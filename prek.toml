@@ -67,7 +67,7 @@ hooks = [{ id = "rumdl-fmt" }]
 # between local development and CI.
 #
 # - pre-commit stage: lightweight checks and auto-fixes (fmt) for development velocity
-# - pre-push stage: comprehensive checks before pushing upstream (cargo-check, clippy, test-docs)
+# - pre-push stage: comprehensive checks before pushing upstream (cargo-check, clippy)
 [[repos]]
 repo = "https://github.com/FeryET/pre-commit-rust.git"
 rev = "2b764ff13b37a64a57232a99363e6438e8877c5c"
@@ -93,27 +93,19 @@ hooks = [
   ], stages = [
     "pre-push",
   ] },
-  # test-docs: run doctests only via cargo test (nextest doesn't support doctests).
-  # Named distinctively so it can be skipped independently: SKIP=test-docs
-  { id = "test", name = "test docs", args = ["--doc", "--workspace"], pass_filenames = false, stages = [
-    "pre-push",
-  ] },
 ]
 
-# Nextest: Rust test runner with parallel execution, retries, and better UX.
-# Replaces pre-commit-rust's `test` hook. Routes through cargo-run-bin to
-# auto-install via cargo-binstall on first run.
+# Test hooks: routed through the `test-runner` crate, which owns the same
+# invocations CI runs. The `test` subcommand runs nextest and then the temp-dir
+# gates; the `doc` subcommand runs doctests and then the rustdoc link gate.
 [[repos]]
 repo = "local"
 hooks = [
-  { id = "test", name = "test", entry = "cargo run --package cargo-bin -- cargo-nextest run --workspace --all-targets --all-features", language = "system", pass_filenames = false, stages = [
+  { id = "test", name = "test", entry = "cargo run --package test-runner -- test --all-features --locked", language = "system", pass_filenames = false, stages = [
     "pre-push",
   ] },
-  # rustdoc: unresolved intra-doc links, the same gate `run-all-tests.sh` runs.
-  # --all-features carries as much weight as the flag does: without it a module
-  # behind an off-by-default feature is compiled out and never checked at all.
-  # Named so it can be skipped independently: SKIP=rustdoc
-  { id = "rustdoc", name = "rustdoc", entry = "cargo doc --locked --no-deps --workspace --all-features --document-private-items", language = "system", pass_filenames = false, stages = [
+  # Named distinctively so it can be skipped independently: SKIP=test-docs
+  { id = "test-docs", name = "test docs", entry = "cargo run --package test-runner -- doc --all-features --locked", language = "system", pass_filenames = false, stages = [
     "pre-push",
   ] },
 ]

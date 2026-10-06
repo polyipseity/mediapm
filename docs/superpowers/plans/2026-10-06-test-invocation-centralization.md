@@ -1935,7 +1935,7 @@ Expected: exit 0.
 - Modify: `.agents/instructions/rust-conventions.instructions.md`
 - Modify: `.agents/instructions/ci-workflow.instructions.md`
 - Modify: `.agents/instructions/temp-directory-spec.instructions.md`
-- Modify: `.agents/instructions/scripts.instructions.md`
+- Modify: `.agents/instructions/scripts-and-permissions.instructions.md`
 - Modify: `.vscode/settings.json`
 - Modify: `.agents/coverage-matrix.md` (only if it tracks a spec row about the gate)
 
@@ -2008,7 +2008,7 @@ The janitor-contract and regression-gate sections name `run-all-tests.{sh,ps1}` 
 
 Also correct the janitor self-test bullet: `tests/scripts/test-clean-mediapm-temp.{sh,ps1}` still live in the root `tests` crate, but `test-run-all-tests.{sh,ps1}` no longer exist.
 
-- [ ] **Step 7: Fix `scripts.instructions.md`**
+- [ ] **Step 7: Fix `scripts-and-permissions.instructions.md`**
 
 The file requires cross-platform helpers to ship as `.sh` + `.ps1` twins. Add one line to that section: `scripts/test-runner` is a crate rather than a script pair, because its twin-free existence is the point: the gates it holds are implemented once. The janitor remains a twin pair because it is a user-facing command.
 
@@ -2023,7 +2023,7 @@ Expected: no output, or rows that Task 10's edits should update. Update any row 
 
 - [ ] **Step 10: Lint every markdown file touched**
 
-Run: `RUSTC_WRAPPER="" cargo bin rumdl check AGENTS.md README.md src/mediapm/AGENTS.md .agents/instructions/rust-conventions.instructions.md .agents/instructions/ci-workflow.instructions.md .agents/instructions/temp-directory-spec.instructions.md .agents/instructions/scripts.instructions.md 2>&1`
+Run: `RUSTC_WRAPPER="" cargo bin rumdl check AGENTS.md README.md src/mediapm/AGENTS.md .agents/instructions/rust-conventions.instructions.md .agents/instructions/ci-workflow.instructions.md .agents/instructions/temp-directory-spec.instructions.md .agents/instructions/scripts-and-permissions.instructions.md 2>&1`
 Expected: exit 0.
 
 - [ ] **Step 11: Confirm no stale reference survives anywhere**
