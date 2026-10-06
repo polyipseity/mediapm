@@ -33,7 +33,7 @@ cargo run -p test-runner -- <subcommand> [selection flags]
 
 | Subcommand | Runs |
 | --- | --- |
-| `test` | nextest over the selection, then the janitor dry-run gate, then the unprefixed-tempdir gate |
+| `test` | nextest over the selection, then the unprefixed-tempdir gate, then the janitor dry-run gate |
 | `doc` | doctests over the selection, then the rustdoc link gate |
 | `feature-matrix` | every package x feature combination, checked one at a time |
 

@@ -30,6 +30,8 @@
 - **R2: the janitor's contract-line match is a full match, not a prefix.** `run-all-tests.sh` uses `^would remove:` (prefix only) while the pw1 twin anchors both ends. The Rust port anchors both ends, so a line that looks like contract output but carries extra trailing content is forwarded to stderr instead of swallowed. Cost if wrong: one extra stderr line on a passing run.
 - **R3: an unknown argument exits 2, not 1.** The shell runner exited 1; clap exits 2 for a usage error. The spec was updated to match. Cost if wrong: a caller asserting exactly 1.
 - **R4: `feature-matrix` derives rows from `cargo metadata` minus the implicit `default` feature.** Verified against the tree before planning: `cargo metadata --no-deps --format-version 1` yields 55 candidate rows, and removing `default` from the 8 packages that declare one yields exactly the 47 rows the current `ci.yml` matrix lists. Cost if wrong: the matrix grows by 8 redundant probes, which is harmless but noisy.
+- **R5: the tempdir gate runs before the janitor gate.** The spec's CLI table listed janitor first, copied from the old shell script's order. The Rust `test::run` calls tempdir first because that gate is a pure in-process source scan with no subprocess and no filesystem mutation, so failing fast on it is free; the janitor spawns `sh` or `pwsh`. The spec was updated to match the code. Cost if wrong: when both gates fail, the user sees the two messages in the other order.
+- **R6: `--locked` and `--no-locked` do not conflict, and `--no-locked` wins.** The cargo aliases hardcode `--locked`, so a `conflicts_with` between the two flags would make the escape hatch unreachable through the very aliases people use. Both flags being present is resolved in `Selection::wants_lock`, which returns `!no_locked`. Cost if wrong: a caller passing both gets unlocked rather than a usage error, which is the intended reading.
 
 ---
 
@@ -62,6 +64,13 @@ fn locked_is_the_default() {
 #[test]
 fn no_locked_opts_out() {
     let cli = Cli::parse_from(["test-runner", "test", "--no-locked"]);
+    let Command::Test(sel) = cli.command else { panic!("expected test") };
+    assert!(!sel.wants_lock());
+}
+
+#[test]
+fn no_locked_wins_over_locked() {
+    let cli = Cli::parse_from(["test-runner", "test", "--locked", "--no-locked"]);
     let Command::Test(sel) = cli.command else { panic!("expected test") };
     assert!(!sel.wants_lock());
 }
@@ -181,8 +190,10 @@ pub struct Selection {
     /// Require an up-to-date `Cargo.lock`. This is the default.
     #[arg(long)]
     pub locked: bool,
-    /// Permit `Cargo.lock` to be updated. Conflicts with `--locked`.
-    #[arg(long, conflicts_with = "locked")]
+    /// Permit `Cargo.lock` to be updated. Wins over `--locked`, so a caller
+    /// that appended it to an alias carrying `--locked` still gets the
+    /// escape hatch.
+    #[arg(long)]
     pub no_locked: bool,
 }
 
@@ -224,8 +235,8 @@ impl Selection {
 /// Arguments for the feature-matrix sweep.
 #[derive(Debug, Args, Clone)]
 pub struct MatrixArgs {
-    /// Permit `Cargo.lock` to be updated. Conflicts with `--locked`.
-    #[arg(long, conflicts_with = "locked")]
+    /// Permit `Cargo.lock` to be updated. Wins over `--locked`.
+    #[arg(long)]
     pub no_locked: bool,
     /// Require an up-to-date `Cargo.lock`. This is the default.
     #[arg(long)]
