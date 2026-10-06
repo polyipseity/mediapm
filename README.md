@@ -55,7 +55,9 @@ cargo clippy-pkg <crate>   # lint one crate
 cargo build-pkg <crate>    # build one crate
 cargo fmt-check            # check formatting
 cargo clippy-all           # lint entire workspace
-cargo test-all             # nextest + tempdir and janitor gates
+cargo test-all             # nextest + tempdir and janitor gates; takes the runner's own
+                           # flags (-p, --features, --no-default-features, --no-locked),
+                           # not nextest flags
 cargo test-doc-all         # doctests + rustdoc link gate
 ```
 
