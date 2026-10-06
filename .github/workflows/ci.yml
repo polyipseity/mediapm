@@ -48,10 +48,10 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606
 
       - name: Run tests
-        run: scripts/run-all-tests.sh
+        run: cargo --locked test-all
 
-      - name: Run large tests
-        run: scripts/run-all-tests.sh --large
+      - name: Run doctests and rustdoc
+        run: cargo --locked test-doc-all
 
       - name: Build project
         run: |
@@ -59,93 +59,19 @@ jobs:
           cargo --locked clippy-all
           cargo --locked fmt-check
           cargo --locked build-all
-          cargo --locked doc --no-deps --workspace --all-features --document-private-items
 
-  # Feature matrix: one `cargo check` per crate per feature combination.
+  # Feature combinations: one `cargo check` per crate per combination.
   #
-  # Regenerate when a crate gains or loses a feature, or the matrix quietly
-  # stops covering it. Order within a package: `--no-default-features`, each
-  # single feature alphabetically, then `--all-features`. Crates with no
-  # `[features]` section get those two endpoints only. Packages alphabetical.
-  #
-  # Three things a reader will otherwise get wrong:
-  #
-  # 1. `--no-default-features` is not a minimal build of `mediapm-utils` via
-  #    `mediapm` or `mediapm-conductor`. Both force features on regardless.
-  #    Only probing `mediapm-utils` directly gives a minimal build.
-  # 2. Eight bin targets need `required-features = ["cli"]`, so cargo skips
-  #    them on every probe without it. Expected, not a failure.
-  # 3. No `--all-targets`, so `#[cfg(test)]` code depending on an optional
-  #    dependency goes unchecked. Adding it would unify dev-dependency
-  #    features across all probes and mask a genuinely missing dependency.
-  feature-matrix:
-    name: "Feature Matrix: ${{ matrix.package }} ${{ matrix.flags }}"
+  # The combinations are derived from `cargo metadata` by the runner, not
+  # listed here: a hand-maintained list is a list that silently rots when a
+  # crate gains a feature. The three gotchas a reader of the old inline list
+  # had to be told (the meaning of `--no-default-features` for
+  # `mediapm-utils`, the `required-features = ["cli"]` bin targets, and the
+  # deliberate absence of `--all-targets`) are now properties of the
+  # derivation and are documented in `scripts/test-runner/src/matrix.rs`.
+  feature-combinations:
+    name: "Feature Matrix"
     runs-on: ubuntu-latest
-    strategy:
-      # Every probe must report, so one broken combination does not hide the
-      # rest of the matrix.
-      fail-fast: false
-      matrix:
-        include:
-          # build-utils (no [features] section)
-          - { package: "build-utils", flags: "--no-default-features" }
-          - { package: "build-utils", flags: "--all-features" }
-          # cargo-bin (no [features] section)
-          - { package: "cargo-bin", flags: "--no-default-features" }
-          - { package: "cargo-bin", flags: "--all-features" }
-          # mediapm: cli, media-tagger, proptest
-          - { package: "mediapm", flags: "--no-default-features" }
-          - { package: "mediapm", flags: "--features cli" }
-          - { package: "mediapm", flags: "--features media-tagger" }
-          - { package: "mediapm", flags: "--features proptest" }
-          - { package: "mediapm", flags: "--all-features" }
-          # mediapm-cas: cli, large-tests
-          - { package: "mediapm-cas", flags: "--no-default-features" }
-          - { package: "mediapm-cas", flags: "--features cli" }
-          - { package: "mediapm-cas", flags: "--features large-tests" }
-          - { package: "mediapm-cas", flags: "--all-features" }
-          # mediapm-conductor: cli, fetch, progress, proptest, tool-presets
-          - { package: "mediapm-conductor", flags: "--no-default-features" }
-          - { package: "mediapm-conductor", flags: "--features cli" }
-          - { package: "mediapm-conductor", flags: "--features fetch" }
-          - { package: "mediapm-conductor", flags: "--features progress" }
-          - { package: "mediapm-conductor", flags: "--features proptest" }
-          - { package: "mediapm-conductor", flags: "--features tool-presets" }
-          - { package: "mediapm-conductor", flags: "--all-features" }
-          # mediapm-conductor-builtin-archive: cli
-          - { package: "mediapm-conductor-builtin-archive", flags: "--no-default-features" }
-          - { package: "mediapm-conductor-builtin-archive", flags: "--features cli" }
-          - { package: "mediapm-conductor-builtin-archive", flags: "--all-features" }
-          # mediapm-conductor-builtin-echo: cli
-          - { package: "mediapm-conductor-builtin-echo", flags: "--no-default-features" }
-          - { package: "mediapm-conductor-builtin-echo", flags: "--features cli" }
-          - { package: "mediapm-conductor-builtin-echo", flags: "--all-features" }
-          # mediapm-conductor-builtin-export: cli
-          - { package: "mediapm-conductor-builtin-export", flags: "--no-default-features" }
-          - { package: "mediapm-conductor-builtin-export", flags: "--features cli" }
-          - { package: "mediapm-conductor-builtin-export", flags: "--all-features" }
-          # mediapm-conductor-builtin-fs: cli
-          - { package: "mediapm-conductor-builtin-fs", flags: "--no-default-features" }
-          - { package: "mediapm-conductor-builtin-fs", flags: "--features cli" }
-          - { package: "mediapm-conductor-builtin-fs", flags: "--all-features" }
-          # mediapm-conductor-builtin-import: cli, fetch
-          - { package: "mediapm-conductor-builtin-import", flags: "--no-default-features" }
-          - { package: "mediapm-conductor-builtin-import", flags: "--features cli" }
-          - { package: "mediapm-conductor-builtin-import", flags: "--features fetch" }
-          - { package: "mediapm-conductor-builtin-import", flags: "--all-features" }
-          # mediapm-conductor-examples-concat-tool (no [features] section)
-          - { package: "mediapm-conductor-examples-concat-tool", flags: "--no-default-features" }
-          - { package: "mediapm-conductor-examples-concat-tool", flags: "--all-features" }
-          # mediapm-tests (no [features] section)
-          - { package: "mediapm-tests", flags: "--no-default-features" }
-          - { package: "mediapm-tests", flags: "--all-features" }
-          # mediapm-utils: cli, nickel, progress, report
-          - { package: "mediapm-utils", flags: "--no-default-features" }
-          - { package: "mediapm-utils", flags: "--features cli" }
-          - { package: "mediapm-utils", flags: "--features nickel" }
-          - { package: "mediapm-utils", flags: "--features progress" }
-          - { package: "mediapm-utils", flags: "--features report" }
-          - { package: "mediapm-utils", flags: "--all-features" }
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -153,10 +79,8 @@ jobs:
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606
 
-      # Unquoted so a future flagless row expands to no argument rather than
-      # an empty one; every current row supplies at least one flag.
-      - name: Check feature combination
-        run: cargo --locked check --package ${{ matrix.package }} ${{ matrix.flags }}
+      - name: Check every feature combination
+        run: cargo --locked run --package test-runner -- feature-matrix --locked
 
   # Windows: runs ONLY the workspace tests via the root `mediapm-tests` crate.
   windows:

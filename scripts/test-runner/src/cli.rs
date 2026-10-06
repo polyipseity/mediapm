@@ -131,10 +131,10 @@ pub struct MatrixArgs {
     /// Permit `Cargo.lock` to be updated. Wins over `--locked`.
     #[arg(long)]
     pub no_locked: bool,
-    /// Require an up-to-date `Cargo.lock`. This is the default. The cargo
-    /// aliases hardcode `--locked`, so this flag has to parse when a caller
-    /// appends it; `--no-locked` is the only one of the two that changes
-    /// the answer.
+    /// Require an up-to-date `Cargo.lock`. This is the default. No cargo
+    /// alias invokes `feature-matrix`, so the CI feature-matrix step is the
+    /// caller that passes `--locked` explicitly; `--no-locked` is the only
+    /// one of the two that changes the answer.
     #[arg(long)]
     pub locked: bool,
     /// Print every derived combination without running any of them.
@@ -145,13 +145,15 @@ pub struct MatrixArgs {
 impl MatrixArgs {
     /// Whether each `cargo check` must pass `--locked`.
     ///
-    /// Reads both flags for the same reason as [`Selection::wants_lock`]:
-    /// the cargo aliases hardcode `--locked`, so the flag has to parse when
-    /// a caller appends it, and `--no-locked` is the only one of the two
-    /// that changes the answer. With neither flag the sweep is locked (the
-    /// default), with `--locked` alone it is locked explicitly, with
-    /// `--no-locked` alone it is unlocked, and with both it is unlocked, so
-    /// the escape hatch always wins.
+    /// Reads both flags for the same reason as [`Selection::wants_lock`],
+    /// with one difference: no cargo alias invokes `feature-matrix`, so
+    /// nothing upstream of here hardcodes `--locked`. The CI
+    /// feature-matrix step is what passes it explicitly, and
+    /// `--no-locked` is the only one of the two that changes the answer.
+    /// With neither flag the sweep is locked (the default), with
+    /// `--locked` alone it is locked explicitly, with `--no-locked` alone
+    /// it is unlocked, and with both it is unlocked, so the escape hatch
+    /// always wins.
     pub fn wants_lock(&self) -> bool {
         match (self.locked, self.no_locked) {
             (_, true) => false,
