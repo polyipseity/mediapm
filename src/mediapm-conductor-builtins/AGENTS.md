@@ -25,8 +25,6 @@ Cross-crate data flow, shared invariants, and integration boundaries are documen
 
 ## D. Conductor-Builtins Specification
 
-## D. Conductor-Builtins Specification
-
 ### D1. Shared Framework, CLI, API, and Validation
 
 Each builtin follows: parameter validation → execution → output. Pure builtins produce deterministic output; impure builtins perform side effects.

@@ -34,8 +34,6 @@ SI prefixes are 1000-based: `format_count` and `format_rate` use decimal SI pref
 
 ## deno permission wrapper contract
 
-## deno permission wrapper contract
-
 yt-dlp invokes deno as `[deno, 'run', *options, '-']` with `--no-config` and no
 `--allow-*` flags. deno 2.x enforces a permission sandbox, so the `ws` npm
 package's `WS_NO_BUFFER_UTIL` env access is denied (`NotCapable`), breaking the
