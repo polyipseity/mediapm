@@ -143,19 +143,56 @@ pub fn enforce(root: &Path) -> Result<()> {
         bail!("mediapm temp-dir sweep failed: {trimmed}");
     }
 
+    // The trigger stays the broad `would remove` form because the janitor's
+    // own summary line (`would remove 3 mediapm temp director(ies)`) also
+    // carries it, and a sweep that only reported a count is still a
+    // leftover. The evidence collected for the verdict is narrower: only
+    // the per-directory lines, so the verdict names paths rather than
+    // repeating the count the gate already implies.
     let mut leftover = false;
+    let mut leftovers: Vec<&str> = Vec::new();
     for line in combined.lines() {
         if line.starts_with("would remove") {
             leftover = true;
+            if line.starts_with("would remove:") {
+                leftovers.push(line);
+            }
         }
         if !is_contract_line(line) {
             eprintln!("{line}");
         }
     }
-    if leftover {
-        bail!("test suite left mediapm temp dirs behind");
+    if !leftover {
+        return Ok(());
     }
-    Ok(())
+    let detail =
+        if leftovers.is_empty() { String::new() } else { format!(": {}", leftovers.join("; ")) };
+    bail!("test suite left mediapm temp dirs behind{detail}");
+}
+
+#[cfg(test)]
+mod program_tests {
+    use super::janitor_command;
+    use std::path::Path;
+
+    /// The unix branch must spawn the janitor by path.
+    ///
+    /// `clean-mediapm-temp.sh` is bash: it uses `set -euo pipefail`, `[[ ]]`
+    /// and `read -r -d ''`, none of which dash parses. On `ubuntu-latest` the
+    /// resolved `sh` is dash, so naming an interpreter fails the gate on every
+    /// run while passing on macOS, where `sh` is bash 3.2. The stub-based
+    /// tests cannot catch that on a bash-as-sh host, because the stub's own
+    /// `set -euo pipefail` is legal there. This assertion is what closes it
+    /// everywhere, with no spawn and no interpreter dependency.
+    #[test]
+    #[cfg(unix)]
+    fn the_unix_branch_spawns_the_janitor_by_path() {
+        let (program, _args) = janitor_command(Path::new("/repo"));
+        assert!(
+            program.to_string_lossy().ends_with("clean-mediapm-temp.sh"),
+            "the janitor must be spawned by path, not through an interpreter; got {program:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -217,10 +254,14 @@ mod tests {
         );
     }
 
-    /// A successful sweep that lists a leftover fails with the verdict,
-    /// not with the leftover path. The broad `would remove` form is what
-    /// catches the janitor's own `would remove 1 mediapm temp director(ies)`
-    /// summary, which the old pwsh runner's colon form missed.
+    /// A successful sweep that lists a leftover fails, and the verdict
+    /// names the directory. The broad `would remove` form is the trigger,
+    /// because it is also what catches the janitor's own
+    /// `would remove 1 mediapm temp director(ies)` summary that the old
+    /// pwsh runner's colon form missed. A bare verdict told the developer
+    /// that a directory survived without saying which one, so the first
+    /// thing a pre-push author sees is a path they have to reconstruct
+    /// from `$TMPDIR` by hand.
     #[test]
     fn a_leftover_fails_the_gate() {
         let root = scratch("leftover");
@@ -233,7 +274,15 @@ mod tests {
             0,
         );
         let err = enforce(&root).expect_err("a leftover must fail the gate");
-        assert_eq!(err.to_string(), "test suite left mediapm temp dirs behind");
+        let text = err.to_string();
+        assert!(
+            text.contains("test suite left mediapm temp dirs behind"),
+            "unexpected message: {text}"
+        );
+        assert!(
+            text.contains("/tmp/mediapm-artifact-abc"),
+            "the verdict must name the leftover directory; got: {text}"
+        );
     }
 
     /// The empty-root case, which nothing else covers: a sweep with

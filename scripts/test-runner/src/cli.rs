@@ -30,7 +30,11 @@ pub struct Cli {
 /// The three things the runner can do.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run the test suite, then the janitor and tempdir gates.
+    /// Run the test suite, then the tempdir and janitor gates.
+    ///
+    /// The tempdir gate runs first because it is a pure in-process scan, so a
+    /// naming violation is reported without spending a subprocess on a tree
+    /// that is already wrong.
     Test(Selection),
     /// Run doctests, then the rustdoc link gate.
     Doc(Selection),
