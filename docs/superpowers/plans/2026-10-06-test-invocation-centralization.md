@@ -505,6 +505,7 @@ mod tests {
                 OsString::from("--quiet"),
                 OsString::from("--package"),
                 OsString::from("cargo-bin"),
+                OsString::from("--locked"),
                 OsString::from("--"),
                 OsString::from("cargo-nextest"),
                 OsString::from("run"),
@@ -569,19 +570,27 @@ use crate::cli::Selection;
 /// `.github/` or `rust-toolchain.toml` provisioned the binary, so CI
 /// depended on it being ambient.
 ///
-/// Both levels carry `--locked`: the outer `cargo run` guards the
-/// `cargo-bin` build, the inner nextest run guards the workspace.
+/// Both levels carry `--locked`, and they mean different things. Before the
+/// `--` separator it is a cargo flag guarding the `cargo-bin` build; after
+/// it, it is a nextest flag guarding the workspace build that the suite
+/// runs. Omitting the outer one lets cargo rewrite `Cargo.lock` while
+/// building `cargo-bin`, which the runner has no reason to permit: the old
+/// shell runner passed `--locked` to cargo on every invocation.
 pub fn argv(selection: &Selection) -> Vec<OsString> {
+    let locked = selection.wants_lock();
     let mut argv: Vec<OsString> = vec![
         OsString::from("run"),
         OsString::from("--quiet"),
         OsString::from("--package"),
         OsString::from("cargo-bin"),
-        OsString::from("--"),
-        OsString::from("cargo-nextest"),
-        OsString::from("run"),
     ];
-    if selection.wants_lock() {
+    if locked {
+        argv.push(OsString::from("--locked"));
+    }
+    argv.push(OsString::from("--"));
+    argv.push(OsString::from("cargo-nextest"));
+    argv.push(OsString::from("run"));
+    if locked {
         argv.push(OsString::from("--locked"));
     }
     argv.push(OsString::from("--workspace"));
@@ -792,6 +801,14 @@ Expected: failure, `is_contract_line` is undefined.
 
 - [ ] **Step 3: Implement `janitor.rs`**
 
+First, delete the `#[expect(clippy::unnecessary_wraps, ...)]` that Task 2
+placed on `enforce` in this file. The placeholder body returned `Ok(())`
+unconditionally, which is what the lint fires on; the real body below can
+fail, so the lint stops firing and a fulfilled `#[expect]` is an
+`unfulfilled_lint_expectations` build error. The same deletion is required in
+`tempdir.rs` at Step 6. Leave the two `#[expect(dead_code, ...)]` attributes
+in `main.rs` alone; Task 5 removes those.
+
 ```rust
 //! Temp-directory janitor gate.
 //!
@@ -986,6 +1003,9 @@ Run: `RUSTC_WRAPPER="" cargo test -p test-runner tempdir 2>&1`
 Expected: failure, `violations_in` is undefined.
 
 - [ ] **Step 6: Implement `tempdir.rs`**
+
+Delete the `#[expect(clippy::unnecessary_wraps, ...)]` that Task 2 placed on
+`enforce` here, for the same reason given in Step 3.
 
 ```rust
 //! Unprefixed-tempdir invariant gate.
@@ -1478,7 +1498,9 @@ consumes anything from either module: `Metadata::packages` and `Package`
 belong to this task's derivation, and `MatrixArgs::wants_lock` is the final
 unconsumed item in `cli`. Both lints stop firing here, so both expectations
 become `unfulfilled_lint_expectations` errors if left in place. Leave the
-permanent `#[expect]`s on `Selection` and on `dispatch` alone.
+permanent `#[expect(clippy::struct_excessive_bools, ...)]` on `Selection`
+alone; the `needless_pass_by_value` expectation that once sat on `dispatch`
+was already deleted in Task 2 and must not be recreated.
 
 - [ ] **Step 5: Run the tests**
 
