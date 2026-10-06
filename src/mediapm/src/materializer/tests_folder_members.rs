@@ -543,6 +543,91 @@ async fn a_folder_whose_nested_member_lands_first_is_counted_as_missing() {
     );
 }
 
+/// Name of the directory inside the folder that is made read-only, so no
+/// child directory can be created in it.
+const READ_ONLY_DIR: &str = "read-only";
+
+/// The member that needs a directory inside [`READ_ONLY_DIR`].
+///
+/// Two levels below the read-only directory on purpose: its own parent does
+/// not exist, so `create_dir_all` is the call that meets the read-only
+/// directory. One level down would leave the parent already there and the
+/// run would fail at the write after it, past the branch under test.
+const READ_ONLY_BLOCKED_MEMBER: &str = "read-only/sub/member.bin";
+
+/// Bytes [`READ_ONLY_BLOCKED_MEMBER`] holds. The member never lands, so the
+/// content only has to be what the archive carries.
+const READ_ONLY_BLOCKED_PAYLOAD: &[u8] = b"member payload that never lands";
+
+/// A folder the disk will not let the run write fails the run instead of
+/// counting the member missing.
+///
+/// `existing_non_directory_ancestor` reads the ancestors only after
+/// `create_dir_all` has failed, and a walk whose answers are all directories
+/// answers `None`, where the original error goes out. The refusal and the
+/// error are different answers about the folder: one says a member declined
+/// and the rest of the library is fine, the other says the library cannot be
+/// written at all, which is what a run over a read-only directory has to say.
+/// The fixture places a read-only directory where the member's parent has to
+/// be created, so `create_dir_all` fails on the permission and no ancestor
+/// that answers is a file. Unix only, because the fixture needs `chmod`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_folder_whose_member_directory_cannot_be_made_fails_the_run() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let archive = cas
+        .put(bytes::Bytes::from(zip_payload(&[(
+            READ_ONLY_BLOCKED_MEMBER,
+            READ_ONLY_BLOCKED_PAYLOAD,
+        )])))
+        .await
+        .unwrap();
+
+    let folder = paths.hierarchy_root_dir.join(FOLDER_PATH);
+    let read_only = folder.join(READ_ONLY_DIR);
+    tokio::fs::create_dir_all(&read_only).await.unwrap();
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let run = sync_hierarchy(
+        &paths,
+        &folder_only_document(&archive.to_string()),
+        &mut MediaPmState::default(),
+        &cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        None,
+        None,
+    )
+    .await;
+
+    // Put the directory back before asserting, so the workspace comes away
+    // removable whether the assertion below holds or fails.
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let error = run.expect_err(
+        "the disk refused the write, so the run must fail; a report counting the member missing \
+         blames the member for what the disk did",
+    );
+    let MediaPmError::Io { operation, source, .. } = &error else {
+        panic!("expected the parent-directory I/O error, got {error:?}");
+    };
+    assert_eq!(
+        operation, "creating extracted-file parent directory",
+        "the run has to fail where the member's directory could not be made; a failure at an \
+         earlier call would leave the ancestor walk untested"
+    );
+    assert_eq!(
+        source.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "the fixture makes the directory read-only, so the failure has to be the permission"
+    );
+}
+
 /// A folder with one blocked variant and one good variant stays missing over
 /// two runs, though its good variant's file is correct.
 ///
