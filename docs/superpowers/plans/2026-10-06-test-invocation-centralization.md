@@ -521,6 +521,13 @@ mod tests {
     fn argv_omits_locked_when_opted_out() {
         let got = argv(&selection(&["--no-locked"]));
         assert!(!got.iter().any(|a| a == "--locked"));
+        // The absence check alone would still pass with an outer `--locked`
+        // misplaced before the separator, because it would then be absent
+        // under `--no-locked` yet present otherwise. Pinning the separator's
+        // position constrains the unlocked shape's prefix contiguity, which
+        // the locked-shape exact-vector test does not cover.
+        let separator = got.iter().position(|a| a == "--").expect("separator present");
+        assert_eq!(separator, 4);
     }
 
     #[test]
@@ -565,7 +572,8 @@ use crate::cli::Selection;
 /// The argv that runs the nextest suite for `selection`.
 ///
 /// Nextest is reached as `cargo run --package cargo-bin -- cargo-nextest`,
-/// which is the route `cargo-run-bin` installs through on first use. The
+/// which is the route the `bin` alias in `.cargo/config.toml` installs
+/// through on first use. The
 /// old shell runner called `cargo nextest` directly while nothing in
 /// `.github/` or `rust-toolchain.toml` provisioned the binary, so CI
 /// depended on it being ambient.
