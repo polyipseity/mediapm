@@ -1206,9 +1206,9 @@ mod tests {
     use clap::Parser;
     use std::ffi::OsString;
 
-    fn selection(args: &[&str]) -> crate::cli::Selection {
+    fn selection(options: &[&str]) -> crate::cli::Selection {
         let mut argv = vec!["test-runner", "doc"];
-        argv.extend_from_slice(args);
+        argv.extend_from_slice(options);
         let Command::Doc(sel) = Cli::parse_from(argv).command else {
             panic!("expected the doc subcommand");
         };
@@ -1231,8 +1231,14 @@ mod tests {
 
     #[test]
     fn doctest_argv_omits_locked_when_opted_out() {
-        let got = doctest_argv(&selection(&["--no-locked"]));
-        assert!(!got.iter().any(|a| a == "--locked"));
+        assert_eq!(
+            doctest_argv(&selection(&["--no-locked"])),
+            vec![
+                OsString::from("test"),
+                OsString::from("--doc"),
+                OsString::from("--workspace"),
+            ]
+        );
     }
 
     #[test]
@@ -1305,15 +1311,17 @@ pub fn run(selection: &Selection) -> Result<i32> {
 /// as something separate from `test`.
 pub fn doctest_argv(selection: &Selection) -> Vec<OsString> {
     let mut argv = vec![OsString::from("test"), OsString::from("--doc")];
-    if selection.wants_lock() {
-        argv.push(OsString::from("--locked"));
-    }
     // Same reason as `nextest::argv`: `--workspace` wins silently over `-p`,
     // so emitting both made `-p` a no-op. Emitted only when no package was
-    // named. The rustdoc step below is deliberately unaffected: it always runs
-    // workspace-wide so an off-by-default module cannot hide a broken link.
+    // named. It comes BEFORE the lock flag, because the pinned vector in
+    // Step 1 puts it there. The rustdoc step below is deliberately
+    // unaffected: it always runs workspace-wide so an off-by-default module
+    // cannot hide a broken link.
     if selection.package.is_none() {
         argv.push(OsString::from("--workspace"));
+    }
+    if selection.wants_lock() {
+        argv.push(OsString::from("--locked"));
     }
     argv.extend(selection.feature_flags());
     argv.extend(selection.package_flags());
