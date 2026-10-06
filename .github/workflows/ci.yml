@@ -69,7 +69,11 @@ jobs:
   # `mediapm-utils`, the `required-features = ["cli"]` bin targets, and the
   # deliberate absence of `--all-targets`) are now properties of the
   # derivation and are documented in `scripts/test-runner/src/matrix.rs`.
-  feature-combinations:
+  #
+  # Two `--locked` flags, guarding two different builds: the outer one is a
+  # cargo flag guarding the `test-runner` build, the inner one reaches the
+  # runner and is what each spawned `cargo check` carries.
+  feature-matrix:
     name: "Feature Matrix"
     runs-on: ubuntu-latest
     steps:
