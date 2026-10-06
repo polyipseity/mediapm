@@ -2,12 +2,12 @@
 //!
 //! Nextest is reached through the `cargo-bin` crate rather than as an
 //! ambient `cargo-nextest` on `PATH`. `cargo run --package cargo-bin --
-//! cargo-nextest` is the route the `cargo-run-bin` alias installs on first
-//! use, so the binary the suite runs is the one this workspace pinned.
-//! Before this runner existed, `run-all-tests.sh` called `cargo nextest`
-//! directly while nothing in `.github/` or `rust-toolchain.toml`
-//! provisioned the binary, so CI succeeded only because the machine
-//! happened to carry it.
+//! cargo-nextest` is the invocation the `bin` alias in
+//! `.cargo/config.toml` wraps, so the binary the suite runs is the one
+//! this workspace pinned. Before this runner existed,
+//! `run-all-tests.sh` called `cargo nextest` directly while nothing in
+//! `.github/` or `rust-toolchain.toml` provisioned the binary, so CI
+//! succeeded only because the machine happened to carry it.
 
 use std::ffi::OsString;
 
@@ -16,24 +16,36 @@ use crate::cli::Selection;
 /// The argv that runs the nextest suite for `selection`.
 ///
 /// Nextest is reached as `cargo run --package cargo-bin -- cargo-nextest`,
-/// which is the route `cargo-run-bin` installs through on first use. The
-/// old shell runner called `cargo nextest` directly while nothing in
-/// `.github/` or `rust-toolchain.toml` provisioned the binary, so CI
-/// depended on it being ambient.
+/// which is the invocation the `bin` alias wraps. The old shell runner
+/// called `cargo nextest` directly while nothing in `.github/` or
+/// `rust-toolchain.toml` provisioned the binary, so CI depended on it
+/// being ambient.
 ///
-/// Both levels carry `--locked`: the outer `cargo run` guards the
-/// `cargo-bin` build, the inner nextest run guards the workspace.
+/// Two `--locked` flags appear, one on each side of the `--` separator,
+/// and they guard two different builds. After the separator the flag is a
+/// nextest argument and guards the workspace resolution the suite itself
+/// runs. Before it the flag is a cargo argument and guards the `cargo-bin`
+/// build, which is a real resolution step rather than a formality: it
+/// resolves `cargo-bin`'s own dependency graph and would otherwise be free
+/// to rewrite `Cargo.lock` on the way to running the suite. `run-all-tests.sh`
+/// passed `--locked` to cargo on every invocation, so dropping the outer
+/// one here would reintroduce an unlocked resolution that the runner it
+/// replaces did not have.
 pub fn argv(selection: &Selection) -> Vec<OsString> {
+    let locked = selection.wants_lock();
     let mut argv: Vec<OsString> = vec![
         OsString::from("run"),
         OsString::from("--quiet"),
         OsString::from("--package"),
         OsString::from("cargo-bin"),
-        OsString::from("--"),
-        OsString::from("cargo-nextest"),
-        OsString::from("run"),
     ];
-    if selection.wants_lock() {
+    if locked {
+        argv.push(OsString::from("--locked"));
+    }
+    argv.push(OsString::from("--"));
+    argv.push(OsString::from("cargo-nextest"));
+    argv.push(OsString::from("run"));
+    if locked {
         argv.push(OsString::from("--locked"));
     }
     argv.push(OsString::from("--workspace"));
@@ -61,6 +73,9 @@ mod tests {
         sel
     }
 
+    /// Both sides of the `--` separator carry `--locked`: the outer one
+    /// is a cargo flag guarding the `cargo-bin` build, the inner one is a
+    /// nextest flag guarding the workspace build.
     #[test]
     fn argv_routes_through_cargo_bin_and_locks_both_levels() {
         assert_eq!(
@@ -70,6 +85,7 @@ mod tests {
                 OsString::from("--quiet"),
                 OsString::from("--package"),
                 OsString::from("cargo-bin"),
+                OsString::from("--locked"),
                 OsString::from("--"),
                 OsString::from("cargo-nextest"),
                 OsString::from("run"),
@@ -81,10 +97,20 @@ mod tests {
         );
     }
 
+    /// The escape hatch has to reach both levels, since one `wants_lock()`
+    /// decision drives them. The second assertion is what makes that
+    /// claim: it places the separator immediately after the fixed prefix,
+    /// so an outer `--locked` left behind on the cargo side fails here
+    /// even though a global absence check would also pass.
     #[test]
     fn argv_omits_locked_when_opted_out() {
         let got = argv(&selection(&["--no-locked"]));
         assert!(!got.iter().any(|a| a == "--locked"));
+        let separator = got.iter().position(|a| a == "--").expect("-- present");
+        assert_eq!(
+            separator, 4,
+            "nothing sits between the fixed prefix and the separator: {got:?}"
+        );
     }
 
     #[test]

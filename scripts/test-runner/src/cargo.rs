@@ -63,8 +63,9 @@ pub fn metadata(dir: &Path) -> Result<Metadata> {
 /// The cargo executable to spawn.
 ///
 /// Honours `CARGO` so a nested toolchain or a test stub can redirect it,
-/// matching what `build-utils` already does.
-fn cargo_binary() -> std::ffi::OsString {
+/// matching what `build-utils` already does. Every spawn site in the
+/// crate resolves through here, so the `CARGO` contract stays one fact.
+pub(crate) fn cargo_binary() -> std::ffi::OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| std::ffi::OsString::from("cargo"))
 }
 
@@ -85,7 +86,7 @@ mod tests {
 
     use super::Metadata;
 
-    /// Guards the shape [`metadata`] deserializes: without this the only
+    /// Guards the shape `metadata` deserializes: without this the only
     /// coverage of the wire format is a live cargo invocation, so a
     /// mismatch in a field name would surface as a runtime parse failure
     /// in whichever subcommand happened to run first.

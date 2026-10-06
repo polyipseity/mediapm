@@ -21,8 +21,7 @@ use crate::cli::Selection;
 pub fn run(selection: &Selection) -> Result<i32> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let metadata = cargo::metadata(manifest_dir)?;
-    let root = metadata.workspace_root.clone();
-    drop(metadata);
+    let root = metadata.workspace_root;
 
     let code = run_nextest(selection)?;
     if code != 0 {
@@ -36,12 +35,10 @@ pub fn run(selection: &Selection) -> Result<i32> {
 
 /// Spawns the nextest suite and returns its exit code.
 fn run_nextest(selection: &Selection) -> Result<i32> {
-    let status = std::process::Command::new(
-        std::env::var_os("CARGO").unwrap_or_else(|| std::ffi::OsString::from("cargo")),
-    )
-    .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")))
-    .args(crate::nextest::argv(selection))
-    .status()
-    .context("spawn the nextest suite")?;
+    let status = std::process::Command::new(cargo::cargo_binary())
+        .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")))
+        .args(crate::nextest::argv(selection))
+        .status()
+        .context("spawn the nextest suite")?;
     cargo::status_code(status, "the nextest suite")
 }
