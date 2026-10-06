@@ -3,6 +3,7 @@ resolver = "3"
 members = [
 	"scripts/build-utils",
 	"scripts/cargo-bin",
+	"scripts/test-runner",
 	"src/mediapm",
 	"src/mediapm-cas",
 	"src/mediapm-conductor",

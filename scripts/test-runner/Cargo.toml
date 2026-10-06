@@ -1,0 +1,17 @@
+[package]
+name = "test-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+description = "Central runner for workspace tests, doctests and the feature matrix"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
