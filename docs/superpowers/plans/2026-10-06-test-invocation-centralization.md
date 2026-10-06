@@ -51,7 +51,7 @@
 - Produces: `cli::{Cli, Command, Selection}` where `Command` is `Test(Selection) | Doc(Selection) | FeatureMatrix(MatrixArgs)`; `Selection::{features, all_features, no_default_features, package, locked, no_locked, wants_lock(), feature_flags()}`; `cargo::{Metadata, Package, metadata(), status_code()}` where `Metadata { workspace_root: PathBuf, packages: Vec<Package> }` and `Package { name: String, features: BTreeMap<String, Vec<String>> }`.
 - [ ] **Step 1: Write the failing CLI tests**
 
-In `scripts/test-runner/src/cli.rs`, add a `#[cfg(test)] mod tests` covering:
+In `scripts/test-runner/src/cli.rs`, add a `#[cfg(test)] mod tests` beginning with `use clap::Parser;` and `use super::{Cli, Command};` (without the trait in scope none of these compile), covering:
 
 ```rust
 #[test]
@@ -126,12 +126,25 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-clap = { workspace = true }
+# The workspace clap entry is `default-features = false` with only
+# ["derive", "env", "std"], which leaves out `help`, `usage`,
+# `error-context` and `suggestions`. Without them the binary has no
+# `--help` at all and parse errors carry no usage line. These are clap
+# 4's defaults minus `std` (already on) and `color`, added here rather
+# than to the workspace entry so no other crate's surface moves.
+clap = { workspace = true, features = [
+    "help",
+    "usage",
+    "error-context",
+    "suggestions",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ```
 
 - [ ] **Step 4: Write `scripts/test-runner/src/cli.rs`**
+
+Declare the `all_features` / `no_default_features` conflict on `all_features` only. `conflicts_with_all` on `features` covers `--features` against both, but it does not make those two conflict with each other, and cargo rejects that pair. Clap's conflicts are symmetric, so one side is enough. Omitting it makes the test above fail.
 
 Module doc explaining that the module owns the command-line surface and that feature selection mirrors cargo's three mutually exclusive flags. Then:
 
@@ -179,7 +192,7 @@ pub struct Selection {
     )]
     pub features: Option<String>,
     /// Activate all available features.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "no_default_features")]
     pub all_features: bool,
     /// Do not activate the `default` feature.
     #[arg(long)]
@@ -385,12 +398,32 @@ In the root `Cargo.toml`, add `"scripts/test-runner",` to `members`, keeping the
 - [ ] **Step 8: Run the tests**
 
 Run: `RUSTC_WRAPPER="" cargo test -p test-runner 2>&1`
-Expected: PASS, 6 tests in `cli::tests`.
+Expected: PASS, 7 tests in `cli::tests`.
 
-- [ ] **Step 9: Lint**
+- [ ] **Step 8b: Lint**
 
 Run: `RUSTC_WRAPPER="" cargo clippy -p test-runner --all-targets --all-features 2>&1`
 Expected: exit 0 with no diagnostics.
+
+`dispatch` is three `todo!()` arms at this point, so nothing calls
+`cargo::metadata`, `cargo::status_code`, `Selection::package_flags` or
+`MatrixArgs::wants_lock`, and `warnings = "deny"` turns each into a
+`dead_code` error. Silence them with item-scoped `#[expect]` carrying a
+substantive reason, never a bare `#[allow]`:
+
+- `#[expect(dead_code, reason = "...")]` on `mod cargo;`. **Task 2 deletes
+  it.**
+- `#[expect(dead_code, reason = "...")]` on `mod cli;`. **Task 5 deletes
+  it.**
+- `#[expect(clippy::struct_excessive_bools, reason = "...")]` on
+  `Selection`, permanent: it mirrors cargo's flags one for one, and
+  collapsing them into enums would diverge from cargo's own CLI.
+- `#[expect(clippy::needless_pass_by_value, reason = "...")]` on
+  `dispatch`. **Task 2 deletes it**, when the first arm moves its payload.
+
+`#[expect]` fires `unfulfilled_lint_expectations` once it is fulfilled, so
+leaving one of the three time-limited expectations in place is a hard build
+error, not a warning. Tasks 2 and 5 must delete theirs.
 
 ---
 
@@ -631,6 +664,12 @@ In `main.rs`, add `mod gates;`, `mod nextest;`, `mod test;` to the module list, 
 ```rust
 Command::Test(selection) => test::run(&selection),
 ```
+
+Delete the `#[expect(dead_code, ...)]` on `mod cargo;` and the
+`#[expect(clippy::needless_pass_by_value, ...)]` on `dispatch` that Task 1
+added. Both are now fulfilled, and a fulfilled `#[expect]` is an
+`unfulfilled_lint_expectations` error. Leave the `#[expect]` on `mod cli;`
+alone; Task 5 removes it.
 
 - [ ] **Step 8: Run the tests**
 
@@ -1378,6 +1417,10 @@ In `main.rs`, add `mod matrix;` and replace:
 ```rust
 Command::FeatureMatrix(args) => matrix::run(&args),
 ```
+
+Delete the `#[expect(dead_code, ...)]` on `mod cli;` that Task 1 added.
+It was the last unconsumed item in that module, so it is now fulfilled and
+a fulfilled `#[expect]` is an `unfulfilled_lint_expectations` error.
 
 - [ ] **Step 5: Run the tests**
 
