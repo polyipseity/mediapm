@@ -1591,21 +1591,28 @@ Extract:
 /// both are cargo flags and neither changes the other's meaning; the order
 /// is fixed so two runs of the same probe produce byte-identical argv.
 fn probe_argv(args: &MatrixArgs, probe: &Probe) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec![OsString::from("check")];
+    // The local is `check_argv`, not `argv`: inside a function whose
+    // parameter is `args`, a local named `argv` trips
+    // `clippy::similar_names`, which the workspace denies.
+    let mut check_argv: Vec<OsString> = vec![OsString::from("check")];
     if args.wants_lock() {
-        argv.push(OsString::from("--locked"));
+        check_argv.push(OsString::from("--locked"));
     }
-    argv.push(OsString::from("--package"));
-    argv.push(OsString::from(&probe.package));
-    argv.extend(probe.flags.iter().map(OsString::from));
-    argv
+    check_argv.push(OsString::from("--package"));
+    check_argv.push(OsString::from(&probe.package));
+    check_argv.extend(probe.flags.iter().map(OsString::from));
+    check_argv
 }
 ```
 
 Have the spawn loop call it, and pin two vectors: one for the locked default
-and one under `--no-locked` asserting `--locked` is absent. Name the local
-holding the built argv so `clippy::similar_names` stays clear of the `args`
-parameter, as Task 5's `check_argv` did.
+and one under `--no-locked` asserting `--locked` is absent. Build both
+`MatrixArgs` values through `Cli::parse_from(["test-runner",
+"feature-matrix", ...])` rather than by hand-setting the flag pair, so the
+tests drive the same `wants_lock` decision the sweep does. Name any helper
+local that holds the parsed `Vec` something other than `argv`: beside a
+binding named `args` it trips `clippy::similar_names`, which is why the
+sibling `nextest.rs` binds its payload as `sel`.
 
 - [ ] **Step 3c: Restore `dispatch`'s by-value rationale**
 
