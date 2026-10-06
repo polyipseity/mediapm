@@ -31,6 +31,7 @@
 - **R3: an unknown argument exits 2, not 1.** The shell runner exited 1; clap exits 2 for a usage error. The spec was updated to match. Cost if wrong: a caller asserting exactly 1.
 - **R4: `feature-matrix` derives rows from `cargo metadata` minus the implicit `default` feature.** Verified against the tree before planning: `cargo metadata --no-deps --format-version 1` yields 55 candidate rows, and removing `default` from the 8 packages that declare one yields exactly the 47 rows the current `ci.yml` matrix lists. Cost if wrong: the matrix grows by 8 redundant probes, which is harmless but noisy.
 - **R5: the tempdir gate runs before the janitor gate.** The spec's CLI table listed janitor first, copied from the old shell script's order. The Rust `test::run` calls tempdir first because that gate is a pure in-process source scan with no subprocess and no filesystem mutation, so failing fast on it is free; the janitor spawns `sh` or `pwsh`. The spec was updated to match the code. Cost if wrong: when both gates fail, the user sees the two messages in the other order.
+- **R12: `--workspace` is emitted only when no package is named, in both `nextest::argv` and `doc::doctest_argv`.** Cargo resolves `--workspace -p <pkg>` as a union in which `--workspace` wins silently and with no warning, so emitting both made `-p` an accepted flag that did nothing. The old `cargo test-pkg` alias carried no `--workspace`, which is what made its `-p` narrow, so the runner was losing a capability the thing it replaces had. `rustdoc_argv` stays workspace-wide unconditionally, because the link gate must not be narrowable by an off-by-default module. Ruled after the Task 4 implementer's F1 report and the Task 4 review both found the composition. The review corrected the implementer's cost estimate: every pinned vector in both already-reviewed files is built from a selection with no `-p`, so the change breaks none of them. Cost if wrong: none for any caller the plan creates, since none passes `-p`; a developer passing `-p` gets the narrow run they asked for rather than a silent whole-workspace one.
 - **R11: an exit code a process cannot carry becomes 70 (`EX_SOFTWARE`), reported on stderr, not a silent 1.** The runner converts a subcommand's `i32` into `std::process::ExitCode`, which only carries a `u8`. `unwrap_or(1)` would silently rewrite anything above 255 to 1, which is the value-masking default `.agents/instructions/typing-conventions.instructions.md` bans, and 1 collides with the generic-failure path. 70 says "the runner could not represent what happened", which is a defect in the runner rather than a verdict on the suite, and it is distinguishable from every status a real failure produces: 1 is the generic and `missing-cli` path in `mediapm/src/main.rs`, 2 is POSIX shell misuse, 3 is sync-warning, 4 is sync-error. It is also a plain numeric status on Windows, where `sysexits.h` does not exist. Ruled by the Task 2 implementer and ratified here. Cost if wrong: a caller sees 70 rather than the real code, but the stderr line names the actual value, so nothing is lost.
 - **R6: `--locked` and `--no-locked` do not conflict, and `--no-locked` wins.** The cargo aliases hardcode `--locked`, so a `conflicts_with` between the two flags would make the escape hatch unreachable through the very aliases people use. Both flags being present is resolved in `Selection::wants_lock` by matching the pair `(self.locked, self.no_locked)` and letting `no_locked` win. The match reads both fields, which is deliberate: a field nothing reads is `dead_code` under `warnings = "deny"`, and an accepted-but-inert flag whose rationale lives only in a plan reads as a bug. The obvious one-liner `self.locked || !self.no_locked` is wrong and must not be substituted: with both flags present it returns true, so `--no-locked` loses. This was caught by the Task 1 implementer, who was handed that exact expression along with the two invariants it violates. Cost if wrong: a caller passing both gets locked instead of unlocked, which is the wrong way round for an escape hatch.
 
@@ -1303,13 +1304,16 @@ pub fn run(selection: &Selection) -> Result<i32> {
 /// nextest cannot run doctests, which is the whole reason this step exists
 /// as something separate from `test`.
 pub fn doctest_argv(selection: &Selection) -> Vec<OsString> {
-    let mut argv = vec![
-        OsString::from("test"),
-        OsString::from("--doc"),
-        OsString::from("--workspace"),
-    ];
+    let mut argv = vec![OsString::from("test"), OsString::from("--doc")];
     if selection.wants_lock() {
         argv.push(OsString::from("--locked"));
+    }
+    // Same reason as `nextest::argv`: `--workspace` wins silently over `-p`,
+    // so emitting both made `-p` a no-op. Emitted only when no package was
+    // named. The rustdoc step below is deliberately unaffected: it always runs
+    // workspace-wide so an off-by-default module cannot hide a broken link.
+    if selection.package.is_none() {
+        argv.push(OsString::from("--workspace"));
     }
     argv.extend(selection.feature_flags());
     argv.extend(selection.package_flags());
