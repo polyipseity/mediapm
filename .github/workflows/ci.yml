@@ -87,7 +87,7 @@ jobs:
       - name: Check every feature combination
         run: cargo --locked run --package test-runner -- feature-matrix --locked
 
-  # Windows: runs ONLY the workspace tests via the root `mediapm-tests` crate.
+  # Windows: runs the workspace tests via the root `mediapm-tests` crate and the gate tests via `test-runner`.
   windows:
     name: "Windows: Workspace Tests"
     runs-on: windows-latest
@@ -100,3 +100,6 @@ jobs:
 
       - name: Run workspace tests
         run: cargo --locked test-pkg mediapm-tests
+
+      - name: Run test-runner gate tests
+        run: cargo --locked test-pkg test-runner
