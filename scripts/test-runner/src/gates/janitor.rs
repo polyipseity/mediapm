@@ -255,13 +255,14 @@ mod tests {
     }
 
     /// A successful sweep that lists a leftover fails, and the verdict
-    /// names the directory. The broad `would remove` form is the trigger,
-    /// because it is also what catches the janitor's own
-    /// `would remove 1 mediapm temp director(ies)` summary that the old
-    /// pwsh runner's colon form missed. A bare verdict told the developer
-    /// that a directory survived without saying which one, so the first
-    /// thing a pre-push author sees is a path they have to reconstruct
-    /// from `$TMPDIR` by hand.
+    /// names the directory. A bare verdict told the developer that a
+    /// directory survived without saying which one, so the first thing a
+    /// pre-push author sees is a path they have to reconstruct from
+    /// `$TMPDIR` by hand.
+    ///
+    /// The stub emits the janitor's summary line alongside the path, and
+    /// the verdict must carry only the path: the evidence collected is the
+    /// per-directory lines, not everything the broad trigger matched.
     #[test]
     fn a_leftover_fails_the_gate() {
         let root = scratch("leftover");
@@ -283,6 +284,30 @@ mod tests {
             text.contains("/tmp/mediapm-artifact-abc"),
             "the verdict must name the leftover directory; got: {text}"
         );
+        assert!(
+            !text.contains("director(ies)"),
+            "the verdict carries the per-directory paths, not the janitor's count; got: {text}"
+        );
+    }
+
+    /// A sweep that reports only a count is still a leftover.
+    ///
+    /// The trigger is the broad `would remove` rather than the colon form
+    /// for exactly this case: the janitor's own summary line
+    /// `would remove 1 mediapm temp director(ies)` carries the prefix but
+    /// names no directory, and a colon-only trigger would read a sweep
+    /// that found leftovers as a clean run. The old pwsh runner had that
+    /// colon-only trigger, so this is the defect it had.
+    ///
+    /// Nothing collects a path here, so the verdict carries no evidence
+    /// clause at all — asserted exactly, because the absence of a trailing
+    /// `:` and an empty detail is the whole shape of this branch.
+    #[test]
+    fn a_count_only_sweep_fails_with_the_bare_verdict() {
+        let root = scratch("count-only-leftover");
+        write_stub(&root, &["would remove 1 mediapm temp director(ies)"], 0);
+        let err = enforce(&root).expect_err("a count-only leftover must fail the gate");
+        assert_eq!(err.to_string(), "test suite left mediapm temp dirs behind");
     }
 
     /// The empty-root case, which nothing else covers: a sweep with
