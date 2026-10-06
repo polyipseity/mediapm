@@ -207,6 +207,57 @@ mod program_tests {
              got args {args:?}"
         );
     }
+
+    /// The Windows branch must name `pwsh` and pass `--dry-run`.
+    ///
+    /// The flag is why this test exists, and nothing else can observe it on
+    /// Windows: the stub-based tests spawn the command built here through
+    /// `write_stub`'s Windows twin, whose script has no `param()` block, so
+    /// `pwsh -File` hands `--dry-run` through `$args` where it lands
+    /// unexamined — `write_stub`'s own doc comment records that. The stub
+    /// tests therefore see nothing of the flag on either platform, and the
+    /// unix twin above observes it only for the unix branch, so this is the
+    /// only assertion anywhere that reads the Windows arg list.
+    ///
+    /// Without `--dry-run`, `clean-mediapm-temp.ps1` deletes exactly the
+    /// temp directories the gate exists to report, destroying the evidence
+    /// of the failure the gate catches — and every other test in this file
+    /// keeps passing, because nothing else looks at the args. The remaining
+    /// assertions pin the invocation form `janitor_command` documents:
+    /// `pwsh` with `-File` is how the platform runs a script, and
+    /// `-NoProfile` keeps user profile scripts from perturbing the sweep.
+    ///
+    /// Every arg is checked against the whole list rather than a fixed
+    /// position, so reordering the command cannot silently drop the flag,
+    /// matching the unix twin.
+    #[test]
+    #[cfg(windows)]
+    fn the_windows_branch_passes_dry_run() {
+        let (program, args) = janitor_command(Path::new("/repo"));
+        assert_eq!(
+            program.to_string_lossy(),
+            "pwsh",
+            "the Windows branch must name the pwsh interpreter; got {program:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "-NoProfile"),
+            "the Windows branch must pass -NoProfile; got args {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "-File"),
+            "the Windows branch must pass -File; got args {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg.to_string_lossy().ends_with("clean-mediapm-temp.ps1")),
+            "the Windows branch must pass the ps1 janitor script; got args {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--dry-run"),
+            "the gate must pass --dry-run to the janitor; without it the janitor deletes \
+             the temp directories this gate exists to report instead of reporting them; \
+             got args {args:?}"
+        );
+    }
 }
 
 #[cfg(test)]
