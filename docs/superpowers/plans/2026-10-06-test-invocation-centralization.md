@@ -841,14 +841,39 @@ use anyhow::{Context, Result, bail};
 /// is a diagnostic, and it is forwarded to stderr rather than swallowed,
 /// because a warning the janitor grows later must not vanish into a
 /// captured variable.
+///
+/// The per-directory lines are matched by [`is_path_line`] rather than by a
+/// bare prefix. A prefix test cannot satisfy the two tests this module
+/// requires at once: `would remove: /tmp/mediapm-artifact-abc` must be
+/// recognised while `would remove: /tmp/x and then some` must not, and the
+/// two share their first fourteen characters. Keeping the test bodies and
+/// splitting the match on "is the remainder one token" is the direction
+/// that leaves the safe default in place, since an ambiguous line is then
+/// forwarded rather than swallowed. Note that the verdict on the tree does
+/// not depend on any of this: it comes from the separate
+/// `starts_with("would remove")` check, so this only decides what is echoed.
 fn is_contract_line(line: &str) -> bool {
     if line == "no mediapm temp directories found"
-        || line.starts_with("would remove: ")
-        || line.starts_with("removed: ")
+        || is_path_line("would remove: ", line)
+        || is_path_line("removed: ", line)
     {
         return true;
     }
     is_count_line("would remove", line) || is_count_line("removed", line)
+}
+
+/// Matches a per-directory line, `<prefix><path>`.
+///
+/// The path must be non-empty and a single token. A remainder carrying
+/// whitespace is prose appended to a path, which means the line is not the
+/// janitor's own output and belongs on stderr. The accepted edge is a
+/// `TMPDIR` containing a space: such a path line is forwarded rather than
+/// swallowed, which echoes one line and does not change the verdict.
+fn is_path_line(prefix: &str, line: &str) -> bool {
+    let Some(rest) = line.strip_prefix(prefix) else {
+        return false;
+    };
+    !rest.is_empty() && !rest.chars().any(char::is_whitespace)
 }
 
 /// Matches the janitor's summary line, `<word> <n> mediapm temp director(ies)`.
