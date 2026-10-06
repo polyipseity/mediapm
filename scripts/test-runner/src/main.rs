@@ -13,11 +13,14 @@
 
 // `dispatch` is still a set of `todo!()` arms, so nothing calls these two
 // modules yet and rustc reports every item in them as dead. Each expectation
-// is removed by the task that first calls into that module: Task 2 for
-// `cargo`, Task 5 for `cli` (whose `MatrixArgs` is the last item consumed).
+// is removed by the task that makes its last item live: Task 5 for both.
+// `cargo` is gated by `Metadata::packages` and the `Package` struct, which
+// are feature-matrix inputs; Task 2 reads `metadata()` and `status_code()`
+// but leaves those two unread, so removing the expectation there would be a
+// hard build error under `warnings = "deny"`.
 #[expect(
     dead_code,
-    reason = "the feature-matrix and test subcommands are still todo!() arms, so nothing calls the typed metadata view yet; Task 2 removes this"
+    reason = "the feature-matrix and test subcommands are still todo!() arms, so nothing calls the typed metadata view yet; gated by Metadata::packages and Package, which Task 5 consumes, so Task 5 removes this"
 )]
 mod cargo;
 #[expect(

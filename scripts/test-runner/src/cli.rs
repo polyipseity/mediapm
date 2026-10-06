@@ -65,7 +65,10 @@ pub struct Selection {
     /// Package to check; defaults to the whole workspace.
     #[arg(short, long, value_name = "PKG")]
     pub package: Option<String>,
-    /// Require an up-to-date `Cargo.lock`. This is the default.
+    /// Require an up-to-date `Cargo.lock`. This is the default. The cargo
+    /// aliases hardcode `--locked`, so this flag has to parse when a caller
+    /// appends it; `--no-locked` is the only one of the two that changes
+    /// the answer.
     #[arg(long)]
     pub locked: bool,
     /// Permit `Cargo.lock` to be updated. Wins over `--locked`, so a caller
@@ -77,8 +80,20 @@ pub struct Selection {
 
 impl Selection {
     /// Whether child cargo invocations must pass `--locked`.
+    ///
+    /// Both flags are read so neither field is inert: the cargo aliases
+    /// hardcode `--locked`, which is why the flag has to exist, and a
+    /// caller that appends `--no-locked` to such an alias is still asking
+    /// for the escape hatch. Every combination has one answer and none of
+    /// them is wrong: neither flag means the default (`--locked`),
+    /// `--locked` alone states the default explicitly, `--no-locked` alone
+    /// opts out, and both together resolve to `--no-locked` so the escape
+    /// hatch wins over the flag it is undoing.
     pub fn wants_lock(&self) -> bool {
-        !self.no_locked
+        match (self.locked, self.no_locked) {
+            (_, true) => false,
+            (_, false) => true,
+        }
     }
 
     /// The feature flags to append to a child cargo invocation.
@@ -116,7 +131,10 @@ pub struct MatrixArgs {
     /// Permit `Cargo.lock` to be updated. Wins over `--locked`.
     #[arg(long)]
     pub no_locked: bool,
-    /// Require an up-to-date `Cargo.lock`. This is the default.
+    /// Require an up-to-date `Cargo.lock`. This is the default. The cargo
+    /// aliases hardcode `--locked`, so this flag has to parse when a caller
+    /// appends it; `--no-locked` is the only one of the two that changes
+    /// the answer.
     #[arg(long)]
     pub locked: bool,
     /// Print every derived combination without running any of them.
@@ -126,8 +144,19 @@ pub struct MatrixArgs {
 
 impl MatrixArgs {
     /// Whether each `cargo check` must pass `--locked`.
+    ///
+    /// Reads both flags for the same reason as [`Selection::wants_lock`]:
+    /// the cargo aliases hardcode `--locked`, so the flag has to parse when
+    /// a caller appends it, and `--no-locked` is the only one of the two
+    /// that changes the answer. With neither flag the sweep is locked (the
+    /// default), with `--locked` alone it is locked explicitly, with
+    /// `--no-locked` alone it is unlocked, and with both it is unlocked, so
+    /// the escape hatch always wins.
     pub fn wants_lock(&self) -> bool {
-        !self.no_locked
+        match (self.locked, self.no_locked) {
+            (_, true) => false,
+            (_, false) => true,
+        }
     }
 }
 
@@ -140,6 +169,15 @@ mod tests {
     #[test]
     fn locked_is_the_default() {
         let cli = Cli::parse_from(["test-runner", "test"]);
+        let Command::Test(sel) = cli.command else {
+            panic!("expected test");
+        };
+        assert!(sel.wants_lock());
+    }
+
+    #[test]
+    fn locked_alone_keeps_the_default() {
+        let cli = Cli::parse_from(["test-runner", "test", "--locked"]);
         let Command::Test(sel) = cli.command else {
             panic!("expected test");
         };
