@@ -894,6 +894,15 @@ fn is_count_line(word: &str, line: &str) -> bool {
 }
 
 /// The command that runs the janitor for this platform.
+///
+/// On unix the script is spawned BY PATH, with no interpreter named. That is
+/// deliberate and load-bearing: `scripts/clean-mediapm-temp.sh` carries a
+/// `#!/usr/bin/env bash` shebang and uses `set -euo pipefail`, `[[ ]]` and
+/// `read -r -d ''`, none of which dash parses. `sh` is bash on macOS, so the
+/// mistake is invisible there and fatal on `ubuntu-latest`, where `/bin/sh`
+/// is dash and the first line it reaches is `set -euo pipefail`. Letting the
+/// shebang choose the interpreter is what the shell runner did, and it is
+/// the only form that is correct on both.
 fn janitor_command(root: &Path) -> (std::ffi::OsString, Vec<std::ffi::OsString>) {
     if cfg!(windows) {
         (
@@ -909,13 +918,10 @@ fn janitor_command(root: &Path) -> (std::ffi::OsString, Vec<std::ffi::OsString>)
         )
     } else {
         (
-            std::ffi::OsString::from("sh"),
-            vec![
-                root.join("scripts")
-                    .join("clean-mediapm-temp.sh")
-                    .into_os_string(),
-                std::ffi::OsString::from("--dry-run"),
-            ],
+            root.join("scripts")
+                .join("clean-mediapm-temp.sh")
+                .into_os_string(),
+            vec![std::ffi::OsString::from("--dry-run")],
         )
     }
 }
@@ -1118,6 +1124,44 @@ fn walk(root: &Path, dir: &Path, allowed: &Path, found: &mut Vec<String>) -> Res
 ```
 
 The call site passes `root` through, so update the recursive call in `violations_in` to `walk(root, &start, &allowed, &mut found)?;`.
+
+- [ ] **Step 6b: Test `enforce` itself, not just its parsers**
+
+The tests in Steps 1 and 4 cover `is_contract_line` and `violations_in`.
+Nothing yet exercises the two functions the crate exists to provide, and
+Task 9 deletes `tests/scripts/test-run-all-tests.{sh,ps1}`, which covered
+all three of `enforce`'s real behaviours against the real gate. Deleting
+those files without restoring the coverage is a net loss, so restore it
+here.
+
+`enforce` takes the workspace root as a parameter, so a hermetic test needs
+neither the real janitor nor a real temp root. Build a scratch root under
+the managed `mediapm-` prefix containing a stub `scripts/clean-mediapm-temp.sh`
+that prints canned lines and exits with a chosen status. Guard the stub with
+`#[cfg(unix)]` and write a `#[cfg(windows)]` twin emitting `.ps1`, so the
+`pwsh` branch is covered too; today nothing at all exercises it, because the
+Windows CI job runs only `cargo --locked test-pkg mediapm-tests`.
+
+Cover these three cases for the janitor gate, matching what the deleted shell
+self-test asserted:
+
+1. the stub exits non-zero and prints `no such directory: <path>`: `enforce`
+   fails, and the error message names the cause, so a caller can tell a
+   failed sweep from a dirty tree.
+2. the stub exits 0 and prints `would remove: <path>`: `enforce` fails with
+   `test suite left mediapm temp dirs behind`.
+3. the stub exits 0 and prints `no mediapm temp directories found`: `enforce`
+   passes.
+
+Case 3 is the one that must not be lost. It is the only assertion that a
+clean tree is not falsely reported dirty, and a broken spawn on a clean tree
+produces the same message as case 1, so only case 3 distinguishes them.
+
+For the tempdir gate, add one test that `enforce` fails and its error message
+is `unprefixed tempdir/prefix use outside src/mediapm-utils/src/temp.rs` when
+the scanned tree contains a violating file, and that it passes on a clean
+tree. Reuse the `Scratch` guard from Step 4 so nothing is left at the temp
+root.
 
 - [ ] **Step 7: Run the tests**
 
