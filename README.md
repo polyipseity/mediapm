@@ -53,10 +53,10 @@ See `src/mediapm/examples/` for annotated bootstrapping and tool-addition exampl
 cargo test-pkg <crate>     # test one crate (e.g. mediapm, mediapm-cas)
 cargo clippy-pkg <crate>   # lint one crate
 cargo build-pkg <crate>    # build one crate
-cargo fmt-check     # check formatting
-cargo clippy-all    # lint entire workspace
-cargo test-all      # nextest + tempdir and janitor gates
-cargo test-doc-all  # doctests + rustdoc link gate
+cargo fmt-check            # check formatting
+cargo clippy-all           # lint entire workspace
+cargo test-all             # nextest + tempdir and janitor gates
+cargo test-doc-all         # doctests + rustdoc link gate
 ```
 
 Online integration gate (network + external providers):

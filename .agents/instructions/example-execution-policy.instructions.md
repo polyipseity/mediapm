@@ -28,7 +28,7 @@ Any non-deterministic test doing real network downloads must apply the same gati
 - **Level 2 (harness skip:)** absent opt-in, returns early — normal `cargo test`/`test-all`/pre-push never downloads.
 - **Level 3 (explicit opt-in:)** `MEDIAPM_RUN_ONLINE_SYNC=1` (tokens `1|true|yes|on`) runs the full download and assertions.
 
-This gate is **orthogonal** to the `large-tests` feature: `--large`/`--all-features` does not run the YouTube test, and the test needs no feature. The single shared env var `MEDIAPM_RUN_ONLINE_SYNC` (`example_isolation::RUN_ONLINE_SYNC_ENV`) is the only Level 3 gate: the online demo `main()` uses it as a disable toggle (unset/enabled = full sync; disabled = reduced mode), the non-example regression test as an enable toggle (unset/disabled/unknown = skip). The offline demo (`mediapm_demo`) has no Level 3 env var and always runs a full sync.
+This gate is **orthogonal** to the `large-tests` feature: `--all-features` does not run the YouTube test, and the test needs no feature. The single shared env var `MEDIAPM_RUN_ONLINE_SYNC` (`example_isolation::RUN_ONLINE_SYNC_ENV`) is the only Level 3 gate: the online demo `main()` uses it as a disable toggle (unset/enabled = full sync; disabled = reduced mode), the non-example regression test as an enable toggle (unset/disabled/unknown = skip). The offline demo (`mediapm_demo`) has no Level 3 env var and always runs a full sync.
 
 ## Examples-as-tests must be isolated
 
