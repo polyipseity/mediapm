@@ -8,11 +8,8 @@ bin = ["run", "--package", "cargo-bin", "--"]
 build-all = ["build", "--workspace", "--all-targets", "--all-features"]
 clippy-all = ["clippy", "--workspace", "--all-targets", "--all-features"]
 fmt-check = ["fmt", "--all", "--", "--check"]
-test-all = ["run", "--package", "cargo-bin", "--", "cargo-nextest", "run", "--workspace", "--all-targets", "--all-features"]
-# Doctests are a separate gate because nextest cannot run them. `test-all` alone
-# is not full validation: pair it with `doc-test`. `scripts/run-all-tests.sh`
-# and the prek `test-docs` hook both run this step, so CI and pre-push are covered.
-doc-test = ["test", "--workspace", "--doc", "--all-features"]
+test-all = ["run", "--package", "test-runner", "--", "test", "--all-features", "--locked"]
+test-doc-all = ["run", "--package", "test-runner", "--", "doc", "--all-features", "--locked"]
 
 # Targeted validation (recommended for most development)
 build-pkg = ["build", "--all-targets", "--all-features", "-p"]
