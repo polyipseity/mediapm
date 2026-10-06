@@ -77,6 +77,9 @@ fn process_exit_code(code: i32) -> ExitCode {
 
 /// Routes a parsed subcommand to its implementation.
 ///
+/// Takes `command` by value because the match owns it: each arm binds its
+/// own payload and hands it on by reference to [`test::run`],
+/// [`doc::run`] and [`matrix::run`], so no arm moves anything back out.
 fn dispatch(command: Command) -> anyhow::Result<i32> {
     match command {
         Command::Test(selection) => test::run(&selection),

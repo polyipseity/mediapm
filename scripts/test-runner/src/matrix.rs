@@ -2,7 +2,7 @@
 //!
 //! Every workspace member is checked with `--no-default-features`, then
 //! each single feature it declares, then `--all-features`. The CI workflow
-//! used to carry the resulting combination list as a 47-row YAML matrix,
+//! used to carry the resulting combination list as a 46-row YAML matrix,
 //! which is a list that silently rots: a crate gains a feature and the
 //! matrix stops covering it. Deriving the list from `cargo metadata` makes
 //! that impossible.
@@ -51,14 +51,7 @@ pub fn run(args: &MatrixArgs) -> Result<i32> {
     let cargo_bin = cargo::cargo_binary();
     let mut failures = Vec::new();
     for probe in &derived {
-        let mut check_argv: Vec<OsString> = vec![OsString::from("check")];
-        if args.wants_lock() {
-            check_argv.push(OsString::from("--locked"));
-        }
-        check_argv.push(OsString::from("--package"));
-        check_argv.push(OsString::from(&probe.package));
-        check_argv.extend(probe.flags.iter().map(OsString::from));
-
+        let check_argv = probe_argv(args, probe);
         let status = std::process::Command::new(&cargo_bin)
             .current_dir(dir)
             .args(&check_argv)
@@ -81,12 +74,38 @@ pub fn run(args: &MatrixArgs) -> Result<i32> {
     Ok(1)
 }
 
+/// The argv for one `cargo check` probe.
+///
+/// `check` first, then the lock flag, then the package, then the probe's
+/// own feature flags. `--locked` precedes the package selector because
+/// both are cargo flags and neither changes the other's meaning; the order
+/// is fixed so two runs of the same probe produce byte-identical argv.
+///
+/// The local is named `check_argv` rather than `argv` only because
+/// `clippy::similar_names` reads `argv` as too close to the `args`
+/// parameter; the two differ by one character.
+fn probe_argv(args: &MatrixArgs, probe: &Probe) -> Vec<OsString> {
+    let mut check_argv: Vec<OsString> = vec![OsString::from("check")];
+    if args.wants_lock() {
+        check_argv.push(OsString::from("--locked"));
+    }
+    check_argv.push(OsString::from("--package"));
+    check_argv.push(OsString::from(&probe.package));
+    check_argv.extend(probe.flags.iter().map(OsString::from));
+    check_argv
+}
+
 /// Derives every probe from `metadata`, ordered by package name.
 ///
 /// Per package: `--no-default-features`, then each declared feature in
 /// sorted order except the implicit `default`, then `--all-features`.
 /// `cargo metadata` reports `default` alongside the real features, and
 /// sweeping it alone is redundant, so it is filtered out.
+///
+/// The filter matches the feature's NAME rather than its position, and it
+/// has to: `default` sorts among the real features, so in `mediapm-utils`
+/// (keys `cli`, `default`, `nickel`, `progress`, `report`) it is the second
+/// key, and dropping a fixed index would delete `nickel` instead.
 pub fn probes(metadata: &Metadata) -> Vec<Probe> {
     let mut packages: Vec<_> = metadata.packages.iter().collect();
     packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -114,10 +133,28 @@ pub fn probes(metadata: &Metadata) -> Vec<Probe> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{Probe, probes};
+    use clap::Parser;
+
+    use super::{Probe, probe_argv, probes};
     use crate::cargo::Metadata;
+    use crate::cli::{Cli, Command, MatrixArgs};
+
+    /// The `MatrixArgs` a caller would get from the command line, so the
+    /// argv tests exercise the same `wants_lock` decision the sweep does
+    /// rather than a hand-set flag pair. The local is `command_line`
+    /// rather than `argv` so `clippy::similar_names` does not read it as
+    /// too close to the `args` binding on the next line.
+    fn matrix_args(options: &[&str]) -> MatrixArgs {
+        let mut command_line = vec!["test-runner", "feature-matrix"];
+        command_line.extend_from_slice(options);
+        let Command::FeatureMatrix(args) = Cli::parse_from(command_line).command else {
+            panic!("expected the feature-matrix subcommand");
+        };
+        args
+    }
 
     /// Builds a [`Metadata`] the way `cargo metadata` would report it, from
     /// a package-name/feature-name-pair table. Hand-built rather than
@@ -191,5 +228,55 @@ mod tests {
         .expect("parse");
         let _: BTreeMap<String, Vec<String>> = parsed.packages[0].features.clone();
         assert_eq!(parsed.workspace_root, PathBuf::from("/repo"));
+    }
+
+    /// Pins the argv a probe actually spawns, in full. Every element is
+    /// named here because the pieces are independently load-bearing: drop
+    /// the `check` subcommand and cargo builds a workspace instead of
+    /// checking, drop `--package` and one probe silently checks all 14
+    /// members, and swap `--locked` for an unlocked resolution and the
+    /// sweep starts rewriting `Cargo.lock`.
+    #[test]
+    fn probe_argv_locks_by_default() {
+        let probe = Probe {
+            package: "mediapm-utils".into(),
+            flags: vec!["--features".into(), "progress".into()],
+        };
+        assert_eq!(
+            probe_argv(&matrix_args(&[]), &probe),
+            vec![
+                OsString::from("check"),
+                OsString::from("--locked"),
+                OsString::from("--package"),
+                OsString::from("mediapm-utils"),
+                OsString::from("--features"),
+                OsString::from("progress"),
+            ]
+        );
+    }
+
+    /// The escape hatch has to remove `--locked` rather than merely add a
+    /// flag beside it, since cargo takes the last `--locked` it sees and a
+    /// leftover one would leave the opt-out inert. The full-vector
+    /// assertion is what makes that claim: checking only for absence would
+    /// also pass against an argv carrying an unrelated extra element.
+    #[test]
+    fn probe_argv_omits_locked_when_opted_out() {
+        let probe =
+            Probe { package: "mediapm-utils".into(), flags: vec!["--no-default-features".into()] };
+        let got = probe_argv(&matrix_args(&["--no-locked"]), &probe);
+        assert!(
+            !got.iter().any(|a| a == "--locked"),
+            "an opted-out sweep must not carry --locked: {got:?}"
+        );
+        assert_eq!(
+            got,
+            vec![
+                OsString::from("check"),
+                OsString::from("--package"),
+                OsString::from("mediapm-utils"),
+                OsString::from("--no-default-features"),
+            ]
+        );
     }
 }
