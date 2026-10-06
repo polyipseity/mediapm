@@ -31,7 +31,7 @@
 - **R3: an unknown argument exits 2, not 1.** The shell runner exited 1; clap exits 2 for a usage error. The spec was updated to match. Cost if wrong: a caller asserting exactly 1.
 - **R4: `feature-matrix` derives rows from `cargo metadata` minus the implicit `default` feature.** Verified against the tree before planning: `cargo metadata --no-deps --format-version 1` yields 55 candidate rows, and removing `default` from the 8 packages that declare one yields exactly the 47 rows the current `ci.yml` matrix lists. Cost if wrong: the matrix grows by 8 redundant probes, which is harmless but noisy.
 - **R5: the tempdir gate runs before the janitor gate.** The spec's CLI table listed janitor first, copied from the old shell script's order. The Rust `test::run` calls tempdir first because that gate is a pure in-process source scan with no subprocess and no filesystem mutation, so failing fast on it is free; the janitor spawns `sh` or `pwsh`. The spec was updated to match the code. Cost if wrong: when both gates fail, the user sees the two messages in the other order.
-- **R6: `--locked` and `--no-locked` do not conflict, and `--no-locked` wins.** The cargo aliases hardcode `--locked`, so a `conflicts_with` between the two flags would make the escape hatch unreachable through the very aliases people use. Both flags being present is resolved in `Selection::wants_lock`, which returns `!no_locked`. Cost if wrong: a caller passing both gets unlocked rather than a usage error, which is the intended reading.
+- **R6: `--locked` and `--no-locked` do not conflict, and `--no-locked` wins.** The cargo aliases hardcode `--locked`, so a `conflicts_with` between the two flags would make the escape hatch unreachable through the very aliases people use. Both flags being present is resolved in `Selection::wants_lock` by matching the pair `(self.locked, self.no_locked)` and letting `no_locked` win. The match reads both fields, which is deliberate: a field nothing reads is `dead_code` under `warnings = "deny"`, and an accepted-but-inert flag whose rationale lives only in a plan reads as a bug. The obvious one-liner `self.locked || !self.no_locked` is wrong and must not be substituted: with both flags present it returns true, so `--no-locked` loses. This was caught by the Task 1 implementer, who was handed that exact expression along with the two invariants it violates. Cost if wrong: a caller passing both gets locked instead of unlocked, which is the wrong way round for an escape hatch.
 
 ---
 
@@ -73,6 +73,13 @@ fn no_locked_wins_over_locked() {
     let cli = Cli::parse_from(["test-runner", "test", "--locked", "--no-locked"]);
     let Command::Test(sel) = cli.command else { panic!("expected test") };
     assert!(!sel.wants_lock());
+}
+
+#[test]
+fn locked_flag_alone_requests_locking() {
+    let cli = Cli::parse_from(["test-runner", "test", "--locked"]);
+    let Command::Test(sel) = cli.command else { panic!("expected test") };
+    assert!(sel.wants_lock());
 }
 
 #[test]
@@ -201,6 +208,10 @@ pub struct Selection {
     #[arg(short, long, value_name = "PKG")]
     pub package: Option<String>,
     /// Require an up-to-date `Cargo.lock`. This is the default.
+    ///
+    /// The cargo aliases that wrap this binary hardcode `--locked`, so the
+    /// flag has to parse when a caller appends it. `--no-locked` is the only
+    /// one of the two that changes the answer.
     #[arg(long)]
     pub locked: bool,
     /// Permit `Cargo.lock` to be updated. Wins over `--locked`, so a caller
@@ -212,8 +223,21 @@ pub struct Selection {
 
 impl Selection {
     /// Whether child cargo invocations must pass `--locked`.
+    ///
+    /// The match is on the tuple rather than on `no_locked` alone so that
+    /// both fields are read: a field nothing reads is `dead_code` under
+    /// `warnings = "deny"`. The precedence is `--no-locked` over `--locked`,
+    /// so appending `--no-locked` to an alias that already carries
+    /// `--locked` still unlocks the run.
+    ///
+    /// Note that `self.locked || !self.no_locked` is the tempting one-liner
+    /// and it is wrong: with both flags it returns true, so `--no-locked`
+    /// would lose.
     pub fn wants_lock(&self) -> bool {
-        !self.no_locked
+        match (self.locked, self.no_locked) {
+            (_, true) => false,
+            (_, false) => true,
+        }
     }
 
     /// The feature flags to append to a child cargo invocation.
@@ -252,6 +276,9 @@ pub struct MatrixArgs {
     #[arg(long)]
     pub no_locked: bool,
     /// Require an up-to-date `Cargo.lock`. This is the default.
+    ///
+    /// Accepted for the same reason as `Selection::locked`: the CI step that
+    /// runs the matrix appends `--locked`.
     #[arg(long)]
     pub locked: bool,
     /// Print every derived combination without running any of them.
@@ -261,8 +288,14 @@ pub struct MatrixArgs {
 
 impl MatrixArgs {
     /// Whether each `cargo check` must pass `--locked`.
+    ///
+    /// Matches the tuple for the same reason as `Selection::wants_lock`, and
+    /// resolves the precedence the same way.
     pub fn wants_lock(&self) -> bool {
-        !self.no_locked
+        match (self.locked, self.no_locked) {
+            (_, true) => false,
+            (_, false) => true,
+        }
     }
 }
 ```
@@ -398,7 +431,7 @@ In the root `Cargo.toml`, add `"scripts/test-runner",` to `members`, keeping the
 - [ ] **Step 8: Run the tests**
 
 Run: `RUSTC_WRAPPER="" cargo test -p test-runner 2>&1`
-Expected: PASS, 7 tests in `cli::tests`.
+Expected: PASS, 8 tests in `cli::tests`.
 
 - [ ] **Step 8b: Lint**
 
@@ -411,10 +444,12 @@ Expected: exit 0 with no diagnostics.
 `dead_code` error. Silence them with item-scoped `#[expect]` carrying a
 substantive reason, never a bare `#[allow]`:
 
-- `#[expect(dead_code, reason = "...")]` on `mod cargo;`. **Task 2 deletes
-  it.**
-- `#[expect(dead_code, reason = "...")]` on `mod cli;`. **Task 5 deletes
-  it.**
+- `#[expect(dead_code, reason = "...")]` on `mod cargo;`. **Task 5 deletes it,**
+  not Task 2: Task 2 calls `metadata()` and `status_code()`, but `Metadata::packages`
+  and the whole `Package` struct are feature-matrix inputs and stay unread until
+  Task 5, so `dead_code` is still firing in between and removing the expectation
+  early turns Task 2 into a hard build error.
+- `#[expect(dead_code, reason = "...")]` on `mod cli;`. **Task 5 deletes it.**
 - `#[expect(clippy::struct_excessive_bools, reason = "...")]` on
   `Selection`, permanent: it mirrors cargo's flags one for one, and
   collapsing them into enums would diverge from cargo's own CLI.
@@ -665,11 +700,14 @@ In `main.rs`, add `mod gates;`, `mod nextest;`, `mod test;` to the module list, 
 Command::Test(selection) => test::run(&selection),
 ```
 
-Delete the `#[expect(dead_code, ...)]` on `mod cargo;` and the
-`#[expect(clippy::needless_pass_by_value, ...)]` on `dispatch` that Task 1
-added. Both are now fulfilled, and a fulfilled `#[expect]` is an
-`unfulfilled_lint_expectations` error. Leave the `#[expect]` on `mod cli;`
-alone; Task 5 removes it.
+Delete the `#[expect(clippy::needless_pass_by_value, ...)]` on `dispatch`
+that Task 1 added. It is now fulfilled, and a fulfilled `#[expect]` is an
+`unfulfilled_lint_expectations` error.
+
+Leave both `#[expect(dead_code, ...)]` attributes alone. The one on
+`mod cargo;` must stay until Task 5, because `Metadata::packages` and
+`Package` are still unread at the end of this task, so the lint is still
+firing and the expectation is still required.
 
 - [ ] **Step 8: Run the tests**
 
@@ -1418,9 +1456,13 @@ In `main.rs`, add `mod matrix;` and replace:
 Command::FeatureMatrix(args) => matrix::run(&args),
 ```
 
-Delete the `#[expect(dead_code, ...)]` on `mod cli;` that Task 1 added.
-It was the last unconsumed item in that module, so it is now fulfilled and
-a fulfilled `#[expect]` is an `unfulfilled_lint_expectations` error.
+Delete both `#[expect(dead_code, ...)]` attributes that Task 1 added, the
+one on `mod cargo;` and the one on `mod cli;`. This is the last task that
+consumes anything from either module: `Metadata::packages` and `Package`
+belong to this task's derivation, and `MatrixArgs::wants_lock` is the final
+unconsumed item in `cli`. Both lints stop firing here, so both expectations
+become `unfulfilled_lint_expectations` errors if left in place. Leave the
+permanent `#[expect]`s on `Selection` and on `dispatch` alone.
 
 - [ ] **Step 5: Run the tests**
 
