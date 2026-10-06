@@ -59,7 +59,7 @@ Per-crate `AGENTS.md` holds detailed invariants and contracts.
 
 ## Cache policy
 
-- All caches are TTL-based, not bounded by entry count.
+- Caches carry no entry-count cap. The tool caches below expire on a clock; the sync verdict cache (`src/mediapm/src/materializer/verdicts.rs`) expires on change and holds only what the current run confirmed.
 - Managed-tool downloads use shared user-level cache (`<os-cache-dir>/mediapm/cache/`, 7-day eviction).
 - Workspace-scoped tool-content cache at `<mediapm_dir>/tools/` for conductor-level payloads (24h stale-entry eviction).
 
