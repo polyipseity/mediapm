@@ -31,6 +31,7 @@
 - **R3: an unknown argument exits 2, not 1.** The shell runner exited 1; clap exits 2 for a usage error. The spec was updated to match. Cost if wrong: a caller asserting exactly 1.
 - **R4: `feature-matrix` derives rows from `cargo metadata` minus the implicit `default` feature.** Verified against the tree before planning: `cargo metadata --no-deps --format-version 1` yields 55 candidate rows, and removing `default` from the 8 packages that declare one yields exactly the 47 rows the current `ci.yml` matrix lists. Cost if wrong: the matrix grows by 8 redundant probes, which is harmless but noisy.
 - **R5: the tempdir gate runs before the janitor gate.** The spec's CLI table listed janitor first, copied from the old shell script's order. The Rust `test::run` calls tempdir first because that gate is a pure in-process source scan with no subprocess and no filesystem mutation, so failing fast on it is free; the janitor spawns `sh` or `pwsh`. The spec was updated to match the code. Cost if wrong: when both gates fail, the user sees the two messages in the other order.
+- **R11: an exit code a process cannot carry becomes 70 (`EX_SOFTWARE`), reported on stderr, not a silent 1.** The runner converts a subcommand's `i32` into `std::process::ExitCode`, which only carries a `u8`. `unwrap_or(1)` would silently rewrite anything above 255 to 1, which is the value-masking default `.agents/instructions/typing-conventions.instructions.md` bans, and 1 collides with the generic-failure path. 70 says "the runner could not represent what happened", which is a defect in the runner rather than a verdict on the suite, and it is distinguishable from every status a real failure produces: 1 is the generic and `missing-cli` path in `mediapm/src/main.rs`, 2 is POSIX shell misuse, 3 is sync-warning, 4 is sync-error. It is also a plain numeric status on Windows, where `sysexits.h` does not exist. Ruled by the Task 2 implementer and ratified here. Cost if wrong: a caller sees 70 rather than the real code, but the stderr line names the actual value, so nothing is lost.
 - **R6: `--locked` and `--no-locked` do not conflict, and `--no-locked` wins.** The cargo aliases hardcode `--locked`, so a `conflicts_with` between the two flags would make the escape hatch unreachable through the very aliases people use. Both flags being present is resolved in `Selection::wants_lock` by matching the pair `(self.locked, self.no_locked)` and letting `no_locked` win. The match reads both fields, which is deliberate: a field nothing reads is `dead_code` under `warnings = "deny"`, and an accepted-but-inert flag whose rationale lives only in a plan reads as a bug. The obvious one-liner `self.locked || !self.no_locked` is wrong and must not be substituted: with both flags present it returns true, so `--no-locked` loses. This was caught by the Task 1 implementer, who was handed that exact expression along with the two invariants it violates. Cost if wrong: a caller passing both gets locked instead of unlocked, which is the wrong way round for an escape hatch.
 
 ---
@@ -535,6 +536,22 @@ mod tests {
 Run: `RUSTC_WRAPPER="" cargo test -p test-runner nextest 2>&1`
 Expected: failure, because `src/nextest.rs` does not exist.
 
+- [ ] **Step 2b: Note a plan defect this task's later code will hit**
+
+`assert_eq!(parsed.workspace_root, Path::from("/repo"));` does not compile.
+`std::path::Path` is unsized, a `#[repr(transparent)]` wrapper over `OsStr`,
+so it has no `From` impl and the call additionally errors on an unknown size.
+Use `Path::new("/repo")`.
+
+- [ ] **Step 2c: Add the teardown this task's placeholders create**
+
+The gate placeholders written in Step 6 return `Ok(())` unconditionally, which
+`clippy::unnecessary_wraps` fires on. Silence each with an item-scoped
+`#[expect(clippy::unnecessary_wraps, reason = "...")]` naming Task 3 as the task
+that makes the return fallible, and record here that **Task 3 must delete
+both**. A fulfilled `#[expect]` is an `unfulfilled_lint_expectations` build
+error, the same trap as the `dispatch` expectation this task removes in Step 7.
+
 - [ ] **Step 3: Write `scripts/test-runner/src/nextest.rs`**
 
 Module doc explaining that nextest is reached through `cargo-bin` so it is auto-installed on first use, and that `run-all-tests.sh` used to call `cargo nextest` directly with nothing in `.github/` installing it.
@@ -590,7 +607,7 @@ fn metadata_parses_the_documented_shape() {
         ]
     }"#;
     let parsed: Metadata = serde_json::from_slice(doc).expect("parse");
-    assert_eq!(parsed.workspace_root, Path::from("/repo"));
+    assert_eq!(parsed.workspace_root, Path::new("/repo"));
     assert_eq!(parsed.packages.len(), 2);
     assert!(parsed.packages[1].features.is_empty());
 }
@@ -616,8 +633,7 @@ use crate::cli::Selection;
 pub fn run(selection: &Selection) -> Result<i32> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let metadata = cargo::metadata(manifest_dir)?;
-    let root = metadata.workspace_root.clone();
-    drop(metadata);
+    let root = metadata.workspace_root;
 
     let code = run_nextest(selection)?;
     if code != 0 {
