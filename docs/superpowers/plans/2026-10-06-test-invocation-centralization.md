@@ -29,7 +29,7 @@
 - **R1: leftover detection uses `starts_with("would remove")`, not `starts_with("would remove:")`.** The current `run-all-tests.sh` uses `grep -q 'would remove'` and its pwsh twin uses `-like 'would remove:*'`. The twin's colon requirement misses the janitor's own summary line `would remove 3 mediapm temp director(ies)`, so the Windows runner would report a clean sweep while leftovers existed. The shell runner's behaviour is the correct one; the Rust port matches it. Cost if wrong: none, this is strictly the more careful of the two.
 - **R2: the janitor's contract-line match is a full match, not a prefix.** `run-all-tests.sh` uses `^would remove:` (prefix only) while the pw1 twin anchors both ends. The Rust port anchors both ends, so a line that looks like contract output but carries extra trailing content is forwarded to stderr instead of swallowed. Cost if wrong: one extra stderr line on a passing run.
 - **R3: an unknown argument exits 2, not 1.** The shell runner exited 1; clap exits 2 for a usage error. The spec was updated to match. Cost if wrong: a caller asserting exactly 1.
-- **R4: `feature-matrix` derives rows from `cargo metadata` minus the implicit `default` feature.** Verified against the tree before planning: `cargo metadata --no-deps --format-version 1` yields 55 candidate rows, and removing `default` from the 8 packages that declare one yields exactly the 47 rows the current `ci.yml` matrix lists. Cost if wrong: the matrix grows by 8 redundant probes, which is harmless but noisy.
+- **R4: `feature-matrix` derives rows from `cargo metadata` minus the implicit `default` feature.** The substantive claim was verified against the real tree during Task 5 and holds exactly: the derived rows, minus `test-runner`'s own two, are byte-identical to the 46 rows the current `ci.yml` matrix lists, confirmed by `diff`. The COUNTS in the first draft of this ruling were wrong, not the derivation: `cargo metadata --no-deps --format-version 1` over 14 members yields 57 candidate rows including a `default` sweep, 9 members declare `default`, the filter removes those 9, and 48 rows remain — 46 for the 13 packages the YAML covers, plus `test-runner`'s two endpoints. The original 55/8/47/49 figures were stale by the two rows `test-runner` added and counted `default`-declaring packages one short. Filtering by feature NAME rather than by index makes the count robust to cargo version differences in whether `default` is synthesized for crates that lack one. Cost if wrong: the matrix grows by 9 redundant probes, which is harmless but noisy.
 - **R5: the tempdir gate runs before the janitor gate.** The spec's CLI table listed janitor first, copied from the old shell script's order. The Rust `test::run` calls tempdir first because that gate is a pure in-process source scan with no subprocess and no filesystem mutation, so failing fast on it is free; the janitor spawns `sh` or `pwsh`. The spec was updated to match the code. Cost if wrong: when both gates fail, the user sees the two messages in the other order.
 - **R12: `--workspace` is emitted only when no package is named, in both `nextest::argv` and `doc::doctest_argv`.** Cargo resolves `--workspace -p <pkg>` as a union in which `--workspace` wins silently and with no warning, so emitting both made `-p` an accepted flag that did nothing. The old `cargo test-pkg` alias carried no `--workspace`, which is what made its `-p` narrow, so the runner was losing a capability the thing it replaces had. `rustdoc_argv` stays workspace-wide unconditionally, because the link gate must not be narrowable by an off-by-default module. Ruled after the Task 4 implementer's F1 report and the Task 4 review both found the composition. The review corrected the implementer's cost estimate: every pinned vector in both already-reviewed files is built from a selection with no `-p`, so the change breaks none of them. Cost if wrong: none for any caller the plan creates, since none passes `-p`; a developer passing `-p` gets the narrow run they asked for rather than a silent whole-workspace one.
 - **R11: an exit code a process cannot carry becomes 70 (`EX_SOFTWARE`), reported on stderr, not a silent 1.** The runner converts a subcommand's `i32` into `std::process::ExitCode`, which only carries a `u8`. `unwrap_or(1)` would silently rewrite anything above 255 to 1, which is the value-masking default `.agents/instructions/typing-conventions.instructions.md` bans, and 1 collides with the generic-failure path. 70 says "the runner could not represent what happened", which is a defect in the runner rather than a verdict on the suite, and it is distinguishable from every status a real failure produces: 1 is the generic and `missing-cli` path in `mediapm/src/main.rs`, 2 is POSIX shell misuse, 3 is sync-warning, 4 is sync-error. It is also a plain numeric status on Windows, where `sysexits.h` does not exist. Ruled by the Task 2 implementer and ratified here. Cost if wrong: a caller sees 70 rather than the real code, but the stderr line names the actual value, so nothing is lost.
@@ -1599,7 +1599,19 @@ Expected: PASS, including the four `matrix::tests`.
 - [ ] **Step 6: Check the derivation against the real workspace**
 
 Run: `RUSTC_WRAPPER="" cargo run -q -p test-runner -- feature-matrix --print 2>&1 | wc -l`
-Expected: 49. The old YAML matrix had 47 rows covering 12 packages; `test-runner` is the 13th workspace member and brings its own two endpoint rows.
+Expected: 48. The old YAML matrix has 46 rows covering 13 packages; `test-runner` is the 14th workspace member and brings its own two endpoint rows. All four figures here were re-measured during Task 5, after the first draft of the plan carried 47 and 49.
+
+Then prove the derivation is not merely plausible but reproduces the hand-maintained list, which is the property this subcommand exists to provide. Extract the YAML rows and diff them against the derived rows with `test-runner`'s own two removed:
+
+```bash
+RUSTC_WRAPPER="" cargo run -q -p test-runner -- feature-matrix --print | sort > /tmp/derived.txt
+grep -v '^test-runner ' /tmp/derived.txt > /tmp/derived-notr.txt
+grep '^          - { package: ' .github/workflows/ci.yml \
+  | sed -E 's/^ *- \{ package: "([^"]+)", flags: "([^"]*)" \}/\1 \2/' | sort > /tmp/yaml.txt
+diff /tmp/derived-notr.txt /tmp/yaml.txt && echo IDENTICAL
+```
+
+Expected: no output and `IDENTICAL`. Task 5 measured exactly that.
 
 Run: `RUSTC_WRAPPER="" cargo run -q -p test-runner -- feature-matrix --print 2>&1 | grep -c "features default"`
 Expected: 0. Any hit means the implicit `default` feature leaked into the single-feature sweep.
@@ -1980,5 +1992,5 @@ After every task is reviewed and committed, the controller runs, in this order:
 2. `RUSTC_WRAPPER="" cargo clippy -p test-runner --all-targets --all-features`
 3. `RUSTC_WRAPPER="" cargo test-all`
 4. `RUSTC_WRAPPER="" cargo test-doc-all`
-5. `RUSTC_WRAPPER="" cargo run --package test-runner -- feature-matrix --print | wc -l` (expect 49)
+5. `RUSTC_WRAPPER="" cargo run --package test-runner -- feature-matrix --print | wc -l` (expect 48)
 6. `prek validate-config`
