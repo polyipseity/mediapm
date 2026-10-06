@@ -27,7 +27,11 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 ///
 /// Returns an error listing the offending `file:line` pairs when any file
 /// outside [`ALLOWED`] matches one of [`FORBIDDEN`], and an I/O error when
-/// the tree cannot be walked or a file cannot be read.
+/// the tree cannot be walked or a file cannot be read. A `.rs` file that is
+/// not UTF-8 aborts the whole gate rather than being skipped, because
+/// `read_to_string` fails on it; the `grep -r` this gate replaces skipped
+/// binary files silently, so the port is stricter here on purpose and a
+/// non-UTF-8 source file has to be fixed rather than ignored.
 pub fn enforce(root: &Path) -> Result<()> {
     let violations = violations_in(root)?;
     if violations.is_empty() {
@@ -56,11 +60,21 @@ fn violations_in(root: &Path) -> Result<Vec<String>> {
 ///
 /// `root` is the workspace root, kept so a violation prints the same
 /// repo-relative path a reader would type, not an absolute one.
+///
+/// Directory entries are classified by
+/// [`std::fs::DirEntry::file_type`], which does not follow symlinks,
+/// rather than by `Path::is_dir`, which does. That is
+/// the `grep -r` semantics this gate ports: `grep -r` does not descend
+/// through a symlink to a directory, so a link loop under `src/` or
+/// `tests/` must terminate here too instead of recursing to a stack
+/// overflow.
 fn walk(root: &Path, dir: &Path, allowed: &Path, found: &mut Vec<String>) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
         let entry = entry.with_context(|| format!("read entry in {}", dir.display()))?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type =
+            entry.file_type().with_context(|| format!("read the type of {}", path.display()))?;
+        if file_type.is_dir() {
             walk(root, &path, allowed, found)?;
             continue;
         }
@@ -82,10 +96,9 @@ fn walk(root: &Path, dir: &Path, allowed: &Path, found: &mut Vec<String>) -> Res
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::ops::Deref;
-    use std::path::{Path, PathBuf};
 
-    use super::violations_in;
+    use super::{enforce, violations_in};
+    use crate::gates::test_scratch::scratch;
 
     /// Guards the single allowed site: `temp.rs` may build temp
     /// directories by any means it likes, because it is where the prefix
@@ -139,40 +152,30 @@ mod tests {
         assert!(violations_in(&root).expect("scan").is_empty());
     }
 
-    /// A scratch tree that removes itself when the test ends.
-    ///
-    /// Derefs to [`Path`] so the test bodies read as if `scratch` returned
-    /// one.
-    struct Scratch(PathBuf);
-
-    impl Deref for Scratch {
-        type Target = Path;
-
-        fn deref(&self) -> &Path {
-            &self.0
-        }
+    /// The gate's own verdict, not just its scan: a tree with a bare
+    /// tempdir has to fail with the message the caller prints after the
+    /// `error: ` prefix. The offending `file:line` goes to stderr
+    /// separately, so this asserts the summary, not the echo.
+    #[test]
+    fn enforce_rejects_a_violating_tree() {
+        let root = scratch("enforce-violating");
+        fs::create_dir_all(root.join("src/mediapm/src")).expect("mkdir");
+        fs::write(root.join("src/mediapm/src/lib.rs"), "fn f() { let _ = tempfile::tempdir(); }\n")
+            .expect("write");
+        let err = enforce(&root).expect_err("a bare tempdir must fail the gate");
+        assert_eq!(
+            err.to_string(),
+            "unprefixed tempdir/prefix use outside src/mediapm-utils/src/temp.rs"
+        );
     }
 
-    impl Drop for Scratch {
-        /// Best-effort removal. A tree that survives a failed cleanup is
-        /// named `mediapm-test-runner-gate-*`, so the janitor reclaims it
-        /// instead of it becoming an unexplained leftover.
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    /// Creates a unique scratch tree under the managed temp prefix.
-    fn scratch(tag: &str) -> Scratch {
-        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "mediapm-test-runner-gate-{}-{}-{seq}",
-            std::process::id(),
-            tag
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create scratch root");
-        Scratch(dir)
+    /// The passing path of the same verdict, so a gate that rejected every
+    /// tree would fail here rather than at the end of a real suite.
+    #[test]
+    fn enforce_accepts_a_clean_tree() {
+        let root = scratch("enforce-clean");
+        fs::create_dir_all(root.join("src/mediapm/src")).expect("mkdir");
+        fs::write(root.join("src/mediapm/src/lib.rs"), "fn f() {}\n").expect("write");
+        enforce(&root).expect("a clean tree must pass the gate");
     }
 }

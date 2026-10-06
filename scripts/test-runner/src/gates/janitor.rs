@@ -39,6 +39,12 @@ fn is_contract_line(line: &str) -> bool {
 /// gate's leftover verdict does not come from these lines, so the safe
 /// direction is to forward a line the janitor may not have written rather
 /// than swallow one it may have.
+///
+/// The cost is an echo rather than a wrong verdict: on Windows a `%TEMP%`
+/// containing a space is the common case rather than an edge, so there the
+/// per-directory lines routinely take this branch and are re-printed on
+/// stderr. That is noise on a clean pass and never changes the verdict,
+/// which is decided by the separate `would remove` check.
 fn is_path_line(prefix: &str, line: &str) -> bool {
     let Some(rest) = line.strip_prefix(prefix) else {
         return false;
@@ -64,25 +70,41 @@ fn is_count_line(word: &str, line: &str) -> bool {
 }
 
 /// The command that runs the janitor for this platform.
+///
+/// On POSIX the script is spawned **by path, with no interpreter named**,
+/// and that is load-bearing rather than incidental. `clean-mediapm-temp.sh`
+/// is a bash script (`#!/usr/bin/env bash`, `set -euo pipefail`, `[[ ]]`,
+/// `read -r -d ''`), while the POSIX `sh` is dash on Debian and ubuntu,
+/// which rejects it on the `pipefail` line:
+///
+/// ```text
+/// $ dash scripts/clean-mediapm-temp.sh --dry-run
+/// scripts/clean-mediapm-temp.sh: 3: set: Illegal option -o pipefail
+/// $ /bin/sh scripts/clean-mediapm-temp.sh --dry-run   # macOS: bash in POSIX mode
+/// ```
+///
+/// Naming `sh` here therefore fails the gate on every `ubuntu-latest` run
+/// and passes on macOS, which is the worst shape a portability defect can
+/// take. Executing the path lets the kernel read the shebang and pick the
+/// interpreter, which is what `run-all-tests.sh` did before this gate
+/// existed. Do not "tidy" the bare path back into an interpreter name.
+///
+/// The pwsh branch names its interpreter because `-File` requires it; that
+/// is the platform's own script-invocation form.
 fn janitor_command(root: &Path) -> (std::ffi::OsString, Vec<std::ffi::OsString>) {
+    let script = root.join("scripts").join("clean-mediapm-temp.sh");
     if cfg!(windows) {
         (
             std::ffi::OsString::from("pwsh"),
             vec![
                 std::ffi::OsString::from("-NoProfile"),
                 std::ffi::OsString::from("-File"),
-                root.join("scripts").join("clean-mediapm-temp.ps1").into_os_string(),
+                script.with_file_name("clean-mediapm-temp.ps1").into_os_string(),
                 std::ffi::OsString::from("--dry-run"),
             ],
         )
     } else {
-        (
-            std::ffi::OsString::from("sh"),
-            vec![
-                root.join("scripts").join("clean-mediapm-temp.sh").into_os_string(),
-                std::ffi::OsString::from("--dry-run"),
-            ],
-        )
+        (script.into_os_string(), vec![std::ffi::OsString::from("--dry-run")])
     }
 }
 
@@ -99,6 +121,10 @@ fn janitor_command(root: &Path) -> (std::ffi::OsString, Vec<std::ffi::OsString>)
 /// Returns an error when the janitor cannot be spawned, when it exits
 /// non-zero (a sweep it could not perform is never reported as a clean
 /// one), or when its dry-run output lists anything it would remove.
+///
+/// The status is read first on purpose: a temp root that cannot be
+/// scanned prints nothing that reads as a leftover, so a text-only gate
+/// would read that failure as a clean sweep.
 pub fn enforce(root: &Path) -> Result<()> {
     let (program, args) = janitor_command(root);
     let output = Command::new(&program)
@@ -134,7 +160,11 @@ pub fn enforce(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_contract_line;
+    use std::fs;
+    use std::path::Path;
+
+    use super::{enforce, is_contract_line};
+    use crate::gates::test_scratch::scratch;
 
     /// Pins the janitor's output contract from the side of the gate: every
     /// line a dry run may print must be recognised, or the gate forwards it
@@ -169,5 +199,92 @@ mod tests {
     fn contract_lines_must_match_wholly() {
         assert!(!is_contract_line("would remove: /tmp/x and then some"));
         assert!(!is_contract_line("no such directory: /nope"));
+    }
+
+    /// A janitor that exits non-zero reports a sweep it did not perform.
+    /// The status is read before the output, so the gate has to name that
+    /// diagnostic in its own error: this is the case a broken spawn shares
+    /// with a genuinely unscannable temp root, and reporting it as a clean
+    /// sweep is what the status-first read exists to prevent.
+    #[test]
+    fn a_failed_sweep_names_its_own_diagnostic() {
+        let root = scratch("failed-sweep");
+        write_stub(&root, &["no such directory: /nonexistent-root"], 1);
+        let err = enforce(&root).expect_err("a failed sweep must fail the gate");
+        assert_eq!(
+            err.to_string(),
+            "mediapm temp-dir sweep failed: no such directory: /nonexistent-root"
+        );
+    }
+
+    /// A successful sweep that lists a leftover fails with the verdict,
+    /// not with the leftover path. The broad `would remove` form is what
+    /// catches the janitor's own `would remove 1 mediapm temp director(ies)`
+    /// summary, which the old pwsh runner's colon form missed.
+    #[test]
+    fn a_leftover_fails_the_gate() {
+        let root = scratch("leftover");
+        write_stub(
+            &root,
+            &[
+                "would remove: /tmp/mediapm-artifact-abc",
+                "would remove 1 mediapm temp director(ies)",
+            ],
+            0,
+        );
+        let err = enforce(&root).expect_err("a leftover must fail the gate");
+        assert_eq!(err.to_string(), "test suite left mediapm temp dirs behind");
+    }
+
+    /// The empty-root case, which nothing else covers: a sweep with
+    /// nothing to remove passes. A gate that failed here would report a
+    /// broken janitor as a dirty repository on every clean run.
+    #[test]
+    fn a_clean_sweep_passes() {
+        let root = scratch("clean-sweep");
+        write_stub(&root, &["no mediapm temp directories found"], 0);
+        enforce(&root).expect("a clean sweep must pass the gate");
+    }
+
+    /// Writes an executable stub janitor into `root`'s `scripts/`.
+    ///
+    /// The stub is a bash script because the gate now executes the script
+    /// by path: the kernel reads the shebang, so a stub without one, or
+    /// without the executable bit, would fail to spawn rather than fail to
+    /// assert. Its own `set -euo pipefail` is what makes the by-path form
+    /// observable — the stub is rejected outright by any POSIX `sh`.
+    #[cfg(unix)]
+    fn write_stub(root: &Path, lines: &[&str], exit_code: i32) {
+        use std::fmt::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = root.join("scripts");
+        fs::create_dir_all(&dir).expect("create the stub's scripts dir");
+        let mut body = String::from("#!/usr/bin/env bash\nset -euo pipefail\n");
+        for line in lines {
+            writeln!(body, "echo \"{line}\"").expect("render the stub body");
+        }
+        writeln!(body, "exit {exit_code}").expect("render the stub exit");
+        let path = dir.join("clean-mediapm-temp.sh");
+        fs::write(&path, body).expect("write the stub janitor");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+            .expect("make the stub executable");
+    }
+
+    /// The Windows twin of [`write_stub`]. `pwsh -File <script>` hands a
+    /// script with no `param()` block any trailing token through `$args`,
+    /// so the `--dry-run` the gate passes lands there and is ignored.
+    #[cfg(windows)]
+    fn write_stub(root: &Path, lines: &[&str], exit_code: i32) {
+        use std::fmt::Write as _;
+
+        let dir = root.join("scripts");
+        fs::create_dir_all(&dir).expect("create the stub's scripts dir");
+        let mut body = String::new();
+        for line in lines {
+            writeln!(body, "Write-Output \"{line}\"").expect("render the stub body");
+        }
+        writeln!(body, "exit {exit_code}").expect("render the stub exit");
+        fs::write(dir.join("clean-mediapm-temp.ps1"), body).expect("write the stub janitor");
     }
 }

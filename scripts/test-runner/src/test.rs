@@ -1,10 +1,10 @@
 //! The `test` subcommand.
 //!
 //! The subcommand owns the suite run plus the two gates that guard it: the
-//! temp-directory janitor and the unprefixed-tempdir invariant. Both gates
-//! are placeholders here and gain their real bodies in Task 3; this task
-//! only fixes the order they run in, which is the part nothing else
-//! decides.
+//! temp-directory janitor and the unprefixed-tempdir invariant. The
+//! tempdir gate runs first because it is a pure in-process scan, so a
+//! naming violation is reported without spending a process spawn on a tree
+//! that is already wrong.
 
 use std::path::Path;
 
