@@ -259,7 +259,7 @@ Post-change: demo examples:
 
 The online demo's embedded test (`main_is_exercised`) runs reduced (config-only) mode deterministically in the test harness (skips in CI), so the pre-push gate exercises only reduced mode — no network. Its full-sync path runs only on the explicit `cargo run --package mediapm --example mediapm_demo_online` above.
 
-Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all`.
+Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all && cargo test-doc-all`. `cargo test-all` runs nextest plus the tempdir and janitor gates; `cargo test-doc-all` runs the workspace doctests plus the rustdoc link gate, separately because nextest cannot execute doctests. Both delegate to the `test-runner` crate (`scripts/test-runner`).
 
 ## Feature Flags
 

@@ -21,7 +21,7 @@
 - **Conductor**: write `conductor.ncl`, create `Conductor`, call `run_workflow("name")`.
 - **Builtins**: CLI (`mediapm-conductor-builtin-echo --arg message "hi" --arg output stdout`) or Rust API (`BTreeMap<String, String>` args + optional payload bytes).
 - **MediaPM**: write `mediapm.ncl`, create `MediaPmService`, call `sync_library()`.
-- **Tests/build**: `cargo test -p <crate>`; `cargo build-pkg <crate>`; full validation via `cargo fmt-check`, `cargo clippy-all`, `cargo test-all`.
+- **Tests/build**: `cargo test -p <crate>`; `cargo build-pkg <crate>`; full validation via `cargo test-all` (nextest plus the tempdir and janitor gates) and `cargo test-doc-all` (doctests plus the rustdoc link gate), alongside `cargo fmt-check` and `cargo clippy-all`. Both delegates run the `test-runner` crate (`scripts/test-runner`), which is also what CI and the pre-push hook run.
 - Per-crate `src/*/AGENTS.md` and `.agents/instructions/` carry contracts and edge cases.
 
 ## Architecture

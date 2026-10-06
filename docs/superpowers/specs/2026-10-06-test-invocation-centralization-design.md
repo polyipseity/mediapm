@@ -98,7 +98,7 @@ The hand-written shell self-tests go away, replaced by Rust tests in the crate:
 
 ## Files updated for accuracy
 
-`AGENTS.md` quick start, `src/mediapm/AGENTS.md`, `README.md`, `.agents/instructions/rust-conventions.instructions.md`, `.agents/instructions/ci-workflow.instructions.md`, `.agents/instructions/temp-directory-spec.instructions.md`, `.agents/instructions/scripts.instructions.md`, and the `.vscode/settings.json` terminal auto-approve regex, which lists subcommand names and needs `test-doc-all` in place of `doc-test`.
+`AGENTS.md` quick start, `src/mediapm/AGENTS.md`, `README.md`, `.agents/instructions/rust-conventions.instructions.md`, `.agents/instructions/ci-workflow.instructions.md`, `.agents/instructions/temp-directory-spec.instructions.md`, `.agents/instructions/scripts-and-permissions.instructions.md`, and the `.vscode/settings.json` terminal auto-approve regex, which lists subcommand names and needs `test-doc-all` in place of `doc-test`.
 
 ## Accepted cost
 

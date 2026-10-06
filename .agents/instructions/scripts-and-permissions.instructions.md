@@ -8,10 +8,11 @@ applyTo: "scripts/**"
 
 ## Placement and naming
 
-- Keep repo-level helper scripts in `scripts/`; the directory contains `build.rs` and `cargo-bin/`. Do not scatter contributor-facing or CI-facing automation across random folders when `scripts/` is the intended home.
+- Keep repo-level helper scripts in `scripts/`; the directory contains `build.rs`, `cargo-bin/` and `test-runner/`. Do not scatter contributor-facing or CI-facing automation across random folders when `scripts/` is the intended home.
 - Name scripts for the task they perform (`bootstrap`, `check`, `release`, etc.) and keep each script narrowly focused.
 - Production scripts live in `scripts/`; their self-tests live in `tests/scripts/` (root `tests/` crate, package `mediapm-tests`) — do not place test scripts inside `scripts/`. The line-ending and permission policies below apply wherever scripts live.
-- Cross-platform helper scripts ship as `.sh` + `.ps1` twins with identical CLI and output (e.g. `run-all-tests`, `clean-mediapm-temp`); each platform runs its native script.
+- Cross-platform helper scripts ship as `.sh` + `.ps1` twins with identical CLI and output (e.g. `clean-mediapm-temp`); each platform runs its native script.
+- The twin rule is for scripts a user or a hook invokes directly. A gate that exists only to hold a rule is better as one Rust crate than as a pair of copies of that rule: `scripts/test-runner` is a crate, not a script pair, and the twin-free existence is the point. The janitor stays a twin pair because it is a user-facing command with its own output contract.
 - Choose the extension that matches the intended shell or runtime instead of relying on ambiguous launcher behavior.
 - If a script becomes application code rather than repo automation, move it into the appropriate source tree instead of leaving it in `scripts/`.
 - Detect a script's runtime from its extension, shebang, adjacent config files, and the commands it invokes before adding stack-specific script guidance.
@@ -33,8 +34,8 @@ applyTo: "scripts/**"
 - Prefer explicit error handling, predictable exit codes, and idempotent operations where possible.
 - Do not assume Bash-only features in `.sh` unless you intentionally require Bash and document that requirement.
 - For PowerShell, prefer clear cmdlet names over aliases in committed scripts.
-- PowerShell `-File` gotcha: `pwsh -File script.ps1 --token` leaves dash-prefixed tokens unbound in `$args` (they do not bind to positional parameters). Fold the first one in when the positional param is empty, why-commented, as `run-all-tests.ps1` does.
-- POSIX sh gotcha: under `set -e`, a command-substitution assignment (`var="$(cmd)"`) aborts the script when `cmd` exits non-zero. Guard it with `if var="$(cmd)"; then` or append `|| true`, as `test-run-all-tests.sh` does.
+- PowerShell `-File` gotcha: `pwsh -File script.ps1 --token` leaves dash-prefixed tokens unbound in `$args` (they do not bind to positional parameters). Fold the first one in when the positional param is empty, why-commented.
+- POSIX sh gotcha: under `set -e`, a command-substitution assignment (`var="$(cmd)"`) aborts the script when `cmd` exits non-zero. Guard it with `if var="$(cmd)"; then` or append `|| true`, and annotate any `|| true` with `# check-suppress:suppression_doc:` and its reason.
 
 ## Tooling alignment
 
