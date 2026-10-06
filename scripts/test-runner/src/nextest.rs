@@ -31,6 +31,13 @@ use crate::cli::Selection;
 /// passed `--locked` to cargo on every invocation, so dropping the outer
 /// one here would reintroduce an unlocked resolution that the runner it
 /// replaces did not have.
+///
+/// `--workspace` is emitted only when no `-p` was given. Cargo resolves
+/// the two selectors in favour of `--workspace` rather than in favour of
+/// `-p`, so a vector carrying both would run every member's tests and drop
+/// the package the caller asked for, without an error or a warning to say
+/// so. `doc::doctest_argv` narrows the same way, so the two subcommands
+/// answer a `-p` selection identically.
 pub fn argv(selection: &Selection) -> Vec<OsString> {
     let locked = selection.wants_lock();
     let mut argv: Vec<OsString> = vec![
@@ -48,7 +55,9 @@ pub fn argv(selection: &Selection) -> Vec<OsString> {
     if locked {
         argv.push(OsString::from("--locked"));
     }
-    argv.push(OsString::from("--workspace"));
+    if selection.package.is_none() {
+        argv.push(OsString::from("--workspace"));
+    }
     argv.push(OsString::from("--all-targets"));
     argv.extend(selection.feature_flags());
     argv.extend(selection.package_flags());
@@ -113,9 +122,20 @@ mod tests {
         );
     }
 
+    /// A `-p` selection has to *replace* `--workspace`, not sit beside
+    /// it, and this test carries both halves of that claim. Cargo resolves
+    /// the two selectors in favour of `--workspace` without saying so, so a
+    /// vector carrying both would run every member's tests and report the
+    /// narrowed package as done. The absence check is what makes this a
+    /// test of the composition: the `-p` pair alone would pass just as
+    /// well with the trap still in place.
     #[test]
-    fn argv_appends_the_package_selector() {
+    fn argv_narrows_to_the_package_instead_of_the_workspace() {
         let got = argv(&selection(&["-p", "mediapm-utils"]));
+        assert!(
+            !got.iter().any(|a| a == "--workspace"),
+            "a `-p` selection must not also carry --workspace: {got:?}"
+        );
         let idx = got.iter().position(|a| a == "-p").expect("-p present");
         assert_eq!(got[idx + 1], OsString::from("mediapm-utils"));
     }

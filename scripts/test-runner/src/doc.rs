@@ -17,7 +17,8 @@ use anyhow::{Context, Result};
 use crate::cargo;
 use crate::cli::Selection;
 
-/// This crate's manifest directory, the anchor for every child cargo run.
+/// This crate's manifest directory, the anchor for the child cargo runs in
+/// this module.
 ///
 /// Cargo walks up to the workspace root from here regardless of the
 /// process working directory, so the runner never has to resolve a path
@@ -53,12 +54,20 @@ pub fn run(selection: &Selection) -> Result<i32> {
 ///
 /// `--workspace` rather than a package list, because a doctest is a
 /// property of the documentation that shipped rather than of one target's
-/// build, and a package list is a set someone has to keep updated. A `-p`
-/// selection is still appended so the same flags narrow this subcommand
-/// as they narrow `test`.
+/// build, and a package list is a set someone has to keep updated. It is
+/// emitted only when no `-p` was given, because cargo resolves the two
+/// selectors in favour of `--workspace` rather than in favour of `-p`:
+/// passing both is not an error and not a warning, it just runs the whole
+/// workspace and drops the package the caller asked for. Emitting exactly
+/// one of them is what makes `-p` mean what it reads like.
+///
+/// The same rule is in `nextest::argv`, so `test` and `doc` narrow by a
+/// package the same way.
 pub fn doctest_argv(selection: &Selection) -> Vec<OsString> {
-    let mut argv =
-        vec![OsString::from("test"), OsString::from("--doc"), OsString::from("--workspace")];
+    let mut argv = vec![OsString::from("test"), OsString::from("--doc")];
+    if selection.package.is_none() {
+        argv.push(OsString::from("--workspace"));
+    }
     if selection.wants_lock() {
         argv.push(OsString::from("--locked"));
     }
@@ -126,8 +135,27 @@ mod tests {
 
     #[test]
     fn doctest_argv_omits_locked_when_opted_out() {
-        let got = doctest_argv(&selection(&["--no-locked"]));
-        assert!(!got.iter().any(|a| a == "--locked"));
+        assert_eq!(
+            doctest_argv(&selection(&["--no-locked"])),
+            vec![OsString::from("test"), OsString::from("--doc"), OsString::from("--workspace"),]
+        );
+    }
+
+    /// A `-p` selection has to replace `--workspace`, not sit beside it.
+    /// Cargo resolves the two selectors in favour of `--workspace` without
+    /// saying so, so a vector carrying both would run every member's
+    /// doctests and report the narrowed package as done. The absence check
+    /// is what makes this a test of the composition; the `-p` pair alone
+    /// would pass just as well with the trap still in place.
+    #[test]
+    fn doctest_argv_narrows_to_the_package_instead_of_the_workspace() {
+        let got = doctest_argv(&selection(&["-p", "mediapm-utils"]));
+        assert!(
+            !got.iter().any(|a| a == "--workspace"),
+            "a `-p` selection must not also carry --workspace: {got:?}"
+        );
+        let idx = got.iter().position(|a| a == "-p").expect("-p present");
+        assert_eq!(got[idx + 1], OsString::from("mediapm-utils"));
     }
 
     #[test]
