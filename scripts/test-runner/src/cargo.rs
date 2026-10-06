@@ -78,3 +78,29 @@ pub fn status_code(status: ExitStatus, label: &str) -> Result<i32> {
         None => Err(anyhow::anyhow!("{label} was terminated by a signal")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::Metadata;
+
+    /// Guards the shape [`metadata`] deserializes: without this the only
+    /// coverage of the wire format is a live cargo invocation, so a
+    /// mismatch in a field name would surface as a runtime parse failure
+    /// in whichever subcommand happened to run first.
+    #[test]
+    fn metadata_parses_the_documented_shape() {
+        let doc = br#"{
+            "workspace_root": "/repo",
+            "packages": [
+                {"name": "alpha", "features": {"cli": [], "default": ["cli"]}},
+                {"name": "beta", "features": {}}
+            ]
+        }"#;
+        let parsed: Metadata = serde_json::from_slice(doc).expect("parse");
+        assert_eq!(parsed.workspace_root, Path::new("/repo"));
+        assert_eq!(parsed.packages.len(), 2);
+        assert!(parsed.packages[1].features.is_empty());
+    }
+}

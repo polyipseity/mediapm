@@ -11,23 +11,29 @@
 //! `CARGO_MANIFEST_DIR` and asks cargo where the workspace root is, so it
 //! works in a checkout without a `.git` directory.
 
-// `dispatch` is still a set of `todo!()` arms, so nothing calls these two
-// modules yet and rustc reports every item in them as dead. Each expectation
-// is removed by the task that makes its last item live: Task 5 for both.
-// `cargo` is gated by `Metadata::packages` and the `Package` struct, which
-// are feature-matrix inputs; Task 2 reads `metadata()` and `status_code()`
-// but leaves those two unread, so removing the expectation there would be a
-// hard build error under `warnings = "deny"`.
+// Two modules still carry an unread item each, so rustc reports it dead
+// and the expectation is still required. Each is removed by the task that
+// makes its last item live, which for both is Task 5.
+//
+// `cargo` is read by the `test` subcommand, but only for `metadata()` and
+// `status_code()`. `Metadata::packages` and the `Package` struct are
+// feature-matrix inputs and nothing reads them until Task 5.
+//
+// `cli`'s `Selection` is fully live; `MatrixArgs::wants_lock` is not, and
+// stays unread while `feature-matrix` is a `todo!()` arm.
 #[expect(
     dead_code,
-    reason = "the feature-matrix and test subcommands are still todo!() arms, so nothing calls the typed metadata view yet; gated by Metadata::packages and Package, which Task 5 consumes, so Task 5 removes this"
+    reason = "Metadata::packages and Package are feature-matrix inputs that only the feature-matrix subcommand reads, and that arm is still todo!(), so the typed metadata view is half live; Task 5 consumes both and removes this"
 )]
 mod cargo;
 #[expect(
     dead_code,
-    reason = "package_flags and MatrixArgs::wants_lock are consumed by subcommands that are still todo!() arms; Task 5 removes this"
+    reason = "MatrixArgs::wants_lock is consumed only by the feature-matrix subcommand, which is still a todo!() arm; Task 5 removes this"
 )]
 mod cli;
+mod gates;
+mod nextest;
+mod test;
 
 use std::process::ExitCode;
 
@@ -38,7 +44,7 @@ use crate::cli::{Cli, Command};
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match dispatch(cli.command) {
-        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        Ok(code) => process_exit_code(code),
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::FAILURE
@@ -46,20 +52,90 @@ fn main() -> ExitCode {
     }
 }
 
+/// The status the runner exits with when a subcommand reported a value
+/// outside the range a process exit status can carry.
+///
+/// `EX_SOFTWARE` from `sysexits.h`: the subcommand reported something the
+/// runner could not represent, which is a defect in the runner rather than
+/// a verdict on the suite, so it must not borrow a status the suite itself
+/// uses. It is clear of the statuses this workspace already assigns: `0`
+/// clean, `1` the `missing-cli` and generic-failure paths, `3` warning and
+/// `4` error from `mediapm sync`, and `2`, which POSIX reserves for shell
+/// misuse.
+const UNREPRESENTABLE_EXIT_CODE: u8 = 70;
+
+/// Narrows a subcommand's reported code to what a process can exit with.
+///
+/// Returns `None` for anything a POSIX exit status cannot carry, so the
+/// caller reports the value instead of silently substituting another one.
+fn narrow_exit_code(code: i32) -> Option<u8> {
+    u8::try_from(code).ok()
+}
+
+/// Turns a subcommand's reported code into this process's exit status.
+///
+/// A POSIX exit status is a single unsigned byte, so a code outside
+/// `0..=255` cannot be forwarded to a caller reading `$?`. Such a value is
+/// named on stderr and replaced with [`UNREPRESENTABLE_EXIT_CODE`]:
+/// collapsing it to `1` instead would report a run that failed for one
+/// reason as if it failed for another, which is the kind of masked value
+/// this repository's typing conventions reject.
+fn process_exit_code(code: i32) -> ExitCode {
+    if let Some(narrowed) = narrow_exit_code(code) {
+        return ExitCode::from(narrowed);
+    }
+    eprintln!(
+        "error: a subcommand reported exit code {code}, which is outside the range 0..=255 a process can exit with; \
+         reporting {UNREPRESENTABLE_EXIT_CODE} instead"
+    );
+    ExitCode::from(UNREPRESENTABLE_EXIT_CODE)
+}
+
 /// Routes a parsed subcommand to its implementation.
 ///
 /// Takes `command` by value because every arm binds and moves its own
-/// payload. While the arms are still `todo!()` no move is visible to
-/// clippy, so the by-value signature is expected here and the expectation
-/// lapses once Task 2 replaces the first arm.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "each dispatch arm moves its own payload out of the command; the todo!() placeholder arms show clippy no move yet"
-)]
+/// payload: the `test` arm hands its selection to [`test::run`] by
+/// reference, but `doc` and `feature-matrix` still hold their payloads for
+/// later tasks.
 fn dispatch(command: Command) -> anyhow::Result<i32> {
     match command {
-        Command::Test(_) => todo!("Task 2"),
+        Command::Test(selection) => test::run(&selection),
         Command::Doc(_) => todo!("Task 4"),
         Command::FeatureMatrix(_) => todo!("Task 5"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UNREPRESENTABLE_EXIT_CODE, narrow_exit_code};
+
+    /// Guards the narrowing seam the runner's own exit status depends on:
+    /// every status a subcommand reports in practice must pass through
+    /// unchanged, because a status silently rewritten here is a verdict the
+    /// suite never produced.
+    #[test]
+    fn exit_codes_a_process_can_carry_are_forwarded() {
+        assert_eq!(narrow_exit_code(0), Some(0));
+        assert_eq!(narrow_exit_code(1), Some(1));
+        assert_eq!(narrow_exit_code(255), Some(255));
+    }
+
+    /// A negative status and one past the byte boundary both have to be
+    /// refused rather than truncated, since truncating either reports a
+    /// different run than the one that happened.
+    #[test]
+    fn exit_codes_a_process_cannot_carry_are_refused() {
+        assert_eq!(narrow_exit_code(256), None);
+        assert_eq!(narrow_exit_code(-1), None);
+        assert_eq!(narrow_exit_code(i32::MAX), None);
+        assert_eq!(narrow_exit_code(i32::MIN), None);
+    }
+
+    /// Pins the replacement status. `EX_SOFTWARE` is distinct from every
+    /// status the suite itself reports, so a caller can tell "the runner
+    /// could not represent this" from "the suite failed".
+    #[test]
+    fn unrepresentable_exit_code_is_ex_software() {
+        assert_eq!(UNREPRESENTABLE_EXIT_CODE, 70);
     }
 }

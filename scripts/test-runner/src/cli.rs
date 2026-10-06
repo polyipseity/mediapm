@@ -162,6 +162,8 @@ impl MatrixArgs {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     use clap::Parser;
 
     use super::{Cli, Command};
@@ -233,6 +235,33 @@ mod tests {
         assert!(
             Cli::try_parse_from(["test-runner", "test", "--all-features", "--features", "cli"])
                 .is_err()
+        );
+    }
+
+    /// A selection with no `-p` covers the whole workspace, so the
+    /// fragment has to be empty. A stray empty `-p` here would make cargo
+    /// read the next flag as a package name.
+    #[test]
+    fn package_flags_are_empty_without_a_package() {
+        let cli = Cli::parse_from(["test-runner", "test"]);
+        let Command::Test(sel) = cli.command else {
+            panic!("expected test");
+        };
+        assert_eq!(sel.package_flags(), Vec::<OsString>::new());
+    }
+
+    /// A `-p` selection has to reach the child as the pair `-p <PKG>`, in
+    /// that order and with nothing between them, because cargo reads the
+    /// value as the argument to `-p` rather than as a positional.
+    #[test]
+    fn package_flags_carry_the_package_selector() {
+        let cli = Cli::parse_from(["test-runner", "test", "-p", "mediapm-utils"]);
+        let Command::Test(sel) = cli.command else {
+            panic!("expected test");
+        };
+        assert_eq!(
+            sel.package_flags(),
+            vec![OsString::from("-p"), OsString::from("mediapm-utils")]
         );
     }
 }
