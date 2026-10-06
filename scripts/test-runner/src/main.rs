@@ -31,6 +31,7 @@ mod cargo;
     reason = "MatrixArgs::wants_lock is consumed only by the feature-matrix subcommand, which is still a todo!() arm; Task 5 removes this"
 )]
 mod cli;
+mod doc;
 mod gates;
 mod nextest;
 mod test;
@@ -94,13 +95,13 @@ fn process_exit_code(code: i32) -> ExitCode {
 /// Routes a parsed subcommand to its implementation.
 ///
 /// Takes `command` by value because every arm binds and moves its own
-/// payload: the `test` arm hands its selection to [`test::run`] by
-/// reference, but `doc` and `feature-matrix` still hold their payloads for
-/// later tasks.
+/// payload: the `test` and `doc` arms hand their selection to
+/// [`test::run`] and [`doc::run`] by reference, but `feature-matrix` still
+/// holds its payload for a later task.
 fn dispatch(command: Command) -> anyhow::Result<i32> {
     match command {
         Command::Test(selection) => test::run(&selection),
-        Command::Doc(_) => todo!("Task 4"),
+        Command::Doc(selection) => doc::run(&selection),
         Command::FeatureMatrix(_) => todo!("Task 5"),
     }
 }
