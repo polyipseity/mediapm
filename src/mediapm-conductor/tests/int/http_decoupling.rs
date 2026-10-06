@@ -61,7 +61,8 @@ fn write_probe(dir: &Path, name: &str, contents: &str) {
 /// path would drop the owner at the end of this statement, deleting the
 /// directory, and the caller would recreate it with `create_dir_all` and leave
 /// it with no cleanup owner — a `mediapm-artifact-*` tree orphaned in `$TMPDIR`
-/// on every run, which `scripts/run-all-tests.sh` fails the suite for.
+/// on every run, which the `test-runner` crate's temp-dir janitor gate
+/// fails the suite for (`cargo run --package test-runner -- test`).
 ///
 /// The real `src/http/` tree cannot be used instead: the build guard in
 /// `build.rs` scans the same tree and panics during compilation, so the test
