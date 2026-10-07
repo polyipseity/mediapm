@@ -756,7 +756,7 @@ async fn prepare_hierarchy_entry(
                     )]),
                 })
             } else {
-                shared.notice(format!(
+                shared.missing_reason(format!(
                     "media '{media_id}' variant '{effective_variant}' has no content hash, so its \
                      output was not written"
                 ));
@@ -1134,7 +1134,7 @@ async fn write_zip_folder_variant(
 ) -> Result<bool, MediaPmError> {
     let extracted = extract_zip_folder_variant_bytes(&variant.data, rename_rules)?;
     if extracted.is_empty() {
-        shared.notice(format!(
+        shared.missing_reason(format!(
             "media '{media_id}' variant '{}': ZIP archive contained zero extractable files",
             variant.name
         ));
@@ -1153,7 +1153,7 @@ async fn write_zip_folder_variant(
         // shared writer clearing a directory would delete something the run
         // does not own.
         if tokio::fs::metadata(&file_target).await.is_ok_and(|metadata| metadata.is_dir()) {
-            shared.notice(format!(
+            shared.missing_reason(format!(
                 "media '{media_id}' variant '{}': not writing '{}' because it is already a \
                  directory",
                 variant.name,
@@ -1179,7 +1179,7 @@ async fn write_zip_folder_variant(
                     source,
                 });
             };
-            shared.notice(format!(
+            shared.missing_reason(format!(
                 "media '{media_id}' variant '{}': not writing '{}' because '{}' is a file",
                 variant.name,
                 file_target.display(),
@@ -1253,7 +1253,7 @@ async fn write_plain_folder_variant(
     managed_files: &mut BTreeMap<String, ManagedFileRecord>,
 ) -> Result<bool, MediaPmError> {
     if tokio::fs::metadata(&variant.variant_path).await.is_ok_and(|metadata| metadata.is_dir()) {
-        shared.notice(format!(
+        shared.missing_reason(format!(
             "media '{media_id}' variant '{}': not writing '{}' because it is already a directory",
             variant.name,
             variant.variant_path.display()
@@ -1349,8 +1349,9 @@ async fn materialize_media_folder_entry(
     // written anything.
     let mut unwritten_variant = parsed_variants.is_empty();
     if parsed_variants.is_empty() {
-        shared
-            .notice(format!("media '{media_id}' resolved to no variants, so nothing was written"));
+        shared.missing_reason(format!(
+            "media '{media_id}' resolved to no variants, so nothing was written"
+        ));
     }
 
     // Resolve every variant before deciding anything, so a folder is never
@@ -1373,7 +1374,7 @@ async fn materialize_media_folder_entry(
         {
             Ok(payload) => payload,
             Err(error) => {
-                shared.notice(format!(
+                shared.missing_reason(format!(
                     "media '{media_id}' variant '{variant_name}' resolution failed: {error}"
                 ));
                 unwritten_variant = true;
@@ -1381,7 +1382,7 @@ async fn materialize_media_folder_entry(
             }
         };
         if let Some(notice) = payload.notice {
-            shared.notice(notice);
+            shared.missing_reason(notice);
         }
         if let Some(source_hash) = payload.source_hash {
             variant_hashes.insert(variant_name.clone(), source_hash.to_string());
@@ -1572,7 +1573,7 @@ async fn materialize_playlist_entry(
     // worker, broke the join loop on the `Err`, and sent the report back with
     // it.
     if tokio::fs::metadata(target_path).await.is_ok_and(|metadata| metadata.is_dir()) {
-        shared.notice(format!(
+        shared.missing_reason(format!(
             "playlist '{relative_path}' is not written because a directory already sits at '{}'",
             target_path.display()
         ));
@@ -1822,11 +1823,13 @@ fn normalize_yt_dlp_sandbox_zip_member_path(path: &Path) -> PathBuf {
 }
 
 impl SyncSharedState {
+    /// Warns that an arm of the run produced nothing. Every caller accompanies such an arm, so
+    /// these messages stay out of `MaterializeReport.notices`, which collects non-fatal findings.
     #[expect(
         clippy::unused_self,
-        reason = "method-shaped diagnostic helper; self kept for caller symmetry"
+        reason = "method-shaped failure-path helper; self kept for caller symmetry"
     )]
-    fn notice(&self, message: impl Into<String>) {
+    fn missing_reason(&self, message: impl Into<String>) {
         warn!("{}", message.into());
     }
 
