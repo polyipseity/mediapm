@@ -628,6 +628,61 @@ async fn a_folder_whose_member_directory_cannot_be_made_fails_the_run() {
     );
 }
 
+/// The three answers `existing_non_directory_ancestor` gives, called directly
+/// with one input per exit.
+///
+/// The first two inputs are what a failed `create_dir_all` leaves for the
+/// walk: a file standing where the parent had to be created is the answer that
+/// turns the failure into a refusal, while a chain whose answering candidates
+/// are all directories gives nothing back, so the caller keeps the error the
+/// disk already reported.
+///
+/// The third input is a bare relative name, which the call site does not pass:
+/// it walks a path built by joining under the hierarchy root, so the chain
+/// reaches the filesystem root, and a statable root answers as a directory.
+/// An absolute path runs the chain out only when the root itself fails its
+/// metadata. A relative name gets there on its own: metadata fails on the
+/// name, then on the empty path its `parent()` leads to, and the empty path has
+/// no parent after it. The input pins what an exhausted walk hands back and
+/// carries no claim about the call site reaching that exit.
+#[tokio::test]
+async fn the_walk_runs_out_of_ancestors_only_for_a_relative_path_no_call_site_passes() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+
+    let blocker = root.path().join("blocker.bin");
+    std::fs::write(&blocker, b"a file standing where a directory belongs").unwrap();
+    let under_file = blocker.join("sub").join("member.bin");
+    assert_eq!(
+        existing_non_directory_ancestor(&under_file).await,
+        Some(blocker.clone()),
+        "the two candidates above the file cannot answer, so the walk has to name the file, which \
+         is what turns the failed `create_dir_all` into a refusal: {under_file:?}"
+    );
+
+    let directory = root.path().join("made");
+    tokio::fs::create_dir_all(&directory).await.unwrap();
+    let under_directory = directory.join("sub").join("member.bin");
+    assert_eq!(
+        existing_non_directory_ancestor(&under_directory).await,
+        None,
+        "the candidates that answer here are all directories, so the walk has no file to name and \
+         the caller keeps its original error: {under_directory:?}"
+    );
+
+    let name = "ancestor-walk-chain-end";
+    assert!(
+        !Path::new(name).exists(),
+        "the name has to be absent from the working directory, or metadata answers with it and the \
+         chain never runs out"
+    );
+    assert_eq!(
+        existing_non_directory_ancestor(Path::new(name)).await,
+        None,
+        "metadata fails on the name and then on the empty path, which has no parent after it, so \
+         the loop falls through with no candidate having answered"
+    );
+}
+
 /// A folder with one blocked variant and one good variant stays missing over
 /// two runs, though its good variant's file is correct.
 ///
