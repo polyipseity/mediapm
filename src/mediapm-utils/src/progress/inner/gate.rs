@@ -205,6 +205,16 @@ impl WriteGate {
         Self { flag: Arc::new(AtomicBool::new(false)), committed_frame_term: None }
     }
 
+    /// Whether this gate is the no-op variant (no paired [`BufferedTerm`]).
+    ///
+    /// A no-op gate never suppresses a write, so a caller asking whether the
+    /// window still owes a block a draw can skip the question entirely:
+    /// every push already reached the term. See the flush at the end of
+    /// `ProgressRenderer::run_frame`.
+    pub(crate) fn is_noop(&self) -> bool {
+        self.committed_frame_term.is_none()
+    }
+
     /// Advance the terminal cursor past a frame that has just been committed.
     ///
     /// The commit contract (see the module docs) hands the frame over to the

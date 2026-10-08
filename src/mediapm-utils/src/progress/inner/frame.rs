@@ -119,6 +119,13 @@ impl ProgressRenderer {
     /// draw, which is triggered by opening the gate (indicatif draws on the
     /// next bar operation while the gate is open).
     ///
+    /// The frame also tracks whether steps 2–4 pushed anything: every push
+    /// happens while the gate is shut, so a dirty line owes the block a
+    /// draw, and on a frame whose bars are all finished the tick loop below
+    /// is what would normally pay that debt (any bar's draw repaints every
+    /// dirty line of the block). When nothing ticks, the flush at the end of
+    /// the loop pays it instead — see the comment there.
+    ///
     /// This is the terminal path's single frame entry point; pre-roll is not
     /// part of it (see [`finalize`](Self::finalize)).
     ///
@@ -137,11 +144,15 @@ impl ProgressRenderer {
         self.gate.suppress();
 
         // Step 2: Recompute layout (styles buffered).
-        self.recompute_layout();
+        let mut pushed = self.recompute_layout();
 
         // Step 3: Resize handling.
         let resized = self.maybe_adjust_for_resize();
         if resized {
+            // A resize re-syncs every slot through paths that report their
+            // own pushes to no one, so count the resize itself: those pushes
+            // owe a draw whether or not their dedup comparisons fired.
+            pushed = true;
             for slot in &self.slots {
                 if let Some(ref source) = *slot.source.borrow() {
                     source.dirty.store(true, Ordering::Release);
@@ -171,7 +182,7 @@ impl ProgressRenderer {
                     slot_timing.prev_instant = update.instant;
                 }
 
-                self.sync_snapshot_to_bar(
+                pushed |= self.sync_snapshot_to_bar(
                     i,
                     &snap,
                     timing.rate_str.as_deref(),
@@ -180,9 +191,9 @@ impl ProgressRenderer {
                 if snap.status == TrackStatus::Active {
                     // bar.tick() called in the spinner loop below.
                 } else if source.is_cleared() {
-                    self.blank_bar(i);
+                    pushed |= self.blank_bar(i);
                 } else {
-                    self.finish_slot(i, snap.status);
+                    pushed |= self.finish_slot(i, snap.status);
                 }
             }
         }
@@ -198,11 +209,28 @@ impl ProgressRenderer {
         // Step 6: Advance spinners and draw once.
         // Open the gate — indicatif draws on the next bar operation.
         let _guard = self.gate.open();
+        let mut ticked = false;
         for slot in &self.slots {
             if let Some(ref source) = *slot.source.borrow()
                 && !source.is_finished()
             {
                 slot.bar.tick();
+                ticked = true;
+            }
+        }
+        // A frame whose bars are all finished has no tick of its own, but it
+        // can still owe the block a draw: a row that finished between frames
+        // had its final state pushed while the window was shut, and nothing
+        // else will flush that line before [`finalize`](Self::finalize). One
+        // bar's draw repaints every dirty line of the block, and re-pushing
+        // the first bound slot's prefix is a transmit that force-draws a
+        // finished bar without advancing its tick counter (an idle screen
+        // must not animate). Ungated configurations have no owed draws —
+        // every push already reached the term.
+        if !ticked && pushed && !self.gate.is_noop() {
+            if let Some(slot) = self.slots.iter().find(|s| s.source.borrow().is_some()) {
+                let prefix = slot.cache.prefix.borrow().clone();
+                slot.bar.set_prefix(prefix);
             }
         }
         // _guard drops → gate re-suppressed.
@@ -217,7 +245,11 @@ impl ProgressRenderer {
     ///
     /// `pub(super)` because the parent's slot bookkeeping calls it when a
     /// bound track reaches a terminal state.
-    pub(super) fn finish_slot(&self, i: usize, status: TrackStatus) {
+    ///
+    /// Returns `true` unconditionally: the final `tick` is a real push that
+    /// the frame's open window has to draw, so the caller's owed-draw
+    /// bookkeeping must count the slot even when every string dedup landed.
+    pub(super) fn finish_slot(&self, i: usize, status: TrackStatus) -> bool {
         let slot = &self.slots[i];
         let prefix_w = self.prefix_w.get();
         let suffix_w = self.suffix_w.get();
@@ -234,5 +266,6 @@ impl ProgressRenderer {
             _ => slot.bar.finish(),
         }
         slot.bar.tick();
+        true
     }
 }

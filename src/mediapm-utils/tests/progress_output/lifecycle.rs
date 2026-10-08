@@ -783,16 +783,18 @@ fn overall_handle_progress_reaches_the_renderer() {
 /// the gate, so what the frame's survival rests on is decided there — see the
 /// harness module docs for what the gate changes.
 ///
-/// This is a **gated-only discriminator** at its assertion point, not merely
-/// coverage of the production configuration. Running the identical sequence on
-/// the ungated harness ([`mk_with_capacity`]) and asserting the grid below
-/// fails: the two diverge after the second `tick`, where the ungated path lets
-/// `finish_success`'s done-style draw reach the terminal (`⠏     beta
-/// █████████████████████  0/1 0s`) while the gate discards it and the frame
-/// keeps its active style (`⠹     beta ░░░░░░░░░░░░░░  0/1 0s 0/d`). What the
-/// geometry fixes — two screens at capacity 2, so both rows stay inside
-/// `InMemoryTerm`'s visible grid — is the exact rows asserted, not the
-/// discrimination.
+/// This used to claim **gated-only discriminator** status at its assertion point, and the
+/// discrimination it described is gone by design: the gated path once kept the
+/// active style (`⠹     beta ░░░░░░░░░░░░░░  0/1 0s 0/d`) because `attach`
+/// opened a write window that eagerly drew the bar and the frame's own tick
+/// drew nothing once every bar was finished. With `attach` buffering its
+/// draws and the frame flushing every line the shut window owes (see the
+/// flush at the end of `run_frame`), the gated path draws the same done-style
+/// grid the ungated path does at this point — the discard is now transient,
+/// not final. What the test still pins is the part that matters on the
+/// production path: the committed frame stays above the next screen's band
+/// after the commit advance. It remains the suite's only exact-grid assertion
+/// that runs on the write-gated configuration production draws through.
 ///
 /// An earlier revision of this doc claimed the ungated path captured the same
 /// grid here and called the test non-discriminating. That erratum is corrected
@@ -816,7 +818,7 @@ fn gated_two_screens_keep_the_committed_frame() {
         concat!(
             "⠏     alpha ████████████████████  0/1 0s\n",
             "\n",
-            "⠹     beta ░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "⠏     beta █████████████████████  0/1 0s",
         ),
         "gated_two_screens_keep_the_committed_frame"
     );

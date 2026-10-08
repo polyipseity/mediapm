@@ -345,7 +345,10 @@ impl ProgressRenderer {
     /// against them, and strips the timing through the same [`without_timing`]
     /// the measurement below uses, so the budget and the message cannot answer
     /// differently about the same row.
-    pub(crate) fn recompute_layout(&self) {
+    ///
+    /// Returns whether the re-sync at the end pushed anything, which the
+    /// frame uses to know whether the window still owes the block a draw.
+    pub(crate) fn recompute_layout(&self) -> bool {
         let (_, cols) = self.dim_source.dimensions();
         let prefix_ceiling = max_prefix_width(cols);
         let suffix_ceiling = max_suffix_width(cols);
@@ -469,11 +472,13 @@ impl ProgressRenderer {
         self.prefix_w.set(prefix_w);
         self.suffix_w.set(suffix_w);
         self.draw_fill.set(draw_fill);
+        let mut pushed = false;
         for (i, slot) in self.slots.iter().enumerate() {
             if slot.source.borrow().is_some() {
-                self.sync_slot(i);
+                pushed |= self.sync_slot(i);
             }
         }
+        pushed
     }
 
     /// Apply a snapshot's position/length/suffix/prefix to the indicatif bar
@@ -487,6 +492,13 @@ impl ProgressRenderer {
     /// independently via [`finish_slot`](Self::finish_slot) or explicit
     /// `set_style` calls during attach/resize.
     ///
+    /// Returns whether anything was actually pushed (any dedup comparison
+    /// that fired). A frame uses that to know the open window still owes the
+    /// block a draw: every push here happens while the gate is shut, and a
+    /// frame whose bars are all finished has no tick of its own to flush the
+    /// dirty lines with — see the flush at the end of
+    /// [`run_frame`](super::frame::ProgressRenderer::run_frame).
+    ///
     /// `pub(super)` because the parent's [`recompute_layout`](Self::recompute_layout) and
     /// [`finish_slot`](Self::finish_slot) both push
     /// through it.
@@ -496,7 +508,7 @@ impl ProgressRenderer {
         snap: &TrackSnapshot,
         rate_str: Option<&str>,
         eta_str: Option<&str>,
-    ) {
+    ) -> bool {
         let slot = &self.slots[i];
         let is_overall = self.has_overall && i == self.slots.len() - 1;
         // Style-specific div-by-zero guard: a `WorkerSpinner` slot whose
@@ -554,9 +566,11 @@ impl ProgressRenderer {
         } else {
             timingless_suffix
         };
+        let mut pushed = false;
         if new_prefix != *slot.cache.prefix.borrow() {
             slot.bar.set_prefix(new_prefix.clone());
             *slot.cache.prefix.borrow_mut() = new_prefix;
+            pushed = true;
         }
         // Build display suffix: client truncation when installed, else
         // truncate the fresh component set then render.
@@ -565,15 +579,19 @@ impl ProgressRenderer {
         if display_suffix != *slot.cache.suffix.borrow() {
             slot.bar.set_message(display_suffix.clone());
             *slot.cache.suffix.borrow_mut() = display_suffix;
+            pushed = true;
         }
         if render_total != slot.cache.total.get() {
             slot.bar.set_length(render_total);
             slot.cache.total.set(render_total);
+            pushed = true;
         }
         if render_pos != slot.cache.position.get() {
             slot.bar.set_position(render_pos);
             slot.cache.position.set(render_pos);
+            pushed = true;
         }
+        pushed
     }
 }
 

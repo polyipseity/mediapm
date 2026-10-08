@@ -423,8 +423,9 @@ fn gated_second_screen_does_not_unwind_the_discarded_screens_rows() {
     terminal.tick();
 
     let ops = term.moves_since_last_check();
-    // A draw is one op block ending at its `Flush`; the first one belongs to the
-    // window `add_bar` opens, which is the earliest release after the commit.
+    // A draw is one op block ending at its `Flush`; the first one after the
+    // commit is the second screen's first frame (`attach` buffers its draws,
+    // so the frame that ticks the new bar is the earliest release).
     let first_draw = ops.split("Flush").next().unwrap_or_default();
     assert!(
         !first_draw.contains("Up("),
@@ -433,6 +434,47 @@ fn gated_second_screen_does_not_unwind_the_discarded_screens_rows() {
     assert!(
         !first_draw.contains("Clear"),
         "the first released draw cleared rows it never drew: {ops}"
+    );
+}
+
+/// A frame is one template pair across every row, and `attach` draws no frame of its own.
+///
+/// A `MultiProgress` draw repaints the whole block from each bar's CURRENT state, so a
+/// write window open while `attach` shifts the band and re-measures the layout releases
+/// the shift-phase syncs before `recompute_layout` has walked its slot-order loop to the
+/// last row — and the block the user sees mixes rows drawn at the previous
+/// `(prefix_w, suffix_w)` with rows drawn at the new ones. That is the per-row geometry
+/// divergence the live demo capture caught (`.superpowers/sdd/progress-labels-alignment/`
+/// `task-1-report.md`, Verdict 2: one frame whose rows ended their bars at column 51
+/// beside rows that ended at 62).
+///
+/// The invariant has two halves, both pinned here: `attach` releases no ops at all
+/// (suppressed pushes fail with retry and stay dirty), and the next frame's single
+/// release draws the whole block at one template pair — asserted as the exact grid,
+/// whose column alignment is itself the proof that no two rows disagree.
+#[test]
+fn gated_attach_releases_no_draw_outside_a_frame() {
+    let term = InMemoryTerm::new(ROWS, COLS);
+    let terminal = terminal_with_gate(&term, ROWS as usize);
+    let screen = terminal.screen().build();
+    let _first = screen.add_bar(10, "first");
+    terminal.tick();
+    let _ = term.moves_since_last_check();
+
+    // The second attach shifts the active band and re-measures the layout; the
+    // labels differ so the shifted row's re-sync is a real push, not a dedup.
+    let _second = screen.add_bar(10, "second");
+    let ops = term.moves_since_last_check();
+    assert!(ops.is_empty(), "attach released draws outside a frame: {ops}");
+
+    terminal.tick();
+    assert_eq!(
+        term.contents(),
+        concat!(
+            "\n\n\n\n\n\n\n\n",
+            "⠹      first ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s\n",
+            "⠼     second ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s"
+        )
     );
 }
 
@@ -490,8 +532,9 @@ fn gated_commit_is_one_write_and_the_next_draw_erases_nothing() {
     terminal.tick();
 
     let ops = term.moves_since_last_check();
-    // A draw is one op block ending at its `Flush`; the first one belongs to the
-    // window `add_bar` opens, which is the earliest release after the commit.
+    // A draw is one op block ending at its `Flush`; the first one after the
+    // commit is the second screen's first frame (`attach` buffers its draws,
+    // so the frame that ticks the new bar is the earliest release).
     let first_draw = ops.split("Flush").next().unwrap_or_default();
     assert!(
         first_draw.contains("Str("),

@@ -362,7 +362,10 @@ impl ProgressRenderer {
 
     /// Re-configure the bar at slot index `i` to reflect its current
     /// tracked source (or blank state if unbound).
-    pub(crate) fn sync_slot(&self, i: usize) {
+    ///
+    /// Returns whether anything was pushed — the [`sync_snapshot_to_bar`](Self::sync_snapshot_to_bar)
+    /// report, or `true` when a blank transition actually re-blanked the bar.
+    pub(crate) fn sync_slot(&self, i: usize) -> bool {
         let slot = &self.slots[i];
         if let Some(ref source) = *slot.source.borrow() {
             let snap = source.snapshot();
@@ -413,25 +416,30 @@ impl ProgressRenderer {
                 &snap,
                 timing.rate_str.as_deref(),
                 timing.eta_str.as_deref(),
-            );
+            )
         } else {
-            self.blank_bar(i);
+            self.blank_bar(i)
         }
     }
 
     /// Return slot `i` to a blank row and record that it is blank.
+    ///
+    /// Returns whether the bar was actually re-blanked: a slot already blank
+    /// pushes nothing, and the caller's frame-owed-draw bookkeeping must not
+    /// count it.
     ///
     /// All three pushes are real `update_estimate_and_draw` calls, so blanking
     /// a slot that is already blank spends three draws to change nothing. The
     /// skip is what makes this safe to call from the paths that walk every slot
     /// on a height change, and it holds because a rebind clears the marker: see
     /// [`SlotCache::is_blanked`].
-    fn blank_bar(&self, i: usize) {
+    fn blank_bar(&self, i: usize) -> bool {
         let slot = &self.slots[i];
         if slot.cache.is_blanked() {
-            return;
+            return false;
         }
         blank_new_bar(&slot.bar, &slot.cache);
+        true
     }
 
     /// Attach a tracked state to the next available render slot.
@@ -456,9 +464,22 @@ impl ProgressRenderer {
     /// made every added bar cost a second `set_position` on the slot it
     /// landed in.
     pub(crate) fn attach(&mut self, state: &Arc<SharedState>) {
-        // Buffer all draws during attach — slot shifts + sync_slot + recompute_layout
-        // produce many intermediate state changes that should appear atomically.
-        let _attach_guard = self.gate.open();
+        // Buffer all draws during attach — slot shifts + sync_slot + recompute_layout.
+        //
+        // Every push here goes through `sync_slot`, and a `MultiProgress` draw
+        // repaints the whole block from each bar's CURRENT state. A write
+        // window open across this body would release the shift-phase syncs and
+        // the first part of `recompute_layout`'s slot-order loop before it has
+        // reached the last row, so the block a user sees would mix rows drawn
+        // at the previous template widths with rows drawn at the new ones —
+        // the per-row geometry divergence the live demo capture caught
+        // (`.superpowers/sdd/progress-labels-alignment/task-1-report.md`,
+        // Verdict 2). Suppressed pushes fail with retry, so every line stays
+        // dirty and the next frame's open window draws the whole block at the
+        // one `(prefix_w, suffix_w)` pair that frame settled: the daemon
+        // ticker is the sole draw authority, and attach costs at most one
+        // tick (≤50 ms on an active screen, ≤1 s on an idle one) of latency.
+        self.gate.suppress();
         let child_cap = self.slots.len() - usize::from(self.has_overall);
         let bottom = child_cap.saturating_sub(1);
 
