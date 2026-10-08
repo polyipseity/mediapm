@@ -5,8 +5,8 @@
 ⠏       [idle]
 ⠏       [idle]
 ⠏          [W]
-⠇      default
-⠧      default
-⠦      default
-⠦      default
-⠏      default 7/26
+⠇      ault s8
+⠧      ault s9
+⠦          s10
+⠦          s11
+⠏      ault s8 7/26

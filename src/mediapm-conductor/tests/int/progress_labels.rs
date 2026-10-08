@@ -1,11 +1,15 @@
 //! Client-defined bar-label truncation contract tests.
 //!
 //! Validates that the conductor-owned label structs implement
-//! [`BarLabelTruncation`] with the correct field order: a worker bar never
-//! carries a `completed`/`total` progress tally, while a step bar carries that
-//! tally in the suffix only, so the prefix holds names and the suffix holds
-//! counts. Both labels lead with the status marker and are walked from the
-//! tail, so the least important field is what width pressure reaches first.
+//! [`BarLabelTruncation`] with the allocation policy: a worker bar never
+//! carries a `completed`/`total` progress tally, while a step bar carries
+//! that tally in the suffix only, so the prefix holds names and the suffix
+//! holds counts. The status marker is reserved first and always drawn whole;
+//! the tool is sized next; workflow and step split what remains evenly; and
+//! the worker's activity tag is drawn only from columns left after those,
+//! so it yields first. The inline `allocation_policy` module in
+//! `progress_labels.rs` pins the split mechanics; the tests here pin the
+//! field-order contracts and the widths at which each field changes shape.
 
 use mediapm_conductor::orchestration::progress_labels::{StepBarLabel, WorkerBarLabel};
 use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents};
@@ -40,7 +44,7 @@ fn worker_label_ignores_a_populated_tally_in_the_suffix() {
 }
 
 #[test]
-fn worker_label_tight_prefix_keeps_the_activity_marker() {
+fn worker_label_tight_prefix_keeps_the_names_and_sheds_the_tag() {
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: "wf".into(),
@@ -48,12 +52,13 @@ fn worker_label_tight_prefix_keeps_the_activity_marker() {
         tool: "mediapm-conductor-builtin-archive".into(),
         activity: "active".into(),
     };
-    // Narrow enough that the tool name has to go. Its tail holds no boundary
-    // this narrow, so `fit_segments` drops it whole rather than rendering a
-    // fragment, and what is left is the identifiers and the marker.
+    // Narrow enough that the names need the room: each is held at its
+    // 4-column floor and the tool — which outranks both — gives columns
+    // back, clipping from the front and dropping its brackets with the
+    // clip. The activity tag yields first, so at this width it is gone.
     let tight = label.truncate_prefix(14);
-    assert!(tight.contains("[active]"), "activity lost under pressure: {tight:?}");
-    assert!(!tight.contains("archive"), "tool should be shed at width 14: {tight:?}");
+    assert_eq!(tight, "wf s1 -archive");
+    assert!(!tight.contains("[active]"), "activity yields before the names: {tight:?}");
 }
 
 #[test]
@@ -121,13 +126,22 @@ fn step_label_brackets_the_version_inside_the_tool_name_pair() {
     assert_eq!(wide.matches('(').count(), 1, "the group needs one opening bracket: {wide:?}");
     assert_eq!(wide.matches(')').count(), 1, "the group needs one closing bracket: {wide:?}");
 
-    // Narrow enough to shorten the version, the pair goes with it. Half a
-    // group reads as a bracket nothing opened or nothing closed, which is the
-    // fault the fitter-level sweep in `mediapm-utils` watches at every width.
+    // At 22 the names split the remainder and the tool+version pair comes
+    // through whole: the workflow is cut from the front (its tail survives)
+    // and the bracketed pair needs no columns given back.
     let narrow = label.truncate_prefix(22);
-    assert_eq!(narrow, "default s3 ffmpeg v7.");
-    assert!(!narrow.contains('('), "opening bracket outlived the version: {narrow:?}");
-    assert!(!narrow.contains(')'), "closing bracket outlived the version: {narrow:?}");
+    assert_eq!(narrow, "fault s3 (ffmpeg v7.1)");
+
+    // Tighter still, the workflow is held at its 4-column floor: the tool
+    // group gives columns back, the version shortens from its head, and the
+    // shortened version takes the pair's brackets down with it — half a
+    // group reads as a bracket nothing opened or nothing closed, which is
+    // the fault the fitter-level sweep in `mediapm-utils` watches at every
+    // width.
+    let tighter = label.truncate_prefix(18);
+    assert_eq!(tighter, "ault s3 ffmpeg v7");
+    assert!(!tighter.contains('('), "opening bracket outlived the version: {tighter:?}");
+    assert!(!tighter.contains(')'), "closing bracket outlived the version: {tighter:?}");
 }
 
 #[test]
@@ -147,10 +161,14 @@ fn step_label_brackets_a_tool_name_that_has_no_version() {
 }
 
 /// Visible width of the leading `[F] wf s1` head a step bar shares with a
-/// worker bar.
-const STEP_HEAD_WIDTH: usize = 9;
-/// Visible width of the leading `[F] wf s1` head on a worker bar.
-const WORKER_HEAD_WIDTH: usize = 9;
+/// worker bar: the narrowest width at which both names survive whole under
+/// the even split (one column wider than the tail-drop ladder needed,
+/// because the names now share width with the tool instead of holding their
+/// columns ahead of it).
+const STEP_HEAD_WIDTH: usize = 10;
+/// Visible width of the leading `[F] wf s1` head on a worker bar. See
+/// [`STEP_HEAD_WIDTH`]; the two labels share the allocation.
+const WORKER_HEAD_WIDTH: usize = 10;
 
 #[test]
 fn step_label_head_survives_across_narrow_widths() {
@@ -214,9 +232,10 @@ fn worker_label_head_survives_across_narrow_widths() {
 }
 
 #[test]
-fn worker_label_sheds_the_activity_marker_before_the_identifiers() {
-    // The activity marker trails the identifiers, so it is the first segment
-    // to go once the row narrows past the head.
+fn worker_label_sheds_the_activity_tag_after_the_names_and_tool() {
+    // The activity tag is drawn only from columns left after the marker,
+    // tool and names, so at the widths where identifiers and tool fill the
+    // row the tag is gone; it returns as soon as one column more frees up.
     let label = WorkerBarLabel {
         status_marker: "F".into(),
         workflow_id: "wf".into(),
@@ -224,8 +243,13 @@ fn worker_label_sheds_the_activity_marker_before_the_identifiers() {
         tool: "echo@v1".into(),
         activity: "active".into(),
     };
-    assert_eq!(label.truncate_prefix(18), "[F] wf s1 [active]");
-    assert_eq!(label.truncate_prefix(17), "[F] wf s1");
+    // 18: names at floor, tool clipped bare to what the floor left, no
+    // room for the 8-column tag.
+    assert_eq!(label.truncate_prefix(18), "[F] wf s1 echo@v1");
+    // 27: tool back in brackets, still no room for the tag.
+    assert_eq!(label.truncate_prefix(27), "[F] wf s1 (echo@v1)");
+    // 28: exactly enough left after the row for the tag.
+    assert_eq!(label.truncate_prefix(28), "[F] wf s1 (echo@v1) [active]");
 }
 
 #[test]
@@ -290,8 +314,9 @@ fn step_label_clips_a_long_tool_name_after_the_version_is_gone() {
 #[test]
 fn worker_label_clips_a_very_long_tool_name_from_the_front() {
     // A tool name longer than the budget is clipped to its tail, so the row
-    // keeps the informative end of the name and still closes with the activity
-    // marker rather than dropping it.
+    // keeps the informative end of the name. The tool fills the whole row at
+    // its clip, so the activity tag — drawn only from columns left after the
+    // tool — yields before the name loses a column.
     let label = WorkerBarLabel {
         status_marker: String::new(),
         workflow_id: String::new(),
@@ -300,7 +325,9 @@ fn worker_label_clips_a_very_long_tool_name_from_the_front() {
         activity: "active".into(),
     };
     let tight = label.truncate_prefix(20);
-    assert_eq!(tight, "width-limit [active]");
+    assert_eq!(tight, "-maximum-width-limit");
+    assert_eq!(tight.chars().count(), 20, "the clip must fill the budget: {tight:?}");
+    assert!(!tight.contains("[active]"), "the tag yields before the name: {tight:?}");
 }
 
 #[test]
@@ -387,17 +414,18 @@ fn step_suffix_keeps_the_leading_tally_and_timing_fields() {
     assert_eq!(tight, "3/10", "tight case must keep the leading tally whole: {tight:?}");
 }
 
-/// The step row's three identifying fields give up width in the order they are
-/// declared in: the workflow before the step, and the status marker last.
+/// The step row's identifying fields under the allocation policy: the
+/// workflow and step split width evenly, and the status marker is reserved
+/// so it stands even when both names are gone.
 ///
-/// The widths below each straddle one of those boundaries, so a list that put
-/// the step ahead of the workflow would render `s1` where this renders `wf`, and
-/// a list that let the marker yield would lose the `[F]` that keeps a failed row
-/// from reading as a succeeded one. Every field here is short enough that none of
-/// them can be shortened, so the only thing the width can change is which of
-/// them survive.
+/// The widths below each straddle one of those boundaries. At 16 everything
+/// fits; below it the names share what the tool leaves and each is cut from
+/// the front, so both survive as tails before either disappears; and once
+/// the names are gone the marker still draws — a `[F]` a row could not
+/// carry would read as a succeeded one, which is the one thing a row must
+/// not do.
 #[test]
-fn step_label_yields_the_step_before_the_workflow_and_the_marker_last() {
+fn step_label_splits_the_names_evenly_and_keeps_the_marker() {
     let label = StepBarLabel {
         status_marker: "F".into(),
         workflow_id: "wf".into(),
@@ -407,16 +435,23 @@ fn step_label_yields_the_step_before_the_workflow_and_the_marker_last() {
         completed: String::new(),
         total: String::new(),
     };
-    // The tool name is the one elastic field, so it is clipped rather than
-    // dropped at the widths between the head boundaries, and it takes its
-    // parentheses with it. The head boundaries are the widths at which only the
-    // head survives, one field fewer each time.
+    // At 16 the whole row fits, brackets included.
     assert_eq!(label.truncate_prefix(16), "[F] wf s1 (echo)");
+    // One or two narrower the tool drops its brackets, then clips, while
+    // both names stay whole at their floor.
+    assert_eq!(label.truncate_prefix(15), "[F] wf s1 echo");
     assert_eq!(label.truncate_prefix(14), "[F] wf s1 echo");
+    // Ten is the narrowest width at which both names survive whole.
     assert_eq!(label.truncate_prefix(10), "[F] wf s1");
-    assert_eq!(label.truncate_prefix(9), "[F] wf s1");
-    assert_eq!(label.truncate_prefix(8), "[F] wf");
-    assert_eq!(label.truncate_prefix(6), "[F] wf");
+    // Below that each name shrinks toward its natural width; a name the
+    // tool could not lift to its floor is dropped rather than drawn as a
+    // one-column fragment that says nothing.
+    assert_eq!(label.truncate_prefix(9), "[F] wf");
+    // At 8 neither name can reach even its own natural floor: both drop
+    // and the marker carries the row.
+    assert_eq!(label.truncate_prefix(8), "[F]");
+    // The names gone, the marker stands alone until it cannot fit at all.
+    assert_eq!(label.truncate_prefix(6), "[F]");
     assert_eq!(label.truncate_prefix(5), "[F]");
     assert_eq!(label.truncate_prefix(3), "[F]");
     assert_eq!(label.truncate_prefix(2), "");

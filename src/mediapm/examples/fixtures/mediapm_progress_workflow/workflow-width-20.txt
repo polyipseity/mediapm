@@ -1,7 +1,7 @@
-⠙      default
-⠹      default
+⠙      ault s3
+⠹      ault s4
 ⠏          [W]
 ⠏          [F]
 ⠏       [idle]
-⠼      default 1/3
+⠼      ault s3 1/3
 ⠏      default 4/12

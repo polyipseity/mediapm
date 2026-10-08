@@ -2,64 +2,89 @@
 //!
 //! mediapm-utils owns the render push point but not the field layout. The
 //! two structs here carry conductor's own semantically-named fields and
-//! implement [`BarLabelTruncation`] with their own order. [`StepBarLabel`]
-//! labels the pinned overall workflow bar, so it names the workflow and the
-//! step running on it, and its tally is filled only by a bar that tracks
-//! outputs rather than by the coordinator; [`WorkerBarLabel`] labels one pool
-//! slot, carrying an `activity` marker (`active`/`idle`) alongside its
-//! identifiers and tool name, and never a tally.
+//! implement [`BarLabelTruncation`] with their own allocation policy.
+//! [`StepBarLabel`] labels the pinned overall workflow bar, so it names the
+//! workflow and the step running on it, and its tally is filled only by a
+//! bar that tracks outputs rather than by the coordinator;
+//! [`WorkerBarLabel`] labels one pool slot, carrying an `activity` marker
+//! (`active`/`idle`) alongside its identifiers and tool name, and never a
+//! tally.
 //!
-//! Both labels put the status marker first and are walked from the tail, so the
-//! last field is the first to go. A worker bar ends on its activity marker and
-//! yields that tag before it shortens a tool name, which is the order
-//! tool-sync already renders: `ffmpeg v7.1 [res]` names the thing before it
-//! says what state the thing is in.
+//! The prefix allocation decouples survival rank from display order. The
+//! status marker is reserved first and always drawn whole; the tool is sized
+//! next at its natural rendered width because it outranks both names;
+//! workflow and step split what remains down the middle (each cut from the
+//! front so its tail survives, a name needing less than its half handing the
+//! unused columns to the other); and the activity tag is drawn only from
+//! columns left after those three, so it yields first. The tool gives
+//! columns back only when a name would otherwise fall below [`NAME_FLOOR`].
+//! Display order is unchanged: `marker workflow step (tool) activity`.
 //!
 //! A client label also replaces the built-in prefix components outright, so a
 //! label that wants a status marker has to carry one.
 
 use mediapm_utils::progress::{
-    BarLabelTruncation, Brackets, Segment, SuffixComponents, fit_segments,
+    BarLabelTruncation, Brackets, Segment, SuffixComponents, fit_segments, front_tail,
 };
 
-/// Truncation order for the overall workflow bar's label, and for a bar that
-/// tracks a step's outputs.
+/// Columns a name is held at before the tool gives any of its own back.
 ///
-/// Segments are ordered most important first and yield from the tail. The
-/// prefix ends with the version, so the version is what width pressure reaches
-/// for first: it gives columns back from its end, and it drops whole before
-/// the `tool` name ahead of it is shortened at all. The `tool` name's
-/// parentheses wrap the version too when there is one, so the pair draws only
-/// once both fields are whole. Once neither can shrink further the identifiers
-/// drop, and the status marker with them. The suffix leads with the tally,
-/// then `elapsed`, `rate`, `eta`, and an elastic `custom`.
+/// A name shorter than this says nothing about which workflow or step the
+/// row names, and the tool — which outranks both names — donates columns
+/// until each present name reaches the floor or the tool has nothing left.
+/// A name whose own natural width is below the floor is floored at that
+/// natural width: there is nothing more of the name to hold.
+#[cfg(feature = "progress")]
+const NAME_FLOOR: usize = 4;
+
+/// Allocation policy for the overall workflow bar's label, and for a bar
+/// that tracks a step's outputs.
 ///
-/// The order is the whole mechanism. `fit_segments` drops from the tail
-/// unconditionally, so a field survives by its position in the list.
+/// Fields are displayed `marker workflow step (tool) version`, but survival
+/// rank is decoupled from that order: the status marker is reserved first
+/// and always drawn whole; the tool, with the version inside its bracket
+/// group, is sized next at its natural rendered width; workflow and step
+/// split what remains down the middle (front-cut, keep tail, with a name
+/// needing less than its half handing the unused columns to the other), and
+/// the tool gives columns back only when a name would otherwise fall below
+/// [`NAME_FLOOR`]. The version yields head-columns first inside the group,
+/// and a shortened version takes the pair's brackets down with it. The
+/// suffix leads with the tally, then `elapsed`, `rate`, `eta`, and an
+/// elastic `custom`.
+///
+/// The allocation lives in [`allocate_prefix`], shared with
+/// [`WorkerBarLabel`].
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 pub struct StepBarLabel {
     /// Terminal-state marker, rendered bracketed as `[F]` or `[W]`. Empty
     /// when the step has no status, in which case the segment is omitted.
+    /// Reserved first: a row too narrow to carry it carries nothing.
     pub status_marker: String,
     /// Name of the workflow the step belongs to, e.g. `"default"`.
+    /// Displayed ahead of the step, but the two split width evenly rather
+    /// than by display order, so a long workflow id can no longer evict the
+    /// step: under pressure the name is cut from the front and its tail
+    /// survives.
     pub workflow_id: String,
-    /// Step identifier within the workflow, e.g. `"s3"`.
+    /// Step identifier within the workflow, e.g. `"s3"`. Splits width
+    /// evenly with the workflow name, cut from the front like it.
     pub step_id: String,
     /// Conductor tool name, rendered parenthesized beside the version as
     /// `(ffmpeg v7.1)`, or on its own as `(ffmpeg)` when there is no version.
-    /// Elastic, so a narrow row shortens the name from its front before
-    /// dropping it. The parentheses are the group's decoration rather than
-    /// part of any text, so a row that could not fit them renders the bare
-    /// name and never a closing parenthesis whose opening half was cut away.
+    /// Sized at its natural rendered width before the names are split,
+    /// because the tool outranks both; it shrinks from the front — giving
+    /// columns to the names — only when a name would otherwise fall below
+    /// [`NAME_FLOOR`], and its parentheses are the group's decoration rather
+    /// than part of the text, so a shortened name renders bare.
     pub tool: String,
     /// Tool version, rendered verbatim as `v7.1`, with no brackets of its
     /// own: it is the second member of the tool name's bracket group, so the
     /// parentheses around the two come from the name and not from here. The
-    /// only head-keeping prefix segment: the columns it gives back come off
-    /// the end, so a narrowed row reads `v7.` instead of a tail that names
-    /// nothing. It trails the tool name, so it yields before the name is
-    /// touched, and a version that had to shorten takes the pair down with it.
+    /// only head-keeping field: the columns it gives back come off the end,
+    /// so a narrowed row reads `v7.` instead of a tail that names nothing.
+    /// It trails the tool name, so it yields before the name is touched,
+    /// and a version that had to shorten takes the pair down with it.
     ///
     /// Reachable from production and empty there. The coordinator builds this
     /// label for the overall workflow bar and has no versioned tool field to
@@ -81,43 +106,37 @@ pub struct StepBarLabel {
 
 #[cfg(feature = "progress")]
 impl StepBarLabel {
-    /// Build the prefix segments, most important first.
+    /// Build the tool bracket group: the tool name alone when there is no
+    /// version, the name and the version as one two-member group when there
+    /// is, so [`fit_segments`] keeps the parentheses whole-or-not around
+    /// whichever members survive.
     ///
-    /// The status marker leads, so it is the last segment to go. A `[F]` that
-    /// got clipped away would leave a failed row reading as a succeeded one,
-    /// which is the one thing a row must not do.
+    /// The name is [`Shrink::Front`](mediapm_utils::progress::Shrink::Front)
+    /// (its tail is the informative end) and the version is head-keeping,
+    /// because a version numbers itself from the left: `v7.1` at two columns
+    /// reads `v7`, where a clip that kept the tail could yield nothing at
+    /// all, since the value holds no boundary to cut after.
+    fn tool_segments(&self) -> Vec<Segment> {
+        if self.tool.is_empty() {
+            return Vec::new();
+        }
+        if self.version.is_empty() {
+            vec![Segment::elastic(self.tool.clone()).brackets(Brackets::Round)]
+        } else {
+            vec![
+                Segment::elastic(self.tool.clone()).spanning_brackets(Brackets::Round, 2),
+                Segment::elastic_head(self.version.clone()),
+            ]
+        }
+    }
+
+    /// Rendered width of [`Self::tool_segments`] when nothing has been cut.
     ///
-    /// The identifiers are `Keep` rather than `Elastic` because clipping them
-    /// destroys what identifies them: `default` clipped to `ult` names no
-    /// workflow. The version is the exception, and it is the one head-keeping
-    /// segment, because a version numbers itself from the left: `v7.1` at two
-    /// columns reads `v7`, where a clip that kept the tail could yield nothing
-    /// at all, since the value holds no boundary to cut after.
-    ///
-    /// The tool name's parentheses wrap the name and the version together when
-    /// there is a version to wrap, and the name alone when there is not, so
-    /// the group is the one-member case the rest of the tree already draws.
-    fn prefix_segments(&self) -> Vec<Segment> {
-        let mut segs = Vec::new();
-        if !self.status_marker.is_empty() {
-            segs.push(Segment::keep(self.status_marker.clone()).brackets(Brackets::Square));
-        }
-        if !self.workflow_id.is_empty() {
-            segs.push(Segment::keep(self.workflow_id.clone()));
-        }
-        if !self.step_id.is_empty() {
-            segs.push(Segment::keep(self.step_id.clone()));
-        }
-        if !self.tool.is_empty() {
-            let group = if self.version.is_empty() { 1 } else { 2 };
-            segs.push(
-                Segment::elastic(self.tool.clone()).spanning_brackets(Brackets::Round, group),
-            );
-        }
-        if !self.version.is_empty() {
-            segs.push(Segment::elastic_head(self.version.clone()));
-        }
-        segs
+    /// Measured by fitting the group at an unbounded width rather than by
+    /// re-deriving the bracket and separator arithmetic, so the number the
+    /// allocation budgets with is the number the fitter will draw.
+    fn tool_natural_width(&self) -> usize {
+        fit_segments(&self.tool_segments(), usize::MAX).chars().count()
     }
 
     /// Build the suffix segments, most important first.
@@ -165,7 +184,15 @@ impl StepBarLabel {
 #[cfg(feature = "progress")]
 impl BarLabelTruncation for StepBarLabel {
     fn truncate_prefix(&self, max_width: usize) -> String {
-        fit_segments(&self.prefix_segments(), max_width)
+        allocate_prefix(
+            &self.status_marker,
+            &self.workflow_id,
+            &self.step_id,
+            &self.tool_segments(),
+            self.tool_natural_width(),
+            "",
+            max_width,
+        )
     }
 
     fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
@@ -173,71 +200,65 @@ impl BarLabelTruncation for StepBarLabel {
     }
 }
 
-/// Truncation order for a worker-slot (activity) bar.
+/// Allocation policy for a worker-slot (activity) bar.
 ///
-/// Segments are ordered most important first and yield from the tail. The
-/// prefix ends with the `tool` name and the `activity` marker. Under width
-/// pressure the `tool` name shortens from the front first, and once it cannot
-/// shrink further the trailing marker is dropped, then the identifiers, and
-/// only then the status marker.
-/// A worker carries no workflow phase and no progress tally, so the suffix
-/// has no tally segment; the auto-derived `elapsed`, `rate`, and `eta` still
-/// render, ahead of an elastic `custom`.
+/// Same allocation as [`StepBarLabel`] (see [`allocate_prefix`]): marker
+/// reserved, tool sized, names split evenly, and the `activity` tag drawn
+/// only from columns left after those three, so it yields first — matching
+/// the tail-drop behavior it replaces, where the tag was the last segment
+/// and the first to go. A worker carries no workflow phase and no progress
+/// tally, so the suffix has no tally segment; the auto-derived `elapsed`,
+/// `rate`, and `eta` still render, ahead of an elastic `custom`.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 pub struct WorkerBarLabel {
     /// Terminal-state marker, rendered bracketed as `[F]` or `[W]`. Empty
     /// when the slot has no status, in which case the segment is omitted.
+    /// Reserved first: a row too narrow to carry it carries nothing.
     pub status_marker: String,
     /// Workflow the slot is executing, e.g. `"default"`. Empty unless the
-    /// slot is running a step.
+    /// slot is running a step. Splits width evenly with [`Self::step_id`],
+    /// cut from the front so its tail survives.
     pub workflow_id: String,
     /// Step the slot is executing, e.g. `"s5"`. Empty unless the slot is
-    /// running a step.
+    /// running a step. Splits width evenly with [`Self::workflow_id`], cut
+    /// from the front like it.
     pub step_id: String,
-    /// Conductor tool name, rendered parenthesized as `(echo)`. The only
-    /// elastic prefix segment.
+    /// Conductor tool name, rendered parenthesized as `(echo)`. Sized at its
+    /// natural rendered width before the names are split, because the tool
+    /// outranks both; it shrinks from the front only when a name would
+    /// otherwise fall below [`NAME_FLOOR`].
     pub tool: String,
     /// Worker state marker, rendered bracketed as `[active]` or `[idle]`. It
-    /// trails the identifiers so a narrowed row gives up the tag before it
-    /// gives up the names of what is running.
+    /// trails the identifiers and is drawn only from columns left after the
+    /// marker, tool and names, so a narrowed row gives up the tag before it
+    /// gives up what is running.
     pub activity: String,
 }
 
 #[cfg(feature = "progress")]
 impl WorkerBarLabel {
-    /// Build the prefix segments, most important first.
+    /// Build the tool bracket group: the tool name inside round brackets,
+    /// the one-member case [`fit_segments`] already draws.
     ///
-    /// The status marker leads and the activity marker trails, so the
-    /// trailing tag is the first segment dropped and the marker is never
-    /// dropped. A `[F]` that got clipped away would leave a failed slot
-    /// reading as an idle one, which is the one thing a row must not do.
-    /// Tool-sync gives up its phase tag the same way.
+    /// The name is elastic with its tail kept, because a shortened name's
+    /// informative end is its end; its parentheses are decoration on the
+    /// segment, not text inside it, so a clipped name renders bare rather
+    /// than still wearing its brackets.
+    fn tool_segments(&self) -> Vec<Segment> {
+        if self.tool.is_empty() {
+            return Vec::new();
+        }
+        vec![Segment::elastic(self.tool.clone()).brackets(Brackets::Round)]
+    }
+
+    /// Rendered width of [`Self::tool_segments`] when nothing has been cut.
     ///
-    /// The identifiers are `Keep` rather than `Elastic` because clipping
-    /// them destroys what identifies them: `default` clipped to `ult` names
-    /// no workflow. The tool name is the one elastic segment, because its tail
-    /// is the informative end. Its parentheses are decoration on the segment,
-    /// not text inside it, so a row that clips the name renders the bare name
-    /// rather than a fragment still wearing its brackets.
-    fn prefix_segments(&self) -> Vec<Segment> {
-        let mut segs = Vec::new();
-        if !self.status_marker.is_empty() {
-            segs.push(Segment::keep(self.status_marker.clone()).brackets(Brackets::Square));
-        }
-        if !self.workflow_id.is_empty() {
-            segs.push(Segment::keep(self.workflow_id.clone()));
-        }
-        if !self.step_id.is_empty() {
-            segs.push(Segment::keep(self.step_id.clone()));
-        }
-        if !self.tool.is_empty() {
-            segs.push(Segment::elastic(self.tool.clone()).brackets(Brackets::Round));
-        }
-        if !self.activity.is_empty() {
-            segs.push(Segment::keep(self.activity.clone()).brackets(Brackets::Square));
-        }
-        segs
+    /// Measured by fitting the group at an unbounded width rather than by
+    /// re-deriving the bracket arithmetic, so the number the allocation
+    /// budgets with is the number the fitter will draw.
+    fn tool_natural_width(&self) -> usize {
+        fit_segments(&self.tool_segments(), usize::MAX).chars().count()
     }
 
     /// Build the suffix segments, most important first.
@@ -272,10 +293,317 @@ impl WorkerBarLabel {
 #[cfg(feature = "progress")]
 impl BarLabelTruncation for WorkerBarLabel {
     fn truncate_prefix(&self, max_width: usize) -> String {
-        fit_segments(&self.prefix_segments(), max_width)
+        allocate_prefix(
+            &self.status_marker,
+            &self.workflow_id,
+            &self.step_id,
+            &self.tool_segments(),
+            self.tool_natural_width(),
+            &self.activity,
+            max_width,
+        )
     }
 
     fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
         fit_segments(&Self::suffix_segments(suffix), max_width)
+    }
+}
+
+/// Rendered width of a marker or tag rendered inside square brackets, or
+/// zero for the empty string (an absent field contributes nothing).
+#[cfg(feature = "progress")]
+fn bracketed_width(field: &str) -> usize {
+    if field.is_empty() { 0 } else { field.chars().count() + 2 }
+}
+
+/// Columns a present name is missing after its even-split allotment, capped
+/// at its [`NAME_FLOOR`]: the columns the tool has to donate for the name to
+/// say something. An absent name donates nothing and needs nothing.
+#[cfg(feature = "progress")]
+fn name_deficit(allotment: usize, natural: usize) -> usize {
+    NAME_FLOOR.min(natural).saturating_sub(allotment)
+}
+
+/// Split `budget` columns between the workflow and step names.
+///
+/// Each present name is held at the lesser of its natural width and its
+/// share; the extra column of an odd split goes to the longer name (ties to
+/// the workflow, the first name in display order); and a name that needs
+/// less than its share hands the unused columns to the other name when the
+/// other still needs them. Returns `(workflow, step)` column allotments;
+/// an absent name is allotted zero.
+#[cfg(feature = "progress")]
+fn split_names(
+    budget: usize,
+    workflow_len: usize,
+    step_len: usize,
+    has_workflow: bool,
+    has_step: bool,
+) -> (usize, usize) {
+    match (has_workflow, has_step) {
+        (false, false) => (0, 0),
+        (true, false) => (budget.min(workflow_len), 0),
+        (false, true) => (0, budget.min(step_len)),
+        (true, true) => {
+            let base_workflow =
+                budget / 2 + usize::from(budget % 2 == 1 && workflow_len >= step_len);
+            let base_step = budget - base_workflow;
+            let workflow = base_workflow.min(workflow_len);
+            let step = base_step.min(step_len);
+            let unused = budget - workflow - step;
+            match (
+                workflow_len > workflow && step_len <= step,
+                step_len > step && workflow_len <= workflow,
+            ) {
+                (true, _) => (workflow + unused, step),
+                (_, true) => (workflow, step + unused),
+                _ => (workflow, step),
+            }
+        }
+    }
+}
+
+/// Assemble a bar-label prefix under the allocation policy.
+///
+/// Survival rank is decoupled from display order. The status marker is
+/// reserved first and always drawn whole — a row too narrow to carry it
+/// carries nothing; the tool (already [`fit_segments`]-prepared as `tool`
+/// segments, its natural width in `tool_natural`) is sized next, because the
+/// tool outranks both names; workflow and step split what remains down the
+/// middle, each front-cut so its tail survives, a name needing less than
+/// its half handing the unused columns to the other; and `activity` is
+/// drawn only from columns left after those three, whole or not at all, so
+/// it yields first. The tool shrinks — front-cut, its brackets dropped with
+/// the clip — only while a name is below [`NAME_FLOOR`], then at its plain
+/// fit so the row never exceeds `width`.
+///
+/// Both fields being cut from the front makes the row's length monotone in
+/// `width`: a narrower slot never draws a longer row, which is what stops a
+/// resizing terminal from reading as jitter.
+#[cfg(feature = "progress")]
+fn allocate_prefix(
+    status_marker: &str,
+    workflow: &str,
+    step: &str,
+    tool: &[Segment],
+    tool_natural: usize,
+    activity: &str,
+    width: usize,
+) -> String {
+    let marker_w = bracketed_width(status_marker);
+    let activity_w = bracketed_width(activity);
+    let has_workflow = !workflow.is_empty();
+    let has_step = !step.is_empty();
+    let has_tool = !tool.is_empty();
+    let named = usize::from(marker_w > 0)
+        + usize::from(has_workflow)
+        + usize::from(has_step)
+        + usize::from(has_tool);
+    let separators = named.saturating_sub(1);
+    if marker_w > width {
+        return String::new();
+    }
+    let workflow_len = workflow.chars().count();
+    let step_len = step.chars().count();
+    let tool_cap = width.saturating_sub(marker_w + separators);
+    let mut tool_w = tool_natural.min(tool_cap);
+    let (workflow_w, step_w) = loop {
+        let names_budget = width.saturating_sub(marker_w + separators + tool_w);
+        let allotment = split_names(names_budget, workflow_len, step_len, has_workflow, has_step);
+        let deficit = name_deficit(allotment.0, workflow_len) + name_deficit(allotment.1, step_len);
+        if deficit == 0 || tool_w == 0 {
+            break allotment;
+        }
+        tool_w = tool_w.saturating_sub(deficit);
+    };
+    // A name the tool could not lift to its floor says nothing at one or
+    // two columns, and a row carrying it reads as empty while the suffix
+    // that carries the timing loses its columns — the shape the
+    // `assert_narrow_rows_carry_a_label_or_a_count` sweep rejects. Drop the
+    // name instead of drawing a fragment; a name short enough to fit whole
+    // below the floor keeps its natural width.
+    let floor_workflow = if workflow_w < NAME_FLOOR.min(workflow_len) { 0 } else { workflow_w };
+    let floor_step = if step_w < NAME_FLOOR.min(step_len) { 0 } else { step_w };
+    let mut parts: Vec<String> = Vec::new();
+    if marker_w > 0 {
+        parts.push(format!("[{status_marker}]"));
+    }
+    if floor_workflow > 0 {
+        parts.push(front_tail(workflow, floor_workflow));
+    }
+    if floor_step > 0 {
+        parts.push(front_tail(step, floor_step));
+    }
+    let tool_text = if tool_w == 0 { String::new() } else { fit_segments(tool, tool_w) };
+    if !tool_text.is_empty() {
+        parts.push(tool_text);
+    }
+    let mut row = parts.join(" ");
+    let used = row.chars().count();
+    if activity_w > 0 {
+        let room = if parts.is_empty() { width } else { width.saturating_sub(used + 1) };
+        if activity_w <= room {
+            if !row.is_empty() {
+                row.push(' ');
+            }
+            row.push('[');
+            row.push_str(activity);
+            row.push(']');
+        }
+    }
+    row
+}
+
+/// Allocation-policy tests: a running row shows workflow AND step under
+/// space pressure, the tool outranks both names, the activity tag yields
+/// first, and idle rows keep their exact shapes. Each test pins one clause
+/// of the policy in [`allocate_prefix`] at a width chosen so the clause is
+/// the only thing that can make the assertion hold.
+#[cfg(all(test, feature = "progress"))]
+mod allocation_policy_tests {
+    use super::{StepBarLabel, WorkerBarLabel};
+    use mediapm_utils::progress::BarLabelTruncation;
+
+    /// A step label whose workflow and step both overflow their half of the
+    /// row splits the remainder down the middle — the user-facing guarantee
+    /// that a long workflow name can no longer evict the step. Each name is
+    /// cut from the front so its tail survives, and the tool comes through
+    /// whole because it outranks both names.
+    #[test]
+    fn step_label_splits_both_names_evenly_when_both_overflow() {
+        let label = StepBarLabel {
+            status_marker: String::new(),
+            workflow_id: "mediapm.media.workflow-alpha".into(),
+            step_id: "s12-transform".into(),
+            tool: "ffmpeg".into(),
+            version: String::new(),
+            completed: String::new(),
+            total: String::new(),
+        };
+        let out = label.truncate_prefix(20);
+        assert_eq!(out, "alpha sform (ffmpeg)");
+        assert_eq!(out.chars().count(), 20, "the split must fill the row exactly: {out:?}");
+    }
+
+    /// A name needing less than its half hands the unused columns to the
+    /// other name (flex): the short step stays whole and the long workflow
+    /// gets everything its neighbour could not use.
+    #[test]
+    fn step_label_hands_the_unused_step_columns_to_the_workflow() {
+        let label = StepBarLabel {
+            status_marker: String::new(),
+            workflow_id: "mediapm.media.workflow-alpha".into(),
+            step_id: "s1".into(),
+            tool: "echo".into(),
+            version: String::new(),
+            completed: String::new(),
+            total: String::new(),
+        };
+        assert_eq!(label.truncate_prefix(20), "flow-alpha s1 (echo)");
+    }
+
+    /// A long workflow id is cut from the front so its tail survives: the
+    /// row keeps the part of the name that tells workflow ids apart rather
+    /// than a head that names nothing.
+    #[test]
+    fn step_label_cuts_the_workflow_id_from_the_front() {
+        let label = StepBarLabel {
+            status_marker: String::new(),
+            workflow_id: "mediapm.media.this-workflow".into(),
+            step_id: "s2".into(),
+            tool: "echo".into(),
+            version: String::new(),
+            completed: String::new(),
+            total: String::new(),
+        };
+        let out = label.truncate_prefix(14);
+        assert_eq!(out, "flow s2 (echo)");
+        assert!(!out.contains("mediapm"), "the cut must remove the head, not the tail: {out:?}");
+    }
+
+    /// The tool is sized at its natural width before the names are split, so
+    /// it comes through whole (brackets included) at a width where both
+    /// names must shrink.
+    #[test]
+    fn step_label_keeps_the_tool_whole_while_the_names_shrink() {
+        let label = StepBarLabel {
+            status_marker: String::new(),
+            workflow_id: "mediapm.media.workflow-alpha".into(),
+            step_id: "s12-transform".into(),
+            tool: "echo".into(),
+            version: String::new(),
+            completed: String::new(),
+            total: String::new(),
+        };
+        assert_eq!(label.truncate_prefix(16), "lpha form (echo)");
+    }
+
+    /// The 4-column name floor shrinks the tool: at this width the names
+    /// could hold only two columns each while the tool sat at its natural
+    /// width, so the tool gives columns back until each name says something,
+    /// and the shortened name drops its brackets with its clip.
+    #[test]
+    fn step_label_shrinks_the_tool_to_hold_the_name_floor() {
+        let label = StepBarLabel {
+            status_marker: String::new(),
+            workflow_id: "mediapm.media.workflow-alpha".into(),
+            step_id: "s12-transform".into(),
+            tool: "a-very-long-tool".into(),
+            version: String::new(),
+            completed: String::new(),
+            total: String::new(),
+        };
+        let out = label.truncate_prefix(16);
+        assert_eq!(out, "lpha form g-tool");
+        assert!(!out.contains('('), "a shortened tool renders bare: {out:?}");
+    }
+
+    /// Idle and terminal worker rows keep their exact shapes at every width
+    /// where they fit: the policy touches running rows, and `[idle]`,
+    /// `[W] [idle]`, `[F] [idle]` are the states a reader already knows.
+    #[test]
+    fn idle_and_terminal_prefixes_are_unchanged() {
+        for marker in ["", "W", "F"] {
+            let label = WorkerBarLabel {
+                status_marker: marker.into(),
+                workflow_id: String::new(),
+                step_id: String::new(),
+                tool: String::new(),
+                activity: "idle".into(),
+            };
+            let expected =
+                if marker.is_empty() { "[idle]".to_string() } else { format!("[{marker}] [idle]") };
+            assert_eq!(label.truncate_prefix(40), expected);
+            // At the width the row fills exactly it still draws whole.
+            assert_eq!(label.truncate_prefix(expected.chars().count()), expected);
+            // One column narrower the activity tag yields (whole or nothing),
+            // and below the marker's own width the row carries nothing.
+            assert_eq!(
+                label.truncate_prefix(expected.chars().count() - 1),
+                if marker.is_empty() { String::new() } else { format!("[{marker}]") }
+            );
+        }
+    }
+
+    /// A running worker row splits workflow and step evenly and gives the
+    /// activity tag nothing while names and tool are claiming columns: the
+    /// tag is drawn only from columns left after the marker, tool and names.
+    #[test]
+    fn worker_label_sheds_the_activity_tag_after_the_names_and_tool() {
+        let label = WorkerBarLabel {
+            status_marker: String::new(),
+            workflow_id: "mediapm.media.workflow-alpha".into(),
+            step_id: "s12-transform".into(),
+            tool: "ffmpeg".into(),
+            activity: "active".into(),
+        };
+        // 26 columns: names split evenly 8/8 (no marker, so two
+        // separators), tool whole, nothing left for the tag.
+        assert_eq!(label.truncate_prefix(26), "ow-alpha ransform (ffmpeg)");
+        // 60 columns: everything natural plus the tag, exactly full.
+        assert_eq!(
+            label.truncate_prefix(60),
+            "mediapm.media.workflow-alpha s12-transform (ffmpeg) [active]"
+        );
     }
 }
