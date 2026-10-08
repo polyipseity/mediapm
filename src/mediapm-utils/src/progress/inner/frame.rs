@@ -227,11 +227,13 @@ impl ProgressRenderer {
         // finished bar without advancing its tick counter (an idle screen
         // must not animate). Ungated configurations have no owed draws —
         // every push already reached the term.
-        if !ticked && pushed && !self.gate.is_noop() {
-            if let Some(slot) = self.slots.iter().find(|s| s.source.borrow().is_some()) {
-                let prefix = slot.cache.prefix.borrow().clone();
-                slot.bar.set_prefix(prefix);
-            }
+        if !ticked
+            && pushed
+            && !self.gate.is_noop()
+            && let Some(slot) = self.slots.iter().find(|s| s.source.borrow().is_some())
+        {
+            let prefix = slot.cache.prefix.borrow().clone();
+            slot.bar.set_prefix(prefix);
         }
         // _guard drops → gate re-suppressed.
         self.in_frame.set(false);
