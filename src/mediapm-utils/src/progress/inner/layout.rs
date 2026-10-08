@@ -21,8 +21,8 @@ use std::time::Instant;
 
 use super::super::{
     FRAME_OVERHEAD_COLUMNS, MIN_BAR_FILL, SuffixComponents, TimeSource, bar_color_code,
-    format_count, format_elapsed, format_eta, format_rate, max_prefix_width, max_suffix_width,
-    render_prefix_components, render_suffix_components, semantic_truncate_prefix,
+    close_sgr_state, format_count, format_elapsed, format_eta, format_rate, max_prefix_width,
+    max_suffix_width, render_prefix_components, render_suffix_components, semantic_truncate_prefix,
     semantic_truncate_suffix, visible_width,
 };
 use crate::progress::BarStyle;
@@ -166,13 +166,18 @@ pub(super) fn compute_ansi_overhead(status: TrackStatus, has_client_truncation: 
 /// out of the prefix slot, which is why `width` is what is left after that
 /// subtraction rather than the whole slot.
 ///
+/// The client's own label is closed through [`close_sgr_state`] before it is
+/// prefixed: a label that embeds an unbalanced colour cannot leak it into the
+/// bar fill that follows. Production labels are escape-free, so their rendered
+/// bytes are unchanged.
+///
 /// `pub(super)` because the client-truncation test sibling pins both halves of
 /// the wrapping through the parent module.
 pub(super) fn client_truncated_prefix(
     truncation: &Arc<dyn crate::progress::BarLabelTruncation>,
     width: usize,
 ) -> String {
-    format!("\x1b[0m{}", truncation.truncate_prefix(width))
+    format!("\x1b[0m{}", close_sgr_state(truncation.truncate_prefix(width)))
 }
 
 /// Compose the full suffix component set from snapshot data and timing.
@@ -241,6 +246,11 @@ fn keeps_timing(draw_fill: bool, prefix: &str, timingless_suffix: &str) -> bool 
 /// `sync_snapshot_to_bar` draws through this and
 /// [`ProgressRenderer::recompute_layout`] measures through it, so what the
 /// budget reserves and what the row shows are the same string.
+///
+/// Both branches close their result through [`close_sgr_state`]: a suffix that
+/// contains an escape ends in a reset, so a row can never end in an open
+/// colour state. The reset is zero visible columns, so the measured width
+/// stays equal to the drawn width.
 fn render_slot_suffix(
     suffix: &SuffixComponents,
     truncation: Option<&Arc<dyn crate::progress::BarLabelTruncation>>,
@@ -248,8 +258,11 @@ fn render_slot_suffix(
     color_code: &str,
 ) -> String {
     match truncation {
-        Some(t) => t.truncate_suffix(suffix_w, suffix),
-        None => render_suffix_components(&semantic_truncate_suffix(suffix, suffix_w), color_code),
+        Some(t) => close_sgr_state(t.truncate_suffix(suffix_w, suffix)),
+        None => close_sgr_state(render_suffix_components(
+            &semantic_truncate_suffix(suffix, suffix_w),
+            color_code,
+        )),
     }
 }
 
@@ -575,11 +588,13 @@ mod tests {
     //! — a stale tick redraws the reserved eta rather than dropping it — is
     //! pinned by `progress_output::render::a_stale_tick_still_draws_the_reserved_eta`.
 
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use super::super::super::{PrefixComponents, SuffixComponents, TestTimeSource};
+    use super::super::super::{PrefixComponents, SuffixComponents, TestTimeSource, visible_width};
     use super::super::tracked::{TrackSnapshot, TrackStatus};
-    use super::{SlotTiming, timing_strings};
+    use super::{SlotTiming, client_truncated_prefix, render_slot_suffix, timing_strings};
+    use crate::progress::BarLabelTruncation;
 
     /// Build a minimal snapshot of one row at `position` of `total`.
     fn snap(status: TrackStatus, position: u64, total: u64) -> TrackSnapshot {
@@ -671,5 +686,81 @@ mod tests {
             "an active row still reports its rate"
         );
         assert_eq!(strings.eta_str, None, "and no eta once the work is done");
+    }
+
+    /// A client label that ends mid-escape must be closed at the push point.
+    ///
+    /// Production labels are escape-free, so the plain-label test below pins
+    /// that their bytes stay exactly `reset + label`; this fake pins the
+    /// defensive rule for any label that embeds an unbalanced colour.
+    struct OpenEscapeLabel;
+
+    impl BarLabelTruncation for OpenEscapeLabel {
+        fn truncate_prefix(&self, _max_width: usize) -> String {
+            "x\x1b[31m".into()
+        }
+
+        fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
+            "y\x1b[31m".into()
+        }
+    }
+
+    /// The client prefix wrapper leads with the reset it always has and now
+    /// trails one when — and only when — the client's own string embeds an
+    /// escape, so a production escape-free label keeps its exact bytes.
+    #[test]
+    fn client_truncated_prefix_closes_an_open_escape_and_leaves_plain_labels_alone() {
+        /// An escape-free label standing in for every production client.
+        struct PlainLabel;
+        impl BarLabelTruncation for PlainLabel {
+            fn truncate_prefix(&self, _max_width: usize) -> String {
+                "plain".into()
+            }
+
+            fn truncate_suffix(&self, _max_width: usize, _suffix: &SuffixComponents) -> String {
+                "plain".into()
+            }
+        }
+        let plain: Arc<dyn BarLabelTruncation> = Arc::new(PlainLabel);
+        let open: Arc<dyn BarLabelTruncation> = Arc::new(OpenEscapeLabel);
+        assert_eq!(client_truncated_prefix(&plain, 10), "\x1b[0mplain");
+        assert_eq!(
+            client_truncated_prefix(&open, 10),
+            "\x1b[0mx\x1b[31m\x1b[0m",
+            "an open client escape is closed at the same push point"
+        );
+    }
+
+    /// The suffix funnel is the single string measure and draw both read, so
+    /// whatever it returns must end in a state that cannot leak and must fit
+    /// the slot it was truncated to — an over-wide value is what would make
+    /// indicatif slice the string and cut an escape in half.
+    #[test]
+    fn render_slot_suffix_closes_state_and_fits_its_width() {
+        // Built-in branch: the coloured count segment already self-closes and
+        // the reset keeps the invariant true after truncation to a small slot.
+        let parts = SuffixComponents {
+            count: "0".into(),
+            total: "5".into(),
+            elapsed: "1234567s".into(),
+            rate: Some("2.2/s".into()),
+            eta: Some("9s".into()),
+            custom: String::new(),
+        };
+        let builtin = render_slot_suffix(&parts, None, 4, "35");
+        assert!(
+            builtin.contains('\x1b'),
+            "the coloured count keeps an escape in the raw string: {builtin:?}"
+        );
+        assert!(
+            builtin.ends_with("\x1b[0m"),
+            "a suffix with escapes must terminate in a reset: {builtin:?}"
+        );
+        assert!(visible_width(&builtin) <= 4, "the suffix exceeded its slot: {builtin:?}");
+
+        // Client branch: an open escape from the label is closed here.
+        let open: Arc<dyn BarLabelTruncation> = Arc::new(OpenEscapeLabel);
+        let client = render_slot_suffix(&parts, Some(&open), 10, "35");
+        assert_eq!(client, "y\x1b[31m\x1b[0m");
     }
 }

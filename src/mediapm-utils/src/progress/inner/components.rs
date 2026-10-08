@@ -569,6 +569,19 @@ pub(crate) fn strip_ansi(s: &str) -> String {
 }
 
 /// Number of visible characters in `s` (after stripping ANSI SGR codes).
+/// Close a rendered slot string so it cannot leave the terminal mid-escape.
+///
+/// Appends `\x1b[0m` when `s` contains an SGR escape and does not already end
+/// with one. A reset occupies zero visible columns, so the measured width and
+/// the drawn width stay equal and the slot budget is unchanged. Both the
+/// suffix funnel (`inner::renderer::layout::render_slot_suffix`) and the
+/// client-label wrapper (`inner::renderer::layout::client_truncated_prefix`)
+/// route through this, so no branch can hand a row an open colour state
+/// regardless of what a client label contains.
+pub(crate) fn close_sgr_state(s: String) -> String {
+    if s.contains('\x1b') && !s.ends_with("\x1b[0m") { s + "\x1b[0m" } else { s }
+}
+
 pub(crate) fn visible_width(s: &str) -> usize {
     strip_ansi(s).chars().count()
 }
@@ -838,6 +851,15 @@ pub(crate) fn semantic_truncate_suffix(
 /// `spinner` and `fill` are the two `{spinner}` and `{wide_bar}` style
 /// specifiers, so each caller keeps its own colours and only chooses whether to
 /// draw a fill at all.
+///
+/// Field widths are single-number on purpose. indicatif parses a second number
+/// after the dot as a *style*, and console's numeric fallback turns it into
+/// `\x1b[38;5;{width}m` — a colour derived from the slot's own width, so a
+/// suffix of 18 columns renders xterm-blue and one of 16 renders black. Only
+/// the named specifiers above may colour a field. Padding is all the template
+/// owes the layout: every prefix and suffix string is pre-truncated to its
+/// slot by [`semantic_truncate_prefix`], [`semantic_truncate_suffix`], or the
+/// client's own truncation, so indicatif's slice path is never reached.
 fn frame_template(
     spinner: &str,
     fill: &str,
@@ -847,12 +869,10 @@ fn frame_template(
 ) -> String {
     if draw_fill {
         format!(
-            "{{spinner:{spinner}}} {{prefix:>{prefix_w}.{prefix_w}}} {{wide_bar:0.{fill}}} {{msg:<{suffix_w}.{suffix_w}}}"
+            "{{spinner:{spinner}}} {{prefix:>{prefix_w}}} {{wide_bar:0.{fill}}} {{msg:<{suffix_w}}}"
         )
     } else {
-        format!(
-            "{{spinner:{spinner}}} {{prefix:>{prefix_w}.{prefix_w}}} {{msg:<{suffix_w}.{suffix_w}}}"
-        )
+        format!("{{spinner:{spinner}}} {{prefix:>{prefix_w}}} {{msg:<{suffix_w}}}")
     }
 }
 
@@ -975,5 +995,96 @@ mod tests {
         assert!(s.elapsed.is_empty());
         assert!(s.rate.is_none());
         assert!(s.eta.is_none());
+    }
+
+    /// The frame template must carry exactly one width per field.
+    ///
+    /// Guards the reported "blue suffix" defect: indicatif parses a second
+    /// width after the dot as a style, and console's numeric fallback turns
+    /// it into `\x1b[38;5;{width}m` — a suffix slot of width 18 renders
+    /// xterm-blue. Only the explicitly named styles (`.green`,
+    /// `magenta/dim`, …) may colour a field, so these exact strings pin
+    /// every shape `recompute_layout` can build.
+    #[test]
+    fn frame_template_emits_single_width_fields() {
+        assert_eq!(
+            frame_template(".green", "magenta/dim", 12, 18, true),
+            "{spinner:.green} {prefix:>12} {wide_bar:0.magenta/dim} {msg:<18}"
+        );
+        assert_eq!(
+            frame_template(".green", "magenta/dim", 12, 18, false),
+            "{spinner:.green} {prefix:>12} {msg:<18}"
+        );
+        assert_eq!(
+            frame_template(".green", "yellow/dim", 40, 65, true),
+            "{spinner:.green} {prefix:>40} {wide_bar:0.yellow/dim} {msg:<65}"
+        );
+        assert_eq!(
+            frame_template(".white/.dim", "green/dim", 0, 0, true),
+            "{spinner:.white/.dim} {prefix:>0} {wide_bar:0.green/dim} {msg:<0}"
+        );
+        assert_eq!(
+            frame_template(".red", "red/dim", 7, 9, true),
+            "{spinner:.red} {prefix:>7} {wide_bar:0.red/dim} {msg:<9}"
+        );
+        assert_eq!(
+            frame_template(".red", "red/dim", 7, 9, false),
+            "{spinner:.red} {prefix:>7} {msg:<9}"
+        );
+    }
+
+    /// The suffix component renderer may only emit the intended count/total
+    /// colour and its own reset — never a width-derived `38;5;` sequence or
+    /// the basic blue/bright-blue SGR codes.
+    ///
+    /// `bar_color_code` maps every status to a member of this whitelist, and
+    /// this test pins that nothing else leaks into the raw string.
+    #[test]
+    fn render_suffix_components_carry_no_width_derived_color() {
+        let parts = SuffixComponents {
+            count: "4".into(),
+            total: "12".into(),
+            elapsed: "0s".into(),
+            rate: Some("2.2/s".into()),
+            eta: Some("8s".into()),
+            custom: "skipped".into(),
+        };
+        for (status, is_overall) in [
+            (TrackStatus::Active, true),
+            (TrackStatus::Active, false),
+            (TrackStatus::Warning, true),
+            (TrackStatus::Success, true),
+            (TrackStatus::Failed, true),
+        ] {
+            let rendered = render_suffix_components(&parts, bar_color_code(status, is_overall));
+            assert!(!rendered.contains("38;5;"), "width-derived colour in {rendered:?}");
+            assert!(!rendered.contains("\x1b[34"), "blue SGR in {rendered:?}");
+            assert!(!rendered.contains("\x1b[94"), "bright-blue SGR in {rendered:?}");
+        }
+    }
+
+    /// The prefix component renderer ends in a state that cannot leak: with
+    /// or without a marker, the trailing bytes are a reset or plain text,
+    /// never an open colour.
+    #[test]
+    fn render_prefix_components_end_in_a_closed_state() {
+        let parts = PrefixComponents {
+            marker: "F".into(),
+            tool_name: "echo".into(),
+            version: String::new(),
+            phase: "s3".into(),
+            count: "2".into(),
+            total: "5".into(),
+        };
+        for status in
+            [TrackStatus::Failed, TrackStatus::Warning, TrackStatus::Active, TrackStatus::Success]
+        {
+            let rendered = render_prefix_components(&parts, status);
+            assert!(
+                rendered.ends_with("\x1b[0m") || !rendered.ends_with('m'),
+                "prefix ends mid-escape: {rendered:?}"
+            );
+            assert!(!rendered.contains("38;5;"), "width-derived colour in {rendered:?}");
+        }
     }
 }
