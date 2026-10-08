@@ -47,8 +47,8 @@ fn dimension_source_columns_do_not_change_the_frame() {
             "\n",
             "\n",
             "\n",
-            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "dimension_source_columns_do_not_change_the_frame"
     );
@@ -92,8 +92,8 @@ fn narrow_draw_target_drops_the_bar_not_the_label() {
         concat!(
             "\n",
             "\n",
-            "⠸      tool-a ░░░░░░░░░  0/7 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░  0/10 0s 0/d"
+            "⠸      tool-a ░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠹     overall ░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "narrow_draw_target_drops_the_bar_not_the_label/wide"
     );
@@ -134,8 +134,8 @@ fn wider_draw_target_expands_the_bar() {
         concat!(
             "\n",
             "\n",
-            "⠼      tool-a ████░░░░░  5/10 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░  0/10 0s 0/d"
+            "⠼      tool-a ████░░░░░  5/10 0s 0/d 5s\n",
+            "⠹     overall ░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "wider_draw_target_expands_the_bar/narrow"
     );
@@ -144,8 +144,8 @@ fn wider_draw_target_expands_the_bar() {
         concat!(
             "\n",
             "\n",
-            "⠼      tool-a ████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠼      tool-a ████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  5/10 0s 0/d 5s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "wider_draw_target_expands_the_bar/wide"
     );
@@ -202,8 +202,8 @@ fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
         concat!(
             "\n",
             "\n",
-            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d already downloaded\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s already downloaded\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "narrow_draw_target_does_not_render_an_oversize_custom_suffix/wide"
     );
@@ -226,8 +226,8 @@ fn height_shrink_orphans_and_grow_reattaches() {
             "\n",
             "\n",
             "\n",
-            "⠼       fetch █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/7 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠼       fetch █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/7 0s 0/d 4s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_shrink_orphans_and_grow_reattaches/initial"
     );
@@ -238,8 +238,7 @@ fn height_shrink_orphans_and_grow_reattaches() {
     assert_eq!(shrunk.lines().count(), 1, "one row leaves room for the overall bar only");
     assert!(!shrunk.contains("fetch"), "the child is evicted at one row: {shrunk:?}");
     assert_eq!(
-        &shrunk,
-        concat!("⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", "  0/10 0s 0/d"),
+        &shrunk, "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         "height_shrink_orphans_and_grow_reattaches/shrunk"
     );
 
@@ -254,8 +253,8 @@ fn height_shrink_orphans_and_grow_reattaches() {
             "\n",
             "\n",
             "\n",
-            "⠹       fetch █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/7 0s 0/d\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠹       fetch █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/7 0s 0/d 4s\n",
+            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_shrink_orphans_and_grow_reattaches/grown"
     );
@@ -286,8 +285,8 @@ fn dynamic_height_grows_the_slot_count_to_the_terminal_height() {
     assert_eq!(
         &at_two,
         concat!(
-            "⠸       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠸       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "dynamic_height_grows_the_slot_count_to_the_terminal_height/two_rows"
     );
@@ -304,7 +303,7 @@ fn dynamic_height_grows_the_slot_count_to_the_terminal_height() {
     assert_eq!(
         at_twenty_four,
         concat!(
-            "⠼       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠼       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
             "\n",
             "\n",
             "\n",
@@ -327,7 +326,7 @@ fn dynamic_height_grows_the_slot_count_to_the_terminal_height() {
             "\n",
             "\n",
             "\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "dynamic_height_grows_the_slot_count_to_the_terminal_height/twenty_four_rows"
     );
@@ -352,8 +351,8 @@ fn height_shrink_removes_blank_slots() {
             "\n",
             "\n",
             "\n",
-            "⠸       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠸       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_shrink_removes_blank_slots/tall"
     );
@@ -368,8 +367,8 @@ fn height_shrink_removes_blank_slots() {
         concat!(
             "\n",
             "\n",
-            "⠼       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d"
+            "⠼       fetch ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_shrink_removes_blank_slots/short"
     );
@@ -393,9 +392,9 @@ fn height_grow_appends_blank_slots_above_the_bars() {
         &short,
         concat!(
             "\n",
-            "⠹      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠸      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠹      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠸      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_grow_appends_blank_slots_above_the_bars/short"
     );
@@ -417,11 +416,11 @@ fn height_grow_appends_blank_slots_above_the_bars() {
         &tall,
         concat!(
             "\n",
-            "⠸      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠼      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠸      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠼      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
             "\n",
             "\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_grow_appends_blank_slots_above_the_bars/tall"
     );
@@ -445,9 +444,9 @@ fn height_shrink_then_grow_restores_the_frame() {
             "\n",
             "\n",
             "\n",
-            "⠹      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠸      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠹      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠸      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_shrink_then_grow_restores_the_frame/before"
     );
@@ -457,9 +456,9 @@ fn height_shrink_then_grow_restores_the_frame() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠸      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠼      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠸      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠼      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_shrink_then_grow_restores_the_frame/shrunk"
     );
@@ -476,12 +475,12 @@ fn height_shrink_then_grow_restores_the_frame() {
     assert_eq!(
         &restored,
         concat!(
-            "⠼      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
-            "⠴      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d\n",
+            "⠼      oldest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
+            "⠴      newest ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/7 0s 0/d 7s\n",
             "\n",
             "\n",
             "\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "height_shrink_then_grow_restores_the_frame/restored"
     );
@@ -508,8 +507,8 @@ fn height_sequence_without_overall() {
         concat!(
             "\n",
             "\n",
-            "⠹     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠸     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠹     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s\n",
+            "⠸     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d 3s",
         ),
         "height_sequence_without_overall/tall"
     );
@@ -520,8 +519,8 @@ fn height_sequence_without_overall() {
         &term.contents(),
         concat!(
             "\n",
-            "⠸     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠼     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠸     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s\n",
+            "⠼     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d 3s",
         ),
         "height_sequence_without_overall/three_rows"
     );
@@ -531,8 +530,8 @@ fn height_sequence_without_overall() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠼     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠴     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+            "⠼     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s\n",
+            "⠴     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d 3s",
         ),
         "height_sequence_without_overall/two_rows"
     );
@@ -541,7 +540,12 @@ fn height_sequence_without_overall() {
     screen.tick();
     let one_row = term.contents();
     assert_eq!(
-        &one_row, "⠦     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d",
+        &one_row,
+        concat!(
+            "⠦     bar 1 ",
+            "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+            "  0/3 0s 0/d 3s"
+        ),
         "height_sequence_without_overall/one_row"
     );
     assert!(one_row.contains("bar 1"), "the newest child keeps the only slot: {one_row:?}");
@@ -552,9 +556,9 @@ fn height_sequence_without_overall() {
     assert_eq!(
         &restored,
         concat!(
-            "⠧     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d\n",
+            "⠧     bar 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d 3s\n",
             "\n",
-            "⠹     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d",
+            "⠹     bar 2 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s",
         ),
         "height_sequence_without_overall/reattached"
     );
@@ -610,9 +614,9 @@ fn partial_height_shrink_keeps_active_children() {
             "\n",
             "\n",
             "\n",
-            "⠸      oldest ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/7 0s 0/d\n",
-            "⠼      newest ████████████████████████████░░░░░░░░░░░░░░░░░░░░░  4/7 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠸      oldest ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/7 0s 0/d 5s\n",
+            "⠼      newest ████████████████████████████░░░░░░░░░░░░░░░░░░░░░  4/7 0s 0/d 3s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "partial_height_shrink_keeps_active_children/tall"
     );
@@ -630,9 +634,9 @@ fn partial_height_shrink_keeps_active_children() {
     assert_eq!(
         &short,
         concat!(
-            "⠼      oldest ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/7 0s 0/d\n",
-            "⠴      newest ████████████████████████████░░░░░░░░░░░░░░░░░░░░░  4/7 0s 0/d\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d",
+            "⠼      oldest ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/7 0s 0/d 5s\n",
+            "⠴      newest ████████████████████████████░░░░░░░░░░░░░░░░░░░░░  4/7 0s 0/d 3s\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s",
         ),
         "partial_height_shrink_keeps_active_children/short"
     );

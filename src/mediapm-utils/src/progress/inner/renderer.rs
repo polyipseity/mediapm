@@ -26,8 +26,9 @@ use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
 use super::{
     DimensionSource, MAX_SLOTS, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH, ProgressDebugSink, TimeSource,
     WriteGate, apply_bar_style, apply_done_bar_style, apply_failed_bar_style,
-    apply_overall_bar_style, blank_bar_style, format_rate,
+    apply_overall_bar_style, blank_bar_style,
 };
+use layout::timing_strings;
 
 // The three themed modules below are declared by path so they stay flat
 // siblings of `renderer.rs` rather than moving into a `renderer/` directory.
@@ -400,16 +401,19 @@ impl ProgressRenderer {
                 slot.cache.style_draw_fill.set(draw_fill);
                 slot.cache.style_status_code.set(status_code);
             }
-            let rate_str: Option<String> = if snap.status == TrackStatus::Active {
-                if self.slots_timing[i].rate > 0.0 {
-                    Some(format_rate(self.slots_timing[i].rate))
-                } else {
-                    Some("0/d".into())
-                }
-            } else {
-                None
-            };
-            self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), None);
+            // The timing comes from `timing_strings`, the same helper the
+            // measurement pass calls, so the message this pushes occupies the
+            // columns the budget reserved for it (the measurement/draw
+            // equality invariant). The EMA commit it returns is dropped here:
+            // this path is read-only and the frame's dirty-slot sync applies
+            // the same update for the same snapshot.
+            let timing = timing_strings(&snap, &self.slots_timing[i], &*self.time_source);
+            self.sync_snapshot_to_bar(
+                i,
+                &snap,
+                timing.rate_str.as_deref(),
+                timing.eta_str.as_deref(),
+            );
         } else {
             self.blank_bar(i);
         }
@@ -631,7 +635,18 @@ impl ProgressRenderer {
             if let Some(ref snap) = snap
                 && snap.status != TrackStatus::Active
             {
-                self.sync_snapshot_to_bar(i, snap, None, None);
+                // Routed through the same helper the measurement pass uses, so
+                // this terminal sync cannot drift from what the budget
+                // reserved: for a terminal row the helper answers
+                // `(None, None)`, which is exactly what this loop passed by
+                // hand before the helper existed.
+                let timing = timing_strings(snap, &self.slots_timing[i], &*self.time_source);
+                self.sync_snapshot_to_bar(
+                    i,
+                    snap,
+                    timing.rate_str.as_deref(),
+                    timing.eta_str.as_deref(),
+                );
                 self.finish_slot(i, snap.status);
             }
         }

@@ -5,27 +5,132 @@
 //! measures every row the frame would draw and settles one prefix width and one
 //! suffix width for all of them, so rows align across the screen;
 //! [`ProgressRenderer::sync_snapshot_to_bar`] then renders one row into the
-//! widths that pass settled. The seven free helpers below are the row-shaped
-//! halves of those two steps: they compose and measure a single suffix, and
-//! they own the ANSI overhead the prefix slot has to reserve before a label is
-//! measured.
+//! widths that pass settled. The free helpers below are the row-shaped halves
+//! of those two steps: they compose and measure a single suffix, they own the
+//! ANSI overhead the prefix slot has to reserve before a label is measured,
+//! and they own [`timing_strings`], the one rule set that turns a slot's
+//! timing state into the rate and eta segments every caller measures and draws
+//! with.
 //!
 //! Both steps read tracked state through a [`TrackSnapshot`] rather than
 //! through the `SharedState` behind it, so a layout pass cannot advance
 //! anything and two passes over unchanged state produce identical widths.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use super::super::{
-    FRAME_OVERHEAD_COLUMNS, MIN_BAR_FILL, SuffixComponents, bar_color_code, format_count,
-    format_elapsed, format_eta, format_rate, max_prefix_width, max_suffix_width,
+    FRAME_OVERHEAD_COLUMNS, MIN_BAR_FILL, SuffixComponents, TimeSource, bar_color_code,
+    format_count, format_elapsed, format_eta, format_rate, max_prefix_width, max_suffix_width,
     render_prefix_components, render_suffix_components, semantic_truncate_prefix,
     semantic_truncate_suffix, visible_width,
 };
 use crate::progress::BarStyle;
 
-use super::ProgressRenderer;
 use super::tracked::{TrackSnapshot, TrackStatus};
+use super::{ProgressRenderer, SlotTiming};
+
+/// Rate divisor used for a row whose EMA has not started.
+///
+/// A row attached but not yet progressed has no measured rate, yet its slot
+/// still has to reserve the columns an eta will occupy the moment it does.
+/// One unit per second is that placeholder: it is what [`timing_strings`]
+/// divides the remaining work by until a real rate exists, and it is the same
+/// floor the measurement used before the helper existed, so the reservation a
+/// fresh bar gets does not move.
+const NOMINAL_ETA_RATE_FLOOR: f64 = 1.0;
+
+/// A slot's rate and eta suffix segments, plus the EMA update that produced them.
+///
+/// Returned by [`timing_strings`]. Every path that measures or draws a row's
+/// suffix goes through that function, so a row cannot be measured with one
+/// timing string and drawn with another — the equality this task exists to
+/// protect.
+pub(super) struct SlotTimingStrings {
+    /// Rate segment (e.g. `2.9k/s`); `None` once the row is terminal.
+    pub(super) rate_str: Option<String>,
+    /// ETA segment (e.g. `1m35s`); `None` once the row is terminal or done.
+    pub(super) eta_str: Option<String>,
+    /// The EMA commit the strings were computed from; see [`EmaUpdate`].
+    pub(super) ema_update: Option<EmaUpdate>,
+}
+
+/// The EMA advance that produced a [`SlotTimingStrings::rate_str`].
+///
+/// Only the frame's dirty-slot sync applies it, and it applies it for the very
+/// snapshot the strings were computed from, so a caller that drops it — the
+/// measurement pass and `sync_slot`, both of which are read-only — still reads
+/// back the rate it was shown on that frame. Position changes always mark a
+/// slot dirty ([`crate::progress::ProgressBarHandle::advance`] and
+/// [`set_position`](crate::progress::ProgressBarHandle::set_position) both do),
+/// so the frame that observes a moved position is also the frame that commits
+/// it.
+pub(super) struct EmaUpdate {
+    /// Smoothed rate to store for the next frame.
+    pub(super) rate: f64,
+    /// Position the smoothing window now ends at.
+    pub(super) position: u64,
+    /// Instant that smoothing window ends at.
+    pub(super) instant: Instant,
+}
+
+/// Compute one slot's rate and eta suffix segments — the single rule set.
+///
+/// `recompute_layout` (measurement), `sync_slot`, the frame's dirty-slot sync
+/// and `finalize` all call this instead of computing the pair themselves, which
+/// is what makes the columns the budget reserves equal the columns the row
+/// renders. The rules, in order:
+///
+/// - A terminal row gets `(None, None)` — no rate, no eta.
+/// - A live row's rate is the EMA, **prospectively** updated when the snapshot's
+///   position has moved past the last committed one: the update is simulated
+///   here and returned as [`SlotTimingStrings::ema_update`] so a read-only
+///   caller (measurement, `sync_slot`) sees the value the draw will commit
+///   rather than the stale one it would otherwise render.
+/// - The rate renders through [`format_rate`], which already prints the
+///   zero-rate placeholder `0/d`, so no caller needs its own fallback.
+/// - The eta is present exactly when the row is live and still has work left,
+///   divided by that same prospective rate — falling back to
+///   [`NOMINAL_ETA_RATE_FLOOR`] while the EMA has not started, so a just-attached
+///   bar reserves the eta width it will draw on its first progressed frame.
+///
+/// `time_source` is read only when an update is actually simulated, so two
+/// calls over unchanged state return identical strings.
+pub(super) fn timing_strings(
+    snap: &TrackSnapshot,
+    timing: &SlotTiming,
+    time_source: &dyn TimeSource,
+) -> SlotTimingStrings {
+    let active = snap.status == TrackStatus::Active;
+    let mut rate = timing.rate;
+    let mut ema_update = None;
+    if active && snap.position != timing.prev_position {
+        let now = time_source.now();
+        let dt = now.duration_since(timing.prev_instant).as_secs_f64();
+        if dt > 0.001 {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "progress ETA math tolerates u64 to f64 precision loss"
+            )]
+            let current = (snap.position.saturating_sub(timing.prev_position)) as f64 / dt;
+            rate = rate * 0.9 + current * 0.1;
+            ema_update = Some(EmaUpdate { rate, position: snap.position, instant: now });
+        }
+    }
+    let rate_str = if active { Some(format_rate(rate)) } else { None };
+    let eta_str = if active && snap.total > snap.position {
+        let divisor = if rate > 0.0 { rate } else { NOMINAL_ETA_RATE_FLOOR };
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "progress ETA math tolerates u64 to f64 precision loss"
+        )]
+        let remaining = (snap.total - snap.position) as f64 / divisor;
+        Some(format_eta(remaining))
+    } else {
+        None
+    };
+    SlotTimingStrings { rate_str, eta_str, ema_update }
+}
 
 /// Compute the ANSI byte overhead for the prefix template field.
 ///
@@ -265,47 +370,13 @@ impl ProgressRenderer {
                 // Measure the full rendered suffix (auto fields + custom),
                 // not just the stored custom text — the rendered RHS also
                 // carries count/total/elapsed/rate/eta which consume the
-                // width budget. Replicate the rate/eta computation from the
-                // tick loop so the estimate matches what will actually draw.
-                let rate_str: Option<String> = if snap.status == TrackStatus::Active {
-                    // Prospective rate: replicate the tick-loop EMA update
-                    // read-only so the measured width matches what will draw.
-                    let mut rate = self.slots_timing[i].rate;
-                    if snap.position != self.slots_timing[i].prev_position {
-                        let now = self.time_source.now();
-                        let dt =
-                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
-                        if dt > 0.001 {
-                            #[allow(clippy::cast_precision_loss)]
-                            let current =
-                                (snap.position - self.slots_timing[i].prev_position) as f64 / dt;
-                            rate = rate * 0.9 + current * 0.1;
-                        }
-                    }
-                    Some(format_rate(rate))
-                } else {
-                    None
-                };
-                // Reserve eta width for any in-progress bar.  At measure
-                // time `slots_timing[i].rate` may still be 0 (the bar was
-                // just attached and has not ticked yet), but the draw path
-                // computes eta whenever rate > 0 — which it will be once
-                // the bar progresses.  Under-reserving here would let the
-                // later wider draw overflow `suffix_w` and truncate the
-                // custom suffix.  Use a nominal rate floor so the budget
-                // covers the eta segment that will appear on the next tick.
-                let eta_str = if snap.status == TrackStatus::Active && snap.total > snap.position {
-                    let rate = if self.slots_timing[i].rate > 0.0 {
-                        self.slots_timing[i].rate
-                    } else {
-                        1.0
-                    };
-                    #[allow(clippy::cast_precision_loss)]
-                    let remaining = (snap.total - snap.position) as f64 / rate;
-                    Some(format_eta(remaining))
-                } else {
-                    None
-                };
+                // width budget. The timing comes from `timing_strings`, the
+                // same helper the draw path calls, so the columns reserved
+                // here are the columns the row renders. The EMA commit it
+                // returns is deliberately dropped: this pass is read-only, and
+                // the frame's dirty-slot sync applies the same update for the
+                // same snapshot.
+                let timing = timing_strings(&snap, &self.slots_timing[i], &*self.time_source);
                 // Measure the MERGED suffix (auto fields + user-set
                 // overrides), not just the auto-derived fields.  A wider
                 // user-set `rate`/`eta`/`custom` must widen `suffix_w` or
@@ -319,10 +390,18 @@ impl ProgressRenderer {
                 // kept so the no-fill pass below can measure it without
                 // timing on a frame that turns out to draw no fill, which
                 // saves re-snapshotting every slot.
-                let suffix_with_timing =
-                    compose_suffix(&snap, rate_str.as_deref(), eta_str.as_deref(), true);
-                let suffix_without_timing =
-                    compose_suffix(&snap, rate_str.as_deref(), eta_str.as_deref(), false);
+                let suffix_with_timing = compose_suffix(
+                    &snap,
+                    timing.rate_str.as_deref(),
+                    timing.eta_str.as_deref(),
+                    true,
+                );
+                let suffix_without_timing = compose_suffix(
+                    &snap,
+                    timing.rate_str.as_deref(),
+                    timing.eta_str.as_deref(),
+                    false,
+                );
                 measured.push((suffix_without_timing, truncation.clone()));
                 let suffix_width =
                     measure_suffix_width(suffix_ceiling, &suffix_with_timing, truncation.as_ref());
@@ -482,5 +561,115 @@ impl ProgressRenderer {
             slot.bar.set_position(render_pos);
             slot.cache.position.set(render_pos);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for [`timing_strings`], the one rule set every measurement
+    //! and draw path reads its rate and eta from.
+    //!
+    //! The invariant worth pinning at this level is the *pairing*: the eta a
+    //! row reserves is divided by the same prospective rate its rate segment
+    //! renders, and a terminal row reports neither. The frame-level consequence
+    //! — a stale tick redraws the reserved eta rather than dropping it — is
+    //! pinned by `progress_output::render::a_stale_tick_still_draws_the_reserved_eta`.
+
+    use std::time::Duration;
+
+    use super::super::super::{PrefixComponents, SuffixComponents, TestTimeSource};
+    use super::super::tracked::{TrackSnapshot, TrackStatus};
+    use super::{SlotTiming, timing_strings};
+
+    /// Build a minimal snapshot of one row at `position` of `total`.
+    fn snap(status: TrackStatus, position: u64, total: u64) -> TrackSnapshot {
+        TrackSnapshot {
+            position,
+            total,
+            label: "test".into(),
+            prefix: "test".into(),
+            prefix_components: PrefixComponents::default(),
+            suffix: String::new(),
+            suffix_components: SuffixComponents::default(),
+            status,
+            elapsed: Duration::ZERO,
+        }
+    }
+
+    /// Build a slot's timing state as a fresh slot starts it: nothing
+    /// committed, no rate, window opened at the time source's now.
+    fn timing(time_source: &TestTimeSource) -> SlotTiming {
+        SlotTiming::new(time_source)
+    }
+
+    /// A terminal row reports no timing at all, which is what lets
+    /// [`super::ProgressRenderer::finalize`] reach the same `(None, None)` the
+    /// measurement pass produces.
+    #[test]
+    fn a_terminal_row_reports_no_timing() {
+        let time_source = TestTimeSource::new();
+        let strings =
+            timing_strings(&snap(TrackStatus::Success, 4, 4), &timing(&time_source), &time_source);
+        assert_eq!(strings.rate_str, None, "a finished row draws no rate");
+        assert_eq!(strings.eta_str, None, "a finished row draws no eta");
+        assert!(strings.ema_update.is_none(), "a finished row advances no EMA");
+    }
+
+    /// A fresh bar has no EMA yet, so its rate is the placeholder and its eta
+    /// is the remaining work divided by the nominal floor: the columns the
+    /// budget reserves for the eta that appears once the bar progresses.
+    #[test]
+    fn a_bar_before_the_ema_starts_reserves_the_eta_at_the_nominal_floor() {
+        let time_source = TestTimeSource::new();
+        let strings =
+            timing_strings(&snap(TrackStatus::Active, 0, 10), &timing(&time_source), &time_source);
+        assert_eq!(strings.rate_str.as_deref(), Some("0/d"), "zero rate renders the placeholder");
+        assert_eq!(strings.eta_str.as_deref(), Some("10s"), "10 remaining at the 1.0/s floor");
+        assert!(strings.ema_update.is_none(), "an unmoved position advances no EMA");
+    }
+
+    /// A moved position is smoothed *prospectively*: the returned strings use
+    /// the rate the caller will commit, and the commit itself comes back so
+    /// the frame's dirty-slot sync can store exactly what was rendered.
+    #[test]
+    fn a_moved_position_smooths_prospectively_and_hands_back_the_commit() {
+        let time_source = TestTimeSource::new();
+        let mut slot_timing = timing(&time_source);
+        time_source.advance(Duration::from_secs(5));
+        let strings = timing_strings(&snap(TrackStatus::Active, 5, 10), &slot_timing, &time_source);
+        // 5 units over 5 s = 1.0/s observed; 0 * 0.9 + 1.0 * 0.1 = 0.1/s.
+        assert_eq!(strings.rate_str.as_deref(), Some("6/m"), "the smoothed rate is rendered");
+        assert_eq!(strings.eta_str.as_deref(), Some("50s"), "the eta divides by that same rate");
+
+        let update = strings.ema_update.expect("a moved position hands back its EMA update");
+        assert_eq!(update.position, 5, "the window ends at the observed position");
+        slot_timing.rate = update.rate;
+        slot_timing.prev_position = update.position;
+        slot_timing.prev_instant = update.instant;
+
+        // Re-reading the same state must not smooth again: the commit closed
+        // the window the strings were computed from.
+        let again = timing_strings(&snap(TrackStatus::Active, 5, 10), &slot_timing, &time_source);
+        assert_eq!(
+            again.rate_str.as_deref(),
+            Some("6/m"),
+            "a committed window renders the same rate"
+        );
+        assert!(again.ema_update.is_none(), "and hands back no second commit");
+    }
+
+    /// Work completed leaves no remaining units, so the row reports its rate
+    /// and no eta — the segment is present iff the row is still incomplete.
+    #[test]
+    fn a_completed_row_reports_its_rate_and_no_eta() {
+        let time_source = TestTimeSource::new();
+        let strings =
+            timing_strings(&snap(TrackStatus::Active, 10, 10), &timing(&time_source), &time_source);
+        assert_eq!(
+            strings.rate_str.as_deref(),
+            Some("0/d"),
+            "an active row still reports its rate"
+        );
+        assert_eq!(strings.eta_str, None, "and no eta once the work is done");
     }
 }

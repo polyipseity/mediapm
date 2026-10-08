@@ -16,14 +16,15 @@ use super::common::{H, W, line_with, mk_with_capacity_and_ts, mk_with_dims, with
 
 /// Return the elapsed field of the line containing `label`.
 ///
-/// The elapsed field is identified by shape rather than by position: a rendered
-/// line also carries the count/total (`0/5`, contains `/`) and the rate (`0/d`,
-/// ends with `d`), while the elapsed is a leading-digit token ending in `s`
-/// (`0s`, `14s`, `1m35s`).
+/// The suffix renders as `count/total elapsed [rate] [eta] [custom]`, so the
+/// elapsed is the *first* duration-shaped token (leading digit, trailing `s`)
+/// rather than the last: the eta shares that shape and follows the rate. Taking
+/// the first keeps this helper naming the field it documents — the count/total
+/// token ends in a digit, and the rate ends in `/d`, `/m`, `/h` or `/s`, all of
+/// which come after the elapsed in the rendered order.
 fn elapsed_field(contents: &str, label: &str) -> String {
     line_with(contents, label)
         .split_whitespace()
-        .rev()
         .find(|token| {
             token.ends_with('s') && token.chars().next().is_some_and(|ch| ch.is_ascii_digit())
         })
@@ -58,8 +59,8 @@ fn elapsed_starts_at_zero_and_advances() {
             "\n",
             "\n",
             "\n",
-            "⠼      tool-a █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d"
+            "⠼      tool-a █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 0s 0/d 2s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s",
         ),
         "elapsed_starts_at_zero_and_advances/zero"
     );
@@ -69,8 +70,8 @@ fn elapsed_starts_at_zero_and_advances() {
             "\n",
             "\n",
             "\n",
-            "⠴      tool-a █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 5s 1/m\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 5s 0/d"
+            "⠴      tool-a ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 5s 1/m 1m40s\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 5s 0/d 5s",
         ),
         "elapsed_starts_at_zero_and_advances/five"
     );
@@ -95,8 +96,8 @@ fn elapsed_is_stable_on_a_stale_tick() {
             "\n",
             "\n",
             "\n",
-            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 3s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 3s 0/d"
+            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 3s 0/d 3s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 3s 0/d 5s",
         ),
         "elapsed_is_stable_on_a_stale_tick/first"
     );
@@ -129,8 +130,8 @@ fn elapsed_is_stable_on_a_stale_tick() {
             "\n",
             "\n",
             "\n",
-            "⠴      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d"
+            "⠴      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
+            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
         ),
         "elapsed_is_stable_on_a_stale_tick/third"
     );
@@ -155,9 +156,9 @@ fn elapsed_freezes_when_a_bar_finishes() {
         concat!(
             "\n",
             "\n",
-            "⠹     finishing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d\n",
-            "⠸       running ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d\n",
-            "⠹       overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d",
+            "⠹     finishing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
+            "⠸       running ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
+            "⠹       overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
         ),
         "elapsed_freezes_when_a_bar_finishes/before"
     );
@@ -184,8 +185,8 @@ fn elapsed_freezes_when_a_bar_finishes() {
             "\n",
             "\n",
             "⠏              [F] finishing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s\n",
-            "⠼                    running ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 14s 0/d\n",
-            "⠸                    overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 14s 0/d",
+            "⠼                    running ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 14s 0/d 3s\n",
+            "⠸                    overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 14s 0/d 5s",
         ),
         "elapsed_freezes_when_a_bar_finishes/after"
     );
@@ -212,8 +213,8 @@ fn elapsed_survives_orphan_reattach() {
             "\n",
             "\n",
             "\n",
-            "⠸      worker ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 3s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 3s 0/d"
+            "⠸      worker ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 3s 0/d 10s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 3s 0/d 5s",
         ),
         "elapsed_survives_orphan_reattach/before"
     );
@@ -225,7 +226,11 @@ fn elapsed_survives_orphan_reattach() {
     assert!(!orphaned.contains("worker"), "the shrunken grid orphans the worker: {orphaned:?}");
     assert_eq!(
         orphaned,
-        concat!("⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", "  0/5 5s 0/d"),
+        concat!(
+            "⠸     overall ",
+            "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+            "  0/5 5s 0/d 5s"
+        ),
         "elapsed_survives_orphan_reattach/orphaned"
     );
 
@@ -242,7 +247,7 @@ fn elapsed_survives_orphan_reattach() {
             "\n",
             "\n",
             "⠹      worker ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 7s 0/d\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 7s 0/d"
+            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 7s 0/d 5s",
         ),
         "elapsed_survives_orphan_reattach/after"
     );
@@ -272,9 +277,9 @@ fn elapsed_survives_a_slot_shift() {
         concat!(
             "\n",
             "\n",
-            "⠹       alpha ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 4s 0/d\n",
-            "⠼        beta ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d",
+            "⠹       alpha ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 4s 0/d 10s\n",
+            "⠼        beta ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d 5s\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
         ),
         "elapsed_survives_a_slot_shift"
     );
@@ -301,8 +306,8 @@ fn elapsed_is_independent_of_progress() {
             "\n",
             "\n",
             "\n",
-            "⠸        idle ░░░░░░░░░░░  0/3 6s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░  0/1 6s 0/d"
+            "⠸        idle ░░░░░░░░░░░  0/3 6s 0/d 3s\n",
+            "⠹     overall ░░░░░░░░░░░  0/1 6s 0/d 1s",
         ),
         "elapsed_is_independent_of_progress"
     );

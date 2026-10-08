@@ -17,10 +17,10 @@ use std::time::Duration;
 
 use super::super::{
     DebugSlotState, DebugTickSnapshot, PrefixComponents, SuffixComponents, apply_done_bar_style,
-    apply_failed_bar_style, apply_overall_bar_style, format_eta, format_rate,
+    apply_failed_bar_style, apply_overall_bar_style,
 };
-
 use super::ProgressRenderer;
+use super::layout::timing_strings;
 use super::tracked::{TrackSnapshot, TrackStatus};
 
 impl ProgressRenderer {
@@ -158,40 +158,25 @@ impl ProgressRenderer {
                 }
                 let snap = source.snapshot();
 
-                let rate_str: Option<String> = if snap.status == TrackStatus::Active {
-                    if snap.position != self.slots_timing[i].prev_position {
-                        let now = self.time_source.now();
-                        let dt =
-                            now.duration_since(self.slots_timing[i].prev_instant).as_secs_f64();
-                        if dt > 0.001 {
-                            #[allow(clippy::cast_precision_loss)]
-                            let current =
-                                (snap.position.saturating_sub(self.slots_timing[i].prev_position))
-                                    as f64
-                                    / dt;
-                            self.slots_timing[i].rate =
-                                self.slots_timing[i].rate * 0.9 + current * 0.1;
-                            self.slots_timing[i].prev_position = snap.position;
-                            self.slots_timing[i].prev_instant = now;
-                        }
-                    }
-                    Some(format_rate(self.slots_timing[i].rate))
-                } else {
-                    None
-                };
+                // One helper computes the timing for every caller: the strings
+                // below are what the measurement pass in `recompute_layout`
+                // reserved columns for on this very frame. Unlike the read-only
+                // callers, the frame's dirty-slot sync owns the EMA advance, so
+                // it applies the update for this snapshot before pushing.
+                let timing = timing_strings(&snap, &self.slots_timing[i], &*self.time_source);
+                if let Some(update) = timing.ema_update {
+                    let slot_timing = &mut self.slots_timing[i];
+                    slot_timing.rate = update.rate;
+                    slot_timing.prev_position = update.position;
+                    slot_timing.prev_instant = update.instant;
+                }
 
-                let eta_str = if snap.status == TrackStatus::Active
-                    && snap.total > snap.position
-                    && self.slots_timing[i].rate > 0.0
-                {
-                    #[allow(clippy::cast_precision_loss)]
-                    let remaining = (snap.total - snap.position) as f64 / self.slots_timing[i].rate;
-                    Some(format_eta(remaining))
-                } else {
-                    None
-                };
-
-                self.sync_snapshot_to_bar(i, &snap, rate_str.as_deref(), eta_str.as_deref());
+                self.sync_snapshot_to_bar(
+                    i,
+                    &snap,
+                    timing.rate_str.as_deref(),
+                    timing.eta_str.as_deref(),
+                );
                 if snap.status == TrackStatus::Active {
                     // bar.tick() called in the spinner loop below.
                 } else if source.is_cleared() {

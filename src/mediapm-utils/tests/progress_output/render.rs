@@ -27,8 +27,8 @@ fn active_child_with_overall_renders_exactly() {
         &term.contents(),
         concat!(
             "\n",
-            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
+            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "active_child_with_overall_renders_exactly"
     );
@@ -48,7 +48,7 @@ fn failed_child_with_overall_shows_marker() {
         concat!(
             "\n",
             "⠏              [F] child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠸                overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
+            "⠸                overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "failed_child_with_overall_shows_marker"
     );
@@ -69,7 +69,7 @@ fn success_child_with_overall_renders_full_bar() {
         concat!(
             "\n",
             "⠏       child ███████████████████████████████████████████████████  5/5 0s\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "success_child_with_overall_renders_full_bar"
     );
@@ -100,7 +100,7 @@ fn both_child_and_overall_finish_render_exactly() {
         concat!(
             "\n",
             "⠏       child ██████████████████████████████████████████████████████████  5/5 1s\n",
-            "⠏     overall ██████████████████████████████████████████████████████████  3/3 1s"
+            "⠏     overall ██████████████████████████████████████████████████████████  3/3 1s",
         ),
         "both_child_and_overall_finish_render_exactly"
     );
@@ -131,7 +131,7 @@ fn overall_failed_while_child_succeeded_renders_marker() {
         concat!(
             "\n",
             "⠏                    child █████████████████████████████████████████████  5/5 1s\n",
-            "⠏              [F] overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 1s"
+            "⠏              [F] overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
         ),
         "overall_failed_while_child_succeeded_renders_marker"
     );
@@ -157,7 +157,7 @@ fn failed_child_custom_suffix_renders() {
         concat!(
             "\n",
             "⠏              [F] child ███████████████████████░░░░░░░░░░░░░░░░  3/5 1s aborted\n",
-            "⠸                overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d"
+            "⠸                overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d 5s",
         ),
         "failed_child_custom_suffix_renders"
     );
@@ -177,10 +177,45 @@ fn rate_and_eta_at_known_progress() {
         &term.contents(),
         concat!(
             "\n",
-            "⠼        test █████████████████████░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d"
+            "⠼        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
         ),
         "rate_and_eta_at_known_progress"
+    );
+}
+
+/// The eta the layout reserves is the eta the row draws, on every tick.
+///
+/// A tick with fresh progress draws through the frame's dirty-slot sync, which
+/// has always carried the eta. A *stale* tick — nothing advanced, so the slot
+/// is not dirty — redraws through `sync_slot`, which used to push its eta as
+/// `None`: the row lost `10s` while the budget still reserved its columns, and
+/// those columns came out as trailing pad. That is the measurement/draw
+/// divergence this pins, and the last frame is the one to read: it is the
+/// frame `sync_slot` alone produced.
+#[test]
+fn a_stale_tick_still_draws_the_reserved_eta() {
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let child = screen.add_bar(1000, "test");
+    // The first frame absorbs the initial dimension change. That frame
+    // short-circuits its dirty swap (`resized || …`), so the following tick is
+    // the one that turns the progress into a draw, and the tick after it is
+    // the genuinely stale one where `sync_slot` is the only writer.
+    screen.tick();
+    child.set_position(500);
+    ts.advance(Duration::from_secs(1));
+    screen.tick();
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "⠦        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
+            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
+        ),
+        "a_stale_tick_still_draws_the_reserved_eta"
     );
 }
 
@@ -197,8 +232,8 @@ fn idle_bar_renders_zero_rate() {
         &term.contents(),
         concat!(
             "\n",
-            "⠸        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d"
+            "⠸        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d 1m40s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d 1s",
         ),
         "idle_bar_renders_zero_rate"
     );
@@ -219,8 +254,8 @@ fn rate_stable_on_stale_ticks() {
         &term.contents(),
         concat!(
             "\n",
-            "⠼        test █████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
+            "⠼        test █████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 0s 0/d 8m20s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "rate_stable_on_stale_ticks/progress"
     );
@@ -233,8 +268,8 @@ fn rate_stable_on_stale_ticks() {
         &term.contents(),
         concat!(
             "\n",
-            "⠦        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 455/s\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d"
+            "⠦        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 455/s 1s\n",
+            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
         ),
         "rate_stable_on_stale_ticks/stale"
     );
@@ -263,8 +298,8 @@ fn rate_recomputed_after_more_progress() {
         &small,
         concat!(
             "\n",
-            "⠼        test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
+            "⠼        test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "rate_recomputed_after_more_progress/small"
     );
@@ -273,7 +308,7 @@ fn rate_recomputed_after_more_progress() {
         concat!(
             "\n",
             "⠦        test ███████████████████████████████░░░░░░░░░░░  1.5k/2.0k 0s 2.9k/s 0s\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d"
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "rate_recomputed_after_more_progress/large"
     );
@@ -302,7 +337,7 @@ fn label_within_the_prefix_budget_is_not_truncated() {
             "\n",
             "\n",
             "\n",
-            "⠸     abcdefghijklmnopqrstuvwxyz ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d"
+            "⠸     abcdefghijklmnopqrstuvwxyz ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s",
         ),
         "label_within_the_prefix_budget_is_not_truncated"
     );
@@ -323,7 +358,7 @@ fn zero_total_bar_renders() {
             "\n",
             "\n",
             "⠸        zero ██████████████████████████████████████████████████████  0/0 0s 0/d\n",
-            "⠹     overall ██████████████████████████████████████████████████████  0/0 0s 0/d"
+            "⠹     overall ██████████████████████████████████████████████████████  0/0 0s 0/d",
         ),
         "zero_total_bar_renders"
     );
@@ -352,8 +387,8 @@ fn no_line_carries_an_elapsed_bracket() {
             "\n",
             "\n",
             "\n",
-            "⠸      tool-a ░░░░░░░░░░░  0/3 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░  0/5 0s 0/d"
+            "⠸      tool-a ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
+            "⠹     overall ░░░░░░░░░░░  0/5 0s 0/d 5s",
         ),
         "no_line_carries_an_elapsed_bracket"
     );
