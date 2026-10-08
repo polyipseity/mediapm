@@ -568,7 +568,6 @@ pub(crate) fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Number of visible characters in `s` (after stripping ANSI SGR codes).
 /// Close a rendered slot string so it cannot leave the terminal mid-escape.
 ///
 /// Appends `\x1b[0m` when `s` contains an SGR escape and does not already end
@@ -582,6 +581,8 @@ pub(crate) fn close_sgr_state(s: String) -> String {
     if s.contains('\x1b') && !s.ends_with("\x1b[0m") { s + "\x1b[0m" } else { s }
 }
 
+/// Counts the characters of `s` that render on screen (after stripping ANSI
+/// SGR codes).
 pub(crate) fn visible_width(s: &str) -> usize {
     strip_ansi(s).chars().count()
 }
@@ -1080,6 +1081,9 @@ mod tests {
             [TrackStatus::Failed, TrackStatus::Warning, TrackStatus::Active, TrackStatus::Success]
         {
             let rendered = render_prefix_components(&parts, status);
+            // `!ends_with('m')` treats a non-reset final byte as plain text; it
+            // would misread a plain-text tail ending in the letter `m`, so keep
+            // every rendered prefix ending in a reset or a non-`m` byte.
             assert!(
                 rendered.ends_with("\x1b[0m") || !rendered.ends_with('m'),
                 "prefix ends mid-escape: {rendered:?}"
