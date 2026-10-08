@@ -30,7 +30,6 @@ use std::fmt;
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
 use mediapm_utils::progress::assert_frames_match;
 
 use crate::support::ScreenConfig;
@@ -189,7 +188,13 @@ impl Scenario {
     /// # Panics
     ///
     /// Panics when the drawn grid does not have one line per declared bar, or
-    /// when the grid differs from the one a taller terminal draws.
+    /// when any column the comparison holds differs between the two heights.
+    /// The comparison is [`assert_frames_match`], the same one the transcript
+    /// matcher uses: every column is exact except the spinner glyph, which
+    /// `indicatif` advances through a wall-clock token bucket, so which glyph a
+    /// row ends on follows the real-time spacing of its draws rather than the
+    /// layout under test (see the `frame_match` module docs). A row whose
+    /// spinner column holds anything other than a configured glyph still fails.
     pub fn render_at(&self, width: u16) -> String {
         let grid = self.render(ScreenConfig { width, height: self.height() });
         // Twice the derived height is more than any scenario needs, and it is a
@@ -205,15 +210,17 @@ impl Scenario {
             self.bars(),
             self.height()
         );
-        assert_eq!(
-            grid,
-            roomier,
-            "the {} scenario draws a different frame at {} rows than it does at {}, so its \
-             {} bars are not what it draws",
-            self.name(),
-            self.height(),
-            self.height() * 2,
-            self.bars()
+        assert_frames_match(
+            &grid,
+            &roomier,
+            &format!(
+                "the {} scenario draws a different frame at {} rows than it does at {}, so its \
+                 {} bars are not what it draws",
+                self.name(),
+                self.height(),
+                self.height() * 2,
+                self.bars()
+            ),
         );
         grid
     }
