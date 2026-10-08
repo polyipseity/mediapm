@@ -17,7 +17,7 @@
 //! front so its tail survives, a name needing less than its half handing the
 //! unused columns to the other); and the activity tag is drawn only from
 //! columns left after those three, so it yields first. The tool gives
-//! columns back only when a name would otherwise fall below [`NAME_FLOOR`].
+//! columns back only when a name would otherwise fall below `NAME_FLOOR`.
 //! Display order is unchanged: `marker workflow step (tool) activity`.
 //!
 //! A client label also replaces the built-in prefix components outright, so a
@@ -47,12 +47,12 @@ const NAME_FLOOR: usize = 4;
 /// split what remains down the middle (front-cut, keep tail, with a name
 /// needing less than its half handing the unused columns to the other), and
 /// the tool gives columns back only when a name would otherwise fall below
-/// [`NAME_FLOOR`]. The version yields head-columns first inside the group,
+/// `NAME_FLOOR`. The version yields head-columns first inside the group,
 /// and a shortened version takes the pair's brackets down with it. The
 /// suffix leads with the tally, then `elapsed`, `rate`, `eta`, and an
 /// elastic `custom`.
 ///
-/// The allocation lives in [`allocate_prefix`], shared with
+/// The allocation lives in `allocate_prefix`, shared with
 /// [`WorkerBarLabel`].
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
@@ -75,7 +75,7 @@ pub struct StepBarLabel {
     /// Sized at its natural rendered width before the names are split,
     /// because the tool outranks both; it shrinks from the front — giving
     /// columns to the names — only when a name would otherwise fall below
-    /// [`NAME_FLOOR`], and its parentheses are the group's decoration rather
+    /// `NAME_FLOOR`, and its parentheses are the group's decoration rather
     /// than part of the text, so a shortened name renders bare.
     pub tool: String,
     /// Tool version, rendered verbatim as `v7.1`, with no brackets of its
@@ -202,7 +202,7 @@ impl BarLabelTruncation for StepBarLabel {
 
 /// Allocation policy for a worker-slot (activity) bar.
 ///
-/// Same allocation as [`StepBarLabel`] (see [`allocate_prefix`]): marker
+/// Same allocation as [`StepBarLabel`] (see `allocate_prefix`): marker
 /// reserved, tool sized, names split evenly, and the `activity` tag drawn
 /// only from columns left after those three, so it yields first — matching
 /// the tail-drop behavior it replaces, where the tag was the last segment
@@ -227,7 +227,7 @@ pub struct WorkerBarLabel {
     /// Conductor tool name, rendered parenthesized as `(echo)`. Sized at its
     /// natural rendered width before the names are split, because the tool
     /// outranks both; it shrinks from the front only when a name would
-    /// otherwise fall below [`NAME_FLOOR`].
+    /// otherwise fall below `NAME_FLOOR`.
     pub tool: String,
     /// Worker state marker, rendered bracketed as `[active]` or `[idle]`. It
     /// trails the identifiers and is drawn only from columns left after the

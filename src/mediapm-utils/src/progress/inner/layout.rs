@@ -497,7 +497,7 @@ impl ProgressRenderer {
     /// block a draw: every push here happens while the gate is shut, and a
     /// frame whose bars are all finished has no tick of its own to flush the
     /// dirty lines with — see the flush at the end of
-    /// [`run_frame`](super::frame::ProgressRenderer::run_frame).
+    /// [`run_frame`](super::ProgressRenderer::run_frame).
     ///
     /// `pub(super)` because the parent's [`recompute_layout`](Self::recompute_layout) and
     /// [`finish_slot`](Self::finish_slot) both push
