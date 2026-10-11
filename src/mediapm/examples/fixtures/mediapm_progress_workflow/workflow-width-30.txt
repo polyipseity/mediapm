@@ -1,5 +1,5 @@
 ⠙     efault s3 (ffmpeg)
-⠙     efault s4 (yt-dlp)
+⠹     efault s4 (yt-dlp)
 ⠏             [W] [idle]
 ⠏             [F] [idle]
 ⠏                 [idle]

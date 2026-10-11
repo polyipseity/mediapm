@@ -941,6 +941,19 @@ pub(crate) fn apply_failed_bar_style(
     pb.set_style(bar_style(&frame_template(".red", "red/dim", prefix_w, suffix_w, draw_fill)));
 }
 
+/// The style for a slot that has never held content: one dynamic field that
+/// stretches the message to the terminal width, so the row renders as blank
+/// spaces with no spinner and no fill.
+///
+/// Deliberately NOT the frame template: `frame_template` carries `{spinner}`
+/// and `{wide_bar}`, and a blank row drawing either is the observed desync
+/// class — a glyph or a fill on a row that must read as empty. A fixed-width
+/// no-spinner shape was considered and rejected: an unbound slot keeps its
+/// last drawn content (the retention contract) and is not re-styled while it
+/// holds it, so padding computed from a settled width could outlive a
+/// terminal shrink and spill onto the row below, which is the row-wrap defect
+/// class the sweep tests pin. The rendered pixels are the same either way —
+/// an empty line — and `{wide_msg}` follows the terminal width for free.
 pub(crate) fn blank_bar_style() -> ProgressStyle {
     ProgressStyle::with_template("{wide_msg}").expect("invalid blank bar template")
 }

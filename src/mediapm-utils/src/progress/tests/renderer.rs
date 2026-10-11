@@ -1,7 +1,7 @@
 use super::super::inner::*;
 use super::*;
 
-// ---- Phase 4: BufferedTerm / dirty tracking tests ----------------------
+// ---- Phase 4: BufferedTerm / per-frame sync tests ---------------------
 
 #[test]
 fn multiple_mutations_before_tick_single_draw() {
@@ -131,7 +131,7 @@ fn clean_ticks_draw_the_same_pixels() {
     // Tick 2: no mutations → content body (everything except spinner)
     // must be identical.  The daemon ticker is disabled above, so the
     // spinner char is deterministic too; we still compare only the body
-    // to keep the assertion focused on dirty tracking.
+    // to keep the assertion focused on the drawn content.
     ts.advance(std::time::Duration::from_millis(50));
     group.tick();
     let second = term.contents();
@@ -374,11 +374,11 @@ fn sync_slot_preserves_custom_suffix_on_attach() {
     // sync_slot delegates to sync_snapshot_to_bar which appends the
     // custom suffix.
     //
-    // Bar A is kept ACTIVE (not finished) so the tick drain-loop (which
-    // unconditionally re-syncs non-active bars) does not rescue the
-    // suffix.  Only the dirty-tracking loop processes A — and without
-    // the fix A is not dirty after the attach, so the wrong suffix
-    // persists.
+    // Bar A is kept ACTIVE (not finished) so a terminal row's finish path
+    // cannot mask a suffix regression. The frame re-syncs every bound slot
+    // each tick, so A's suffix is recomputed from the latest state after the
+    // attach — without that per-frame sync a suffix left stale by the attach
+    // would persist until some later mutation re-marked the row.
     use std::sync::Arc;
     use std::time::Duration;
 

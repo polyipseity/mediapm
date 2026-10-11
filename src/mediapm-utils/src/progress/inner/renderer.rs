@@ -17,8 +17,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
@@ -190,13 +190,17 @@ struct SlotCache {
     /// content pushed onto the bar, so a rebound-and-released slot is never
     /// reported as blank.
     blank: Cell<bool>,
-    /// `true` once the slot's terminal-state transition
-    /// ([`finish_slot`](ProgressRenderer::finish_slot)) has been applied to
-    /// the bar and nothing has reactivated the row since. The transition is
-    /// applied once per activation: a finished row that was re-finished every
-    /// frame would re-draw (and re-tick) a row that finished long ago. A row
-    /// that goes active again clears it.
-    terminal_rendered: Cell<bool>,
+    /// The source whose terminal-state transition this bar has already
+    /// carried.
+    ///
+    /// `Some` once [`finish_slot`](ProgressRenderer::finish_slot) has applied
+    /// its abandon/finish to the bar for exactly that source. The record is
+    /// per (slot, source) pair rather than a per-slot flag: a band shift that
+    /// moves an already-terminal source into another slot re-applies the
+    /// transition for that new bar (which has never carried it), while an
+    /// untouched terminal row is never re-finished — and re-ticked — on later
+    /// frames. A row that goes active again clears the record.
+    terminal_finished_for: RefCell<Option<Weak<SharedState>>>,
     /// `true` while this slot holds the blank a cleared source drew. A cleared
     /// row stays blank until a rebind — [`attach`](ProgressRenderer::attach)
     /// or the height-growth reattach — lands a source in the slot, which
@@ -267,7 +271,7 @@ impl SlotCache {
             suffix: RefCell::new(String::new()),
             prefix: RefCell::new(String::new()),
             blank: Cell::new(false),
-            terminal_rendered: Cell::new(false),
+            terminal_finished_for: RefCell::new(None),
             cleared_blank_held: Cell::new(false),
             style_key: Cell::new(StyleKey::unknown()),
         }
@@ -282,12 +286,37 @@ impl SlotCache {
         self.position.set(u64::MAX);
     }
 
+    /// Whether this bar has already carried the terminal transition for
+    /// `source`.
+    ///
+    /// Answers false after a rebind — a source this bar has never finished
+    /// for upgrades to nothing here or fails the pointer comparison — which
+    /// is what re-applies the transition to the bar the source just landed on.
+    fn has_terminal_finished_for(&self, source: &Arc<SharedState>) -> bool {
+        self.terminal_finished_for
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|held| Arc::ptr_eq(&held, source))
+    }
+
+    /// Record that this bar has carried the terminal transition for `source`.
+    fn mark_terminal_finished(&self, source: &Arc<SharedState>) {
+        *self.terminal_finished_for.borrow_mut() = Some(Arc::downgrade(source));
+    }
+
+    /// Forget the recorded source: the row is live again (or blanked), so its
+    /// next terminal state re-applies the transition.
+    fn clear_terminal_finished(&self) {
+        self.terminal_finished_for.borrow_mut().take();
+    }
+
     /// Record the blank state [`blank_new_bar`] just pushed onto a fresh bar.
     fn mark_blanked(&self) {
         self.prefix.borrow_mut().clear();
         *self.suffix.borrow_mut() = BLANK_MESSAGE.to_string();
         self.blank.set(true);
-        self.terminal_rendered.set(false);
+        self.clear_terminal_finished();
         // The blank is a style input the frame does not derive, so the key
         // goes unknown: the next bind re-styles the row whatever its derived
         // inputs say, which is what keeps a re-bound slot from drawing real
@@ -487,10 +516,10 @@ impl ProgressRenderer {
                 slot.cache.style_key.set(style_key);
             }
             if snap.status == TrackStatus::Active {
-                // The row is live, so its terminal transition is unrendered:
+                // The row is live, so its terminal transition is unrecorded:
                 // when it next reaches a terminal state the frame applies the
-                // transition again exactly once.
-                slot.cache.terminal_rendered.set(false);
+                // transition again exactly once for that source.
+                slot.cache.clear_terminal_finished();
             }
             // The timing comes from `timing_strings`, the same helper the
             // measurement pass calls, so the message this pushes occupies the

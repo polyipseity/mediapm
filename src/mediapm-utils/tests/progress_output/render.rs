@@ -36,8 +36,8 @@ fn active_child_with_overall_renders_exactly() {
 
 /// One budget per frame, whatever each row's suffix says.
 ///
-/// A row's elapsed string grows on the clock (`0s` becomes `1m1s` across the
-/// sixty-second boundary) with no mutation behind it, and the row beside it
+/// A row's elapsed string grows on the clock (`0s` becomes `4m18s` across the
+/// minute boundary) with no mutation behind it, and the row beside it
 /// carries a longer count segment. The frame must settle one `prefix_w` and
 /// one `suffix_w` from the widest row and give every row the same one, so all
 /// lines end their fill at the same column. This is the contract the
@@ -51,18 +51,18 @@ fn every_row_shares_one_budget_when_a_suffix_grows() {
     let _child = screen.add_bar(5, "child");
     let _sibling = screen.add_bar(12345, "sibling");
     screen.tick();
-    // Sixty-one seconds of wall clock with no mutation at all: the elapsed
-    // suffix crosses `0s` into `1m1s` and the count segments keep their
-    // different widths.
-    ts.advance(Duration::from_secs(61));
+    // Four minutes eighteen seconds of wall clock with no mutation at all:
+    // the elapsed suffix crosses the minute boundary from `0s` to `4m18s`,
+    // every row's maximum grows, and the settlement must follow on this tick.
+    ts.advance(Duration::from_secs(258));
     screen.tick();
     assert_eq!(
         &term.contents(),
         concat!(
             "\n",
-            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 1m1s 0/d 5s\n",
-            "⠼     sibling ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/12k 1m1s 0/d 3h25m\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1m1s 0/d 1s"
+            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4m18s 0/d 5s\n",
+            "⠼     sibling ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/12k 4m18s 0/d 3h25m\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 4m18s 0/d 1s"
         ),
         "every_row_shares_one_budget_when_a_suffix_grows"
     );

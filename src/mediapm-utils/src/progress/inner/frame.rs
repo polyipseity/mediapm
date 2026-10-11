@@ -197,16 +197,18 @@ impl ProgressRenderer {
                 );
                 if snap.status == TrackStatus::Active {
                     // bar.tick() called in the spinner loop below.
-                } else if !slot.cache.terminal_rendered.get() {
-                    // The terminal transition is applied once per activation.
-                    // A finished row keeps its done style through
+                } else if !slot.cache.has_terminal_finished_for(source) {
+                    // The terminal transition is applied once per source per
+                    // bar. A finished row keeps its done style through
                     // `sync_slot`'s per-frame re-style; what must not repeat
                     // is the abandon/finish and its extra tick, which would
-                    // re-draw a row that finished long ago on every frame.
+                    // re-draw a row that finished long ago on every frame —
+                    // while a source shifted onto a bar that has never
+                    // carried its transition applies it there exactly once.
                     // A cleared row never reaches here: `sync_slot` in step 2
                     // blanks it on the clear transition and holds it blank.
                     pushed |= self.finish_slot(i, snap.status);
-                    slot.cache.terminal_rendered.set(true);
+                    slot.cache.mark_terminal_finished(source);
                 }
             }
         }
@@ -264,8 +266,9 @@ impl ProgressRenderer {
     /// Returns `true` unconditionally: the final `tick` is a real push that
     /// the frame's open window has to draw, so the caller's owed-draw
     /// bookkeeping must count the slot even when every string dedup landed.
-    /// Callers apply it once per activation — the frame guards it with
-    /// [`SlotCache::terminal_rendered`], and [`finalize`](Self::finalize)
+    /// Callers apply it once per source per bar — the frame guards it with
+    /// [`SlotCache::terminal_finished_for`] (a rebind re-applies it to the
+    /// bar the source just landed on), and [`finalize`](Self::finalize)
     /// runs it once at screen teardown.
     pub(super) fn finish_slot(&self, i: usize, status: TrackStatus) -> bool {
         let slot = &self.slots[i];
