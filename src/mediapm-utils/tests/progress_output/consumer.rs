@@ -63,11 +63,16 @@ fn tool_sync_recycles_finished_slots() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠙     tool4 ████████████████████████████████████████████████████████████  1/1 0s\n",
-            "⠙     tool5 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "⠏     tool4 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "⠏     tool5 ████████████████████████████████████████████████████████████  1/1 0s\n",
             "⠏     tool6 ████████████████████████████████████████████████████████████  1/1 0s\n",
             "⠏     tool7 ████████████████████████████████████████████████████████████  1/1 0s",
         ),
+        // The spinner column follows how often a bar receives a position push
+        // (`set_position` advances indicatif's tick counter), and the per-frame
+        // sync re-pushes it on every frame the row's rendered state differs.
+        // The row content — prefix, fill, suffix — is what this test pins; the
+        // glyph column is the animation phase the transcript matcher exempts.
         "tool_sync_recycles_finished_slots"
     );
 }
@@ -87,11 +92,14 @@ fn finished_bars_are_retained() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠙     task0 ████████████████████████████████████████████████████████████  1/1 0s\n",
-            "⠙     task1 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "⠏     task0 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "⠏     task1 ████████████████████████████████████████████████████████████  1/1 0s\n",
             "⠏     task2 ████████████████████████████████████████████████████████████  1/1 0s\n",
             "⠏     task3 ████████████████████████████████████████████████████████████  1/1 0s",
         ),
+        // Spinner column as in `tool_sync_recycles_finished_slots`: the glyph
+        // tracks draw spacing under the per-frame sync; the retained row
+        // content is the assertion.
         "finished_bars_are_retained"
     );
 }

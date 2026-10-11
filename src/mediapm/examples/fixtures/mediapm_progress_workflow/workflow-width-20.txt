@@ -1,5 +1,5 @@
 ⠙      ault s3
-⠹      ault s4
+⠙      ault s4
 ⠏          [W]
 ⠏          [F]
 ⠏       [idle]

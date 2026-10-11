@@ -3,7 +3,7 @@
 //! terminal-state pass a finished slot gets.
 //!
 //! `run_frame` is the whole sequence in one place: suppress writes, settle the
-//! layout, absorb a resize, sync the rows that are dirty, emit the debug
+//! layout, absorb a resize, sync every bound row, emit the debug
 //! snapshot, advance the spinners, draw once, unsuppress. Every other entry
 //! point either delegates here or is a step of it, so there is one place to
 //! read to know what a frame contains and in what order.
@@ -36,7 +36,7 @@ impl ProgressRenderer {
     /// Emit a JSONL snapshot of every slot's state to the configured debug sink.
     ///
     /// No-op when no sink is configured.  Called by
-    /// [`run_frame`](Self::run_frame) **after** the dirty slots are synced, so
+    /// [`run_frame`](Self::run_frame) **after** the slots' timing is synced, so
     /// `rate_bytes_per_sec` and `eta_secs` report the frame just computed
     /// rather than the previous one.
     fn emit_debug_snapshot(&self) {
@@ -93,11 +93,6 @@ impl ProgressRenderer {
                         rate_bytes_per_sec: rate,
                         eta_secs: eta,
                         suffix: snap.suffix.clone(),
-                        dirty: slot
-                            .source
-                            .borrow()
-                            .as_ref()
-                            .is_some_and(|s| s.dirty.load(Ordering::Acquire)),
                     }
                 })
                 .collect();
@@ -112,7 +107,7 @@ impl ProgressRenderer {
     }
 
     /// Execute one frame: suppress writes, recompute layout, handle resize,
-    /// sync every dirty slot (rate/ETA), emit the debug snapshot, advance
+    /// sync every slot (rate/ETA), emit the debug snapshot, advance
     /// spinners and draw once, then unsuppress.
     ///
     /// Every write happens while the gate is suppressed except the final
@@ -120,7 +115,7 @@ impl ProgressRenderer {
     /// next bar operation while the gate is open).
     ///
     /// The frame also tracks whether steps 2–4 pushed anything: every push
-    /// happens while the gate is shut, so a dirty line owes the block a
+    /// happens while the gate is shut, so a pushed line owes the block a
     /// draw, and on a frame whose bars are all finished the tick loop below
     /// is what would normally pay that debt (any bar's draw repaints every
     /// dirty line of the block). When nothing ticks, the flush at the end of
@@ -149,30 +144,42 @@ impl ProgressRenderer {
         // Step 3: Resize handling.
         let resized = self.maybe_adjust_for_resize();
         if resized {
-            // A resize re-syncs every slot through paths that report their
-            // own pushes to no one, so count the resize itself: those pushes
-            // owe a draw whether or not their dedup comparisons fired.
+            // A resize re-syncs slots through paths that report their own
+            // pushes to no one (height growth rebinds orphaned bars and
+            // restyles fresh slots), so count the resize itself: those
+            // pushes owe a draw whether or not their dedup comparisons fired.
+            // Every frame re-syncs every slot by width anyway, so there is
+            // no per-slot dirtying left to do here.
             pushed = true;
-            for slot in &self.slots {
-                if let Some(ref source) = *slot.source.borrow() {
-                    source.dirty.store(true, Ordering::Release);
-                }
-            }
         }
 
-        // Step 4: Sync all dirty slots to bars (still suppressed).
+        // Step 4: Sync every bound slot to its bar (still suppressed).
+        //
+        // No slot is skipped. The settled widths and the row's timing strings
+        // move with the clock and the terminal, so a slot that mutated is not
+        // distinguishable from one that did not, and filtering on it is how a
+        // row went stale — an elapsed string that grew from `0s` to `4m18s`
+        // between mutations never re-settled the row that carried it. String,
+        // position, and length dedup inside `sync_snapshot_to_bar` is what
+        // keeps the terminal writes down.
         for (i, slot) in self.slots.iter().enumerate() {
             if let Some(ref source) = *slot.source.borrow() {
-                let dirty = resized || source.dirty.swap(false, Ordering::AcqRel);
-                if !dirty {
+                let snap = source.snapshot();
+
+                if source.is_cleared() {
+                    // A cleared row is governed by `sync_slot`'s clear
+                    // transition: blank on the frame the clear lands, blank
+                    // while it stays cleared, and re-shown only by the rebind
+                    // that puts a live source in the slot. Pushing content
+                    // here would re-show a row the clear emptied and defeat
+                    // the one-shot blank.
                     continue;
                 }
-                let snap = source.snapshot();
 
                 // One helper computes the timing for every caller: the strings
                 // below are what the measurement pass in `recompute_layout`
                 // reserved columns for on this very frame. Unlike the read-only
-                // callers, the frame's dirty-slot sync owns the EMA advance, so
+                // callers, the frame's slot sync owns the EMA advance, so
                 // it applies the update for this snapshot before pushing.
                 let timing = timing_strings(&snap, &self.slots_timing[i], &*self.time_source);
                 if let Some(update) = timing.ema_update {
@@ -190,10 +197,16 @@ impl ProgressRenderer {
                 );
                 if snap.status == TrackStatus::Active {
                     // bar.tick() called in the spinner loop below.
-                } else if source.is_cleared() {
-                    pushed |= self.blank_bar(i);
-                } else {
+                } else if !slot.cache.terminal_rendered.get() {
+                    // The terminal transition is applied once per activation.
+                    // A finished row keeps its done style through
+                    // `sync_slot`'s per-frame re-style; what must not repeat
+                    // is the abandon/finish and its extra tick, which would
+                    // re-draw a row that finished long ago on every frame.
+                    // A cleared row never reaches here: `sync_slot` in step 2
+                    // blanks it on the clear transition and holds it blank.
                     pushed |= self.finish_slot(i, snap.status);
+                    slot.cache.terminal_rendered.set(true);
                 }
             }
         }
@@ -201,9 +214,9 @@ impl ProgressRenderer {
         // Step 5: Emit the debug snapshot now that rate/ETA are current.
         //
         // This must come after Step 4, not before it: the snapshot reports
-        // `slots_timing[i].rate`, which Step 4 recomputes for every dirty
-        // slot, so emitting earlier would make `rate_bytes_per_sec` and
-        // `eta_secs` one frame stale on terminal screens.
+        // `slots_timing[i].rate`, which Step 4 recomputes for every slot, so
+        // emitting earlier would make `rate_bytes_per_sec` and `eta_secs` one
+        // frame stale on terminal screens.
         self.emit_debug_snapshot();
 
         // Step 6: Advance spinners and draw once.
@@ -251,6 +264,9 @@ impl ProgressRenderer {
     /// Returns `true` unconditionally: the final `tick` is a real push that
     /// the frame's open window has to draw, so the caller's owed-draw
     /// bookkeeping must count the slot even when every string dedup landed.
+    /// Callers apply it once per activation — the frame guards it with
+    /// [`SlotCache::terminal_rendered`], and [`finalize`](Self::finalize)
+    /// runs it once at screen teardown.
     pub(super) fn finish_slot(&self, i: usize, status: TrackStatus) -> bool {
         let slot = &self.slots[i];
         let prefix_w = self.prefix_w.get();

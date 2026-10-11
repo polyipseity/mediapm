@@ -157,8 +157,6 @@ pub struct DebugSlotState {
     pub eta_secs: Option<f64>,
     /// Custom suffix (empty string when none).
     pub suffix: String,
-    /// Whether the source had the dirty flag set this tick.
-    pub dirty: bool,
 }
 
 /// Snapshot of a single tick cycle, serialized as one JSON line.

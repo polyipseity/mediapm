@@ -4,31 +4,10 @@ use super::*;
 // ---- Phase 4: BufferedTerm / dirty tracking tests ----------------------
 
 #[test]
-fn dirty_tracking_initial_state_starts_dirty() {
-    // The SharedState dirty flag starts true so the very first tick always
-    // draws, even without explicit mutations.
-    let term = indicatif::InMemoryTerm::new(10, 80);
-    let terminal = ProgressTerminal::builder()
-        .with_term_like(Box::new(term.clone()))
-        .with_pre_roll_capture(super::pre_roll_capture())
-        .capacity(4)
-        // Disable the daemon ticker: it fires group.tick() on real
-        // wall-clock time, injecting extra ticks/draws beyond the manual
-        // ticks this test controls.
-        .with_ticker_enabled(false)
-        .build();
-    let group = terminal.screen().build();
-    let _bar = group.add_bar(100, "test");
-
-    group.tick();
-    let content = term.contents();
-    assert!(!content.is_empty(), "first tick must draw, got empty");
-}
-
-#[test]
 fn multiple_mutations_before_tick_single_draw() {
-    // Several mutations between ticks should all be reflected in a single
-    // coherent draw after the next tick, without intermediate draws.
+    // Several mutations between ticks are all reflected in one coherent draw
+    // after the next tick: the frame syncs every slot from the latest state,
+    // and the string/position dedup is what keeps that one draw.
     let term = indicatif::InMemoryTerm::new(10, 80);
     let terminal = ProgressTerminal::builder()
         .with_term_like(Box::new(term.clone()))
@@ -108,10 +87,11 @@ fn finalize_produces_final_output() {
 }
 
 #[test]
-fn dirty_tracking_skips_clean_ticks() {
-    // A tick without any mutation must produce identical terminal content
-    // to the previous tick (dirty tracking skips the slot, bar.tick() is
-    // not called, no redraw occurs).
+fn clean_ticks_draw_the_same_pixels() {
+    // A tick without any mutation must produce identical terminal content to
+    // the previous tick. Nothing remembers a frame any more: every tick
+    // re-measures and re-applies every slot, and the string/position dedup is
+    // what leaves the pixels untouched when the composed strings did not move.
 
     // Helper: extract the body (everything after the spinner char).
     fn content_body(s: &str) -> &str {
@@ -179,8 +159,10 @@ fn dirty_tracking_skips_clean_ticks() {
 }
 
 #[test]
-fn dirty_tracking_draws_on_mutation() {
-    // A tick after mutation must reflect the new state in the output.
+fn mutations_reach_the_next_tick() {
+    // A tick after mutation must reflect the new state in the output: the
+    // frame re-syncs every slot from the latest shared state, so a mutation
+    // is on screen at the next tick whatever else the frame re-derived.
     use super::super::inner::DimensionSource;
     use std::sync::Arc;
 

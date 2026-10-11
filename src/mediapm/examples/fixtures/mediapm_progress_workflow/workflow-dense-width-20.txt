@@ -5,8 +5,8 @@
 ⠏       [idle]
 ⠏       [idle]
 ⠏          [W]
-⠇      ault s8
-⠧      ault s9
-⠦          s10
-⠦          s11
+⠧      ault s8
+⠦      ault s9
+⠴          s10
+⠴          s11
 ⠏      ault s8 7/26

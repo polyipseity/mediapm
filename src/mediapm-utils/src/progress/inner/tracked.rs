@@ -36,11 +36,12 @@ pub enum TrackStatus {
 }
 
 impl TrackStatus {
-    /// Compact numeric encoding for dedup comparison (Active=0, Success=1,
-    /// Failed=2, Warning=3).
+    /// Compact numeric encoding of the status (Active=0, Success=1, Failed=2,
+    /// Warning=3).
     ///
-    /// `pub(super)` because the parent's per-slot style cache stores this value
-    /// to skip a redundant `set_style`.
+    /// Feeds the renderer's per-slot style key, which suppresses a redundant
+    /// `set_style` write: the style's colours are a function of the status, so
+    /// two frames with the same key draw the same style.
     pub(super) fn code(self) -> u8 {
         match self {
             Self::Active => 0,
@@ -68,10 +69,6 @@ pub(crate) struct SharedState {
     /// field layout — the client does.
     pub(super) truncation: RwLock<Option<Arc<dyn crate::progress::BarLabelTruncation>>>,
     status: AtomicU8,
-    /// `true` when this handle's rendered state changed since the last push,
-    /// so the renderer must draw the slot again. Cleared by the renderer's
-    /// single push point after it has copied the values onto the bar.
-    pub(super) dirty: AtomicBool,
     disabled: AtomicBool,
     /// Visual style for the bar (see [`BarStyle`]). Defaults to
     /// [`StepCount`](BarStyle::StepCount); set to
@@ -81,6 +78,12 @@ pub(crate) struct SharedState {
     style: AtomicU8,
     start_time: RwLock<Instant>,
     finished_elapsed: RwLock<Option<Duration>>,
+    /// `true` between a [`finish_and_clear`](ProgressBarHandle::finish_and_clear)
+    /// call and the frame that blanks the row for it. The clear is the one
+    /// transition the consumer declares; this flag is what lets the renderer
+    /// apply its blank once and then leave the row alone, with no per-frame
+    /// change detection.
+    cleared_blank_pending: AtomicBool,
     time_source: Arc<dyn TimeSource>,
 }
 
@@ -156,11 +159,11 @@ impl SharedState {
             suffix_components: RwLock::new(SuffixComponents::default()),
             truncation: RwLock::new(None),
             status: AtomicU8::new(0),
-            dirty: AtomicBool::new(true),
             disabled: AtomicBool::new(false),
             style: AtomicU8::new(style as u8),
             start_time: RwLock::new(time_source.now()),
             finished_elapsed: RwLock::new(None),
+            cleared_blank_pending: AtomicBool::new(false),
             time_source,
         }
     }
@@ -211,18 +214,16 @@ impl SharedState {
         }
     }
 
-    /// Re-activate a finished bar. Clears the terminal state marker,
-    /// resets elapsed tracking, and marks the bar dirty so the next
-    /// tick redraws it as active.
+    /// Re-activate a finished bar. Clears the terminal state marker and
+    /// resets elapsed tracking; the next frame redraws the row as active
+    /// because it re-syncs every slot from this shared state.
     pub(crate) fn restart(&self) {
         self.status.store(0, Ordering::Relaxed); // Active
         *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") = None;
         *self.start_time.write().expect("shared_state start_time lock") = self.time_source.now();
-        self.dirty.store(true, Ordering::Release);
     }
 
     pub(crate) fn mark_finished(&self) {
-        self.dirty.store(true, Ordering::Release);
         let elapsed =
             self.time_source.now() - *self.start_time.read().expect("shared_state start_time lock");
         *self.finished_elapsed.write().expect("shared_state finished_elapsed lock") = Some(elapsed);
@@ -240,6 +241,15 @@ impl SharedState {
         self.status.load(Ordering::Relaxed) == 5
     }
 
+    /// Consume the clear's one-shot blank request.
+    ///
+    /// Returns `true` exactly once per [`finish_and_clear`](ProgressBarHandle::finish_and_clear)
+    /// call: the frame that observes the clear blanks the row, and every later
+    /// frame sees `false` and leaves the blank row alone.
+    pub(super) fn take_cleared_blank(&self) -> bool {
+        self.cleared_blank_pending.swap(false, Ordering::AcqRel)
+    }
+
     pub(super) fn style(&self) -> BarStyle {
         match self.style.load(Ordering::Relaxed) {
             1 => BarStyle::WorkerSpinner,
@@ -249,7 +259,6 @@ impl SharedState {
 
     fn set_style(&self, style: BarStyle) {
         self.style.store(style as u8, Ordering::Relaxed);
-        self.dirty.store(true, Ordering::Release);
     }
 }
 
@@ -343,19 +352,16 @@ impl ProgressBarHandle {
     /// Change the total mid-flight for dynamic workloads.
     pub fn set_total(&self, total: u64) {
         self.state.total.store(total, Ordering::Relaxed);
-        self.state.dirty.store(true, Ordering::Release);
     }
 
     /// Advance the bar by `delta` work units.
     pub fn advance(&self, delta: u64) {
         self.state.position.fetch_add(delta, Ordering::Relaxed);
-        self.state.dirty.store(true, Ordering::Release);
     }
 
     /// Jump to an absolute position.
     pub fn set_position(&self, pos: u64) {
         self.state.position.store(pos, Ordering::Relaxed);
-        self.state.dirty.store(true, Ordering::Release);
     }
 
     /// Set prefix components directly (source-data API).
@@ -376,7 +382,6 @@ impl ProgressBarHandle {
                 self.state.prefix_components.write().expect("shared_state prefix_components lock");
             *pc = components;
         }
-        self.state.dirty.store(true, Ordering::Release);
     }
 
     /// Set suffix components directly (source-data API).
@@ -403,7 +408,6 @@ impl ProgressBarHandle {
                 self.state.suffix_components.write().expect("shared_state suffix_components lock");
             *sc = components;
         }
-        self.state.dirty.store(true, Ordering::Release);
     }
 
     /// Install client-supplied truncation logic.
@@ -425,7 +429,6 @@ impl ProgressBarHandle {
             let mut t = self.state.truncation.write().expect("shared_state truncation lock");
             *t = Some(truncation);
         }
-        self.state.dirty.store(true, Ordering::Release);
     }
 
     /// Set the visual style for the bar (see [`BarStyle`]).
@@ -478,6 +481,7 @@ impl ProgressBarHandle {
     /// disappear immediately.
     pub fn finish_and_clear(&self) {
         self.state.status.store(5, Ordering::Relaxed); // FinishedAndCleared
+        self.state.cleared_blank_pending.store(true, Ordering::Release);
         self.state.mark_finished();
     }
 
@@ -493,9 +497,9 @@ impl ProgressBarHandle {
         self.state.is_finished()
     }
 
-    /// Re-activate a finished bar. Clears the terminal state marker,
-    /// resets elapsed tracking, and marks the bar dirty so the next
-    /// tick redraws it as active.
+    /// Re-activate a finished bar. Clears the terminal state marker and
+    /// resets elapsed tracking; the next frame redraws the row as active
+    /// because it re-syncs every slot from this shared state.
     pub fn restart(&self) {
         self.state.restart();
     }

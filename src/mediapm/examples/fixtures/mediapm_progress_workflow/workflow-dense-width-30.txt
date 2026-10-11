@@ -5,8 +5,8 @@
 ⠏                 [idle]
 ⠏                 [idle]
 ⠏             [W] [idle]
-⠇     ault s8 dia-tagger
-⠧     efault s9 (import)
-⠦     ault s10 (archive)
-⠦     fault s11 (ffmpeg)
+⠧     ault s8 dia-tagger
+⠦     efault s9 (import)
+⠴     ault s10 (archive)
+⠴     fault s11 (ffmpeg)
 ⠏     ault s8 dia-tagger 7/26

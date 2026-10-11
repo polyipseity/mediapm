@@ -1,5 +1,5 @@
 ⠙     default s3 (ffmpeg) [active]
-⠹     default s4 (yt-dlp) [active]
+⠙     default s4 (yt-dlp) [active]
 ⠏                       [W] [idle]
 ⠏                       [F] [idle]
 ⠏                           [idle]

@@ -84,9 +84,9 @@ pub trait ProgressBarApi: Send + Sync {
     /// truncation order. When unset, the built-in rendering remains the
     /// fallback.
     fn set_truncation(&self, truncation: Arc<dyn BarLabelTruncation>);
-    /// Re-activate a finished bar. Clears the terminal state marker,
-    /// resets elapsed tracking, and marks the bar dirty so the next
-    /// tick redraws it as active.
+    /// Re-activate a finished bar. Clears the terminal state marker and
+    /// resets elapsed tracking; the next frame redraws the row as active
+    /// because it re-syncs every slot from this shared state.
     fn restart(&self);
     /// Set the visual style for the bar (see [`BarStyle`]).
     ///

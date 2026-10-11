@@ -5,8 +5,8 @@
 ⠏                           [idle]
 ⠏                           [idle]
 ⠏                       [W] [idle]
-⠇        default s8 (media-tagger)
-⠧     default s9 (import) [active]
-⠦            default s10 (archive)
-⠦             default s11 (ffmpeg)
+⠧        default s8 (media-tagger)
+⠦     default s9 (import) [active]
+⠴            default s10 (archive)
+⠴             default s11 (ffmpeg)
 ⠏        default s8 (media-tagger) 7/26

@@ -389,9 +389,9 @@ impl RecordingTrackedHandle {
         self.mark_finished();
     }
 
-    /// Re-activate a finished bar. Clears the terminal state marker,
-    /// resets elapsed tracking, and marks the bar dirty so the next
-    /// tick redraws it as active.
+    /// Re-activate a finished bar. Clears the terminal state marker and
+    /// resets elapsed tracking; the next frame redraws the row as active
+    /// because it re-syncs every slot from the shared state.
     pub fn restart(&self) {
         self.push(ProgressOp::Restart);
         *self.finished_elapsed.lock().expect("recording finished_elapsed lock") = None;

@@ -34,6 +34,63 @@ fn active_child_with_overall_renders_exactly() {
     );
 }
 
+/// One budget per frame, whatever each row's suffix says.
+///
+/// A row's elapsed string grows on the clock (`0s` becomes `1m1s` across the
+/// sixty-second boundary) with no mutation behind it, and the row beside it
+/// carries a longer count segment. The frame must settle one `prefix_w` and
+/// one `suffix_w` from the widest row and give every row the same one, so all
+/// lines end their fill at the same column. This is the contract the
+/// change-detection removal leans on: nothing about the settlement is
+/// remembered between frames.
+#[test]
+fn every_row_shares_one_budget_when_a_suffix_grows() {
+    let ts = Arc::new(TestTimeSource::new());
+    let (terminal, term) = mk_with_capacity_and_ts(4, 80, 3, &ts);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let _child = screen.add_bar(5, "child");
+    let _sibling = screen.add_bar(12345, "sibling");
+    screen.tick();
+    // Sixty-one seconds of wall clock with no mutation at all: the elapsed
+    // suffix crosses `0s` into `1m1s` and the count segments keep their
+    // different widths.
+    ts.advance(Duration::from_secs(61));
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 1m1s 0/d 5s\n",
+            "⠼     sibling ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/12k 1m1s 0/d 3h25m\n",
+            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1m1s 0/d 1s"
+        ),
+        "every_row_shares_one_budget_when_a_suffix_grows"
+    );
+}
+
+/// An unbound slot is an empty line of the frame, not a foreign one.
+///
+/// The screen reserves four slots and binds one bar, so the slots with no
+/// source draw as empty lines — no spinner, no fill — and the frame keeps
+/// redrawing them, so a later bind finds the bar already blank.
+#[test]
+fn an_unbound_slot_draws_an_empty_line() {
+    let (terminal, term) = mk_with_capacity(4, 80, 4);
+    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let _child = screen.add_bar(5, "child");
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "\n",
+            "\n",
+            "\n",
+            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s"
+        ),
+        "an_unbound_slot_draws_an_empty_line"
+    );
+}
+
 /// A failed child carries the `[F]` marker and loses its rate field.
 #[test]
 fn failed_child_with_overall_shows_marker() {

@@ -81,7 +81,6 @@ fn progress_debug_emits_one_line_per_draw() {
         r#""position":2"#,
         r#""total":4"#,
         r#""status""#,
-        r#""dirty""#,
     ] {
         assert!(line.contains(field), "bar state is missing {field}: {line}");
     }

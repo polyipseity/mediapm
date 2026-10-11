@@ -2,6 +2,6 @@
 ⠏           [W]
 ⠏           [F]
 ⠏        [idle]
-⠙     ault s7 g 2/5
-⠧     ault s8 e 1/3
+⠋     ault s7 g 2/5
+⠦     ault s8 e 1/3
 ⠏       default 2/9

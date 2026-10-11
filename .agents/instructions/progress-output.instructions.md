@@ -131,13 +131,15 @@ All status-list suffixes use the **number-first** format: `{n} {word}`, comma-jo
 
 `recompute_layout` checks for installed client truncation to apply the same overhead rule for width budgeting. It measures the suffix through the same `render_slot_suffix` the draw path renders through, so a client label is asked for its own output in both passes.
 
-## Buffer ordering and style dedup
+## Buffer ordering and per-frame sync
 
 The tick loop and attach operation are designed to minimize visible flicker:
 
+- **Every slot syncs every tick**: there is no change-detection layer. `run_frame` step 2 re-measures every bound slot (`recompute_layout`) and re-settles one shared `(prefix_w, suffix_w)` for the frame; step 4 then re-syncs every bound slot — position, timing strings and status — unconditionally. An event that only moves the clock (an elapsed string growing, a rate or ETA changing length) is re-derived on the same frame it happens; nothing needs a "declare your change" call. String and position dedup inside `sync_snapshot_to_bar` survives purely as write suppression.
 - **Buffer-first tick**: `tick()` enables the `WriteGate` (suppresses writes) BEFORE calling `recompute_layout()`. This ensures all `set_style` calls from `recompute_layout` → `sync_slot` → `apply_*_bar_style` are suppressed until `WriteGate::open()` releases them atomically.
 - **Buffered attach**: `attach()` wraps its entire body in a `WriteGate::suppress()`/`open()` pair so slot shifts, sync_slot, and recompute_layout during bar attachment are buffered and appear atomically.
-- **Style dedup**: `sync_slot` caches `(prefix_w, suffix_w, is_overall, draw_fill, status_code)` in `SlotCache` and only calls `apply_*_bar_style` when any component of this tuple changes. This eliminates redundant style writes when bar dimensions and status are stable across ticks.
+- **Style write suppression**: `sync_slot` caches a `StyleKey` of `(prefix_w, suffix_w, is_overall, draw_fill, status_code)` in `SlotCache` and only calls `apply_*_bar_style` when the key differs. This is a write filter, not change detection: every member is derived by the frame itself (settled widths from this frame's `recompute_layout`, status from the source's snapshot), so no caller can forget to declare an input. It suppresses the indicatif tick a `set_style` carries, which would otherwise animate a finished row's spinner every frame. `mark_blanked` resets the key to `StyleKey::unknown()` so a re-bound slot re-styles whatever the derived inputs say.
+- **Terminal transitions apply once**: `finish_slot` runs once per activation (guarded by `SlotCache::terminal_rendered`), and a clear's blank is a one-shot announced by `finish_and_clear` (`SharedState::take_cleared_blank`) held until a rebind clears it. An unbound slot keeps whatever its bar last drew — the retention contract.
 
 ## Three bar-label structs
 
@@ -362,7 +364,7 @@ Each example's test walks its own fixture directory and compares what the screen
 
 ## Debug JSONL
 
-`MEDIAPM_PROGRESS_DEBUG=1` env var enables JSONL tick output to stderr. Each line is a JSON object with fields: `type` (`"tick"`), `tick` (monotonic counter), `elapsed_secs` (f64), `bars` (array of per-slot state: `slot`, `bound`, `label`, `prefix`, `position`, `total`, `status`, `elapsed_secs`, `rate_bytes_per_sec`, `eta_secs`, `suffix`, `dirty`).
+`MEDIAPM_PROGRESS_DEBUG=1` env var enables JSONL tick output to stderr. Each line is a JSON object with fields: `type` (`"tick"`), `tick` (monotonic counter), `elapsed_secs` (f64), `bars` (array of per-slot state: `slot`, `bound`, `label`, `prefix`, `position`, `total`, `status`, `elapsed_secs`, `rate_bytes_per_sec`, `eta_secs`, `suffix`).
 
 ## Pre-roll, gap conversion, finalize
 

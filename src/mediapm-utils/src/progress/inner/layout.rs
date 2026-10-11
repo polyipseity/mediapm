@@ -57,14 +57,12 @@ pub(super) struct SlotTimingStrings {
 
 /// The EMA advance that produced a [`SlotTimingStrings::rate_str`].
 ///
-/// Only the frame's dirty-slot sync applies it, and it applies it for the very
+/// Only the frame's slot sync applies it, and it applies it for the very
 /// snapshot the strings were computed from, so a caller that drops it — the
 /// measurement pass and `sync_slot`, both of which are read-only — still reads
-/// back the rate it was shown on that frame. Position changes always mark a
-/// slot dirty ([`crate::progress::ProgressBarHandle::advance`] and
-/// [`set_position`](crate::progress::ProgressBarHandle::set_position) both do),
-/// so the frame that observes a moved position is also the frame that commits
-/// it.
+/// back the rate it was shown on that frame. The frame syncs every slot on
+/// every frame, so the frame that observes a moved position is also the frame
+/// that commits it.
 pub(super) struct EmaUpdate {
     /// Smoothed rate to store for the next frame.
     pub(super) rate: f64,
@@ -76,7 +74,7 @@ pub(super) struct EmaUpdate {
 
 /// Compute one slot's rate and eta suffix segments — the single rule set.
 ///
-/// `recompute_layout` (measurement), `sync_slot`, the frame's dirty-slot sync
+/// `recompute_layout` (measurement), `sync_slot`, the frame's slot sync
 /// and `finalize` all call this instead of computing the pair themselves, which
 /// is what makes the columns the budget reserves equal the columns the row
 /// renders. The rules, in order:
@@ -390,7 +388,7 @@ impl ProgressRenderer {
                 // same helper the draw path calls, so the columns reserved
                 // here are the columns the row renders. The EMA commit it
                 // returns is deliberately dropped: this pass is read-only, and
-                // the frame's dirty-slot sync applies the same update for the
+                // the frame's slot sync applies the same update for the
                 // same snapshot.
                 let timing = timing_strings(&snap, &self.slots_timing[i], &*self.time_source);
                 // Measure the MERGED suffix (auto fields + user-set
@@ -496,7 +494,7 @@ impl ProgressRenderer {
     /// that fired). A frame uses that to know the open window still owes the
     /// block a draw: every push here happens while the gate is shut, and a
     /// frame whose bars are all finished has no tick of its own to flush the
-    /// dirty lines with — see the flush at the end of
+    /// pushed lines with — see the flush at the end of
     /// [`run_frame`](super::ProgressRenderer::run_frame).
     ///
     /// `pub(super)` because the parent's [`recompute_layout`](Self::recompute_layout) and
@@ -663,7 +661,7 @@ mod tests {
 
     /// A moved position is smoothed *prospectively*: the returned strings use
     /// the rate the caller will commit, and the commit itself comes back so
-    /// the frame's dirty-slot sync can store exactly what was rendered.
+    /// the frame's slot sync can store exactly what was rendered.
     #[test]
     fn a_moved_position_smooths_prospectively_and_hands_back_the_commit() {
         let time_source = TestTimeSource::new();
