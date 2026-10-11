@@ -96,7 +96,7 @@ async fn run_demo() -> ExampleResult<()> {
 #[cfg(feature = "progress")]
 fn run_options_with_progress() -> (RunWorkflowOptions, ProgressTerminal) {
     let terminal = ProgressTerminal::builder().build();
-    let (group, overall) = terminal.screen().with_overall("workflow steps", 1).build();
+    let (group, overall) = terminal.screen().with_overall("running workflows", 1).build();
     let options = RunWorkflowOptions {
         progress_group: Some(Arc::new(group)),
         overall_bar: Some(Arc::new(overall)),

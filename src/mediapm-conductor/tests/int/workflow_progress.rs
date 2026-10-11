@@ -170,8 +170,10 @@ fn count_markers_f(ops: &[ProgressOp]) -> usize {
 
 /// Identity of the pinned overall row.
 ///
-/// The screen opens with `RecordingProgressTracker::with_overall("workflow", 1)`,
-/// so the overall row is the one bar whose `AddBar` op names `workflow`.
+/// The screen opens with `RecordingProgressTracker::with_overall("workflow", 1)` —
+/// a harness seed chosen for this test double, not the production
+/// `running workflows` literal — so the overall row is the one bar whose
+/// `AddBar` op names `workflow`.
 /// Reading that op instead of hardcoding an index is what keeps the per-row
 /// helpers pointing at the same row after a bar is added ahead of it.
 fn overall_bar(recorded: &[RecordedProgressOp]) -> BarId {
@@ -252,7 +254,6 @@ async fn run_with_progress(
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Single-step echo workflow emits the expected progress sequence:
 /// The pinned overall row carries no label at all: it shows the static seed
 /// and the run's progress, so the only ops it records are its creation, one
 /// `set_total` per workflow, its advances, and its terminal finish.
@@ -276,6 +277,7 @@ async fn overall_row_installs_no_label_and_sets_total_once() {
     assert_eq!(totals, 1, "the overall row's total is set exactly once per workflow: {overall:?}");
 }
 
+/// Single-step echo workflow emits the expected progress sequence:
 /// overall bar (total set by coordinator) → per-worker idle bars → step bar
 /// via worker-0 slot → advance → finish → overall advance → finish.
 #[tokio::test]
