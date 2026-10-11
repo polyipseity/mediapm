@@ -111,14 +111,12 @@ fn musicbrainz_client() -> MusicBrainzClient {
         .build()
 }
 
-/// Fetches recording/release payloads through `musicbrainz_rs` on this
-/// module's bounded client.
+/// Fetches recording/release payloads through `musicbrainz_rs`, on the
+/// bounded client [`MUSICBRAINZ`] rather than the crate's unbounded global.
 ///
 /// The client-parameterized sibling exists so a test can point a fetch at a
 /// broken endpoint and exercise the stale-cache fallback without touching the
 /// static that production reads.
-/// Fetches recording/release payloads through `musicbrainz_rs`, on the
-/// bounded client [`MUSICBRAINZ`] rather than the crate's unbounded global.
 pub(super) async fn fetch_musicbrainz_payloads(
     recording_mbid: &str,
     release_mbid: Option<&str>,
@@ -520,7 +518,7 @@ mod tests {
         use musicbrainz_rs::api_bindium::ApiClient;
         use musicbrainz_rs::entity::recording::Recording;
 
-        let root = tempfile::tempdir().expect("cache directory");
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
         let cache = super::super::cover_art::MediaTaggerHttpCache::new(
             Some(root.path().to_path_buf()),
             super::super::cover_art::CacheExpiryPolicy::from_seconds(1),
