@@ -449,7 +449,7 @@ fn gated_second_screen_does_not_unwind_the_discarded_screens_rows() {
 /// beside rows that ended at 62).
 ///
 /// The invariant has two halves, both pinned here: `attach` releases no ops at all
-/// (suppressed pushes fail with retry and stay dirty), and the next frame's single
+/// (suppressed pushes fail with retry and hold their draw until the next frame), and the next frame's single
 /// release draws the whole block at one template pair — asserted as the exact grid,
 /// whose column alignment is itself the proof that no two rows disagree.
 #[test]

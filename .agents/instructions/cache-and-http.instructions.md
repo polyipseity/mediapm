@@ -38,7 +38,7 @@ Configured once via `OnceLock`:
 | `mediapm-conductor` (async, unconditional) | 30s | 30 min | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
 | `mediapm-conductor-builtins/import` (blocking, `fetch`) | 60s | 60s | `mediapm/<version> (+https://github.com/mediapm/mediapm)` |
 
-Both override request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` (minimum 30s).
+Both override request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` (minimum 30s). The MusicBrainz client in the `media-tagger` builtin is a third reader of the same variable on its own path: minimum 30s, default 30s, retry cap 2.
 
 ## Hard boundary rules
 

@@ -71,8 +71,9 @@ fn every_row_shares_one_budget_when_a_suffix_grows() {
 /// An unbound slot is an empty line of the frame, not a foreign one.
 ///
 /// The screen reserves four slots and binds one bar, so the slots with no
-/// source draw as empty lines — no spinner, no fill — and the frame keeps
-/// redrawing them, so a later bind finds the bar already blank.
+/// source draw as empty lines — no spinner, no fill — and the frame retains
+/// them as blank rows between frames, so a later bind finds the bar already
+/// blank.
 #[test]
 fn an_unbound_slot_draws_an_empty_line() {
     let (terminal, term) = mk_with_capacity(4, 80, 4);

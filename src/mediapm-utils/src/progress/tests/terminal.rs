@@ -195,7 +195,8 @@ fn terminal_debug_sink_receives_screen_frames() {
 /// previous one.
 ///
 /// The snapshot reports `slots_timing[i].rate`, which the frame loop recomputes
-/// while syncing dirty slots.  Emitting the snapshot before that sync leaves
+/// on every frame from the latest snapshots.  Emitting the snapshot before that
+/// sync leaves
 /// `rate_bytes_per_sec` at `0` on the very first tick that moves a bar, so the
 /// JSONL stream reports no rate at all for that frame.
 #[test]
