@@ -1,8 +1,11 @@
 //! MusicBrainz payload fetching and FFmetadata mapping helpers.
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use anyhow::Context;
+use musicbrainz_rs::client::MusicBrainzClient;
 use musicbrainz_rs::entity::recording::Recording;
 use musicbrainz_rs::entity::release::Release;
 use musicbrainz_rs::prelude::*;
@@ -23,7 +26,80 @@ pub(super) struct MusicBrainzPayload {
     pub(super) release: Option<Release>,
 }
 
-/// Fetches recording/release payloads through `musicbrainz_rs`.
+/// Env var naming the per-request timeout in whole seconds, the same name
+/// the conductor's shared HTTP client reads (see `src/mediapm-conductor/src/http/client.rs`).
+const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_HTTP_TIMEOUT_SECONDS";
+
+/// How many times a single MusicBrainz request may be retried before the
+/// fetch fails for good.
+///
+/// `musicbrainz_rs`'s own default is ten retries with a `2n²`-second backoff
+/// — minutes of sleeping inside one tagging step. Two retries keep a blip
+/// recoverable and a 503 storm terminal.
+const MUSICBRAINZ_MAX_RETRIES: u32 = 2;
+
+/// The client every MusicBrainz request in this builtin rides on.
+///
+/// Built once through [`musicbrainz_client`] so the bounded construction
+/// cannot drift from the fetch path, which passes it explicitly instead of
+/// using `musicbrainz_rs`'s unbounded global.
+static MUSICBRAINZ: LazyLock<MusicBrainzClient> = LazyLock::new(musicbrainz_client);
+
+/// Parse the request timeout from the documented env var: whole seconds,
+/// floored at the conductor client's documented 30-second floor, defaulting
+/// to 30 rather than the conductor's 1800 — a tagging step that stalls on
+/// MusicBrainz gives its budget back to the run instead of holding it.
+fn parse_musicbrainz_timeout(raw: Option<&str>) -> Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .map_or(Duration::from_secs(30), |seconds| Duration::from_secs(seconds.max(30)))
+}
+
+/// The env-derived per-request timeout for this path.
+fn musicbrainz_timeout() -> Duration {
+    parse_musicbrainz_timeout(std::env::var(REQUEST_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// The user agent every request in this path carries.
+///
+/// MusicBrainz asks callers to identify themselves so it can reach a
+/// misbehaving client; `musicbrainz_rs`'s default names the library rather
+/// than the application making the call.
+fn musicbrainz_user_agent() -> String {
+    format!("mediapm/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Build an agent that identifies this application and aborts a stalled
+/// request at `timeout`.
+///
+/// The timeout is end-to-end — DNS through reading the response body — so a
+/// connection that accepts bytes and then goes quiet cannot hold a tagging
+/// step past its budget.
+fn bounded_agent(timeout: Duration) -> musicbrainz_rs::api_bindium::ureq::Agent {
+    let config = musicbrainz_rs::api_bindium::ureq::config::Config::builder()
+        .user_agent(musicbrainz_user_agent())
+        .timeout_global(Some(timeout))
+        .build();
+    musicbrainz_rs::api_bindium::ureq::Agent::new_with_config(config)
+}
+
+/// The bounded MusicBrainz client this module fetches with.
+///
+/// Every input that used to be unbounded is set here: the request timeout,
+/// the retry cap, and the user agent. Point it at another endpoint or
+/// timeout only in tests, which build their own through [`bounded_agent`].
+fn musicbrainz_client() -> MusicBrainzClient {
+    MusicBrainzClient::builder()
+        .api_client(
+            musicbrainz_rs::api_bindium::ApiClient::builder()
+                .agent(bounded_agent(musicbrainz_timeout()))
+                .max_retries(MUSICBRAINZ_MAX_RETRIES)
+                .build(),
+        )
+        .build()
+}
+
+/// Fetches recording/release payloads through `musicbrainz_rs`, on the
+/// bounded client [`MUSICBRAINZ`] rather than the crate's unbounded global.
 pub(super) async fn fetch_musicbrainz_payloads(
     recording_mbid: &str,
     release_mbid: Option<&str>,
@@ -55,7 +131,7 @@ pub(super) async fn fetch_musicbrainz_payloads(
         }
 
         let recording = recording_fetch
-            .execute_async()
+            .execute_with_client_async(&MUSICBRAINZ)
             .await
             .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
 
@@ -91,7 +167,7 @@ pub(super) async fn fetch_musicbrainz_payloads(
 
             Some(
                 release_fetch
-                    .execute_async()
+                    .execute_with_client_async(&MUSICBRAINZ)
                     .await
                     .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?,
             )
@@ -286,4 +362,65 @@ pub(super) fn insert_tag_if_absent(tags: &mut BTreeMap<String, String>, key: &st
         return;
     }
     tags.entry(sanitize_metadata_key(key)).or_insert_with(|| truncate_metadata_value(value));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// The request timeout parses from the documented env var with the
+    /// conductor's 30-second floor and this path's tighter default of 30,
+    /// so a stalled MusicBrainz response gives the tagging step's budget
+    /// back instead of holding it for half an hour.
+    #[test]
+    fn request_timeout_floors_at_thirty_seconds() {
+        assert_eq!(parse_musicbrainz_timeout(None), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("10")), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("not-a-number")), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("120")), Duration::from_mins(2));
+    }
+
+    /// The client the fetch path uses caps its retries and carries a request
+    /// timeout: the two settings whose absence let a 503 storm hold a tagging
+    /// step for minutes.
+    #[test]
+    fn musicbrainz_client_is_bounded() {
+        let client = musicbrainz_client();
+        assert_eq!(
+            client.api_client.max_retries, MUSICBRAINZ_MAX_RETRIES,
+            "a MusicBrainz request may not be retried more than the seam allows"
+        );
+        let global = client.api_client.agent.config().timeouts().global;
+        assert!(
+            global.is_some_and(|t| t >= Duration::from_secs(30)),
+            "every MusicBrainz request must carry an end-to-end timeout of at least the floor, got {global:?}"
+        );
+    }
+
+    /// The agent the seam builds aborts a slow response at its own timeout,
+    /// proved end to end against a local server that would otherwise hang
+    /// the request. The production client builds its agent through this same
+    /// constructor with the env-derived timeout.
+    #[tokio::test]
+    async fn the_bounded_agent_aborts_a_slow_response_at_its_timeout() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let agent = bounded_agent(Duration::from_millis(250));
+        let started = Instant::now();
+        let result = agent.get(&format!("http://{}/probe", server.address())).call();
+        let elapsed = started.elapsed();
+        assert!(
+            result.is_err(),
+            "a 250 ms-bounded agent must not wait out a 5 s response: {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "the abort must land at the agent's timeout, not the response's: {elapsed:?}"
+        );
+    }
 }
