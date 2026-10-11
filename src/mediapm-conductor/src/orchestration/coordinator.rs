@@ -19,7 +19,7 @@ use mediapm_utils::Timestamp;
 use mediapm_utils::progress::{BarStyle, ProgressBarApi};
 
 #[cfg(feature = "progress")]
-use super::progress_labels::{StepBarLabel, WorkerBarLabel};
+use super::progress_labels::WorkerBarLabel;
 
 use crate::config::WorkflowStepSpec;
 use crate::error::ConductorError;
@@ -235,100 +235,6 @@ fn worker_slot_label(
     }
 }
 
-/// What the overall workflow bar is currently naming.
-///
-/// The overall bar is pinned at the bottom of the screen and outlives every
-/// step, so a label that still named a step after it ended would keep a dead
-/// row's fields on screen for the rest of the run. Each state below is a
-/// label the coordinator can install in full, and moving between them is what
-/// clears the step fields: nothing is derived from what the previous dispatch
-/// left behind.
-#[cfg(feature = "progress")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverallBarState<'a> {
-    /// No step is running. The row names the workflow and nothing else, so a
-    /// step that has just finished, failed, or is waiting for its retry stops
-    /// being named the moment it stops running.
-    Idle,
-    /// A step is running on this bar. The row names the workflow, the step,
-    /// and the tool that step calls.
-    Running {
-        /// Identifier of the step being dispatched, e.g. `"s3"`.
-        step_id: &'a str,
-        /// Conductor tool name the step calls, which is the step's own
-        /// `ToolSpec.name` and therefore a builtin id like `"echo@v1"` where
-        /// the workflow names a builtin.
-        tool: &'a str,
-        /// Human-readable version the merged tool spec declares, or `""` when
-        /// the document declares none. The name identifies the tool and the
-        /// step, so a missing version must leave the row as it was rather
-        /// than carry a substitute.
-        version: &'a str,
-    },
-    /// The run is over and the pinned row names the outcome.
-    ///
-    /// The marker is a field here rather than something the renderer derives
-    /// from the bar's own status, because a label installed with
-    /// `set_truncation` replaces the built-in prefix components wholesale.
-    /// Once a client label owns the prefix there is no marker left for the
-    /// renderer to draw, so a label without this field silently loses the
-    /// `[W]` that `finish_warning` still colours the bar yellow from. The
-    /// failure count survives in the suffix either way, so what the row loses
-    /// without this variant is the mark that says the run warned.
-    Finished {
-        /// Terminal marker rendered as `[W]`. Only the warned branch installs
-        /// this state; a clean run keeps the marker-less label the last step
-        /// outcome installed, which renders the same as an empty marker.
-        status_marker: &'a str,
-    },
-}
-
-/// Builds the [`StepBarLabel`] for the overall workflow bar in the given state.
-///
-/// `workflow_name` fills `workflow_id` in every state, because the bar belongs
-/// to that workflow whether or not one of its steps is running; only the
-/// `Running` state fills the step and tool fields.
-///
-/// `Running` also fills `version` from the merged
-/// [`super::protocol::UnifiedToolSpec`], which carries whatever
-/// `version` the document declared for the step's tool. A builtin holds only
-/// a `builtin_id` (`"echo@v1"`) and a managed tool's document key is
-/// `"{name}@{content-hash}"`, which identifies a payload rather than naming a
-/// release, so neither is read as a version: an undeclared version leaves the
-/// row exactly as it was before the field existed.
-#[cfg(feature = "progress")]
-fn overall_bar_label(state: OverallBarState<'_>, workflow_name: &str) -> StepBarLabel {
-    match state {
-        OverallBarState::Idle => StepBarLabel {
-            status_marker: String::new(),
-            workflow_id: workflow_name.to_string(),
-            step_id: String::new(),
-            tool: String::new(),
-            version: String::new(),
-            completed: String::new(),
-            total: String::new(),
-        },
-        OverallBarState::Running { step_id, tool, version } => StepBarLabel {
-            status_marker: String::new(),
-            workflow_id: workflow_name.to_string(),
-            step_id: step_id.to_string(),
-            tool: tool.to_string(),
-            version: version.to_string(),
-            completed: String::new(),
-            total: String::new(),
-        },
-        OverallBarState::Finished { status_marker } => StepBarLabel {
-            status_marker: status_marker.to_string(),
-            workflow_id: workflow_name.to_string(),
-            step_id: String::new(),
-            tool: String::new(),
-            version: String::new(),
-            completed: String::new(),
-            total: String::new(),
-        },
-    }
-}
-
 impl<C> WorkflowCoordinator<C>
 where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
@@ -417,17 +323,6 @@ where
             if let Some(ref ob) = overall_bar {
                 ob.set_total(total_steps as u64);
             }
-
-            // The overall row names what is running, so its label is installed
-            // at every dispatch and at every step outcome rather than once at
-            // setup. The closure carries the two values every install needs so
-            // the call sites read as the state they move the bar into.
-            #[cfg(feature = "progress")]
-            let set_overall_label = |state: OverallBarState<'_>| {
-                if let Some(ref ob) = overall_bar {
-                    ob.set_truncation(Arc::new(overall_bar_label(state, workflow_name)));
-                }
-            };
 
             // Pre-create one fixed worker-slot bar per pool member.  Each bar
             // starts idle and is reused (never recreated) on every dispatch to
@@ -549,16 +444,6 @@ where
                     #[cfg(not(feature = "progress"))]
                     let step_bar: Option<Arc<dyn ProgressBarApi>> = None;
 
-                    // The overall row names the step from here until that step
-                    // stops running, which the outcome arms below say.
-                    #[cfg(feature = "progress")]
-                    set_overall_label(OverallBarState::Running {
-                        step_id: &step_id,
-                        tool: &step.tool,
-                        version: find_tool_by_name(&unified.tools, &step.tool)
-                            .and_then(|spec| spec.version.as_deref())
-                            .unwrap_or_default(),
-                    });
                     let handle = tokio::spawn(async move {
                         let result = worker
                             .call(
@@ -635,14 +520,9 @@ where
                                 bar.advance(1);
                                 bar.finish_success();
                             }
-                            // The step is no longer running, so the overall
-                            // row stops naming it before it counts it.
                             #[cfg(feature = "progress")]
-                            {
-                                set_overall_label(OverallBarState::Idle);
-                                if let Some(ref ob) = overall_bar {
-                                    ob.advance(1);
-                                }
+                            if let Some(ref ob) = overall_bar {
+                                ob.advance(1);
                             }
                         }
                         Ok(Err(e)) => {
@@ -664,10 +544,6 @@ where
                                     bar.advance(1);
                                     bar.finish_warning();
                                 }
-                                // The step is waiting for its retry, which is
-                                // not running it, so the overall row drops it.
-                                #[cfg(feature = "progress")]
-                                set_overall_label(OverallBarState::Idle);
                                 retry_batch.push((step_id.clone(), attempt + 1));
                             } else {
                                 failed_steps += 1;
@@ -687,11 +563,8 @@ where
                                     bar.finish_warning();
                                 }
                                 #[cfg(feature = "progress")]
-                                {
-                                    set_overall_label(OverallBarState::Idle);
-                                    if let Some(ref ob) = overall_bar {
-                                        ob.advance(1);
-                                    }
+                                if let Some(ref ob) = overall_bar {
+                                    ob.advance(1);
                                 }
                             }
                         }
@@ -714,10 +587,6 @@ where
                                     bar.advance(1);
                                     bar.finish_warning();
                                 }
-                                // The step is waiting for its retry, which is
-                                // not running it, so the overall row drops it.
-                                #[cfg(feature = "progress")]
-                                set_overall_label(OverallBarState::Idle);
                                 retry_batch.push((step_id.clone(), attempt + 1));
                             } else {
                                 failed_steps += 1;
@@ -737,11 +606,8 @@ where
                                     bar.finish_warning();
                                 }
                                 #[cfg(feature = "progress")]
-                                {
-                                    set_overall_label(OverallBarState::Idle);
-                                    if let Some(ref ob) = overall_bar {
-                                        ob.advance(1);
-                                    }
+                                if let Some(ref ob) = overall_bar {
+                                    ob.advance(1);
                                 }
                             }
                         }
@@ -777,7 +643,6 @@ where
                     ],
                 ));
                 if failed_steps > 0 {
-                    set_overall_label(OverallBarState::Finished { status_marker: "W" });
                     bar.finish_warning();
                 } else {
                     bar.finish_success();

@@ -48,7 +48,7 @@ On a frame with no bar, the timing is the first thing the suffix gives up, becau
 
 ## Two layout facts to know before changing a label
 
-**The slot is measured from what a bar draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` turns the seed into built-in prefix components at `src/mediapm-utils/src/progress/inner/tracked.rs:118`, and `snap.prefix` is their render, which is the right width to measure for a bar that draws them. A bar with a `BarLabelTruncation` installed draws something else, so `recompute_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`layout.rs:259`). `snap.prefix` is the wrong width for such a bar, because the seeds are short by design and `idle` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:447`). A client label may be longer or shorter than the string its bar was created with, so the measurement has to follow the label.
+**The slot is measured from what a bar draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` turns the seed into built-in prefix components at `src/mediapm-utils/src/progress/inner/tracked.rs:122`, and `snap.prefix` is their render, which is the right width to measure for a bar that draws them. A bar with a `BarLabelTruncation` installed draws something else, so `recompute_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`layout.rs:378`). `snap.prefix` is the wrong width for such a bar, because the seeds are short by design and `idle` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:348`). A client label may be longer or shorter than the string its bar was created with, so the measurement has to follow the label.
 
 **The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators and the suffix, capped at `MAX_PREFIX_WIDTH`, and the fill takes what neither label wants, down to a floor of `MIN_BAR_FILL` columns. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy.
 
@@ -145,7 +145,7 @@ The tick loop and attach operation are designed to minimize visible flicker:
 
 All three structs implement [`BarLabelTruncation`] (defined in `src/mediapm-utils/src/progress/truncation.rs`) and are rendered via the client-truncation path in `sync_snapshot_to_bar`. The renderer prepends `\x1b[0m` (4-byte ANSI reset) to all client-truncated prefixes; no colored markers are embedded in the truncated string.
 
-All three are installed by production code: the conductor coordinator puts `WorkerBarLabel` on each worker slot and `StepBarLabel` on the pinned overall row, and the mediapm materializer installs `MaterializationBarLabel`.
+All three are installed by production code: the conductor coordinator puts `WorkerBarLabel` on each worker slot, the mediapm materializer installs `MaterializationBarLabel`, and the workflow example puts `StepBarLabel` on its per-step rows. The coordinator installs no label on the pinned overall row at all — its prefix is the static seed `running workflows` — so production renders no `StepBarLabel` anywhere.
 
 Fitting uses `fit_segments` (shared from `mediapm_utils::progress`). Segments are supplied most important first and the list is walked from the tail, so the **last** segment is the first to yield. Under width pressure, elastic segments are shortened from the front, keeping the tail of the text, and once no segment can shrink further whole segments drop from the tail until the remainder fits. The clip is blind, so a tail may begin mid-word and a truncated path reads `he Wall`. Snapping to the next word or slash used to prevent that and cost monotonicity instead: two widths inside one word could render the same length, or go backwards. The clip came back, and `rendered_length_is_monotone_in_width` pins it.
 
@@ -155,15 +155,15 @@ Brackets belong to the segment (`brackets: Option<Brackets>`) rather than to its
 
 The per-screen orderings summarised under each struct below are a convenience, not the spec. The normative ranking, and the reasoning behind each segment's classification, live in the `prefix_segments` and `suffix_segments` bodies of `src/mediapm-conductor/src/orchestration/progress_labels.rs` (`StepBarLabel`, `WorkerBarLabel`) and `src/mediapm/src/materializer/progress_labels.rs` (`MaterializationBarLabel`). Read the code when a field's classification is in question.
 
-### Struct 1: `StepBarLabel` (conductor overall row)
+### Struct 1: `StepBarLabel` (workflow example's step rows)
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries workflow, step and tool identity, plus a version and a tally. The coordinator builds it for the pinned overall row and fills in neither the version nor the tally: `UnifiedToolSpec` holds a builtin id such as `echo@v1` and no version, and the overall bar counts steps through its fill rather than through a tally. The workflow example is the only caller that fills a version, so it is the only screen where `Shrink::Head` has anything to cut.
+Carries workflow, step and tool identity, plus a version and a tally. Production no longer installs it: the coordinator's pinned overall row is a static seed, and the overall bar counts steps through its fill rather than through a tally. The workflow example's step rows are its only caller and the only place a version (`v7.1`) is filled, so they are also the only screen where `Shrink::Head` has anything to cut.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
-| `version` | Tool version, head-keeping, inside the tool name's brackets. Empty in production, so no segment is rendered and the pair wraps the tool name alone. | `"v7.1"` |
+| `version` | Tool version, head-keeping, inside the tool name's brackets. Filled only by the workflow example's step rows; production installs no `StepBarLabel`, so it never renders there. | `"v7.1"` |
 | `completed` / `total` | Progress tally, rendered in the suffix only when `completed` is set | `"2"` / `"5"` |
 | `status_marker` | Terminal state marker | `""` / `"F"` / `"W"` |
 | `workflow_id` | Workflow name | `"default"` |
@@ -174,7 +174,7 @@ Carries workflow, step and tool identity, plus a version and a tally. The coordi
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. This is the label the coordinator creates a bar for, one per pool member (`src/mediapm-conductor/src/orchestration/coordinator.rs:447`), and re-labels through `set_truncation` on every dispatch and every step outcome.
+Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. This is the label the coordinator creates a bar for, one per pool member (`src/mediapm-conductor/src/orchestration/coordinator.rs:348`), and re-labels through `set_truncation` on every dispatch and every step outcome.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -232,9 +232,9 @@ Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases a
 
 ### Screen B: Workflow (`src/mediapm-conductor/src/orchestration/`)
 
-No row on this screen carries a phase tag. The seeds are `workflow` for the overall bar and `idle` for every worker slot (`coordinator.rs:447`), and both are replaced by a client label as soon as the bar has one.
+No row on this screen carries a phase tag. The seeds are `running workflows` for the overall bar (set by `src/mediapm/src/service.rs`, which owns the screen) and `idle` for every worker slot (`coordinator.rs:348`). The overall bar's seed is never replaced — the coordinator installs no label on that row — while each worker slot is replaced by a client label as soon as the bar has one.
 
-The overall row uses `StepBarLabel`, re-installed at each dispatch and at each step outcome, so it names what is running: `default s3 (ffmpeg)`. The conductor carries no tool version, so the `version` field is empty there and its segment is dropped. Worker slots use `WorkerBarLabel`, which ranks `status_marker`, `workflow_id`, `step_id`, `tool`, `activity` and leaves `tool` the only elastic segment, so a running slot reads `default s5 (echo) [active]` wherever the terminal has room for it. `fit_segments` walks from the tail, so a narrow row gives up the `[active]` tag and then the tool name and keeps the identifiers. The seed does not cap the slot: the label is measured from what the row draws, so a row keeps its names at widths where the four-column seed would have clipped them.
+The overall row installs no label at all: its prefix is the static seed `running workflows`, and its progress comes from the built-in position/total, the run's status-list suffix (`N cached, M failed, K retried`), and the bar's terminal status, which still renders the built-in `[W]`/`[F]` marker. Worker slots use `WorkerBarLabel`, which ranks `status_marker`, `workflow_id`, `step_id`, `tool`, `activity` and leaves `tool` the only elastic segment, so a running slot reads `default s5 (echo) [active]` wherever the terminal has room for it. `fit_segments` walks from the tail, so a narrow row gives up the `[active]` tag and then the tool name and keeps the identifiers. The seed does not cap the slot: the label is measured from what the row draws, so a row keeps its names at widths where the four-column seed would have clipped them.
 
 Worker-slot states (`worker_slot_label` in `coordinator.rs:200`):
 

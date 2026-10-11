@@ -3,9 +3,10 @@
 //! mediapm-utils owns the render push point but not the field layout. The
 //! two structs here carry conductor's own semantically-named fields and
 //! implement [`BarLabelTruncation`] with their own allocation policy.
-//! [`StepBarLabel`] labels the pinned overall workflow bar, so it names the
-//! workflow and the step running on it, and its tally is filled only by a
-//! bar that tracks outputs rather than by the coordinator;
+//! [`StepBarLabel`] labels the workflow example's per-step row: it names the
+//! workflow, the step running on it, and the tool's declared version. The
+//! coordinator no longer installs it at all — the pinned overall row is a
+//! static seed — and its tally is filled only by a bar that tracks outputs;
 //! [`WorkerBarLabel`] labels one pool slot, carrying an `activity` marker
 //! (`active`/`idle`) alongside its identifiers and tool name, and never a
 //! tally.
@@ -86,18 +87,18 @@ pub struct StepBarLabel {
     /// It trails the tool name, so it yields before the name is touched,
     /// and a version that had to shorten takes the pair down with it.
     ///
-    /// Reachable from production and empty there. The coordinator builds this
-    /// label for the overall workflow bar and has no versioned tool field to
-    /// read, so it leaves the string empty, the group is the single tool
-    /// name, and the row reads `default s3 (ffmpeg)`. The workflow example is
-    /// the only caller that fills it, and so the only screen where
-    /// `Shrink::Head` has anything to cut.
+    /// Filled only by the workflow example, which is the sole caller of this
+    /// label since the coordinator stopped installing it: the overall row is
+    /// a static seed now, so production renders no version on this screen and
+    /// the example's step rows are the only place `Shrink::Head` has anything
+    /// to cut.
     pub version: String,
     /// Completed count for the progress tally, rendered as
     /// `{completed}/{total}` in the suffix. Names belong in the prefix and
     /// counts in the suffix, so this field has no prefix rendering. The
-    /// coordinator leaves it empty, because the overall bar counts steps
-    /// through its fill rather than through a tally.
+    /// coordinator never installs this label — the overall bar counts steps
+    /// through its fill rather than through a tally — so only the example's
+    /// step rows fill a tally here.
     pub completed: String,
     /// Total count for the progress tally. Rendered only when `completed`
     /// is non-empty.
@@ -605,5 +606,42 @@ mod allocation_policy_tests {
             label.truncate_prefix(60),
             "mediapm.media.workflow-alpha s12-transform (ffmpeg) [active]"
         );
+    }
+
+    /// A tool the document declared no version for renders its name alone
+    /// inside the parentheses.
+    ///
+    /// `builtin_id` names a registration and a document key names a payload,
+    /// and neither is a claim a user wrote, so an empty version is a decision
+    /// rather than a field nothing reads: the pair of tests below pins both
+    /// halves side by side, which an assertion of one alone could not do.
+    #[test]
+    fn step_label_renders_a_builtin_tool_without_a_version() {
+        let label = StepBarLabel {
+            status_marker: String::new(),
+            workflow_id: "default".into(),
+            step_id: "s1".into(),
+            tool: "echo@v1".into(),
+            version: String::new(),
+            completed: String::new(),
+            total: String::new(),
+        };
+        assert_eq!(label.truncate_prefix(usize::MAX), "default s1 (echo@v1)");
+    }
+
+    /// A version the document declared renders inside the tool's parentheses,
+    /// so the builtin's empty one above is a choice and not a dead field.
+    #[test]
+    fn step_label_renders_a_declared_version_inside_the_parentheses() {
+        let label = StepBarLabel {
+            status_marker: String::new(),
+            workflow_id: "default".into(),
+            step_id: "s1".into(),
+            tool: "managed@v1".into(),
+            version: "v9.9.9".into(),
+            completed: String::new(),
+            total: String::new(),
+        };
+        assert_eq!(label.truncate_prefix(usize::MAX), "default s1 (managed@v1 v9.9.9)");
     }
 }

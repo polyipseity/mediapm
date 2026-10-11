@@ -138,33 +138,6 @@ fn dispatch_pc(workflow_id: &str, step_id: &str, tool: &str, _assigned: usize) -
     ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
 }
 
-/// Overall-row prefix for a step that is running.
-///
-/// Mirrors `overall_bar_label` in the coordinator: the pinned row names the
-/// workflow, the step and the tool. `version` is empty because the conductor
-/// has no versioned tool field to read, so no version segment renders.
-fn overall_running_pc(workflow_id: &str, step_id: &str, tool: &str) -> ProgressOp {
-    use mediapm_conductor::orchestration::progress_labels::StepBarLabel;
-    let label = StepBarLabel {
-        status_marker: String::new(),
-        workflow_id: workflow_id.into(),
-        step_id: step_id.into(),
-        tool: tool.into(),
-        version: String::new(),
-        completed: String::new(),
-        total: String::new(),
-    };
-    ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
-}
-
-/// Overall-row prefix when no step is running.
-///
-/// The row keeps naming the workflow it belongs to and drops the step, tool,
-/// and version fields, so a step that has just finished stops being named.
-fn overall_idle_pc(workflow_id: &str) -> ProgressOp {
-    overall_running_pc(workflow_id, "", "")
-}
-
 /// Counts dispatch operations (truncation prefixes whose activity marker
 /// contains `[active]`).
 fn count_dispatches(ops: &[ProgressOp]) -> usize {
@@ -175,11 +148,10 @@ fn count_dispatches(ops: &[ProgressOp]) -> usize {
 
 /// Counts `W` markers among the ops of a single row.
 ///
-/// A slot carries one per non-final attempt, and the overall row carries the
-/// single terminal `[W]` the finish arm installs, so the slice passed in has
-/// to be one row's ops. Take them from [`ops_on_worker_slots`] or
-/// [`ops_on_overall`]; a slice holding both rows cannot say which produced a
-/// given marker.
+/// A slot carries one per non-final attempt. The overall row records no
+/// label ops at all — its prefix is the static seed — so a marker count on
+/// [`ops_on_overall`] is zero by construction; take the slice from
+/// [`ops_on_worker_slots`] to count a slot's markers.
 fn count_markers_w(ops: &[ProgressOp]) -> usize {
     ops.iter()
         .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('W')))
@@ -187,6 +159,9 @@ fn count_markers_w(ops: &[ProgressOp]) -> usize {
 }
 
 /// Counts final-failure markers (`"F"`).
+///
+/// As with [`count_markers_w`], the count on the overall row is zero: its
+/// `[F]` renders from the built-in status marker, not from a label op.
 fn count_markers_f(ops: &[ProgressOp]) -> usize {
     ops.iter()
         .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains('F')))
@@ -278,6 +253,29 @@ async fn run_with_progress(
 // ---------------------------------------------------------------------------
 
 /// Single-step echo workflow emits the expected progress sequence:
+/// The pinned overall row carries no label at all: it shows the static seed
+/// and the run's progress, so the only ops it records are its creation, one
+/// `set_total` per workflow, its advances, and its terminal finish.
+#[tokio::test]
+async fn overall_row_installs_no_label_and_sets_total_once() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        vec![crate::echo_workflow("default", "echo@v1", "hello")],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+
+    let overall = ops_on_overall(&tracker.recorded());
+    let truncations =
+        overall.iter().filter(|op| matches!(op, ProgressOp::SetTruncation { .. })).count();
+    assert_eq!(truncations, 0, "the overall row never installs a label: {overall:?}");
+    let totals = overall.iter().filter(|op| matches!(op, ProgressOp::SetTotal { .. })).count();
+    assert_eq!(totals, 1, "the overall row's total is set exactly once per workflow: {overall:?}");
+}
+
 /// overall bar (total set by coordinator) → per-worker idle bars → step bar
 /// via worker-0 slot → advance → finish → overall advance → finish.
 #[tokio::test]
@@ -311,15 +309,11 @@ async fn single_step_success_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            // The overall row starts naming s1.
-            overall_running_pc("default", "s1", "echo@v1"),
             // Step completes — idle count1/total1, advance, finish success.
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            // The overall row drops s1, then advances once per terminal step.
-            overall_idle_pc("default"),
             ProgressOp::Advance { delta: 1 },
             // Overall bar finished with a status-list suffix.
             ProgressOp::SetSuffixComponents {
@@ -369,25 +363,21 @@ async fn two_step_same_level_success_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            overall_running_pc("default", "s1", "echo@v1"),
             // Dispatch s2 to worker-1 (re-activate idle bar).
             ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            overall_running_pc("default", "s2", "echo@v1"),
             // Step 1 completes.
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            overall_idle_pc("default"),
             ProgressOp::Advance { delta: 1 },
             // Step 2 completes.
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            overall_idle_pc("default"),
             ProgressOp::Advance { delta: 1 },
             // Overall bar finished with a status-list suffix.
             ProgressOp::SetSuffixComponents {
@@ -443,38 +433,32 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            overall_running_pc("default", "s1", "echo@v1"),
             // Dispatch s2 to worker-1 (re-activate, assigned 1).
             ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            overall_running_pc("default", "s2", "echo@v1"),
             // Dispatch s3 to worker-0 (re-activate, assigned 2).
             ProgressOp::Restart,
             dispatch_pc("default", "s3", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
-            overall_running_pc("default", "s3", "echo@v1"),
             // Step 1 completes (worker-0: succeeded 1 / assigned 2 — s3 already
             // dispatched on the same slot before s1 terminated).
             idle_pc_count(1, 2),
             ProgressOp::SetTotal { total: 2 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            overall_idle_pc("default"),
             ProgressOp::Advance { delta: 1 },
             // Step 2 completes (worker-1: succeeded 1 / assigned 1).
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            overall_idle_pc("default"),
             ProgressOp::Advance { delta: 1 },
             // Step 3 completes (worker-0: succeeded 2 / assigned 2).
             idle_pc_count(2, 2),
             ProgressOp::SetTotal { total: 2 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            overall_idle_pc("default"),
             ProgressOp::Advance { delta: 1 },
             // Overall bar finished with a status-list suffix.
             ProgressOp::SetSuffixComponents {
@@ -512,15 +496,10 @@ async fn regression_idle_slot_prefix_stops_at_the_activity_marker() {
 
     let mut idle = BTreeSet::new();
     let mut active = Vec::new();
-    let mut overall = BTreeSet::new();
     for op in tracker.ops() {
         let ProgressOp::SetTruncation { prefix, .. } = op else { continue };
         if prefix.contains("[active]") {
             active.push(prefix);
-        } else if prefix.starts_with("default") || prefix == "[W] default" {
-            // The pinned overall row: marker-less while it runs, marked at the
-            // finish arm once a step has failed.
-            overall.insert(prefix);
         } else {
             idle.insert(prefix);
         }
@@ -529,16 +508,6 @@ async fn regression_idle_slot_prefix_stops_at_the_activity_marker() {
         idle,
         BTreeSet::from(["[idle]".to_string(), "[W] [idle]".to_string(), "[F] [idle]".to_string()]),
         "a slot with no step running names no tool"
-    );
-    assert_eq!(
-        overall,
-        BTreeSet::from([
-            "default".to_string(),
-            "default s1 (broken)".to_string(),
-            "[W] default".to_string(),
-        ]),
-        "the overall row names a running step, drops it once the step stops, and \
-         marks itself when the run ends in failure"
     );
     assert_eq!(
         active,
@@ -613,25 +582,21 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
-            overall_running_pc("default", "s1", "echo@v1"),
             // Level 0 await — step 1 completes.
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            overall_idle_pc("default"),
             ProgressOp::Advance { delta: 1 },
             // Level 1: dispatch s2 to worker-0 (re-activate, assigned 2).
             ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
-            overall_running_pc("default", "s2", "echo@v1"),
             // Level 1 await — step 2 completes.
             idle_pc_count(2, 2),
             ProgressOp::SetTotal { total: 2 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
-            overall_idle_pc("default"),
             ProgressOp::Advance { delta: 1 },
             // Overall bar finished with a status-list suffix.
             ProgressOp::SetSuffixComponents {
@@ -717,8 +682,8 @@ async fn regression_worker_invariant_holds() {
     );
     assert_eq!(
         count_markers_w(&ops_on_overall(&recorded)),
-        1,
-        "the pinned overall row's single terminal marker, counted on its own"
+        0,
+        "the overall row records no label ops since its prefix is the static seed"
     );
     assert_eq!(
         count_markers_f(&ops_on_worker_slots(&recorded)),
@@ -879,8 +844,8 @@ async fn retry_exhausted_progress_ops() {
     );
     assert_eq!(
         count_markers_w(&ops_on_overall(&recorded)),
-        1,
-        "the pinned overall row's single terminal marker, counted on its own"
+        0,
+        "the overall row records no label ops since its prefix is the static seed"
     );
     assert_eq!(
         count_markers_f(&ops_on_worker_slots(&recorded)),
@@ -926,8 +891,8 @@ async fn no_retry_when_max_retries_zero() {
     );
     assert_eq!(
         count_markers_w(&ops_on_overall(&recorded)),
-        1,
-        "the pinned overall row's single terminal marker"
+        0,
+        "the overall row records no label ops since its prefix is the static seed"
     );
     assert_eq!(
         count_markers_f(&ops_on_worker_slots(&recorded)),
@@ -983,8 +948,8 @@ async fn impure_no_retry_without_flag() {
     );
     assert_eq!(
         count_markers_w(&ops_on_overall(&recorded)),
-        1,
-        "the pinned overall row's single terminal marker"
+        0,
+        "the overall row records no label ops since its prefix is the static seed"
     );
     assert_eq!(
         count_markers_f(&ops_on_worker_slots(&recorded)),
@@ -1066,15 +1031,13 @@ async fn overall_bar_suffix_no_failed_on_success() {
     assert!(!suffix.contains("retried"), "zero-count retried dropped: {suffix:?}");
 }
 
-/// The pinned overall row carries a `[W]` of its own when the run ends in
-/// failure, and carries no marker when it ends clean.
+/// The pinned overall row finishes as a warning when the run ends in
+/// failure, and finishes as a success when it ends clean.
 ///
-/// A client label installed with `set_truncation` replaces the built-in
-/// prefix components wholesale, so the marker the renderer would have drawn
-/// from the bar's status is not drawn at all. The bar still turns yellow and
-/// the `failed` count is still in the suffix, so what this pins is the marker
-/// on the row, not the state: `[W]` and `[F]` are different states and must
-/// not collapse into one another or into nothing.
+/// The row installs no label at all — its prefix is the static seed — so the
+/// verdict is what the row records, not what a label carries: the terminal
+/// finish op is the marker, and `[W]` and `[F]` must not collapse into one
+/// another or into nothing. The `failed` count still lands in the suffix.
 #[tokio::test]
 async fn overall_row_marks_a_warned_run_and_leaves_a_clean_run_unmarked() {
     fix_worker_pool_size();
@@ -1091,10 +1054,11 @@ async fn overall_row_marks_a_warned_run_and_leaves_a_clean_run_unmarked() {
     ));
     let (tracker, summary) = run_with_progress(&warned, "default").await;
     assert_eq!(summary.failed_steps, 1);
+    let ops = ops_on_overall(&tracker.recorded());
     assert_eq!(
-        overall_prefixes(&tracker.ops()),
-        vec!["default s1 (broken)".to_string(), "default".to_string(), "[W] default".to_string(),],
-        "a warned run drops the finished step, then ends on the marker"
+        ops.last(),
+        Some(&ProgressOp::FinishWarning),
+        "a run that lost a step ends the overall row with a warning: {ops:?}"
     );
 
     let clean = TestConductor::new();
@@ -1104,81 +1068,11 @@ async fn overall_row_marks_a_warned_run_and_leaves_a_clean_run_unmarked() {
     ));
     let (tracker, summary) = run_with_progress(&clean, "default").await;
     assert_eq!(summary.failed_steps, 0);
+    let ops = ops_on_overall(&tracker.recorded());
     assert_eq!(
-        overall_prefixes(&tracker.ops()),
-        vec!["default s1 (echo@v1)".to_string(), "default".to_string()],
-        "a clean run ends on the workflow name alone, with no marker to strip"
-    );
-}
-
-/// Prefixes installed on the pinned overall row, in order.
-///
-/// The recorded ops carry no bar identity, so a prefix counts as the overall
-/// row's when it starts with the workflow name or carries the terminal marker
-/// in front of it. Worker-slot prefixes start with `[active]`, `[idle]`, `[W]`
-/// or `[F]` followed by `[idle]`, and an active slot's prefix is counted
-/// separately by the caller.
-fn overall_prefixes(ops: &[ProgressOp]) -> Vec<String> {
-    ops.iter()
-        .filter_map(|op| match op {
-            ProgressOp::SetTruncation { prefix, .. }
-                if !prefix.contains("[active]") && !prefix.ends_with("[idle]") =>
-            {
-                Some(prefix.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// A builtin's overall row carries no version, while a managed tool's row
-/// carries the one the document declared.
-///
-/// The two runs differ in one field of one `ToolSpec`, so the comparison is
-/// what makes this test worth having. Asserting the builtin row alone would
-/// pass just as well if the version field were dead, and asserting the managed
-/// row alone would say nothing about the builtin. Run side by side, the
-/// builtin's empty version is a decision the document made, and the reason it
-/// is worth pinning is that a derived version would read fine on a bar and be
-/// wrong in production: `builtin_id` names a registration and a document key
-/// names a payload, and neither is a claim a user wrote.
-///
-/// The prefixes come from a real `run_workflow`, and the recorder renders the
-/// installed label through the same `truncate_prefix` the renderer calls, so
-/// what is compared is the text the row draws rather than the fields behind it.
-#[cfg(feature = "progress")]
-#[tokio::test]
-async fn builtin_row_renders_no_version_while_a_declared_one_renders() {
-    fix_worker_pool_size();
-
-    let builtin_run = TestConductor::new();
-    builtin_run.write_config(doc_with_workflows(
-        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
-        vec![crate::echo_workflow("default", "echo@v1", "hello")],
-    ));
-    let (builtin_tracker, summary) = run_with_progress(&builtin_run, "default").await;
-    assert_eq!(summary.failed_steps, 0);
-
-    let managed_run = TestConductor::new();
-    let mut managed_tool = echo_tool("managed@v1");
-    managed_tool.version = Some("v9.9.9".to_string());
-    managed_run.write_config(doc_with_workflows(
-        BTreeMap::from([("managed@v1".into(), managed_tool)]),
-        vec![crate::echo_workflow("default", "managed@v1", "hello")],
-    ));
-    let (managed_tracker, summary) = run_with_progress(&managed_run, "default").await;
-    assert_eq!(summary.failed_steps, 0);
-
-    assert_eq!(
-        overall_prefixes(&builtin_tracker.ops()),
-        vec!["default s1 (echo@v1)".to_string(), "default".to_string()],
-        "a builtin has no release, so nothing goes inside its parentheses"
-    );
-    assert_eq!(
-        overall_prefixes(&managed_tracker.ops()),
-        vec!["default s1 (managed@v1 v9.9.9)".to_string(), "default".to_string()],
-        "the declared version belongs inside the tool's parentheses, so the \
-         builtin's empty one is a choice and not a field nothing reads"
+        ops.last(),
+        Some(&ProgressOp::FinishSuccess),
+        "a clean run ends the overall row with a success: {ops:?}"
     );
 }
 
@@ -1186,8 +1080,9 @@ async fn builtin_row_renders_no_version_while_a_declared_one_renders() {
 ///
 /// The overall row carries the run's verdict, so a run that lost a step cannot
 /// end the same way a clean run does. Two things say that on the row: the
-/// terminal finish is `FinishWarning` rather than `FinishSuccess`, and the label
-/// carries the `[W]` the finish arm installs. The suffix reports the tally, so
+/// terminal finish is `FinishWarning` rather than `FinishSuccess`. The row's
+/// prefix is the static seed, so `[W]` renders from the bar's built-in status
+/// marker rather than from a label op. The suffix reports the tally, so
 /// it is asserted too: a row that warned without saying how many steps failed
 /// would leave the reader guessing which end of the run to look at.
 #[tokio::test]
@@ -1225,8 +1120,8 @@ async fn overall_bar_finishes_warning_when_a_step_failed() {
     );
     assert_eq!(
         count_markers_w(&ops),
-        1,
-        "the finished overall row carries exactly one `[W]` marker: {ops:?}"
+        0,
+        "the overall row records no label ops, so no marker can come from a label: {ops:?}"
     );
     let suffix = ops.iter().rev().find_map(|op| match op {
         ProgressOp::SetSuffixComponents { components } => Some(components.custom.clone()),
