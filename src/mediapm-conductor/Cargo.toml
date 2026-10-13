@@ -21,7 +21,7 @@ cli = [
 ]
 fetch = ["mediapm-conductor-builtin-import/fetch"]
 proptest = []
-tool-presets = ["dep:flate2", "dep:tar", "dep:zip", "dep:xz2", "progress"]
+tool-presets = ["dep:flate2", "dep:tar", "dep:zip", "dep:xz2", "dep:sha2", "progress"]
 
 [lints]
 workspace = true
@@ -49,7 +49,7 @@ ractor.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+sha2 = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true

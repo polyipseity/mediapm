@@ -725,6 +725,153 @@ mod tests {
         }
     }
 
+    /// Builds a minimal zip archive containing one file, for a Fetch source
+    /// whose URL extension marks it as an archive.
+    fn test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+        use zip::write::SimpleFileOptions;
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default();
+        for (name, content) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    /// Drives the full fetch → process → fetch-feedback wiring for ffmpeg and
+    /// asserts the redirect build id the fetch observed reaches
+    /// [`FetchedToolPayload::canonical_version`].
+    ///
+    /// The macOS chain's resolve-time leg is deliberately a *different* value
+    /// (`resolvetime-obs`) than the build id the redirecting martin-riedl
+    /// permalink serves (`1760000000_N-12345-gabcdef`). Only
+    /// `canonical_version_after_fetch` (called at the `provision.rs` fetch
+    /// site) can replace the resolve-time leg with the fetched one — so
+    /// deleting that call leaves the resolve-time value and this test fails.
+    /// macOS-only sources keep the fetch on the local wiremock server and off
+    /// the real `BtbN` endpoints.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's martin-riedl/jellyfin seam reads against their mutation scope"
+    )]
+    async fn fetch_leg_rewrite_reaches_payload_canonical_version() {
+        let cas = new_in_memory_cas();
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
+        let cache = Cache::open(
+            tmp.path(),
+            &[
+                CacheDomainConfig {
+                    domain: "tools".to_string(),
+                    index_file_name: "tools.json".to_string(),
+                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
+                },
+                CacheDomainConfig {
+                    domain: "tool_metadata".to_string(),
+                    index_file_name: "tool_metadata.json".to_string(),
+                    entry_ttl_seconds: 24 * 60 * 60,
+                },
+            ],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
+        let tracker = RecordingProgressTracker::new();
+
+        let mock_server = MockServer::start().await;
+        let build_id = "1760000000_N-12345-gabcdef";
+        let payload_bytes = test_zip(&[("ffmpeg", b"fake-ffmpeg-binary")]);
+        // For each macOS arch: the permalink 302-redirects to the versioned
+        // download (whose path carries the build id), which serves a real zip.
+        // No `.sha256` is mounted, so the sibling probe 404s and the bytes are
+        // accepted unverified (the documented "verify when served" rule).
+        for arch in ["aarch64", "x86_64"] {
+            let permalink = format!("/redirect/latest/macos/{arch}/snapshot/ffmpeg.zip");
+            let versioned = format!("/download/macos/{arch}/{build_id}/ffmpeg.zip");
+            Mock::given(method("GET"))
+                .and(path(permalink))
+                .respond_with(
+                    ResponseTemplate::new(302).insert_header("location", versioned.as_str()),
+                )
+                .mount(&mock_server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(versioned))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(payload_bytes.clone()))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let env_lock = lock_process_env();
+        // SAFETY: the env lock the guard holds scopes these process-global
+        // seams to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var("MEDIAPM_MARTIN_RIEDL_BASE", mock_server.uri());
+            std::env::set_var("MEDIAPM_JELLYFIN_BASE", mock_server.uri());
+        }
+
+        // Build the real ffmpeg source set against the seam, then keep only the
+        // macOS dual-arch entries so the fetch never touches BtbN's github.com
+        // windows/linux legs.
+        let mut fetch = crate::tools::provider::ffmpeg::sources(&VersionSpec::Latest);
+        fetch.sources.retain(|source| source.os == "macos");
+        assert_eq!(fetch.sources.len(), 2, "expected both macOS arch sources");
+
+        // Resolve-time metadata carries a DIFFERENT macOS leg than the fetch
+        // will observe, so only the fetch-feedback rewrite can produce the
+        // asserted value.
+        let metadata = test_metadata(
+            "autobuild-TEST+resolvetime-obs",
+            "autobuild-TEST+resolvetime-obs",
+            false,
+            0,
+        );
+        let outcome = PreResolveOutcome::Resolved(fetch, metadata);
+
+        let result = fetch_and_import_tool_payload(&cas, "ffmpeg", &cache, &tracker, outcome).await;
+
+        // SAFETY: same env-lock scope as the sets above.
+        unsafe {
+            std::env::remove_var("MEDIAPM_MARTIN_RIEDL_BASE");
+            std::env::remove_var("MEDIAPM_JELLYFIN_BASE");
+        }
+        drop(env_lock);
+
+        let payload = result
+            .expect("ffmpeg macOS fetch should succeed")
+            .expect("ffmpeg should return a payload");
+
+        // The dual-arch rule keys both payloads under arch segments and records
+        // the host-arch exec path — confirming this exercised the real chain.
+        assert!(
+            payload.content_map.contains_key("macos/aarch64/"),
+            "dual-arch macOS slot keys the aarch64 payload under an arch segment"
+        );
+        assert!(
+            payload.content_map.contains_key("macos/x86_64/"),
+            "dual-arch macOS slot keys the x86_64 payload under an arch segment"
+        );
+        assert_eq!(
+            payload.os_exec_paths.get("macos").map(String::as_str),
+            Some(format!("{}/ffmpeg", host_arch_label()).as_str()),
+            "os_exec_paths resolves the host-arch macOS payload"
+        );
+
+        // THE WIRING UNDER TEST: the build id parsed from the redirect target
+        // the fetch actually followed replaces the resolve-time leg.
+        assert_eq!(
+            payload.canonical_version,
+            format!("autobuild-TEST+{build_id}"),
+            "the redirect build id the fetch observed must reach the payload's canonical version"
+        );
+        assert_ne!(
+            payload.canonical_version, "autobuild-TEST+resolvetime-obs",
+            "the resolve-time leg must have been rewritten away"
+        );
+    }
+
     #[tokio::test]
     async fn fetch_and_import_with_pre_resolved_canonical_version() {
         let cas = new_in_memory_cas();

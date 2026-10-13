@@ -269,6 +269,83 @@ async fn pinned_tag_with_a_non_dereferenceable_ref_is_refused() {
     );
 }
 
+/// A stale cache entry from the pre-dereferencing era — whose stored "hash"
+/// is the tag string itself (`{tag}\n{tag}`) — must NOT be trusted as a
+/// commit. The `hash != tag` guard falls through to a re-resolve, which
+/// hits the ref endpoint and, finding a non-dereferenceable ref, refuses.
+/// The mock's `expect(1)` on both endpoints is the proof: had the cache been
+/// served, neither would have been contacted.
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock must serialize the whole set-seam -> await -> unset-seam resolve; the guard is Send and this is the documented MEDIAPM_* test-seam mutation-scope rule"
+)]
+async fn stale_tag_as_hash_cache_entry_triggers_reresolve_and_refusal() {
+    let server = MockServer::start().await;
+    let tag = "2025.07.15";
+    // The release document is served, isolating the outcome to the ref
+    // dereference (which falls back to the tag and is refused).
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/yt-dlp/yt-dlp/releases/tags/{tag}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tag_name": tag,
+            "assets": [
+                { "name": "yt-dlp.exe" },
+                { "name": "yt-dlp_macos" },
+                { "name": "yt-dlp_linux" },
+            ],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // A `tree` ref is neither a commit nor an annotated tag, so the
+    // dereference falls back to the tag string and the pinned path refuses.
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/yt-dlp/yt-dlp/git/refs/tags/{tag}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "object": { "type": "tree", "sha": "2222222222222222222222222222222222222222" },
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
+    let cache = ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+
+    let env_lock = lock_process_env();
+    // SAFETY: the env lock the guard holds scopes this process-global seam
+    // to this test, per the documented MEDIAPM_* mutation-scope rule.
+    unsafe {
+        std::env::set_var(GITHUB_API_BASE_ENV, server.uri());
+    }
+
+    // Seed the stale pre-dereferencing entry under the seam-resolved key:
+    // the "hash" column is the tag string itself.
+    let api_url = format!("{}/repos/yt-dlp/yt-dlp/releases/tags/{tag}", server.uri());
+    cache.store_bytes("default", api_url.as_str(), format!("{tag}\n{tag}").as_bytes()).await;
+
+    let result = resolve_tool_fetch(
+        "yt-dlp",
+        &exact_tag(tag),
+        Some((&cache, "default")),
+        RecheckPolicy::UseCached,
+    )
+    .await;
+
+    // SAFETY: same env-lock scope as the set above.
+    unsafe {
+        std::env::remove_var(GITHUB_API_BASE_ENV);
+    }
+    drop(env_lock);
+
+    let error = result.expect_err("a stale tag-as-hash entry must not be trusted as a commit");
+    let message = error.to_string();
+    assert!(
+        message.contains(&format!("ref for tag {tag} did not dereference to a commit")),
+        "the re-resolved refusal surfaces: {message}"
+    );
+}
+
 /// Deno's per-OS slots carry exactly one candidate each — never a
 /// cross-arch fallback list. The macOS and Linux slots follow the host
 /// architecture; the Windows slot stays `x86_64` because upstream publishes

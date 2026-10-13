@@ -205,6 +205,14 @@ pub(crate) async fn resolve_macos_leg(
         }
         (build_id, false)
     } else {
+        // Advisory-only degradation: a failed probe records the jellyfin
+        // fallback version as the macOS leg rather than failing the resolve.
+        // The fetch-phase rewrite (`canonical_version_after_fetch`) is what
+        // corrects this to the real build id once the payload is served. One
+        // second-order effect: if the stored composite already carries this
+        // same jellyfin version from a prior real failover, the skip check
+        // matches and martin-riedl is not re-probed until the BtbN tag
+        // rotates (<= 1 day) — self-healing, not a permanent wedge.
         tracing::warn!(
             "martin-riedl permalink probe failed; the macOS canonical leg records the \
              jellyfin fallback version until fetch feedback corrects it"

@@ -16,7 +16,7 @@
 #![cfg(feature = "tool-presets")]
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -763,6 +763,15 @@ async fn verify_sha256_sibling(
     bytes: &[u8],
 ) -> Result<(), String> {
     use sha2::Digest;
+    // GitHub release assets (and their CDN redirects) never serve a sibling
+    // `.sha256`, so probing them spends one wasted round-trip per download.
+    // Gate on the serving host before issuing the checksum request; any
+    // other host (martin-riedl, jellyfin, and hermetic test servers) is
+    // still probed, since "verify when served" must keep working wherever a
+    // checksum might appear.
+    if !url_serves_checksum(url) {
+        return Ok(());
+    }
     let checksum_url = format!("{url}.sha256");
     // A short timeout: the checksum file is a few dozen bytes; an endpoint
     // that stalls on it is treated as not serving one.
@@ -788,6 +797,24 @@ fn parse_sha256_checksum(body: &str) -> Option<String> {
     let token = body.split_whitespace().next()?;
     (token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| token.to_ascii_lowercase())
+}
+
+/// Whether the URL's host is one known to serve a sibling `.sha256`.
+///
+/// GitHub release assets (web downloads and their
+/// `objects.githubusercontent.com` redirects) never publish a `.sha256`, so
+/// returning `false` for them skips the doomed checksum probe. Every other
+/// host — martin-riedl, jellyfin, and hermetic test servers — is still
+/// probed, because the checksum rule is "verify when served" and a test or
+/// mirror may serve one.
+#[cfg(feature = "tool-presets")]
+fn url_serves_checksum(url: &str) -> bool {
+    let host = url.split("//").nth(1).and_then(|rest| rest.split('/').next()).unwrap_or("");
+    let host = host.strip_prefix("www.").unwrap_or(host).to_ascii_lowercase();
+    !(host == "github.com"
+        || host.ends_with(".github.com")
+        || host == "objects.githubusercontent.com"
+        || host.ends_with(".githubusercontent.com"))
 }
 
 /// Generates a launcher script that dispatches `$MEDIAPM_EXECUTABLE <argv...> {args...}`.
@@ -918,16 +945,17 @@ pub async fn process_tool_sources(
     let mut content_map: BTreeMap<String, String> = BTreeMap::new();
     let mut os_exec_paths: BTreeMap<String, String> = BTreeMap::new();
 
-    // OS labels carrying more than one source are dual-arch slots (the
-    // ffmpeg macOS chain publishes an `aarch64` and an `x86_64` payload):
-    // their content keys gain an arch segment — `{os}/{arch}/` or
-    // `{os}/{arch}/{filename}` — so the two payloads never collide. OS
-    // labels with a single source keep the flat `{os}/...` shape, so no
-    // existing tool's content-addressed keys churn.
-    let mut os_entry_counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for entry in &downloaded.entries {
-        *os_entry_counts.entry(entry.os.as_str()).or_default() += 1;
-    }
+    // OS labels carrying sources for MORE THAN ONE distinct architecture are
+    // dual-arch slots (the ffmpeg macOS chain publishes an `aarch64` and an
+    // `x86_64` payload): their content keys gain an arch segment —
+    // `{os}/{arch}/` or `{os}/{arch}/{filename}` — so the two payloads never
+    // collide. OS labels with a single source — or with several sources that
+    // all share one architecture — keep the flat `{os}/...` shape, so no
+    // existing tool's content-addressed keys churn. Several sources under one
+    // OS label that all carry the SAME arch would resolve to identical flat
+    // keys and are rejected outright rather than silently overwriting.
+    let (os_entry_counts, os_arches) =
+        collect_os_slot_arches(&downloaded.tool_id, &downloaded.entries)?;
 
     // Compute total items: archive sources get 2 items (decompress + compress),
     // binary/launcher sources get 1 item.
@@ -960,7 +988,8 @@ pub async fn process_tool_sources(
     for (source_idx, source) in downloaded.entries.iter().enumerate() {
         let os_label = &source.os;
         let slot_size = os_entry_counts.get(os_label.as_str()).copied().unwrap_or(1);
-        let is_dual_arch_slot = slot_size > 1;
+        let distinct_arches = os_arches.get(os_label.as_str()).map_or(0, BTreeSet::len);
+        let is_dual_arch_slot = slot_size > 1 && distinct_arches >= 2;
         // Content-key prefix: arch-segmented for dual-arch slots, flat
         // otherwise (see the `os_entry_counts` rule above).
         let key_prefix = if is_dual_arch_slot {
@@ -1034,6 +1063,45 @@ pub async fn process_tool_sources(
     }
 
     Ok(ProvisionResult { content_map, os_exec_paths })
+}
+
+/// The per-OS-label source counts and the per-label set of architecture
+/// labels, as computed by [`collect_os_slot_arches`].
+#[cfg(feature = "tool-presets")]
+type OsSlotArches<'a> = (BTreeMap<&'a str, usize>, BTreeMap<&'a str, BTreeSet<&'a str>>);
+
+/// Counts sources and collects the distinct architectures per OS label,
+/// rejecting any OS label that carries more than one source but fewer than
+/// two distinct architectures.
+///
+/// An OS label with several sources all sharing one architecture would
+/// resolve to identical flat content-map keys, silently overwriting one
+/// another; refusing here names the tool and the offending label so the
+/// configuration error is caught before any extraction. Returns the per-label
+/// source count and the per-label set of architecture labels on success.
+#[cfg(feature = "tool-presets")]
+fn collect_os_slot_arches<'a>(
+    tool_id: &str,
+    entries: &'a [DownloadedSource],
+) -> Result<OsSlotArches<'a>, crate::error::ConductorError> {
+    let mut os_entry_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut os_arches: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for entry in entries {
+        *os_entry_counts.entry(entry.os.as_str()).or_default() += 1;
+        os_arches.entry(entry.os.as_str()).or_default().insert(entry.arch.as_str());
+    }
+    for (os_label, count) in &os_entry_counts {
+        let distinct_arches = os_arches.get(os_label).map_or(0, BTreeSet::len);
+        if *count > 1 && distinct_arches < 2 {
+            return Err(crate::error::ConductorError::Workflow(format!(
+                "tool {tool_id}: OS label '{os_label}' has {count} sources but only \
+                 {distinct_arches} distinct architecture(s); same-OS same-arch sources would \
+                 collide on identical content-map keys. Either give each source a distinct \
+                 architecture or a distinct OS label."
+            )));
+        }
+    }
+    Ok((os_entry_counts, os_arches))
 }
 
 /// Infers archive format from a URL's file extension.
@@ -2869,13 +2937,17 @@ mod tests {
     }
 
     /// Two sources resolving to the same `content_map` key must fail loudly
-    /// instead of silently overwriting. Archive sources key on `{os}/`, so two
-    /// archive entries for one OS label collide; before this guard the second
-    /// entry replaced the first and the tool provisioned with one payload.
+    /// instead of silently overwriting. In a dual-arch slot the key carries an
+    /// arch segment, so two archives sharing one OS *and* architecture collide
+    /// on `{os}/{arch}/`; the distinct-arch gate lets this mixed set through
+    /// (two arches are present), so the per-key duplicate guard is what rejects
+    /// the colliding pair. Before this guard the second entry replaced the
+    /// first and the tool provisioned with one payload.
     #[tokio::test]
     async fn process_rejects_duplicate_content_map_keys() {
         let first = synthetic_zip(&[("tool.bin", b"first-payload")]);
         let second = synthetic_zip(&[("tool.bin", b"second-payload")]);
+        let third = synthetic_zip(&[("tool.bin", b"third-payload")]);
 
         let downloaded = DownloadedSources {
             tool_id: "test".to_string(),
@@ -2900,6 +2972,16 @@ mod tests {
                     expected_size: None,
                     actual_url: None,
                 },
+                DownloadedSource {
+                    os: "linux".to_string(),
+                    arch: "aarch64".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/tool-c.zip".to_string()],
+                    },
+                    bytes: third,
+                    expected_size: None,
+                    actual_url: None,
+                },
             ],
             cached_count: 0,
         };
@@ -2914,7 +2996,10 @@ mod tests {
             message.contains("duplicate content_map key"),
             "error must name the duplicate key problem, got: {message}"
         );
-        assert!(message.contains("linux/"), "error must name the colliding key, got: {message}");
+        assert!(
+            message.contains("linux/x86_64/"),
+            "error must name the colliding arch-segmented key, got: {message}"
+        );
     }
 
     // ── generate_launcher_script ──────────────────────────────────────
@@ -4249,6 +4334,54 @@ mod tests {
             result.os_exec_paths.get("macos").map(String::as_str),
             Some(format!("{}/ffmpeg", host_arch_label()).as_str()),
             "dual-arch slot resolves the host-arch payload path"
+        );
+    }
+
+    /// An OS label carrying more than one source that ALL share one
+    /// architecture is rejected outright: those sources would resolve to
+    /// identical flat content-map keys and silently overwrite one another.
+    /// The distinct-arch gate refuses them with tool + OS context instead.
+    #[tokio::test]
+    async fn process_rejects_same_os_same_arch_sources() {
+        let zip_a = synthetic_zip(&[("ffmpeg", b"payload-a")]);
+        let zip_b = synthetic_zip(&[("ffmpeg", b"payload-b")]);
+        let downloaded = DownloadedSources {
+            tool_id: "ffmpeg".to_string(),
+            entries: vec![
+                DownloadedSource {
+                    os: "macos".to_string(),
+                    arch: "aarch64".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/macos-a.zip".to_string()],
+                    },
+                    bytes: zip_a,
+                    expected_size: None,
+                    actual_url: None,
+                },
+                DownloadedSource {
+                    os: "macos".to_string(),
+                    arch: "aarch64".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/macos-b.zip".to_string()],
+                    },
+                    bytes: zip_b,
+                    expected_size: None,
+                    actual_url: None,
+                },
+            ],
+            cached_count: 0,
+        };
+
+        let cas = InMemoryCas::default();
+        let error = process_tool_sources(&downloaded, &cas, None)
+            .await
+            .expect_err("same-arch dupes must fail");
+        let message = error.to_string();
+        assert!(message.contains("ffmpeg"), "error names the tool: {message}");
+        assert!(message.contains("macos"), "error names the OS label: {message}");
+        assert!(
+            message.contains("architecture"),
+            "error explains the distinct-arch requirement: {message}"
         );
     }
 
