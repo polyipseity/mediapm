@@ -608,7 +608,7 @@ pub(crate) fn canonical_version_after_fetch(
 /// keeps resolving latest and leaves comparison to the caller's validation
 /// gate. `Exact` of any flavor is refused for ffmpeg (`BtbN` retains no
 /// historical builds). [`media-tagger`](crate::tools::provider::media_tagger)
-/// and [`import`](crate::tools::provider::import) are builtin launchers with
+/// and [`import`] are builtin launchers with
 /// no upstream release and ignore the target.
 ///
 /// Returns a tuple of `(ResolvedToolFetch, ResolvedToolMetadata)` where the

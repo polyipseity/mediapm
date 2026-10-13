@@ -267,7 +267,7 @@ impl ProgressRenderer {
     /// the frame's open window has to draw, so the caller's owed-draw
     /// bookkeeping must count the slot even when every string dedup landed.
     /// Callers apply it once per source per bar — the frame guards it with
-    /// [`SlotCache::terminal_finished_for`] (a rebind re-applies it to the
+    /// `SlotCache::has_terminal_finished_for` (a rebind re-applies it to the
     /// bar the source just landed on), and [`finalize`](Self::finalize)
     /// runs it once at screen teardown.
     pub(super) fn finish_slot(&self, i: usize, status: TrackStatus) -> bool {

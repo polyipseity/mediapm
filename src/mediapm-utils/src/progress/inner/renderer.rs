@@ -186,7 +186,7 @@ struct SlotCache {
     /// Last prefix sent to `set_prefix`.
     prefix: RefCell<String>,
     /// `true` while the slot's bar carries the blank state
-    /// [`blank_new_bar`](blank_new_bar) pushed. Cleared by the first real
+    /// [`blank_new_bar`] pushed. Cleared by the first real
     /// content pushed onto the bar, so a rebound-and-released slot is never
     /// reported as blank.
     blank: Cell<bool>,

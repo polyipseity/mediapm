@@ -28,7 +28,7 @@ This keeps the function single-responsibility: it renders a resolve bar for ever
 ### Phase 1b: HEAD prefetch
 
 - Sends HEAD requests to populate `expected_size` on each `Fetch`-producer source; failures are silently ignored (Content-Length fallback).
-- **Evermeet and getrelease URLs are skipped** (dynamic builds). Timeout: 10s per HEAD.
+- Every `Fetch` source is HEADed (the old Evermeet/getrelease skip is gone with evermeet). A martin-riedl permalink 302-redirects, so the HEAD follows the redirect to the versioned download and records its Content-Length (or fails silently). Timeout: 10s per HEAD.
 
 ### Phase 2: Fetch
 

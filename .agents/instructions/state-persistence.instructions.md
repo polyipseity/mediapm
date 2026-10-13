@@ -149,7 +149,8 @@ fallback chain exists.
 When comparing canonical versions for skip-if-up-to-date logic, use exact
 string equality. GitHub-release-based tools (yt-dlp, deno, rsgain, sd) use the
 resolved commit hash as canonical version; ffmpeg uses the composite
-`"{autobuild_tag}+evermeet-{evermeet_version}"`; media-tagger uses the
+`"{autobuild_tag}+{macos_leg_version}"` (the macOS leg is the martin-riedl build
+id or jellyfin version actually fetched); media-tagger uses the
 mediapm build-time git hash. The `resolved_*` provenance fields are separate
 and informational; they never participate in skip/update decisions.
 
