@@ -321,6 +321,12 @@ mod tests {
                     log.lock().unwrap().push("dep-done");
                 } else {
                     log.lock().unwrap().push("dependent-start");
+                    // Documented contract: an index with no wired receiver
+                    // resolves to `None` without blocking.
+                    assert!(
+                        gates.dep_version(999).await.is_none(),
+                        "an undeclared dep index must resolve to None without blocking"
+                    );
                     gates.dep_version(0).await.expect("dep version");
                     gates.dep_own_map(0).await.expect("dep own map");
                     log_gate.lock().unwrap().push("dependent-gated");
@@ -341,9 +347,12 @@ mod tests {
         assert!(dep_done < gated, "gated stage must run after the dep published its map: {log:?}");
     }
 
-    /// A job with empty `same_step_deps` must never wait for an unrelated job:
-    /// with the paused clock, a job wrongly gated on the long sleeper would
-    /// hang past the timeout instead of completing.
+    /// Guards against a driver hang where a wrongly-wired gate channel never
+    /// resolves and `run_pool` never returns: with the paused clock the test
+    /// still completes in virtual time, so a true hang fails via timeout. This
+    /// test observes driver liveness only, not gate-wiring semantics — the
+    /// unknown-index and edge-wait contracts are asserted directly in the
+    /// dependent-start test.
     #[tokio::test(start_paused = true)]
     async fn pool_does_not_gate_a_job_with_no_declared_edges() {
         let jobs = vec![
@@ -366,8 +375,9 @@ mod tests {
         assert_eq!(outcomes, vec![(0, 0), (1, 1)]);
     }
 
-    /// The first failure must abort the pool: the error propagates immediately
-    /// and every in-flight job future is dropped (cancellation on drop).
+    /// The first failure must abort the pool: the error propagates
+    /// immediately — the long-sleeping job never runs to completion — and every
+    /// in-flight job future is dropped (cancellation on drop).
     #[tokio::test(start_paused = true)]
     async fn pool_aborts_and_cancels_in_flight_jobs_on_the_first_failure() {
         /// Drop guard that flags cancellation when the holding job future is
@@ -381,16 +391,22 @@ mod tests {
         }
 
         let dropped = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
         let probe = dropped.clone();
+        let completed_job = completed.clone();
         let jobs = vec![
             PoolJob { index: 0, same_step_deps: vec![], input: () },
             PoolJob { index: 1, same_step_deps: vec![], input: () },
         ];
         let failure = run_pool(jobs, 2, move |job, _gates, _publisher| {
             let guard = (job.index == 0).then(|| CancelProbe(probe.clone()));
+            let completed_job = completed_job.clone();
             async move {
                 if let Some(_guard) = guard {
                     tokio::time::sleep(Duration::from_hours(1)).await;
+                    // Only reachable in a collect-all-then-return regression,
+                    // where the paused clock advances through the full hour.
+                    completed_job.store(true, Ordering::SeqCst);
                     Ok::<_, &'static str>(0)
                 } else {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -405,6 +421,10 @@ mod tests {
         // One yield so a drop deferred by the abort runs before the assertion.
         tokio::task::yield_now().await;
         assert!(dropped.load(Ordering::SeqCst), "in-flight job must be cancelled");
+        assert!(
+            !completed.load(Ordering::SeqCst),
+            "abort must return before the long-sleeping job completes"
+        );
     }
 
     /// The pool must never run more jobs than the requested concurrency width.
