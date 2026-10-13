@@ -6,7 +6,7 @@
 //! status is a promise to a script, so the promise is checked against a real
 //! process here.
 //!
-//! Both workspaces run offline. The warning comes from a tool id no provider
+//! Both workspaces run offline. The error comes from a tool id no provider
 //! answers to, which fails at resolution before any download is attempted, so
 //! the case is reachable without a network. A provisioning failure that got as
 //! far as fetching a payload is not, and is left to the unit test.
@@ -14,7 +14,7 @@
 //! | status | meaning |
 //! | --- | --- |
 //! | 0 | every desired tool registered |
-//! | 3 | the run finished and a tool failed to register |
+//! | 1 | a tool failed to register (provisioning failures are fatal, fail fast) |
 //! | 4 | not used by this command: nothing in the library is missing |
 
 use std::path::Path;
@@ -22,22 +22,21 @@ use std::process::Output;
 
 use super::subprocess::run_tool_sync;
 use mediapm::{ConfigVersionSpec, MediaPmDocument, ToolRequirement, save_mediapm_document};
-use mediapm_utils::report::StatusIcon;
 
 /// Tool id no provider is registered for.
 ///
 /// `resolve_tool_fetch` matches the id against the six managed tools and
-/// returns an error for anything else, before it opens a socket. That error is
-/// what the reconcile loop records as a warning, so this workspace reaches the
-/// warning status with no payload fetched.
+/// returns an error for anything else, before it opens a socket. Under fail
+/// fast that error aborts the whole sync, so this workspace reaches the error
+/// status with no payload fetched.
 const UNRESOLVABLE_TOOL: &str = "nonexistent-tool";
 
 /// Substring the summary line prints on stdout once the tool sync finishes.
 const TOOLS_SYNCED_MARKER: &str = "tools synced";
 
-/// Exit status for a run that reported warnings and nothing worse, as the
-/// whole-sync command uses it.
-const EXIT_WARNING: i32 = 3;
+/// Exit status for a fatal error. A provisioning failure (resolve/fetch/
+/// process) aborts the whole sync, so an unresolvable tool leaves here.
+const EXIT_ERROR: i32 = 1;
 
 /// Exit status the whole-sync command uses for a library left short. This
 /// command must never produce it.
@@ -111,45 +110,44 @@ fn tool_sync_exits_zero_when_every_tool_registered() {
     );
 }
 
-/// A tool the providers do not know ends the command on the warning status.
+/// A tool the providers do not know aborts the sync with an error status.
 ///
-/// The command used to print the warning and exit zero, so a script reading the
-/// number could not tell a clean run from one where a tool is still missing.
-/// The warning text is asserted alongside the status because a status alone
-/// cannot say which tool failed.
+/// Provisioning failures are fatal (fail fast): the reconcile loop aborts on
+/// the first unresolvable tool, so the command exits with an error status
+/// rather than the warning status it used to leave behind. The error text is
+/// asserted alongside the status because a status alone cannot say which tool
+/// failed.
 #[test]
-fn tool_sync_exits_three_when_a_tool_failed_to_register() {
+fn tool_sync_exits_error_when_a_tool_fails_to_register() {
     let workspace = workspace_with_tools(&[UNRESOLVABLE_TOOL]);
     let cache_home = mediapm_utils::temp::cache_dir().expect("cache dir");
 
     let output = tool_sync(workspace.path(), cache_home.path());
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(
         output.status.code(),
-        Some(EXIT_WARNING),
+        Some(EXIT_ERROR),
         "{}",
-        describe("a tool that failed to register must not report success", &output)
+        describe(
+            "a tool that failed to register must abort the sync with an error status",
+            &output
+        )
     );
     assert!(
-        stdout.contains(TOOLS_SYNCED_MARKER),
-        "the summary line has to be printed before the status is chosen, so a reader sees what \
-         the run did alongside the number; stdout:\n{stdout}"
-    );
-    assert!(
-        stderr.contains(StatusIcon::Warning.glyph()) && stderr.contains(UNRESOLVABLE_TOOL),
-        "a user told only that something failed cannot know which tool or why, so the warning \
-         line has to carry both; stderr:\n{stderr}"
+        stderr.contains(UNRESOLVABLE_TOOL) && stderr.contains("no provider registered"),
+        "a user told only that something failed cannot know which tool or why, so the error \
+         line has to carry both the tool id and the underlying cause; stderr:\n{stderr}"
     );
 }
 
 /// The same run does not take the status the whole-sync command uses for a
 /// library left short.
 ///
-/// This is the mistake the warning status is easy to make. The rest of the run
-/// registered, and running the command again retries the failed tool, so status
-/// 4 would tell a script the library is missing entries it never wanted.
+/// This is the mistake the warning status is easy to make. A tool-sync
+/// failure — now fatal — is a provisioning failure, not an incomplete library,
+/// so status 4 would tell a script the library is missing entries it never
+/// wanted.
 #[test]
 fn tool_sync_does_not_exit_four_when_a_tool_failed_to_register() {
     let workspace = workspace_with_tools(&[UNRESOLVABLE_TOOL]);

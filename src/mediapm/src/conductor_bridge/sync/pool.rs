@@ -32,18 +32,6 @@
 //!   sorted by [`PoolJob::index`], so the caller applies results in a
 //!   deterministic order regardless of completion order.
 
-// The pool is additive in this change: the tool-sync provisioning loop becomes
-// its first production consumer in the follow-up wiring, so nothing in the
-// non-test build calls into this module yet. The expectation is removed by
-// that wiring.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the pool is additive in this change; the tool-sync provisioning loop becomes its first production consumer in the follow-up wiring"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::future::Future;
@@ -168,6 +156,12 @@ pub(crate) struct PoolFailure<E> {
 /// `concurrency` is clamped up to 1. Duplicate `PoolJob::index` values are a
 /// caller bug and panic.
 ///
+/// The `run` closure and its returned future need only be `Send`, not
+/// `'static`: jobs are polled inline on the driving future via
+/// `buffer_unordered` and are never spawned onto a separate task, so the
+/// closure may borrow stack-local collaborators (persisted state, the
+/// generated document, a progress handle) for the duration of this call.
+///
 /// # Errors
 ///
 /// Returns the first job error as [`PoolFailure`], carrying the failing job's
@@ -181,7 +175,7 @@ where
     I: Send,
     O: Send,
     E: Send,
-    F: Fn(PoolJob<I>, DepGates, DepPublisher) -> Fut + Clone + Send + 'static,
+    F: Fn(PoolJob<I>, DepGates, DepPublisher) -> Fut + Clone + Send,
     Fut: Future<Output = Result<O, E>> + Send,
 {
     // One channel pair per job index; senders move into the jobs' publishers,

@@ -18,8 +18,6 @@ use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use futures_util::stream::{self, StreamExt};
-
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
@@ -69,6 +67,44 @@ fn default_tool_provision_concurrency() -> usize {
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, usize::from).max(1))
 }
 
+/// The provisioning phase in which a managed-tool failure occurred.
+///
+/// Rendered lowercase (`resolve`/`fetch`/`process`) in the fail-fast sync
+/// error so the message names the exact pipeline stage that failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProvisionPhase {
+    /// Metadata/source resolution (`resolve_tool_fetch`).
+    Resolve,
+    /// Payload download (`fetch_tool_sources`).
+    Fetch,
+    /// Archive extraction / CAS import (`process_tool_sources`).
+    Process,
+}
+
+impl std::fmt::Display for ProvisionPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Resolve => "resolve",
+            Self::Fetch => "fetch",
+            Self::Process => "process",
+        })
+    }
+}
+
+/// A managed-tool provisioning failure: the phase it failed in and the
+/// underlying cause. [`provision_entry`] returns this instead of an
+/// [`EntryOutcome`] so the coordinator can abort the whole sync (fail fast)
+/// with the real cause rather than recording a misleading warning. The failing
+/// tool is identified by the pool job's index (the coordinator maps it back to
+/// its [`ProvisionEntry`]), so the failure itself need not duplicate it.
+#[derive(Debug)]
+pub(crate) struct ProvisionFailure {
+    /// The phase the failure occurred in.
+    pub(crate) phase: ProvisionPhase,
+    /// The underlying cause.
+    pub(crate) source: MediaPmError,
+}
+
 /// Outcome of provisioning a single entry (resolve + fetch + I/O).
 ///
 /// Carries all computed data so `apply_entry_outcome` can perform state
@@ -77,32 +113,17 @@ fn default_tool_provision_concurrency() -> usize {
 enum EntryOutcome {
     /// First-skip: exact version match against persisted state + CAS available.
     Skipped {
-        /// Tool identifier.
-        tool_id: String,
         /// Generated-doc key for the active tool spec.
         key: String,
         /// Runtime from the active tool spec.
         spec_runtime: ToolRuntime,
-        /// Own (pre-inline) content map for dep inlining.
-        own_map: BTreeMap<String, String>,
-    },
-    /// Resolve failed (network/cache error).
-    ResolveError {
-        /// Tool identifier.
-        tool_id: String,
-        /// The error that caused the failure.
-        error: MediaPmError,
     },
     /// Resolved but skipped: composite canonical version already provisioned.
     SkippedAfterResolve {
-        /// Tool identifier.
-        tool_id: String,
         /// Generated-doc key for the active tool spec.
         key: String,
         /// Runtime from the active tool spec.
         spec_runtime: ToolRuntime,
-        /// Own (pre-inline) content map for dep inlining.
-        own_map: BTreeMap<String, String>,
         /// Backfill entry for resolved-field population.
         backfill: ToolRegistryEntry,
         /// Tool record for `managed_tools` registration.
@@ -121,7 +142,8 @@ enum EntryOutcome {
         is_builtin_code: bool,
         /// Whether the tool already existed in the generated doc.
         already_exists: bool,
-        /// The fetched payload (`content_map` NOT yet inlined with deps).
+        /// The fetched payload (`content_map` already inlined with direct
+        /// same-step dep payloads by `provision_entry`).
         payload: FetchedToolPayload,
     },
     /// Resolved and fetched with no payload (builtin/launcher).
@@ -132,8 +154,10 @@ enum EntryOutcome {
         is_builtin_code: bool,
         /// Whether the tool already existed in the generated doc.
         already_exists: bool,
-        /// Resolved canonical version from provider metadata.
-        resolved_canonical_version: String,
+        /// Composite canonical version (bare + same-step dep segments),
+        /// computed in `provision_entry` from the gated dep versions so the
+        /// apply pass never re-derives it from live state.
+        canonical_version: String,
         /// Resolved upstream tag from provider metadata.
         resolved_tag: Option<String>,
         /// Resolved upstream version from provider metadata.
@@ -141,28 +165,31 @@ enum EntryOutcome {
         /// Resolved upstream VCS hash from provider metadata.
         resolved_vcs_hash: Option<String>,
     },
-    /// Fetch/import failed (network/disk error).
-    FetchError {
-        /// Tool identifier.
-        tool_id: String,
-        /// The error that caused the failure.
-        error: MediaPmError,
-    },
 }
 
 /// Provisions a single tool entry: resolve metadata, skip checks, and fetch
 /// the tool payload. Returns an [`EntryOutcome`] carrying all computed data;
 /// state mutations happen in [`apply_entry_outcome`].
 ///
-/// This function is fully async and takes only immutable references, so it
-/// can be called concurrently for parallel provisioning.
+/// Returns [`ProvisionFailure`] instead when the tool cannot be provisioned.
+/// The dependency gates/publisher wire this entry's same-step edges into the
+/// provisioning pool: before the composite/skip check the entry awaits each
+/// same-step dep's resolved version via `gates.dep_version`, publishes its own
+/// bare version right after resolve, and before inlining awaits each dep's
+/// pre-inline payload map via `gates.dep_own_map`. Because it awaits pool
+/// edges, it is polled inline by the pool (never spawned) and may borrow
+/// stack-local collaborators for the duration of the call.
+///
+/// This function is fully async and takes only immutable references (plus the
+/// per-edge gates/publisher), so it can run concurrently for parallel
+/// provisioning.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the parameters are the distinct collaborators the pass reads (persisted state, generated document, live tool state, workspace CAS, tool cache, progress screen, recheck policy); gathering them into a struct would relocate the list without narrowing any borrow"
+    reason = "the parameters are the distinct collaborators the pass reads (persisted state, generated document, live tool state, workspace CAS, tool cache, progress screen, recheck policy, per-edge gates/publisher and dep-index map); gathering them into a struct would relocate the list without narrowing any borrow"
 )]
 #[expect(
     clippy::too_many_lines,
-    reason = "the first-skip check, the resolve, and the four outcome branches all borrow the same entry data; splitting them would re-derive the identity and version decisions and widen the borrow surface across helpers"
+    reason = "the first-skip check, the resolve, and the outcome branches all borrow the same entry data; splitting them would re-derive the identity and version decisions and widen the borrow surface across helpers"
 )]
 async fn provision_entry(
     entry: &ProvisionEntry,
@@ -173,7 +200,10 @@ async fn provision_entry(
     cache: &ToolDownloadCache,
     effective_group: &dyn ProgressScreenApi,
     recheck_policy: RecheckPolicy,
-) -> EntryOutcome {
+    gates: &pool::DepGates,
+    publisher: &mut pool::DepPublisher,
+    dep_indices: &BTreeMap<String, usize>,
+) -> Result<EntryOutcome, ProvisionFailure> {
     let tool_id = &entry.tool_id;
     let tool_req = &entry.tool_requirement;
     let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
@@ -196,17 +226,25 @@ async fn provision_entry(
         ) && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
             && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map).await
         {
-            return EntryOutcome::Skipped {
-                tool_id: tool_id.clone(),
+            let own_map = strip_inlined_deps_keys(&spec.runtime.content_map);
+            // A first-skipped tool still resolves identity for its
+            // dependents: publish its persisted bare version and its
+            // reconstructed (pre-inline) own map so a same-step dependent's
+            // composite and inlining can proceed without re-provisioning it.
+            publisher.publish_version(own_version_segment(&entry.canonical_version).to_string());
+            publisher.publish_own_map(own_map);
+            return Ok(EntryOutcome::Skipped {
                 key: key.clone(),
                 spec_runtime: spec.runtime.clone(),
-                own_map: strip_inlined_deps_keys(&spec.runtime.content_map),
-            };
+            });
         }
     }
 
     // Resolve: get source descriptors from the provider.
     let mut resolved_canonical_version = String::new();
+    // Composite canonical version (bare + gated same-step dep segments), kept
+    // out of the resolve arm so the no-payload outcome can carry it.
+    let mut resolved_composite = String::new();
     let mut resolved_tag_value: Option<String> = None;
     let mut resolved_version_value: Option<String> = None;
     let mut resolved_vcs_hash_value: Option<String> = None;
@@ -232,44 +270,65 @@ async fn provision_entry(
                         && resolved_canonical_version != *hash
                         && resolved_tag_value.as_deref() != Some(hash.as_str())
                     {
-                        return EntryOutcome::ResolveError {
-                            tool_id: tool_id.clone(),
-                            error: MediaPmError::Workflow(format!(
-                                "tool {tool_id}: requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {}",
+                        return Err(ProvisionFailure {
+                            phase: ProvisionPhase::Resolve,
+                            source: MediaPmError::Workflow(format!(
+                                "requested vcs_hash {hash} but resolved canonical {resolved_canonical_version} and tag {}",
                                 resolved_tag_value.as_deref().unwrap_or("(none)")
                             )),
-                        };
+                        });
                     }
                     if let Some(tag) = &fields.tag
                         && resolved_tag_value.as_deref() != Some(tag.as_str())
                     {
-                        return EntryOutcome::ResolveError {
-                            tool_id: tool_id.clone(),
-                            error: MediaPmError::Workflow(format!(
-                                "tool {tool_id}: requested tag {tag} but resolved {}",
+                        return Err(ProvisionFailure {
+                            phase: ProvisionPhase::Resolve,
+                            source: MediaPmError::Workflow(format!(
+                                "requested tag {tag} but resolved {}",
                                 resolved_tag_value.as_deref().unwrap_or("(none)")
                             )),
-                        };
+                        });
                     }
                     if let Some(ver) = &fields.version
                         && human_readable_version != *ver
                     {
-                        return EntryOutcome::ResolveError {
-                            tool_id: tool_id.clone(),
-                            error: MediaPmError::Workflow(format!(
-                                "tool {tool_id}: requested version {ver} but resolved {human_readable_version}"
+                        return Err(ProvisionFailure {
+                            phase: ProvisionPhase::Resolve,
+                            source: MediaPmError::Workflow(format!(
+                                "requested version {ver} but resolved {human_readable_version}"
                             )),
-                        };
+                        });
                     }
                 }
                 ConfigVersionSpec::Latest => {}
                 ConfigVersionSpec::Inherit => {
-                    return EntryOutcome::ResolveError {
-                        tool_id: tool_id.clone(),
-                        error: MediaPmError::Workflow(format!(
-                            "tool {tool_id}: 'inherit' version_spec is only valid for dependencies, not global tool requirements"
-                        )),
-                    };
+                    return Err(ProvisionFailure {
+                        phase: ProvisionPhase::Resolve,
+                        source: MediaPmError::Workflow(
+                            "'inherit' version_spec is only valid for dependencies, not global tool requirements"
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+
+            // Await same-step deps' resolved versions (the pool edges) and
+            // fold them into this entry's composite canonical version in
+            // place of the old live-state lookups. Each dep publishes its
+            // bare version right after its own resolve, so this wait ends as
+            // soon as the deps have resolved — not after they finish
+            // fetching. A dep that is not a pool job (no edge) is skipped,
+            // matching the ungated fallthrough of the old live-state path.
+            let mut dep_segments: BTreeMap<String, String> = BTreeMap::new();
+            for dep_id in collect_same_step_dep_ids(
+                tool_id,
+                tool_req,
+                crate::tools::dependency::known_dependency_type,
+            ) {
+                if let Some(&idx) = dep_indices.get(&dep_id)
+                    && let Some(version) = gates.dep_version(idx).await
+                {
+                    dep_segments.insert(dep_id, version);
                 }
             }
 
@@ -278,8 +337,15 @@ async fn provision_entry(
                 &canonical_version,
                 tool_id,
                 tool_req,
-                live_state,
+                &dep_segments,
             );
+
+            // Publish this entry's bare (pre-composite) version to its
+            // dependents right after resolve, so a dependent's composite
+            // check unblocks while this entry is still fetching. The bare
+            // segment preserves the non-transitive rule (never a composite).
+            publisher.publish_version(canonical_version.clone());
+            resolved_composite.clone_from(&expected_composite);
 
             // Second skip check: composite match against live_state.
             let should_skip = live_state.get(tool_id.as_str()).is_some_and(|entries| {
@@ -340,14 +406,16 @@ async fn provision_entry(
                     resolved_version: metadata.resolved_version,
                     resolved_vcs_hash: metadata.resolved_vcs_hash,
                 });
-                return EntryOutcome::SkippedAfterResolve {
-                    tool_id: tool_id.clone(),
+                // A skipped tool still contributes its reconstructed
+                // (pre-inline) own map so a same-step dependent can inline it
+                // without re-provisioning it.
+                publisher.publish_own_map(own_map);
+                return Ok(EntryOutcome::SkippedAfterResolve {
                     key: key.clone(),
                     spec_runtime,
-                    own_map,
                     backfill,
                     tool_record,
-                };
+                });
             }
 
             let mut provision_metadata = metadata;
@@ -355,10 +423,10 @@ async fn provision_entry(
             PreResolveOutcome::Resolved(fetch, provision_metadata)
         }
         Err(e) => {
-            return EntryOutcome::ResolveError {
-                tool_id: tool_id.clone(),
-                error: MediaPmError::Conductor(e),
-            };
+            return Err(ProvisionFailure {
+                phase: ProvisionPhase::Resolve,
+                source: MediaPmError::Conductor(e),
+            });
         }
     };
 
@@ -371,33 +439,75 @@ async fn provision_entry(
     };
 
     match payload_result {
-        Ok(Some(payload)) => EntryOutcome::Fetched {
-            tool_id: tool_id.clone(),
-            is_builtin_code,
-            already_exists,
-            payload,
-        },
-        Ok(None) => EntryOutcome::FetchedNone {
-            tool_id: tool_id.clone(),
-            is_builtin_code,
-            already_exists,
-            resolved_canonical_version,
-            resolved_tag: resolved_tag_value,
-            resolved_version: resolved_version_value,
-            resolved_vcs_hash: resolved_vcs_hash_value,
-        },
-        Err(e) => EntryOutcome::FetchError { tool_id: tool_id.clone(), error: e },
+        Ok(Some(mut payload)) => {
+            // Publish this tool's own pre-inline payload map so a same-step
+            // dependent can inline it. Published before this tool's own
+            // inlining so a dependent unblocks as soon as this tool has
+            // fetched; the map is exactly this tool's own keys, never its
+            // deps' inlined keys (non-transitive).
+            let pre_inline = payload.content_map.clone();
+            publisher.publish_own_map(pre_inline);
+
+            // Await same-step deps' pre-inline payload maps (the pool edges)
+            // and inline them into this tool's content map under
+            // `deps/<dep_id>/`. This runs after this tool's own fetch, so the
+            // wait covers only the deps' processing, not this tool's.
+            let mut dep_maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+            for dep_id in collect_same_step_dep_ids(
+                tool_id,
+                tool_req,
+                crate::tools::dependency::known_dependency_type,
+            ) {
+                if let Some(&idx) = dep_indices.get(&dep_id)
+                    && let Some(map) = gates.dep_own_map(idx).await
+                {
+                    dep_maps.insert(dep_id, map);
+                }
+            }
+            payload.content_map.extend(inline_same_step_deps(
+                tool_id,
+                tool_req,
+                &dep_maps,
+                crate::tools::dependency::known_dependency_type,
+            ));
+
+            Ok(EntryOutcome::Fetched {
+                tool_id: tool_id.clone(),
+                is_builtin_code,
+                already_exists,
+                payload,
+            })
+        }
+        Ok(None) => {
+            // No payload (builtin/launcher or no sources): publish an empty
+            // own map and carry the composite computed at resolve time.
+            publisher.publish_own_map(BTreeMap::new());
+            Ok(EntryOutcome::FetchedNone {
+                tool_id: tool_id.clone(),
+                is_builtin_code,
+                already_exists,
+                canonical_version: resolved_composite,
+                resolved_tag: resolved_tag_value,
+                resolved_version: resolved_version_value,
+                resolved_vcs_hash: resolved_vcs_hash_value,
+            })
+        }
+        // `fetch_and_import_tool_payload` tags its errors with the fetch or
+        // process phase; pass the phase-tagged failure straight through.
+        Err(failure) => Err(failure),
     }
 }
 
 /// Applies a single entry outcome to the shared mutable state.
 ///
-/// This is the ordered-merge half of the parallel provisioning design:
-/// outcomes are produced concurrently by [`provision_entry`], then applied
-/// sequentially in entry order here.
+/// This is the ordered-merge half of the provisioning design: outcomes are
+/// produced concurrently by the provisioning pool (see `reconcile_desired_tools`)
+/// and applied sequentially in entry index order here, after the whole pool
+/// has succeeded. Same-step dep inlining and dep-gated composites happen in
+/// [`provision_entry`]; this pass only merges the finished result.
 #[expect(
     clippy::too_many_arguments,
-    reason = "this is the ordered-merge half of the parallel provisioning design, so it deliberately takes every shared collection the merge can touch rather than hiding the merge surface behind accessors"
+    reason = "this is the ordered-merge half of the provisioning design, so it deliberately takes every shared collection the merge can touch rather than hiding the merge surface behind accessors"
 )]
 #[expect(
     clippy::too_many_lines,
@@ -408,7 +518,6 @@ fn apply_entry_outcome(
     outcome: EntryOutcome,
     generated_doc: &mut NickelDocument,
     tool_runtimes: &mut BTreeMap<String, ToolRuntime>,
-    provisioned_own_maps: &mut BTreeMap<String, BTreeMap<String, String>>,
     report: &mut ToolSyncReport,
     live_state: &mut HashMap<String, Vec<ToolRegistryEntry>>,
     pruned_tools: &mut usize,
@@ -418,46 +527,21 @@ fn apply_entry_outcome(
     let tool_req = &entry.tool_requirement;
 
     match outcome {
-        EntryOutcome::Skipped { tool_id, key, spec_runtime, own_map } => {
+        EntryOutcome::Skipped { key, spec_runtime, .. } => {
             tool_runtimes.entry(key).or_insert(spec_runtime);
-            provisioned_own_maps.insert(tool_id, own_map);
             report.tools_skipped += 1;
             pb.advance(1);
         }
-        EntryOutcome::ResolveError { tool_id, error } => {
-            report.warnings.push(format!(
-                "tool {tool_id}: resolve failed (will retry on next sync): {error}",
-            ));
-            pb.advance(1);
-        }
-        EntryOutcome::SkippedAfterResolve {
-            tool_id,
-            key,
-            spec_runtime,
-            own_map,
-            backfill,
-            tool_record,
-        } => {
+        EntryOutcome::SkippedAfterResolve { key, spec_runtime, backfill, tool_record, .. } => {
             tool_runtimes.entry(key).or_insert(spec_runtime);
-            provisioned_own_maps.insert(tool_id, own_map);
             report.resolved_field_backfills.push(backfill);
             report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
             pb.advance(1);
         }
-        EntryOutcome::Fetched { tool_id, is_builtin_code, already_exists, mut payload } => {
-            // Record the tool's own (pre-inline) content map.
-            provisioned_own_maps.insert(tool_id.clone(), payload.content_map.clone());
-
-            // Inline direct same-step dependency payloads.
-            payload.content_map.extend(inline_same_step_deps(
-                &tool_id,
-                tool_req,
-                provisioned_own_maps,
-                crate::tools::dependency::known_dependency_type,
-            ));
-
-            // Compute content-addressed hash.
+        EntryOutcome::Fetched { tool_id, is_builtin_code, already_exists, payload } => {
+            // Compute content-addressed hash. The payload's content map was
+            // already inlined with same-step dep payloads by `provision_entry`.
             let content_map_hash: String = if payload.content_map.is_empty() {
                 String::new()
             } else {
@@ -535,12 +619,11 @@ fn apply_entry_outcome(
             tool_id,
             is_builtin_code,
             already_exists,
-            resolved_canonical_version,
+            canonical_version,
             resolved_tag,
             resolved_version,
             resolved_vcs_hash,
         } => {
-            provisioned_own_maps.insert(tool_id.clone(), BTreeMap::new());
             let runtime = ToolRuntime {
                 impure: false,
                 inherited_env_vars: inherited_env_vars.get(&tool_id).cloned().unwrap_or_default(),
@@ -549,12 +632,6 @@ fn apply_entry_outcome(
             tool_runtimes.insert(tool_id.clone(), runtime.clone());
 
             let now = mediapm_utils::Timestamp::now();
-            let composite_for_ok_none = compute_composite_canonical_version(
-                &resolved_canonical_version,
-                &tool_id,
-                tool_req,
-                live_state,
-            );
             report.tool_records.push(ToolRegistryEntry {
                 tool_id: tool_id.clone(),
                 version: format!(
@@ -562,7 +639,7 @@ fn apply_entry_outcome(
                     env!("CARGO_PKG_VERSION"),
                     crate::global::MEDIAPM_GIT_HASH
                 ),
-                canonical_version: composite_for_ok_none,
+                canonical_version,
                 content_map_hash: String::new(),
                 deployed_at: now,
                 resolved_tag,
@@ -601,12 +678,6 @@ fn apply_entry_outcome(
                     },
                 );
             }
-        }
-        EntryOutcome::FetchError { tool_id, error } => {
-            report.warnings.push(format!(
-                "tool {tool_id}: provisioning failed (will retry on next sync): {error}",
-            ));
-            pb.advance(1);
         }
     }
 }
@@ -746,6 +817,7 @@ pub(crate) fn apply_resolved_field_backfills(
 }
 
 /// A single entry in the provisioning pipeline.
+#[derive(Clone)]
 struct ProvisionEntry {
     /// Bare `tool_id` used for provider resolution (e.g., "ffmpeg").
     tool_id: String,
@@ -755,6 +827,7 @@ struct ProvisionEntry {
     kind: EntryKind,
 }
 
+#[derive(Clone)]
 enum EntryKind {
     /// Entry from the user's `tools.<id>` config.
     Explicit,
@@ -982,8 +1055,7 @@ fn own_version_segment(canonical: &str) -> &str {
 /// Dependencies are **direct-only and non-transitive**: each dep's OWN payload
 /// keys are copied under the dep's bare mediapm tool id, and a dep's own
 /// inlined `deps/...` entries are never re-inlined — `deps/` never nests.
-/// Deps absent from `provisioned_own_maps` (skipped or failed provisioning)
-/// contribute nothing.
+/// Deps absent from `dep_own_maps` (no published map) contribute nothing.
 ///
 /// Returns the inlined key → hash entries; the requester's own keys are not
 /// touched. The `known_dep_type` parameter mirrors
@@ -991,13 +1063,13 @@ fn own_version_segment(canonical: &str) -> &str {
 fn inline_same_step_deps(
     tool_id: &str,
     tool_req: &ToolRequirement,
-    provisioned_own_maps: &BTreeMap<String, BTreeMap<String, String>>,
+    dep_own_maps: &BTreeMap<String, BTreeMap<String, String>>,
     known_dep_type: fn(&str, &str) -> Option<DependencyTypes>,
 ) -> BTreeMap<String, String> {
     let mut inlined = BTreeMap::new();
     for dep_id in collect_same_step_dep_ids(tool_id, tool_req, known_dep_type) {
-        let Some(own_map) = provisioned_own_maps.get(&dep_id) else {
-            continue; // dep not provisioned this pass — nothing to inline
+        let Some(own_map) = dep_own_maps.get(&dep_id) else {
+            continue; // dep published no map this pass — nothing to inline
         };
         for (key, hash) in own_map {
             // Own maps are pre-inline by construction; defensively skip any
@@ -1034,16 +1106,20 @@ fn strip_inlined_deps_keys(content_map: &BTreeMap<String, String>) -> BTreeMap<S
 /// ensures skip detection works correctly — when a same-step dep version
 /// changes, the composite changes and triggers re-provisioning.
 ///
-/// For tools without same-step deps, returns the bare version unchanged.
+/// `dep_segments` maps a same-step `dep_id` to the bare version that dep
+/// published through the provisioning pool (see `provision_entry`). A dep with
+/// no published segment contributes no segment here. For tools without
+/// same-step deps, returns the bare version unchanged.
 ///
 /// Dependency versions are **non-transitive**: each `dep_id:dep_ver` segment
 /// carries the dep's OWN version segment (via [`own_version_segment`]), never
-/// the dep's full composite.
+/// the dep's full composite — so even a caller that passes a composite segment
+/// cannot nest it transitively.
 pub(crate) fn compute_composite_canonical_version(
     bare: &str,
     tool_id: &str,
     tool_req: &ToolRequirement,
-    live_state: &HashMap<String, Vec<ToolRegistryEntry>>,
+    dep_segments: &BTreeMap<String, String>,
 ) -> String {
     let same_step_deps = collect_same_step_dep_ids(
         tool_id,
@@ -1053,38 +1129,67 @@ pub(crate) fn compute_composite_canonical_version(
     let dep_versions: Vec<(&str, &str)> = same_step_deps
         .iter()
         .filter_map(|dep_id| {
-            let dep_req = tool_req.dependencies.get(dep_id)?;
-            let dep_group = live_state.get(dep_id.as_str())?;
-            // Find the active entry for this dep. The dep spec in
-            // tool_req.dependencies is ConfigVersionSpec (from serde). For
-            // Inherit/Latest (the common case for SameStep deps like ffmpeg
-            // → yt-dlp), we match any active entry regardless of spec values
-            // — the dep was already resolved and provisioned earlier in the
-            // same sync pass, so whatever version is active IS the version
-            // to include. For Exact, verify against the spec via
-            // spec_matches_entry.
-            let matched = dep_group.iter().find(|e| {
-                if e.content_map_hash.is_empty() {
-                    return false;
-                }
-                match dep_req {
-                    ConfigVersionSpec::Inherit | ConfigVersionSpec::Latest => true,
-                    ConfigVersionSpec::Exact(fields) => spec_matches_entry(
-                        &VersionSpec::Exact(fields.clone()),
-                        e.resolved_tag.as_deref(),
-                        e.resolved_version.as_deref(),
-                        e.resolved_vcs_hash.as_deref(),
-                    ),
-                }
-            })?;
-            // Non-transitive: reference the dep's OWN version segment. A dep
-            // that is also an explicitly configured tool with its own
-            // same-step deps carries a composite canonical_version; nesting
-            // it would leak the dep's deps transitively into the requester.
-            Some((dep_id.as_str(), own_version_segment(&matched.canonical_version)))
+            let version = dep_segments.get(dep_id)?;
+            // Non-transitive: reference the dep's OWN version segment even if
+            // a caller passed a composite, so a dep's deps never leak
+            // transitively into the requester.
+            Some((dep_id.as_str(), own_version_segment(version)))
         })
         .collect();
     composite_canonical_version(bare, &dep_versions)
+}
+
+/// Build same-step dep version segments from stored live state, for the
+/// post-sync "requires sync" check in `service.rs`.
+///
+/// The provisioning pool publishes dep versions through its gates at resolve
+/// time; this check instead reads the deps' last-synced entries from
+/// `live_state`, because it compares the stored composite against a
+/// freshly-resolved own version without running a new provisioning pool. A dep
+/// with no active entry (empty content map or spec mismatch) contributes no
+/// segment, matching the pool's ungated fallthrough.
+pub(crate) fn dep_segments_from_live_state(
+    tool_id: &str,
+    tool_req: &ToolRequirement,
+    live_state: &HashMap<String, Vec<ToolRegistryEntry>>,
+) -> BTreeMap<String, String> {
+    let mut segments = BTreeMap::new();
+    for dep_id in collect_same_step_dep_ids(
+        tool_id,
+        tool_req,
+        crate::tools::dependency::known_dependency_type,
+    ) {
+        let Some(dep_group) = live_state.get(dep_id.as_str()) else {
+            continue;
+        };
+        let Some(dep_req) = tool_req.dependencies.get(&dep_id) else {
+            continue;
+        };
+        // Find the active entry for this dep. Inherit/Latest match any active
+        // entry (the dep was resolved earlier in the pass); Exact verifies
+        // against the spec via `spec_matches_entry`.
+        let matched = dep_group.iter().find(|e| {
+            if e.content_map_hash.is_empty() {
+                return false;
+            }
+            match dep_req {
+                ConfigVersionSpec::Inherit | ConfigVersionSpec::Latest => true,
+                ConfigVersionSpec::Exact(fields) => spec_matches_entry(
+                    &VersionSpec::Exact(fields.clone()),
+                    e.resolved_tag.as_deref(),
+                    e.resolved_version.as_deref(),
+                    e.resolved_vcs_hash.as_deref(),
+                ),
+            }
+        });
+        if let Some(matched) = matched {
+            segments.insert(
+                dep_id.clone(),
+                own_version_segment(&matched.canonical_version).to_string(),
+            );
+        }
+    }
+    segments
 }
 
 /// Find the active spec for a logical tool name in a generated document.
@@ -1262,108 +1367,99 @@ pub(crate) async fn reconcile_desired_tools(
     };
 
     let mut pruned_tools: usize = 0;
-    // Own (pre-inline) content maps for tools processed this pass, keyed by
-    // bare mediapm tool id. Requesters re-inline direct same-step deps under
-    // `deps/<dep_id>/` from these maps, so they must hold each dep's OWN
-    // payload keys only — never inlined `deps/` entries (non-transitive).
-    let mut provisioned_own_maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    // Split entries into two levels: level-0 (deps, no own deps) and
-    // level-1 (explicit tools, may have deps). All level-0 entries must be
-    // applied before level-1 entries start, because level-1 inlining reads
-    // `provisioned_own_maps` populated by level-0 apply.
-    let level0: Vec<(usize, &ProvisionEntry)> =
-        entries.iter().enumerate().filter(|(_, e)| matches!(e.kind, EntryKind::Dep)).collect();
-    let level1: Vec<(usize, &ProvisionEntry)> =
-        entries.iter().enumerate().filter(|(_, e)| matches!(e.kind, EntryKind::Explicit)).collect();
 
-    // Level 0: parallel resolve + fetch, sequential apply.
-    let level0_outcomes: Vec<(usize, EntryOutcome)> = stream::iter(level0.iter().copied())
-        .map(|(idx, entry)| {
-            let cache_ref = &cache;
-            let cas_ref = workspace_cas.as_ref();
-            let state_ref = state;
-            let gen_ref = &generated_doc;
-            let live_ref = &live_state;
-            let group_ref = progress_group;
-            async move {
-                let outcome = provision_entry(
-                    entry,
-                    state_ref,
-                    gen_ref,
-                    live_ref,
-                    cas_ref,
-                    cache_ref,
-                    group_ref,
-                    recheck_policy,
-                )
-                .await;
-                (idx, outcome)
-            }
-        })
-        .buffer_unordered(default_tool_provision_concurrency().min(level0.len()).max(1))
-        .collect()
-        .await;
-    let mut sorted0 = level0_outcomes;
-    sorted0.sort_by_key(|(idx, _)| *idx);
-    for (idx, outcome) in sorted0 {
-        apply_entry_outcome(
-            &entries[idx],
-            outcome,
-            &mut generated_doc,
-            &mut tool_runtimes,
-            &mut provisioned_own_maps,
-            &mut report,
-            &mut live_state,
-            &mut pruned_tools,
-            inherited_env_vars,
-            pb.as_ref(),
-        );
+    // Build the pool's dependency edges. Each tool id maps to its FIRST
+    // entries-order index (dedup keeps dep entries first), and a job's
+    // `same_step_deps` are the pool indices of its same-step deps resolved
+    // through that first-match rule. A same-step dep with no pool job
+    // contributes no edge (ungated), matching the old live-state fallthrough.
+    let mut dep_indices: BTreeMap<String, usize> = BTreeMap::new();
+    for (idx, entry) in entries.iter().enumerate() {
+        dep_indices.entry(entry.tool_id.clone()).or_insert(idx);
     }
-
-    // Level 1: parallel resolve + fetch, sequential apply.
-    // `provisioned_own_maps` is now fully populated from level-0, so
-    // level-1 entries can inline same-step dep payloads.
-    let level1_outcomes: Vec<(usize, EntryOutcome)> = stream::iter(level1.iter().copied())
-        .map(|(idx, entry)| {
-            let cache_ref = &cache;
-            let cas_ref = workspace_cas.as_ref();
-            let state_ref = state;
-            let gen_ref = &generated_doc;
-            let live_ref = &live_state;
-            let group_ref = progress_group;
-            async move {
-                let outcome = provision_entry(
-                    entry,
-                    state_ref,
-                    gen_ref,
-                    live_ref,
-                    cas_ref,
-                    cache_ref,
-                    group_ref,
-                    recheck_policy,
-                )
-                .await;
-                (idx, outcome)
-            }
+    let jobs: Vec<pool::PoolJob<ProvisionEntry>> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| pool::PoolJob {
+            index,
+            same_step_deps: collect_same_step_dep_ids(
+                &entry.tool_id,
+                &entry.tool_requirement,
+                crate::tools::dependency::known_dependency_type,
+            )
+            .iter()
+            .filter_map(|dep_id| dep_indices.get(dep_id).copied())
+            .collect(),
+            input: entry.clone(),
         })
-        .buffer_unordered(default_tool_provision_concurrency().min(level1.len()).max(1))
-        .collect()
-        .await;
-    let mut sorted1 = level1_outcomes;
-    sorted1.sort_by_key(|(idx, _)| *idx);
-    for (idx, outcome) in sorted1 {
-        apply_entry_outcome(
-            &entries[idx],
-            outcome,
-            &mut generated_doc,
-            &mut tool_runtimes,
-            &mut provisioned_own_maps,
-            &mut report,
-            &mut live_state,
-            &mut pruned_tools,
-            inherited_env_vars,
-            pb.as_ref(),
-        );
+        .collect();
+
+    // One bounded pool for every tool: `default_tool_provision_concurrency()`
+    // caps how many are resolved/fetched/processed at once. A job awaits only
+    // its same-step deps' published versions (before the composite/skip check)
+    // and payload maps (before inlining), so nothing is serialized behind an
+    // unrelated tool's full pipeline.
+    let concurrency = default_tool_provision_concurrency().min(jobs.len()).max(1);
+    // Pre-bind immutable views of the shared collaborators so the pool closure
+    // captures plain `&` references (the mutable borrows are released once the
+    // pool's closure/future are dropped, before the sequential apply below).
+    let state_view: &MediaPmState = state;
+    let gen_view: &NickelDocument = &generated_doc;
+    let live_view: &HashMap<String, Vec<ToolRegistryEntry>> = &live_state;
+    let cas_view: &FileSystemCas = workspace_cas.as_ref();
+    let cache_view: &ToolDownloadCache = &cache;
+    let dep_view: &BTreeMap<String, usize> = &dep_indices;
+    let pool_result = pool::run_pool(jobs, concurrency, |job, gates, mut publisher| async move {
+        provision_entry(
+            &job.input,
+            state_view,
+            gen_view,
+            live_view,
+            cas_view,
+            cache_view,
+            progress_group,
+            recheck_policy,
+            &gates,
+            &mut publisher,
+            dep_view,
+        )
+        .await
+    })
+    .await;
+
+    match pool_result {
+        Ok(outcomes) => {
+            // Apply outcomes sequentially in entry index order — equal to the
+            // old dep-then-explicit order, because dedup keeps dep entries
+            // first. The whole pool succeeded before anything is applied.
+            for (idx, outcome) in outcomes {
+                apply_entry_outcome(
+                    &entries[idx],
+                    outcome,
+                    &mut generated_doc,
+                    &mut tool_runtimes,
+                    &mut report,
+                    &mut live_state,
+                    &mut pruned_tools,
+                    inherited_env_vars,
+                    pb.as_ref(),
+                );
+            }
+        }
+        Err(pool_failure) => {
+            // Fail fast: the first provisioning failure aborts the whole sync.
+            // run_pool already dropped every in-flight job (cancelling
+            // downloads); this returns before any apply, document save, env
+            // write, or state write, so a failed run leaves the workspace
+            // unchanged. The overall bar is finished red to match.
+            pb.finish_error();
+            return Err(MediaPmError::Workflow(format!(
+                "tool sync failed: {} ({}): {}",
+                entries[pool_failure.index].tool_id,
+                pool_failure.source.phase,
+                pool_failure.source.source,
+            )));
+        }
     }
 
     if report.warnings.is_empty() {

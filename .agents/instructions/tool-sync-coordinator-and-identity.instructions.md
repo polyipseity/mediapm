@@ -21,7 +21,7 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    - `None` → use `default_mediapm_user_download_cache_root()` (default OS cache dir) - `Some(path)` → use the provided path as the cache root A single `Cache` instance owns its own `FileSystemCas` internally; no external CAS injection is needed.
 4. **Provision skip** — before fetching each tool, look up `state.managed_tools` by tool id group (via `index_managed_tools()`) and find an active entry (non-empty `content_map_hash`) whose `canonical_version` matches the resolved canonical version. If found, route through `PreResolveOutcome::Skip` instead of `PreResolveOutcome::Resolved`. The provisioning function shows a resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })` and returns `Ok(None)`. The coordinator increments `tools_skipped` and advances the overall bar. Skipped tools are candidates for `resolved_*` backfill (see below). When a skipped tool's runtime is reconstructed under its conductor tool id, the coordinator uses `find_active_tool_spec()` (both skip paths plus external consumers like the demo examples : see "Active tool spec resolution").
 5. **Active-tool tracking (pruning)** — the active set for filesystem pruning is
-   the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every tool inserted by the provisioning loop, keyed by its generated-doc key: `{name}@{hash}` when the content map is non-empty, bare `{name}` when empty). Tools NOT in this set get their content_map cleared and filesystem payloads removed after the provisioning loop. (`compute_used_tool_ids` was deleted: the provisioning loop's `tool_runtimes` keys are the single source of truth for what is active.) 5b. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`: - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`). - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, emit a warning and continue. - Determine `PreResolveOutcome`: `Skip` if the tool is already provisioned at the resolved version, else `Resolved`. - Call `fetch_and_import_tool_payload()` with the outcome. On skip (`was_skip`), increment `tools_skipped` and continue. - On `Ok(Some(payload))`: compute content-addressed hash, build spec+runtime, insert into generated doc. - **External data registration**: before inserting the tool spec, register every CAS hash in the tool's `content_map` as an `ExternalDataEntry` in `generated_doc.external_data` with `OutputSaveMode::Saved`. This satisfies the `content_map ⊆ external_data` invariant. - On `Ok(None)`: create minimal spec without content map. - On `Err`: append warning to report, continue loop.
+   the set of **mediapm conductor tool ids** collected in `tool_runtimes` (every tool inserted by the provisioning loop, keyed by its generated-doc key: `{name}@{hash}` when the content map is non-empty, bare `{name}` when empty). Tools NOT in this set get their content_map cleared and filesystem payloads removed after the provisioning loop. (`compute_used_tool_ids` was deleted: the provisioning loop's `tool_runtimes` keys are the single source of truth for what is active.) 5b. **Per-tool provisioning loop** — for each `(tool_id, requirement_value)` in `desired_tools`: - Check if it's a builtin source-ingest tool (`is_builtin_source_ingest_requirement`). - Resolve the tool fetch via `provider::resolve_tool_fetch()`. If resolve fails, the pool fails fast: `ProvisionFailure { phase: Resolve }` aborts the sync with the real cause. - Determine `PreResolveOutcome`: `Skip` if the tool is already provisioned at the resolved version, else `Resolved`. - Call `fetch_and_import_tool_payload()` with the outcome. On skip (`was_skip`), increment `tools_skipped` and continue. - On `Ok(Some(payload))`: compute content-addressed hash, build spec+runtime, insert into generated doc. - **External data registration**: before inserting the tool spec, register every CAS hash in the tool's `content_map` as an `ExternalDataEntry` in `generated_doc.external_data` with `OutputSaveMode::Saved`. This satisfies the `content_map ⊆ external_data` invariant. - On `Ok(None)`: create minimal spec without content map. - On `Err`: fail fast — `ProvisionFailure` (resolve/fetch/process phase) aborts the sync; nothing is applied or written.
 6. **Dependency version resolution** — call `resolve_dep_version_spec()` for
    each dependency's `version_spec` (`ConfigVersionSpec` from serde). `ConfigVersionSpec::Inherit` is resolved against the global tool requirements; `Exact`/`Latest` pass through (converted to `VersionSpec`). Errors on missing global tool or circular inherit resolution.
 7. **Create tools dir** — `std::fs::create_dir_all(&paths.tools_dir)`.
@@ -29,14 +29,16 @@ applyTo: "src/mediapm/src/conductor_bridge/sync/mod.rs, src/mediapm/src/conducto
    The `tool_runtimes` map is keyed by **mediapm conductor tool id**; env var names derive from the stripped plain mediapm tool id (hash-free), while env var values point at `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>` mirroring the provision-cache layout.
 9. **Save generated document** — `save_conductor_generated_document()`.
 
-### Two-level parallel provisioning
+### Unified pool with per-edge waits
 
-The provisioning loop runs in two levels with bounded parallelism:
+Provisioning runs as one dependency-aware bounded pool (`conductor_bridge::sync::pool`), replacing the old two-level Dep-then-Explicit barrier:
 
-- **Level 0** (`EntryKind::Dep`): same-step dependency entries run in parallel via `buffer_unordered(default_tool_provision_concurrency().min(n))`. The concurrency is auto-scaled from `available_parallelism()` with a `MEDIAPM_TOOL_PROVISION_CONCURRENCY` env-var override. Results are sorted by original index to preserve deterministic application order.
-- **Level 1** (`EntryKind::Explicit`): user-configured tool entries run after level-0 apply completes, so `provisioned_own_maps` is populated before inlining.
+- **One pool**: every deduped entry becomes a `PoolJob` with `same_step_deps` indices derived from `known_dependency_type()` (`SAME_STEP` roles only; the dep index is the first entries-order match on the dep tool id — dedup keeps dep entries first). Width is `default_tool_provision_concurrency()` (auto-scaled from `available_parallelism()` with a `MEDIAPM_TOOL_PROVISION_CONCURRENCY` env-var override), capped at the job count.
+- **Per-edge waits**: a job resolves and fetches immediately; it awaits same-step deps' resolved **bare** versions through `DepGates::dep_version` before its skip/composite check, and their pre-inline own maps through `DepGates::dep_own_map` before inlining. Cross-step deps create no edges. Skipped deps publish their reconstructed values too, so a dependent never blocks on a skipped dep.
+- **Fail fast**: the first `ProvisionFailure` aborts the pool; the dropped stream cancels every in-flight job, and the coordinator returns `tool sync failed: {tool_id} ({phase}): {cause}` before any apply, state write, or document save (all-or-nothing).
+- **Determinism**: outcomes apply sequentially in original entry index order — which equals the old dep-then-explicit order because dedup places dep entries first — so `state.json` and `conductor.generated.ncl` stay byte-stable for identical inputs.
 
-Within each level, `provision_entry` fetches and processes a single tool. `apply_entry_outcome` runs sequentially after each level completes, merging results into the generated document and populating `provisioned_own_maps` for dependency inlining.
+`provision_entry` fetches and processes a single tool within its job; `apply_entry_outcome` runs sequentially after the whole pool succeeds.
 
 ### Dual-write strategy
 
@@ -60,7 +62,7 @@ The sync coordinator persists two distinct documents with different write polici
 | `tools_skipped`            | `usize`                  | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })`. |
 | `pruned_tools`             | `usize`                  | Number of stale `"{name}@{old_hash}"` keys pruned from the generated doc                                                       |
 | `resolved_field_backfills` | `Vec<ToolRegistryEntry>` | Entries whose `resolved_*` provenance fields were backfilled in place during skip (see below)                                  |
-| `warnings`                 | `Vec<String>`            | Non-fatal warnings (provision failures)                                                                                        |
+| `warnings`                 | `Vec<String>`            | Non-fatal notices only (backfills, hints); provisioning failures abort instead of warning |
 
 ### Resolved-field population and skip backfill
 
@@ -80,11 +82,11 @@ The sync coordinator persists two distinct documents with different write polici
 - **Two tool id concepts (never confuse)**:
   - **MediaPM tool id** — the plain logical id (`yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`). Used in `mediapm.ncl` tools keys, dependency keys, `ToolRegistryEntry.tool_id`, `step.tool`, and the **env var name stem** (`MEDIAPM_YT_DLP_LINUX[_DIR]` : hash-free).
   - **MediaPM conductor tool id** — the generated-doc `tools` map key: `"{name}@{hash}"` when the content map is non-empty, bare `"{name}"` when empty. This is the **provision-cache key** (`<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/`) and the **`tool_runtimes` map key**; the mediapm layer must never key provisioning state by the plain mediapm tool id.
-- Provision failures produce warnings only (they never abort the loop or return `Err`. The failed tool will be retried on next sync.
+- **Provision failures are fatal (fail fast)**: the first entry failure aborts the whole sync (`ProvisionFailure` → `tool sync failed: {tool_id} ({phase}): {cause}`), cancels every in-flight job, and writes nothing — no apply, no `state.json`, no `conductor.generated.ncl`. A failed run leaves state untouched so the next sync re-provisions from the previous good state.
 - Content-addressed hash is computed from `serde_json::to_string(&payload.content_map)` → `blake3::hash()` → hex.
 - Tool key format: `"{name}@{hash}"` when content_map non-empty, bare `"{name}"` when empty.
 - Builtin source-ingest tools (`import`) skip hash-key generation and use bare name.
-- Progress bar shows `desired_tools.len()` total items; bar finishes success (no warnings) or error (warnings present).
+- Progress bar shows the desired-tool set across one pool; the overall bar finishes error on the first provisioning failure (fail fast) and success otherwise; `warnings` now carry only non-fatal notices.
 - `content_map ⊆ external_data` invariant: every CAS hash referenced in any tool's `runtime.content_map` must have a matching `ExternalDataEntry` in `generated_doc.external_data`. Enforced on both encode (`encode_document()`) and decode (`decode_document()`) of conductor NCL documents.
 - State churn without conductor-file churn is expected and correct. A change to
   `state.json` alone means only metadata changed; a change to
@@ -200,10 +202,10 @@ This helper is the single source of truth used by all 3 injection points:
 - **Direct-only, non-transitive**: inlining copies the dep's OWN pre-inline
   payload map; a dep's own `deps/` entries are never re-inlined.
 - Hook point: the `Ok(Some(payload))` provision arm calls
-  `inline_same_step_deps(tool_id, tool_req, &provisioned_own_maps,
-known_dependency_type)` BEFORE `content_map_hash` is computed, so the requester tool_key, prune prefix, and `external_data` (DataUsageTracker scans all content-map values) automatically cover inlined entries. A requester's tool_key changes iff any direct dep's own payload changes.
+  `inline_same_step_deps(tool_id, tool_req, &dep_own_maps,
+known_dependency_type)` BEFORE `content_map_hash` is computed, where `dep_own_maps` is built from the same-step deps' `DepGates::dep_own_map` publications (replacing the old apply-populated `provisioned_own_maps`), so the requester tool_key, prune prefix, and `external_data` (DataUsageTracker scans all content-map values) automatically cover inlined entries. A requester's tool_key changes iff any direct dep's own payload changes.
 - Skip interplay: dep unchanged → dep skipped → requester composite (own
-  version segments from live_state) matches → requester skipped too; the reconstructed runtime from the generated doc already carries `deps/...`. Dep changed → dep re-provisions → requester composite changes → requester re-provisions and re-inlines. No recursion.
+  version segments published through the pool's dep gates) matches → requester skipped too; the reconstructed runtime from the generated doc already carries `deps/...`. Dep changed → dep re-provisions → requester composite changes → requester re-provisions and re-inlines. No recursion.
 - `write_generated_dotenv` skips `deps/`-prefixed keys (no companion env vars).
 
 ### Indexing: `index_managed_tools()`

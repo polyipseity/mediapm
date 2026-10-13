@@ -67,14 +67,13 @@ async fn reconcile_desired_tools_records_progress_ops() {
     );
 }
 
-// Non-fatal tool-sync failures (resolve/provision errors) are recorded as
-// `report.warnings` and retried on the next sync. The child bars for those
-// failed tools must therefore finish with a warning (yellow `[W]`), never
-// with an error (red `[F]`). This guards the Phase 2 fix: a resolve failure
-// used to call `finish_error()` on the child bar, producing a misleading
-// `[F]` while the overall bar correctly showed `[W]`.
+// Provisioning failures are now fatal (fail fast): an unresolvable tool aborts
+// the whole sync with the phase-tagged cause instead of recording a warning to
+// retry on the next sync. The bar for the failed run finishes red
+// (`finish_error`, `[F]`), matching the fatal outcome, and nothing is applied
+// or written. This reverses the old Phase 2 warn-continue contract.
 #[tokio::test]
-async fn reconcile_desired_tools_resolve_failure_shows_warning_not_error() {
+async fn reconcile_desired_tools_resolve_failure_fails_fast() {
     let tmp = mediapm_utils::temp::artifact_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
@@ -83,8 +82,7 @@ async fn reconcile_desired_tools_resolve_failure_shows_warning_not_error() {
     let workspace_cas = super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
 
     // An unknown tool name has no provider registered for resolution, so
-    // `resolve_tool_fetch` returns Err and the tool is skipped with a
-    // warning rather than aborting the whole sync.
+    // `resolve_tool_fetch` returns Err and the whole sync aborts (fail fast).
     let mut desired = BTreeMap::new();
     desired.insert("nonexistent-tool".to_string(), serde_json::json!({ "version_spec": "latest" }));
 
@@ -101,29 +99,22 @@ async fn reconcile_desired_tools_resolve_failure_shows_warning_not_error() {
     )
     .await;
 
-    // The sync still succeeds overall (the failure is non-fatal).
-    assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
-    let report = result.unwrap();
-    assert_eq!(
-        report.warnings.len(),
-        1,
-        "expected exactly one warning for the unresolvable tool, got {:?}",
-        report.warnings
+    // The sync now fails fast naming the failing tool and its phase.
+    let err = result.expect_err("an unresolvable tool must abort the whole sync");
+    let message = err.to_string();
+    assert!(
+        message.contains("tool sync failed: nonexistent-tool (resolve)"),
+        "the error must name the failing tool and resolve phase: {message}"
     );
 
     let ops = tracker.ops();
-    let finish_errors: Vec<&ProgressOp> =
-        ops.iter().filter(|op| matches!(op, ProgressOp::FinishError)).collect();
     assert!(
-        finish_errors.is_empty(),
-        "non-fatal tool-sync failure must not emit FinishError (red [F]); got {finish_errors:?}",
+        ops.iter().any(|op| matches!(op, ProgressOp::FinishError)),
+        "a fatal provisioning failure must finish the bar red (finish_error); got {ops:?}"
     );
-
-    let finish_warnings: Vec<&ProgressOp> =
-        ops.iter().filter(|op| matches!(op, ProgressOp::FinishWarning)).collect();
     assert!(
-        !finish_warnings.is_empty(),
-        "expected at least one FinishWarning (yellow [W]) for the failed tool, got {ops:?}",
+        !ops.iter().any(|op| matches!(op, ProgressOp::FinishWarning)),
+        "a fatal provisioning failure is no longer a warning; got {ops:?}"
     );
 }
 
@@ -147,7 +138,8 @@ async fn reconcile_desired_tools_drives_the_callers_overall_bar() {
     let (screen, overall) = RecordingProgressTracker::with_overall("syncing tools", 1);
 
     // One desired tool, unresolvable, so the entry count is known without
-    // any network access (the resolve failure is a warning, not an error).
+    // any network access (the resolve failure aborts the sync fast, but only
+    // after the overall bar is totalled).
     let mut desired = BTreeMap::new();
     desired.insert("nonexistent-tool".to_string(), serde_json::json!({ "version_spec": "latest" }));
 
@@ -163,7 +155,10 @@ async fn reconcile_desired_tools_drives_the_callers_overall_bar() {
         Some(Arc::new(overall)),
     )
     .await;
-    assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+    // The unknown tool aborts the sync (fail fast), but the caller's overall
+    // bar is totalled to the entry count BEFORE provisioning runs, so the
+    // SetTotal is still observable on the failure path.
+    assert!(result.is_err(), "the unknown tool must fail the sync fast: {:?}", result.ok());
 
     let ops = screen.ops();
     assert!(

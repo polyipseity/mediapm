@@ -295,15 +295,23 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
                 Ok((_, metadata)) => {
                     let resolved_canonical_version = metadata.canonical_version;
                     // Build live_state from managed tools and compute composite
-                    // canonical_version for apples-to-apples comparison.
+                    // canonical_version for apples-to-apples comparison. The
+                    // dep segments come from the stored live state (the deps'
+                    // last-synced versions), mirroring the gate-published
+                    // versions the pool used when the composite was recorded.
                     let live_state =
                         crate::conductor_bridge::sync::index_managed_tools(&state.managed_tools);
+                    let dep_segments = crate::conductor_bridge::sync::dep_segments_from_live_state(
+                        tool_id,
+                        desired.unwrap(),
+                        &live_state,
+                    );
                     let expected_composite =
                         crate::conductor_bridge::sync::compute_composite_canonical_version(
                             &resolved_canonical_version,
                             tool_id,
                             desired.unwrap(),
-                            &live_state,
+                            &dep_segments,
                         );
                     Ok(existing.canonical_version != expected_composite
                         || (existing.content_map_hash.is_empty()

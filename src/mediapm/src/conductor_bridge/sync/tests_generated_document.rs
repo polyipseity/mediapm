@@ -84,7 +84,6 @@ fn fetched_none_registers_a_spec_without_a_version() {
     };
     let mut generated_doc = NickelDocument::default();
     let mut tool_runtimes = BTreeMap::new();
-    let mut provisioned_own_maps = BTreeMap::new();
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
     let mut pruned_tools = 0usize;
@@ -96,14 +95,13 @@ fn fetched_none_registers_a_spec_without_a_version() {
             tool_id: "media-tagger".to_string(),
             is_builtin_code: false,
             already_exists: false,
-            resolved_canonical_version: "mediapm-0123456789ab".to_string(),
+            canonical_version: "mediapm-0123456789ab".to_string(),
             resolved_tag: Some("v2024.01.01".to_string()),
             resolved_version: Some("2024.01.01".to_string()),
             resolved_vcs_hash: Some("0123456789abcdef".to_string()),
         },
         &mut generated_doc,
         &mut tool_runtimes,
-        &mut provisioned_own_maps,
         &mut report,
         &mut live_state,
         &mut pruned_tools,

@@ -989,3 +989,18 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | Item | Tests | Status |
 | --- | --- | --- |
 | Two orders of one collision now end the same way. `cover/thumb.jpg` landing first already refused at the member-is-a-directory check; `cover` landing first failed in `create_dir_all`, and `?` carried the error out of the join loop so the report never came back. Extraction sorts members by declared path, so the paths pick which order runs and insertion order does not; the nested-first test declares `downloads/cover` to sort behind `cover/thumb.jpg` and strip to `cover` on landing. Both orders must leave the collided path standing, because a refusal may cost the member and never what it collided with. What separates a refusal from a failure that stops the run is `existing_non_directory_ancestor`, read only after `create_dir_all` has already failed: a non-directory ancestor answers and the member is skipped, while a walk that meets only directories, or nothing at all, returns the original error, so a library that cannot be written does not pass for a member that declined. A third test covers that return: the member's directory must be created inside a read-only one, so the walk meets only directories and the run fails instead of handing back a report | `a_folder_whose_file_member_lands_first_is_counted_as_missing`; `a_folder_whose_nested_member_lands_first_is_counted_as_missing`; `a_folder_whose_member_directory_cannot_be_made_fails_the_run`; `the_walk_runs_out_of_ancestors_only_for_a_relative_path_no_call_site_passes` | [covered] |
+
+## Unified provisioning pool and fail-fast tool sync, 2026-10-12
+
+| Item | Tests | Status |
+| --- | --- | --- |
+| Pool returns outcomes in index order regardless of completion order (deterministic apply). | `pool_returns_outcomes_in_index_order_regardless_of_completion_order` | [covered] |
+| Per-edge wait: a dependent starts before its same-step dep finishes and gates only its later stage on the dep's publication; an undeclared dep index resolves to `None` without blocking. | `pool_lets_a_dependent_start_before_its_dep_finishes` | [covered] |
+| A job with no declared edges is never gated; driver liveness under a never-resolving channel is a timeout failure. | `pool_does_not_gate_a_job_with_no_declared_edges` | [covered] |
+| First failure aborts the pool immediately (the long-sleeping job never completes) and cancels every in-flight job. | `pool_aborts_and_cancels_in_flight_jobs_on_the_first_failure` | [covered] |
+| Concurrency bound: never more than the requested width in flight, and the width is actually reached. | `pool_bounds_concurrency_to_the_requested_width` | [covered] |
+| Empty pool is an immediate success. | `pool_with_no_jobs_returns_empty_success` | [covered] |
+| Fail-fast tool sync: an unresolvable required tool aborts with `tool sync failed: {tool} (resolve): {cause}` and writes neither `state.json` nor `conductor.generated.ncl` (RED verified on pre-wiring tree; hermetic — an unknown tool id errors before any socket). | `sync_unresolvable_tool_fails_fast_and_writes_nothing` | [covered] |
+| The tool-sync error line names both the failing tool and the underlying cause at the CLI level. | `tool_sync_exits_error_when_a_tool_fails_to_register` | [covered] |
+| Slot fields (`max_input_slots`/`max_output_slots`) are accepted on ffmpeg at the config boundary (hermetic unit; no network-free tool accepts slot fields, so sync-level acceptance cannot be hermetic under fail-fast; reject direction stays sync-level). | `slot_fields_are_accepted_on_ffmpeg` | [covered] |
+| `recheck_seconds` is accepted on any tool through a real (hermetic, network-free) sync. | `sync_accepts_recheck_seconds_on_any_tool` | [covered] |

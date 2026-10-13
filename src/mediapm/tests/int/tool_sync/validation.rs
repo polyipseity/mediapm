@@ -113,31 +113,29 @@ async fn sync_rejects_slot_field_on_non_ffmpeg() {
     assert!(msg.contains("yt-dlp"), "error should mention the tool: {msg}");
 }
 
-/// Sync accepts ffmpeg setting `max_input_slots` / `max_output_slots`.
-#[tokio::test]
-async fn sync_accepts_slot_field_on_ffmpeg() {
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.tools.insert(
-        "ffmpeg".to_string(),
-        ToolRequirement { max_input_slots: 8, max_output_slots: 2, ..ToolRequirement::default() },
-    );
-
-    let (mut service, _root, _cache_root) =
-        service_with_cache(runtime).await.expect("service creation");
-
-    let result = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await;
-    assert!(result.is_ok(), "ffmpeg slot fields should be accepted: {:?}", result.err());
-}
+// The former `sync_accepts_slot_field_on_ffmpeg` sync-level test moved to the
+// crate-internal boundary unit test `slot_fields_are_accepted_on_ffmpeg`
+// (`tools/dependency.rs`): no network-free tool accepts slot fields (only
+// ffmpeg does), so a sync-level acceptance run cannot be hermetic, and under
+// fail-fast provisioning a real ffmpeg fetch aborts the sync on an
+// unreachable upstream. The reject direction stays at the sync level in
+// `sync_rejects_slot_field_on_non_ffmpeg_tool` (it fires before any
+// network). Do not re-add a network-dependent sync-level acceptance test here.
 
 /// Sync accepts `recheck_seconds` on any tool — it is a global optional field,
 /// not a tool-specific slot field.
+///
+/// Hermetic by design: `media-tagger` resolves to its build-time identity with
+/// no network (launcher generation, no upstream release), so the sync reaches
+/// success on a real provision path. The originally used network-provisioned
+/// tools (yt-dlp) now fail fast on an unreachable upstream, which is the
+/// intended behavior — full-provision acceptance for live tools lives behind
+/// the network-gated online paths.
 #[tokio::test]
 async fn sync_accepts_recheck_seconds_on_any_tool() {
     let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert(
-        "yt-dlp".to_string(),
+        "media-tagger".to_string(),
         ToolRequirement { recheck_seconds: 30, ..ToolRequirement::default() },
     );
 
@@ -151,5 +149,36 @@ async fn sync_accepts_recheck_seconds_on_any_tool() {
         result.is_ok(),
         "recheck_seconds on non-ffmpeg tool should be accepted: {:?}",
         result.err()
+    );
+}
+
+/// Provisioning failures fail fast: an unresolvable tool aborts the whole sync
+/// with the phase-tagged cause, and nothing is applied or written (no
+/// `state.json`, no `conductor.generated.ncl`). This pins the fail-fast
+/// contract that replaced the old warn-continue behavior, hermetically (an
+/// unknown tool id resolves to a provider error with no network access).
+#[tokio::test]
+async fn sync_unresolvable_tool_fails_fast_and_writes_nothing() {
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert("nonexistent-tool".to_string(), ToolRequirement::default());
+
+    let (mut service, _root, _cache_root) =
+        service_with_cache(runtime).await.expect("service creation");
+
+    let result = service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await;
+    let err = result.expect_err("an unresolvable tool must abort the whole sync");
+    let message = err.to_string();
+    assert!(
+        message.contains("tool sync failed: nonexistent-tool (resolve)"),
+        "the error must name the failing tool and resolve phase: {message}"
+    );
+
+    let paths = service.paths();
+    assert!(!paths.mediapm_state_json.exists(), "a failed sync must not write state.json");
+    assert!(
+        !paths.conductor_generated_ncl.exists(),
+        "a failed sync must not write conductor.generated.ncl"
     );
 }

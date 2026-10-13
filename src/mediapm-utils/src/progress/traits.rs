@@ -146,8 +146,12 @@ impl ProgressBarApi for ProgressBarHandle {
 /// [`RecordingProgressTracker`](crate::progress::recording::RecordingProgressTracker) implement
 /// this trait, allowing consumer functions to accept either a real display
 /// group or a recording group for testing.
+///
+/// The `Send + Sync` supertraits mirror [`ProgressBarApi`] and exist so a
+/// shared `&dyn ProgressScreenApi` can be captured by a `Send` closure (the
+/// tool-sync provisioning pool polls its jobs through a `Send` bound).
 #[cfg(feature = "progress")]
-pub trait ProgressScreenApi {
+pub trait ProgressScreenApi: Send + Sync {
     /// Add a child bar and return an [`Arc`]-wrapped handle.
     fn add_bar(&self, total: u64, label: &str) -> Arc<dyn ProgressBarApi>;
     /// Add a child bar whose prefix fields are given as components.

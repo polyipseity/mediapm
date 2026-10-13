@@ -20,6 +20,7 @@ use mediapm_utils::progress::{
 };
 use tokio::sync::Semaphore;
 
+use crate::conductor_bridge::sync::{ProvisionFailure, ProvisionPhase};
 use crate::error::MediaPmError;
 use crate::output::ProgressScreenApi;
 use crate::tools::downloader::ToolDownloadCache;
@@ -168,6 +169,9 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// cache — its TTL is creation-time-based.
 ///
 /// Returns `Ok(None)` when the tool has no provider sources.
+///
+/// Returns [`ProvisionFailure`] tagging the failing phase (`Fetch` or
+/// `Process`) so the caller can abort the sync naming the exact stage.
 #[expect(
     clippy::too_many_lines,
     reason = "provisioning pipeline orchestrates resolve/fetch/process phases; keeping it in one function preserves the phase ordering invariant"
@@ -178,21 +182,21 @@ pub(super) async fn fetch_and_import_tool_payload(
     cache: &ToolDownloadCache,
     group: &dyn ProgressScreenApi,
     outcome: PreResolveOutcome,
-) -> Result<Option<FetchedToolPayload>, MediaPmError> {
+) -> Result<Option<FetchedToolPayload>, ProvisionFailure> {
     // Track created bars so we can mark them red on error.
     let mut error_bars: Vec<Arc<dyn crate::output::ProgressBarApi>> = Vec::new();
 
-    // Helper to mark the still-active bars as warned before returning Err.
-    // These are non-fatal tool-sync failures (recorded as `report.warnings`
-    // and retried on the next sync), so the bars use `finish_warning()`
-    // (yellow `[W]`) rather than `finish_error()` (red `[F]`). Bars already
-    // finished (e.g. resolve/fetch that succeeded before the failing phase)
-    // are skipped so they keep their success status instead of being
+    // Helper to mark the still-active bars as failed before returning the
+    // phase-tagged error. A fetch/process failure now aborts the whole sync
+    // (fail fast), so the bars are finished red (`finish_error`, `[F]`) to
+    // match the fatal outcome rather than the old non-fatal warning. Bars
+    // already finished (e.g. resolve/fetch that succeeded before the failing
+    // phase) are skipped so they keep their success status instead of being
     // retroactively marked failed.
     let finish_error_bars = |bars: &[Arc<dyn crate::output::ProgressBarApi>]| {
         for bar in bars {
             if !bar.is_finished() {
-                bar.finish_warning();
+                bar.finish_error();
             }
         }
     };
@@ -319,7 +323,10 @@ pub(super) async fn fetch_and_import_tool_payload(
         Ok(d) => d,
         Err(e) => {
             finish_error_bars(&error_bars);
-            return Err(MediaPmError::Workflow(format!("tool {tool_id}: fetch failed: {e}")));
+            return Err(ProvisionFailure {
+                phase: ProvisionPhase::Fetch,
+                source: MediaPmError::Workflow(format!("fetch failed: {e}")),
+            });
         }
     };
     // Set fetch bar RHS message if some sources were cache-served.
@@ -364,7 +371,10 @@ pub(super) async fn fetch_and_import_tool_payload(
         Ok(r) => r,
         Err(e) => {
             finish_error_bars(&error_bars);
-            return Err(MediaPmError::Workflow(format!("tool {tool_id}: process failed: {e}")));
+            return Err(ProvisionFailure {
+                phase: ProvisionPhase::Process,
+                source: MediaPmError::Workflow(format!("process failed: {e}")),
+            });
         }
     };
     process_bar.finish_success();
