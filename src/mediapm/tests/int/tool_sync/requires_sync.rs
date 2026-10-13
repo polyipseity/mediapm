@@ -246,7 +246,11 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
             )
             .await;
         user_cache
-            .store_bytes("tool_metadata", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2")
+            .store_bytes(
+                "tool_metadata",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                b"1759500000_N-127260-g7bc3576910",
+            )
             .await;
         // Drop the handle before the warning check opens the same root
         // (flock contention otherwise fails the cache open).
@@ -259,7 +263,7 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
     state.managed_tools.push(ToolRegistryEntry {
         tool_id: "ffmpeg".to_string(),
         version: String::new(),
-        canonical_version: "autobuild-2025-07-15-12-00+evermeet-8.1.2".to_string(),
+        canonical_version: "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910".to_string(),
         content_map_hash: "blake3:abc".to_string(),
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,

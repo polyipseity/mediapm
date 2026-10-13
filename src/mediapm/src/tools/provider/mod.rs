@@ -18,7 +18,9 @@ pub(crate) mod yt_dlp;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use mediapm_conductor::cache::Cache;
-use mediapm_conductor::tools::provider::{ResolvedToolFetch, SourceProducer, VersionSpec};
+use mediapm_conductor::tools::provider::{
+    DownloadedSource, ResolvedToolFetch, SourceProducer, VersionSpec,
+};
 
 #[cfg(test)]
 use crate::tools::downloader::ToolDownloadCache;
@@ -315,12 +317,16 @@ pub(crate) async fn resolve_github_tag_release(
     let api_url = format!("{}/repos/{owner}/{repo}/releases/tags/{tag}", github_api_base());
 
     // Try cache first. A fully valid entry (UTF-8, non-empty hash plus at
-    // least one asset name) short-circuits the HTTP fetch below.
+    // least one asset name) short-circuits the HTTP fetch below. An entry
+    // whose "hash" is the tag itself is the old non-dereferencing fallback
+    // recorded as a commit — it falls through to the re-resolve, which now
+    // refuses such a ref loudly.
     if let Some(cache) = metadata_cache
         && let Some(bytes) = cache.lookup_bytes(&api_url).await
         && let Ok(s) = String::from_utf8(bytes)
         && let Some((hash, rest)) = s.split_once('\n')
         && !hash.is_empty()
+        && hash != tag
     {
         let assets: Vec<String> =
             rest.split('\n').filter(|n| !n.is_empty()).map(str::to_string).collect();
@@ -367,6 +373,18 @@ pub(crate) async fn resolve_github_tag_release(
     // match reports which platform slot found nothing, with tool context.
 
     let commit_hash = resolve_github_tag_commit_hash(http_client, owner, repo, tag).await?;
+
+    // A pinned canonical version must be the tag's commit, not the tag name
+    // echoed back: `resolve_github_tag_commit_hash` falls back to the tag
+    // string when the ref carries no dereferenceable SHA, which is tolerable
+    // for a `Latest` resolve (comparison re-resolves) but silently wrong for
+    // a pin — the stored "commit" would never match a real one, forcing a
+    // re-provision on every sync while never proving what was deployed.
+    if commit_hash == tag {
+        return Err(mediapm_conductor::ConductorError::Workflow(format!(
+            "{owner}/{repo}: ref for tag {tag} did not dereference to a commit"
+        )));
+    }
 
     // Store in metadata cache. Do NOT call touch() — TTL is creation-time-based.
     if let Some(cache) = metadata_cache {
@@ -480,7 +498,7 @@ pub(crate) async fn resolve_latest_autobuild_tag(
     repo: &str,
     metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> Result<(String, bool), mediapm_conductor::ConductorError> {
-    let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases?per_page=10");
+    let api_url = format!("{}/repos/{owner}/{repo}/releases?per_page=10", github_api_base());
 
     // Try cache first.
     if let Some(cache) = metadata_cache
@@ -530,6 +548,54 @@ pub(crate) async fn resolve_latest_autobuild_tag(
     }
 
     Ok((tag, false))
+}
+
+/// Corrects a tool's canonical version from the sources that actually
+/// served its fetch (fetch feedback).
+///
+/// The resolve phase cannot know which chain member will answer: a
+/// multi-candidate chain falls through on HTTP failures and `.sha256`
+/// mismatches, and the ffmpeg macOS chain's resolve-time probe may not
+/// reflect what the fetch phase downloads (a permalink cached yesterday can
+/// redirect somewhere new). This function re-derives the canonical version
+/// from each source's actual URL and must run after fetch, before the
+/// canonical version is recorded.
+///
+/// Only ffmpeg uses it today: its canonical version is
+/// `{btbn_tag}+{macos_leg}`, where the leg is the martin-riedl build id or
+/// jellyfin-ffmpeg version parsed from the URL that actually served the
+/// macOS bytes. The rewrite replaces the segment after the first `+` of the
+/// bare version and preserves any `;dep:ver` composite segments, so a
+/// SameStep-dependency composite stays intact. Tools with no rule (or no
+/// parsable actual URL) return their canonical version unchanged.
+#[must_use]
+pub(crate) fn canonical_version_after_fetch(
+    tool_name: &str,
+    canonical_version: &str,
+    entries: &[DownloadedSource],
+) -> String {
+    if !tool_name.eq_ignore_ascii_case("ffmpeg") {
+        return canonical_version.to_string();
+    }
+    // The macOS chain owns the canonical leg: whichever macOS entry carries
+    // an actual URL first is the one whose bytes were imported.
+    let Some(macos_entry) = entries.iter().find(|entry| entry.os == "macos") else {
+        return canonical_version.to_string();
+    };
+    let Some(actual_url) = macos_entry.actual_url.as_deref() else {
+        return canonical_version.to_string();
+    };
+    let Some(leg) = ffmpeg::macos_leg_from_url(actual_url) else {
+        return canonical_version.to_string();
+    };
+
+    // Preserve SameStep dependency segments: `{bare}+{leg};dep:ver;…`.
+    let (bare, deps) = match canonical_version.split_once(';') {
+        Some((bare, rest)) => (bare, format!(";{rest}")),
+        None => (canonical_version, String::new()),
+    };
+    let prefix = bare.split_once('+').map_or(bare, |(prefix, _old_leg)| prefix);
+    format!("{prefix}+{leg}{deps}")
 }
 
 /// Resolves source descriptors and canonical version for the named managed tool.
@@ -635,25 +701,30 @@ pub(crate) async fn resolve_tool_fetch(
                 ));
             }
             let (autobuild_tag, btbn_cached) = ffmpeg::resolve_btbn_tag(tracker_ref).await?;
-            let (evermeet_version, evermeet_cached) =
-                ffmpeg::resolve_evermeet_version(tracker_ref).await?;
-            let canonical_version = format!("{autobuild_tag}+evermeet-{evermeet_version}");
-            let fetch = ffmpeg::sources();
+            // The macOS leg is advisory at resolve time: a failed permalink
+            // probe records the jellyfin fallback version, and
+            // `canonical_version_after_fetch` rewrites the composite from
+            // the URL that actually served the fetch.
+            let (macos_leg, leg_cached) = ffmpeg::resolve_macos_leg(tracker_ref).await;
+            let canonical_version = format!("{autobuild_tag}+{macos_leg}");
+            let fetch = ffmpeg::sources(version_target);
             (
                 fetch,
                 ResolvedToolMetadata {
                     human_readable_version: canonical_version.clone(),
                     canonical_version,
-                    metadata_cached: btbn_cached || evermeet_cached,
+                    metadata_cached: btbn_cached || leg_cached,
                     metadata_fetch_count: 0,
                     resolved_tag: Some(autobuild_tag),
-                    // WHY: the artifact set mixes BtbN autobuilds and
-                    // evermeet.cx zips — no single version identifies it;
-                    // evermeet's semver identifies only the macOS build.
+                    // WHY: the artifact set mixes BtbN autobuilds,
+                    // martin-riedl snapshots, and jellyfin-ffmpeg builds —
+                    // no single version identifies it; the macOS leg
+                    // identifies only that leg.
                     resolved_version: None,
                     // WHY: deref'ing a BtbN build tag yields the build-script
-                    // repo commit (not the upstream ffmpeg source commit), and
-                    // evermeet.cx zips carry no git provenance. Resolvable != meaningful.
+                    // repo commit (not the upstream ffmpeg source commit),
+                    // and neither martin-riedl build ids nor jellyfin-ffmpeg
+                    // versions identify the whole artifact set. Resolvable != meaningful.
                     resolved_vcs_hash: None,
                 },
             )
@@ -829,7 +900,8 @@ mod tests {
 
         // Pre-seed metadata cache for network-backed tools to avoid real API calls.
         // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag (yt-dlp, deno, rsgain, sd)
-        // and plain "{tag}" for resolve_latest_autobuild_tag (ffmpeg BtbN) or evermeet version.
+        // and plain "{tag}" for resolve_latest_autobuild_tag (ffmpeg BtbN) or the
+        // martin-riedl macOS-leg build id.
         for (api_url, tag, hash) in &[
             (
                 "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
@@ -854,7 +926,7 @@ mod tests {
         ] {
             cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
-        // ffmpeg: autobuild tag + evermeet version
+        // ffmpeg: autobuild tag + martin-riedl macOS-leg build id
         cache
             .store_bytes(
                 "default",
@@ -862,7 +934,13 @@ mod tests {
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache
+            .store_bytes(
+                "default",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
 
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "import", "sd"] {
             let result = resolve_tool_fetch(
@@ -887,14 +965,17 @@ mod tests {
                     );
                 }
                 "ffmpeg" => {
-                    assert_eq!(canonical, "autobuild-2025-07-15-12-00+evermeet-8.1.2");
+                    assert_eq!(
+                        canonical,
+                        "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910"
+                    );
                     assert_eq!(
                         metadata.resolved_tag.as_deref(),
                         Some("autobuild-2025-07-15-12-00")
                     );
-                    // WHY: no single version identifies the mixed BtbN+evermeet
-                    // artifact set, and the BtbN build-repo hash is not the
-                    // upstream ffmpeg source hash.
+                    // WHY: no single version identifies the mixed
+                    // BtbN+martin-riedl+jellyfin artifact set, and the BtbN
+                    // build-repo hash is not the upstream ffmpeg source hash.
                     assert_eq!(metadata.resolved_version, None);
                     assert_eq!(metadata.resolved_vcs_hash, None);
                 }
@@ -981,9 +1062,9 @@ mod tests {
             "ffmpeg" => (
                 vec![
                     "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
-                    "https://evermeet.cx/ffmpeg/getrelease/zip",
+                    "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
                 ],
-                vec![b"autobuild-2025-07-15-12-00", b"8.1.2"],
+                vec![b"autobuild-2025-07-15-12-00", b"1759500000_N-127260-g7bc3576910"],
             ),
             _ => (vec![], vec![]),
         };
@@ -1001,9 +1082,9 @@ mod tests {
     async fn resolve_tool_fetch_ffmpeg_leaves_version_and_vcs_hash_none() {
         let _env = lock_process_env();
         // Regression: ffmpeg's resolved_version and resolved_vcs_hash must stay
-        // None by design (mixed BtbN + evermeet sources; no single version or
-        // upstream VCS hash identifies the artifact set). See the why-empty
-        // rationale in the ffmpeg provider module doc.
+        // None by design (mixed BtbN + martin-riedl + jellyfin sources; no single
+        // version or upstream VCS hash identifies the artifact set). See the
+        // why-empty rationale in the ffmpeg provider module doc.
         let (cache, _tmp) = seed_metadata_cache("ffmpeg").await;
         let (_, metadata) = resolve_tool_fetch(
             "ffmpeg",
@@ -1014,7 +1095,7 @@ mod tests {
         .await
         .expect("ffmpeg resolve should succeed");
         assert_eq!(metadata.resolved_tag.as_deref(), Some("autobuild-2025-07-15-12-00"));
-        // WHY: no single version identifies the mixed BtbN+evermeet artifact set.
+        // WHY: no single version identifies the mixed BtbN+martin-riedl+jellyfin artifact set.
         assert_eq!(metadata.resolved_version, None);
         // WHY: the BtbN build-repo hash is not the upstream ffmpeg source hash.
         assert_eq!(metadata.resolved_vcs_hash, None);
@@ -1050,14 +1131,14 @@ mod tests {
         clippy::await_holding_lock,
         reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
     )]
-    async fn resolve_tool_fetch_each_fetched_tool_has_three_os_entries() {
+    async fn resolve_tool_fetch_each_fetched_tool_covers_three_oses() {
         let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache to avoid real API calls.
-        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/evermeet.
+        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/ martin-riedl build id.
         for (api_url, tag, hash) in &[
             (
                 "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
@@ -1082,7 +1163,7 @@ mod tests {
         ] {
             cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
-        // ffmpeg: autobuild tag + evermeet version
+        // ffmpeg: autobuild tag + martin-riedl macOS-leg build id
         cache
             .store_bytes(
                 "default",
@@ -1090,12 +1171,18 @@ mod tests {
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache
+            .store_bytes(
+                "default",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
 
         // media-tagger is an internal launcher — no external sources.
         let expected_oses = ["windows", "linux", "macos"];
         let expected_canonicals: [(&str, &str); 5] = [
-            ("ffmpeg", "autobuild-2025-07-15-12-00+evermeet-8.1.2"),
+            ("ffmpeg", "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910"),
             ("yt-dlp", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"),
             ("deno", "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"),
             ("rsgain", "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2"),
@@ -1143,7 +1230,7 @@ mod tests {
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache with tag values for each tool.
-        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/evermeet.
+        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/ martin-riedl build id.
         let test_data: Vec<(&str, &str, &str, &str)> = vec![
             (
                 "yt-dlp",
@@ -1174,7 +1261,7 @@ mod tests {
         for (_, api_url, tag, hash) in &test_data {
             cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
-        // ffmpeg: autobuild tag + evermeet version
+        // ffmpeg: autobuild tag + martin-riedl macOS-leg build id
         cache
             .store_bytes(
                 "default",
@@ -1182,7 +1269,13 @@ mod tests {
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache
+            .store_bytes(
+                "default",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
 
         for (tool_name, _, tag, _hash) in &test_data {
             let (fetch, metadata) = resolve_tool_fetch(
@@ -1243,11 +1336,12 @@ mod tests {
             let canonical = metadata.canonical_version;
             assert_eq!(fetch.tool_id, "ffmpeg");
             assert_eq!(
-                canonical, "autobuild-2025-07-15-12-00+evermeet-8.1.2",
+                canonical, "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910",
                 "ffmpeg canonical version mismatch"
             );
             assert!(!fetch.sources.is_empty(), "ffmpeg should have sources");
-            // BtbN sources keep /latest/download/; evermeet source unchanged
+            // BtbN sources keep /latest/download/; the martin-riedl permalink
+            // and jellyfin fallback carry no /latest/download/ placeholder.
             for source in &fetch.sources {
                 if let SourceProducer::Fetch { urls } = &source.producer {
                     for url in urls {
@@ -1311,7 +1405,7 @@ mod tests {
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache with known tags/hashes for all tools.
-        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/evermeet.
+        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/ martin-riedl build id.
         for (api_url, tag, hash) in &[
             (
                 "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
@@ -1336,7 +1430,7 @@ mod tests {
         ] {
             cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
-        // ffmpeg: autobuild tag + evermeet version
+        // ffmpeg: autobuild tag + martin-riedl macOS-leg build id
         cache
             .store_bytes(
                 "default",
@@ -1344,7 +1438,13 @@ mod tests {
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache
+            .store_bytes(
+                "default",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
 
         // — yt-dlp (tag "2025.07.15", no v-prefix, no filename rewrite) —
         {
@@ -1386,7 +1486,8 @@ mod tests {
             }
         }
 
-        // — ffmpeg (composite canonical, BtbN URLs keep /latest/download/, Evermeet unchanged) —
+        // — ffmpeg (composite canonical, BtbN URLs keep /latest/download/, macOS is
+        //    a martin-riedl permalink + jellyfin fallback chain per arch) —
         {
             let (fetch, metadata) = resolve_tool_fetch(
                 "ffmpeg",
@@ -1398,10 +1499,10 @@ mod tests {
             .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
-                canonical, "autobuild-2025-07-15-12-00+evermeet-8.1.2",
+                canonical, "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910",
                 "ffmpeg canonical version"
             );
-            assert_eq!(fetch.sources.len(), 3, "ffmpeg: expected 3 OS sources");
+            assert_eq!(fetch.sources.len(), 4, "ffmpeg: windows + 2 macOS arches + linux");
             // windows: BtbN URLs keep /latest/download/ (no substitution)
             if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
                 assert_eq!(fetch.sources[0].os, "windows");
@@ -1415,14 +1516,29 @@ mod tests {
                     "ffmpeg windows primary URL should use master-latest naming"
                 );
             }
-            // macos: Evermeet, completely unchanged
-            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
-                assert_eq!(fetch.sources[1].os, "macos");
-                assert_eq!(urls, &["https://evermeet.cx/ffmpeg/getrelease/zip"]);
+            // macos: one source per arch, martin-riedl permalink first, jellyfin fallback second
+            for source in &fetch.sources[1..3] {
+                assert_eq!(source.os, "macos");
+                let SourceProducer::Fetch { urls } = &source.producer else {
+                    panic!("ffmpeg macOS sources must be Fetch producers");
+                };
+                assert_eq!(urls.len(), 2, "macOS chain holds permalink + jellyfin fallback");
+                assert!(
+                    urls[0].contains("/redirect/latest/macos/"),
+                    "macOS primary is a martin-riedl permalink: {}",
+                    urls[0]
+                );
+                assert!(
+                    urls[1].contains("jellyfin-ffmpeg_"),
+                    "macOS fallback is a jellyfin archive: {}",
+                    urls[1]
+                );
             }
+            assert_eq!(fetch.sources[1].arch, "aarch64");
+            assert_eq!(fetch.sources[2].arch, "x86_64");
             // linux: BtbN URLs keep /latest/download/
-            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
-                assert_eq!(fetch.sources[2].os, "linux");
+            if let SourceProducer::Fetch { urls } = &fetch.sources[3].producer {
+                assert_eq!(fetch.sources[3].os, "linux");
                 assert_eq!(urls.len(), 2);
                 assert!(
                     urls[0].contains("/releases/latest/download/"),
@@ -1613,7 +1729,7 @@ mod tests {
         let cache = ToolDownloadCache::open(temp_dir.path(), "metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache with known tags and hashes.
-        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/evermeet.
+        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/ martin-riedl build id.
         let seeds: &[(&str, &str)] = &[
             (
                 "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
@@ -1635,7 +1751,7 @@ mod tests {
         for (url, tag_hash) in seeds {
             cache.store_bytes("default", url, tag_hash.as_bytes()).await;
         }
-        // ffmpeg: autobuild tag + evermeet version
+        // ffmpeg: autobuild tag + martin-riedl macOS-leg build id
         cache
             .store_bytes(
                 "default",
@@ -1643,7 +1759,13 @@ mod tests {
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache
+            .store_bytes(
+                "default",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
 
         for tool in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd", "media-tagger"] {
             let (_, metadata1) = resolve_tool_fetch(
@@ -1681,7 +1803,7 @@ mod tests {
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
         // Pre-seed metadata cache to avoid real API calls.
-        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/evermeet.
+        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/ martin-riedl build id.
         for (api_url, tag, hash) in &[
             (
                 "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
@@ -1701,7 +1823,7 @@ mod tests {
         ] {
             cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
-        // ffmpeg: autobuild tag + evermeet version
+        // ffmpeg: autobuild tag + martin-riedl macOS-leg build id
         cache
             .store_bytes(
                 "default",
@@ -1709,7 +1831,13 @@ mod tests {
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
-        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+        cache
+            .store_bytes(
+                "default",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
 
         // All managed tools whose provider type is Fetch must have size_hint_bytes.
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain"] {
@@ -1800,19 +1928,53 @@ mod tests {
         assert_eq!(tag, "autobuild-2025-07-15-12-00");
     }
 
+    /// The releases-list lookup routes through the `MEDIAPM_GITHUB_API_BASE`
+    /// seam (the folded review fix): a wiremock server standing in for the
+    /// GitHub API answers the list endpoint and the first `autobuild-*` tag
+    /// is picked from it, proving the URL is built from `github_api_base()`
+    /// and not a hardcoded host.
     #[tokio::test]
-    async fn resolve_evermeet_version_returns_cached() {
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock must serialize the whole set-seam -> await -> unset-seam resolve; the guard is Send and this is the documented MEDIAPM_* test-seam mutation-scope rule"
+    )]
+    async fn resolve_latest_autobuild_tag_routes_through_the_github_api_base_seam() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/BtbN/FFmpeg-Builds/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "tag_name": "latest" },
+                { "tag_name": "autobuild-2025-07-15-12-00" },
+            ])))
+            .mount(&server)
+            .await;
+
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         let tracker = MetadataCacheTracker::new(&cache, "default");
-        cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
-        let (version, cached) = ffmpeg::resolve_evermeet_version(Some(&tracker))
-            .await
-            .expect("should return cached evermeet version");
-        assert_eq!(version, "8.1.2");
-        assert!(cached, "should indicate metadata was cached");
+        let _env = lock_process_env();
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(GITHUB_API_BASE_ENV, server.uri());
+        }
+
+        let (tag, metadata_cached) =
+            resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", Some(&tracker))
+                .await
+                .expect("seam-routed releases list should resolve");
+        assert_eq!(tag, "autobuild-2025-07-15-12-00", "first autobuild-* tag wins");
+        assert!(!metadata_cached, "the list was fetched, not cached");
+
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(GITHUB_API_BASE_ENV);
+        }
     }
 
     #[tokio::test]
@@ -1842,5 +2004,107 @@ mod tests {
                 .expect("should return cached (tag, hash)");
         assert_eq!(tag, "2025.07.15");
         assert_eq!(commit_hash, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0");
+    }
+
+    // ── canonical_version_after_fetch (fetch feedback) ───────────────
+
+    /// Builds one downloaded macOS entry carrying an `actual_url`, for the
+    /// fetch-feedback tests.
+    fn macos_entry_with_actual_url(url: &str) -> DownloadedSource {
+        DownloadedSource {
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            producer: SourceProducer::Fetch { urls: vec![url.to_string()] },
+            bytes: Vec::new(),
+            expected_size: None,
+            actual_url: Some(url.to_string()),
+        }
+    }
+
+    /// When the martin-riedl primary served, the composite's leg becomes the
+    /// build id from the actual versioned download URL — whatever the
+    /// resolve-time probe predicted.
+    #[test]
+    fn canonical_after_fetch_rewrites_the_leg_from_a_martin_riedl_url() {
+        let entries = [macos_entry_with_actual_url(
+            "https://ffmpeg.martin-riedl.de/download/macos/aarch64/1759600000_N-127999-gdeadbeef12/ffmpeg.zip",
+        )];
+        assert_eq!(
+            canonical_version_after_fetch(
+                "ffmpeg",
+                "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910",
+                &entries,
+            ),
+            "autobuild-2025-07-15-12-00+1759600000_N-127999-gdeadbeef12",
+            "the leg is replaced by the build id the fetch actually served"
+        );
+    }
+
+    /// A fallback (jellyfin) fetch rewrites the leg to the archive's
+    /// version, and `SameStep` dependency segments (`;dep:ver`) survive the
+    /// rewrite untouched.
+    #[test]
+    fn canonical_after_fetch_rewrites_the_leg_from_a_jellyfin_url_and_keeps_dep_segments() {
+        let entries = [macos_entry_with_actual_url(
+            "https://repo.jellyfin.org/releases/ffmpeg/macos/jellyfin-ffmpeg_7.1.3-2_portable_macos-aarch64.zip",
+        )];
+        assert_eq!(
+            canonical_version_after_fetch(
+                "ffmpeg",
+                "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910;deno:abc123",
+                &entries,
+            ),
+            "autobuild-2025-07-15-12-00+7.1.3-2;deno:abc123",
+            "the fallback leg replaces the composite segment; dep segments stay"
+        );
+    }
+
+    /// No macOS entry, no actual URL, an unparsable URL, or a different tool
+    /// all leave the canonical version untouched — feedback corrects only
+    /// what it can actually read.
+    #[test]
+    fn canonical_after_fetch_leaves_uncorrectable_cases_unchanged() {
+        let windows_only = [DownloadedSource {
+            os: "windows".to_string(),
+            arch: "x86_64".to_string(),
+            producer: SourceProducer::Fetch { urls: vec!["https://example.com/x.zip".to_string()] },
+            bytes: Vec::new(),
+            expected_size: None,
+            actual_url: Some("https://example.com/x.zip".to_string()),
+        }];
+        assert_eq!(
+            canonical_version_after_fetch("ffmpeg", "autobuild-x+leg", &windows_only),
+            "autobuild-x+leg",
+            "no macOS entry means no leg to re-derive"
+        );
+
+        let no_actual_url = [DownloadedSource {
+            actual_url: None,
+            ..macos_entry_with_actual_url("https://example.com/y.zip")
+        }];
+        assert_eq!(
+            canonical_version_after_fetch("ffmpeg", "autobuild-x+leg", &no_actual_url),
+            "autobuild-x+leg",
+            "a launcher-style entry carries no URL feedback"
+        );
+
+        let unparsable = [macos_entry_with_actual_url("https://example.com/not-a-chain-url.zip")];
+        assert_eq!(
+            canonical_version_after_fetch("ffmpeg", "autobuild-x+leg", &unparsable),
+            "autobuild-x+leg",
+            "an unparsable actual URL is no basis for a rewrite"
+        );
+
+        let yt_dlp_entry = [DownloadedSource {
+            os: "linux".to_string(),
+            ..macos_entry_with_actual_url(
+                "https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_linux",
+            )
+        }];
+        assert_eq!(
+            canonical_version_after_fetch("yt-dlp", "a1b2c3d4", &yt_dlp_entry),
+            "a1b2c3d4",
+            "only ffmpeg's canonical carries a macOS leg to correct"
+        );
     }
 }

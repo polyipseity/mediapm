@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::tools::helpers::build_raw_os_conditional_selector;
+use mediapm_conductor::tools::provider::host_arch_label;
 
 use crate::conductor_bridge::constants::{
     DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, OUTPUT_YT_DLP_ANNOTATION_FILE, OUTPUT_YT_DLP_ARCHIVE_FILE,
@@ -96,17 +97,21 @@ pub(crate) fn resolve_step_output_binding(
 ///
 /// The path is relative to the sandbox root (a direct child), because the
 /// step process runs with the sandbox directory as its working directory and
-/// the inlined companion payload is materialized at `deps/ffmpeg/<os>/ffmpeg`.
+/// the inlined companion payload is materialized at `deps/ffmpeg/<os>/…`.
+/// macOS is dual-arch: the inlined ffmpeg payload lives under the arch
+/// segment (`deps/ffmpeg/macos/{host_arch}/ffmpeg`, mirroring the `macos/`
+/// content keys two macOS sources produce), so its selector resolves the
+/// host arch. Linux and Windows sources are single (`x86_64`) payloads whose
+/// keys stay flat.
 ///
 /// Uses `build_raw_os_conditional_selector` because the paths already contain
-/// the OS directory component (`deps/ffmpeg/{os}/ffmpeg`). Using
-/// `build_os_conditional_selector` would produce double-prefixed paths like
-/// `macos/deps/ffmpeg/macos/ffmpeg`.
+/// the OS directory component. Using `build_os_conditional_selector` would
+/// produce double-prefixed paths like `macos/deps/ffmpeg/macos/…`.
 #[must_use]
 fn yt_dlp_managed_ffmpeg_location_selector() -> String {
     build_raw_os_conditional_selector(&BTreeMap::from([
         ("linux".to_string(), "deps/ffmpeg/linux/ffmpeg".to_string()),
-        ("macos".to_string(), "deps/ffmpeg/macos/ffmpeg".to_string()),
+        ("macos".to_string(), format!("deps/ffmpeg/macos/{}/ffmpeg", host_arch_label())),
         ("windows".to_string(), "deps/ffmpeg/windows/ffmpeg.exe".to_string()),
     ]))
 }
@@ -269,16 +274,17 @@ mod tests {
         let selector = yt_dlp_managed_ffmpeg_location_selector();
         // On all platforms (BTreeMap iterates by key order, 3 OSes present),
         // the selector must be a nested template. The key invariant: each
-        // branch must resolve to `deps/ffmpeg/{os}/ffmpeg` WITHOUT double
+        // branch must resolve to `deps/ffmpeg/{os}/…` WITHOUT double
         // OS-prefix duplication (the original bug produced
-        // `macos/deps/ffmpeg/macos/ffmpeg`).
+        // `macos/deps/ffmpeg/macos/ffmpeg`). macOS is dual-arch, so its
+        // inlined dep payload lives under the host-arch segment.
         assert!(
             selector.contains("deps/ffmpeg/linux/ffmpeg"),
             "selector must contain literal deps path: {selector}"
         );
         assert!(
-            selector.contains("deps/ffmpeg/macos/ffmpeg"),
-            "selector must contain literal deps path: {selector}"
+            selector.contains(&format!("deps/ffmpeg/macos/{}/ffmpeg", host_arch_label())),
+            "macOS branch must name the host-arch deps path: {selector}"
         );
         assert!(
             selector.contains("deps/ffmpeg/windows/ffmpeg.exe"),

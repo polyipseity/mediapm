@@ -213,7 +213,7 @@ Every `ToolRegistryEntry` has a non-optional `canonical_version` (`String`). The
 
 - **Builtin launchers** (media-tagger, import): `MEDIAPM_GIT_HASH`, the compile-time constant emitted by `build.rs`.
 - **GitHub-release tools** (yt-dlp, deno, rsgain, sd): the resolved upstream commit hash, not the tag.
-- **ffmpeg**: the composite `"{autobuild_tag}+evermeet-{evermeet_version}"`; its two sources have no single commit hash, so neither a version nor a VCS hash identifies the artifact set.
+- **ffmpeg**: the composite `"{autobuild_tag}+{macos_leg_version}"`, where the macOS leg is the martin-riedl build id (e.g. `1759500000_N-127260-g7bc3576910`) when the permalink chain served or the jellyfin-ffmpeg version (e.g. `7.1.3-1`) when the fallback did; the leg is corrected after fetch from the URL that actually served the bytes (`canonical_version_after_fetch`), and the artifact set has no single commit hash, so neither a version nor a VCS hash identifies it.
 
 What the provider resolves is only the tool's own segment. The value persisted in `ToolRegistryEntry.canonical_version` is a **composite**: `compute_composite_canonical_version()` appends one `;{dep_id}:{dep_own_version}` segment per SameStep dependency, sorted by dep id, so a dep's version change re-provisions the requester. Dep segments are non-transitive — each carries the dep's own first segment, never the dep's own composite — and a tool with no SameStep deps stores the bare provider value unchanged. Skip detection compares the composite, not the bare value.
 

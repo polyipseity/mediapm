@@ -66,7 +66,7 @@ async fn conductor_ncl_skips_write_when_unchanged() {
 /// document remains untouched.
 ///
 /// This regression test reproduces the original scenario: `BtbN` autobuild
-/// tags change daily (`canonical_version` churn) while the evermeet binary
+/// tags change daily (`canonical_version` churn) while the macOS payload
 /// (same `content_map` / runtime hashes) stays identical. The generated NCL
 /// document should not change — state.json absorbs the metadata update.
 #[tokio::test]

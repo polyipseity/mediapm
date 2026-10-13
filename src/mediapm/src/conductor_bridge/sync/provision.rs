@@ -149,11 +149,10 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 ///
 /// After phase 1 (resolve), a HEAD-prefetch step populates
 /// [`ResolvedSource::expected_size`] for each `Fetch`-producer source so
-/// phase 2 progress bars start with an accurate byte total. Evermeet and
-/// getrelease URLs are skipped (dynamic endpoints).
+/// phase 2 progress bars start with an accurate byte total.
 ///
 /// The resolve bar shows `metadata_fetch_count` items (one per metadata lookup,
-/// e.g., ffmpeg has 2: btbn tag + evermeet version). When all metadata lookups
+/// e.g., ffmpeg has 2: btbn tag + martin-riedl build probe). When all metadata lookups
 /// were cache hits, the bar shows `"N cached"` where N = `metadata_fetch_count`
 /// (e.g. `2 cached`). When the tool is already up-to-date (Skip), the bar shows
 /// `"skipped, N cached"` (with the count when cached, e.g. `skipped, 2 cached`) or
@@ -379,6 +378,16 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
     process_bar.finish_success();
 
+    // Fetch feedback: a multi-candidate chain can serve a different member
+    // than the resolve phase predicted (HTTP failure or `.sha256` mismatch
+    // fails a member over), so the canonical version is re-derived from the
+    // URLs that actually served before the payload is recorded.
+    let canonical_version = crate::tools::provider::canonical_version_after_fetch(
+        tool_id,
+        &canonical_version,
+        &downloaded.entries,
+    );
+
     Ok(Some(FetchedToolPayload {
         content_map: result.content_map,
         os_exec_paths: result.os_exec_paths,
@@ -401,10 +410,6 @@ pub(super) async fn fetch_and_import_tool_payload(
 /// source.  Failures are silently ignored — `expected_size` stays `None` and
 /// the existing Content-Length fallback in phase 2 applies.
 ///
-/// Evermeet URLs are skipped because they are dynamic endpoints (return a
-/// freshly-built zip per request, so HEAD Content-Length wouldn't match the
-/// GET response).
-///
 /// Uses fully concurrent HEAD requests with a semaphore to limit concurrency.
 async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
     let Ok(client) = mediapm_conductor::http::client::shared_http_client() else {
@@ -421,11 +426,6 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
                 SourceProducer::Fetch { urls } if !urls.is_empty() => &urls[0],
                 _ => return None,
             };
-            // Skip dynamic endpoints: Evermeet returns a fresh build
-            // on every request, so HEAD Content-Length is meaningless.
-            if url.contains("evermeet") || url.contains("getrelease") {
-                return None;
-            }
             let client = client.clone();
             let semaphore = semaphore.clone();
             let url = url.clone();
@@ -1031,7 +1031,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_bar_cached_two_shows_cached_two() {
         // Regression: resolve bar with metadata_cached=true and
-        // metadata_fetch_count=2 (e.g., ffmpeg btbn + evermeet) must show
+        // metadata_fetch_count=2 (e.g., ffmpeg btbn tag + martin-riedl
+        // build probe) must show
         // "2 cached" status list (not bare "cached" without count).
         let cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");

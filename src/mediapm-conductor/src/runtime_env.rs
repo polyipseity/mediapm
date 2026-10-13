@@ -218,6 +218,10 @@ fn strip_tool_key_hash(tool_key: &str) -> &str {
 /// Derives the binary-entry env var name from an already-uppercased tool id
 /// and a content-map key.
 ///
+/// Keys shaped `{os}/` (a directory entry) map to a `_DIR` var; keys shaped
+/// `{os}/{rest}` map to the bare binary var — except arch-segmented
+/// directory keys (`{os}/{arch}/`, produced by dual-arch OS slots such as
+/// ffmpeg's macOS chain), which are directories too and resolve to `_DIR`.
 /// Returns `(env_var_name, key)` tuple.
 #[must_use]
 fn content_key_to_env_name<'a>(tool_id_upper: &str, key: &'a str) -> (String, &'a str) {
@@ -225,7 +229,7 @@ fn content_key_to_env_name<'a>(tool_id_upper: &str, key: &'a str) -> (String, &'
     let os = parts.next().unwrap_or("");
     let rest = parts.next().unwrap_or("");
     let os_upper = os.to_uppercase();
-    if rest.is_empty() {
+    if rest.is_empty() || rest.ends_with('/') {
         (format!("MEDIAPM_{tool_id_upper}_{os_upper}_DIR"), key)
     } else {
         (format!("MEDIAPM_{tool_id_upper}_{os_upper}"), key)
@@ -315,8 +319,11 @@ pub fn write_generated_dotenv(
             }
 
             // If this is a binary entry, also emit the binary env var.
+            // Arch-segmented directory keys (`{os}/{arch}/`, dual-arch OS
+            // slots) are directories, not binaries: they only contributed
+            // the `_DIR` entry above and never a bare binary var.
             let rest = parts.next().unwrap_or("");
-            if !rest.is_empty() {
+            if !rest.is_empty() && !rest.ends_with('/') {
                 let (env_name, _env_key) = content_key_to_env_name(&tool_id_upper, key);
                 let bin_path = tools_base_dir.join(&path_segment).join("payload").join(key);
                 let env_value = std::path::absolute(&bin_path)
@@ -587,6 +594,17 @@ mod tests {
         assert_eq!(
             content_key_to_env_name("FFMPEG", "linux/"),
             ("MEDIAPM_FFMPEG_LINUX_DIR".to_string(), "linux/"),
+        );
+    }
+
+    /// An arch-segmented directory key (dual-arch OS slot, e.g. ffmpeg's
+    /// `macos/aarch64/`) is a directory, not a binary: it resolves to the
+    /// OS-level `_DIR` var so both arch keys collapse to one name.
+    #[test]
+    fn content_key_to_env_name_arch_segmented_dir() {
+        assert_eq!(
+            content_key_to_env_name("FFMPEG", "macos/aarch64/"),
+            ("MEDIAPM_FFMPEG_MACOS_DIR".to_string(), "macos/aarch64/"),
         );
     }
 

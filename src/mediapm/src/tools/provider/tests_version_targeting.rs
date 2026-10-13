@@ -207,6 +207,68 @@ async fn btbn_pinned_ffmpeg_is_refused_with_the_retention_reason() {
     }
 }
 
+/// A pinned tag whose ref carries no dereferenceable SHA (here: an object
+/// of type `tree`) is refused with the dereference reason — the folded
+/// review fix. A `Latest` resolve keeps its legacy fallback (the tag string
+/// stands in as the identity), but a pin that stored the tag as its
+/// "commit hash" could never match a real one, so the pinned path errors
+/// instead. The release document itself is served, isolating the refusal to
+/// the ref dereference.
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock must serialize the whole set-seam -> await -> unset-seam resolve; the guard is Send and this is the documented MEDIAPM_* test-seam mutation-scope rule"
+)]
+async fn pinned_tag_with_a_non_dereferenceable_ref_is_refused() {
+    let server = MockServer::start().await;
+    let tag = "2025.07.15";
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/yt-dlp/yt-dlp/releases/tags/{tag}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "tag_name": tag,
+            "assets": [
+                { "name": "yt-dlp.exe" },
+                { "name": "yt-dlp_macos" },
+                { "name": "yt-dlp_linux" },
+            ],
+        })))
+        .mount(&server)
+        .await;
+    // The ref answers, but its object is a `tree`, not a commit or annotated
+    // tag — the dereference falls back to the tag string, which the pinned
+    // path must refuse.
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/yt-dlp/yt-dlp/git/refs/tags/{tag}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "object": { "type": "tree", "sha": "1111111111111111111111111111111111111111" },
+        })))
+        .mount(&server)
+        .await;
+
+    let env_lock = lock_process_env();
+    // SAFETY: the env lock the guard holds scopes this process-global seam
+    // to this test, per the documented MEDIAPM_* mutation-scope rule.
+    unsafe {
+        std::env::set_var(GITHUB_API_BASE_ENV, server.uri());
+    }
+
+    let result =
+        resolve_tool_fetch("yt-dlp", &exact_tag(tag), None, RecheckPolicy::UseCached).await;
+
+    // SAFETY: same env-lock scope as the set above.
+    unsafe {
+        std::env::remove_var(GITHUB_API_BASE_ENV);
+    }
+    drop(env_lock);
+
+    let error = result.expect_err("a non-dereferenceable pinned ref must be refused");
+    let message = error.to_string();
+    assert!(
+        message.contains(&format!("ref for tag {tag} did not dereference to a commit")),
+        "the refusal names the dereference failure: {message}"
+    );
+}
+
 /// Deno's per-OS slots carry exactly one candidate each — never a
 /// cross-arch fallback list. The macOS and Linux slots follow the host
 /// architecture; the Windows slot stays `x86_64` because upstream publishes

@@ -24,7 +24,11 @@ See `crate::tools::provider::mod.rs` for the pipeline implementation and types.
 | `build_os_conditional_selector` | Flat binary names (no OS in path) | Prepends `{os}/` to each value | Command path selectors: `{"linux": "sd-x86_64-linux"}` → `linux/sd-x86_64-linux` |
 | `build_raw_os_conditional_selector` | Pre-qualified paths (OS already in path) | Uses values as-is | Companion dep selectors: `{"macos": "deps/ffmpeg/macos/ffmpeg"}` → `deps/ffmpeg/macos/ffmpeg` |
 
-**Invariant:** Inlined companion dep content map keys follow `deps/{tool_id}/{os}/{filename}`. The OS directory component is already embedded in the key. Callers MUST use `build_raw_os_conditional_selector` for these paths. Using `build_os_conditional_selector` produces double-prefixed paths (`macos/deps/ffmpeg/macos/ffmpeg`) that break runtime resolution.
+**Invariant:** Inlined companion dep content map keys follow `deps/{tool_id}/{os}/{filename}` (arch-segmented as `deps/{tool_id}/{os}/{arch}/{filename}` when the dep's OS slot is dual-arch — ffmpeg's macOS chain). The OS directory component is already embedded in the key. Callers MUST use `build_raw_os_conditional_selector` for these paths. Using `build_os_conditional_selector` produces double-prefixed paths (`macos/deps/ffmpeg/macos/ffmpeg`) that break runtime resolution.
+
+### Content-map key shapes
+
+`process_tool_sources` keys payloads by OS-label slot occupancy: an OS label with **one** source keeps the flat shape (`{os}/` for archives, `{os}/{filename}` for binaries), while an OS label shared by **two** sources — a dual-arch slot, e.g. ffmpeg's `aarch64` + `x86_64` macOS chain — gains an arch segment (`{os}/{arch}/`, `{os}/{arch}/{filename}`). Same-OS same-arch duplicates are still rejected outright. `os_exec_paths` stays os-keyed: a dual-arch slot records only the host-arch payload's exec path prefixed with `{arch}/` (so the `{os}/`-prefixed selector resolves to the real location); a single-source slot is unchanged.
 
 ### Item semantics and progress tracking
 

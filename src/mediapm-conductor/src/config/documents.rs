@@ -536,7 +536,9 @@ mod tests {
                 (
                     "ffmpeg".to_string(),
                     ToolSpec {
-                        version: Some("autobuild-2025-07-15+evermeet-8.1.2".to_string()),
+                        version: Some(
+                            "autobuild-2025-07-15+1759500000_N-127260-g7bc3576910".to_string(),
+                        ),
                         kind: ToolKindSpec::Executable {
                             command: vec!["ffmpeg".to_string()],
                             env_vars: BTreeMap::new(),
@@ -568,7 +570,7 @@ mod tests {
         let unified = decoded.to_unified();
         assert_eq!(
             unified.tools["ffmpeg"].version.as_deref(),
-            Some("autobuild-2025-07-15+evermeet-8.1.2")
+            Some("autobuild-2025-07-15+1759500000_N-127260-g7bc3576910")
         );
         assert_eq!(unified.tools["echo"].version, None);
     }

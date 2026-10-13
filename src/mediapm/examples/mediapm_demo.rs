@@ -727,7 +727,13 @@ async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> Exampl
             b"autobuild-2025-07-15-12-00",
         )
         .await;
-    cache.store_bytes(METADATA_DOMAIN, "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
+    cache
+        .store_bytes(
+            METADATA_DOMAIN,
+            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+            b"1759500000_N-127260-g7bc3576910",
+        )
+        .await;
 
     Ok(())
 }

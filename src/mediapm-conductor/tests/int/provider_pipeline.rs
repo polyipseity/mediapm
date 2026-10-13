@@ -328,10 +328,16 @@ async fn process_mixed_archive_binary_progress() {
     // Append a synthetic archive entry to test mixed source processing.
     let mut entries = downloaded.entries.clone();
     entries.push(DownloadedSource {
-        os: "linux".to_string(),
+        // A distinct OS label keeps this synthetic archive outside echo's
+        // launcher slots: two sources on one OS label would make the slot
+        // dual-arch (arch-segmented keys) or, with equal arches, trip the
+        // duplicate-key guard — neither is what this progress test is about.
+        os: "test-os".to_string(),
+        arch: "x86_64".to_string(),
         producer: SourceProducer::Fetch { urls: vec!["https://example.com/extra.zip".to_string()] },
         bytes: zip,
         expected_size: None,
+        actual_url: None,
     });
     let mixed = DownloadedSources {
         tool_id: "echo".to_string(),
@@ -357,10 +363,13 @@ fn echo_with_zip_archive(downloaded: &DownloadedSources) -> DownloadedSources {
     let payload = pseudo_random_buffer(20_000);
     let mut entries = downloaded.entries.clone();
     entries.push(DownloadedSource {
-        os: "linux".to_string(),
+        // Distinct OS label, same reasoning as `process_mixed_archive_binary_progress`.
+        os: "test-os".to_string(),
+        arch: "x86_64".to_string(),
         producer: SourceProducer::Fetch { urls: vec!["https://example.com/extra.zip".to_string()] },
         bytes: synthetic_zip(&[("extra.bin", payload.as_slice())]),
         expected_size: None,
+        actual_url: None,
     });
     DownloadedSources {
         tool_id: downloaded.tool_id.clone(),

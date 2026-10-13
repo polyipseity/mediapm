@@ -320,7 +320,8 @@ mod tests {
 
     #[test]
     fn sanitize_tool_id_preserves_safe_characters() {
-        let safe = "ffmpeg+evermeet-ffmpeg@6e66d4d1e81f75b5f34dc2a369cc341e12edc531";
+        let safe =
+            "ffmpeg+1759500000_N-127260-g7bc3576910@6e66d4d1e81f75b5f34dc2a369cc341e12edc531";
         assert_eq!(sanitize_tool_id(safe), safe);
     }
 
