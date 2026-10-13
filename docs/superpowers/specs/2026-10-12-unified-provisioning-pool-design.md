@@ -21,7 +21,7 @@ Both defects predate the progress-labels branch (`git diff --stat 6086b285..HEAD
 
 The scheduler is a pure core: a generic driver over an injected provision closure, so all scheduling behavior is unit-testable without network.
 
-- `PoolJob<I> { index, same_step_deps: Vec<usize>, input }` — one unit; `same_step_deps` is a DAG (cycles are rejected at the config boundary, MPM-E003).
+- `PoolJob<I> { index, same_step_deps: Vec<usize>, input }` — one unit; `same_step_deps` is a DAG by construction: edges always point from a later explicit index to an earlier auto-vivified dep index (dedup keeps dep entries first), so the graph is index-decreasing and acyclic without any config check (MPM-E003 covers circular `inherit` only).
 - `DepGates` (receiver side, handed to each job) — `async fn dep_version(index) -> Option<String>` and `async fn dep_own_map(index) -> Option<BTreeMap<String, String>>`. Backed by `tokio::sync::watch` channels (multi-subscriber: one dep feeds several dependents).
 - `DepPublisher` (sender side, handed to each job) — a job publishes its **bare** canonical version right after resolve (skips publish theirs from the reconstructed entry) and its **pre-inline own map** right after process (or skip reconstruction). Bare version, never the composite, preserves the non-transitive rule.
 - `run_pool(jobs, concurrency, run) -> Result<Vec<(usize, O)>, PoolFailure<E>>` — drives jobs via `FuturesUnordered` + `buffer_unordered`-equivalent bounding. Success: outcomes sorted by `index`. Failure: the first `Err` returns immediately and drops every in-flight future (cancelling downloads); nothing has been applied because apply stays post-collection.

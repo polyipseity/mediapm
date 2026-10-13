@@ -374,7 +374,7 @@ mod tests {
     /// aborts the sync on an unreachable upstream, so a sync-level
     /// acceptance run cannot exist hermetically. The reject direction for
     /// non-ffmpeg tools is pinned at the sync level by
-    /// `sync_rejects_slot_field_on_non_ffmpeg_tool` (which fires before any
+    /// `sync_rejects_slot_field_on_non_ffmpeg` (which fires before any
     /// network) and here by the field-set contract.
     #[test]
     fn slot_fields_are_accepted_on_ffmpeg() {

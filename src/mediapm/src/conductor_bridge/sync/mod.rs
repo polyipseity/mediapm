@@ -442,9 +442,10 @@ async fn provision_entry(
         Ok(Some(mut payload)) => {
             // Publish this tool's own pre-inline payload map so a same-step
             // dependent can inline it. Published before this tool's own
-            // inlining so a dependent unblocks as soon as this tool has
-            // fetched; the map is exactly this tool's own keys, never its
-            // deps' inlined keys (non-transitive).
+            // inlining so a dependent unblocks as soon as the payload exists
+            // (after this tool's fetch AND process — the map is only known
+            // once the bytes are CAS-imported); the map is exactly this
+            // tool's own keys, never its deps' inlined keys (non-transitive).
             let pre_inline = payload.content_map.clone();
             publisher.publish_own_map(pre_inline);
 
@@ -1373,6 +1374,23 @@ pub(crate) async fn reconcile_desired_tools(
     // `same_step_deps` are the pool indices of its same-step deps resolved
     // through that first-match rule. A same-step dep with no pool job
     // contributes no edge (ungated), matching the old live-state fallthrough.
+    //
+    // Structural safety notes (no config can violate these today):
+    // - Edges always point from a later (explicit) index to an earlier
+    //   (auto-vivified dep) index, so the pool graph is index-decreasing and
+    //   therefore acyclic — no deadlock is possible, even sequentially. This,
+    //   not any config check, is what makes cycle detection unnecessary
+    //   (MPM-E003 covers circular `inherit` only).
+    // - First-match means that if two requirers declared the same dep id with
+    //   DIFFERENT version specs, dedup would keep both entries but the second
+    //   requirer would fold the first requirer's dep version into its
+    //   composite. No registry pair allows this today (only yt-dlp has
+    //   same-step deps, with unique keys).
+    // - A same-step dep with an EMPTY content map publishes a bare version,
+    //   while the service-side comparison skips empty-content-map entries —
+    //   such a dep would make sync-time and check-time composites diverge
+    //   (perpetual `requires sync`). No registry same-step dep lacks a
+    //   payload today (ffmpeg/deno fetch binaries).
     let mut dep_indices: BTreeMap<String, usize> = BTreeMap::new();
     for (idx, entry) in entries.iter().enumerate() {
         dep_indices.entry(entry.tool_id.clone()).or_insert(idx);

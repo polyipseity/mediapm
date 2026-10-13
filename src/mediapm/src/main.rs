@@ -69,10 +69,11 @@ fn sync_exit_status(summary: &mediapm::SyncSummary) -> Option<i32> {
 /// Exit status for a finished `tool sync`, or `None` when it went clean.
 ///
 /// The only place the mapping from [`mediapm::output::ToolSyncOutcome`] to a
-/// process status lives for `mediapm tool sync`. A tool that failed to
-/// provision takes [`EXIT_WARNING`] and not [`EXIT_INCOMPLETE_LIBRARY`]: the
-/// other tools in the same run registered, and running the command again
-/// retries the failed one, so nothing the library needed is missing.
+/// process status lives for `mediapm tool sync`. A run whose report carries
+/// warnings takes [`EXIT_WARNING`] and not [`EXIT_INCOMPLETE_LIBRARY`]: the
+/// warnings are non-fatal notices (resolved-field backfills, hints), so the
+/// library gained nothing missing. Provisioning failures never reach this
+/// function — under fail fast they abort the sync before any summary exists.
 ///
 /// A tool sync that cannot run at all returns an error out of
 /// [`MediaPmService::sync_tools_with_tag_update_checks`] and never reaches this
@@ -1555,35 +1556,35 @@ mod tests {
         assert_eq!(tool_sync_exit_status(&summary), None, "summary: {summary:?}");
     }
 
-    /// A tool that failed to provision takes the warning status.
+    /// A warning-bearing run takes the warning status.
     ///
     /// The command used to print the `Δ` line and exit zero, so a script
-    /// reading the number could not tell a clean run from one where a tool is
-    /// still missing.
+    /// reading the number could not tell a clean run from one where notices
+    /// were reported. Warnings are non-fatal notices (backfills, hints) —
+    /// provisioning failures abort before a summary exists.
     #[test]
-    fn tool_sync_exits_three_when_a_tool_failed_to_provision() {
+    fn tool_sync_exits_three_when_warnings_are_reported() {
         let summary = mediapm::ToolsSyncSummary {
             added_tools: 2,
             warnings: vec![
-                "tool nonexistent-tool: no provider registered for resolution".to_string(),
+                "backfilled resolved fields for 3 tool(s) from provider metadata".to_string(),
             ],
             ..tools_sync_summary()
         };
         assert_eq!(tool_sync_exit_status(&summary), Some(EXIT_WARNING), "summary: {summary:?}");
     }
 
-    /// A tool that failed to provision does not take the library's status.
+    /// A warning-bearing run does not take the library's status.
     ///
-    /// This is the mistake the warning status is easy to make. The rest of the
-    /// run registered, and re-running the command retries the failed tool, so
-    /// nothing the library needs is missing, and status 4 would tell a script
-    /// the run had left work undone.
+    /// This is the mistake the warning status is easy to make. A backfill or
+    /// hint leaves nothing the library needs missing, so status 4 would tell
+    /// a script the run had left work undone.
     #[test]
-    fn tool_sync_does_not_exit_four_when_a_tool_failed_to_provision() {
+    fn tool_sync_does_not_exit_four_for_warnings() {
         let summary = mediapm::ToolsSyncSummary {
             added_tools: 2,
             warnings: vec![
-                "tool nonexistent-tool: no provider registered for resolution".to_string(),
+                "backfilled resolved fields for 3 tool(s) from provider metadata".to_string(),
             ],
             ..tools_sync_summary()
         };

@@ -119,7 +119,7 @@ async fn sync_rejects_slot_field_on_non_ffmpeg() {
 // ffmpeg does), so a sync-level acceptance run cannot be hermetic, and under
 // fail-fast provisioning a real ffmpeg fetch aborts the sync on an
 // unreachable upstream. The reject direction stays at the sync level in
-// `sync_rejects_slot_field_on_non_ffmpeg_tool` (it fires before any
+// `sync_rejects_slot_field_on_non_ffmpeg` (it fires before any
 // network). Do not re-add a network-dependent sync-level acceptance test here.
 
 /// Sync accepts `recheck_seconds` on any tool — it is a global optional field,
