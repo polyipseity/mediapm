@@ -156,6 +156,24 @@ pub enum VersionSpec {
     Exact(VersionSpecFields),
 }
 
+impl From<&ConfigVersionSpec> for VersionSpec {
+    /// Converts the serde-facing spec into the resolved form handed to
+    /// provider resolution.
+    ///
+    /// [`Inherit`](ConfigVersionSpec::Inherit) maps to
+    /// [`Latest`](VersionSpec::Latest): `Inherit` is resolved to the global
+    /// requirement's concrete spec before dependency resolution, and a
+    /// global tool requirement still carrying `Inherit` at this point is
+    /// rejected by the caller's post-resolve validation — provider
+    /// resolution itself never sees the invalid state.
+    fn from(spec: &ConfigVersionSpec) -> Self {
+        match spec {
+            ConfigVersionSpec::Latest | ConfigVersionSpec::Inherit => VersionSpec::Latest,
+            ConfigVersionSpec::Exact(fields) => VersionSpec::Exact(fields.clone()),
+        }
+    }
+}
+
 /// Fields for exact version specification.
 ///
 /// At least one field MUST be non-None (enforced at deserialization via
@@ -236,6 +254,14 @@ impl SourceProducer {
 pub struct ResolvedSource {
     /// OS target label (e.g. `"linux"`, `"macos"`, `"windows"`).
     pub os: String,
+    /// CPU architecture label the source's artifact is built for —
+    /// `"x86_64"` or `"aarch64"`.
+    ///
+    /// Carried but not yet used in content-map keys (arch key segments land
+    /// with the ffmpeg macOS chain). Sources publishing one universal
+    /// artifact per OS (builtin launcher scripts, yt-dlp's universal macOS
+    /// binary) label the host architecture via [`host_arch_label`].
+    pub arch: String,
     /// How phase 2 produces bytes for this source.
     pub producer: SourceProducer,
     /// Expected byte size, if known from HEAD probes.
@@ -243,6 +269,22 @@ pub struct ResolvedSource {
     /// Optional soft upper bound for expected byte size, set from provider
     /// definitions. Used as a fallback estimate when HEAD probes fail.
     pub size_hint_bytes: Option<u64>,
+}
+
+/// Returns the architecture label for sources that publish one universal
+/// artifact per OS.
+///
+/// Returns `"aarch64"` on ARM hosts and `"x86_64"` on `x86_64` hosts. Hosts
+/// outside the two architectures the managed tools publish builds for
+/// resolve `"x86_64"` — the widest-coverage build — rather than inventing a
+/// label no release carries; such a host fails at fetch with a clear
+/// download error instead of a fabricated arch at resolve.
+#[must_use]
+pub fn host_arch_label() -> String {
+    match std::env::consts::ARCH {
+        "aarch64" => "aarch64".to_string(),
+        _ => "x86_64".to_string(),
+    }
 }
 
 /// Phase 1 output: everything needed for phase 2.
@@ -2293,12 +2335,14 @@ mod tests {
             sources: vec![
                 ResolvedSource {
                     os: "linux".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::Fetch { urls: vec!["mock://a".to_string()] },
                     expected_size: None,
                     size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::Fetch { urls: vec!["mock://b".to_string()] },
                     expected_size: None,
                     size_hint_bytes: Some(500),
@@ -2383,6 +2427,7 @@ mod tests {
             tool_id: "regression-test".to_string(),
             sources: vec![ResolvedSource {
                 os: "linux".to_string(),
+                arch: host_arch_label(),
                 producer: SourceProducer::Fetch {
                     // "a" is not cached, "b" is cached — old code would miss
                     // on "a" and fail.
@@ -2979,18 +3024,21 @@ mod tests {
             sources: vec![
                 ResolvedSource {
                     os: "linux".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::launcher("test"),
                     expected_size: Some(100),
                     size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::launcher("test"),
                     expected_size: Some(200),
                     size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::launcher("test"),
                     expected_size: Some(150),
                     size_hint_bytes: None,
@@ -3189,18 +3237,21 @@ mod tests {
             sources: vec![
                 ResolvedSource {
                     os: "linux".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::mediapm_builtin("media-tagger"),
                     expected_size: None,
                     size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::mediapm_builtin("media-tagger"),
                     expected_size: None,
                     size_hint_bytes: None,
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::mediapm_builtin("media-tagger"),
                     expected_size: None,
                     size_hint_bytes: None,

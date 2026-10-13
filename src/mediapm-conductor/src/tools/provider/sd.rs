@@ -10,6 +10,8 @@ pub fn sources() -> ResolvedToolFetch {
         sources: vec![
             ResolvedSource {
                 os: "windows".to_string(),
+                // The pinned asset is the x86_64 Windows build.
+                arch: "x86_64".to_string(),
                 producer: SourceProducer::Fetch {
                     urls: vec!["https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-pc-windows-msvc.zip".to_string()],
                 },
@@ -18,6 +20,8 @@ pub fn sources() -> ResolvedToolFetch {
             },
             ResolvedSource {
                 os: "macos".to_string(),
+                // The pinned asset is the Apple Silicon (aarch64) macOS build.
+                arch: "aarch64".to_string(),
                 producer: SourceProducer::Fetch {
                     urls: vec!["https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-aarch64-apple-darwin.tar.gz".to_string()],
                 },
@@ -26,6 +30,8 @@ pub fn sources() -> ResolvedToolFetch {
             },
             ResolvedSource {
                 os: "linux".to_string(),
+                // The pinned asset is the x86_64 Linux build.
+                arch: "x86_64".to_string(),
                 producer: SourceProducer::Fetch {
                     urls: vec!["https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-unknown-linux-gnu.tar.gz".to_string()],
                 },

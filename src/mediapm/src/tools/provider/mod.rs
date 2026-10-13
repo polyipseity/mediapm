@@ -18,10 +18,12 @@ pub(crate) mod yt_dlp;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use mediapm_conductor::cache::Cache;
-use mediapm_conductor::tools::provider::{ResolvedToolFetch, SourceProducer};
+use mediapm_conductor::tools::provider::{ResolvedToolFetch, SourceProducer, VersionSpec};
 
 #[cfg(test)]
 use crate::tools::downloader::ToolDownloadCache;
+#[cfg(test)]
+use mediapm_conductor::tools::provider::host_arch_label;
 
 /// Whether to force re-resolve or use cached metadata.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -128,6 +130,82 @@ pub(crate) struct ResolvedToolMetadata {
     pub(crate) resolved_vcs_hash: Option<String>,
 }
 
+/// Environment variable overriding the GitHub REST API base URL.
+///
+/// Hermetic-test seam only: tests point it at a local `wiremock` server to
+/// exercise tag-pinned resolution without real network access. Unset (the
+/// production default) resolves every endpoint against the real GitHub API.
+const GITHUB_API_BASE_ENV: &str = "MEDIAPM_GITHUB_API_BASE";
+
+/// Returns the GitHub REST API base URL — the production GitHub API, or the
+/// `MEDIAPM_GITHUB_API_BASE` test override when set.
+///
+/// Read per call (not cached in a `OnceLock`) so per-test wiremock servers
+/// can each take a turn under the process env lock.
+fn github_api_base() -> String {
+    std::env::var(GITHUB_API_BASE_ENV).unwrap_or_else(|_| "https://api.github.com".to_string())
+}
+
+/// Resolves the commit SHA a tag points at, dereferencing annotated tags.
+///
+/// Shared by [`resolve_latest_github_tag`] (whose callers also pin by tag)
+/// and [`resolve_github_tag_release`] so both paths dereference identically.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from
+/// [`shared_http_client`](mediapm_conductor::http::client::shared_http_client).
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
+///
+/// # Errors
+///
+/// Returns [`mediapm_conductor::ConductorError`] when the HTTP request or
+/// response parsing fails.
+async fn resolve_github_tag_commit_hash(
+    http_client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    tag: &str,
+) -> Result<String, mediapm_conductor::ConductorError> {
+    // Resolve git commit hash from the tag ref.
+    let ref_url = format!("{}/repos/{owner}/{repo}/git/refs/tags/{tag}", github_api_base());
+    let ref_response = http_client.get(&ref_url).send().await.map_err(|e| {
+        mediapm_conductor::ConductorError::Workflow(format!("GitHub API ref request failed: {e}"))
+    })?;
+
+    let ref_value: serde_json::Value = ref_response.json().await.map_err(|e| {
+        mediapm_conductor::ConductorError::Workflow(format!(
+            "GitHub API ref response parse failed: {e}"
+        ))
+    })?;
+
+    let commit_sha = match ref_value["object"]["type"].as_str() {
+        Some("commit") => ref_value["object"]["sha"].as_str().unwrap_or(tag).to_string(),
+        Some("tag") => {
+            // Annotated tag — dereference one more level.
+            let tag_sha = ref_value["object"]["sha"].as_str().unwrap_or(tag);
+            let tag_url = format!("{}/repos/{owner}/{repo}/git/tags/{tag_sha}", github_api_base());
+            let tag_response = http_client.get(&tag_url).send().await.map_err(|e| {
+                mediapm_conductor::ConductorError::Workflow(format!(
+                    "GitHub API annotated tag request failed: {e}"
+                ))
+            })?;
+            let tag_value: serde_json::Value = tag_response.json().await.map_err(|e| {
+                mediapm_conductor::ConductorError::Workflow(format!(
+                    "GitHub API annotated tag response parse failed: {e}"
+                ))
+            })?;
+            tag_value["object"]["sha"].as_str().unwrap_or(tag_sha).to_string()
+        }
+        // A ref that is neither a commit nor an annotated tag carries no
+        // dereferenceable SHA; the tag name itself is the best identity.
+        _ => tag.to_string(),
+    };
+
+    Ok(commit_sha)
+}
+
 /// Resolves the latest GitHub release tag and its commit hash for `owner/repo`.
 ///
 /// Returns `(tag, commit_hash, metadata_cached)` where `tag` is the version
@@ -156,12 +234,11 @@ pub(crate) async fn resolve_latest_github_tag(
     repo: &str,
     metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> Result<(String, String, bool), mediapm_conductor::ConductorError> {
-    let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
+    let api_url = format!("{}/repos/{owner}/{repo}/releases/latest", github_api_base());
 
-    // Try metadata cache first. If the cached entry is non-UTF-8 or malformed,
-    // fall through to re-fetch.
     // Try cache first. A fully valid cached entry (UTF-8, non-empty
-    // tag+hash pair) short-circuits the HTTP fetch below.
+    // tag+hash pair) short-circuits the HTTP fetch below. A malformed or
+    // non-UTF-8 entry falls through to re-fetch.
     if let Some(cache) = metadata_cache
         && let Some(bytes) = cache.lookup_bytes(&api_url).await
         && let Ok(s) = String::from_utf8(bytes.clone())
@@ -171,7 +248,6 @@ pub(crate) async fn resolve_latest_github_tag(
     {
         return Ok((tag.to_string(), hash.to_string(), true));
     }
-    // Invalid cache entry — fall through to re-fetch.
 
     // Fetch from GitHub API.
     let http_client = mediapm_conductor::http::client::shared_http_client().map_err(|e| {
@@ -195,37 +271,7 @@ pub(crate) async fn resolve_latest_github_tag(
     })?;
     let tag = tag.to_string();
 
-    // Resolve git commit hash from the tag ref.
-    let ref_url = format!("https://api.github.com/repos/{owner}/{repo}/git/refs/tags/{tag}");
-    let ref_response = http_client.get(&ref_url).send().await.map_err(|e| {
-        mediapm_conductor::ConductorError::Workflow(format!("GitHub API ref request failed: {e}"))
-    })?;
-    let ref_value: serde_json::Value = ref_response.json().await.map_err(|e| {
-        mediapm_conductor::ConductorError::Workflow(format!(
-            "GitHub API ref response parse failed: {e}"
-        ))
-    })?;
-
-    let commit_sha = match ref_value["object"]["type"].as_str() {
-        Some("commit") => ref_value["object"]["sha"].as_str().unwrap_or(&tag).to_string(),
-        Some("tag") => {
-            // Annotated tag — dereference one more level.
-            let tag_sha = ref_value["object"]["sha"].as_str().unwrap_or(&tag);
-            let tag_url = format!("https://api.github.com/repos/{owner}/{repo}/git/tags/{tag_sha}");
-            let tag_response = http_client.get(&tag_url).send().await.map_err(|e| {
-                mediapm_conductor::ConductorError::Workflow(format!(
-                    "GitHub API annotated tag request failed: {e}"
-                ))
-            })?;
-            let tag_value: serde_json::Value = tag_response.json().await.map_err(|e| {
-                mediapm_conductor::ConductorError::Workflow(format!(
-                    "GitHub API annotated tag response parse failed: {e}"
-                ))
-            })?;
-            tag_value["object"]["sha"].as_str().unwrap_or(tag_sha).to_string()
-        }
-        _ => tag.clone(), // fallback: use tag as-is
-    };
+    let commit_sha = resolve_github_tag_commit_hash(http_client, owner, repo, &tag).await?;
 
     // Store in metadata cache. Do NOT call touch() — TTL is creation-time-based.
     if let Some(cache) = metadata_cache {
@@ -233,6 +279,181 @@ pub(crate) async fn resolve_latest_github_tag(
     }
 
     Ok((tag, commit_sha, false))
+}
+
+/// Resolves a tag-pinned GitHub release: its commit hash and asset names.
+///
+/// Returns `(commit_hash, asset_names, metadata_cached)`. The metadata cache
+/// key is the release-by-tag API endpoint; the cached value is
+/// `"{commit_hash}\n{asset_name}\n{asset_name}..."` — first line the commit
+/// hash, remaining lines the release asset names. A non-UTF-8 or
+/// hash-without-assets entry falls through to re-fetch. The caller must NOT
+/// call `touch()` on the metadata cache — the 1-day TTL is anchored to
+/// creation time, not last use.
+///
+/// The commit hash is resolved through the same tag-ref dereference as
+/// [`resolve_latest_github_tag`], so a pinned tool's `canonical_version` has
+/// the same semantic kind (resolved commit hash) as an unpinned one.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from
+/// [`shared_http_client`](mediapm_conductor::http::client::shared_http_client).
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
+///
+/// # Errors
+///
+/// Returns [`mediapm_conductor::ConductorError`] when the HTTP request,
+/// response parsing, or tag verification fails.
+pub(crate) async fn resolve_github_tag_release(
+    owner: &str,
+    repo: &str,
+    tag: &str,
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
+) -> Result<(String, Vec<String>, bool), mediapm_conductor::ConductorError> {
+    let api_url = format!("{}/repos/{owner}/{repo}/releases/tags/{tag}", github_api_base());
+
+    // Try cache first. A fully valid entry (UTF-8, non-empty hash plus at
+    // least one asset name) short-circuits the HTTP fetch below.
+    if let Some(cache) = metadata_cache
+        && let Some(bytes) = cache.lookup_bytes(&api_url).await
+        && let Ok(s) = String::from_utf8(bytes)
+        && let Some((hash, rest)) = s.split_once('\n')
+        && !hash.is_empty()
+    {
+        let assets: Vec<String> =
+            rest.split('\n').filter(|n| !n.is_empty()).map(str::to_string).collect();
+        if !assets.is_empty() {
+            return Ok((hash.to_string(), assets, true));
+        }
+    }
+
+    // Fetch the release-by-tag document from GitHub API.
+    let http_client = mediapm_conductor::http::client::shared_http_client().map_err(|e| {
+        mediapm_conductor::ConductorError::Workflow(format!("HTTP client unavailable: {e}"))
+    })?;
+
+    let response = http_client.get(&api_url).send().await.map_err(|e| {
+        mediapm_conductor::ConductorError::Workflow(format!(
+            "GitHub API release-by-tag request failed: {e}"
+        ))
+    })?;
+
+    let release: serde_json::Value = response.json().await.map_err(|e| {
+        mediapm_conductor::ConductorError::Workflow(format!(
+            "GitHub API release-by-tag response parse failed: {e}"
+        ))
+    })?;
+
+    let returned_tag = release["tag_name"].as_str().ok_or_else(|| {
+        mediapm_conductor::ConductorError::Workflow(
+            "GitHub API release-by-tag response missing tag_name".to_string(),
+        )
+    })?;
+    if returned_tag != tag {
+        return Err(mediapm_conductor::ConductorError::Workflow(format!(
+            "GitHub API release-by-tag returned tag {returned_tag} for requested {tag}"
+        )));
+    }
+    let assets = release["assets"].as_array().ok_or_else(|| {
+        mediapm_conductor::ConductorError::Workflow(
+            "GitHub API release-by-tag response missing assets array".to_string(),
+        )
+    })?;
+    let asset_names: Vec<String> =
+        assets.iter().filter_map(|a| a["name"].as_str()).map(str::to_string).collect();
+    // A release with no named assets is not refused here: the per-tool asset
+    // match reports which platform slot found nothing, with tool context.
+
+    let commit_hash = resolve_github_tag_commit_hash(http_client, owner, repo, tag).await?;
+
+    // Store in metadata cache. Do NOT call touch() — TTL is creation-time-based.
+    if let Some(cache) = metadata_cache {
+        let mut payload = commit_hash.clone();
+        for name in &asset_names {
+            payload.push('\n');
+            payload.push_str(name);
+        }
+        cache.store_bytes(&api_url, payload.as_bytes()).await;
+    }
+
+    Ok((commit_hash, asset_names, false))
+}
+
+/// Returns the tag the version target pins, if the target pins one.
+///
+/// [`VersionSpec::Exact`] carrying only `vcs_hash`/`version` returns `None`:
+/// a bare hash or version string cannot address a release asset list, so
+/// those flavors keep resolving latest and leave comparison to the caller's
+/// validation gate.
+fn pinned_tag(target: &VersionSpec) -> Option<&str> {
+    match target {
+        VersionSpec::Exact(fields) => fields.tag.as_deref(),
+        VersionSpec::Latest => None,
+    }
+}
+
+/// Builds the clear resolve-time refusal for a pinned release that carries
+/// no asset matching a platform slot's pattern.
+fn missing_release_asset_error(
+    tool_id: &str,
+    tag: &str,
+    os: &str,
+    pattern: &str,
+) -> mediapm_conductor::ConductorError {
+    mediapm_conductor::ConductorError::Workflow(format!(
+        "tool {tool_id}: release tag {tag} has no asset matching '{pattern}' for os {os}"
+    ))
+}
+
+/// Builds the download URL for one asset of a tag-pinned GitHub release.
+///
+/// GitHub serves tag-pinned assets at `releases/download/{tag}/{asset}`,
+/// mirroring the `releases/latest/download/{asset}` template the `Latest`
+/// path substitutes.
+#[must_use]
+pub(crate) fn github_release_asset_url(
+    owner: &str,
+    repo: &str,
+    tag: &str,
+    asset_name: &str,
+) -> String {
+    format!("https://github.com/{owner}/{repo}/releases/download/{tag}/{asset_name}")
+}
+
+/// Resolves a tag-pinned GitHub tool into its fetch and metadata.
+///
+/// `sources_for_release` maps the release's asset names onto per-OS sources,
+/// refusing (with tool, tag, and pattern context) when a platform slot has
+/// no matching asset. All four GitHub tools share this path so the pinned
+/// metadata shape — canonical = the tag's commit hash, provenance fields
+/// carrying the pinned tag — stays identical across tools.
+async fn resolve_pinned_github_tool(
+    owner: &str,
+    repo: &str,
+    tag: &str,
+    tracker: Option<&MetadataCacheTracker<'_>>,
+    sources_for_release: fn(
+        &str,
+        &[String],
+    ) -> Result<ResolvedToolFetch, mediapm_conductor::ConductorError>,
+) -> Result<(ResolvedToolFetch, ResolvedToolMetadata), mediapm_conductor::ConductorError> {
+    let (commit_hash, assets, metadata_cached) =
+        resolve_github_tag_release(owner, repo, tag, tracker).await?;
+    let fetch = sources_for_release(tag, &assets)?;
+    Ok((
+        fetch,
+        ResolvedToolMetadata {
+            human_readable_version: tag.to_string(),
+            canonical_version: commit_hash.clone(),
+            metadata_cached,
+            metadata_fetch_count: 0,
+            resolved_tag: Some(tag.to_string()),
+            resolved_version: Some(tag.to_string()),
+            resolved_vcs_hash: Some(commit_hash),
+        },
+    ))
 }
 
 /// Resolves the latest `autobuild-*` tag for `owner/repo` by listing
@@ -313,6 +534,17 @@ pub(crate) async fn resolve_latest_autobuild_tag(
 
 /// Resolves source descriptors and canonical version for the named managed tool.
 ///
+/// `version_target` is the already-resolved [`VersionSpec`] for the tool.
+/// [`VersionSpec::Exact`] with a `tag` makes the GitHub-release tools
+/// (yt-dlp, deno, rsgain, sd) resolve that release through the
+/// release-by-tag endpoint and build fetch URLs from its asset list
+/// ([`resolve_github_tag_release`]); `Exact` with only `vcs_hash`/`version`
+/// keeps resolving latest and leaves comparison to the caller's validation
+/// gate. `Exact` of any flavor is refused for ffmpeg (`BtbN` retains no
+/// historical builds). [`media-tagger`](crate::tools::provider::media_tagger)
+/// and [`import`](crate::tools::provider::import) are builtin launchers with
+/// no upstream release and ignore the target.
+///
 /// Returns a tuple of `(ResolvedToolFetch, ResolvedToolMetadata)` where the
 /// second element carries:
 /// - `human_readable_version`: informational only, no semantic use — version
@@ -348,6 +580,7 @@ pub(crate) async fn resolve_latest_autobuild_tag(
 )]
 pub(crate) async fn resolve_tool_fetch(
     tool_name: &str,
+    version_target: &VersionSpec,
     metadata_cache: Option<(&Cache, &str)>,
     recheck_policy: RecheckPolicy,
 ) -> Result<(ResolvedToolFetch, ResolvedToolMetadata), mediapm_conductor::ConductorError> {
@@ -357,29 +590,50 @@ pub(crate) async fn resolve_tool_fetch(
 
     let (fetch, mut metadata) = match tool_name {
         n if n.eq_ignore_ascii_case("yt-dlp") => {
-            let (tag, commit_hash, mc) = yt_dlp::resolve_latest_tag(tracker_ref).await?;
-            let mut fetch = yt_dlp::sources();
-            for source in &mut fetch.sources {
-                if let SourceProducer::Fetch { urls } = &mut source.producer {
-                    for url in urls.iter_mut() {
-                        *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
+            if let Some(tag) = pinned_tag(version_target) {
+                resolve_pinned_github_tool(
+                    "yt-dlp",
+                    "yt-dlp",
+                    tag,
+                    tracker_ref,
+                    yt_dlp::sources_for_release,
+                )
+                .await?
+            } else {
+                let (tag, commit_hash, mc) = yt_dlp::resolve_latest_tag(tracker_ref).await?;
+                let mut fetch = yt_dlp::sources();
+                for source in &mut fetch.sources {
+                    if let SourceProducer::Fetch { urls } = &mut source.producer {
+                        for url in urls.iter_mut() {
+                            *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
+                        }
                     }
                 }
+                (
+                    fetch,
+                    ResolvedToolMetadata {
+                        human_readable_version: tag.clone(),
+                        canonical_version: commit_hash.clone(),
+                        metadata_cached: mc,
+                        metadata_fetch_count: 0,
+                        resolved_tag: Some(tag.clone()),
+                        resolved_version: Some(tag),
+                        resolved_vcs_hash: Some(commit_hash),
+                    },
+                )
             }
-            (
-                fetch,
-                ResolvedToolMetadata {
-                    human_readable_version: tag.clone(),
-                    canonical_version: commit_hash.clone(),
-                    metadata_cached: mc,
-                    metadata_fetch_count: 0,
-                    resolved_tag: Some(tag.clone()),
-                    resolved_version: Some(tag),
-                    resolved_vcs_hash: Some(commit_hash),
-                },
-            )
         }
         n if n.eq_ignore_ascii_case("ffmpeg") => {
+            if matches!(version_target, VersionSpec::Exact(_)) {
+                // BtbN replaces its rolling "latest" assets on every build and
+                // retains no historical archives; a pin resolved against
+                // latest would silently fetch the wrong bytes, so the pin is
+                // refused with the reason instead.
+                return Err(mediapm_conductor::ConductorError::Workflow(
+                    "tool ffmpeg: BtbN does not retain historical builds; pinning ffmpeg's BtbN legs is impossible"
+                        .to_string(),
+                ));
+            }
             let (autobuild_tag, btbn_cached) = ffmpeg::resolve_btbn_tag(tracker_ref).await?;
             let (evermeet_version, evermeet_cached) =
                 ffmpeg::resolve_evermeet_version(tracker_ref).await?;
@@ -405,53 +659,75 @@ pub(crate) async fn resolve_tool_fetch(
             )
         }
         n if n.eq_ignore_ascii_case("deno") => {
-            let (tag, commit_hash, mc) = deno::resolve_tag(tracker_ref).await?;
-            let mut fetch = deno::sources();
-            for source in &mut fetch.sources {
-                if let SourceProducer::Fetch { urls } = &mut source.producer {
-                    for url in urls.iter_mut() {
-                        *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
+            if let Some(tag) = pinned_tag(version_target) {
+                resolve_pinned_github_tool(
+                    "denoland",
+                    "deno",
+                    tag,
+                    tracker_ref,
+                    deno::sources_for_release,
+                )
+                .await?
+            } else {
+                let (tag, commit_hash, mc) = deno::resolve_tag(tracker_ref).await?;
+                let mut fetch = deno::sources();
+                for source in &mut fetch.sources {
+                    if let SourceProducer::Fetch { urls } = &mut source.producer {
+                        for url in urls.iter_mut() {
+                            *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
+                        }
                     }
                 }
+                (
+                    fetch,
+                    ResolvedToolMetadata {
+                        human_readable_version: tag.clone(),
+                        canonical_version: commit_hash.clone(),
+                        metadata_cached: mc,
+                        metadata_fetch_count: 0,
+                        resolved_tag: Some(tag.clone()),
+                        resolved_version: Some(tag),
+                        resolved_vcs_hash: Some(commit_hash),
+                    },
+                )
             }
-            (
-                fetch,
-                ResolvedToolMetadata {
-                    human_readable_version: tag.clone(),
-                    canonical_version: commit_hash.clone(),
-                    metadata_cached: mc,
-                    metadata_fetch_count: 0,
-                    resolved_tag: Some(tag.clone()),
-                    resolved_version: Some(tag),
-                    resolved_vcs_hash: Some(commit_hash),
-                },
-            )
         }
         n if n.eq_ignore_ascii_case("rsgain") => {
-            let (tag, commit_hash, mc) = rsgain::resolve_tag(tracker_ref).await?;
-            let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
-            let mut fetch = rsgain::sources();
-            for source in &mut fetch.sources {
-                if let SourceProducer::Fetch { urls } = &mut source.producer {
-                    for url in urls.iter_mut() {
-                        *url = url
-                            .replace("/latest/download/", &format!("/download/{tag}/"))
-                            .replace("rsgain-latest", &format!("rsgain-{version}"));
+            if let Some(tag) = pinned_tag(version_target) {
+                resolve_pinned_github_tool(
+                    "complexlogic",
+                    "rsgain",
+                    tag,
+                    tracker_ref,
+                    rsgain::sources_for_release,
+                )
+                .await?
+            } else {
+                let (tag, commit_hash, mc) = rsgain::resolve_tag(tracker_ref).await?;
+                let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
+                let mut fetch = rsgain::sources();
+                for source in &mut fetch.sources {
+                    if let SourceProducer::Fetch { urls } = &mut source.producer {
+                        for url in urls.iter_mut() {
+                            *url = url
+                                .replace("/latest/download/", &format!("/download/{tag}/"))
+                                .replace("rsgain-latest", &format!("rsgain-{version}"));
+                        }
                     }
                 }
+                (
+                    fetch,
+                    ResolvedToolMetadata {
+                        human_readable_version: tag.clone(),
+                        canonical_version: commit_hash.clone(),
+                        metadata_cached: mc,
+                        metadata_fetch_count: 0,
+                        resolved_tag: Some(tag.clone()),
+                        resolved_version: Some(tag),
+                        resolved_vcs_hash: Some(commit_hash),
+                    },
+                )
             }
-            (
-                fetch,
-                ResolvedToolMetadata {
-                    human_readable_version: tag.clone(),
-                    canonical_version: commit_hash.clone(),
-                    metadata_cached: mc,
-                    metadata_fetch_count: 0,
-                    resolved_tag: Some(tag.clone()),
-                    resolved_version: Some(tag),
-                    resolved_vcs_hash: Some(commit_hash),
-                },
-            )
         }
         n if n.eq_ignore_ascii_case("media-tagger") => {
             let canonical = crate::global::MEDIAPM_GIT_HASH.to_string();
@@ -489,29 +765,34 @@ pub(crate) async fn resolve_tool_fetch(
             )
         }
         n if n.eq_ignore_ascii_case("sd") => {
-            let (tag, commit_hash, mc) = sd::resolve_tag(tracker_ref).await?;
-            let mut fetch = sd::sources();
-            for source in &mut fetch.sources {
-                if let SourceProducer::Fetch { urls } = &mut source.producer {
-                    for url in urls.iter_mut() {
-                        *url = url
-                            .replace("/latest/download/", &format!("/download/{tag}/"))
-                            .replace("sd-latest", &format!("sd-{tag}"));
+            if let Some(tag) = pinned_tag(version_target) {
+                resolve_pinned_github_tool("chmln", "sd", tag, tracker_ref, sd::sources_for_release)
+                    .await?
+            } else {
+                let (tag, commit_hash, mc) = sd::resolve_tag(tracker_ref).await?;
+                let mut fetch = sd::sources();
+                for source in &mut fetch.sources {
+                    if let SourceProducer::Fetch { urls } = &mut source.producer {
+                        for url in urls.iter_mut() {
+                            *url = url
+                                .replace("/latest/download/", &format!("/download/{tag}/"))
+                                .replace("sd-latest", &format!("sd-{tag}"));
+                        }
                     }
                 }
+                (
+                    fetch,
+                    ResolvedToolMetadata {
+                        human_readable_version: tag.clone(),
+                        canonical_version: commit_hash.clone(),
+                        metadata_cached: mc,
+                        metadata_fetch_count: 0,
+                        resolved_tag: Some(tag.clone()),
+                        resolved_version: Some(tag),
+                        resolved_vcs_hash: Some(commit_hash),
+                    },
+                )
             }
-            (
-                fetch,
-                ResolvedToolMetadata {
-                    human_readable_version: tag.clone(),
-                    canonical_version: commit_hash.clone(),
-                    metadata_cached: mc,
-                    metadata_fetch_count: 0,
-                    resolved_tag: Some(tag.clone()),
-                    resolved_version: Some(tag),
-                    resolved_vcs_hash: Some(commit_hash),
-                },
-            )
         }
         _ => {
             return Err(mediapm_conductor::ConductorError::Workflow(format!(
@@ -522,6 +803,9 @@ pub(crate) async fn resolve_tool_fetch(
     metadata.metadata_fetch_count = tracker_ref.map_or(0, MetadataCacheTracker::lookup_count);
     Ok((fetch, metadata))
 }
+
+#[cfg(test)]
+mod tests_version_targeting;
 
 #[cfg(test)]
 mod tests {
@@ -575,9 +859,13 @@ mod tests {
         cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "import", "sd"] {
-            let result =
-                resolve_tool_fetch(name, Some((&*cache, "default")), RecheckPolicy::default())
-                    .await;
+            let result = resolve_tool_fetch(
+                name,
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await;
             assert!(result.is_ok(), "tool {name}: resolve should succeed");
             let (fetch, metadata) = result.unwrap();
             let canonical = metadata.canonical_version;
@@ -662,7 +950,13 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_tool_fetch_rejects_unknown() {
-        let result = resolve_tool_fetch("no-such-tool", None, RecheckPolicy::default()).await;
+        let result = resolve_tool_fetch(
+            "no-such-tool",
+            &VersionSpec::Latest,
+            None,
+            RecheckPolicy::default(),
+        )
+        .await;
         assert!(result.is_err(), "unknown tool should return error");
     }
 
@@ -695,10 +989,14 @@ mod tests {
         // upstream VCS hash identifies the artifact set). See the why-empty
         // rationale in the ffmpeg provider module doc.
         let (cache, _tmp) = seed_metadata_cache("ffmpeg").await;
-        let (_, metadata) =
-            resolve_tool_fetch("ffmpeg", Some((&*cache, "default")), RecheckPolicy::default())
-                .await
-                .expect("ffmpeg resolve should succeed");
+        let (_, metadata) = resolve_tool_fetch(
+            "ffmpeg",
+            &VersionSpec::Latest,
+            Some((&*cache, "default")),
+            RecheckPolicy::default(),
+        )
+        .await
+        .expect("ffmpeg resolve should succeed");
         assert_eq!(metadata.resolved_tag.as_deref(), Some("autobuild-2025-07-15-12-00"));
         // WHY: no single version identifies the mixed BtbN+evermeet artifact set.
         assert_eq!(metadata.resolved_version, None);
@@ -714,6 +1012,7 @@ mod tests {
         let (cache, _tmp) = seed_metadata_cache("media-tagger").await;
         let (_, metadata) = resolve_tool_fetch(
             "media-tagger",
+            &VersionSpec::Latest,
             Some((&*cache, "default")),
             RecheckPolicy::default(),
         )
@@ -777,10 +1076,14 @@ mod tests {
             ("sd", "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3"),
         ];
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd"] {
-            let (fetch, metadata) =
-                resolve_tool_fetch(name, Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (fetch, metadata) = resolve_tool_fetch(
+                name,
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             let canonical = metadata.canonical_version;
             let expected_canonical = expected_canonicals
                 .iter()
@@ -851,10 +1154,14 @@ mod tests {
         cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         for (tool_name, _, tag, _hash) in &test_data {
-            let (fetch, metadata) =
-                resolve_tool_fetch(tool_name, Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (fetch, metadata) = resolve_tool_fetch(
+                tool_name,
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(fetch.tool_id, *tool_name, "tool_id should match input name");
             // Canonical version is the git hash for GitHub-sourced tools.
@@ -894,10 +1201,14 @@ mod tests {
 
         // Also verify ffmpeg separately (different cache structure, composite canonical).
         {
-            let (fetch, metadata) =
-                resolve_tool_fetch("ffmpeg", Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (fetch, metadata) = resolve_tool_fetch(
+                "ffmpeg",
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(fetch.tool_id, "ffmpeg");
             assert_eq!(
@@ -996,10 +1307,14 @@ mod tests {
 
         // — yt-dlp (tag "2025.07.15", no v-prefix, no filename rewrite) —
         {
-            let (fetch, metadata) =
-                resolve_tool_fetch("yt-dlp", Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (fetch, metadata) = resolve_tool_fetch(
+                "yt-dlp",
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
                 canonical, "y1y2y3y4y5y6y7y8y9y0y1y2y3y4y5y6y7y8y9y0y1y2y3",
@@ -1032,10 +1347,14 @@ mod tests {
 
         // — ffmpeg (composite canonical, BtbN URLs keep /latest/download/, Evermeet unchanged) —
         {
-            let (fetch, metadata) =
-                resolve_tool_fetch("ffmpeg", Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (fetch, metadata) = resolve_tool_fetch(
+                "ffmpeg",
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
                 canonical, "autobuild-2025-07-15-12-00+evermeet-8.1.2",
@@ -1073,10 +1392,14 @@ mod tests {
 
         // — deno (tag "v2.2.12", v-prefixed, no filename rewrite) —
         {
-            let (fetch, metadata) =
-                resolve_tool_fetch("deno", Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (fetch, metadata) = resolve_tool_fetch(
+                "deno",
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
                 canonical, "d1d2d3d4d5d6d7d8d9d0d1d2d3d4d5d6d7d8d9d0d1d2d3",
@@ -1095,24 +1418,37 @@ mod tests {
                 assert_eq!(fetch.sources[1].os, "macos");
                 assert!(urls[0].contains("v2.2.12"), "deno macos URL should contain tag");
                 assert!(
-                    urls[0].ends_with("deno-aarch64-apple-darwin.zip"),
-                    "deno macos primary URL filename mismatch",
+                    urls[0].ends_with(&format!("deno-{}-apple-darwin.zip", host_arch_label())),
+                    "deno macos URL should name the host-arch asset, got {}",
+                    urls[0],
                 );
-                assert_eq!(urls.len(), 2, "deno macos should have 2 URLs");
+                assert_eq!(
+                    urls.len(),
+                    1,
+                    "deno macos should have exactly one host-arch URL, not a cross-arch list"
+                );
             }
             if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
                 assert_eq!(fetch.sources[2].os, "linux");
                 assert!(urls[0].contains("v2.2.12"), "deno linux URL should contain tag");
-                assert_eq!(urls.len(), 2, "deno linux should have 2 URLs");
+                assert_eq!(
+                    urls.len(),
+                    1,
+                    "deno linux should have exactly one host-arch URL, not a cross-arch list"
+                );
             }
         }
 
         // — rsgain (tag "v3.7", path + filename rewrite: rsgain-latest → rsgain-3.7) —
         {
-            let (fetch, metadata) =
-                resolve_tool_fetch("rsgain", Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (fetch, metadata) = resolve_tool_fetch(
+                "rsgain",
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
                 canonical, "r1r2r3r4r5r6r7r8r9r0r1r2r3r4r5r6r7r8r9r0r1r2r3",
@@ -1150,10 +1486,14 @@ mod tests {
 
         // — sd (tag "v1.1.0", path + filename rewrite: sd-latest → sd-v1.1.0) —
         {
-            let (fetch, metadata) =
-                resolve_tool_fetch("sd", Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (fetch, metadata) = resolve_tool_fetch(
+                "sd",
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
                 canonical, "s1s2s3s4s5s6s7s8s9s0s1s2s3s4s5s6s7s8s9s0s1s2s3",
@@ -1171,12 +1511,14 @@ mod tests {
             }
             if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
                 assert_eq!(fetch.sources[1].os, "macos");
+                let expected = format!(
+                    "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-{}-apple-darwin.tar.gz",
+                    host_arch_label()
+                );
                 assert_eq!(
                     urls,
-                    &[
-                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-aarch64-apple-darwin.tar.gz",
-                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-apple-darwin.tar.gz",
-                    ]
+                    &[expected],
+                    "sd macos should have exactly one host-arch URL, not a cross-arch list"
                 );
             }
             if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
@@ -1193,8 +1535,14 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_tool_fetch_media_tagger_canonical_is_git_hash() {
-        let (_, metadata) =
-            resolve_tool_fetch("media-tagger", None, RecheckPolicy::default()).await.unwrap();
+        let (_, metadata) = resolve_tool_fetch(
+            "media-tagger",
+            &VersionSpec::Latest,
+            None,
+            RecheckPolicy::default(),
+        )
+        .await
+        .unwrap();
         let canonical = metadata.canonical_version;
         // MEDIAPM_GIT_HASH is the compile-time constant — it may be empty in some
         // test environments without .git, but it must not panic.
@@ -1247,14 +1595,22 @@ mod tests {
         cache.store_bytes("default", "https://evermeet.cx/ffmpeg/getrelease/zip", b"8.1.2").await;
 
         for tool in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd", "media-tagger"] {
-            let (_, metadata1) =
-                resolve_tool_fetch(tool, Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
-            let (_, metadata2) =
-                resolve_tool_fetch(tool, Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap();
+            let (_, metadata1) = resolve_tool_fetch(
+                tool,
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
+            let (_, metadata2) = resolve_tool_fetch(
+                tool,
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 metadata1.canonical_version, metadata2.canonical_version,
                 "canonical_version for {tool} must be deterministic"
@@ -1301,10 +1657,14 @@ mod tests {
 
         // All managed tools whose provider type is Fetch must have size_hint_bytes.
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain"] {
-            let (fetch, _metadata) =
-                resolve_tool_fetch(name, Some((&*cache, "default")), RecheckPolicy::default())
-                    .await
-                    .unwrap_or_else(|e| panic!("resolve {name}: {e}"));
+            let (fetch, _metadata) = resolve_tool_fetch(
+                name,
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("resolve {name}: {e}"));
             for source in &fetch.sources {
                 assert!(
                     matches!(source.producer, super::SourceProducer::Fetch { .. }),
@@ -1323,6 +1683,7 @@ mod tests {
         {
             let (fetch, _metadata) = resolve_tool_fetch(
                 "media-tagger",
+                &VersionSpec::Latest,
                 Some((&*cache, "default")),
                 RecheckPolicy::default(),
             )

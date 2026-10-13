@@ -240,7 +240,11 @@ async fn provision_entry(
         }
     }
 
-    // Resolve: get source descriptors from the provider.
+    // Resolve: get source descriptors from the provider. The tool's version
+    // target drives resolution: a tag-pinned GitHub tool fetches that
+    // release's assets; a bare vcs_hash/version pin resolves latest and the
+    // validation below still compares.
+    let version_target = VersionSpec::from(&tool_req.version_spec);
     let mut resolved_canonical_version = String::new();
     // Composite canonical version (bare + gated same-step dep segments), kept
     // out of the resolve arm so the no-payload outcome can carry it.
@@ -250,6 +254,7 @@ async fn provision_entry(
     let mut resolved_vcs_hash_value: Option<String> = None;
     let pre_resolved = match provider::resolve_tool_fetch(
         tool_id,
+        &version_target,
         Some((cache, "tool_metadata")),
         recheck_policy,
     )

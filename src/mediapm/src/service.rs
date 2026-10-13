@@ -13,7 +13,7 @@ use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
-use mediapm_conductor::tools::provider::ConfigVersionSpec;
+use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::{Conductor, RuntimeStoragePaths};
 use url::Url;
 
@@ -285,8 +285,12 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
                 .map_err(|e| {
                     MediaPmError::Workflow(format!("failed to open tool download cache: {e}"))
                 })?;
+            // Resolve with the tool's own version target so a tag-pinned
+            // tool's canonical version is compared against the pinned
+            // release, not against whatever is currently latest.
             match crate::tools::provider::resolve_tool_fetch(
                 tool_id,
+                &VersionSpec::from(&desired.unwrap().version_spec),
                 Some((&cache, "tool_metadata")),
                 RecheckPolicy::default(),
             )

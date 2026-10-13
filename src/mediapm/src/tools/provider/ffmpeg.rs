@@ -112,6 +112,8 @@ pub(crate) fn sources() -> ResolvedToolFetch {
         sources: vec![
             ResolvedSource {
                 os: "windows".to_string(),
+                // WHY: BtbN win64 builds are x86_64-only.
+                arch: "x86_64".to_string(),
                 producer: SourceProducer::Fetch {
                     urls: vec![
                         "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl-shared.zip".to_string(),
@@ -123,6 +125,9 @@ pub(crate) fn sources() -> ResolvedToolFetch {
             },
             ResolvedSource {
                 os: "macos".to_string(),
+                // WHY: the macOS leg's upstream builds Intel-only binaries;
+                // Apple Silicon hosts run them under Rosetta.
+                arch: "x86_64".to_string(),
                 producer: SourceProducer::Fetch {
                     urls: vec![
                         "https://evermeet.cx/ffmpeg/getrelease/zip".to_string(),
@@ -133,6 +138,8 @@ pub(crate) fn sources() -> ResolvedToolFetch {
             },
             ResolvedSource {
                 os: "linux".to_string(),
+                // WHY: BtbN linux64 builds are x86_64-only.
+                arch: "x86_64".to_string(),
                 producer: SourceProducer::Fetch {
                     urls: vec![
                         "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl-shared.tar.xz".to_string(),

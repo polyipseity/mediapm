@@ -457,6 +457,7 @@ mod tests {
     use mediapm_conductor::cache::CacheDomainConfig;
     use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
     use mediapm_conductor::cache_user_level::UserLevelCache;
+    use mediapm_conductor::tools::provider::{VersionSpec, host_arch_label};
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -509,6 +510,7 @@ mod tests {
         // verify that resolve_tool_fetch rejects unknown tools.
         let resolve_result = crate::tools::provider::resolve_tool_fetch(
             "nonexistent-tool",
+            &VersionSpec::Latest,
             Some((&*cache, "tool_metadata")),
             RecheckPolicy::default(),
         )
@@ -541,6 +543,7 @@ mod tests {
         let tracker = RecordingProgressTracker::new();
         let (fetch, metadata) = crate::tools::provider::resolve_tool_fetch(
             "media-tagger",
+            &VersionSpec::Latest,
             Some((&*cache, "tool_metadata")),
             RecheckPolicy::default(),
         )
@@ -648,6 +651,7 @@ mod tests {
         // Resolve normally — metadata cache returns the pre-seeded tag.
         let (mut fetch, metadata) = crate::tools::provider::resolve_tool_fetch(
             "yt-dlp",
+            &VersionSpec::Latest,
             Some((&*cache, "tool_metadata")),
             RecheckPolicy::default(),
         )
@@ -1244,6 +1248,7 @@ mod tests {
             sources: vec![
                 ResolvedSource {
                     os: "linux".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::Fetch {
                         urls: vec!["https://example.com/ffmpeg-linux.zip".to_string()],
                     },
@@ -1252,6 +1257,7 @@ mod tests {
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::Fetch {
                         urls: vec!["https://example.com/ffmpeg-macos.zip".to_string()],
                     },
@@ -1260,6 +1266,7 @@ mod tests {
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::Fetch {
                         urls: vec!["https://example.com/ffmpeg-windows.zip".to_string()],
                     },
@@ -1283,6 +1290,7 @@ mod tests {
             sources: vec![
                 ResolvedSource {
                     os: "linux".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::Fetch {
                         urls: vec!["https://example.com/tool-linux.zip".to_string()],
                     },
@@ -1291,6 +1299,7 @@ mod tests {
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::Fetch {
                         urls: vec!["https://example.com/tool-macos".to_string()],
                     },
@@ -1299,6 +1308,7 @@ mod tests {
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
+                    arch: host_arch_label(),
                     producer: SourceProducer::launcher("test"),
                     expected_size: None,
                     size_hint_bytes: None,

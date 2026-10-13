@@ -13,7 +13,9 @@
 //! tagged release; its identity is the mediapm build (`resolved_version` =
 //! crate version, `resolved_vcs_hash` = mediapm git hash).
 
-use mediapm_conductor::tools::provider::{ResolvedSource, ResolvedToolFetch, SourceProducer};
+use mediapm_conductor::tools::provider::{
+    ResolvedSource, ResolvedToolFetch, SourceProducer, host_arch_label,
+};
 
 /// Returns per-OS `GenerateLauncher` sources for the media-tagger builtin.
 #[must_use]
@@ -23,18 +25,24 @@ pub(crate) fn sources() -> ResolvedToolFetch {
         sources: vec![
             ResolvedSource {
                 os: "windows".to_string(),
+                // Launcher scripts are arch-independent; they label the host arch.
+                arch: host_arch_label(),
                 producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
             },
             ResolvedSource {
                 os: "macos".to_string(),
+                // Launcher scripts are arch-independent; they label the host arch.
+                arch: host_arch_label(),
                 producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
             },
             ResolvedSource {
                 os: "linux".to_string(),
+                // Launcher scripts are arch-independent; they label the host arch.
+                arch: host_arch_label(),
                 producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
