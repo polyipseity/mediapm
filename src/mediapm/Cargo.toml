@@ -72,4 +72,5 @@ build-utils = { path = "../../scripts/build-utils" }
 indicatif = { workspace = true, features = ["in_memory"] }
 proptest.workspace = true
 same-file.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 wiremock = "0.6"

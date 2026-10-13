@@ -10,6 +10,7 @@
 /// 7. Save the generated document
 pub(crate) mod external_data;
 pub(crate) mod lifecycle;
+mod pool;
 pub(crate) mod provision;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
