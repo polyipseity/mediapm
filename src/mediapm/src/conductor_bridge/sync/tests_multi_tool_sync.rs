@@ -1,6 +1,7 @@
 //! One reconcile pass over a seeded two-tool cache: per-tool bars and repeat-run determinism.
 
 use crate::config::ToolRequirement;
+use crate::example_isolation::lock_process_env;
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -67,7 +68,12 @@ async fn seed_two_tool_cache(cache_root: &std::path::Path) {
 /// `MediaPmState` defeats both skip checks), so each produces exactly
 /// 3 bars: `[res]`, `[fch]`, `[pro]`. The overall bar adds 1.
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+)]
 async fn sync_multi_tool_per_tool_bars_are_order_independent() {
+    let _env = lock_process_env();
     let tmp = mediapm_utils::temp::artifact_dir().unwrap();
     let cache_root_tmp = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
@@ -193,7 +199,12 @@ async fn sync_multi_tool_per_tool_bars_are_order_independent() {
 /// generates its launcher offline. Both take the `Resolved` path, so each
 /// produces a `[res]`, a `[fch]` and a `[pro]` bar.
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+)]
 async fn per_tool_phase_bars_carry_the_version_between_the_tool_and_the_phase() {
+    let _env = lock_process_env();
     let tmp = mediapm_utils::temp::artifact_dir().unwrap();
     let cache_root_tmp = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
@@ -295,10 +306,15 @@ async fn per_tool_phase_bars_carry_the_version_between_the_tool_and_the_phase() 
 /// produce identical generated-document bytes and bar-operation multisets.
 #[tokio::test]
 #[expect(
+    clippy::await_holding_lock,
+    reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+)]
+#[expect(
     clippy::too_many_lines,
     reason = "the determinism contract is the comparison itself: both runs, the document-byte equality, and the bar-multiset equality must stay visible together so a future edit cannot quietly compare only one of the two artifacts"
 )]
 async fn sync_parallel_fetch_is_deterministic() {
+    let _env = lock_process_env();
     let tmp1 = mediapm_utils::temp::artifact_dir().unwrap();
     let tmp2 = mediapm_utils::temp::artifact_dir().unwrap();
     let cache1 = mediapm_utils::temp::cache_dir().unwrap();

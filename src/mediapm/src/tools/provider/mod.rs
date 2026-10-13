@@ -810,13 +810,19 @@ mod tests_version_targeting;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::example_isolation::lock_process_env;
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     #[expect(
         clippy::too_many_lines,
         reason = "integration-style test seeds six tools' metadata caches and asserts each route"
     )]
     async fn resolve_tool_fetch_routes_all_tools() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
@@ -949,7 +955,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_tool_fetch_rejects_unknown() {
+        let _env = lock_process_env();
         let result = resolve_tool_fetch(
             "no-such-tool",
             &VersionSpec::Latest,
@@ -983,7 +994,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_tool_fetch_ffmpeg_leaves_version_and_vcs_hash_none() {
+        let _env = lock_process_env();
         // Regression: ffmpeg's resolved_version and resolved_vcs_hash must stay
         // None by design (mixed BtbN + evermeet sources; no single version or
         // upstream VCS hash identifies the artifact set). See the why-empty
@@ -1005,7 +1021,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_tool_fetch_media_tagger_leaves_tag_none() {
+        let _env = lock_process_env();
         // Regression: media-tagger's resolved_tag must stay None by design
         // (builtin launcher shipped inside mediapm; no upstream tag exists).
         // resolved_version and resolved_vcs_hash identify the mediapm build.
@@ -1025,7 +1046,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_tool_fetch_each_fetched_tool_has_three_os_entries() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
@@ -1103,10 +1129,15 @@ mod tests {
 
     #[tokio::test]
     #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
+    #[expect(
         clippy::too_many_lines,
         reason = "integration-style test seeds metadata caches and asserts concrete URLs for all tools"
     )]
     async fn resolve_tool_fetch_with_metadata_cache_produces_concrete_urls() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
@@ -1233,7 +1264,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_latest_github_tag_round_trip() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
@@ -1261,10 +1297,15 @@ mod tests {
 
     #[tokio::test]
     #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
+    #[expect(
         clippy::too_many_lines,
         reason = "integration-style test resolves and asserts exact URLs for all managed tools"
     )]
     async fn resolve_tool_fetch_exact_urls_after_resolution() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
@@ -1534,7 +1575,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_tool_fetch_media_tagger_canonical_is_git_hash() {
+        let _env = lock_process_env();
         let (_, metadata) = resolve_tool_fetch(
             "media-tagger",
             &VersionSpec::Latest,
@@ -1557,7 +1603,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_canonical_version_is_deterministic() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache = ToolDownloadCache::open(temp_dir.path(), "metadata.json", 3600).await.unwrap();
 
@@ -1619,7 +1670,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn all_fetch_providers_have_size_hint_bytes() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
@@ -1699,7 +1755,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_latest_github_tag_fallthrough_on_stale_latest() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
@@ -1755,7 +1816,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_latest_github_tag_returns_tag_and_hash() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();

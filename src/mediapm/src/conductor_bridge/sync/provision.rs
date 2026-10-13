@@ -462,6 +462,8 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use crate::example_isolation::lock_process_env;
+
     use super::*;
 
     /// Builds a `ResolvedToolMetadata` for tests where resolved fields are
@@ -484,7 +486,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn fetch_and_import_rejects_unknown_tool() {
+        let _env = lock_process_env();
         let _cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
@@ -519,7 +526,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn fetch_and_import_generate_launcher_succeeds() {
+        let _env = lock_process_env();
         let cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
@@ -595,7 +607,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn fetch_and_import_ytdlp_full_pipeline() {
+        let _env = lock_process_env();
         // Full 3-phase pipeline (resolve → fetch → process) for a tool
         // with URL-based Fetch sources. Uses wiremock to serve download
         // payloads and pre-seeds the metadata cache for tag resolution.

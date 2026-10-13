@@ -8,6 +8,10 @@
 //! rolling ffmpeg legs is refused with the retention reason instead of
 //! silently fetching the wrong bytes.
 //!
+//! The pure matcher tests at the bottom pin the per-tool asset selection
+//! itself (exact-name for yt-dlp/deno, version-embedded suffix for
+//! rsgain/sd) against synthetic asset lists, with no HTTP at all.
+//!
 //! HTTP is served by a local `wiremock` server through the
 //! `MEDIAPM_GITHUB_API_BASE` test seam (read per call, never a `OnceLock`),
 //! so no test touches the real network. The seam is process-global, so every
@@ -163,28 +167,44 @@ async fn exact_tag_missing_asset_names_the_unfilled_slot() {
     assert!(message.contains("macos"), "error names the unfilled OS slot: {message}");
 }
 
-/// Pinning ffmpeg is refused outright because every ffmpeg leg resolves from
-/// `BtbN`'s single rolling release, whose assets are replaced on every build —
-/// a pin resolved against `latest` would fetch bytes other than the ones it
-/// names. The refusal happens at resolve, before any HTTP.
+/// Pinning ffmpeg is refused outright, in every `Exact` flavor, because every
+/// ffmpeg leg resolves from `BtbN`'s single rolling release, whose assets are
+/// replaced on every build — a pin resolved against `latest` would fetch bytes
+/// other than the ones it names. The refusal happens at resolve, before any
+/// HTTP, so all three flavors assert the same retention reason hermetically.
 #[tokio::test]
 async fn btbn_pinned_ffmpeg_is_refused_with_the_retention_reason() {
-    let result = resolve_tool_fetch(
-        "ffmpeg",
-        &exact_tag("autobuild-2025-07-15-12-00"),
-        None,
-        RecheckPolicy::UseCached,
-    )
-    .await;
+    let pinned_flavors = [
+        ("tag", exact_tag("autobuild-2025-07-15-12-00")),
+        (
+            "version",
+            VersionSpec::Exact(VersionSpecFields {
+                vcs_hash: None,
+                version: Some("7.1.1".to_string()),
+                tag: None,
+            }),
+        ),
+        (
+            "vcs_hash",
+            VersionSpec::Exact(VersionSpecFields {
+                vcs_hash: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                version: None,
+                tag: None,
+            }),
+        ),
+    ];
+    for (flavor, target) in &pinned_flavors {
+        let result = resolve_tool_fetch("ffmpeg", target, None, RecheckPolicy::UseCached).await;
 
-    let Err(error) = result else {
-        panic!("a pinned ffmpeg resolve must fail");
-    };
-    let message = error.to_string();
-    assert!(
-        message.contains("BtbN does not retain historical builds"),
-        "refusal states the retention reason: {message}"
-    );
+        let Err(error) = result else {
+            panic!("a pinned ffmpeg resolve must fail for the {flavor} flavor");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("BtbN does not retain historical builds"),
+            "{flavor} pin refusal states the retention reason: {message}"
+        );
+    }
 }
 
 /// Deno's per-OS slots carry exactly one candidate each — never a
@@ -235,4 +255,165 @@ fn sd_sources_select_one_host_arch_candidate_per_os() {
         );
         assert_eq!(source.arch, expected_arch, "source arch label matches the asset");
     }
+}
+
+/// The exact-name matchers (yt-dlp and deno) select a platform slot's asset
+/// by exact name — a prefix-sharing decoy in the release must never be
+/// selected — and the pinned URL embeds the matched name under
+/// `releases/download/{tag}/`, so the fetch addresses the asset the matcher
+/// actually chose.
+#[test]
+fn exact_name_matchers_pin_the_matched_asset_url() {
+    let tag = "2025.07.15";
+
+    // yt-dlp: exact names, plus a prefix-sharing decoy that must not match.
+    let assets: Vec<String> = ["yt-dlp.exe", "yt-dlp_macos", "yt-dlp_linux", "yt-dlp_macos_arm64"]
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let fetch = yt_dlp::sources_for_release(tag, &assets).expect("all three slots match");
+    for (os, expected) in
+        [("windows", "yt-dlp.exe"), ("macos", "yt-dlp_macos"), ("linux", "yt-dlp_linux")]
+    {
+        let source = fetch.sources.iter().find(|s| s.os == os).expect("os slot present");
+        let SourceProducer::Fetch { urls } = &source.producer else {
+            panic!("{os} slot must be a fetch source");
+        };
+        assert_eq!(urls.len(), 1, "{os} slot carries one candidate");
+        assert!(
+            urls[0].ends_with(&format!("/releases/download/{tag}/{expected}")),
+            "{os} slot must pin the exact {expected} asset, got {}",
+            urls[0]
+        );
+    }
+
+    // deno: same exact-name shape; the macOS/Linux names follow the host
+    // arch, and the decoy is the *other* arch so it is wrong on every host.
+    let host = host_arch_label();
+    let other_arch = if host == "x86_64" { "aarch64" } else { "x86_64" };
+    let assets: Vec<String> = vec![
+        "deno-x86_64-pc-windows-msvc.zip".to_string(),
+        format!("deno-{host}-apple-darwin.zip"),
+        format!("deno-{host}-unknown-linux-gnu.zip"),
+        format!("deno-{other_arch}-apple-darwin.zip"),
+    ];
+    let fetch = deno::sources_for_release(tag, &assets).expect("all three slots match");
+    for (os, expected) in [
+        ("windows", "deno-x86_64-pc-windows-msvc.zip".to_string()),
+        ("macos", format!("deno-{host}-apple-darwin.zip")),
+        ("linux", format!("deno-{host}-unknown-linux-gnu.zip")),
+    ] {
+        let source = fetch.sources.iter().find(|s| s.os == os).expect("os slot present");
+        let SourceProducer::Fetch { urls } = &source.producer else {
+            panic!("{os} slot must be a fetch source");
+        };
+        assert!(
+            urls[0].ends_with(&format!("/releases/download/{tag}/{expected}")),
+            "{os} slot must pin the exact {expected} asset, got {}",
+            urls[0]
+        );
+    }
+}
+
+/// The rsgain matcher selects each slot's asset by `rsgain-*{suffix}` (the
+/// version-embedded name), ignoring prefix- and suffix-adjacent decoys, and
+/// the pinned URL embeds the matched name. A release whose assets carry only
+/// wrong suffixes refuses naming the tool, the tag, the missing pattern, and
+/// the OS slot.
+#[test]
+fn rsgain_suffix_matcher_pins_the_versioned_asset_and_names_a_miss() {
+    let tag = "v3.7";
+    let assets: Vec<String> = [
+        "rsgain-3.7-win64.zip",
+        "rsgain-3.7-macOS-x86_64.zip",
+        "rsgain-3.7-Linux.tar.xz",
+        // Decoys: a checksum sibling and a wrong-suffix name must not match.
+        "rsgain-3.7-win64.zip.sha256",
+        "rsgain-3.7-win32.zip",
+    ]
+    .iter()
+    .map(|name| (*name).to_string())
+    .collect();
+    let fetch = rsgain::sources_for_release(tag, &assets).expect("all three slots match");
+    for (os, expected) in [
+        ("windows", "rsgain-3.7-win64.zip"),
+        ("macos", "rsgain-3.7-macOS-x86_64.zip"),
+        ("linux", "rsgain-3.7-Linux.tar.xz"),
+    ] {
+        let source = fetch.sources.iter().find(|s| s.os == os).expect("os slot present");
+        let SourceProducer::Fetch { urls } = &source.producer else {
+            panic!("{os} slot must be a fetch source");
+        };
+        assert!(
+            urls[0].ends_with(&format!("/releases/download/{tag}/{expected}")),
+            "{os} slot must pin the matched {expected} asset, got {}",
+            urls[0]
+        );
+    }
+
+    // Wrong-suffix-only list: the windows slot finds nothing and refuses.
+    let miss: Vec<String> =
+        ["rsgain-3.7-win32.zip", "rsgain-3.7-macOS-arm64.zip", "rsgain-3.7-Debian.tar.xz"]
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+    let Err(error) = rsgain::sources_for_release(tag, &miss) else {
+        panic!("a release with no -win64.zip asset must refuse the windows slot");
+    };
+    let message = error.to_string();
+    assert!(message.contains("rsgain"), "error names the tool: {message}");
+    assert!(message.contains(tag), "error names the tag: {message}");
+    assert!(message.contains("rsgain-*-win64.zip"), "error names the missing pattern: {message}");
+    assert!(message.contains("windows"), "error names the OS slot: {message}");
+}
+
+/// The sd matcher selects each slot's asset by `sd-*{suffix}` (the
+/// version-embedded name), ignoring a wrong-suffix decoy, and the pinned URL
+/// embeds the matched name. A release whose assets carry only wrong suffixes
+/// refuses naming the tool, the tag, the missing pattern, and the OS slot.
+#[test]
+fn sd_suffix_matcher_pins_the_versioned_asset_and_names_a_miss() {
+    let tag = "v1.1.0";
+    let host = host_arch_label();
+    let assets: Vec<String> = vec![
+        "sd-v1.1.0-x86_64-pc-windows-msvc.zip".to_string(),
+        format!("sd-v1.1.0-{host}-apple-darwin.tar.gz"),
+        "sd-v1.1.0-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+        // Decoy: same tag, wrong suffix — must not match any slot.
+        "sd-v1.1.0-win64.zip".to_string(),
+    ];
+    let fetch = sd::sources_for_release(tag, &assets).expect("all three slots match");
+    for (os, expected) in [
+        ("windows", "sd-v1.1.0-x86_64-pc-windows-msvc.zip".to_string()),
+        ("macos", format!("sd-v1.1.0-{host}-apple-darwin.tar.gz")),
+        ("linux", "sd-v1.1.0-x86_64-unknown-linux-gnu.tar.gz".to_string()),
+    ] {
+        let source = fetch.sources.iter().find(|s| s.os == os).expect("os slot present");
+        let SourceProducer::Fetch { urls } = &source.producer else {
+            panic!("{os} slot must be a fetch source");
+        };
+        assert!(
+            urls[0].ends_with(&format!("/releases/download/{tag}/{expected}")),
+            "{os} slot must pin the matched {expected} asset, got {}",
+            urls[0]
+        );
+    }
+
+    // Wrong-suffix-only list: the windows slot finds nothing and refuses.
+    let miss: Vec<String> =
+        ["sd-v1.1.0-win64.zip", "sd-v1.1.0-macOS.tar.gz", "sd-v1.1.0-linux.tar.gz"]
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+    let Err(error) = sd::sources_for_release(tag, &miss) else {
+        panic!("a release with no windows-msvc asset must refuse the windows slot");
+    };
+    let message = error.to_string();
+    assert!(message.contains("sd"), "error names the tool: {message}");
+    assert!(message.contains(tag), "error names the tag: {message}");
+    assert!(
+        message.contains("sd-*-x86_64-pc-windows-msvc.zip"),
+        "error names the missing pattern: {message}"
+    );
+    assert!(message.contains("windows"), "error names the OS slot: {message}");
 }
