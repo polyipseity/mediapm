@@ -951,6 +951,363 @@ mod tests {
         assert!(ffmpeg_instance.outputs.contains_key("primary"));
     }
 
+    /// Domain separator the documented instance-key spec fixes for the v2 key
+    /// scheme.
+    ///
+    /// Re-declared here instead of imported: the production constant is
+    /// `pub(crate)` inside `mediapm-conductor`, and this oracle exists to pin the
+    /// documented value, so a changed domain string must fail the oracle rather
+    /// than move both sides together.
+    const ORACLE_INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2";
+
+    /// Returns whether a raw binding source is deterministic, per the documented
+    /// spec: a source naming `${env.`, `context.os`, `:file(`, or `:folder(`
+    /// resolves from the host rather than from the recorded inputs, so it stays
+    /// out of the instance key.
+    ///
+    /// Deliberately a second implementation of the rule rather than a call to
+    /// `is_deterministic_binding_source`: a filter that moves with production
+    /// cannot detect production being wrong about which bindings are key material.
+    fn oracle_is_deterministic_binding(raw_source: &str) -> bool {
+        !(raw_source.contains("${env.")
+            || raw_source.contains("context.os")
+            || raw_source.contains(":file(")
+            || raw_source.contains(":folder("))
+    }
+
+    /// Pins the oracle's restatement of the determinism rule against the spec.
+    ///
+    /// No binding source on the demo path carries any of the four markers, so
+    /// without this an `oracle_is_deterministic_binding` that always returned `true`
+    /// would still pass the fixture test — the rule would be restated but never
+    /// exercised false. Each marker must make a source host-dependent, whether it
+    /// stands alone or sits inside a longer source; a plain literal must not, and
+    /// neither must a source that merely *looks* templated: the rule is a substring
+    /// scan for those four markers, so an unrelated `${` interpolation and the bare
+    /// word `folder` both stay deterministic.
+    #[test]
+    fn oracle_is_deterministic_binding_refuses_each_host_marker() {
+        let cases = [
+            ("${env.HOME}", false),
+            ("--flag ${env.MY_VAR} --other", false),
+            ("context.os", false),
+            (r#"${context.os == "macos" ? "a" : "b"}"#, false),
+            (":file(", false),
+            ("${inputs.payload:file(payload.txt)}", false),
+            (":folder(", false),
+            ("${inputs.folder:folder(dir)}", false),
+            ("mp4", true),
+            ("", true),
+            ("${step_output.step-0-0-import.video_untagged}", true),
+            ("my-folder-name", true),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(
+                oracle_is_deterministic_binding(source),
+                expected,
+                "source {source:?} must be classified as deterministic={expected}",
+            );
+        }
+    }
+
+    /// Recomposes one step's deterministic binding hashes from the spec: each
+    /// deterministic binding contributes `composite(name bytes, resolved value
+    /// bytes)`, walked in `BTreeMap` order (sorted by name).
+    ///
+    /// This is the composition the oracle exists to check, so it is written out
+    /// here instead of calling `instance_key_hash_from_resolved_value_bytes` or
+    /// `deterministic_input_hashes_from_resolved_value_bytes`. Contrast
+    /// `arg_hashes` in `mediapm-conductor`'s `step_worker/cache.rs`, which
+    /// deliberately *does* call the production composition because its job is to
+    /// guard that helper. Different purpose, opposite rule: do not "de-duplicate"
+    /// this against production, because a test that calls the code under test
+    /// cannot detect that code being wrong.
+    fn oracle_binding_hashes(
+        merged_bindings: &BTreeMap<String, String>,
+        resolved_values: &BTreeMap<String, Vec<u8>>,
+    ) -> Vec<Hash> {
+        let mut hashes = Vec::new();
+        for (name, raw_source) in merged_bindings {
+            let Some(value_bytes) = resolved_values.get(name) else {
+                continue;
+            };
+            if !oracle_is_deterministic_binding(raw_source) {
+                continue;
+            }
+            hashes.push(Hash::composite(&[
+                Hash::from_content(name.as_bytes()),
+                Hash::from_content(value_bytes),
+            ]));
+        }
+        hashes
+    }
+
+    /// Recomputes one recorded instance's key from the spec.
+    ///
+    /// Components, in order: the versioned domain separator, the unified
+    /// tools-catalog key, `executed_at` only when the instance is impure, the
+    /// deterministic binding hashes, and the instance's materialized-input hashes
+    /// in `BTreeMap` order. The deterministic environment term is empty on the
+    /// mediapm path, which passes no env hashes at all.
+    ///
+    /// Written out here rather than delegating to `derive_instance_key_v2` (or its
+    /// `derive_tool_call_instance_key` re-export), for the reason given on
+    /// [`Self::oracle_binding_hashes`].
+    fn oracle_instance_key(instance: &ToolCallInstance, binding_hashes: &[Hash]) -> Hash {
+        let mut parts = Vec::new();
+        parts.push(Hash::from_content(ORACLE_INSTANCE_KEY_DOMAIN_V2.as_bytes()));
+        parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
+        if instance.impure {
+            parts.push(Hash::from_content(&instance.executed_at.as_unix_nanos().to_le_bytes()));
+        }
+        parts.extend_from_slice(binding_hashes);
+        parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
+        Hash::composite(&parts)
+    }
+
+    /// Independently derives every demo workflow step's instance key and pairs it
+    /// with the recorded instance that key owns.
+    ///
+    /// *Resolution* comes from the production helpers — which hash a binding
+    /// points at, and which bytes a binding resolves to — because resolution is
+    /// not what this oracle checks. *Composition* comes from
+    /// [`Self::oracle_binding_hashes`] and [`Self::oracle_instance_key`], which are
+    /// this oracle's own implementation of the documented spec. The forbidden
+    /// production calls are `instance_key_hash_from_resolved_value_bytes`,
+    /// `deterministic_input_hashes_from_resolved_inputs`,
+    /// `deterministic_input_hashes_from_resolved_value_bytes`, and
+    /// `derive_instance_key_v2`; see [`Self::oracle_binding_hashes`] for why.
+    ///
+    /// Steps are walked in the workflow's declared (dependency) order, so each
+    /// step's hash-reference bindings see the outputs recorded for the steps
+    /// before it. Returns `(step_id, tool_call_id, key)` per step, or a diagnostic
+    /// naming the step, its tool, and every recorded candidate key.
+    ///
+    /// Two checks do the enforcing, and only two. A step that derives no recorded
+    /// key — what a stale fixture key produces — returns that diagnostic instead of
+    /// re-deriving a key the fixture does not hold, and the closing count check
+    /// rejects a run in which a recorded instance pairs with no step. The candidate
+    /// slice is additionally required to hold exactly one entry, but that branch is
+    /// defensive rather than reachable against this fixture: candidacy requires
+    /// `derived == *stored_key` against the unique keys of a `BTreeMap`, so at most
+    /// one entry can ever match and only the zero case can fire.
+    async fn oracle_derive_demo_instance_keys(
+        cas: &FileSystemCas,
+        generated: &NickelDocument,
+        state: &ConductorState,
+        workflow: &mediapm_conductor::WorkflowSpec,
+    ) -> Result<Vec<(String, String, Hash)>, String> {
+        let mut step_outputs = StepOutputHashes::new();
+        let mut claimed: BTreeSet<Hash> = BTreeSet::new();
+        let mut paired = Vec::new();
+
+        for step in &workflow.steps {
+            let tool_call_id = find_active_tool_spec(generated, &step.tool)
+                .map(|(key, _)| key.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "step '{}' references unknown tool '{}' in the generated document",
+                        step.id, step.tool,
+                    )
+                })?;
+            let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
+                .map_err(|error| {
+                    format!("step '{}': merging step inputs failed: {error}", step.id)
+                })?;
+            let Some(expected_inputs) =
+                resolve_expected_input_hashes(cas, generated, &merged, &step_outputs)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "step '{}': resolving expected input hashes failed: {error}",
+                            step.id,
+                        )
+                    })?
+            else {
+                return Err(format!(
+                    "step '{}': no recorded predecessor supplies its hash-backed inputs",
+                    step.id,
+                ));
+            };
+            let resolved_values =
+                build_instance_key_resolved_value_bytes(cas, &merged, &expected_inputs)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "step '{}': resolving instance-key value bytes failed: {error}",
+                            step.id,
+                        )
+                    })?;
+            let binding_hashes = oracle_binding_hashes(&merged, &resolved_values);
+
+            let mut candidates = Vec::new();
+            let mut diagnostics = Vec::new();
+            for (stored_key, instance) in &state.tool_call_instances {
+                if instance.tool_call_id != tool_call_id || claimed.contains(stored_key) {
+                    continue;
+                }
+                let derived = oracle_instance_key(instance, &binding_hashes);
+                diagnostics.push(format!("{} -> {}", stored_key.to_hex(), derived.to_hex()));
+                if derived == *stored_key {
+                    candidates.push((stored_key, instance));
+                }
+            }
+            if candidates.len() != 1 {
+                return Err(format!(
+                    "step '{}' (tool '{tool_call_id}') pairs with {} recorded instance(s), \
+                     expected exactly one; recorded -> independently derived: {diagnostics:?}",
+                    step.id,
+                    candidates.len(),
+                ));
+            }
+            let (stored_key, instance) = candidates[0];
+            if instance.instance_key != *stored_key {
+                return Err(format!(
+                    "step '{}' (tool '{tool_call_id}') is recorded under key {} but the instance \
+                     body carries instance_key {}",
+                    step.id,
+                    stored_key.to_hex(),
+                    instance.instance_key.to_hex(),
+                ));
+            }
+            claimed.insert(*stored_key);
+            paired.push((step.id.clone(), tool_call_id, *stored_key));
+            step_outputs
+                .insert(step.id.clone(), output_hashes_from_instance(instance, &step.outputs));
+        }
+
+        if claimed.len() != state.tool_call_instances.len() {
+            let unpaired = state
+                .tool_call_instances
+                .keys()
+                .filter(|key| !claimed.contains(key))
+                .map(Hash::to_hex)
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "{} recorded instance(s) pair with no workflow step: {unpaired:?}",
+                unpaired.len(),
+            ));
+        }
+
+        Ok(paired)
+    }
+
+    /// The fixture's recorded instance keys are checked against an independent
+    /// oracle: every demo workflow step's key is recomputed from the fixture's own
+    /// inputs by the documented spec, with the oracle's own composition of the
+    /// binding hashes and the instance-key components.
+    ///
+    /// This is the second implementation the fixture needs.
+    /// `demo_workflow_step_outputs_include_ffmpeg_and_apply` and
+    /// `demo_ffmpeg_instance_matches_step_inputs` derive keys through the
+    /// production path and compare them with the fixture, so they catch a *future*
+    /// derivation change but cannot catch a *wrong* derivation: both sides move
+    /// together. Task 1 changed the instance-key material and re-derived this
+    /// fixture's five keys with that same production path, which cost the fixture
+    /// its independence for exactly those keys; this test buys it back.
+    ///
+    /// The oracle must not call the production key helpers, and it must stay that
+    /// way; see [`Self::oracle_binding_hashes`]. It does use production
+    /// *resolution* helpers — `find_active_tool_spec`,
+    /// `merge_step_inputs_with_tool_defaults`, `resolve_expected_input_hashes`,
+    /// `build_instance_key_resolved_value_bytes`, and
+    /// `output_hashes_from_instance` — because resolution is not in question here.
+    ///
+    /// A deliberate change to the instance-key spec — the domain constant, the
+    /// component order, or the name term of a binding hash — has to update this
+    /// oracle by hand in the same commit that updates the production helper. That
+    /// friction is the point: it turns a silent spec change, whose fixture
+    /// regeneration the production path would have made self-consistent, into a
+    /// reviewable one.
+    ///
+    /// A live demo run remains the only way to re-record the fixture's *inputs*:
+    /// the commands, inputs, outputs, and timestamps a real sync captured. Task 1
+    /// changed only the key each input derives, never the inputs themselves, which
+    /// is why an oracle over the recorded inputs is enough to validate the keys.
+    #[tokio::test]
+    async fn demo_fixture_instance_keys_match_independent_spec_oracle() {
+        let generated = load_generated_doc();
+        let state = load_conductor_state();
+        let workflow = generated
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
+            .expect("demo workflow");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let paired = oracle_derive_demo_instance_keys(&cas, &generated, &state, workflow)
+            .await
+            .expect("every recorded key must be the key the spec derives");
+
+        assert_eq!(
+            paired.len(),
+            workflow.steps.len(),
+            "every demo workflow step must pair with a recorded instance: {paired:?}",
+        );
+        assert!(
+            paired.iter().any(|(_, tool_call_id, _)| tool_call_id == "import@v1"),
+            "the oracle must cover the import@v1 instance: {paired:?}",
+        );
+        for (step_id, tool_call_id, key) in &paired {
+            let instance = state.tool_call_instances.get(key).unwrap_or_else(|| {
+                panic!(
+                    "step '{step_id}' ({tool_call_id}) derives key {} that the fixture does not \
+                     record",
+                    key.to_hex(),
+                )
+            });
+            assert_eq!(
+                instance.tool_call_id,
+                *tool_call_id,
+                "step '{step_id}' derives key {} but the fixture records tool '{}' under it",
+                key.to_hex(),
+                instance.tool_call_id,
+            );
+        }
+    }
+
+    /// Proves the oracle is sensitive to a stale key rather than merely restating
+    /// what the fixture says: re-keying one recorded instance in a copy of the
+    /// loaded fixture makes the oracle refuse to pair that instance's step, naming
+    /// the step, the tool, and the recorded candidate key.
+    ///
+    /// The perturbation is in memory, so the checked-in fixture keeps its exact
+    /// bytes.
+    #[tokio::test]
+    async fn demo_fixture_instance_key_oracle_rejects_a_stale_key() {
+        let generated = load_generated_doc();
+        let mut state = load_conductor_state();
+        let workflow = generated
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
+            .expect("demo workflow");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let import_key = state
+            .tool_call_instances
+            .iter()
+            .find(|(_, instance)| instance.tool_call_id == "import@v1")
+            .map(|(key, _)| *key)
+            .expect("recorded import instance");
+        let import_instance =
+            state.tool_call_instances.remove(&import_key).expect("recorded import instance");
+        let stale_key = Hash::from_content(b"task-6-oracle-stale-key-perturbation");
+        assert_ne!(stale_key, import_key, "the perturbation must move the key");
+        state.tool_call_instances.insert(stale_key, import_instance);
+
+        let error = oracle_derive_demo_instance_keys(&cas, &generated, &state, workflow)
+            .await
+            .expect_err("a re-keyed instance must fail the oracle");
+        assert!(
+            error.contains("step-0-0-import-video_untagged-to-video_untagged"),
+            "the diagnostic must name the step: {error}",
+        );
+        assert!(error.contains("import@v1"), "the diagnostic must name the tool: {error}");
+    }
+
     /// Argument hashes as the derivation produced them *before* the input name
     /// became key material: the resolved value bytes alone, with
     /// non-deterministic bindings dropped.
