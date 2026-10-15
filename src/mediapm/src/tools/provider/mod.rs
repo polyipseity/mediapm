@@ -714,7 +714,8 @@ pub(crate) async fn resolve_tool_fetch(
             )
             .await;
             let canonical_version = format!("{autobuild_tag}+{macos_leg}");
-            let fetch = ffmpeg::sources(version_target, jellyfin.as_ref(), &macos_leg);
+            let fetch =
+                ffmpeg::sources(version_target, jellyfin.as_ref(), &macos_leg, &autobuild_tag);
             (
                 fetch,
                 ResolvedToolMetadata {
@@ -1196,6 +1197,41 @@ mod tests {
                 source.identity.as_deref(),
                 Some(leg),
                 "each macOS permalink source records the resolved leg as its cache identity"
+            );
+        }
+    }
+
+    /// The resolved `BtbN` autobuild tag is threaded from the resolve into the
+    /// Windows and Linux sources: both fetch a `releases/latest/download`
+    /// alias whose asset is replaced when upstream rotates, so each carries the
+    /// tag as its content-cache identity, and a rotated tag is a cache miss
+    /// rather than the previous build's bytes served under the new tag's name.
+    /// Seeded metadata only — the tag comes from the seeded `BtbN` entry, not
+    /// the network.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
+    async fn resolve_tool_fetch_ffmpeg_threads_the_autobuild_tag_into_the_alias_identities() {
+        let _env = lock_process_env();
+        let (cache, _tmp) = seed_metadata_cache("ffmpeg").await;
+        let (fetch, metadata) = resolve_tool_fetch(
+            "ffmpeg",
+            &VersionSpec::Latest,
+            Some((&*cache, "default")),
+            RecheckPolicy::default(),
+        )
+        .await
+        .expect("ffmpeg resolve should succeed");
+
+        let tag = metadata.resolved_tag.as_deref().expect("the seeded BtbN tag is resolved");
+        assert_eq!(tag, "autobuild-2025-07-15-12-00", "the seeded tag is what the aliases key");
+        for source in fetch.sources.iter().filter(|source| source.os != "macos") {
+            assert_eq!(
+                source.identity.as_deref(),
+                Some(tag),
+                "each BtbN alias source records the resolved autobuild tag as its cache identity"
             );
         }
     }

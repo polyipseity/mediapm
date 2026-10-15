@@ -866,9 +866,15 @@ mod tests {
         // No resolved jellyfin fallback in this test: it drives the
         // martin-riedl primary, which the mock answers first. The resolve-time
         // leg is the same `resolvetime-obs` the metadata below records, so the
-        // permalink sources carry the identity this resolve declared.
-        let mut fetch =
-            crate::tools::provider::ffmpeg::sources(&VersionSpec::Latest, None, "resolvetime-obs");
+        // permalink sources carry the identity this resolve declared. The
+        // autobuild tag only keys the BtbN sources, which are retained away
+        // below.
+        let mut fetch = crate::tools::provider::ffmpeg::sources(
+            &VersionSpec::Latest,
+            None,
+            "resolvetime-obs",
+            "autobuild-TEST",
+        );
         fetch.sources.retain(|source| source.os == "macos");
         assert_eq!(fetch.sources.len(), 2, "expected both macOS arch sources");
 

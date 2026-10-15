@@ -10,12 +10,17 @@
 //! miss rather than pinned, because that repository retires a build line by
 //! deleting its artifacts.
 //!
-//! A martin-riedl permalink is a moving target: it redirects to whichever
-//! build the site serves when it is fetched, so those sources declare the
-//! resolved macOS leg as their content-cache identity. A rotated build is
-//! then a cache miss instead of the previous build's payload being re-served
-//! — and its last-use clock refreshed — on every sync under the new build's
-//! name.
+//! Both moving-target families declare the build they resolved as their
+//! content-cache identity. A martin-riedl permalink redirects to whichever
+//! build the site serves when it is fetched, so those sources carry the
+//! resolved macOS leg — but only while the URL is a permalink, since a pinned
+//! `Exact` build addresses its own versioned download. A `BtbN`
+//! `releases/latest/download` alias serves a fixed path whose asset is
+//! replaced when upstream rotates, and it is what both arms fetch, so the
+//! Windows and Linux sources carry the resolved `BtbN` autobuild tag
+//! unconditionally. A rotated build is then a cache miss instead of the
+//! previous build's payload being re-served — and its last-use clock
+//! refreshed — on every sync under the new build's name.
 //!
 //! The conductor fetch layer verifies each downloaded candidate against the
 //! serving endpoint's `.sha256` sibling when one is published, so a corrupt
@@ -549,14 +554,24 @@ async fn probe_macos_build_id(permalink: &str) -> Option<String> {
 /// macOS source records the leg as its content-cache identity, and bytes
 /// cached from a permalink are only re-served while the permalink still
 /// resolves to that build. [`UNRESOLVED_MACOS_LEG`] names no build and is
-/// therefore not an identity. `Exact` addresses one pinned build directly:
-/// its versioned download URL is its own identity, so no identity is
-/// declared either.
+/// therefore not an identity. `Exact` addresses one pinned macOS build
+/// directly: its versioned download URL is its own identity, so the macOS
+/// sources declare no identity in that arm.
+///
+/// `autobuild_tag` is the resolved `BtbN` autobuild the download aliases
+/// address (see [`resolve_btbn_tag`]). Those URLs are
+/// `releases/latest/download` aliases — a fixed path whose asset is replaced
+/// when upstream rotates — so the Windows and Linux sources record the tag as
+/// their content-cache identity, and bytes cached from an alias are only
+/// re-served while it still resolves to that tag. `Exact` rewrites only the
+/// macOS URLs, so those two sources keep fetching an alias and record the tag
+/// in either arm.
 #[must_use]
 pub(crate) fn sources(
     target: &VersionSpec,
     jellyfin: Option<&JellyfinMacosFallback>,
     macos_leg: &str,
+    autobuild_tag: &str,
 ) -> ResolvedToolFetch {
     let pinned_build_id = match target {
         VersionSpec::Exact(VersionSpecFields { tag, .. }) => tag.as_deref(),
@@ -570,6 +585,10 @@ pub(crate) fn sources(
         Some(_) => None,
         None => (macos_leg != UNRESOLVED_MACOS_LEG).then(|| macos_leg.to_string()),
     };
+    // The `BtbN` alias path never changes, and it is the path both arms fetch
+    // — the pinned shape rewrites only the macOS URLs — so the tag the resolve
+    // picked is what tells one build's bytes from another's either way.
+    let autobuild_identity: Option<String> = Some(autobuild_tag.to_string());
 
     let mut sources = vec![
         ResolvedSource {
@@ -584,7 +603,7 @@ pub(crate) fn sources(
             },
             expected_size: None,
             size_hint_bytes: Some(120_000_000),
-            identity: None,
+            identity: autobuild_identity.clone(),
         },
     ];
 
@@ -625,7 +644,7 @@ pub(crate) fn sources(
         },
         expected_size: None,
         size_hint_bytes: Some(80_000_000),
-        identity: None,
+        identity: autobuild_identity,
     });
 
     ResolvedToolFetch { tool_id: "ffmpeg".to_string(), sources }
@@ -742,6 +761,10 @@ mod tests {
     /// chain tests can name one without probing the site.
     const TEST_MACOS_LEG: &str = "1759500000_N-127260-g7bc3576910";
 
+    /// A `BtbN` autobuild tag standing in for a resolved rolling tag, so the
+    /// identity tests can name one without reaching the GitHub API.
+    const TEST_AUTOBUILD_TAG: &str = "autobuild-2025-07-15-12-00";
+
     /// A hand-built jellyfin fallback standing in for a repository read, so
     /// the chain tests do not depend on the network.
     fn test_jellyfin_fallback() -> JellyfinMacosFallback {
@@ -772,7 +795,8 @@ mod tests {
     #[test]
     fn sources_latest_chains_snapshot_release_then_jellyfin_for_both_arches() {
         let jellyfin = test_jellyfin_fallback();
-        let fetch = sources(&VersionSpec::Latest, Some(&jellyfin), TEST_MACOS_LEG);
+        let fetch =
+            sources(&VersionSpec::Latest, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
 
         let macos: Vec<&ResolvedSource> =
             fetch.sources.iter().filter(|s| s.os == "macos").collect();
@@ -804,7 +828,7 @@ mod tests {
     /// shortens the chain instead of producing a URL for a nameless archive.
     #[test]
     fn sources_latest_omits_jellyfin_when_the_repository_was_unreadable() {
-        let fetch = sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG);
+        let fetch = sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG, TEST_AUTOBUILD_TAG);
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
             let SourceProducer::Fetch { urls } = &source.producer else {
@@ -833,7 +857,7 @@ mod tests {
             tag: Some(build_id.to_string()),
         });
         let jellyfin = test_jellyfin_fallback();
-        let fetch = sources(&target, Some(&jellyfin), build_id);
+        let fetch = sources(&target, Some(&jellyfin), build_id, TEST_AUTOBUILD_TAG);
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
             let SourceProducer::Fetch { urls } = &source.producer else {
@@ -848,6 +872,39 @@ mod tests {
         }
     }
 
+    /// The `BtbN` Windows and Linux sources fetch a `releases/latest/download`
+    /// alias: the path never changes and the asset is replaced when upstream
+    /// rotates, so those sources carry the resolved autobuild tag as their
+    /// content-cache identity and a rotated tag is a cache miss rather than
+    /// the previous build's bytes served under the new tag's name. `Exact`
+    /// rewrites only the macOS URLs, so those two sources fetch an alias in
+    /// either arm and key the tag in either arm.
+    #[test]
+    fn sources_declare_the_autobuild_tag_as_the_alias_sources_identity() {
+        let fetch = sources(&VersionSpec::Latest, None, TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
+        for source in fetch.sources.iter().filter(|s| s.os != "macos") {
+            assert_eq!(
+                source.identity.as_deref(),
+                Some(TEST_AUTOBUILD_TAG),
+                "a `latest/download` alias source is keyed by the tag it resolved to"
+            );
+        }
+
+        let target = VersionSpec::Exact(VersionSpecFields {
+            vcs_hash: None,
+            version: None,
+            tag: Some(TEST_MACOS_LEG.to_string()),
+        });
+        let exact = sources(&target, None, TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
+        for source in exact.sources.iter().filter(|s| s.os != "macos") {
+            assert_eq!(
+                source.identity.as_deref(),
+                Some(TEST_AUTOBUILD_TAG),
+                "`Exact` rewrites only the macOS URLs, so the alias sources still key the tag"
+            );
+        }
+    }
+
     /// Both martin-riedl permalink candidates carry the resolved macOS leg as
     /// their content-cache identity, so a rotated build is a cache miss rather
     /// than a cached payload served under the new build's name. The unresolved
@@ -856,7 +913,8 @@ mod tests {
     #[test]
     fn sources_declare_the_macos_leg_as_the_permalink_identity() {
         let jellyfin = test_jellyfin_fallback();
-        let fetch = sources(&VersionSpec::Latest, Some(&jellyfin), TEST_MACOS_LEG);
+        let fetch =
+            sources(&VersionSpec::Latest, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
             assert_eq!(
@@ -865,29 +923,28 @@ mod tests {
                 "a permalink source is keyed by the build its permalinks resolve to"
             );
         }
-        for source in fetch.sources.iter().filter(|s| s.os != "macos") {
+
+        let unresolved =
+            sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG, TEST_AUTOBUILD_TAG);
+        for source in unresolved.sources.iter().filter(|s| s.os == "macos") {
             assert_eq!(
                 source.identity, None,
-                "an autobuild `latest/download` alias is not version-specific, so it stays unkeyed (parked defect: the URL is not the build; see the coverage matrix)"
+                "the unresolved sentinel names no build, so no permalink source is keyed by it"
             );
         }
-
-        let unresolved = sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG);
-        assert!(
-            unresolved.sources.iter().all(|source| source.identity.is_none()),
-            "the unresolved sentinel names no build, so nothing may be keyed by it"
-        );
 
         let target = VersionSpec::Exact(VersionSpecFields {
             vcs_hash: None,
             version: None,
             tag: Some(TEST_MACOS_LEG.to_string()),
         });
-        let exact = sources(&target, Some(&jellyfin), TEST_MACOS_LEG);
-        assert!(
-            exact.sources.iter().all(|source| source.identity.is_none()),
-            "a pinned build id addresses one versioned download, which is its own identity"
-        );
+        let exact = sources(&target, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
+        for source in exact.sources.iter().filter(|s| s.os == "macos") {
+            assert_eq!(
+                source.identity, None,
+                "a pinned build id addresses one versioned download, which is its own identity"
+            );
+        }
     }
 
     /// The permalink probe reads the build id out of the final redirect

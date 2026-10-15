@@ -2942,6 +2942,33 @@ mod tests {
         assert_eq!(moved_bytes, b"build-one", "the miss re-fetches whatever the permalink serves");
     }
 
+    /// A `latest/download` alias is one stable path whose asset is replaced
+    /// when upstream rotates, so the resolved build — not the URL — is what
+    /// keeps one build's cached bytes from answering for another's. Two tags
+    /// on the same URL must therefore be two cache entries, while a source
+    /// whose URL is its own identity still keys by the URL alone.
+    #[test]
+    fn content_cache_key_separates_a_rotated_alias_from_the_url() {
+        let url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/\
+                   ffmpeg-master-latest-linux64-gpl.tar.xz";
+        let build = content_cache_key(url, Some("autobuild-2025-07-15-12-00"));
+        let rotated = content_cache_key(url, Some("autobuild-2025-08-01-09-00"));
+
+        assert_ne!(
+            build, rotated,
+            "a rotated autobuild tag must not be served the previous build's cached bytes"
+        );
+        assert!(
+            build.starts_with(url) && rotated.starts_with(url),
+            "the URL stays the key's base, so a cache hit still reports the requested URL"
+        );
+        assert_eq!(
+            content_cache_key(url, None),
+            url,
+            "a source with no moving target is keyed by its URL alone"
+        );
+    }
+
     // ── process_single_source budget tracking ────────────────────────
 
     #[tokio::test]
