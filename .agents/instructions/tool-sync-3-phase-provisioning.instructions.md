@@ -15,7 +15,7 @@ by a pre-resolve step:
 
 The caller resolves the tool fetch before calling `fetch_and_import_tool_payload()` and passes the outcome:
 
-- **`Resolved(fetch, metadata)`** — normal path. `metadata` is a `ResolvedToolMetadata` carrying `human_readable_version`, `canonical_version`, `metadata_cached` (bool: all lookups were cache hits), `metadata_fetch_count` (u32: lookup count, e.g. ffmpeg = 2), and the three `resolved_*` provenance fields (all `Option<String>` — `None` when the provider has no value).
+- **`Resolved(fetch, metadata)`** — normal path. `metadata` is a `ResolvedToolMetadata` carrying `human_readable_version`, `canonical_version`, `metadata_cached` (bool: all lookups were cache hits), `metadata_fetch_count` (u32: lookup count, e.g. ffmpeg = 5: the BtbN autobuild tag, the martin-riedl macOS-leg probe, and three jellyfin fallback reads — the repo index plus one pointer file per macOS arch — while every other tool has 1), and the three `resolved_*` provenance fields (all `Option<String>` — `None` when the provider has no value).
 - **`Skip { name, version, metadata_cached, metadata_fetch_count, resolved_tag, resolved_version, resolved_vcs_hash }`** — already provisioned at the canonical version. Only the resolve bar shows, then the function returns `Ok(None)`. `metadata_cached` toggles `"skipped, N cached"` vs `"skipped"` (N = `metadata_fetch_count`); the `resolved_*` fields carry fresh provenance for coordinator backfill.
 
 This keeps the function single-responsibility: it renders a resolve bar for every tool (avoiding a bare `pb.advance(1)` with no per-tool feedback).
@@ -28,7 +28,7 @@ This keeps the function single-responsibility: it renders a resolve bar for ever
 ### Phase 1b: HEAD prefetch
 
 - Sends HEAD requests to populate `expected_size` on each `Fetch`-producer source; failures are silently ignored (Content-Length fallback).
-- Every `Fetch` source is HEADed (the old Evermeet/getrelease skip is gone with evermeet). A martin-riedl permalink 302-redirects, so the HEAD follows the redirect to the versioned download and records its Content-Length (or fails silently). Timeout: 10s per HEAD.
+- Every `Fetch` source is HEADed (the old Evermeet/getrelease skip is gone with evermeet). A martin-riedl permalink 302-redirects, so a HEAD follows the redirect to the versioned download and records its Content-Length — except against martin-riedl itself, which answers `HEAD` with 404 and serves only `GET`, so its sources start without an expected size and the fetch bar's byte total arrives with the response's Content-Length instead. Every failure here is silent by design: the probe only improves a byte total that the response would otherwise supply. Timeout: 10s per HEAD.
 
 ### Phase 2: Fetch
 

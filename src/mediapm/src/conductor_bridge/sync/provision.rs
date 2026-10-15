@@ -88,7 +88,10 @@ pub(super) enum PreResolveOutcome {
         human_readable_version: String,
         /// Whether the version/tag lookups were served from metadata cache.
         metadata_cached: bool,
-        /// Number of individual version/tag lookups performed (e.g., ffmpeg = 2, all others = 1).
+        /// Number of individual metadata lookups performed (e.g., ffmpeg = 5: the
+        /// `BtbN` autobuild tag, the martin-riedl macOS-leg probe, and three
+        /// jellyfin fallback reads — the repo index plus one pointer file per macOS
+        /// arch — while every other tool performs 1).
         metadata_fetch_count: u32,
     },
 }
@@ -155,12 +158,14 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// [`ResolvedSource::expected_size`] for each `Fetch`-producer source so
 /// phase 2 progress bars start with an accurate byte total.
 ///
-/// The resolve bar shows `metadata_fetch_count` items (one per metadata lookup,
-/// e.g., ffmpeg has 2: btbn tag + martin-riedl build probe). When all metadata lookups
-/// were cache hits, the bar shows `"N cached"` where N = `metadata_fetch_count`
-/// (e.g. `2 cached`). When the tool is already up-to-date (Skip), the bar shows
-/// `"skipped, N cached"` (with the count when cached, e.g. `skipped, 2 cached`) or
-/// `"skipped"` otherwise. Fetch bar shows
+/// The resolve bar shows `metadata_fetch_count` items (one per metadata lookup:
+/// ffmpeg has 5 — the `BtbN` autobuild tag, the martin-riedl build probe, and
+/// three jellyfin fallback reads, the repo index plus one pointer file per macOS
+/// arch — while every other tool has 1). When all metadata lookups were cache
+/// hits, the bar shows `"N cached"` where N = `metadata_fetch_count` (e.g.
+/// `5 cached`). When the tool is already up-to-date (Skip), the bar shows
+/// `"skipped, N cached"` (with the count when cached, e.g. `skipped, 5 cached`)
+/// or `"skipped"` otherwise. Fetch bar shows
 /// `sources.len()` items (one per source).  Process bar shows the sum
 /// of per-source items: archive sources contribute 2 items (decompress +
 /// compress), binary/launcher sources contribute 1 item (import).  Phase 2
@@ -1189,8 +1194,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_bar_cached_two_shows_cached_two() {
         // Regression: resolve bar with metadata_cached=true and
-        // metadata_fetch_count=2 (e.g., ffmpeg btbn tag + martin-riedl
-        // build probe) must show
+        // metadata_fetch_count=2 (a two-lookup resolve, as ffmpeg's own count
+        // was before the jellyfin fallback reads were added) must show the
         // "2 cached" status list (not bare "cached" without count).
         let cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");

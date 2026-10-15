@@ -11,12 +11,13 @@ applyTo: "src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins
 | Cache | TTL | Basis | Content | Key |
 | --- | --- | --- | --- | --- |
 | **Content cache** (`tools.json`) | 7d | Last-use | Raw downloaded tool payload bytes | Download URI (actual URL used) |
-| **Metadata cache** (`tool_metadata.json`) | 1d | Creation-time | GitHub API responses (tag names, versions) | API endpoint URL |
+| **Metadata cache** (`tool_metadata.json`) | 1d | Creation-time | GitHub API responses (tag names, versions), the jellyfin macOS repo index, and its per-arch `*-gpl.txt` pointer files | API endpoint URL (any metadata read) |
 | **Provision cache** (RAII) | 24h | Creation-time | Extracted tool binaries (per-platform unpack) | Tool identity hash |
 
 - Content cache TTL is **last-use based** — `lookup_bytes()` / `store_bytes()` reset the clock.
 - Metadata cache TTL is **creation-time based** — never call `touch()`; doing so extends TTL and defeats the 1-day freshness guarantee.
 - Provision cache is **RAII** — the extracted temp dir lives for the `ProvisionCache` handle (24h default).
+- **A download may leave the host it was requested from.** The jellyfin macOS archive 302-redirects to `*.mirror.jellyfin.org` (`sgp1.mirror.jellyfin.org` in practice), so that host is as load-bearing as `repo.jellyfin.org` and degrades the macOS fallback when it is unreachable.
 
 All caches live under `default_mediapm_user_download_cache_root()` (`~/.cache/mediapm/` on Linux, `~/Library/Caches/mediapm/` on macOS):
 

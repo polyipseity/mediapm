@@ -223,7 +223,7 @@ The built-in path is used by Screen A (tool-sync) bars, which do not install `Ba
 Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases are shortened from longer names (`resolve` → `res`, `fetch` → `fch`, `process` → `pro`, `prune` → `prn`).
 
 - **Bar label** is `{tool_id} {version} [{phase}]`, space-separated (`src/mediapm/src/conductor_bridge/sync/provision.rs:144` and `:213`). A tool reporting no human-readable version drops the version and the space, so the label is `media-tagger [fch]`.
-- **Resolve bar** totals `metadata_fetch_count` (`provision.rs:212`), which is 2 for ffmpeg (BtbN autobuild tag plus the macOS-leg probe: a martin-riedl redirect parse or a jellyfin version lookup) and 1 for every other tool. It is a lookup count, never a byte total or a percentage.
+- **Resolve bar** totals `metadata_fetch_count` (`provision.rs:227`), which is 5 for ffmpeg (the BtbN autobuild tag, the martin-riedl macOS-leg probe, and three jellyfin fallback reads: the repo index plus one pointer file per macOS arch) and 1 for every other tool. It is a lookup count, never a byte total or a percentage. `resolve_tool_fetch_ffmpeg_leaves_version_and_vcs_hash_none` asserts the number against a fully seeded cache, so a new lookup fails the suite rather than silently making this line wrong.
 - **Resolve bar** shows `N cached` status list via `SuffixComponents::status_list`.
 - **Skip bar** shows `skipped, N cached` status list (when cached) vs `skipped` (when not cached).
 - **Byte columns** render through `format_count` (`src/mediapm-utils/src/progress/inner/components.rs:205`), which is decimal: 31 457 280 bytes reads `31M`, not `29.9MiB`.
