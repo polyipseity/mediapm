@@ -154,7 +154,7 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
 /// `media-tagger [fch]`). The three fields reach the renderer as
 /// [`PrefixComponents`], so a tool id carrying a space stays one field.
 ///
-/// After phase 1 (resolve), a HEAD-prefetch step populates
+/// After phase 1 (resolve), a ranged-`GET` prefetch step populates
 /// [`ResolvedSource::expected_size`] for each `Fetch`-producer source so
 /// phase 2 progress bars start with an accurate byte total.
 ///
@@ -290,7 +290,8 @@ pub(super) async fn fetch_and_import_tool_payload(
         }
     };
 
-    // Phase 1b: Prefetch expected sizes via HEAD requests.
+    // Phase 1b: Prefetch expected sizes with a one-byte ranged GET (the method
+    // the fetch uses — `HEAD` is refused by martin-riedl).
     prefetch_expected_sizes(&mut fetch.sources).await;
 
     if fetch.sources.is_empty() {
@@ -416,16 +417,26 @@ pub(super) async fn fetch_and_import_tool_payload(
 /// Connection pooling, TLS reuse, and DNS caching are managed centrally.
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 ///
-/// Sends HEAD requests to populate `expected_size` on each `Fetch`-producer
-/// source.  Failures are silently ignored — `expected_size` stays `None` and
-/// the existing Content-Length fallback in phase 2 applies.
+/// Sends a one-byte ranged `GET` (`Range: bytes=0-0`) to populate
+/// `expected_size` on each `Fetch`-producer source. The request carries the
+/// method the fetch itself uses, because a `HEAD` probe is not answered
+/// everywhere: martin-riedl replies 404 to `HEAD` while serving `GET`, which
+/// left its sources with no byte total. The payload total comes from
+/// `Content-Range` (`bytes 0-0/<total>`) when the server honours the range and
+/// answers `206`, and from `Content-Length` when it ignores the range and
+/// returns the whole payload as `200`.
 ///
-/// Uses fully concurrent HEAD requests with a semaphore to limit concurrency.
+/// Failures are silently ignored — `expected_size` stays as it was and the
+/// existing Content-Length fallback in phase 2 applies. A transport error, a
+/// non-success status, an unparsable `Content-Range`, or a zero size all
+/// record nothing.
+///
+/// Uses fully concurrent requests with a semaphore to limit concurrency.
 async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
     let Ok(client) = mediapm_conductor::http::client::shared_http_client() else {
         return;
     };
-    let head_timeout = std::time::Duration::from_secs(10);
+    let probe_timeout = std::time::Duration::from_secs(10);
     let semaphore = Arc::new(Semaphore::new(MAX_LOOKAHEAD));
 
     let tasks: Vec<_> = sources
@@ -441,13 +452,36 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
             let url = url.clone();
             Some(async move {
                 let _permit = semaphore.acquire().await.expect("semaphore closed");
-                let request = client.head(&url).timeout(head_timeout).send().await;
+                // Ask with the method the fetch uses. martin-riedl answers
+                // `HEAD` with 404 and serves only `GET`, so a `HEAD` probe
+                // recorded nothing for its sources. `Range: bytes=0-0` keeps
+                // the probe to one byte; the size comes from `Content-Range`
+                // when the server honours the range and from `Content-Length`
+                // when it answers with the whole payload instead.
+                let request = client
+                    .get(&url)
+                    .header(reqwest::header::RANGE, "bytes=0-0")
+                    .timeout(probe_timeout)
+                    .send()
+                    .await;
                 if let Ok(response) = request
                     && response.status().is_success()
-                    && let Some(content_length) = response.content_length()
-                    && content_length > 0
                 {
-                    return Some((idx, content_length));
+                    if let Some(total) = response
+                        .headers()
+                        .get(reqwest::header::CONTENT_RANGE)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.rsplit('/').next())
+                        .and_then(|total| total.trim().parse::<u64>().ok())
+                        && total > 0
+                    {
+                        return Some((idx, total));
+                    }
+                    if let Some(content_length) = response.content_length()
+                        && content_length > 0
+                    {
+                        return Some((idx, content_length));
+                    }
                 }
                 None
             })
@@ -685,7 +719,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Patch download URLs to point at wiremock (so HEAD prefetch and
+        // Patch download URLs to point at wiremock (so the prefetch probe and
         // download hit the local server instead of GitHub).
         for source in &mut fetch.sources {
             if let SourceProducer::Fetch { urls } = &mut source.producer {
@@ -1503,6 +1537,108 @@ mod tests {
             .sum();
         // 1 archive (2) + 1 binary (1) + 1 launcher (1) = 4
         assert_eq!(total, 4, "mixed sources should produce correct process total");
+    }
+
+    // -- Expected-size prefetch tests --
+
+    /// Builds one `Fetch`-producer source pointing at `url`, so the prefetch
+    /// probe has exactly one candidate to request.
+    fn source_with_url(url: &str) -> ResolvedSource {
+        ResolvedSource {
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            producer: SourceProducer::Fetch { urls: vec![url.to_string()] },
+            expected_size: None,
+            size_hint_bytes: None,
+        }
+    }
+
+    /// The prefetch asks with the method the fetch uses. martin-riedl answers
+    /// `HEAD` with 404 and serves only `GET`, so a `HEAD`-only probe left its
+    /// sources with no byte total and the fetch bar had to wait for the
+    /// response. A `206` carries the full size in `Content-Range`, not in
+    /// `Content-Length` (which is the one-byte range).
+    #[tokio::test]
+    async fn prefetch_reads_the_total_from_content_range_when_the_host_rejects_head() {
+        use wiremock::matchers::{header, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        Mock::given(method("GET"))
+            .and(header("range", "bytes=0-0"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("content-range", "bytes 0-0/41943040")
+                    .set_body_bytes(b"x".as_slice()),
+            )
+            .mount(&server)
+            .await;
+
+        let mut sources = vec![source_with_url(&format!("{}/ffmpeg.zip", server.uri()))];
+        prefetch_expected_sizes(&mut sources).await;
+
+        assert_eq!(
+            sources[0].expected_size,
+            Some(41_943_040),
+            "a 206 answers with the payload total in Content-Range"
+        );
+    }
+
+    /// A host that ignores the range answers `200`, where `Content-Length` is
+    /// the payload total.
+    #[tokio::test]
+    async fn prefetch_reads_the_total_from_content_length_when_the_range_is_ignored() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0_u8; 2048]))
+            .mount(&server)
+            .await;
+
+        let mut sources = vec![source_with_url(&format!("{}/deno.zip", server.uri()))];
+        prefetch_expected_sizes(&mut sources).await;
+
+        assert_eq!(sources[0].expected_size, Some(2048), "a 200 answers with the payload total");
+    }
+
+    /// The prefetch stays best-effort: a refusal records nothing and never
+    /// panics, exactly as a failed `HEAD` did.
+    #[tokio::test]
+    async fn prefetch_records_nothing_for_a_refused_source() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+
+        let mut sources = vec![source_with_url(&format!("{}/gone.zip", server.uri()))];
+        prefetch_expected_sizes(&mut sources).await;
+
+        assert_eq!(sources[0].expected_size, None, "a refusal leaves the size unknown");
+    }
+
+    /// A silent failure leaves an already-known size alone, which is the "stays
+    /// as it was" half of the contract that seeding `None` cannot observe.
+    #[tokio::test]
+    async fn prefetch_preserves_a_known_size_when_the_probe_fails() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+
+        let mut sources = vec![source_with_url(&format!("{}/gone.zip", server.uri()))];
+        sources[0].expected_size = Some(999);
+        prefetch_expected_sizes(&mut sources).await;
+
+        assert_eq!(
+            sources[0].expected_size,
+            Some(999),
+            "a failed probe must not clear a size recorded earlier"
+        );
     }
 
     // -- Progress bar label format tests (shortened phases + version) --

@@ -25,10 +25,11 @@ This keeps the function single-responsibility: it renders a resolve bar for ever
 - Receives the resolved `ResolvedToolFetch` from `PreResolveOutcome::Resolved` (the caller does the resolve, not this function).
 - Resolve bar shows `metadata_fetch_count` items (total 0 = indeterminate when no lookups). When `metadata_cached`, the bar shows `"N cached"` status list.
 
-### Phase 1b: HEAD prefetch
+### Phase 1b: ranged-GET prefetch
 
-- Sends HEAD requests to populate `expected_size` on each `Fetch`-producer source; failures are silently ignored (Content-Length fallback).
-- Every `Fetch` source is HEADed (the old Evermeet/getrelease skip is gone with evermeet). A martin-riedl permalink 302-redirects, so a HEAD follows the redirect to the versioned download and records its Content-Length — except against martin-riedl itself, which answers `HEAD` with 404 and serves only `GET`, so its sources start without an expected size and the fetch bar's byte total arrives with the response's Content-Length instead. Every failure here is silent by design: the probe only improves a byte total that the response would otherwise supply. Timeout: 10s per HEAD.
+- Sends a one-byte ranged `GET` (`Range: bytes=0-0`) to populate `expected_size` on each `Fetch`-producer source; failures are silently ignored (Content-Length fallback).
+- The total comes from `Content-Range` when the server honours the range and answers `206`, and from `Content-Length` when it ignores the range and answers `200` with the whole payload. The probe carries the method the fetch itself uses, because `HEAD` is not answered everywhere: martin-riedl replies `404` to `HEAD` while serving `GET`, so a HEAD probe recorded nothing for its sources and the fetch bar's byte total arrived only with the response.
+- Every `Fetch` source is probed (the old Evermeet/getrelease skip is gone with evermeet). The probe follows redirects, so a martin-riedl permalink 302-redirects to the versioned download and the total recorded is the payload's. A refusal, transport error, unparsable `Content-Range`, or zero size records nothing and leaves any size already known untouched. Every failure here is silent by design: the probe only improves a byte total that the response would otherwise supply. Timeout: 10s per probe.
 
 ### Phase 2: Fetch
 

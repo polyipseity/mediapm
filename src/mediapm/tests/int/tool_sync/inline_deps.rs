@@ -42,9 +42,9 @@ use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 // network-resolved managed tools whose payloads are pure downloads with
 // tooling mediapm already has (`zip`); ffmpeg is excluded because its linux
 // payload is tar.xz (mediapm has no tar/xz decoder). One tolerated network
-// touch remains: `prefetch_expected_sizes` fires tolerant HEAD probes at the
-// rewritten GitHub URLs before fetch; failures are silently ignored, so
-// offline runs only pay a fast DNS failure.
+// touch remains: `prefetch_expected_sizes` fires tolerant one-byte ranged
+// `GET` probes (`Range: bytes=0-0`) at the rewritten GitHub URLs before fetch;
+// failures are silently ignored, so offline runs only pay a fast DNS failure.
 
 /// Hermetic: seeds a generated doc whose `yt-dlp` runtime already carries
 /// inlined `deps/ffmpeg/...` and `deps/deno/...` keys (as a previous network

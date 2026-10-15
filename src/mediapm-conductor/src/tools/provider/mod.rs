@@ -264,10 +264,10 @@ pub struct ResolvedSource {
     pub arch: String,
     /// How phase 2 produces bytes for this source.
     pub producer: SourceProducer,
-    /// Expected byte size, if known from HEAD probes.
+    /// Expected byte size, if known from the prefetch probe.
     pub expected_size: Option<u64>,
     /// Optional soft upper bound for expected byte size, set from provider
-    /// definitions. Used as a fallback estimate when HEAD probes fail.
+    /// definitions. Used as a fallback estimate when the prefetch probe fails.
     pub size_hint_bytes: Option<u64>,
 }
 
@@ -987,7 +987,7 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 /// decompressed bytes during repacking, keeping the progress bar smooth
 /// through the full process pipeline.
 ///
-/// [`MAX_LOOKAHEAD`] (16) bounds the number of concurrent HEAD probes
+/// [`MAX_LOOKAHEAD`] (16) bounds the number of concurrent prefetch probes
 /// during phase 1 (resolve). `SUB_ENTRY_CHUNK` (64 KiB) controls the
 /// minimum byte interval between sub-entry progress callbacks during
 /// extraction/compression, preventing excessive callback overhead.
