@@ -545,7 +545,12 @@ fn apply_entry_outcome(
             report.tools_skipped += 1;
             pb.advance(1);
         }
-        EntryOutcome::Fetched { tool_id, is_builtin_code, already_exists, payload } => {
+        EntryOutcome::Fetched { tool_id, is_builtin_code, already_exists, mut payload } => {
+            // Chain-member failures a later member covered: the tool
+            // provisioned, but a source it declares does not serve. The sync
+            // summary colours a non-empty warning list as a warning rather
+            // than an error, so the run still succeeds while saying so.
+            report.warnings.append(&mut payload.warnings);
             // Compute content-addressed hash. The payload's content map was
             // already inlined with same-step dep payloads by `provision_entry`.
             let content_map_hash: String = if payload.content_map.is_empty() {
@@ -1616,6 +1621,8 @@ mod tests_cache_root;
 mod tests_composite_version;
 #[cfg(test)]
 mod tests_dependency_specs;
+#[cfg(test)]
+mod tests_fetch_warnings;
 #[cfg(test)]
 mod tests_generated_document;
 #[cfg(test)]

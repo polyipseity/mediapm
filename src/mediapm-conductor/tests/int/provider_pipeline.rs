@@ -343,6 +343,7 @@ async fn process_mixed_archive_binary_progress() {
         tool_id: "echo".to_string(),
         entries,
         cached_count: downloaded.cached_count,
+        warnings: Vec::new(),
     };
 
     let cas = InMemoryCas::default();
@@ -375,6 +376,7 @@ fn echo_with_zip_archive(downloaded: &DownloadedSources) -> DownloadedSources {
         tool_id: downloaded.tool_id.clone(),
         entries,
         cached_count: downloaded.cached_count,
+        warnings: Vec::new(),
     }
 }
 

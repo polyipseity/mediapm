@@ -333,6 +333,18 @@ pub struct DownloadedSources {
     /// Number of sources that were served from the download cache
     /// (not fetched from the network).
     pub cached_count: usize,
+    /// Per-candidate failures that a later chain member covered, in fetch
+    /// order: the source provisioned, but a candidate it declares does not
+    /// serve. Each entry is a user-facing sentence naming the tool, its OS
+    /// and arch, the failed candidate with its cause, and the candidate that
+    /// served instead. An empty list means every source was served by its
+    /// first candidate, or from cache.
+    ///
+    /// Carried rather than merely logged so the mediapm layer can surface it
+    /// in its `ToolSyncReport.warnings`: this crate must not depend on a
+    /// terminal progress layer, and a silently-covered fallback is exactly
+    /// the case an operator needs to see.
+    pub warnings: Vec<String>,
 }
 
 /// Result of processing a single source: content map and executable path.
@@ -441,7 +453,7 @@ pub async fn fetch_tool_sources(
     domain: &str,
     progress_cb: Option<ProviderProgressCallback>,
 ) -> Result<DownloadedSources, crate::error::ConductorError> {
-    type FetchResult = Result<(Vec<u8>, String, Option<String>), crate::error::ConductorError>;
+    type FetchResult = Result<FetchedBytes, crate::error::ConductorError>;
 
     let total = fetch.sources.len() as u64;
 
@@ -512,8 +524,15 @@ pub async fn fetch_tool_sources(
                         // A cache hit is keyed by the candidate URL; the
                         // bytes' original redirect provenance is not
                         // retained, so the candidate is the best-known
-                        // actual URL.
-                        (idx, Ok((cached, cache_key.clone(), Some(cache_key))), true)
+                        // actual URL. A cache hit never reports failures —
+                        // the chain was not walked.
+                        let fetched = FetchedBytes {
+                            bytes: cached,
+                            cache_key: cache_key.clone(),
+                            final_url: Some(cache_key),
+                            failures: Vec::new(),
+                        };
+                        (idx, Ok(fetched), true)
                     } else {
                         let estimate = source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
                         budget.set_total(idx, estimate);
@@ -530,10 +549,10 @@ pub async fn fetch_tool_sources(
                         )
                         .await;
                         match result {
-                            Ok((downloaded, cache_key, actual_url)) => {
-                                cache.store_bytes(domain, &cache_key, &downloaded).await;
+                            Ok(fetched) => {
+                                cache.store_bytes(domain, &fetched.cache_key, &fetched.bytes).await;
                                 completed_sources.fetch_add(1, Ordering::AcqRel);
-                                (idx, Ok((downloaded, cache_key, actual_url)), false)
+                                (idx, Ok(fetched), false)
                             }
                             Err(e) => (idx, Err(e), false),
                         }
@@ -557,6 +576,8 @@ pub async fn fetch_tool_sources(
     let mut entries = Vec::with_capacity(fetch.sources.len());
     let mut fetch_iter = fetch_results.into_iter().peekable();
     let mut total_cached: usize = 0;
+    // Chain members that a later member covered, as user-facing sentences.
+    let mut warnings: Vec<String> = Vec::new();
 
     for (idx, source) in fetch.sources.iter().enumerate() {
         match &source.producer {
@@ -565,9 +586,23 @@ pub async fn fetch_tool_sources(
                 // in sorted order — advance the iterator.
                 let (_, result, was_cached) =
                     fetch_iter.next().expect("parallel fetch result missing for Fetch source");
-                let (bytes, _cache_key, actual_url) = result?;
+                let FetchedBytes { bytes, final_url: actual_url, failures, .. } = result?;
                 if was_cached {
                     total_cached += 1;
+                }
+                // A chain served by a later member is a warning, not a
+                // failure: the source provisioned, but a candidate it
+                // declares does not serve. Naming the tool, OS and arch is
+                // what lets an operator act on it.
+                let tool_id = &fetch.tool_id;
+                let os = &source.os;
+                let arch = &source.arch;
+                let served_url = actual_url.as_deref().unwrap_or("an unknown URL");
+                for (url, cause) in failures {
+                    warnings.push(format!(
+                        "tool {tool_id} os {os} (arch {arch}): candidate failed ({cause} at \
+                         {url}); served by {served_url}"
+                    ));
                 }
                 entries.push(DownloadedSource {
                     os: source.os.clone(),
@@ -606,22 +641,51 @@ pub async fn fetch_tool_sources(
         }
     }
 
-    Ok(DownloadedSources { tool_id: fetch.tool_id.clone(), entries, cached_count: total_cached })
+    Ok(DownloadedSources {
+        tool_id: fetch.tool_id.clone(),
+        entries,
+        cached_count: total_cached,
+        warnings,
+    })
+}
+
+/// Bytes served by one chain member, plus the members that failed first.
+///
+/// A chain that succeeds on a later member is not an error, but it is not
+/// silent either: `failures` travels with the bytes so the caller can report
+/// each covered candidate.
+#[cfg(feature = "tool-presets")]
+#[derive(Debug, Clone)]
+struct FetchedBytes {
+    /// The payload bytes the serving member produced.
+    bytes: Vec<u8>,
+    /// The candidate URL that served the bytes — the key the download cache
+    /// is stored under, since a later run replays the same candidate list.
+    cache_key: String,
+    /// The final URL after redirects, when the bytes came over HTTP. `None`
+    /// when the caller served them from cache instead.
+    final_url: Option<String>,
+    /// Candidates that failed before `cache_key` served, in chain order, as
+    /// `(candidate url, cause)`. Empty when the first candidate served.
+    failures: Vec<(String, String)>,
 }
 
 /// Downloads bytes from URL candidates (tried in order — one chain).
 ///
-/// On success, returns the downloaded bytes, the candidate URL that served
-/// them (the key the download cache is stored under), and the final URL
-/// after redirects when the bytes came over HTTP. A cache-served source
-/// reports the candidate as its actual URL (the cached bytes' redirect
-/// provenance is not retained).
+/// On success, returns a [`FetchedBytes`] naming the bytes, the candidate URL
+/// that served them (the key the download cache is stored under), the final
+/// URL after redirects when the bytes came over HTTP, and every candidate
+/// that failed first. A cache-served source never reaches this function: the
+/// caller reports the candidate as its actual URL, because the cached bytes'
+/// redirect provenance is not retained.
 ///
 /// Each successfully-downloaded candidate is verified against its sibling
 /// `{url}.sha256` when the endpoint serves one (see
 /// [`verify_sha256_sibling`]); a mismatch fails that candidate and the next
-/// chain member is tried. Only chain exhaustion produces an error, and the
-/// error names every endpoint with its per-candidate cause.
+/// chain member is tried. Every failure is logged at `warn`, and the returned
+/// `failures` list is what lets the sync layer report a chain a later member
+/// covered. Only chain exhaustion produces an error, and the error names
+/// every endpoint with its per-candidate cause.
 ///
 /// Advances the budget item per HTTP chunk and fires the progress callback
 /// after each chunk, so the progress bar updates smoothly during large
@@ -650,7 +714,7 @@ async fn fetch_bytes_from_candidates(
     completed_sources: &AtomicU64,
     total_sources: u64,
     progress_cb: Option<&ProviderProgressCallback>,
-) -> Result<(Vec<u8>, String, Option<String>), crate::error::ConductorError> {
+) -> Result<FetchedBytes, crate::error::ConductorError> {
     use crate::error::ConductorError;
     use futures_util::StreamExt;
 
@@ -697,6 +761,9 @@ async fn fetch_bytes_from_candidates(
                             }
                         }
                         Err(e) => {
+                            tracing::warn!(
+                                "mid-stream download error for {url}: {e}; trying the next candidate"
+                            );
                             download_error = Some(format!("download error: {e}"));
                             break;
                         }
@@ -714,11 +781,17 @@ async fn fetch_bytes_from_candidates(
                 // download's checksum — when one is served; a mismatch fails
                 // this candidate and falls through to the next chain member.
                 if let Err(cause) = verify_sha256_sibling(client, &final_url, &buffer).await {
+                    tracing::warn!("{url} failed verification: {cause}; trying the next candidate");
                     spent_bytes += buffer.len() as u64;
                     failures.push((url.clone(), cause));
                     continue;
                 }
-                return Ok((buffer, url.clone(), Some(final_url)));
+                return Ok(FetchedBytes {
+                    bytes: buffer,
+                    cache_key: url.clone(),
+                    final_url: Some(final_url),
+                    failures,
+                });
             }
             Ok(response) => {
                 tracing::warn!("HTTP {} for {}, skipping", response.status(), url);
@@ -2881,6 +2954,7 @@ mod tests {
                 },
             ],
             cached_count: 0,
+            warnings: Vec::new(),
         };
 
         let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
@@ -2984,6 +3058,7 @@ mod tests {
                 },
             ],
             cached_count: 0,
+            warnings: Vec::new(),
         };
 
         let cas = InMemoryCas::default();
@@ -4307,6 +4382,7 @@ mod tests {
                 },
             ],
             cached_count: 0,
+            warnings: Vec::new(),
         };
 
         let cas = InMemoryCas::default();
@@ -4370,6 +4446,7 @@ mod tests {
                 },
             ],
             cached_count: 0,
+            warnings: Vec::new(),
         };
 
         let cas = InMemoryCas::default();
@@ -4513,5 +4590,70 @@ mod tests {
         assert!(message.contains("HTTP 404"), "names the 404 cause: {message}");
         assert!(message.contains(&bad_sum_url), "names the checksum endpoint: {message}");
         assert!(message.contains("sha256 mismatch"), "names the mismatch cause: {message}");
+    }
+
+    /// A chain served by a later member is not silent: the failure that
+    /// preceded it travels with the bytes — named with the tool, its OS and
+    /// arch, the failed candidate with its cause, and the candidate that
+    /// served — so the sync layer can report it.
+    ///
+    /// The counterpart of `chain_exhaustion_names_every_endpoint`: that test
+    /// pins the error a total outage produces, this one pins the warning a
+    /// *covered* outage produces, which used to be indistinguishable from a
+    /// clean first-candidate fetch.
+    #[tokio::test]
+    async fn a_covered_chain_failure_is_reported_with_the_serving_candidate() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // First endpoint: plain 404 (no mock — wiremock's default).
+        // Second endpoint: the payload; no `.sha256` sibling is mounted, so
+        // the "verify when served" probe finds none and accepts the bytes.
+        Mock::given(method("GET"))
+            .and(path("/fallback.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"payload"))
+            .mount(&server)
+            .await;
+
+        let missing_url = format!("{}/missing.zip", server.uri());
+        let fallback_url = format!("{}/fallback.zip", server.uri());
+        let fetch = ResolvedToolFetch {
+            tool_id: "ffmpeg".to_string(),
+            sources: vec![ResolvedSource {
+                os: "macos".to_string(),
+                arch: "aarch64".to_string(),
+                producer: SourceProducer::Fetch {
+                    urls: vec![missing_url.clone(), fallback_url.clone()],
+                },
+                expected_size: None,
+                size_hint_bytes: None,
+            }],
+        };
+
+        let (cache, _cache_dir) = open_tools_cache().await;
+        let downloaded = fetch_tool_sources(&fetch, &cache, "tools", None)
+            .await
+            .expect("the second candidate serves, so the fetch succeeds");
+
+        assert_eq!(downloaded.entries.len(), 1, "one source, one entry");
+        assert_eq!(downloaded.entries[0].bytes.as_slice(), b"payload");
+        assert_eq!(
+            downloaded.warnings.len(),
+            1,
+            "exactly the covered failure is reported: {:?}",
+            downloaded.warnings
+        );
+        let warning = downloaded.warnings.first().expect("one warning");
+        assert!(
+            warning.contains("tool ffmpeg os macos (arch aarch64)"),
+            "the warning says which tool, OS and arch: {warning}"
+        );
+        assert!(warning.contains(&missing_url), "names the failed candidate: {warning}");
+        assert!(warning.contains("HTTP 404"), "names that candidate's cause: {warning}");
+        assert!(
+            warning.contains(&fallback_url),
+            "names the candidate that served instead: {warning}"
+        );
     }
 }

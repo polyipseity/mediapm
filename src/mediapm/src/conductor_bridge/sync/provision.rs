@@ -55,6 +55,10 @@ pub(super) struct FetchedToolPayload {
     /// Resolved upstream VCS commit hash, or `None` when the provider has no
     /// hash.
     pub(super) resolved_vcs_hash: Option<String>,
+    /// Per-candidate fetch failures a later chain member covered, in fetch
+    /// order. Threaded to the sync report's warnings so a silently-covered
+    /// fallback reaches the operator instead of only the log.
+    pub(super) warnings: Vec<String>,
 }
 
 /// Outcome of the pre-resolve step that determines whether a tool should be
@@ -396,6 +400,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         resolved_tag,
         resolved_version,
         resolved_vcs_hash,
+        warnings: downloaded.warnings,
     }))
 }
 
