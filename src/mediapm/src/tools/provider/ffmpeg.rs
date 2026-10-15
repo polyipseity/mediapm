@@ -562,8 +562,12 @@ async fn probe_macos_build_id(permalink: &str) -> Option<String> {
 /// address (see [`resolve_btbn_tag`]). Those URLs are
 /// `releases/latest/download` aliases — a fixed path whose asset is replaced
 /// when upstream rotates — so the Windows and Linux sources record the tag as
-/// their content-cache identity, and bytes cached from an alias are only
-/// re-served while it still resolves to that tag. `Exact` rewrites only the
+/// their content-cache identity, and an entry is only re-served for the tag it
+/// was fetched under. The tag itself comes from the metadata cache, whose
+/// 1-day creation-time TTL bounds how long an upstream rotation can go
+/// unnoticed, so a cold content cache can still fetch newer bytes and store them
+/// under the previous day's tag; that mismatch self-heals when the tag
+/// re-resolves. `Exact` rewrites only the
 /// macOS URLs, so those two sources keep fetching an alias and record the tag
 /// in either arm.
 #[must_use]

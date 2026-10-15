@@ -291,7 +291,8 @@ pub struct ResolvedSource {
     pub size_hint_bytes: Option<u64>,
     /// Resolved identity of the bytes this source serves, when its URL is not
     /// itself one — a permalink that redirects to a versioned download whose
-    /// build changes upstream. The content cache keys on it (the URL plus this
+    /// build changes upstream, or a `latest` alias whose fixed path has its
+    /// asset replaced upstream. The content cache keys on it (the URL plus this
     /// value, joined by `content_cache_key`), so cached bytes are only reused
     /// for the identity they were fetched under.
     ///
