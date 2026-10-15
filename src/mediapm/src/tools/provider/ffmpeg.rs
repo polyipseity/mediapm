@@ -456,14 +456,18 @@ pub(crate) async fn resolve_macos_leg(
         // Advisory-only degradation: a failed probe records the jellyfin
         // fallback version as the macOS leg rather than failing the resolve.
         // The fetch-phase rewrite (`canonical_version_after_fetch`) is what
-        // corrects this to the real build id once the payload is served. One
-        // second-order effect: if the stored composite already carries this
-        // same jellyfin version from a prior real failover, the skip check
-        // matches and martin-riedl is not re-probed until the BtbN tag
-        // rotates (<= 1 day) — self-healing, not a permanent wedge.
+        // corrects this to the real build id once the payload is served.
+        //
+        // That correction is one-way, so a degraded leg has to stay rare: the
+        // stored composite carries the fetch-observed leg while the next
+        // resolve derives this one again, so for as long as the two disagree
+        // the tool re-provisions — and drags its same-step dependents with it —
+        // instead of skipping. This is exactly why the probe below walks the
+        // same method the fetch walks: against martin-riedl a `HEAD` probe
+        // failed every single time, so the two legs never agreed.
         tracing::warn!(
             "martin-riedl permalink probe failed; the macOS canonical leg records the \
-             resolved jellyfin version until fetch feedback corrects it"
+             resolved jellyfin version, and this tool will not skip until the probe succeeds"
         );
         (jellyfin_fallback_version.unwrap_or(UNRESOLVED_MACOS_LEG).to_string(), false)
     }
@@ -471,6 +475,14 @@ pub(crate) async fn resolve_macos_leg(
 
 /// Probes the martin-riedl permalink and parses the build id out of the
 /// final redirect target.
+///
+/// The probe walks the same method the fetch walks — `GET` — because
+/// martin-riedl answers `HEAD` with 404 and serves only `GET`. A `HEAD` probe
+/// therefore never saw the redirect target, and the leg it recorded (the
+/// jellyfin fallback version) disagreed with the fetch-observed leg on every
+/// run, so the tool re-provisioned instead of skipping. The `Range` header asks
+/// for one byte: the payload is not what the probe is after, and the body is
+/// never read.
 ///
 /// Returns `None` on any transport failure, non-success status, or
 /// unparsable target — the caller degrades to the fallback leg.
@@ -482,7 +494,8 @@ async fn probe_macos_build_id(permalink: &str) -> Option<String> {
             return None;
         }
     };
-    match client.head(permalink).send().await {
+    let request = client.get(permalink).header(reqwest::header::RANGE, "bytes=0-0");
+    match request.send().await {
         Ok(response) if response.status().is_success() => {
             let final_url = response.url().to_string();
             let build_id = martin_riedl_build_id_from_url(&final_url);
@@ -496,7 +509,7 @@ async fn probe_macos_build_id(permalink: &str) -> Option<String> {
         }
         Ok(response) => {
             tracing::warn!(
-                "martin-riedl permalink {permalink} answered HEAD with {}",
+                "martin-riedl permalink {permalink} answered the probe with {}",
                 response.status()
             );
             None
@@ -816,7 +829,7 @@ mod tests {
         let server = MockServer::start().await;
         let build_id = "1759500000_N-127260-g7bc3576910";
         let permalink_path = "/redirect/latest/macos/arm64/snapshot/ffmpeg.zip";
-        Mock::given(method("HEAD"))
+        Mock::given(method("GET"))
             .and(path(permalink_path))
             .respond_with(ResponseTemplate::new(302).insert_header(
                 "location",
@@ -824,9 +837,9 @@ mod tests {
             ))
             .mount(&server)
             .await;
-        // The redirected HEAD lands here; any body would do, the probe only
+        // The redirected request lands here; any body would do, the probe only
         // reads the final URL.
-        Mock::given(method("HEAD"))
+        Mock::given(method("GET"))
             .and(path(format!("/download/macos/arm64/{build_id}/ffmpeg.zip")))
             .respond_with(ResponseTemplate::new(200))
             .mount(&server)
@@ -866,6 +879,68 @@ mod tests {
         }
     }
 
+    /// martin-riedl answers `HEAD` with 404 and serves only `GET`, so a probe
+    /// that relied on `HEAD` could never read the build id out of the redirect
+    /// target. It degraded to the jellyfin version instead, while the fetch
+    /// observed the real martin-riedl build id and stored it — so the resolve
+    /// leg and the stored composite disagreed on every later sync, and ffmpeg
+    /// plus its same-step dependents re-provisioned instead of skipping.
+    ///
+    /// The probe therefore walks the same method the fetch walks, and carries a
+    /// one-byte `Range` so the redirect target is known without the payload.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock must serialize the whole set-seam -> await -> unset-seam resolve; the guard is Send and this is the documented MEDIAPM_* test-seam mutation-scope rule"
+    )]
+    async fn resolve_macos_leg_reads_the_redirect_target_from_a_get_only_source() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let build_id = "1791650033_N-127260-g7bc3576910";
+        let permalink_path = "/redirect/latest/macos/arm64/snapshot/ffmpeg.zip";
+        // The live martin-riedl shape: a `HEAD` is refused outright.
+        Mock::given(method("HEAD")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path(permalink_path))
+            .and(header("range", "bytes=0-0"))
+            .respond_with(ResponseTemplate::new(302).insert_header(
+                "location",
+                format!("/download/macos/arm64/{build_id}/ffmpeg.zip").as_str(),
+            ))
+            .mount(&server)
+            .await;
+        // The redirect target; the probe reads its URL and never its body.
+        Mock::given(method("GET"))
+            .and(path(format!("/download/macos/arm64/{build_id}/ffmpeg.zip")))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(b"x".as_slice()))
+            .mount(&server)
+            .await;
+
+        let _env = crate::example_isolation::lock_process_env();
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(MARTIN_RIEDL_BASE_ENV, server.uri());
+        }
+
+        // A jellyfin fallback is offered, so a degraded probe is visible as its
+        // version rather than as the unresolved sentinel.
+        let (leg, cached) = resolve_macos_leg(None, Some("8.1.3-1")).await;
+        assert_eq!(
+            leg, build_id,
+            "the probe must follow the GET redirect; a HEAD-only probe degrades to 8.1.3-1 \
+             while the fetch stores this build id, and the two never agree"
+        );
+        assert!(!cached, "the first resolve goes to the network");
+
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(MARTIN_RIEDL_BASE_ENV);
+        }
+    }
+
     /// A permalink that answers the probe with an error degrades to the
     /// resolved jellyfin version as the leg instead of failing the resolve:
     /// the chain still holds its candidates, and fetch feedback corrects the
@@ -883,7 +958,7 @@ mod tests {
         let server = MockServer::start().await;
         // The permalink's default answer is 404, but mount it explicitly so
         // the refusal is this test's fixture rather than wiremock's silence.
-        Mock::given(method("HEAD")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
 
         let _env = crate::example_isolation::lock_process_env();
         // SAFETY: the env lock the guard holds scopes this process-global seam
