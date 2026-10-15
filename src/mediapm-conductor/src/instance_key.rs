@@ -60,15 +60,24 @@ pub fn instance_key_resolved_value_bytes_for_literal_binding(raw_binding_source:
     raw_binding_source.as_bytes().to_vec()
 }
 
-/// Maps one resolved binding value to its instance-key hash when the raw
-/// binding source is deterministic.
+/// Maps one resolved binding to its instance-key hash when the raw binding
+/// source is deterministic.
+///
+/// The hash covers the input **name** as well as the resolved bytes: the name
+/// decides which slot the value occupies in the command, so two bindings that
+/// resolve to the same bytes under different names must land in different keys.
+/// Names are stable per step — they come from the tool's declared input
+/// contract unioned with the step's own bindings — so keying them cannot split
+/// one step's own cache across runs.
 #[must_use]
 pub fn instance_key_hash_from_resolved_value_bytes(
+    key: &str,
     raw_binding_source: &str,
     resolved_value: &[u8],
 ) -> Option<Hash> {
-    is_deterministic_binding_source(raw_binding_source)
-        .then_some(Hash::from_content(resolved_value))
+    is_deterministic_binding_source(raw_binding_source).then(|| {
+        Hash::composite(&[Hash::from_content(key.as_bytes()), Hash::from_content(resolved_value)])
+    })
 }
 
 /// Collects deterministic input hashes from resolved step inputs, matching
@@ -87,6 +96,7 @@ pub fn deterministic_input_hashes_from_resolved_inputs(
             .or_else(|| default_inputs.get(&resolved_input.key).map(input_binding_to_string))
             .unwrap_or_default();
         if let Some(hash) = instance_key_hash_from_resolved_value_bytes(
+            &resolved_input.key,
             &raw_source,
             resolved_input.value.as_bytes(),
         ) {
@@ -108,7 +118,9 @@ pub fn deterministic_input_hashes_from_resolved_value_bytes(
         let Some(value_bytes) = resolved_values.get(key) else {
             continue;
         };
-        if let Some(hash) = instance_key_hash_from_resolved_value_bytes(raw_source, value_bytes) {
+        if let Some(hash) =
+            instance_key_hash_from_resolved_value_bytes(key, raw_source, value_bytes)
+        {
             input_hashes.push(hash);
         }
     }
@@ -144,29 +156,71 @@ pub fn instance_matches_stored_key(
 mod tests {
     use super::*;
 
+    /// Pins that a hash-backed binding resolves to the referenced hash's
+    /// canonical string bytes and that the instance hash covers the input name
+    /// as well as those bytes.
     #[test]
     fn hash_reference_binding_uses_hash_string_bytes() {
         let hash = Hash::from_content(b"referenced-bytes");
         let bytes = instance_key_resolved_value_bytes_for_hash_reference(hash);
         assert_eq!(bytes, hash.to_string().as_bytes());
-        let key_hash =
-            instance_key_hash_from_resolved_value_bytes("${step_output.step-0.primary}", &bytes)
-                .expect("hash reference binding is deterministic");
-        assert_eq!(key_hash, Hash::from_content(hash.to_string().as_bytes()));
+        let key_hash = instance_key_hash_from_resolved_value_bytes(
+            "primary",
+            "${step_output.step-0.primary}",
+            &bytes,
+        )
+        .expect("hash reference binding is deterministic");
+        assert_eq!(
+            key_hash,
+            Hash::composite(&[
+                Hash::from_content(b"primary"),
+                Hash::from_content(hash.to_string().as_bytes()),
+            ])
+        );
     }
 
+    /// Pins that a literal binding's value material is its raw source bytes
+    /// (no template expansion) and that the input name participates in the
+    /// instance hash.
     #[test]
     fn literal_binding_uses_raw_source_bytes() {
         let raw = "mp4";
         let bytes = instance_key_resolved_value_bytes_for_literal_binding(raw);
-        let key_hash = instance_key_hash_from_resolved_value_bytes(raw, &bytes)
+        let key_hash = instance_key_hash_from_resolved_value_bytes("format", raw, &bytes)
             .expect("literal is deterministic");
-        assert_eq!(key_hash, Hash::from_content(raw.as_bytes()));
+        assert_eq!(
+            key_hash,
+            Hash::composite(&[Hash::from_content(b"format"), Hash::from_content(raw.as_bytes()),])
+        );
     }
 
+    /// Pins that a non-deterministic binding source (`${env.HOME}`, which the
+    /// host environment can change between runs) stays out of the instance-key
+    /// material entirely, so an env-dependent run never reuses a stale
+    /// instance.
     #[test]
     fn env_binding_is_not_instance_key_material() {
         assert!(!is_deterministic_binding_source("${env.HOME}"));
-        assert!(instance_key_hash_from_resolved_value_bytes("${env.HOME}", b"/tmp").is_none());
+        assert!(
+            instance_key_hash_from_resolved_value_bytes("home", "${env.HOME}", b"/tmp").is_none()
+        );
+    }
+
+    /// The input name is key material: it decides which command slot the value
+    /// lands in, so two bindings that resolve to the same bytes under different
+    /// names must not share an instance key. Sharing one would let the first
+    /// step's recorded instance be probed and reused for a differently-named
+    /// (and therefore differently-shaped) command.
+    #[test]
+    fn same_bytes_under_different_names_produce_different_hashes() {
+        let left = instance_key_hash_from_resolved_value_bytes("message", "same", b"same")
+            .expect("a literal binding is deterministic");
+        let right = instance_key_hash_from_resolved_value_bytes("text", "same", b"same")
+            .expect("a literal binding is deterministic");
+        assert_ne!(left, right, "the input name is part of the instance-key material");
+
+        let again = instance_key_hash_from_resolved_value_bytes("message", "same", b"same")
+            .expect("a literal binding is deterministic");
+        assert_eq!(left, again, "and the derivation stays deterministic");
     }
 }

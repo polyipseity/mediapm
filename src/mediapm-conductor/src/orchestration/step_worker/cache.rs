@@ -37,17 +37,46 @@ mod proptests {
     impl proptest::arbitrary::Arbitrary for ResolvedInput {
         type Parameters = ();
         type Strategy = BoxedStrategy<Self>;
+        /// Generates literal-binding inputs only.
+        ///
+        /// Production drops non-deterministic bindings from the key material
+        /// (`is_deterministic_binding_source` rejects `${env.`, `context.os`,
+        /// `:file(` and `:folder(`), and [`arg_hashes`] now routes through that
+        /// same production helper. An unconstrained `any::<String>()` can emit
+        /// a value containing `${env.`, which would be filtered out; two
+        /// distinct input lists could then both filter to empty and the
+        /// `different_inputs_produce_different_keys` property would fail on a
+        /// rejection, not on a real collision. Restricting the generators to
+        /// literal shapes keeps the filter a no-op here so the properties test
+        /// what they claim to test.
         fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
-            (any::<String>(), any::<String>())
+            (
+                proptest::string::string_regex("[a-z_]{0,6}").expect("literal input names"),
+                proptest::string::string_regex("[A-Za-z0-9]{0,8}").expect("literal input values"),
+            )
                 .prop_map(|(key, value)| ResolvedInput { key, value })
                 .boxed()
         }
     }
 
-    /// Maps resolved inputs to deterministic command-arg hashes (the v2 key
-    /// takes content hashes, not raw values).
+    /// Maps resolved inputs to instance-key hashes through the production
+    /// helper, so the guard tracks the real recipe instead of duplicating it.
+    ///
+    /// Duplicating the composite by hand left the properties green while a
+    /// flipped determinism filter in production would collapse every key; the
+    /// generator above keeps every generated binding deterministic, so the
+    /// production filter is exercised without rejecting any case.
     fn arg_hashes(inputs: &[ResolvedInput]) -> Vec<Hash> {
-        inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect()
+        inputs
+            .iter()
+            .filter_map(|input| {
+                crate::instance_key::instance_key_hash_from_resolved_value_bytes(
+                    &input.key,
+                    &input.value,
+                    input.value.as_bytes(),
+                )
+            })
+            .collect()
     }
 
     proptest! {
