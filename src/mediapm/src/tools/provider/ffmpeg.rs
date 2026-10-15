@@ -81,19 +81,75 @@ fn jellyfin_base() -> String {
     std::env::var(JELLYFIN_BASE_ENV).unwrap_or_else(|_| JELLYFIN_BASE_DEFAULT.to_string())
 }
 
-/// Builds the martin-riedl "latest" permalink for one macOS architecture.
+/// martin-riedl's release channel for a macOS permalink.
 ///
-/// The permalink always serves the current build: the resolve-phase probe
-/// reads its redirect target, and the fetch phase downloads through it.
-fn martin_riedl_permalink(arch: &str) -> String {
-    format!("{}/redirect/latest/macos/{arch}/snapshot/ffmpeg.zip", martin_riedl_base())
+/// `Snapshot` is the rolling master build the site republishes every few
+/// days; `Release` is the current tagged stable build. The macOS chain tries
+/// `Snapshot` before `Release` before the jellyfin fallback, so a snapshot
+/// outage does not exhaust the primary source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MartinRiedlChannel {
+    /// Rolling master snapshot build.
+    Snapshot,
+    /// Current tagged stable release.
+    Release,
+}
+
+impl MartinRiedlChannel {
+    /// The path segment the site uses for this channel.
+    const fn path_segment(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Release => "release",
+        }
+    }
+}
+
+/// Maps our canonical architecture label to the one martin-riedl.de uses.
+///
+/// Our canonical vocabulary (`aarch64`/`x86_64`, from `std::env::consts::ARCH`)
+/// drives content-map keys and `os_exec_paths`; the site labels the same two
+/// targets `arm64`/`amd64`. Translating here keeps the site's vocabulary out
+/// of everything downstream, so no content-addressed key depends on it.
+///
+/// # Panics
+///
+/// Panics on an arch outside [`MACOS_ARCHES`]: the value comes from our own
+/// fixed set, so anything else is a programming error, not user input.
+fn martin_riedl_arch_label(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => panic!("unsupported canonical arch for a martin-riedl URL: {other}"),
+    }
+}
+
+/// Builds the martin-riedl "latest" permalink for one macOS architecture and
+/// release channel.
+///
+/// The permalink always serves the current build for its channel: the
+/// resolve-phase probe reads its redirect target, and the fetch phase
+/// downloads through it. The architecture is translated by
+/// [`martin_riedl_arch_label`].
+fn martin_riedl_permalink(arch: &str, channel: MartinRiedlChannel) -> String {
+    format!(
+        "{}/redirect/latest/macos/{}/{}/ffmpeg.zip",
+        martin_riedl_base(),
+        martin_riedl_arch_label(arch),
+        channel.path_segment(),
+    )
 }
 
 /// Builds the martin-riedl versioned download URL for one architecture and
 /// build id. The build id is the full `{unixtime}_{buildid}` path segment
 /// parsed from a permalink redirect target by [`martin_riedl_build_id_from_url`].
+/// The architecture is translated by [`martin_riedl_arch_label`].
 fn martin_riedl_download_url(arch: &str, build_id: &str) -> String {
-    format!("{}/download/macos/{arch}/{build_id}/ffmpeg.zip", martin_riedl_base())
+    format!(
+        "{}/download/macos/{}/{build_id}/ffmpeg.zip",
+        martin_riedl_base(),
+        martin_riedl_arch_label(arch),
+    )
 }
 
 /// Builds the jellyfin-ffmpeg macOS archive URL for one architecture.
@@ -187,7 +243,7 @@ pub(crate) async fn resolve_btbn_tag(
 pub(crate) async fn resolve_macos_leg(
     metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> (String, bool) {
-    let permalink = martin_riedl_permalink("aarch64");
+    let permalink = martin_riedl_permalink("aarch64", MartinRiedlChannel::Snapshot);
 
     // Cache lookup, keyed by the permalink the fetch phase caches under.
     if let Some(cache) = metadata_cache
@@ -294,14 +350,23 @@ pub(crate) fn sources(target: &VersionSpec) -> ResolvedToolFetch {
     ];
 
     for arch in MACOS_ARCHES {
-        let primary = match pinned_build_id {
-            Some(build_id) => martin_riedl_download_url(arch, build_id),
-            None => martin_riedl_permalink(arch),
+        // `Exact` addresses one pinned build directly; `Latest` walks the
+        // site's two rolling channels before the jellyfin fallback, so a
+        // snapshot outage still leaves the release permalink as a primary.
+        let urls = match pinned_build_id {
+            Some(build_id) => {
+                vec![martin_riedl_download_url(arch, build_id), jellyfin_macos_archive(arch)]
+            }
+            None => vec![
+                martin_riedl_permalink(arch, MartinRiedlChannel::Snapshot),
+                martin_riedl_permalink(arch, MartinRiedlChannel::Release),
+                jellyfin_macos_archive(arch),
+            ],
         };
         sources.push(ResolvedSource {
             os: "macos".to_string(),
             arch: arch.to_string(),
-            producer: SourceProducer::Fetch { urls: vec![primary, jellyfin_macos_archive(arch)] },
+            producer: SourceProducer::Fetch { urls },
             expected_size: None,
             size_hint_bytes: Some(45_000_000),
         });
@@ -328,6 +393,31 @@ pub(crate) fn sources(target: &VersionSpec) -> ResolvedToolFetch {
 mod tests {
     use super::*;
 
+    /// Our canonical arch labels (`aarch64`/`x86_64`) are translated to the
+    /// site's vocabulary (`arm64`/`amd64`) when building martin-riedl URLs:
+    /// sending the canonical label is what 404'd every macOS request.
+    #[test]
+    fn martin_riedl_urls_map_canonical_arch_labels() {
+        let _env = crate::example_isolation::lock_process_env();
+        assert_eq!(martin_riedl_arch_label("aarch64"), "arm64");
+        assert_eq!(martin_riedl_arch_label("x86_64"), "amd64");
+        assert_eq!(
+            martin_riedl_permalink("aarch64", MartinRiedlChannel::Snapshot),
+            format!("{}/redirect/latest/macos/arm64/snapshot/ffmpeg.zip", martin_riedl_base())
+        );
+        assert_eq!(
+            martin_riedl_permalink("x86_64", MartinRiedlChannel::Release),
+            format!("{}/redirect/latest/macos/amd64/release/ffmpeg.zip", martin_riedl_base())
+        );
+        assert_eq!(
+            martin_riedl_download_url("x86_64", "1759500000_N-127260-g7bc3576910"),
+            format!(
+                "{}/download/macos/amd64/1759500000_N-127260-g7bc3576910/ffmpeg.zip",
+                martin_riedl_base()
+            )
+        );
+    }
+
     /// A martin-riedl versioned download URL parses to its full
     /// `{unixtime}_{buildid}` segment — the value the `Exact` path embeds
     /// and [`macos_leg_from_url`] re-derives from a fetch's actual URL.
@@ -347,7 +437,7 @@ mod tests {
     fn martin_riedl_build_id_refuses_non_download_urls() {
         assert_eq!(
             martin_riedl_build_id_from_url(
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip"
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"
             ),
             None,
             "a permalink has no /download/macos/ segment"
@@ -398,12 +488,13 @@ mod tests {
         );
     }
 
-    /// `Latest` builds one chain per macOS architecture — martin-riedl
-    /// permalink first, jellyfin archive second — alongside the unchanged
-    /// `BtbN` Windows and Linux sources. Two macos sources on one OS label is
-    /// what makes the sync layer's arch-segmented content keys kick in.
+    /// `Latest` builds one chain per macOS architecture — the snapshot
+    /// permalink, the release permalink, then the jellyfin archive —
+    /// alongside the unchanged `BtbN` Windows and Linux sources. Two macOS
+    /// sources on one OS label is what makes the sync layer's arch-segmented
+    /// content keys kick in.
     #[test]
-    fn sources_latest_chains_permalink_then_jellyfin_for_both_arches() {
+    fn sources_latest_chains_snapshot_release_then_jellyfin_for_both_arches() {
         let fetch = sources(&VersionSpec::Latest);
 
         let macos: Vec<&ResolvedSource> =
@@ -417,8 +508,12 @@ mod tests {
             };
             assert_eq!(
                 urls,
-                &[martin_riedl_permalink(&source.arch), jellyfin_macos_archive(&source.arch),],
-                "the permalink is the primary chain member, jellyfin the fallback"
+                &[
+                    martin_riedl_permalink(&source.arch, MartinRiedlChannel::Snapshot),
+                    martin_riedl_permalink(&source.arch, MartinRiedlChannel::Release),
+                    jellyfin_macos_archive(&source.arch),
+                ],
+                "snapshot first, release second, jellyfin last"
             );
         }
 
@@ -468,19 +563,19 @@ mod tests {
 
         let server = MockServer::start().await;
         let build_id = "1759500000_N-127260-g7bc3576910";
-        let permalink_path = "/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip";
+        let permalink_path = "/redirect/latest/macos/arm64/snapshot/ffmpeg.zip";
         Mock::given(method("HEAD"))
             .and(path(permalink_path))
             .respond_with(ResponseTemplate::new(302).insert_header(
                 "location",
-                format!("/download/macos/aarch64/{build_id}/ffmpeg.zip").as_str(),
+                format!("/download/macos/arm64/{build_id}/ffmpeg.zip").as_str(),
             ))
             .mount(&server)
             .await;
         // The redirected HEAD lands here; any body would do, the probe only
         // reads the final URL.
         Mock::given(method("HEAD"))
-            .and(path(format!("/download/macos/aarch64/{build_id}/ffmpeg.zip")))
+            .and(path(format!("/download/macos/arm64/{build_id}/ffmpeg.zip")))
             .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;

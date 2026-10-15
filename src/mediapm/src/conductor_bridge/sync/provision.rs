@@ -787,9 +787,13 @@ mod tests {
         // download (whose path carries the build id), which serves a real zip.
         // No `.sha256` is mounted, so the sibling probe 404s and the bytes are
         // accepted unverified (the documented "verify when served" rule).
-        for arch in ["aarch64", "x86_64"] {
-            let permalink = format!("/redirect/latest/macos/{arch}/snapshot/ffmpeg.zip");
-            let versioned = format!("/download/macos/{arch}/{build_id}/ffmpeg.zip");
+        // The client translates our canonical arch labels to the site's
+        // vocabulary (`aarch64` -> `arm64`, `x86_64` -> `amd64`) when it
+        // builds martin-riedl URLs, so the mocks must answer on the mapped
+        // path rather than the canonical one.
+        for url_arch in ["arm64", "amd64"] {
+            let permalink = format!("/redirect/latest/macos/{url_arch}/snapshot/ffmpeg.zip");
+            let versioned = format!("/download/macos/{url_arch}/{build_id}/ffmpeg.zip");
             Mock::given(method("GET"))
                 .and(path(permalink))
                 .respond_with(

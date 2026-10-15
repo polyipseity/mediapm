@@ -248,7 +248,7 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
         user_cache
             .store_bytes(
                 "tool_metadata",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;

@@ -730,7 +730,7 @@ async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> Exampl
     cache
         .store_bytes(
             METADATA_DOMAIN,
-            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
             b"1759500000_N-127260-g7bc3576910",
         )
         .await;

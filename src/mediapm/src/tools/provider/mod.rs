@@ -937,7 +937,7 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
@@ -1062,7 +1062,7 @@ mod tests {
             "ffmpeg" => (
                 vec![
                     "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
-                    "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                    "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
                 ],
                 vec![b"autobuild-2025-07-15-12-00", b"1759500000_N-127260-g7bc3576910"],
             ),
@@ -1174,7 +1174,7 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
@@ -1272,7 +1272,7 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
@@ -1441,7 +1441,7 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
@@ -1516,22 +1516,32 @@ mod tests {
                     "ffmpeg windows primary URL should use master-latest naming"
                 );
             }
-            // macos: one source per arch, martin-riedl permalink first, jellyfin fallback second
+            // macos: one source per arch — snapshot permalink, release
+            // permalink, then the jellyfin fallback
             for source in &fetch.sources[1..3] {
                 assert_eq!(source.os, "macos");
                 let SourceProducer::Fetch { urls } = &source.producer else {
                     panic!("ffmpeg macOS sources must be Fetch producers");
                 };
-                assert_eq!(urls.len(), 2, "macOS chain holds permalink + jellyfin fallback");
+                assert_eq!(
+                    urls.len(),
+                    3,
+                    "macOS chain holds snapshot + release permalinks + jellyfin fallback"
+                );
                 assert!(
-                    urls[0].contains("/redirect/latest/macos/"),
-                    "macOS primary is a martin-riedl permalink: {}",
+                    urls[0].contains("/redirect/latest/macos/") && urls[0].contains("/snapshot/"),
+                    "macOS primary is the martin-riedl snapshot permalink: {}",
                     urls[0]
                 );
                 assert!(
-                    urls[1].contains("jellyfin-ffmpeg_"),
-                    "macOS fallback is a jellyfin archive: {}",
+                    urls[1].contains("/redirect/latest/macos/") && urls[1].contains("/release/"),
+                    "macOS second candidate is the martin-riedl release permalink: {}",
                     urls[1]
+                );
+                assert!(
+                    urls[2].contains("jellyfin-ffmpeg_"),
+                    "macOS fallback is a jellyfin archive: {}",
+                    urls[2]
                 );
             }
             assert_eq!(fetch.sources[1].arch, "aarch64");
@@ -1762,7 +1772,7 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
@@ -1834,7 +1844,7 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/aarch64/snapshot/ffmpeg.zip",
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
