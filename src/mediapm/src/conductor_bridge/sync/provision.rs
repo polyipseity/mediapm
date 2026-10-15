@@ -819,7 +819,9 @@ mod tests {
         // Build the real ffmpeg source set against the seam, then keep only the
         // macOS dual-arch entries so the fetch never touches BtbN's github.com
         // windows/linux legs.
-        let mut fetch = crate::tools::provider::ffmpeg::sources(&VersionSpec::Latest);
+        // No resolved jellyfin fallback in this test: it drives the
+        // martin-riedl primary, which the mock answers first.
+        let mut fetch = crate::tools::provider::ffmpeg::sources(&VersionSpec::Latest, None);
         fetch.sources.retain(|source| source.os == "macos");
         assert_eq!(fetch.sources.len(), 2, "expected both macOS arch sources");
 

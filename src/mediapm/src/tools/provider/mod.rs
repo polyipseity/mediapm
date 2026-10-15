@@ -701,19 +701,26 @@ pub(crate) async fn resolve_tool_fetch(
                 ));
             }
             let (autobuild_tag, btbn_cached) = ffmpeg::resolve_btbn_tag(tracker_ref).await?;
-            // The macOS leg is advisory at resolve time: a failed permalink
-            // probe records the jellyfin fallback version, and
-            // `canonical_version_after_fetch` rewrites the composite from
-            // the URL that actually served the fetch.
-            let (macos_leg, leg_cached) = ffmpeg::resolve_macos_leg(tracker_ref).await;
+            // The jellyfin fallback is resolved before the leg because the
+            // leg records the version the fallback would serve when the
+            // permalink probe cannot identify a build. The leg is advisory
+            // either way: `canonical_version_after_fetch` rewrites the
+            // composite from the URL that actually served the fetch.
+            let (jellyfin, jellyfin_cached) =
+                ffmpeg::resolve_jellyfin_macos_fallback(tracker_ref).await;
+            let (macos_leg, leg_cached) = ffmpeg::resolve_macos_leg(
+                tracker_ref,
+                jellyfin.as_ref().map(|fallback| fallback.version.as_str()),
+            )
+            .await;
             let canonical_version = format!("{autobuild_tag}+{macos_leg}");
-            let fetch = ffmpeg::sources(version_target);
+            let fetch = ffmpeg::sources(version_target, jellyfin.as_ref());
             (
                 fetch,
                 ResolvedToolMetadata {
                     human_readable_version: canonical_version.clone(),
                     canonical_version,
-                    metadata_cached: btbn_cached || leg_cached,
+                    metadata_cached: btbn_cached || leg_cached || jellyfin_cached,
                     metadata_fetch_count: 0,
                     resolved_tag: Some(autobuild_tag),
                     // WHY: the artifact set mixes BtbN autobuilds,
@@ -942,6 +949,8 @@ mod tests {
             )
             .await;
 
+        seed_jellyfin_metadata(&cache, "default").await;
+
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "import", "sd"] {
             let result = resolve_tool_fetch(
                 name,
@@ -1052,6 +1061,34 @@ mod tests {
         assert!(result.is_err(), "unknown tool should return error");
     }
 
+    /// Seeds the jellyfin macOS repository lookups, so a test that resolves
+    /// ffmpeg never reaches the live repository: the directory index, which
+    /// names the newest build line, and both architectures' pointer files,
+    /// which name the archives.
+    async fn seed_jellyfin_metadata(cache: &ToolDownloadCache, domain: &str) {
+        cache
+            .store_bytes(
+                domain,
+                "https://repo.jellyfin.org/files/ffmpeg/macos/",
+                b"<a href=\"latest-7.x/\">latest-7.x/</a><a href=\"latest-8.x/\">latest-8.x/</a>",
+            )
+            .await;
+        cache
+            .store_bytes(
+                domain,
+                "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/macarm64-gpl.txt",
+                b"jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz\n",
+            )
+            .await;
+        cache
+            .store_bytes(
+                domain,
+                "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/x86_64/mac64-gpl.txt",
+                b"jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz\n",
+            )
+            .await;
+    }
+
     /// Seeded metadata cache for a single tool's resolved fields, avoiding real
     /// API calls.
     async fn seed_metadata_cache(tool_name: &str) -> (ToolDownloadCache, tempfile::TempDir) {
@@ -1063,8 +1100,17 @@ mod tests {
                 vec![
                     "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
                     "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+                    "https://repo.jellyfin.org/files/ffmpeg/macos/",
+                    "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/macarm64-gpl.txt",
+                    "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/x86_64/mac64-gpl.txt",
                 ],
-                vec![b"autobuild-2025-07-15-12-00", b"1759500000_N-127260-g7bc3576910"],
+                vec![
+                    b"autobuild-2025-07-15-12-00",
+                    b"1759500000_N-127260-g7bc3576910",
+                    b"<a href=\"latest-8.x/\">latest-8.x/</a>",
+                    b"jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz\n",
+                    b"jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz\n",
+                ],
             ),
             _ => (vec![], vec![]),
         };
@@ -1095,6 +1141,11 @@ mod tests {
         .await
         .expect("ffmpeg resolve should succeed");
         assert_eq!(metadata.resolved_tag.as_deref(), Some("autobuild-2025-07-15-12-00"));
+        assert!(
+            metadata.metadata_cached,
+            "the seeded cache must serve every ffmpeg lookup; a false here means a test \
+             reached the network"
+        );
         // WHY: no single version identifies the mixed BtbN+martin-riedl+jellyfin artifact set.
         assert_eq!(metadata.resolved_version, None);
         // WHY: the BtbN build-repo hash is not the upstream ffmpeg source hash.
@@ -1178,6 +1229,8 @@ mod tests {
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
+
+        seed_jellyfin_metadata(&cache, "default").await;
 
         // media-tagger is an internal launcher — no external sources.
         let expected_oses = ["windows", "linux", "macos"];
@@ -1276,6 +1329,8 @@ mod tests {
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
+
+        seed_jellyfin_metadata(&cache, "default").await;
 
         for (tool_name, _, tag, _hash) in &test_data {
             let (fetch, metadata) = resolve_tool_fetch(
@@ -1445,6 +1500,8 @@ mod tests {
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
+
+        seed_jellyfin_metadata(&cache, "default").await;
 
         // — yt-dlp (tag "2025.07.15", no v-prefix, no filename rewrite) —
         {
@@ -1777,6 +1834,8 @@ mod tests {
             )
             .await;
 
+        seed_jellyfin_metadata(&cache, "default").await;
+
         for tool in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd", "media-tagger"] {
             let (_, metadata1) = resolve_tool_fetch(
                 tool,
@@ -1848,6 +1907,8 @@ mod tests {
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
+
+        seed_jellyfin_metadata(&cache, "default").await;
 
         // All managed tools whose provider type is Fetch must have size_hint_bytes.
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain"] {
@@ -2056,7 +2117,7 @@ mod tests {
     #[test]
     fn canonical_after_fetch_rewrites_the_leg_from_a_jellyfin_url_and_keeps_dep_segments() {
         let entries = [macos_entry_with_actual_url(
-            "https://repo.jellyfin.org/releases/ffmpeg/macos/jellyfin-ffmpeg_7.1.3-2_portable_macos-aarch64.zip",
+            "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz",
         )];
         assert_eq!(
             canonical_version_after_fetch(
@@ -2064,7 +2125,7 @@ mod tests {
                 "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910;deno:abc123",
                 &entries,
             ),
-            "autobuild-2025-07-15-12-00+7.1.3-2;deno:abc123",
+            "autobuild-2025-07-15-12-00+8.1.3-1;deno:abc123",
             "the fallback leg replaces the composite segment; dep segments stay"
         );
     }

@@ -1,10 +1,14 @@
 //! Provider source definitions for `ffmpeg`.
 //!
 //! Windows and Linux come from BtbN/FFmpeg-Builds (two URL candidates each,
-//! tried in order). macOS is a two-endpoint chain per architecture: a
-//! martin-riedl.de permalink (primary; `aarch64` and `x86_64` are two
-//! sources on one OS label, so the sync layer keys their payloads
-//! `macos/{arch}/…`) falling back to a versioned jellyfin-ffmpeg archive.
+//! tried in order). macOS is a per-architecture chain: the martin-riedl.de
+//! `snapshot` permalink (primary), that site's `release` permalink, then the
+//! newest jellyfin-ffmpeg archive. `aarch64` and `x86_64` are two sources on
+//! one OS label, so the sync layer keys their payloads `macos/{arch}/…`. The
+//! permalinks carry the site's arch vocabulary (`arm64`/`amd64`), which is
+//! not ours, and the jellyfin archive is resolved on every metadata-cache
+//! miss rather than pinned, because that repository retires a build line by
+//! deleting its artifacts.
 //! The conductor fetch layer verifies each downloaded candidate against the
 //! serving endpoint's `.sha256` sibling when one is published, so a corrupt
 //! or stale chain member fails over to the next automatically.
@@ -12,7 +16,7 @@
 //! Canonical version: composite of `autobuild-{tag}` from `BtbN` and the
 //! macOS leg actually fetched — the martin-riedl build id
 //! (`{unixtime}_{buildid}`, e.g. `1759500000_N-127260-g7bc3576910`) when
-//! the primary served, the jellyfin-ffmpeg version (e.g. `7.1.3-1`) when
+//! the primary served, the jellyfin-ffmpeg version (e.g. `8.1.3-1`) when
 //! the fallback did — e.g.
 //! "autobuild-2026-07-22-13-36+1759500000_N-127260-g7bc3576910". The
 //! resolve-time leg is corrected after fetch by
@@ -28,6 +32,8 @@
 //! ffmpeg-source git-describe but does not identify the whole set, and the
 //! jellyfin fork's version carries no upstream git provenance at all.
 //! Resolvable != meaningful.
+
+use std::collections::BTreeMap;
 
 use mediapm_conductor::tools::provider::{
     ResolvedSource, ResolvedToolFetch, SourceProducer, VersionSpec, VersionSpecFields,
@@ -52,18 +58,28 @@ const JELLYFIN_BASE_ENV: &str = "MEDIAPM_JELLYFIN_BASE";
 /// Production repo.jellyfin.org base URL.
 const JELLYFIN_BASE_DEFAULT: &str = "https://repo.jellyfin.org";
 
-/// jellyfin-ffmpeg macOS version embedded in the fallback archive names.
-///
-/// Single source of truth for the fallback version: the archive URL is built
-/// from it, the canonical fallback leg is it, and
-/// `jellyfin_version_parses_from_the_portable_archive_name` pins that the
-/// URL's basename parses back to it, so the URL and the leg cannot drift.
-const JELLYFIN_MACOS_VERSION: &str = "7.1.3-1";
-
 /// macOS architectures the martin-riedl primary and jellyfin fallback both
 /// publish. Both land in the content map (`macos/{arch}/…` keys) and the
 /// host-arch one drives the os-keyed executable path.
 const MACOS_ARCHES: [&str; 2] = ["aarch64", "x86_64"];
+
+/// One canonical architecture and the two labels jellyfin's repository uses
+/// for it: the directory archives live under and the pointer-file token that
+/// names the archive.
+struct JellyfinArchLabels {
+    /// Our canonical label — the content-map and `os_exec_paths` vocabulary.
+    canonical: &'static str,
+    /// The repository directory holding this architecture's archives.
+    dir: &'static str,
+    /// The `*-gpl.txt` pointer-file token naming this architecture's archive.
+    file: &'static str,
+}
+
+/// The jellyfin repository's labels for the two macOS architectures.
+const JELLYFIN_MACOS_ARCH_LABELS: [JellyfinArchLabels; 2] = [
+    JellyfinArchLabels { canonical: "aarch64", dir: "arm64", file: "macarm64" },
+    JellyfinArchLabels { canonical: "x86_64", dir: "x86_64", file: "mac64" },
+];
 
 /// Returns the martin-riedl base URL — the production endpoint, or the
 /// `MEDIAPM_MARTIN_RIEDL_BASE` test override when set.
@@ -152,17 +168,177 @@ fn martin_riedl_download_url(arch: &str, build_id: &str) -> String {
     )
 }
 
-/// Builds the jellyfin-ffmpeg macOS archive URL for one architecture.
+/// The jellyfin-ffmpeg macOS fallback archives the repository currently
+/// publishes.
 ///
-/// The archive name embeds [`JELLYFIN_MACOS_VERSION`]; the canonical
-/// fallback leg is parsed back out of this name by
-/// [`jellyfin_version_from_archive_name`].
-fn jellyfin_macos_archive(arch: &str) -> String {
-    format!(
-        "{}/releases/ffmpeg/macos/jellyfin-ffmpeg_{}_portable_macos-{arch}.zip",
-        jellyfin_base(),
-        JELLYFIN_MACOS_VERSION,
-    )
+/// Resolved rather than pinned: the repository retires a build line by
+/// deleting its artifacts — the reason a version constant rots into a `410
+/// Gone` — so the version comes from the repository and the canonical leg is
+/// derived from whatever the fetch actually served.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JellyfinMacosFallback {
+    /// The version published in the newest `latest-{N}.x` line (e.g. `8.1.3-1`).
+    pub(crate) version: String,
+    /// Canonical architecture label -> the archive URL the pointer file names.
+    pub(crate) urls: BTreeMap<String, String>,
+}
+
+/// The jellyfin macOS directory index URL.
+fn jellyfin_macos_index_url() -> String {
+    format!("{}/files/ffmpeg/macos/", jellyfin_base())
+}
+
+/// The `*-gpl.txt` pointer-file URL for one architecture in one build line.
+fn jellyfin_macos_pointer_url(labels: &JellyfinArchLabels, line: &str) -> String {
+    format!("{}/files/ffmpeg/macos/{line}/{}/{}-gpl.txt", jellyfin_base(), labels.dir, labels.file)
+}
+
+/// The archive URL for one architecture in one build line.
+fn jellyfin_macos_archive_url(labels: &JellyfinArchLabels, line: &str, filename: &str) -> String {
+    format!("{}/files/ffmpeg/macos/{line}/{}/{filename}", jellyfin_base(), labels.dir)
+}
+
+/// Picks the highest `latest-{N}.x` line named in the jellyfin macOS index.
+///
+/// The index is an nginx `<pre>` listing. The comparison is numeric, not
+/// textual, because `latest-10.x` sorts before `latest-9.x` as text. Returns
+/// `None` when the listing names no such line.
+fn newest_jellyfin_major_line(index_html: &str) -> Option<String> {
+    index_html
+        .split("href=\"latest-")
+        .skip(1)
+        .filter_map(|rest| rest.split(".x/\"").next())
+        .filter_map(|digits| digits.parse::<u32>().ok())
+        .max()
+        .map(|major| format!("latest-{major}.x"))
+}
+
+/// Reads the archive filename out of a `*-gpl.txt` pointer file.
+///
+/// The repository writes the exact archive name on its own line. The shape is
+/// re-checked here so a reorganized pointer file degrades to "no fallback"
+/// rather than producing a URL for something that is not a jellyfin archive.
+fn jellyfin_pointer_filename(body: &str, file_label: &str) -> Option<String> {
+    let name = body.trim();
+    let suffix = format!("_portable_{file_label}-gpl.tar.xz");
+    (name.starts_with("jellyfin-ffmpeg_") && name.ends_with(&suffix)).then(|| name.to_string())
+}
+
+/// Fetches a small text resource, preferring the metadata cache.
+///
+/// Returns the body and whether it came from the cache. A transport failure,
+/// non-success status, or unreadable body yields `None` with a
+/// `tracing::warn!` naming the URL: the caller degrades to a shorter macOS
+/// chain rather than failing the resolve.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from
+/// [`shared_http_client`](mediapm_conductor::http::client::shared_http_client).
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
+async fn fetch_text(
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
+    url: &str,
+) -> (Option<String>, bool) {
+    if let Some(cache) = metadata_cache
+        && let Some(bytes) = cache.lookup_bytes(url).await
+        && let Ok(text) = String::from_utf8(bytes)
+    {
+        return (Some(text), true);
+    }
+    let Ok(client) = mediapm_conductor::http::client::shared_http_client() else {
+        tracing::warn!("HTTP client unavailable while reading {url}");
+        return (None, false);
+    };
+    match client.get(url).send().await {
+        Ok(response) if response.status().is_success() => match response.text().await {
+            Ok(text) => {
+                if let Some(cache) = metadata_cache {
+                    cache.store_bytes(url, text.as_bytes()).await;
+                }
+                (Some(text), false)
+            }
+            Err(e) => {
+                tracing::warn!("could not read the body of {url}: {e}");
+                (None, false)
+            }
+        },
+        Ok(response) => {
+            tracing::warn!("{url} answered GET with {}", response.status());
+            (None, false)
+        }
+        Err(e) => {
+            tracing::warn!("could not reach {url}: {e}");
+            (None, false)
+        }
+    }
+}
+
+/// Resolves the newest jellyfin-ffmpeg macOS release from the repository.
+///
+/// Two reads, both through the metadata cache (1-day, creation-time — never
+/// `touch`ed, which would extend the freshness window): the macOS directory
+/// index, which names the highest `latest-{N}.x` line, and that line's
+/// per-architecture `*-gpl.txt` pointer file, which names the archive exactly.
+///
+/// Returns the fallback plus whether every read was served from the metadata
+/// cache, or `None` when the repository is unreadable or a pointer file does
+/// not name a well-formed archive. `None` is not an error: the martin-riedl
+/// permalinks remain the macOS chain, so a sync the primary can serve still
+/// succeeds without a fallback.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from
+/// [`shared_http_client`](mediapm_conductor::http::client::shared_http_client).
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
+pub(crate) async fn resolve_jellyfin_macos_fallback(
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
+) -> (Option<JellyfinMacosFallback>, bool) {
+    let (index, index_cached) = fetch_text(metadata_cache, &jellyfin_macos_index_url()).await;
+    let Some(line) = index.as_deref().and_then(newest_jellyfin_major_line) else {
+        tracing::warn!(
+            "the jellyfin macOS index named no build line; the macOS chain keeps only the \
+             martin-riedl permalinks"
+        );
+        return (None, false);
+    };
+
+    let mut version: Option<String> = None;
+    let mut urls = BTreeMap::new();
+    let mut all_cached = index_cached;
+    for labels in JELLYFIN_MACOS_ARCH_LABELS {
+        let pointer_url = jellyfin_macos_pointer_url(&labels, &line);
+        let (body, cached) = fetch_text(metadata_cache, &pointer_url).await;
+        all_cached &= cached;
+        let Some(filename) =
+            body.as_deref().and_then(|body| jellyfin_pointer_filename(body, labels.file))
+        else {
+            tracing::warn!(
+                "the jellyfin pointer file {pointer_url} named no macOS archive; the macOS \
+                 chain keeps only the martin-riedl permalinks"
+            );
+            return (None, false);
+        };
+        if version.is_none() {
+            version = jellyfin_version_from_archive_name(&filename);
+        }
+        urls.insert(
+            labels.canonical.to_string(),
+            jellyfin_macos_archive_url(&labels, &line, &filename),
+        );
+    }
+
+    let Some(version) = version else {
+        tracing::warn!(
+            "the jellyfin macOS archive name carried no version; the macOS chain keeps only \
+             the martin-riedl permalinks"
+        );
+        return (None, false);
+    };
+    (Some(JellyfinMacosFallback { version, urls }), all_cached)
 }
 
 /// Parses the build id from a martin-riedl versioned download URL.
@@ -183,7 +359,8 @@ fn martin_riedl_build_id_from_url(url: &str) -> Option<String> {
 
 /// Parses the jellyfin-ffmpeg version from an archive URL's basename.
 ///
-/// Expects `jellyfin-ffmpeg_{version}_portable_macos-{arch}.zip`; returns
+/// Expects the repository's
+/// `jellyfin-ffmpeg_{version}_portable_{arch}-gpl.tar.xz` shape; returns
 /// `None` for any other shape (including martin-riedl URLs, whose `ffmpeg.zip`
 /// basename carries no version).
 fn jellyfin_version_from_archive_name(url: &str) -> Option<String> {
@@ -217,8 +394,18 @@ pub(crate) async fn resolve_btbn_tag(
     super::resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", metadata_cache).await
 }
 
+/// Advisory macOS leg recorded when neither the martin-riedl probe nor the
+/// jellyfin index identified a version.
+///
+/// The value never survives a successful fetch:
+/// [`super::canonical_version_after_fetch`] replaces the leg with the build id
+/// or version parsed from the URL that actually served the macOS bytes, so it
+/// only labels a resolve that could not identify anything.
+const UNRESOLVED_MACOS_LEG: &str = "unresolved";
+
 /// Resolves the macOS canonical leg: the martin-riedl build id behind the
-/// `aarch64` permalink, or the jellyfin-ffmpeg version when the probe fails.
+/// `aarch64` snapshot permalink, or `jellyfin_fallback_version` when the probe
+/// fails.
 ///
 /// The probe is a `HEAD` request through the redirect-following shared
 /// client, so the final URL after all hops is what gets parsed and no zip
@@ -232,6 +419,10 @@ pub(crate) async fn resolve_btbn_tag(
 /// id for both architectures, so a second probe would double the metadata
 /// traffic for no information.
 ///
+/// `jellyfin_fallback_version` is whatever
+/// [`resolve_jellyfin_macos_fallback`] found, so an unidentified probe still
+/// records the version the fallback chain would serve.
+///
 /// Returns `(leg, metadata_cached)`.
 ///
 /// # HTTP client policy
@@ -242,6 +433,7 @@ pub(crate) async fn resolve_btbn_tag(
 /// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
 pub(crate) async fn resolve_macos_leg(
     metadata_cache: Option<&MetadataCacheTracker<'_>>,
+    jellyfin_fallback_version: Option<&str>,
 ) -> (String, bool) {
     let permalink = martin_riedl_permalink("aarch64", MartinRiedlChannel::Snapshot);
 
@@ -271,9 +463,9 @@ pub(crate) async fn resolve_macos_leg(
         // rotates (<= 1 day) — self-healing, not a permanent wedge.
         tracing::warn!(
             "martin-riedl permalink probe failed; the macOS canonical leg records the \
-             jellyfin fallback version until fetch feedback corrects it"
+             resolved jellyfin version until fetch feedback corrects it"
         );
-        (JELLYFIN_MACOS_VERSION.to_string(), false)
+        (jellyfin_fallback_version.unwrap_or(UNRESOLVED_MACOS_LEG).to_string(), false)
     }
 }
 
@@ -318,16 +510,22 @@ async fn probe_macos_build_id(permalink: &str) -> Option<String> {
 
 /// Returns the resolved sources for `ffmpeg`.
 ///
-/// `target` selects the macOS primary URLs: `Latest` (and any non-tag spec)
-/// chains the martin-riedl permalink before the jellyfin archive per
+/// `target` selects the martin-riedl URLs: `Latest` (and any non-tag spec)
+/// chains the snapshot permalink before the release permalink per
 /// architecture; `Exact { tag }` substitutes the tag as the martin-riedl
-/// build id into versioned download URLs, keeping the jellyfin fallback
-/// behind it. The tool-level dispatcher refuses ffmpeg pins before ever
-/// building an `Exact` fetch (`BtbN` retains no historical builds), so the
-/// `Exact` shape exists for direct callers and its URL construction is
-/// pinned by unit tests.
+/// build id into a versioned download URL. The tool-level dispatcher refuses
+/// ffmpeg pins before ever building an `Exact` fetch (`BtbN` retains no
+/// historical builds), so the `Exact` shape exists for direct callers and its
+/// URL construction is pinned by unit tests.
+///
+/// `jellyfin` is the resolved macOS fallback. When it is `None` — the
+/// repository was unreadable — the macOS chains keep only their martin-riedl
+/// candidates rather than inventing an archive URL.
 #[must_use]
-pub(crate) fn sources(target: &VersionSpec) -> ResolvedToolFetch {
+pub(crate) fn sources(
+    target: &VersionSpec,
+    jellyfin: Option<&JellyfinMacosFallback>,
+) -> ResolvedToolFetch {
     let pinned_build_id = match target {
         VersionSpec::Exact(VersionSpecFields { tag, .. }) => tag.as_deref(),
         VersionSpec::Latest => None,
@@ -351,18 +549,19 @@ pub(crate) fn sources(target: &VersionSpec) -> ResolvedToolFetch {
 
     for arch in MACOS_ARCHES {
         // `Exact` addresses one pinned build directly; `Latest` walks the
-        // site's two rolling channels before the jellyfin fallback, so a
-        // snapshot outage still leaves the release permalink as a primary.
-        let urls = match pinned_build_id {
-            Some(build_id) => {
-                vec![martin_riedl_download_url(arch, build_id), jellyfin_macos_archive(arch)]
-            }
+        // site's two rolling channels first, so a snapshot outage still
+        // leaves the release permalink as a primary. The jellyfin archive
+        // trails either shape when the repository was readable.
+        let mut urls = match pinned_build_id {
+            Some(build_id) => vec![martin_riedl_download_url(arch, build_id)],
             None => vec![
                 martin_riedl_permalink(arch, MartinRiedlChannel::Snapshot),
                 martin_riedl_permalink(arch, MartinRiedlChannel::Release),
-                jellyfin_macos_archive(arch),
             ],
         };
+        if let Some(archive) = jellyfin.and_then(|fallback| fallback.urls.get(arch)) {
+            urls.push(archive.clone());
+        }
         sources.push(ResolvedSource {
             os: "macos".to_string(),
             arch: arch.to_string(),
@@ -449,14 +648,18 @@ mod tests {
         );
     }
 
-    /// The jellyfin fallback archive name embeds the version the canonical
-    /// fallback leg records, so the URL and the leg cannot drift.
+    /// The jellyfin archive basename carries the version the canonical leg
+    /// records, and the repository's pointer file names exactly that archive,
+    /// so the resolved URL and the leg cannot drift.
     #[test]
     fn jellyfin_version_parses_from_the_portable_archive_name() {
         assert_eq!(
-            jellyfin_version_from_archive_name(&jellyfin_macos_archive("aarch64")).as_deref(),
-            Some(JELLYFIN_MACOS_VERSION),
-            "the archive URL built from the version const parses back to it"
+            jellyfin_version_from_archive_name(
+                "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/\
+                 jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz"
+            )
+            .as_deref(),
+            Some("8.1.3-1"),
         );
         assert_eq!(
             jellyfin_version_from_archive_name("https://example.com/ffmpeg.zip"),
@@ -476,8 +679,12 @@ mod tests {
             Some("1759500000_N-127260-g7bc3576910"),
         );
         assert_eq!(
-            macos_leg_from_url(&jellyfin_macos_archive("x86_64")).as_deref(),
-            Some(JELLYFIN_MACOS_VERSION),
+            macos_leg_from_url(
+                "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/x86_64/\
+                 jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz"
+            )
+            .as_deref(),
+            Some("8.1.3-1"),
         );
         assert_eq!(
             macos_leg_from_url(
@@ -488,14 +695,37 @@ mod tests {
         );
     }
 
+    /// A hand-built jellyfin fallback standing in for a repository read, so
+    /// the chain tests do not depend on the network.
+    fn test_jellyfin_fallback() -> JellyfinMacosFallback {
+        let base = JELLYFIN_BASE_DEFAULT;
+        let mut urls = BTreeMap::new();
+        urls.insert(
+            "aarch64".to_string(),
+            format!(
+                "{base}/files/ffmpeg/macos/latest-8.x/arm64/\
+                 jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz"
+            ),
+        );
+        urls.insert(
+            "x86_64".to_string(),
+            format!(
+                "{base}/files/ffmpeg/macos/latest-8.x/x86_64/\
+                 jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz"
+            ),
+        );
+        JellyfinMacosFallback { version: "8.1.3-1".to_string(), urls }
+    }
+
     /// `Latest` builds one chain per macOS architecture — the snapshot
-    /// permalink, the release permalink, then the jellyfin archive —
+    /// permalink, the release permalink, then the resolved jellyfin archive —
     /// alongside the unchanged `BtbN` Windows and Linux sources. Two macOS
     /// sources on one OS label is what makes the sync layer's arch-segmented
     /// content keys kick in.
     #[test]
     fn sources_latest_chains_snapshot_release_then_jellyfin_for_both_arches() {
-        let fetch = sources(&VersionSpec::Latest);
+        let jellyfin = test_jellyfin_fallback();
+        let fetch = sources(&VersionSpec::Latest, Some(&jellyfin));
 
         let macos: Vec<&ResolvedSource> =
             fetch.sources.iter().filter(|s| s.os == "macos").collect();
@@ -506,12 +736,13 @@ mod tests {
             let SourceProducer::Fetch { urls } = &source.producer else {
                 panic!("macOS sources must be fetch producers");
             };
+            let archive = jellyfin.urls.get(&source.arch).expect("every arch has an archive");
             assert_eq!(
                 urls,
                 &[
                     martin_riedl_permalink(&source.arch, MartinRiedlChannel::Snapshot),
                     martin_riedl_permalink(&source.arch, MartinRiedlChannel::Release),
-                    jellyfin_macos_archive(&source.arch),
+                    archive.clone(),
                 ],
                 "snapshot first, release second, jellyfin last"
             );
@@ -519,6 +750,28 @@ mod tests {
 
         let oses: Vec<&str> = fetch.sources.iter().map(|s| s.os.as_str()).collect();
         assert_eq!(oses, vec!["windows", "macos", "macos", "linux"]);
+    }
+
+    /// Without a resolved fallback the macOS chains keep their two
+    /// martin-riedl candidates and invent nothing: an unreadable repository
+    /// shortens the chain instead of producing a URL for a nameless archive.
+    #[test]
+    fn sources_latest_omits_jellyfin_when_the_repository_was_unreadable() {
+        let fetch = sources(&VersionSpec::Latest, None);
+
+        for source in fetch.sources.iter().filter(|s| s.os == "macos") {
+            let SourceProducer::Fetch { urls } = &source.producer else {
+                panic!("macOS sources must be fetch producers");
+            };
+            assert_eq!(
+                urls,
+                &[
+                    martin_riedl_permalink(&source.arch, MartinRiedlChannel::Snapshot),
+                    martin_riedl_permalink(&source.arch, MartinRiedlChannel::Release),
+                ],
+                "a missing fallback leaves the two permalinks and nothing else"
+            );
+        }
     }
 
     /// `Exact { tag }` embeds the tag as the martin-riedl build id in the
@@ -532,18 +785,17 @@ mod tests {
             version: None,
             tag: Some(build_id.to_string()),
         });
-        let fetch = sources(&target);
+        let jellyfin = test_jellyfin_fallback();
+        let fetch = sources(&target, Some(&jellyfin));
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
             let SourceProducer::Fetch { urls } = &source.producer else {
                 panic!("macOS sources must be fetch producers");
             };
+            let archive = jellyfin.urls.get(&source.arch).expect("every arch has an archive");
             assert_eq!(
                 urls,
-                &[
-                    martin_riedl_download_url(&source.arch, build_id),
-                    jellyfin_macos_archive(&source.arch),
-                ],
+                &[martin_riedl_download_url(&source.arch, build_id), archive.clone()],
                 "a pinned build id addresses the versioned download directly"
             );
         }
@@ -600,11 +852,11 @@ mod tests {
             std::env::set_var(MARTIN_RIEDL_BASE_ENV, server.uri());
         }
 
-        let (leg, cached) = resolve_macos_leg(Some(&tracker)).await;
+        let (leg, cached) = resolve_macos_leg(Some(&tracker), None).await;
         assert_eq!(leg, build_id, "the probe parses the build id from the redirect target");
         assert!(!cached, "the first resolve goes to the network");
 
-        let (leg_again, cached_again) = resolve_macos_leg(Some(&tracker)).await;
+        let (leg_again, cached_again) = resolve_macos_leg(Some(&tracker), None).await;
         assert_eq!(leg_again, build_id, "the cached id survives across resolves");
         assert!(cached_again, "the second resolve is served from the metadata cache");
 
@@ -615,9 +867,10 @@ mod tests {
     }
 
     /// A permalink that answers the probe with an error degrades to the
-    /// jellyfin fallback version as the leg instead of failing the resolve:
-    /// the chain still holds both candidates, and fetch feedback corrects
-    /// the canonical version if the primary serves later.
+    /// resolved jellyfin version as the leg instead of failing the resolve:
+    /// the chain still holds its candidates, and fetch feedback corrects the
+    /// canonical version if the primary serves later. With no resolved
+    /// fallback the leg is the explicit unresolved sentinel.
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -639,16 +892,186 @@ mod tests {
             std::env::set_var(MARTIN_RIEDL_BASE_ENV, server.uri());
         }
 
-        let (leg, cached) = resolve_macos_leg(None).await;
+        let (leg, cached) = resolve_macos_leg(None, Some("8.1.3-1")).await;
         assert_eq!(
-            leg, JELLYFIN_MACOS_VERSION,
-            "a failed probe records the jellyfin fallback version as the leg"
+            leg, "8.1.3-1",
+            "a failed probe records the resolved jellyfin version as the leg"
         );
         assert!(!cached, "nothing usable was cached");
+
+        let (unresolved, _) = resolve_macos_leg(None, None).await;
+        assert_eq!(
+            unresolved, UNRESOLVED_MACOS_LEG,
+            "with no resolved fallback the leg says so instead of inventing a version"
+        );
 
         // SAFETY: same env-lock scope as the set above.
         unsafe {
             std::env::remove_var(MARTIN_RIEDL_BASE_ENV);
+        }
+    }
+
+    /// The jellyfin index names several build lines; the highest number wins,
+    /// compared numerically so `latest-10.x` beats `latest-9.x`.
+    #[test]
+    fn newest_jellyfin_major_line_picks_numerically_and_ignores_other_entries() {
+        let listing = "<a href=\"../\">../</a>\n\
+                       <a href=\"latest-6.x/\">latest-6.x/</a>\n\
+                       <a href=\"9.x/\">9.x/</a>\n\
+                       <a href=\"latest-9.x/\">latest-9.x/</a>\n\
+                       <a href=\"latest-10.x/\">latest-10.x/</a>\n\
+                       <a href=\"latest-old.x/\">latest-old.x/</a>";
+        assert_eq!(newest_jellyfin_major_line(listing).as_deref(), Some("latest-10.x"));
+        assert_eq!(newest_jellyfin_major_line("<a href=\"../\">../</a>"), None);
+    }
+
+    /// A pointer file names the archive to fetch; anything that is not a
+    /// jellyfin archive name is refused rather than turned into a URL.
+    #[test]
+    fn jellyfin_pointer_filename_accepts_only_archive_names() {
+        assert_eq!(
+            jellyfin_pointer_filename(
+                "jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz\n",
+                "macarm64"
+            )
+            .as_deref(),
+            Some("jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz"),
+        );
+        assert_eq!(
+            jellyfin_pointer_filename(
+                "jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz",
+                "macarm64"
+            ),
+            None,
+            "the other architecture's archive is not this architecture's",
+        );
+        assert_eq!(jellyfin_pointer_filename("<html>nope</html>", "mac64"), None);
+    }
+
+    /// The repository is read for its newest build line and each
+    /// architecture's pointer file; the resolved URLs name the archives the
+    /// repository currently serves, and the second resolve is a cache hit.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock must serialize the whole set-seam -> await -> unset-seam resolve; the guard is Send and this is the documented MEDIAPM_* test-seam mutation-scope rule"
+    )]
+    async fn resolve_jellyfin_macos_fallback_reads_the_newest_line_then_the_cache() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/files/ffmpeg/macos/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "<a href=\"../\">../</a><a href=\"latest-7.x/\">latest-7.x/</a><a href=\"latest-8.x/\">latest-8.x/</a>",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/files/ffmpeg/macos/latest-8.x/arm64/macarm64-gpl.txt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz\n"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/files/ffmpeg/macos/latest-8.x/x86_64/mac64-gpl.txt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = mediapm_conductor::cache::Cache::open(
+            dir.path(),
+            &[mediapm_conductor::cache::CacheDomainConfig {
+                domain: "tool_metadata".to_string(),
+                index_file_name: "tool_metadata.json".to_string(),
+                entry_ttl_seconds: mediapm_conductor::cache::ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("cache open");
+        let tracker = MetadataCacheTracker::new(&cache, "tool_metadata");
+
+        let _env = crate::example_isolation::lock_process_env();
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(JELLYFIN_BASE_ENV, server.uri());
+        }
+
+        let (fallback, cached) = resolve_jellyfin_macos_fallback(Some(&tracker)).await;
+        let fallback = fallback.expect("the repository answers with a usable fallback");
+        assert_eq!(fallback.version, "8.1.3-1", "the version comes from the pointer file");
+        assert_eq!(
+            fallback.urls.get("aarch64").map(String::as_str),
+            Some(
+                format!(
+                    "{}/files/ffmpeg/macos/latest-8.x/arm64/\
+                     jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz",
+                    server.uri()
+                )
+                .as_str()
+            ),
+            "the aarch64 archive URL names the pointer file's archive",
+        );
+        assert_eq!(
+            fallback.urls.get("x86_64").map(String::as_str),
+            Some(
+                format!(
+                    "{}/files/ffmpeg/macos/latest-8.x/x86_64/\
+                     jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz",
+                    server.uri()
+                )
+                .as_str()
+            ),
+            "the x86_64 archive URL names the pointer file's archive",
+        );
+        assert!(!cached, "the first resolve goes to the network");
+
+        let (fallback_again, cached_again) = resolve_jellyfin_macos_fallback(Some(&tracker)).await;
+        assert_eq!(fallback_again, Some(fallback), "the cached fallback survives across resolves");
+        assert!(cached_again, "the second resolve is served from the metadata cache");
+
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(JELLYFIN_BASE_ENV);
+        }
+    }
+
+    /// An unreadable index is not a failure: the macOS chain drops to its
+    /// martin-riedl candidates rather than aborting the resolve.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock must serialize the whole set-seam -> await -> unset-seam resolve; the guard is Send and this is the documented MEDIAPM_* test-seam mutation-scope rule"
+    )]
+    async fn resolve_jellyfin_macos_fallback_degrades_when_the_index_is_unreadable() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+
+        let _env = crate::example_isolation::lock_process_env();
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(JELLYFIN_BASE_ENV, server.uri());
+        }
+
+        let (fallback, cached) = resolve_jellyfin_macos_fallback(None).await;
+        assert_eq!(fallback, None, "an unreadable repository yields no fallback");
+        assert!(!cached, "nothing was cached");
+
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(JELLYFIN_BASE_ENV);
         }
     }
 }
