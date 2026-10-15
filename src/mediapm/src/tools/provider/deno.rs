@@ -62,6 +62,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 },
                 expected_size: None,
                 size_hint_bytes: Some(hint),
+                identity: None,
             })
             .collect(),
     }
@@ -96,6 +97,7 @@ pub(crate) fn sources_for_release(
             },
             expected_size: None,
             size_hint_bytes: Some(hint),
+            identity: None,
         });
     }
     Ok(ResolvedToolFetch { tool_id: "deno".to_string(), sources })

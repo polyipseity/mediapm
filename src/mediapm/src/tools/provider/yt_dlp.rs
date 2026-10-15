@@ -60,6 +60,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 },
                 expected_size: None,
                 size_hint_bytes: Some(25_000_000),
+                identity: None,
             },
             ResolvedSource {
                 os: "macos".to_string(),
@@ -72,6 +73,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 },
                 expected_size: None,
                 size_hint_bytes: Some(25_000_000),
+                identity: None,
             },
             ResolvedSource {
                 os: "linux".to_string(),
@@ -84,6 +86,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 },
                 expected_size: None,
                 size_hint_bytes: Some(25_000_000),
+                identity: None,
             },
         ],
     }
@@ -120,6 +123,7 @@ pub(crate) fn sources_for_release(
             },
             expected_size: None,
             size_hint_bytes: Some(25_000_000),
+            identity: None,
         });
     }
     Ok(ResolvedToolFetch { tool_id: "yt-dlp".to_string(), sources })

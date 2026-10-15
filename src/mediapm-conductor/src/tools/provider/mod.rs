@@ -60,6 +60,26 @@ pub const MAX_LOOKAHEAD: usize = 16;
 /// extraction/compression (64 KB).
 const SUB_ENTRY_CHUNK: u64 = 65536;
 
+/// Separates a source URL from its resolved identity inside a content-cache
+/// key.
+const CONTENT_CACHE_IDENTITY_SEPARATOR: &str = "#identity=";
+
+/// Content-cache key for one source URL.
+///
+/// A URL that is itself an identity — a `{version}`-templated release asset,
+/// a pinned build's download — is keyed by the URL alone. A moving target — a
+/// permalink that 302-redirects to a versioned download, or any `latest` alias
+/// whose asset changes when upstream rotates — also carries its resolved
+/// identity, so the bytes cached for one build can never answer for another:
+/// without it the entry is found again on every sync, its last-use clock is
+/// refreshed, and the payload freezes while the state records the newer build.
+fn content_cache_key(url: &str, identity: Option<&str>) -> String {
+    match identity {
+        Some(identity) => format!("{url}{CONTENT_CACHE_IDENTITY_SEPARATOR}{identity}"),
+        None => url.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -269,6 +289,20 @@ pub struct ResolvedSource {
     /// Optional soft upper bound for expected byte size, set from provider
     /// definitions. Used as a fallback estimate when the prefetch probe fails.
     pub size_hint_bytes: Option<u64>,
+    /// Resolved identity of the bytes this source serves, when its URL is not
+    /// itself one — a permalink that redirects to a versioned download whose
+    /// build changes upstream. The content cache keys on it (the URL plus this
+    /// value, joined by `content_cache_key`), so cached bytes are only reused
+    /// for the identity they were fetched under.
+    ///
+    /// `None` for a version-specific URL, whose URL is its identity. The
+    /// identity is per source, not per candidate: it covers every URL that
+    /// source names, while the cache key stays per URL, so a source's two
+    /// permalink candidates keep distinct keys. A source that chains a
+    /// versioned candidate behind its permalinks therefore also keys that
+    /// candidate by the identity, which is harmless — a versioned URL is only
+    /// re-fetched, never served a payload belonging to another build.
+    pub identity: Option<String>,
 }
 
 /// Returns the architecture label for sources that publish one universal
@@ -317,9 +351,10 @@ pub struct DownloadedSource {
     /// The URL the bytes actually came from, when this source was fetched
     /// over HTTP: the final URL after redirects, so a permalink fetch
     /// reports the versioned download URL it resolved to. Cache-served
-    /// entries carry the candidate URL the cache was keyed by (the cached
-    /// bytes' redirect provenance is not retained). `None` for
-    /// launcher-generated sources.
+    /// entries carry the requested candidate URL — the cached bytes' redirect
+    /// provenance is not retained, and the identity segment a content-cache
+    /// key may carry is not part of a URL. `None` for launcher-generated
+    /// sources.
     pub actual_url: Option<String>,
 }
 
@@ -499,21 +534,26 @@ pub async fn fetch_tool_sources(
                 let urls = urls.clone();
                 let tool_id = fetch.tool_id.clone();
                 let os_label = source.os.clone();
+                let identity = source.identity.clone();
                 let cb = progress_cb.clone();
                 let budget = budget.clone();
                 let completed_sources = Arc::clone(&completed_sources);
                 Some(async move {
-                    // Try cache lookup for each fallback URL.
+                    // Try cache lookup for each fallback URL, under the key
+                    // that URL is stored with: the URL itself, plus the
+                    // source's resolved identity when its URL is a moving
+                    // permalink.
                     let mut cache_hit = None;
                     for url in &urls {
-                        if let Some(cached) = cache.lookup_bytes(domain, url).await {
-                            cache.touch(domain, url);
-                            cache_hit = Some((url.clone(), cached));
+                        let key = content_cache_key(url, identity.as_deref());
+                        if let Some(cached) = cache.lookup_bytes(domain, &key).await {
+                            cache.touch(domain, &key);
+                            cache_hit = Some((key, url.clone(), cached));
                             break;
                         }
                     }
 
-                    if let Some((cache_key, cached)) = cache_hit {
+                    if let Some((cache_key, requested_url, cached)) = cache_hit {
                         let size = cached.len() as u64;
                         budget.set_total(idx, size);
                         budget.advance(idx, size);
@@ -521,15 +561,18 @@ pub async fn fetch_tool_sources(
                         if let Some(ref cb) = cb {
                             fire_fetch_chunk_progress(cb, &completed_sources, total, &budget);
                         }
-                        // A cache hit is keyed by the candidate URL; the
-                        // bytes' original redirect provenance is not
-                        // retained, so the candidate is the best-known
-                        // actual URL. A cache hit never reports failures —
-                        // the chain was not walked.
+                        // A cache hit reports the candidate URL it was
+                        // looked up under; the bytes' original redirect
+                        // provenance is not retained, so the candidate is
+                        // the best-known actual URL. The key's identity
+                        // suffix is not part of a URL, and the bytes' final
+                        // URL is derived from it, so the requested URL is
+                        // reported unkeyed. A cache hit never reports
+                        // failures — the chain was not walked.
                         let fetched = FetchedBytes {
                             bytes: cached,
                             cache_key: cache_key.clone(),
-                            final_url: Some(cache_key),
+                            final_url: Some(requested_url),
                             failures: Vec::new(),
                         };
                         (idx, Ok(fetched), true)
@@ -541,6 +584,7 @@ pub async fn fetch_tool_sources(
                             &urls,
                             &tool_id,
                             &os_label,
+                            identity.as_deref(),
                             &budget,
                             idx,
                             &completed_sources,
@@ -659,11 +703,17 @@ pub async fn fetch_tool_sources(
 struct FetchedBytes {
     /// The payload bytes the serving member produced.
     bytes: Vec<u8>,
-    /// The candidate URL that served the bytes — the key the download cache
-    /// is stored under, since a later run replays the same candidate list.
+    /// The key the download cache stores these bytes under — the serving
+    /// candidate URL, plus the source's resolved identity when that URL is a
+    /// moving permalink (see [`content_cache_key`]), since a later run
+    /// replays the same candidate list under the identity it resolves.
     cache_key: String,
-    /// The final URL after redirects, when the bytes came over HTTP. `None`
-    /// when the caller served them from cache instead.
+    /// The URL the bytes are attributed to. The final URL after redirects
+    /// when the bytes came over HTTP — a permalink fetch reports the
+    /// versioned download it resolved to. `Some` of the requested candidate
+    /// URL when the caller served them from cache instead, whose redirect
+    /// provenance is not retained. Never a content-cache key: the requested
+    /// URL is reported unkeyed, so downstream URL parsing sees a URL.
     final_url: Option<String>,
     /// Candidates that failed before `cache_key` served, in chain order, as
     /// `(candidate url, cause)`. Empty when the first candidate served.
@@ -673,11 +723,17 @@ struct FetchedBytes {
 /// Downloads bytes from URL candidates (tried in order — one chain).
 ///
 /// On success, returns a [`FetchedBytes`] naming the bytes, the candidate URL
-/// that served them (the key the download cache is stored under), the final
-/// URL after redirects when the bytes came over HTTP, and every candidate
-/// that failed first. A cache-served source never reaches this function: the
-/// caller reports the candidate as its actual URL, because the cached bytes'
-/// redirect provenance is not retained.
+/// that served them (keyed for the download cache by
+/// [`content_cache_key`]: the URL, plus `identity` when the URL is a moving
+/// permalink), the final URL after redirects when the bytes came over HTTP,
+/// and every candidate that failed first. A cache-served source never reaches
+/// this function: the caller reports the candidate as its actual URL, because
+/// the cached bytes' redirect provenance is not retained.
+///
+/// `identity` is the source's resolved identity — what the bytes will be, when
+/// a permalink's URL alone does not determine it. It is the same value the
+/// caller's cache lookup keys with, so a stored payload is only ever found
+/// again under the identity it was fetched for.
 ///
 /// Each successfully-downloaded candidate is verified against its sibling
 /// `{url}.sha256` when the endpoint serves one (see
@@ -709,6 +765,7 @@ async fn fetch_bytes_from_candidates(
     urls: &[String],
     tool_id: &str,
     os_label: &str,
+    identity: Option<&str>,
     budget: &MultiItemBudget,
     item_idx: usize,
     completed_sources: &AtomicU64,
@@ -788,7 +845,7 @@ async fn fetch_bytes_from_candidates(
                 }
                 return Ok(FetchedBytes {
                     bytes: buffer,
-                    cache_key: url.clone(),
+                    cache_key: content_cache_key(url, identity),
                     final_url: Some(final_url),
                     failures,
                 });
@@ -2664,6 +2721,7 @@ mod tests {
                     producer: SourceProducer::Fetch { urls: vec!["mock://a".to_string()] },
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
@@ -2671,6 +2729,7 @@ mod tests {
                     producer: SourceProducer::Fetch { urls: vec!["mock://b".to_string()] },
                     expected_size: None,
                     size_hint_bytes: Some(500),
+                    identity: None,
                 },
             ],
         };
@@ -2760,6 +2819,7 @@ mod tests {
                 },
                 expected_size: Some(cached_data.len() as u64),
                 size_hint_bytes: None,
+                identity: None,
             }],
         };
 
@@ -2773,6 +2833,113 @@ mod tests {
             result.entries[0].bytes, cached_data,
             "returned bytes should match cached content from URL 'b'"
         );
+    }
+
+    // ── Identity-keyed content cache ─────────────────────────────────
+
+    /// Path of the versioned download the permalink of
+    /// [`a_permalink_cached_under_one_identity_is_not_served_under_another`]
+    /// redirects to. Requests to it are counted to tell a fresh download from
+    /// a cache-served fetch.
+    const PERMALINK_DOWNLOAD_PATH: &str = "/download/macos/arm64/1759500000_N-1/ffmpeg.zip";
+
+    /// Fetches one permalink source through the real fetch phase with
+    /// `identity` as the source's resolved identity, and returns the payload
+    /// bytes together with the number of requests the server received for the
+    /// versioned download during the call: `0` when the content cache answered,
+    /// `1` when the identity was cold and the payload was downloaded again.
+    ///
+    /// The count is taken over the versioned download path alone: a cold fetch
+    /// also spends requests on the permalink's 302 and on the `.sha256` sibling
+    /// probe, so a whole-server delta cannot distinguish "downloaded" from
+    /// "served from cache".
+    async fn fetch_one_source(
+        server: &wiremock::MockServer,
+        cache: &crate::cache_user_level::UserLevelCache,
+        permalink: &str,
+        identity: &str,
+    ) -> (Vec<u8>, usize, Option<String>) {
+        let before = download_request_count(server).await;
+        let fetch = ResolvedToolFetch {
+            tool_id: "ffmpeg".to_string(),
+            sources: vec![ResolvedSource {
+                os: "macos".to_string(),
+                arch: "aarch64".to_string(),
+                producer: SourceProducer::Fetch { urls: vec![permalink.to_string()] },
+                expected_size: None,
+                size_hint_bytes: None,
+                identity: Some(identity.to_string()),
+            }],
+        };
+        let downloaded = fetch_tool_sources(&fetch, cache, "tools", None)
+            .await
+            .expect("the permalink chain serves");
+        let entry = downloaded.entries.first().expect("one source, one entry");
+        let bytes = entry.bytes.clone();
+        let actual_url = entry.actual_url.clone();
+        (bytes, download_request_count(server).await - before, actual_url)
+    }
+
+    /// Number of requests the mock server has received for the versioned
+    /// download [`PERMALINK_DOWNLOAD_PATH`] names.
+    async fn download_request_count(server: &wiremock::MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .expect("the request recorder is enabled")
+            .iter()
+            .filter(|request| request.url.path() == PERMALINK_DOWNLOAD_PATH)
+            .count()
+    }
+
+    /// A permalink's cached payload is stored under its resolved identity, so a
+    /// later resolve that names a different build cannot be served the older
+    /// build's bytes. Without the identity in the key the entry is found again
+    /// and refreshed on every sync, which freezes the payload upstream never
+    /// rotates out of the workspace.
+    #[tokio::test]
+    async fn a_permalink_cached_under_one_identity_is_not_served_under_another() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"))
+            .respond_with(ResponseTemplate::new(302).insert_header(
+                "location",
+                format!("{}{PERMALINK_DOWNLOAD_PATH}", server.uri()).as_str(),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(PERMALINK_DOWNLOAD_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"build-one".as_slice()))
+            .mount(&server)
+            .await;
+
+        let (cache, _dir) = open_tools_cache().await;
+        let permalink = format!("{}/redirect/latest/macos/arm64/snapshot/ffmpeg.zip", server.uri());
+
+        let (first, first_downloads, _) =
+            fetch_one_source(&server, &cache, &permalink, "build-one").await;
+        assert_eq!(first, b"build-one");
+        assert_eq!(first_downloads, 1, "a cold identity downloads the payload");
+
+        let (same, reuses, served_url) =
+            fetch_one_source(&server, &cache, &permalink, "build-one").await;
+        assert_eq!(same, b"build-one", "the same identity is served from the cache");
+        assert_eq!(reuses, 0, "a warm identity never reaches the server");
+        assert_eq!(
+            served_url.as_deref(),
+            Some(permalink.as_str()),
+            "a cache hit reports the requested URL, never the identity-suffixed cache key"
+        );
+
+        // The identity moved: the cached entry must not answer for it.
+        let (moved_bytes, moved_downloads, _) =
+            fetch_one_source(&server, &cache, &permalink, "build-two").await;
+        assert_eq!(moved_downloads, 1, "a different identity is a cache miss");
+        assert_eq!(moved_bytes, b"build-one", "the miss re-fetches whatever the permalink serves");
     }
 
     // ── process_single_source budget tracking ────────────────────────
@@ -3383,6 +3550,7 @@ mod tests {
                     producer: SourceProducer::launcher("test"),
                     expected_size: Some(100),
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
@@ -3390,6 +3558,7 @@ mod tests {
                     producer: SourceProducer::launcher("test"),
                     expected_size: Some(200),
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
@@ -3397,6 +3566,7 @@ mod tests {
                     producer: SourceProducer::launcher("test"),
                     expected_size: Some(150),
                     size_hint_bytes: None,
+                    identity: None,
                 },
             ],
         };
@@ -3596,6 +3766,7 @@ mod tests {
                     producer: SourceProducer::mediapm_builtin("media-tagger"),
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
@@ -3603,6 +3774,7 @@ mod tests {
                     producer: SourceProducer::mediapm_builtin("media-tagger"),
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
@@ -3610,6 +3782,7 @@ mod tests {
                     producer: SourceProducer::mediapm_builtin("media-tagger"),
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
             ],
         };
@@ -4517,6 +4690,7 @@ mod tests {
                 },
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             }],
         };
 
@@ -4577,6 +4751,7 @@ mod tests {
                 },
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             }],
         };
 
@@ -4628,6 +4803,7 @@ mod tests {
                 },
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             }],
         };
 

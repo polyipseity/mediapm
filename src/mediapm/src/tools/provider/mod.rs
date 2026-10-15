@@ -714,7 +714,7 @@ pub(crate) async fn resolve_tool_fetch(
             )
             .await;
             let canonical_version = format!("{autobuild_tag}+{macos_leg}");
-            let fetch = ffmpeg::sources(version_target, jellyfin.as_ref());
+            let fetch = ffmpeg::sources(version_target, jellyfin.as_ref(), &macos_leg);
             (
                 fetch,
                 ResolvedToolMetadata {
@@ -1160,6 +1160,44 @@ mod tests {
         assert_eq!(metadata.resolved_version, None);
         // WHY: the BtbN build-repo hash is not the upstream ffmpeg source hash.
         assert_eq!(metadata.resolved_vcs_hash, None);
+    }
+
+    /// The resolved macOS leg is threaded from the resolve into the sources:
+    /// both macOS permalink sources carry it as their content-cache identity,
+    /// so a permalink whose build rotated is a cache miss rather than the
+    /// older build's payload served under the new build's name. Seeded
+    /// metadata only — the leg comes from the seeded permalink entry, not the
+    /// network.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
+    async fn resolve_tool_fetch_ffmpeg_threads_the_leg_into_the_permalink_identities() {
+        let _env = lock_process_env();
+        let (cache, _tmp) = seed_metadata_cache("ffmpeg").await;
+        let (fetch, metadata) = resolve_tool_fetch(
+            "ffmpeg",
+            &VersionSpec::Latest,
+            Some((&*cache, "default")),
+            RecheckPolicy::default(),
+        )
+        .await
+        .expect("ffmpeg resolve should succeed");
+
+        let leg = "1759500000_N-127260-g7bc3576910";
+        assert!(
+            metadata.canonical_version.ends_with(&format!("+{leg}")),
+            "the seeded permalink entry is the leg this test keys against: {}",
+            metadata.canonical_version
+        );
+        for source in fetch.sources.iter().filter(|source| source.os == "macos") {
+            assert_eq!(
+                source.identity.as_deref(),
+                Some(leg),
+                "each macOS permalink source records the resolved leg as its cache identity"
+            );
+        }
     }
 
     #[tokio::test]

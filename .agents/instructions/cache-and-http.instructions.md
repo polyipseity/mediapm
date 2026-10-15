@@ -10,11 +10,12 @@ applyTo: "src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins
 
 | Cache | TTL | Basis | Content | Key |
 | --- | --- | --- | --- | --- |
-| **Content cache** (`tools.json`) | 7d | Last-use | Raw downloaded tool payload bytes | Download URI (actual URL used) |
+| **Content cache** (`tools.json`) | 7d | Last-use | Raw downloaded tool payload bytes | Download URI, plus the source's resolved identity when the URI is a moving permalink |
 | **Metadata cache** (`tool_metadata.json`) | 1d | Creation-time | GitHub API responses (tag names, versions), the jellyfin macOS repo index, and its per-arch `*-gpl.txt` pointer files | API endpoint URL (any metadata read) |
 | **Provision cache** (RAII) | 24h | Creation-time | Extracted tool binaries (per-platform unpack) | Tool identity hash |
 
 - Content cache TTL is **last-use based** — `lookup_bytes()` / `store_bytes()` reset the clock.
+- **A moving download URI carries its resolved identity in the key.** A permalink that 302-redirects to a versioned download (the martin-riedl macOS candidates) would otherwise be found again on every sync, refreshing its last-use clock and freezing the payload while the state recorded the newer build; the key is `uri#identity=<id>` for such a source and the bare URI otherwise. The identity is per source, not per candidate, so every candidate URL a source names is keyed, and a cache hit reports the *requested* URL rather than the key, because the macOS leg is re-derived by parsing the URI that was actually served.
 - Metadata cache TTL is **creation-time based** — never call `touch()`; doing so extends TTL and defeats the 1-day freshness guarantee.
 - Provision cache is **RAII** — the extracted temp dir lives for the `ProvisionCache` handle (24h default).
 - **A download may leave the host it was requested from.** The jellyfin macOS archive 302-redirects to `*.mirror.jellyfin.org` (`sgp1.mirror.jellyfin.org` in practice), so that host is as load-bearing as `repo.jellyfin.org` and degrades the macOS fallback when it is unreachable.

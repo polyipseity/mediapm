@@ -17,6 +17,7 @@ pub fn sources() -> ResolvedToolFetch {
                 },
                 expected_size: None,
                 size_hint_bytes: Some(358_000),
+                identity: None,
             },
             ResolvedSource {
                 os: "macos".to_string(),
@@ -27,6 +28,7 @@ pub fn sources() -> ResolvedToolFetch {
                 },
                 expected_size: None,
                 size_hint_bytes: Some(490_000),
+                identity: None,
             },
             ResolvedSource {
                 os: "linux".to_string(),
@@ -37,6 +39,7 @@ pub fn sources() -> ResolvedToolFetch {
                 },
                 expected_size: None,
                 size_hint_bytes: Some(480_000),
+                identity: None,
             },
         ],
     }

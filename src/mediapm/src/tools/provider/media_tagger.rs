@@ -30,6 +30,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             },
             ResolvedSource {
                 os: "macos".to_string(),
@@ -38,6 +39,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             },
             ResolvedSource {
                 os: "linux".to_string(),
@@ -46,6 +48,7 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 producer: SourceProducer::mediapm_builtin("media-tagger"),
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             },
         ],
     }

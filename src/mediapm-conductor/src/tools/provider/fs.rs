@@ -15,6 +15,7 @@ pub fn sources() -> ResolvedToolFetch {
                 producer: SourceProducer::launcher("fs@v1"),
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             },
             ResolvedSource {
                 os: "linux".to_string(),
@@ -23,6 +24,7 @@ pub fn sources() -> ResolvedToolFetch {
                 producer: SourceProducer::launcher("fs@v1"),
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             },
             ResolvedSource {
                 os: "macos".to_string(),
@@ -31,6 +33,7 @@ pub fn sources() -> ResolvedToolFetch {
                 producer: SourceProducer::launcher("fs@v1"),
                 expected_size: None,
                 size_hint_bytes: None,
+                identity: None,
             },
         ],
     }

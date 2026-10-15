@@ -864,8 +864,11 @@ mod tests {
         // macOS dual-arch entries so the fetch never touches BtbN's github.com
         // windows/linux legs.
         // No resolved jellyfin fallback in this test: it drives the
-        // martin-riedl primary, which the mock answers first.
-        let mut fetch = crate::tools::provider::ffmpeg::sources(&VersionSpec::Latest, None);
+        // martin-riedl primary, which the mock answers first. The resolve-time
+        // leg is the same `resolvetime-obs` the metadata below records, so the
+        // permalink sources carry the identity this resolve declared.
+        let mut fetch =
+            crate::tools::provider::ffmpeg::sources(&VersionSpec::Latest, None, "resolvetime-obs");
         fetch.sources.retain(|source| source.os == "macos");
         assert_eq!(fetch.sources.len(), 2, "expected both macOS arch sources");
 
@@ -1469,6 +1472,7 @@ mod tests {
                     },
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
@@ -1478,6 +1482,7 @@ mod tests {
                     },
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
@@ -1487,6 +1492,7 @@ mod tests {
                     },
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
             ],
         };
@@ -1511,6 +1517,7 @@ mod tests {
                     },
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "macos".to_string(),
@@ -1520,6 +1527,7 @@ mod tests {
                     },
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
                 ResolvedSource {
                     os: "windows".to_string(),
@@ -1527,6 +1535,7 @@ mod tests {
                     producer: SourceProducer::launcher("test"),
                     expected_size: None,
                     size_hint_bytes: None,
+                    identity: None,
                 },
             ],
         };
@@ -1550,6 +1559,7 @@ mod tests {
             producer: SourceProducer::Fetch { urls: vec![url.to_string()] },
             expected_size: None,
             size_hint_bytes: None,
+            identity: None,
         }
     }
 
