@@ -1146,6 +1146,16 @@ mod tests {
             "the seeded cache must serve every ffmpeg lookup; a false here means a test \
              reached the network"
         );
+        // The resolve bar's item total, and the number the progress-output and
+        // tool-sync-3-phase-provisioning instructions both name: the BtbN tag, the
+        // martin-riedl build probe, the jellyfin index, and one pointer file per
+        // macOS arch. A new lookup must fail here, not silently make those docs
+        // wrong.
+        assert_eq!(
+            metadata.metadata_fetch_count, 5,
+            "ffmpeg resolves 5 metadata lookups (BtbN tag + martin-riedl probe + jellyfin \
+             index + one pointer file per macOS arch)"
+        );
         // WHY: no single version identifies the mixed BtbN+martin-riedl+jellyfin artifact set.
         assert_eq!(metadata.resolved_version, None);
         // WHY: the BtbN build-repo hash is not the upstream ffmpeg source hash.
