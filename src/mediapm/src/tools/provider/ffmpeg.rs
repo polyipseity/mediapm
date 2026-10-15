@@ -850,10 +850,12 @@ mod tests {
     }
 
     /// `Exact { tag }` embeds the tag as the martin-riedl build id in the
-    /// versioned download URLs (per arch), with the jellyfin fallback still
-    /// chained behind it.
+    /// versioned download URLs of the **macOS** arches, with the jellyfin
+    /// fallback still chained behind it. The Windows and Linux sources keep
+    /// fetching `latest/download` under `Exact`; their alias shape is pinned by
+    /// `sources_declare_the_autobuild_tag_as_the_alias_sources_identity`.
     #[test]
-    fn sources_exact_builds_versioned_download_urls() {
+    fn sources_exact_builds_versioned_download_urls_for_macos_arches() {
         let build_id = "1759500000_N-127260-g7bc3576910";
         let target = VersionSpec::Exact(VersionSpecFields {
             vcs_hash: None,
