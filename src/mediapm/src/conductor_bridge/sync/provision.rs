@@ -137,6 +137,16 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
     }
 }
 
+/// Display form of a tool version: the `SemVer` version with its build
+/// metadata (`+...`) stripped, e.g. `0.0.0+cfa32c3182b` -> `0.0.0`.
+///
+/// Progress labels use this and nothing else does: provider metadata,
+/// `state.json`, and `canonical_version` keep the full string.
+#[must_use]
+pub(crate) fn display_version(version: &str) -> &str {
+    version.split_once('+').map_or(version, |(base, _meta)| base)
+}
+
 /// Fetches a tool payload for **all** platforms, extracts each to a
 /// per-OS temp directory, imports files to CAS with `./{os}/` key prefixes,
 /// and builds an OS-conditional command-selector template.
@@ -214,6 +224,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         PreResolveOutcome::Resolved(_, metadata) => metadata.human_readable_version.as_str(),
         PreResolveOutcome::Skip { human_readable_version, .. } => human_readable_version.as_str(),
     };
+    let version_for_label = display_version(version_for_label);
     let version_suffix =
         if version_for_label.is_empty() { String::new() } else { format!(" {version_for_label}") };
     // The fields each phase bar draws, given to the bar rather than rendered
@@ -1785,6 +1796,42 @@ mod tests {
                 ProgressOp::AddBar { label, .. } if label.contains("[process]")
             )),
             "unexpected [process] in ops\ngot: {ops:#?}",
+        );
+    }
+
+    /// Progress labels show the `SemVer` version without build metadata (spec R4).
+    ///
+    /// `media-tagger` reports `0.0.0+<build hash>`; the hash is provider/state
+    /// material and eats the prefix budget, which is what made two rows of the
+    /// same tool truncate to different lengths.
+    #[tokio::test]
+    async fn resolve_bar_label_strips_build_metadata() {
+        let (cas, cache, tracker, _tmp) = label_setup().await;
+        let fetch = provider::media_tagger::sources();
+        let outcome = PreResolveOutcome::Resolved(
+            fetch,
+            test_metadata("0.0.0+cfa32c3182b", "0.0.0+cfa32c3182b", false, 1),
+        );
+        let result =
+            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
+        assert!(result.is_ok(), "resolve should succeed");
+
+        let ops = tracker.ops();
+        let recorded: Vec<String> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ProgressOp::SetPrefixComponents { version, .. } => Some(version.clone()),
+                ProgressOp::AddBar { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            recorded.iter().any(|r| r.contains("0.0.0")),
+            "the label must still carry the version; recorded: {recorded:?}"
+        );
+        assert!(
+            recorded.iter().all(|r| !r.contains("cfa32c3182b")),
+            "progress labels must not carry build metadata (spec R4); recorded: {recorded:?}"
         );
     }
 }
