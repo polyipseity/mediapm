@@ -273,6 +273,8 @@ pub async fn sync_hierarchy(
         // progress while adding no draw target of its own.
         Arc::new(ProgressBarHandle::disabled())
     };
+    // The phase runs live work from entry (Task 6); `pb`'s finish parks it.
+    pb.set_animating(true);
 
     let mut join_set = tokio::task::JoinSet::new();
     let document_arc = Arc::new(document.clone());
@@ -476,6 +478,8 @@ fn add_variant_sub_bar(
         member_count as u64,
         &format!("{variant_name} [{}]", MaterializationPhase::Write.tag()),
     );
+    // Live write work (Task 6); the entry arm's finish parks the row.
+    bar.set_animating(true);
     bar.set_truncation(Arc::new(MaterializationBarLabel {
         entry_path: entry_path.to_string(),
         entry_name: entry_name.to_string(),
@@ -523,6 +527,8 @@ impl<'a> EntryPhaseBar<'a> {
             // fraction, and the outcome rides on the colour and the status
             // marker the arm installs at the finish.
             let bar = pg.add_bar(1, &format!("{relative_path} [{}]", phase.tag()));
+            // Live phase work (Task 6); the arm's finish parks the row.
+            bar.set_animating(true);
             bar.set_truncation(Arc::new(MaterializationBarLabel {
                 entry_path: entry_path.to_string(),
                 entry_name: entry_name.to_string(),

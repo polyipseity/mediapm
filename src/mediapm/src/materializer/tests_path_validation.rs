@@ -143,7 +143,11 @@ async fn regression_sync_hierarchy_sanitizes_interpolated_path_component() {
             ProgressOp::AddBar { total: 1, label: "materializing".into() },
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::SetTruncation { prefix: "materializing".into(), suffix: String::new() },
+            // The phase declares live work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             ProgressOp::AddBar { total: 1, label: "AC_DC [stg]".into() },
+            // The entry bar declares live work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             ProgressOp::SetTruncation { prefix: "AC_DC [stg]".into(), suffix: String::new() },
             ProgressOp::SetTruncation { prefix: "AC_DC [vrf]".into(), suffix: String::new() },
             ProgressOp::Advance { delta: 1 },

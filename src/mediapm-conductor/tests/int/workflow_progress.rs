@@ -300,6 +300,8 @@ async fn single_step_success_progress_ops() {
             // Overall bar created by with_overall(), total set to real step count.
             ProgressOp::AddBar { total: 1, label: "workflow".into() },
             ProgressOp::SetTotal { total: 1 },
+            // The run declares the overall bar live (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
@@ -311,6 +313,8 @@ async fn single_step_success_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
+            // The dispatch declares in-flight work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Step completes — idle count1/total1, advance, finish success.
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
@@ -354,6 +358,8 @@ async fn two_step_same_level_success_progress_ops() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow".into() },
             ProgressOp::SetTotal { total: 2 },
+            // The run declares the overall bar live (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
@@ -365,10 +371,14 @@ async fn two_step_same_level_success_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
+            // The dispatch declares in-flight work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Dispatch s2 to worker-1 (re-activate idle bar).
             ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
+            // The dispatch declares in-flight work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Step 1 completes.
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
@@ -424,6 +434,8 @@ async fn three_step_same_level_progress_ops() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow".into() },
             ProgressOp::SetTotal { total: 3 },
+            // The run declares the overall bar live (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
@@ -435,14 +447,20 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
+            // The dispatch declares in-flight work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Dispatch s2 to worker-1 (re-activate, assigned 1).
             ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
+            // The dispatch declares in-flight work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Dispatch s3 to worker-0 (re-activate, assigned 2).
             ProgressOp::Restart,
             dispatch_pc("default", "s3", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
+            // The dispatch declares in-flight work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Step 1 completes (worker-0: succeeded 1 / assigned 2 — s3 already
             // dispatched on the same slot before s1 terminated).
             idle_pc_count(1, 2),
@@ -573,6 +591,8 @@ async fn two_step_sequential_levels_progress_ops() {
             // Overall bar created by with_overall(), total set by coordinator.
             ProgressOp::AddBar { total: 1, label: "workflow".into() },
             ProgressOp::SetTotal { total: 2 },
+            // The run declares the overall bar live (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
@@ -584,6 +604,8 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
+            // The dispatch declares in-flight work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Level 0 await — step 1 completes.
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
@@ -594,6 +616,8 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
+            // The dispatch declares in-flight work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Level 1 await — step 2 completes.
             idle_pc_count(2, 2),
             ProgressOp::SetTotal { total: 2 },

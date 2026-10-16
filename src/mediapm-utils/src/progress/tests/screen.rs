@@ -471,13 +471,19 @@ fn gated_attach_releases_no_draw_outside_a_frame() {
     let term = InMemoryTerm::new(ROWS, COLS);
     let terminal = terminal_with_gate(&term, ROWS as usize);
     let screen = terminal.screen().build();
-    let _first = screen.add_bar(10, "first");
+    let first = screen.add_bar(10, "first");
+    // The glyphs below only cycle for rows that declared in-flight work
+    // (Task 6's opt-in); this test pins draw discipline, so it opts in
+    // rather than pinning the parked default (which `active_without_opt_in_is_parked`
+    // covers).
+    first.set_animating(true);
     terminal.tick();
     let _ = term.moves_since_last_check();
 
     // The second attach shifts the active band and re-measures the layout; the
     // labels differ so the shifted row's re-sync is a real push, not a dedup.
-    let _second = screen.add_bar(10, "second");
+    let second = screen.add_bar(10, "second");
+    second.set_animating(true);
     let ops = term.moves_since_last_check();
     assert!(ops.is_empty(), "attach released draws outside a frame: {ops}");
 

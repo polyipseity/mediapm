@@ -84,6 +84,12 @@ pub(crate) struct SharedState {
     /// apply its blank once and then leave the row alone, with no per-frame
     /// change detection.
     cleared_blank_pending: AtomicBool,
+    /// Consumer-declared in-flight work (see
+    /// [`set_animating`](ProgressBarHandle::set_animating)). Defaults to
+    /// `false`: a row nobody declares live renders parked even while
+    /// [`status`](Self::snapshot) is `Active` (spec R3/AC2), so a forgotten
+    /// declaration is a still row rather than a spinning one.
+    animating: AtomicBool,
     time_source: Arc<dyn TimeSource>,
 }
 
@@ -164,6 +170,7 @@ impl SharedState {
             start_time: RwLock::new(time_source.now()),
             finished_elapsed: RwLock::new(None),
             cleared_blank_pending: AtomicBool::new(false),
+            animating: AtomicBool::new(false),
             time_source,
         }
     }
@@ -201,6 +208,7 @@ impl SharedState {
             suffix_components: sc.clone(),
             status,
             elapsed: self.elapsed(),
+            animating: self.animating.load(Ordering::Relaxed),
         }
     }
 
@@ -257,6 +265,12 @@ impl SharedState {
         }
     }
 
+    /// Store the consumer-declared in-flight-work flag (see
+    /// [`ProgressBarHandle::set_animating`]).
+    fn set_animating(&self, animating: bool) {
+        self.animating.store(animating, Ordering::Relaxed);
+    }
+
     fn set_style(&self, style: BarStyle) {
         self.style.store(style as u8, Ordering::Relaxed);
     }
@@ -283,6 +297,11 @@ pub struct TrackSnapshot {
     pub status: TrackStatus,
     /// Elapsed time since the handle was created (frozen on finish).
     pub elapsed: Duration,
+    /// Whether the consumer declared this row to carry in-flight work (see
+    /// [`set_animating`](ProgressBarHandle::set_animating)). The renderer
+    /// animates a row only when this is `true` **and** `status` is
+    /// [`Active`](TrackStatus::Active); otherwise the row renders parked.
+    pub animating: bool,
 }
 
 // ---- ProgressBarHandle ----------------------------------------------------
@@ -454,6 +473,22 @@ impl ProgressBarHandle {
     #[must_use]
     pub fn style(&self) -> BarStyle {
         self.state.style()
+    }
+
+    /// Declare whether this row carries in-flight work, so its spinner
+    /// animates.
+    ///
+    /// Rows default to parked (a static `·`): a row nobody declares live
+    /// stays still even while [`Active`](TrackStatus::Active), which is the
+    /// safe failure when a new state is forgotten (spec R3/AC2). Terminal
+    /// status parks a row regardless of this flag, so an explicit
+    /// `set_animating(false)` only matters for a row that returns to
+    /// [`Active`](TrackStatus::Active) without new work — between a
+    /// [`restart`](Self::restart) and the opt-in that accompanies its next
+    /// dispatch. [`restart`](Self::restart) deliberately leaves the flag
+    /// alone: it re-activates a row, it does not declare work.
+    pub fn set_animating(&self, animating: bool) {
+        self.state.set_animating(animating);
     }
 
     /// Mark the bar as finished successfully (keeps it visible).

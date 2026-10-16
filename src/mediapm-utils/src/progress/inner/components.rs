@@ -625,6 +625,13 @@ pub(crate) const SPINNER_COLUMN: usize = 0;
 /// accept and why nine would be the wrong size.
 pub(crate) const TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
+/// The spinner-column character a parked row draws (spec R3/AC2).
+///
+/// A row with no declared in-flight work renders this dot instead of cycling
+/// `TICK_CHARS`, so it is as legitimate a spinner-column character as any
+/// glyph and the transcript matcher treats it as one.
+pub(crate) const PARKED_GLYPH: char = '·';
+
 /// Columns held back for the bar fill before the prefix slot grows past the
 /// measured label.
 ///

@@ -32,7 +32,7 @@
 //! its slot and wrapped onto the line below, and a row that appeared or
 //! vanished all differ at a column this comparison does not exempt.
 
-use crate::progress::inner::{SPINNER_COLUMN, TICK_CHARS, strip_ansi};
+use crate::progress::inner::{PARKED_GLYPH, SPINNER_COLUMN, TICK_CHARS, strip_ansi};
 
 /// Every character the spinner column of a rendered frame can hold.
 ///
@@ -112,9 +112,13 @@ fn first_difference(expected: &str, actual: &str) -> Option<usize> {
     }
 }
 
-/// Whether `character` is one of the configured spinner glyphs.
+/// Whether `character` is one of the spinner-column characters.
+///
+/// Both the cycling `TICK_CHARS` glyphs and the parked `PARKED_GLYPH` a row
+/// with no declared in-flight work draws (spec R3/AC2) count: which of them a
+/// row shows at the end of a run is animation phase, not layout.
 fn is_spinner(character: char) -> bool {
-    TICK_CHARS.contains(character)
+    TICK_CHARS.contains(character) || character == PARKED_GLYPH
 }
 
 /// The character `line` holds at `column`, or `None` when the line is shorter.

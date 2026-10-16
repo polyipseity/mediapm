@@ -663,6 +663,7 @@ mod tests {
             suffix_components: SuffixComponents::default(),
             status,
             elapsed: Duration::ZERO,
+            animating: false,
         }
     }
 

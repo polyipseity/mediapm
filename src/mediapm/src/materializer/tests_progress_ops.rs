@@ -140,8 +140,12 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
             ProgressOp::AddBar { total: 1, label: "materializing".into() },
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::SetTruncation { prefix: "materializing".into(), suffix: String::new() },
+            // The phase declares live work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             // Per-entry bar: staging.
             ProgressOp::AddBar { total: 1, label: "test_file [stg]".into() },
+            // The entry bar declares live work (Task 6 opt-in).
+            ProgressOp::SetAnimating { animating: true },
             ProgressOp::SetTruncation { prefix: "test_file [stg]".into(), suffix: String::new() },
             // Per-entry bar: verify phase (set before hash resolution).
             ProgressOp::SetTruncation { prefix: "test_file [vrf]".into(), suffix: String::new() },

@@ -23,6 +23,8 @@ fn parallel_workers_with_a_failed_worker() {
 
     let a = screen.add_bar(5, "worker-a");
     let b = screen.add_bar(5, "worker-b");
+    b.set_animating(true);
+    _overall.set_animating(true);
 
     a.advance(3);
     b.advance(2);
@@ -112,6 +114,7 @@ fn materializer_consumer_lifecycle() {
     let screen = terminal.screen().build();
 
     let bar = screen.add_bar(3, "materializing");
+    bar.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -154,6 +157,7 @@ fn materializer_consumer_lifecycle() {
 fn tool_sync_consumer_lifecycle() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
     let (screen, _overall) = terminal.screen().with_overall("syncing tools", 2).build();
+    _overall.set_animating(true);
 
     let t1 = screen.add_bar(0, "yt-dlp");
     t1.advance(1);
@@ -269,6 +273,9 @@ fn workers_with_interleaved_advances() {
 
     let c1 = screen.add_bar(10, "fast");
     let c2 = screen.add_bar(10, "slow");
+    c1.set_animating(true);
+    c2.set_animating(true);
+    overall.set_animating(true);
     c1.set_position(8);
     c2.set_position(3);
     overall.advance(11);
@@ -299,6 +306,10 @@ fn worker_children_fill_the_small_grid() {
     let c1 = screen.add_bar(5, "child-a");
     let c2 = screen.add_bar(5, "child-b");
     let c3 = screen.add_bar(5, "child-c");
+    c1.set_animating(true);
+    c2.set_animating(true);
+    c3.set_animating(true);
+    _overall.set_animating(true);
     c1.set_position(2);
     c2.set_position(4);
     c3.set_position(5);
@@ -323,8 +334,11 @@ fn worker_children_fill_the_small_grid() {
 fn child_capacity_excludes_the_overall_slot() {
     let (terminal, term) = mk_with_capacity(3, 40, 2);
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    _overall.set_animating(true);
     let _c1 = screen.add_bar(3, "alpha");
     let _c2 = screen.add_bar(3, "beta");
+    _c1.set_animating(true);
+    _c2.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -338,9 +352,12 @@ fn child_capacity_excludes_the_overall_slot() {
 
     let (terminal, term) = mk_with_capacity(3, 40, 2);
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    _overall.set_animating(true);
     let _c1 = screen.add_bar(3, "alpha");
     let _c2 = screen.add_bar(3, "beta");
     let _c3 = screen.add_bar(3, "gamma");
+    _c1.set_animating(true);
+    _c2.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -361,6 +378,8 @@ fn repeated_position_setting_yields_last_value() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 100).build();
 
     let worker = screen.add_bar(50, "worker");
+    worker.set_animating(true);
+    _overall.set_animating(true);
     for i in 0..20 {
         worker.set_position(i * 2);
     }
@@ -393,6 +412,7 @@ fn repeated_position_setting_yields_last_value() {
 fn conductor_cli_step_progress_lifecycle() {
     let (terminal, term) = mk_with_capacity(5, 80, 4);
     let (screen, overall) = terminal.screen().with_overall("steps", 0).build();
+    overall.set_animating(true);
 
     overall.set_total(3);
     overall.set_position(1);

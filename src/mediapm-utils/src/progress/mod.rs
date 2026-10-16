@@ -97,6 +97,10 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             suffix_components: crate::progress::inner::SuffixComponents::default(),
             status: TrackStatus::Active,
             elapsed: recording::RecordingTrackedHandle::snapshot_elapsed(self),
+            // Stub snapshot: like `position: 0` and the constant `Active`
+            // status, the display-only animation flag is not modeled here;
+            // assert `set_animating` through the recorded ops instead.
+            animating: false,
         }
     }
     fn is_finished(&self) -> bool {
@@ -134,6 +138,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     }
     fn set_style(&self, style: BarStyle) {
         recording::RecordingTrackedHandle::set_style(self, style);
+    }
+    fn set_animating(&self, animating: bool) {
+        recording::RecordingTrackedHandle::set_animating(self, animating);
     }
 }
 

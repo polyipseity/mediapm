@@ -24,7 +24,8 @@ fn first_glyph(line: &str) -> char {
 const BRAILLE_TICKS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// A worker-spinner bar renders a filled bar while busy, an empty track while
-/// idle, and a completed bar once finished.
+/// idle, and a completed bar once finished. An idle row also parks on the `·`:
+/// it is `Active` but never declared in-flight work (spec R3/AC2).
 #[test]
 fn worker_spinner_style_renders_idle_and_active() {
     let (terminal, term) = mk_with_capacity(5, 80, 4);
@@ -32,6 +33,8 @@ fn worker_spinner_style_renders_idle_and_active() {
 
     let _idle = screen.add_bar_with_style(0, "idle", BarStyle::WorkerSpinner);
     let busy = screen.add_bar_with_style(5, "busy", BarStyle::WorkerSpinner);
+    busy.set_animating(true);
+    _overall.set_animating(true);
     busy.advance(5);
     screen.tick();
 
@@ -47,7 +50,7 @@ fn worker_spinner_style_renders_idle_and_active() {
         concat!(
             "\n",
             "\n",
-            "⠋        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/0 0s 0/d\n",
+            "·        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/0 0s 0/d\n",
             "⠋        busy ███████████████████████████████████████████████████  5/5 0s 0/d\n",
             "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
@@ -66,7 +69,7 @@ fn worker_spinner_style_renders_idle_and_active() {
         concat!(
             "\n",
             "\n",
-            "⠙        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/0 0s 0/d\n",
+            "·        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/0 0s 0/d\n",
             "·        busy ███████████████████████████████████████████████████  5/5 0s\n",
             "⠙     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
@@ -74,17 +77,20 @@ fn worker_spinner_style_renders_idle_and_active() {
     );
 }
 
-/// The spinner only animates while its bar is active: consecutive draws advance
-/// the glyph of an unfinished bar and leave both a successful and a failed bar
-/// frozen — a finished bar must never look busy again.
+/// The spinner advances only for a row that declared in-flight work: an
+/// `Active` bar with `set_animating(true)` advances its glyph on every draw,
+/// while a finished bar (whatever its history) and an `Active` row nobody
+/// declared live stay frozen — a finished or unlive bar must never look busy.
 #[test]
 fn spinner_advances_only_while_a_bar_is_active() {
     let (terminal, term) = mk_with_capacity(5, 80, 4);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
 
     let active = screen.add_bar(5, "active");
     let done = screen.add_bar(5, "done");
     let failed = screen.add_bar(5, "failed");
+    active.set_animating(true);
+    overall.set_animating(true);
     active.advance(1);
     done.advance(5);
     done.finish_success();
@@ -144,6 +150,9 @@ fn zero_total_fill_depends_on_the_bar_style() {
 
     let _tracked = screen.add_bar(0, "step-zero");
     let _blank = screen.add_bar_with_style(0, "worker-zero", BarStyle::WorkerSpinner);
+    _tracked.set_animating(true);
+    _blank.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
 
     let contents = term.contents();

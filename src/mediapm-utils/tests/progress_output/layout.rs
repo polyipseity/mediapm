@@ -70,6 +70,7 @@ impl BarLabelTruncation for WorkerRowLabel {
 fn fixed_height_grid_with_overall() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    _overall.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -91,8 +92,10 @@ fn fixed_height_grid_with_overall() {
 fn add_bar_reuses_bottom_child_slot() {
     let (terminal, term) = mk_with_capacity(5, 80, 4);
     let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    _overall.set_animating(true);
 
     let _c1 = screen.add_bar(5, "tool1");
+    _c1.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -107,6 +110,7 @@ fn add_bar_reuses_bottom_child_slot() {
     );
 
     let _c2 = screen.add_bar(3, "tool2");
+    _c2.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -129,6 +133,7 @@ fn no_overall_reuses_bottom_child_slot() {
     let screen = terminal.screen().build();
 
     let _c1 = screen.add_bar(5, "task1");
+    _c1.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -142,6 +147,7 @@ fn no_overall_reuses_bottom_child_slot() {
     );
 
     let _c2 = screen.add_bar(3, "task2");
+    _c2.set_animating(true);
     // The single writer draws frames, not bar operations: attaching no
     // longer pushes an immediate legacy draw (`add_bar` used to write the
     // bar's first frame itself), so the layout this assert pins lands on
@@ -168,6 +174,7 @@ fn bar_count_never_grows() {
     let screen = terminal.screen().build();
     for i in 0..30 {
         let _c = screen.add_bar(1, &format!("tool{i}"));
+        _c.set_animating(true);
         screen.tick();
     }
     assert_eq!(
@@ -190,8 +197,10 @@ fn children_fill_slots_chronologically() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
 
+    _overall.set_animating(true);
     for i in 0..5 {
         let _c = screen.add_bar(2, &format!("task{i}"));
+        _c.set_animating(true);
         screen.tick();
     }
     assert_eq!(
@@ -218,6 +227,10 @@ fn children_are_ordered_by_age() {
     let _c1 = screen.add_bar(5, "first");
     let _c2 = screen.add_bar(5, "second");
     let _c3 = screen.add_bar(5, "third");
+    _c1.set_animating(true);
+    _c2.set_animating(true);
+    _c3.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
     screen.tick();
     assert_eq!(
@@ -244,6 +257,9 @@ fn slot_shift_does_not_corrupt_display() {
 
     let c1 = screen.add_bar(10, "alpha");
     let c2 = screen.add_bar(10, "beta");
+    c1.set_animating(true);
+    c2.set_animating(true);
+    _overall.set_animating(true);
     c1.advance(3);
     c2.advance(7);
     ts.advance(Duration::from_secs(1));
@@ -262,6 +278,7 @@ fn slot_shift_does_not_corrupt_display() {
     );
 
     let c3 = screen.add_bar(10, "gamma");
+    c3.set_animating(true);
     c3.advance(5);
     ts.advance(Duration::from_secs(1));
     screen.tick();
@@ -292,6 +309,10 @@ fn overall_never_shifts_when_children_overflow() {
     let _c1 = screen.add_bar(1, "a");
     let _c2 = screen.add_bar(1, "b");
     let _c3 = screen.add_bar(1, "c");
+    _c1.set_animating(true);
+    _c2.set_animating(true);
+    _c3.set_animating(true);
+    overall.set_animating(true);
     overall.advance(3);
     ts.advance(Duration::from_secs(1));
     screen.tick();
@@ -307,7 +328,8 @@ fn overall_never_shifts_when_children_overflow() {
         "overall_never_shifts_when_children_overflow/full"
     );
 
-    let _ = screen.add_bar(1, "d");
+    let _d = screen.add_bar(1, "d");
+    _d.set_animating(true);
     let _ = screen.add_bar(1, "e");
     overall.advance(2);
     ts.advance(Duration::from_secs(1));
@@ -332,6 +354,7 @@ fn blank_slots_render_nothing() {
     let screen = terminal.screen().build();
 
     let _c = screen.add_bar(10, "child");
+    _c.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -353,6 +376,8 @@ fn child_slot_sits_above_the_pinned_overall() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
 
     let _c = screen.add_bar(7, "worker");
+    _c.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -374,8 +399,10 @@ fn overall_stays_in_the_bottom_slot() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
 
+    _overall.set_animating(true);
     for i in 0..5 {
         let _c = screen.add_bar(2, &format!("task{i}"));
+        _c.set_animating(true);
         screen.tick();
     }
     assert_eq!(
@@ -405,6 +432,9 @@ fn overflow_bars_are_tracked_but_not_drawn() {
     let c3 = screen.add_bar(5, "tool-c");
     let c4 = screen.add_bar(5, "tool-d");
     let c5 = screen.add_bar(5, "tool-e");
+    for bar in [&c1, &c2, &c3, &c4, &c5] {
+        bar.set_animating(true);
+    }
 
     c1.advance(1);
     c2.advance(2);
@@ -453,6 +483,8 @@ fn resolve_prefix_within_budget_keeps_phase_tag() {
             ..Default::default()
         },
     );
+    child.set_animating(true);
+    _overall.set_animating(true);
     child.set_position(0);
     screen.tick();
     assert_eq!(
@@ -663,6 +695,8 @@ fn resolve_label_multiword_no_bracket_keeps_whole_label() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
 
     let child = screen.add_bar(100, "syncing tools");
+    child.set_animating(true);
+    _overall.set_animating(true);
     child.set_position(0);
     screen.tick();
     assert_eq!(
@@ -723,6 +757,7 @@ fn fill_at_its_floor_gives_its_columns_to_the_label_and_count() {
     let (terminal, term) = mk_with_capacity(2, 20, 1);
     let screen = terminal.screen().build();
     let bar = screen.add_bar(3, "default s3 (ffmpeg)");
+    bar.set_animating(true);
     bar.advance(1);
     screen.tick();
     assert_eq!(
@@ -734,6 +769,7 @@ fn fill_at_its_floor_gives_its_columns_to_the_label_and_count() {
     let (terminal, term) = mk_with_capacity(2, 80, 1);
     let screen = terminal.screen().build();
     let bar = screen.add_bar(3, "default s3 (ffmpeg)");
+    bar.set_animating(true);
     bar.advance(1);
     screen.tick();
     assert_eq!(
@@ -798,6 +834,7 @@ fn client_suffix_reserves_exactly_what_it_draws_and_the_fill_keeps_the_rest() {
     let (terminal, term) = mk_with_capacity(2, 80, 1);
     let screen = terminal.screen().build();
     let bar = screen.add_bar(12, "default");
+    bar.set_animating(true);
     bar.advance(4);
     screen.tick();
     assert_eq!(
@@ -813,6 +850,7 @@ fn client_suffix_reserves_exactly_what_it_draws_and_the_fill_keeps_the_rest() {
     let (terminal, term) = mk_with_capacity(2, 80, 1);
     let screen = terminal.screen().build();
     let bar = screen.add_bar(12, "default");
+    bar.set_animating(true);
     bar.advance(4);
     bar.set_truncation(Arc::new(TallyRowLabel));
     screen.tick();

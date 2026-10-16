@@ -95,6 +95,15 @@ pub trait ProgressBarApi: Send + Sync {
     /// [`add_bar`](crate::progress::ProgressScreen::add_bar) so the renderer
     /// applies the style-specific `0/0` div-by-zero guard.
     fn set_style(&self, style: BarStyle);
+    /// Declare that this row carries in-flight work, so its spinner
+    /// animates.
+    ///
+    /// Rows default to parked (a static `·`): a state nobody declares stays
+    /// still even while [`Active`](crate::progress::TrackStatus::Active),
+    /// which is the safe failure (spec R3). Terminal status parks a row
+    /// regardless of this flag; see
+    /// [`ProgressBarHandle::set_animating`] for the full contract.
+    fn set_animating(&self, animating: bool);
 }
 
 #[cfg(feature = "progress")]
@@ -137,6 +146,9 @@ impl ProgressBarApi for ProgressBarHandle {
     }
     fn set_style(&self, style: BarStyle) {
         ProgressBarHandle::set_style(self, style);
+    }
+    fn set_animating(&self, animating: bool) {
+        ProgressBarHandle::set_animating(self, animating);
     }
 }
 

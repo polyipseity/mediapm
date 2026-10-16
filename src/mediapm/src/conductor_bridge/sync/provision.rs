@@ -242,6 +242,9 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
     let bar_total = metadata_fetch_count;
     let resolve_bar = group.add_bar_with_prefix(bar_total.into(), &bar_prefix("res"));
+    // Phase bars animate while they carry live work (Task 6); their
+    // `finish_*` transitions park the row.
+    resolve_bar.set_animating(true);
     error_bars.push(resolve_bar.clone());
     let (
         mut fetch,
@@ -323,6 +326,7 @@ pub(super) async fn fetch_and_import_tool_payload(
 
     // Phase 2: Fetch — download (or generate) bytes for each source.
     let fetch_bar = group.add_bar_with_prefix(total, &bar_prefix("fch"));
+    fetch_bar.set_animating(true);
     error_bars.push(fetch_bar.clone());
     let fetch_bar_cb = fetch_bar.clone();
     let fetch_tool_id = tool_id.to_string();
@@ -371,6 +375,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     // as the aggregate total and refines to actual payload sizes as each
     // source begins processing.
     let process_bar = group.add_bar_with_prefix(total_process_items, &bar_prefix("pro"));
+    process_bar.set_animating(true);
     error_bars.push(process_bar.clone());
     let process_bar_cb = process_bar.clone();
     let pp_tool_id = tool_id.to_string();

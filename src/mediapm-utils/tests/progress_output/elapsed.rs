@@ -40,6 +40,8 @@ fn elapsed_starts_at_zero_and_advances() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
 
     let child = screen.add_bar(3, "tool-a");
+    child.set_animating(true);
+    _overall.set_animating(true);
     child.advance(1);
     screen.tick();
     let at_zero = term.contents();
@@ -86,6 +88,8 @@ fn elapsed_is_stable_on_a_stale_tick() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
 
     let _child = screen.add_bar(3, "tool-a");
+    _child.set_animating(true);
+    _overall.set_animating(true);
     ts.advance(Duration::from_secs(3));
     screen.tick();
     let first = term.contents();
@@ -148,6 +152,9 @@ fn elapsed_freezes_when_a_bar_finishes() {
 
     let finishing = screen.add_bar(3, "finishing");
     let _running = screen.add_bar(3, "running");
+    finishing.set_animating(true);
+    _running.set_animating(true);
+    _overall.set_animating(true);
 
     ts.advance(Duration::from_secs(4));
     screen.tick();
@@ -203,6 +210,8 @@ fn elapsed_survives_orphan_reattach() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
 
     let _worker = screen.add_bar(10, "worker");
+    _worker.set_animating(true);
+    _overall.set_animating(true);
     ts.advance(Duration::from_secs(3));
     screen.tick();
     let before = term.contents();
@@ -276,10 +285,13 @@ fn elapsed_survives_a_slot_shift() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
 
     let _alpha = screen.add_bar(10, "alpha");
+    _alpha.set_animating(true);
+    _overall.set_animating(true);
     ts.advance(Duration::from_secs(2));
     screen.tick();
 
     let _beta = screen.add_bar(5, "beta");
+    _beta.set_animating(true);
     ts.advance(Duration::from_secs(2));
     screen.tick();
     let contents = term.contents();
@@ -307,6 +319,8 @@ fn elapsed_is_independent_of_progress() {
     let (terminal, term) = mk_with_capacity_and_ts(H, W, 4, &ts);
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
     let _child = screen.add_bar(3, "idle");
+    _child.set_animating(true);
+    _overall.set_animating(true);
 
     ts.advance(Duration::from_secs(6));
     screen.tick();

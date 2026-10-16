@@ -121,6 +121,8 @@ pub fn render_tool_sync_screen(config: ScreenConfig) -> String {
 
     // ffmpeg: both lookups were cache hits, so the bar reports `2 cached`.
     let ffmpeg_resolve = screen.add_bar(FFMPEG_LOOKUPS, "ffmpeg v7.1 [res]");
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    ffmpeg_resolve.set_animating(true);
     ffmpeg_resolve.set_suffix_components(SuffixComponents::status_list(&[StatusCount {
         word: "cached",
         count: Some(2),
@@ -133,6 +135,8 @@ pub fn render_tool_sync_screen(config: ScreenConfig) -> String {
 
     // yt-dlp: already provisioned at this version, so it resolves and stops.
     let ytdlp_resolve = screen.add_bar(1, "yt-dlp v2025.1 [res]");
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    ytdlp_resolve.set_animating(true);
     ytdlp_resolve.set_suffix_components(SuffixComponents::status_list(&[
         StatusCount { word: "skipped", count: None },
         StatusCount { word: "cached", count: Some(1) },
@@ -145,10 +149,16 @@ pub fn render_tool_sync_screen(config: ScreenConfig) -> String {
 
     // deno: resolves from the network, then fetches and processes its payloads.
     let deno_resolve = screen.add_bar(1, "deno v2.1.4 [res]");
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    deno_resolve.set_animating(true);
     deno_resolve.set_position(1);
     deno_resolve.finish_success();
 
     let deno_fetch = screen.add_bar(2, "deno v2.1.4 [fch]");
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    deno_fetch.set_animating(true);
     set_phase_components(&deno_fetch, "deno", "v2.1.4", "fch", 1, 2);
     deno_fetch.set_total(DENO_FETCH_BYTES);
     deno_fetch.set_position(DENO_FETCHED_BYTES);
@@ -165,6 +175,8 @@ pub fn render_tool_sync_screen(config: ScreenConfig) -> String {
     // An archive source contributes a decompress item and a compress item, a
     // binary source one import item: three items for these two sources.
     let deno_process = screen.add_bar(3, "deno v2.1.4 [pro]");
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    deno_process.set_animating(true);
     set_phase_components(&deno_process, "deno", "v2.1.4", "pro", 2, 3);
     deno_process.set_position(2);
     screen.tick();
@@ -178,6 +190,8 @@ pub fn render_tool_sync_screen(config: ScreenConfig) -> String {
     // The prune bar counts the candidates the document rewrite will drop; it is
     // registered after the provisioning loop, directly above the overall bar.
     let prune = screen.add_bar(2, "pruning [prn]");
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    prune.set_animating(true);
     prune.advance(1);
     screen.tick();
     clock.advance(Duration::from_secs(1));
@@ -224,6 +238,8 @@ fn render_dense(config: ScreenConfig) -> String {
 
     for (index, (tool, version)) in TOOLS.iter().enumerate() {
         let resolve = screen.add_bar(1, &format!("{tool} {version} [res]"));
+        // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+        resolve.set_animating(true);
         resolve.set_position(1);
         resolve.finish_success();
         overall.advance(1);
@@ -233,6 +249,8 @@ fn render_dense(config: ScreenConfig) -> String {
         // Every source here comes from the network, so the fetch bar opens
         // part-way through and the process bar opens behind it.
         let fetch = screen.add_bar(2, &format!("{tool} {version} [fch]"));
+        // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+        fetch.set_animating(true);
         set_phase_components(&fetch, tool, version, "fch", 1, 2);
         fetch.set_total(PAYLOAD_BYTES[index]);
         fetch.set_position(PAYLOAD_BYTES[index] / 2);
@@ -243,6 +261,10 @@ fn render_dense(config: ScreenConfig) -> String {
         fetch.finish_success();
 
         let process = screen.add_bar(ARCHIVE_ITEMS, &format!("{tool} {version} [pro]"));
+
+        // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+        process.set_animating(true);
         set_phase_components(&process, tool, version, "pro", 1, ARCHIVE_ITEMS);
         process.set_position(1);
         screen.tick();
@@ -254,6 +276,10 @@ fn render_dense(config: ScreenConfig) -> String {
     }
 
     let prune = screen.add_bar(2, "pruning [prn]");
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    prune.set_animating(true);
     prune.advance(1);
     prune.finish_success();
 
@@ -298,6 +324,10 @@ fn render_states(config: ScreenConfig) -> String {
     overall.set_total(TOOL_COUNT);
 
     let tagger_resolve = screen.add_bar(1, MEDIA_TAGGER_LABEL);
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    tagger_resolve.set_animating(true);
     tagger_resolve.set_position(1);
     tagger_resolve.finish_success();
     overall.advance(1);
@@ -305,6 +335,10 @@ fn render_states(config: ScreenConfig) -> String {
     clock.advance(Duration::from_secs(1));
 
     let ffmpeg_resolve = screen.add_bar(FFMPEG_LOOKUPS, FFMPEG_LABEL);
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    ffmpeg_resolve.set_animating(true);
     ffmpeg_resolve.set_suffix_components(SuffixComponents::status_list(&[StatusCount {
         word: "cached",
         count: Some(2),
@@ -317,6 +351,8 @@ fn render_states(config: ScreenConfig) -> String {
 
     // rsgain was already provisioned, so its resolve bar is the only row it has.
     let rsgain_resolve = screen.add_bar(1, RSGAIN_LABEL);
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    rsgain_resolve.set_animating(true);
     rsgain_resolve.set_suffix_components(SuffixComponents::status_list(&[
         StatusCount { word: "skipped", count: None },
         StatusCount { word: "cached", count: Some(1) },
@@ -332,7 +368,13 @@ fn render_states(config: ScreenConfig) -> String {
     // finished rather than beside one that has.
     let deno_resolve = screen.add_bar(1, DENO_LABEL);
 
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    deno_resolve.set_animating(true);
     let deno_fetch = screen.add_bar(2, DENO_FETCH_LABEL);
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    deno_fetch.set_animating(true);
     set_phase_components(&deno_fetch, "deno", DENO_VERSION, "fch", 1, 2);
     deno_fetch.set_total(DENO_FETCH_BYTES);
     deno_fetch.set_position(DENO_FETCH_BYTES / 3);
@@ -343,6 +385,10 @@ fn render_states(config: ScreenConfig) -> String {
     deno_fetch.finish_success();
 
     let deno_process = screen.add_bar(DENO_PROCESS_ITEMS, DENO_PROCESS_LABEL);
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    deno_process.set_animating(true);
     set_phase_components(&deno_process, "deno", DENO_VERSION, "pro", 1, DENO_PROCESS_ITEMS);
     deno_process.set_position(1);
     screen.tick();
@@ -358,17 +404,27 @@ fn render_states(config: ScreenConfig) -> String {
     // two scenarios leave out. The status alone puts the `[W]` and the `[F]` on
     // the row: the renderer folds it into the prefix marker before drawing.
     let sd_resolve = screen.add_bar(1, SD_LABEL);
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    sd_resolve.set_animating(true);
     set_phase_components(&sd_resolve, "sd", SD_VERSION, "res", 1, 1);
     sd_resolve.set_position(1);
     sd_resolve.finish_warning();
 
     let sd_fetch = screen.add_bar(1, SD_FETCH_LABEL);
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    sd_fetch.set_animating(true);
     set_phase_components(&sd_fetch, "sd", SD_VERSION, "fch", 0, 1);
     sd_fetch.set_position(0);
     sd_fetch.finish_error();
     screen.tick();
 
     let prune = screen.add_bar(2, "pruning [prn]");
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    prune.set_animating(true);
     prune.advance(1);
     prune.finish_success();
 

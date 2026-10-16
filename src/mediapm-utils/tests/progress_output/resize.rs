@@ -27,6 +27,8 @@ fn dimension_source_columns_do_not_change_the_frame() {
     let (terminal, term) = mk_with_dims(5, 80, 4, &dims, None, false);
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
     let _child = screen.add_bar(7, "tool-a");
+    _child.set_animating(true);
+    _overall.set_animating(true);
 
     screen.tick();
     let wide = term.contents();
@@ -69,11 +71,15 @@ fn narrow_draw_target_drops_the_bar_not_the_label() {
     let (wide_terminal, wide_term) = mk_with_capacity(4, 40, 3);
     let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
     let _child = wide_screen.add_bar(7, "tool-a");
+    _child.set_animating(true);
+    _overall.set_animating(true);
     wide_screen.tick();
 
     let (narrow_terminal, narrow_term) = mk_with_capacity(4, 20, 3);
     let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
     let _child = narrow_screen.add_bar(7, "tool-a");
+    _child.set_animating(true);
+    _overall.set_animating(true);
     narrow_screen.tick();
 
     let wide = wide_term.contents();
@@ -111,12 +117,16 @@ fn wider_draw_target_expands_the_bar() {
     let (narrow_terminal, narrow_term) = mk_with_capacity(4, 40, 3);
     let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
     let child = narrow_screen.add_bar(10, "tool-a");
+    child.set_animating(true);
+    _overall.set_animating(true);
     child.advance(5);
     narrow_screen.tick();
 
     let (wide_terminal, wide_term) = mk_with_capacity(4, 120, 3);
     let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
     let child = wide_screen.add_bar(10, "tool-a");
+    child.set_animating(true);
+    _overall.set_animating(true);
     child.advance(5);
     wide_screen.tick();
 
@@ -167,6 +177,8 @@ fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
     let (narrow_terminal, narrow_term) = mk_with_capacity(4, 20, 3);
     let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
     let child = narrow_screen.add_bar(10, "tool-a");
+    child.set_animating(true);
+    _overall.set_animating(true);
     child.set_suffix_components(SuffixComponents {
         custom: "already downloaded".into(),
         ..Default::default()
@@ -176,6 +188,8 @@ fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
     let (wide_terminal, wide_term) = mk_with_capacity(4, 120, 3);
     let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
     let child = wide_screen.add_bar(10, "tool-a");
+    child.set_animating(true);
+    _overall.set_animating(true);
     child.set_suffix_components(SuffixComponents {
         custom: "already downloaded".into(),
         ..Default::default()
@@ -218,6 +232,8 @@ fn height_shrink_orphans_and_grow_reattaches() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
 
     let child = screen.add_bar(7, "fetch");
+    child.set_animating(true);
+    _overall.set_animating(true);
     child.advance(3);
     screen.tick();
     assert_eq!(
@@ -273,6 +289,8 @@ fn dynamic_height_grows_the_slot_count_to_the_terminal_height() {
     let (terminal, term) = mk_with_dims(24, 80, 6, &dims, None, true);
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
     let _c1 = screen.add_bar(7, "fetch");
+    _c1.set_animating(true);
+    _overall.set_animating(true);
 
     screen.tick();
     let at_two = term.contents();
@@ -341,6 +359,8 @@ fn height_shrink_removes_blank_slots() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
 
     let _child = screen.add_bar(7, "fetch");
+    _child.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
     let tall = term.contents();
     assert_eq!(tall.lines().count(), 6, "six rows render six reserved slots");
@@ -385,6 +405,9 @@ fn height_grow_appends_blank_slots_above_the_bars() {
 
     let _old = screen.add_bar(7, "oldest");
     let _new = screen.add_bar(7, "newest");
+    _old.set_animating(true);
+    _new.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
     let short = term.contents();
     assert_eq!(short.lines().count(), 4, "four rows render four slots");
@@ -436,6 +459,9 @@ fn height_shrink_then_grow_restores_the_frame() {
 
     let _old = screen.add_bar(7, "oldest");
     let _new = screen.add_bar(7, "newest");
+    _old.set_animating(true);
+    _new.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
     let before = term.contents();
     assert_eq!(
@@ -501,6 +527,8 @@ fn height_sequence_without_overall() {
 
     let _old = screen.add_bar(5, "bar 2");
     let _new = screen.add_bar(3, "bar 1");
+    _old.set_animating(true);
+    _new.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -605,6 +633,9 @@ fn partial_height_shrink_keeps_active_children() {
 
     let old = screen.add_bar(7, "oldest");
     let new = screen.add_bar(7, "newest");
+    old.set_animating(true);
+    new.set_animating(true);
+    _overall.set_animating(true);
     old.advance(2);
     new.advance(4);
     screen.tick();

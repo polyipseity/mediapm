@@ -228,6 +228,8 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     let workers: Vec<_> = (0..POOL_SIZE)
         .map(|_| {
             let bar = screen.add_bar(0, WORKFLOW_SEED);
+            // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+            bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
             WorkerSlot::Idle.apply(&bar);
             bar.finish_success();
@@ -244,6 +246,8 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     // to copy for this one. It takes the worker seed: the slot follows what a
     // bar draws, so a longer seed here would buy nothing.
     let step_bar = screen.add_bar(STEP_OUTPUTS, WORKFLOW_SEED);
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    step_bar.set_animating(true);
     step_bar.set_truncation(Arc::new(StepBarLabel {
         status_marker: String::new(),
         workflow_id: "default".to_string(),
@@ -373,6 +377,8 @@ fn render_dense(config: ScreenConfig) -> String {
     let workers: Vec<_> = (0..POOL_SIZE)
         .map(|_| {
             let bar = screen.add_bar(0, WORKFLOW_SEED);
+            // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+            bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
             WorkerSlot::Idle.apply(&bar);
             bar.finish_success();
@@ -467,6 +473,8 @@ fn render_states(config: ScreenConfig) -> String {
     let workers: Vec<_> = (0..POOL_SIZE)
         .map(|_| {
             let bar = screen.add_bar(0, WORKFLOW_SEED);
+            // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+            bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
             WorkerSlot::Idle.apply(&bar);
             bar.finish_success();
@@ -512,6 +520,8 @@ fn render_states(config: ScreenConfig) -> String {
     // The wide version and the wide tool name are on separate steps so each row
     // shows one shrink biting rather than both at once.
     let wide_version = screen.add_bar(WIDE_VERSION_OUTPUTS, WORKFLOW_SEED);
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    wide_version.set_animating(true);
     wide_version.set_truncation(Arc::new(StepBarLabel {
         status_marker: String::new(),
         workflow_id: "default".to_string(),
@@ -524,6 +534,10 @@ fn render_states(config: ScreenConfig) -> String {
     wide_version.set_position(2);
 
     let wide_tool = screen.add_bar(WIDE_TOOL_OUTPUTS, WORKFLOW_SEED);
+
+    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+
+    wide_tool.set_animating(true);
     wide_tool.set_truncation(Arc::new(StepBarLabel {
         status_marker: String::new(),
         workflow_id: "default".to_string(),

@@ -319,9 +319,12 @@ where
 
             // The overall bar is created by the caller with a placeholder
             // total; set the real total now that we know the step count.
+            // Ruling F: the overall bar animates while this run is active;
+            // its finalize status parks it.
             #[cfg(feature = "progress")]
             if let Some(ref ob) = overall_bar {
                 ob.set_total(total_steps as u64);
+                ob.set_animating(true);
             }
 
             // Pre-create one fixed worker-slot bar per pool member.  Each bar
@@ -437,6 +440,11 @@ where
                                 &step.tool,
                             )));
                             bar.set_total(assigned as u64);
+                            // Dispatch declares in-flight work (Task 6):
+                            // the bar spins until its settlement finishes
+                            // it, and the terminal status parks the row
+                            // afterwards.
+                            bar.set_animating(true);
                             Some(bar)
                         } else {
                             None

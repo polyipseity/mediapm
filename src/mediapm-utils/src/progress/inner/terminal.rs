@@ -177,14 +177,12 @@ impl ProgressTerminalBuilder {
     ///
     /// The ungated test harnesses build their draw target over an injectable
     /// term (the `InMemoryTerm` a fixture asserts on) while managing their
-    /// own bars; under the single writer, `run_frame` renders one [`FramePlan`]
+    /// own bars; under the single writer, `run_frame` renders one frame plan
     /// and writes it through this term — without it the frame would be built
     /// and discarded. The gate stays a no-op: there are no buffered draws to
     /// suppress or compensate for. This is the `with_multi_progress`
     /// companion for the plan-then-write path; the harness keeps ownership
     /// of the same term instance it passes as the draw target.
-    ///
-    /// [`FramePlan`]: super::FramePlan
     #[must_use]
     pub fn with_multi_progress_and_term(
         mut self,

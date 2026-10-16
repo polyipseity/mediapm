@@ -28,6 +28,8 @@ fn active_bar_survives_join_and_its_line_is_frozen() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
 
     let _bar = screen.add_bar(5, "alpha");
+    _bar.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
     screen.join();
 
@@ -54,6 +56,7 @@ fn join_and_clear_collapses_blank_slots_only() {
 
     let child = screen.add_bar(5, "fetch");
     child.finish_success();
+    _overall.set_animating(true);
     screen.tick();
     screen.join_and_clear();
     assert_eq!(
@@ -75,6 +78,7 @@ fn finalized_overall_bar_persists() {
 
     let child = screen.add_bar(5, "fetch");
     child.advance(5);
+    _overall.set_animating(true);
     screen.tick();
     child.finish_success();
     screen.tick();
@@ -98,6 +102,8 @@ fn join_keeps_every_bound_bar() {
 
     let child = screen.add_bar(3, "fetch");
     child.advance(3);
+    child.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
     screen.join();
     assert_eq!(
@@ -115,6 +121,7 @@ fn join_keeps_every_bound_bar() {
 fn finalized_screen_without_children_draws_only_the_overall() {
     let (terminal, term) = mk_with_capacity(4, 80, 3);
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    _overall.set_animating(true);
 
     screen.tick();
     screen.join_and_clear();
@@ -170,6 +177,7 @@ fn finished_child_stays_visible() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
 
     let child = screen.add_bar(5, "fetch");
+    _overall.set_animating(true);
     screen.tick();
     child.finish_success();
     screen.tick();
@@ -195,6 +203,7 @@ fn all_finished_bars_persist() {
 
     let c1 = screen.add_bar(3, "alpha");
     let c2 = screen.add_bar(5, "beta");
+    _overall.set_animating(true);
     c1.advance(3);
     c2.advance(5);
     screen.tick();
@@ -224,6 +233,7 @@ fn finishing_a_slot_twice_is_idempotent() {
 
     let child = screen.add_bar(5, "fetch");
     child.advance(5);
+    _overall.set_animating(true);
     screen.tick();
     child.finish_success();
     screen.tick();
@@ -262,6 +272,9 @@ fn finish_and_clear_zeroes_the_line_and_reuses_the_slot() {
 
     let _c1 = screen.add_bar(5, "keep");
     let c2 = screen.add_bar(5, "clear");
+    _c1.set_animating(true);
+    c2.set_animating(true);
+    _overall.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -292,6 +305,7 @@ fn finish_and_clear_zeroes_the_line_and_reuses_the_slot() {
     );
 
     let _c3 = screen.add_bar(5, "new");
+    _c3.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -320,6 +334,8 @@ fn finish_and_clear_keeps_other_bars() {
 
     let keep = screen.add_bar(3, "keep");
     let clear = screen.add_bar(3, "clear");
+    keep.set_animating(true);
+    _overall.set_animating(true);
     keep.advance(3);
     clear.advance(3);
     screen.tick();
@@ -327,6 +343,7 @@ fn finish_and_clear_keeps_other_bars() {
 
     clear.finish_and_clear();
     let _new = screen.add_bar(3, "new");
+    _new.set_animating(true);
     screen.tick();
 
     let contents = term.contents();
@@ -354,6 +371,7 @@ fn error_bar_keeps_progress_and_visibility() {
     let screen = terminal.screen().build();
 
     let child = screen.add_bar(5, "worker");
+    child.set_animating(true);
     child.advance(2);
     screen.tick();
     child.finish_error();
@@ -381,6 +399,10 @@ fn recycle_finished_slot_after_full() {
     let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
 
     let children: Vec<_> = (0..4).map(|i| screen.add_bar(2, &format!("task{i}"))).collect();
+    for child in &children {
+        child.set_animating(true);
+    }
+    _overall.set_animating(true);
     ts.advance(Duration::from_secs(1));
     screen.tick();
     assert_eq!(
@@ -413,6 +435,7 @@ fn recycle_finished_slot_after_full() {
     );
 
     let _c4 = screen.add_bar(2, "task4");
+    _c4.set_animating(true);
     ts.advance(Duration::from_secs(1));
     screen.tick();
     assert_eq!(
@@ -450,6 +473,7 @@ fn recycle_oldest_finished_slot() {
         )
     };
 
+    _overall.set_animating(true);
     let a1 = bar("a", "resolve", 1);
     let a2 = bar("a", "fetch", 1);
     let a3 = bar("a", "process", 1);
@@ -503,6 +527,7 @@ fn finalize_full_lifecycle_exact() {
 
     let c1 = screen.add_bar(5, "alpha");
     let c2 = screen.add_bar(3, "beta");
+    _overall.set_animating(true);
     c1.advance(5);
     c1.finish_success();
     c2.advance(3);
@@ -543,6 +568,7 @@ fn finalize_leaves_no_blank_lines() {
     let c1 = screen.add_bar(5, "alpha");
     let c2 = screen.add_bar(5, "beta");
     let c3 = screen.add_bar(5, "gamma");
+    _overall.set_animating(true);
     for child in [&c1, &c2, &c3] {
         child.advance(5);
         child.finish_success();
@@ -580,6 +606,7 @@ fn overall_stays_bottom_with_finished_children() {
     let (terminal, term) = mk_with_capacity(5, 80, 4);
     let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
 
+    _overall.set_animating(true);
     for i in 0..3 {
         let child = screen.add_bar(2, &format!("child{i}"));
         child.advance(2);
@@ -744,6 +771,7 @@ fn overall_handle_progress_reaches_the_renderer() {
     let (terminal, term) = mk_with_capacity(4, 80, 3);
     let (screen, overall) = terminal.screen().with_overall("overall", 4).build();
     let child = screen.add_bar(2, "child");
+    child.set_animating(true);
     child.advance(2);
     screen.tick();
 

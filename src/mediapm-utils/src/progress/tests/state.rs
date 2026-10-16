@@ -645,6 +645,11 @@ fn spinner_advances_per_cycle_for_all_bars() {
 
     let bar1 = bar("resolve", 100);
     let bar2 = bar("fetch", 100);
+    // Animation is opt-in (Task 6): the glyph this test measures only cycles
+    // for rows that declared in-flight work.
+    bar1.set_animating(true);
+    bar2.set_animating(true);
+    overall.set_animating(true);
 
     // Advance time so rate computation has positive dt.
     ts.advance(std::time::Duration::from_millis(100));
@@ -754,6 +759,10 @@ fn recycled_bar_spinner_animates() {
 
     // Phase 2: add fetch bar (recycles bar1's slot via attach Phase 2).
     let bar2 = bar("fetch", 5);
+    // The glyph this test measures only cycles for rows that declared
+    // in-flight work (Task 6's opt-in).
+    bar2.set_animating(true);
+    overall.set_animating(true);
     bar2.advance(2);
     ts.advance(std::time::Duration::from_millis(50));
     group.tick();

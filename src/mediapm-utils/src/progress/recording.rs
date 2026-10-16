@@ -120,6 +120,13 @@ pub enum ProgressOp {
         /// Rendered suffix string (full width, no truncation applied).
         suffix: String,
     },
+    /// `set_animating(animating)` was called. Declares or withdraws the
+    /// row's in-flight-work claim; the display bar parks a row that never
+    /// declared it, even while `Active` (spec R3/AC2).
+    SetAnimating {
+        /// The declared in-flight-work flag.
+        animating: bool,
+    },
     /// `finish_success()` was called.
     FinishSuccess,
     /// `finish_error()` was called.
@@ -363,6 +370,16 @@ impl RecordingTrackedHandle {
     pub fn set_style(&self, _style: BarStyle) {
         // No ProgressOp variant for style today; the recording harness
         // asserts worker-slot behavior via prefix/total deltas.
+    }
+
+    /// Declare that this row carries in-flight work, so its spinner animates.
+    ///
+    /// Recorded like the other mutators; the flag itself is display-only
+    /// state this harness does not model (its `ProgressBarApi::snapshot` is a
+    /// stub), so a test asserts through
+    /// [`ops()`](RecordingTrackedHandle::ops) rather than a snapshot.
+    pub fn set_animating(&self, animating: bool) {
+        self.push(ProgressOp::SetAnimating { animating });
     }
 
     /// Mark as finished with success.

@@ -1416,6 +1416,9 @@ pub(crate) async fn reconcile_desired_tools(
         }
         None => progress_group.add_bar(total_tools, "syncing tools"),
     };
+    // The overall bar animates while the sync runs (Task 6); its
+    // `finish_*` transition parks the row.
+    pb.set_animating(true);
     // Exactly one advancement path: every entry-termination route below goes
     // through this counter, never a raw `advance` on `pb`.
     let progress = Arc::new(OverallProgress::new(&pb));
@@ -1588,6 +1591,10 @@ pub(crate) async fn reconcile_desired_tools(
     } else {
         None
     };
+    if let Some(ref bar) = prn_bar {
+        // The prune pass is live work (Task 6); its finish parks the row.
+        bar.set_animating(true);
+    }
 
     let tools_before_rewrite = generated_doc.tools.len();
     generated_doc.tools.retain(|key, spec| {

@@ -732,20 +732,29 @@ impl ProgressRenderer {
             );
             let (style, animation) = if is_overall {
                 // The pinned aggregate row wears `Overall` at every status,
-                // exactly as `apply_overall_bar_style` painted it; only a live
-                // one cycles.
-                let animation = if snap.status == TrackStatus::Active {
+                // exactly as `apply_overall_bar_style` painted it; only a
+                // live one cycles, and only while its owner declared the run
+                // active through `set_animating(true)` (Task 6).
+                let animation = if snap.status == TrackStatus::Active && snap.animating {
                     RowAnimation::Animate
+                } else if snap.status == TrackStatus::Active {
+                    RowAnimation::Static("idle")
                 } else {
                     RowAnimation::Static("terminal")
                 };
                 (RenderStyle::Overall, animation)
             } else {
                 match snap.status {
-                    // Today `Active` implies animate (Task 6 narrows it), so
-                    // the frame's own counter replaces the per-bar tick loop
-                    // this swap removes.
-                    TrackStatus::Active => (RenderStyle::Active, RowAnimation::Animate),
+                    // `Active` alone does not animate (Task 6, spec R3/AC2):
+                    // the frame's counter cycles the glyph only for a row
+                    // whose source opted in with `set_animating(true)`, so a
+                    // forgotten declaration parks the row instead of spinning
+                    // it. The frame's own counter replaces the per-bar tick
+                    // loop this swap removes.
+                    TrackStatus::Active if snap.animating => {
+                        (RenderStyle::Active, RowAnimation::Animate)
+                    }
+                    TrackStatus::Active => (RenderStyle::Active, RowAnimation::Static("idle")),
                     TrackStatus::Success | TrackStatus::Warning => {
                         (RenderStyle::Done, RowAnimation::Static("terminal"))
                     }
@@ -1046,6 +1055,9 @@ impl ProgressRenderer {
 // The test bodies live beside this file rather than under a `renderer/`
 // directory, so each declaration names its own path. This is the same shape
 // the progress examples use to reach their `support/` siblings.
+#[cfg(test)]
+#[path = "tests_animation_states.rs"]
+mod tests_animation_states;
 #[cfg(test)]
 #[path = "tests_blank_slot_draws.rs"]
 mod tests_blank_slot_draws;

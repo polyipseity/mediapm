@@ -4,7 +4,7 @@
 //! writer in [`super::writer`] can emit exactly one repaint and a row can
 //! never carry geometry from an older frame (spec §4.1).
 //
-use super::{FRAME_OVERHEAD_COLUMNS, TICK_CHARS, visible_width};
+use super::{FRAME_OVERHEAD_COLUMNS, PARKED_GLYPH, TICK_CHARS, visible_width};
 use console::style;
 
 /// Which color treatment a row renders with. Selected from the frame's
@@ -139,7 +139,7 @@ impl FramePlan {
     fn render_spinner(&self, row: &PlanRow) -> String {
         let RowAnimation::Animate = row.animation else {
             // A parked row never cycles (spec R3): fixed dot, no color.
-            return "·".to_string();
+            return PARKED_GLYPH.to_string();
         };
         let ticks: Vec<char> = TICK_CHARS.chars().collect();
         let glyph = ticks[self.spinner_index % ticks.len()];
