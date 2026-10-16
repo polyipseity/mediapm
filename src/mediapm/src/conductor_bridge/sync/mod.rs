@@ -16,7 +16,7 @@ pub(crate) mod provision;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::cache::Cache;
@@ -504,6 +504,39 @@ async fn provision_entry(
     }
 }
 
+/// Counts each tool-sync entry's completion exactly once against the
+/// caller's `syncing tools` overall bar.
+///
+/// The bar's position means tools completed / total (spec R2). The pool
+/// calls [`advance_once`](Self::advance_once) when an entry's provision
+/// future settles, which moves the bar during the visible download phase;
+/// the post-pool apply pass may re-assert the same index and is absorbed.
+/// A raw `pb.advance(1)` on this bar is forbidden: two call sites that each
+/// believe they own an outcome double-count under the first refactor.
+pub(crate) struct OverallProgress {
+    /// The `syncing tools` overall bar this counter drives.
+    bar: Arc<dyn ProgressBarApi>,
+    /// Entry indices already counted: `insert` returning `false` means an
+    /// earlier call already advanced for that index, so this ask is absorbed.
+    advanced: Mutex<HashSet<usize>>,
+}
+
+impl OverallProgress {
+    /// Wrap the phase's overall bar in a per-entry counter.
+    pub(crate) fn new(bar: &Arc<dyn ProgressBarApi>) -> Self {
+        Self { bar: Arc::clone(bar), advanced: Mutex::new(HashSet::new()) }
+    }
+
+    /// Advance the overall bar for `entry_index`, at most once ever.
+    pub(crate) fn advance_once(&self, entry_index: usize) {
+        let counted =
+            self.advanced.lock().expect("overall progress counter lock").insert(entry_index);
+        if counted {
+            self.bar.advance(1);
+        }
+    }
+}
+
 /// Applies a single entry outcome to the shared mutable state.
 ///
 /// This is the ordered-merge half of the provisioning design: outcomes are
@@ -511,6 +544,12 @@ async fn provision_entry(
 /// and applied sequentially in entry index order here, after the whole pool
 /// has succeeded. Same-step dep inlining and dep-gated composites happen in
 /// [`provision_entry`]; this pass only merges the finished result.
+///
+/// The trailing `entry_index`/`progress` pair re-asserts this entry against
+/// the caller's [`OverallProgress`] in the skip arms. The pool already
+/// counted every entry when its future settled, so the re-assert is absorbed
+/// today; it matters for a skip decided outside the pool, which must land
+/// exactly once if its index never advanced.
 #[expect(
     clippy::too_many_arguments,
     reason = "this is the ordered-merge half of the provisioning design, so it deliberately takes every shared collection the merge can touch rather than hiding the merge surface behind accessors"
@@ -528,7 +567,8 @@ fn apply_entry_outcome(
     live_state: &mut HashMap<String, Vec<ToolRegistryEntry>>,
     pruned_tools: &mut usize,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
-    pb: &dyn ProgressBarApi,
+    entry_index: usize,
+    progress: &OverallProgress,
 ) {
     let tool_req = &entry.tool_requirement;
 
@@ -536,14 +576,14 @@ fn apply_entry_outcome(
         EntryOutcome::Skipped { key, spec_runtime, .. } => {
             tool_runtimes.entry(key).or_insert(spec_runtime);
             report.tools_skipped += 1;
-            pb.advance(1);
+            progress.advance_once(entry_index);
         }
         EntryOutcome::SkippedAfterResolve { key, spec_runtime, backfill, tool_record, .. } => {
             tool_runtimes.entry(key).or_insert(spec_runtime);
             report.resolved_field_backfills.push(backfill);
             report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
-            pb.advance(1);
+            progress.advance_once(entry_index);
         }
         EntryOutcome::Fetched { tool_id, is_builtin_code, already_exists, mut payload } => {
             // Chain-member failures a later member covered: the tool
@@ -1376,6 +1416,9 @@ pub(crate) async fn reconcile_desired_tools(
         }
         None => progress_group.add_bar(total_tools, "syncing tools"),
     };
+    // Exactly one advancement path: every entry-termination route below goes
+    // through this counter, never a raw `advance` on `pb`.
+    let progress = Arc::new(OverallProgress::new(&pb));
 
     let mut pruned_tools: usize = 0;
 
@@ -1437,8 +1480,9 @@ pub(crate) async fn reconcile_desired_tools(
     let cas_view: &FileSystemCas = workspace_cas.as_ref();
     let cache_view: &ToolDownloadCache = &cache;
     let dep_view: &BTreeMap<String, usize> = &dep_indices;
+    let progress_view: &OverallProgress = &progress;
     let pool_result = pool::run_pool(jobs, concurrency, |job, gates, mut publisher| async move {
-        provision_entry(
+        let outcome = provision_entry(
             &job.input,
             state_view,
             gen_view,
@@ -1451,7 +1495,15 @@ pub(crate) async fn reconcile_desired_tools(
             &mut publisher,
             dep_view,
         )
-        .await
+        .await;
+        // Count the entry the moment its provision future settles — inside
+        // the concurrent phase, so the bar moves during the visible download
+        // phase rather than only after the pool returns. A failure settles
+        // too and counts; the entries the failure cancels never settle and
+        // never count, so `position == total` still means every entry
+        // terminated.
+        progress_view.advance_once(job.index);
+        outcome
     })
     .await;
 
@@ -1470,7 +1522,8 @@ pub(crate) async fn reconcile_desired_tools(
                     &mut live_state,
                     &mut pruned_tools,
                     inherited_env_vars,
-                    pb.as_ref(),
+                    idx,
+                    progress.as_ref(),
                 );
             }
         }

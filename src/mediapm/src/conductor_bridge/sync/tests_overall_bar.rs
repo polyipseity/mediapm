@@ -166,4 +166,105 @@ async fn reconcile_desired_tools_drives_the_callers_overall_bar() {
         "the caller's `syncing tools` overall bar must be totalled to the tool count; \
          got {ops:?}"
     );
+    // End-to-end proof of the pool's advancement wiring (spec AC3): the
+    // single entry failed at resolve, yet its future still settled inside
+    // the concurrent phase and was counted exactly once through
+    // `OverallProgress` — a wiring that fired nowhere would leave the bar
+    // frozen at 0, one that fired in both pool and apply would double-count.
+    let advances: Vec<u64> = ops
+        .iter()
+        .filter_map(|op| match op {
+            ProgressOp::Advance { delta } => Some(*delta),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        advances,
+        vec![1],
+        "the single failing entry must be counted exactly once when its provision future \
+         settles; got {ops:?}"
+    );
+}
+
+/// Exactly one advance per entry, no matter how many call sites ask.
+///
+/// The defect this pins: the overall bar used to advance only in the
+/// post-pool skip arms, so a fetched-only sync showed `0/7` with every child
+/// finished, and a second call site would have double-counted a skipped
+/// entry. The counter makes duplicate asks idempotent, so the pool can
+/// advance on completion and the apply pass can re-assert without lying.
+#[test]
+fn overall_progress_advances_once_per_entry() {
+    let screen = RecordingProgressTracker::new();
+    let bar: Arc<dyn ProgressBarApi> = Arc::new(screen.add_bar(7, "syncing tools"));
+    let progress = OverallProgress::new(&bar);
+
+    progress.advance_once(0);
+    progress.advance_once(0);
+    progress.advance_once(1);
+    progress.advance_once(1);
+    progress.advance_once(1);
+
+    let ops = screen.ops();
+    let advances: Vec<u64> = ops
+        .iter()
+        .filter_map(|op| match op {
+            ProgressOp::Advance { delta } => Some(*delta),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(advances, vec![1, 1], "one advance per entry index; got {ops:?}");
+}
+
+/// The `Skipped` arm may re-assert an entry the pool already counted without
+/// counting it twice.
+///
+/// The pool advances index 0 when its future settles; the apply pass then
+/// asks for the same index through the one arm that advances at all (the
+/// `Fetched` arms never touch the counter, so a re-assert there would pin
+/// nothing). Exactly one `Advance { delta: 1 }` is the invariant: an entry
+/// counts once no matter how many routes ask.
+#[test]
+fn apply_pass_reasserting_a_counted_entry_does_not_double_advance() {
+    let screen = RecordingProgressTracker::new();
+    let bar: Arc<dyn ProgressBarApi> = Arc::new(screen.add_bar(7, "syncing tools"));
+    let progress = OverallProgress::new(&bar);
+
+    progress.advance_once(0); // the pool counted this entry at completion
+
+    // Re-assert entry 0 through the `Skipped` arm — the arm whose
+    // `advance_once` call is the second route to the same index.
+    let entry = ProvisionEntry {
+        tool_id: "ffmpeg".to_string(),
+        tool_requirement: ToolRequirement::default(),
+        kind: EntryKind::Explicit,
+    };
+    let mut generated_doc = NickelDocument::default();
+    let mut tool_runtimes = BTreeMap::new();
+    let mut report = ToolSyncReport::default();
+    let mut live_state = std::collections::HashMap::new();
+    let mut pruned_tools = 0usize;
+    let inherited_env_vars = BTreeMap::new();
+
+    apply_entry_outcome(
+        &entry,
+        EntryOutcome::Skipped { key: "ffmpeg".to_string(), spec_runtime: ToolRuntime::default() },
+        &mut generated_doc,
+        &mut tool_runtimes,
+        &mut report,
+        &mut live_state,
+        &mut pruned_tools,
+        &inherited_env_vars,
+        0,
+        &progress,
+    );
+
+    let ops = screen.ops();
+    let advances: usize = ops.iter().filter(|op| matches!(op, ProgressOp::Advance { .. })).count();
+    assert_eq!(advances, 1, "re-asserting a counted entry must be a no-op; got {ops:?}");
+    // Non-vacuity: the re-assert only means something if the arm actually ran.
+    assert_eq!(
+        report.tools_skipped, 1,
+        "the `Skipped` arm must have run for the re-assert to mean anything; got {report:?}"
+    );
 }

@@ -76,7 +76,8 @@ fn external_data_rebuilt_independently_from_tool_specs() {
 #[test]
 fn fetched_none_registers_a_spec_without_a_version() {
     let screen = ProgressScreen::disabled();
-    let bar = screen.add_bar(0, "fetched-none");
+    let bar: Arc<dyn ProgressBarApi> = Arc::new(screen.add_bar(0, "fetched-none"));
+    let progress = OverallProgress::new(&bar);
     let entry = ProvisionEntry {
         tool_id: "media-tagger".to_string(),
         tool_requirement: ToolRequirement::default(),
@@ -106,7 +107,8 @@ fn fetched_none_registers_a_spec_without_a_version() {
         &mut live_state,
         &mut pruned_tools,
         &inherited_env_vars,
-        &bar,
+        0,
+        &progress,
     );
 
     let spec = generated_doc

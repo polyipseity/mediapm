@@ -58,6 +58,48 @@ async fn seed_two_tool_cache(cache_root: &std::path::Path) {
     // on disk under the TempDir that the caller holds.
 }
 
+/// Asserts the overall `syncing tools` bar ended the run at its total (spec AC3).
+///
+/// The overall row is located by its `AddBar` label and advances are summed
+/// on that row only, so no op recorded against a per-tool phase row can ever
+/// count toward the overall position — phase-bar work must not be able to
+/// fake the overall success this asserts, whatever ops those bars emit today
+/// or gain later. `expected_entries` is the entry count the fixture
+/// configured: the total must equal it, and the position must equal the
+/// total, or a fetched-only sync froze below its own bar.
+fn assert_overall_position_reaches_total(
+    tracker: &RecordingProgressTracker,
+    expected_entries: u64,
+) {
+    let recorded = tracker.recorded();
+    let (overall_bar, overall_total) = recorded
+        .iter()
+        .find_map(|entry| match &entry.op {
+            ProgressOp::AddBar { label, total } if label == "syncing tools" => {
+                Some((entry.bar, *total))
+            }
+            _ => None,
+        })
+        .expect("the overall bar must be registered through the tracker");
+    assert_eq!(
+        overall_total, expected_entries,
+        "the overall total must be the configured entry count"
+    );
+    let position: u64 = recorded
+        .iter()
+        .filter(|entry| entry.bar == overall_bar)
+        .filter_map(|entry| match &entry.op {
+            ProgressOp::Advance { delta } => Some(*delta),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(
+        position, overall_total,
+        "a fetched-only sync must advance the overall bar to its total once every entry \
+         terminates; got {recorded:?}"
+    );
+}
+
 /// Verifies that the parallel provisioning driver creates the correct
 /// per-tool bars regardless of completion order. The assertion is a
 /// **sorted multiset** of `(tool_id, phase)` pairs extracted from every
@@ -182,6 +224,12 @@ async fn sync_multi_tool_per_tool_bars_are_order_independent() {
             );
         }
     }
+
+    // --- overall position reaches total (spec AC3, fetched-only success) ---
+    // Both entries took the `Resolved` path (seeded cache, no network): the
+    // pool must have counted each one, or the row freezes at 0 under finished
+    // children — the `0/7` symptom this rule exists for.
+    assert_overall_position_reaches_total(&tracker, 2);
 }
 
 /// Every per-tool phase bar carries the tool id and the phase tag, with the

@@ -21,7 +21,8 @@ use super::*;
 /// metadata of the kind ffmpeg actually resolves.
 fn report_after_fetched(warnings: Vec<String>) -> ToolSyncReport {
     let screen = ProgressScreen::disabled();
-    let bar = screen.add_bar(0, "fetched");
+    let bar: Arc<dyn ProgressBarApi> = Arc::new(screen.add_bar(0, "fetched"));
+    let progress = OverallProgress::new(&bar);
     let entry = ProvisionEntry {
         tool_id: "ffmpeg".to_string(),
         tool_requirement: ToolRequirement::default(),
@@ -63,7 +64,8 @@ fn report_after_fetched(warnings: Vec<String>) -> ToolSyncReport {
         &mut live_state,
         &mut pruned_tools,
         &inherited_env_vars,
-        &bar,
+        0,
+        &progress,
     );
     report
 }
