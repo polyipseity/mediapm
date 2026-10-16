@@ -308,6 +308,9 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall(OVERALL_SEED, 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     // `sync_hierarchy` replaces the placeholder total with the entry count and
     // installs the label on the caller's own handle, whether that is the handle
     // it was given or one it opened itself. The label leaves `phase` unset, so
@@ -531,6 +534,9 @@ fn render_dense(config: ScreenConfig) -> String {
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall(OVERALL_SEED, 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     overall.set_total(ENTRY_COUNT);
     overall.set_truncation(Arc::new(MaterializationBarLabel {
         entry_name: "materializing".to_string(),
@@ -632,6 +638,9 @@ fn render_states(config: ScreenConfig) -> String {
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall(OVERALL_SEED, 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     overall.set_total(ENTRY_COUNT);
     overall.set_truncation(Arc::new(MaterializationBarLabel {
         entry_name: "materializing".to_string(),

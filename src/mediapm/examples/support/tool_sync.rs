@@ -115,6 +115,9 @@ pub fn render_tool_sync_screen(config: ScreenConfig) -> String {
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("syncing tools", 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     // The caller pins the overall bar with a placeholder total; the tool phase
     // is what knows the tool count.
     overall.set_total(TOOL_COUNT);
@@ -233,6 +236,9 @@ fn render_dense(config: ScreenConfig) -> String {
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("syncing tools", 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     let tool_count = TOOLS.len() as u64;
     overall.set_total(tool_count);
 
@@ -321,6 +327,9 @@ fn render_states(config: ScreenConfig) -> String {
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("syncing tools", 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     overall.set_total(TOOL_COUNT);
 
     let tagger_resolve = screen.add_bar(1, MEDIA_TAGGER_LABEL);

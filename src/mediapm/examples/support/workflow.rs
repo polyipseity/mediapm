@@ -219,6 +219,9 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("running workflows", 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     // The caller pins the overall bar with a placeholder total; the coordinator
     // sets the step count once the workflow is resolved.
     overall.set_total(STEP_COUNT);
@@ -372,6 +375,9 @@ fn render_dense(config: ScreenConfig) -> String {
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("running workflows", 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     overall.set_total(STEP_COUNT);
 
     let workers: Vec<_> = (0..POOL_SIZE)
@@ -468,6 +474,9 @@ fn render_states(config: ScreenConfig) -> String {
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("running workflows", 1).build();
+    // The worked examples mirror production, where the owner of a run's
+    // overall bar opts it in while the run is active (review R1, Important 1).
+    overall.set_animating(true);
     overall.set_total(STEP_COUNT);
 
     let workers: Vec<_> = (0..POOL_SIZE)

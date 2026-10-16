@@ -23,6 +23,10 @@ fn parallel_workers_with_a_failed_worker() {
 
     let a = screen.add_bar(5, "worker-a");
     let b = screen.add_bar(5, "worker-b");
+    // Both workers are live on the first tick; the pinned frame is the one
+    // after `a` fails, where its terminal status parks the row (review R1,
+    // Minor 2 — this cannot change the pinned bytes).
+    a.set_animating(true);
     b.set_animating(true);
     _overall.set_animating(true);
 
