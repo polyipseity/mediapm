@@ -2,11 +2,10 @@
 //! [`ProgressRenderer::run_frame`], the debug snapshot the tick emits, and the
 //! terminal-state pass a finished slot gets.
 //!
-//! `run_frame` is the whole sequence in one place: suppress writes, settle the
-//! layout, absorb a resize, sync every bound row, emit the debug
-//! snapshot, advance the spinners, draw once, unsuppress. Every other entry
-//! point either delegates here or is a step of it, so there is one place to
-//! read to know what a frame contains and in what order.
+//! `run_frame` is the whole sequence in one place: absorb a resize, build the
+//! frame plan, emit the debug snapshot, write the rendered frame once. Every
+//! other entry point either delegates here or is a step of it, so there is one
+//! place to read to know what a frame contains and in what order.
 //!
 //! [`ProgressRenderer::finish_slot`] is the pass that runs outside that
 //! sequence, when a row reaches a terminal state and has to stop looking
@@ -15,12 +14,12 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use super::super::writer::write_frame;
 use super::super::{
     DebugSlotState, DebugTickSnapshot, PrefixComponents, SuffixComponents, apply_done_bar_style,
     apply_failed_bar_style, apply_overall_bar_style,
 };
 use super::ProgressRenderer;
-use super::layout::timing_strings;
 use super::tracked::{TrackSnapshot, TrackStatus};
 
 impl ProgressRenderer {
@@ -106,20 +105,15 @@ impl ProgressRenderer {
         }
     }
 
-    /// Execute one frame: suppress writes, recompute layout, handle resize,
-    /// sync every slot (rate/ETA), emit the debug snapshot, advance
-    /// spinners and draw once, then unsuppress.
+    /// Execute one frame: absorb a resize, build the plan, emit the debug
+    /// snapshot, write the rendered frame once.
     ///
-    /// Every write happens while the gate is suppressed except the final
-    /// draw, which is triggered by opening the gate (indicatif draws on the
-    /// next bar operation while the gate is open).
-    ///
-    /// The frame also tracks whether steps 2–4 pushed anything: every push
-    /// happens while the gate is shut, so a pushed line owes the block a
-    /// draw, and on a frame whose bars are all finished the tick loop below
-    /// is what would normally pay that debt (any bar's draw repaints every
-    /// dirty line of the block). When nothing ticks, the flush at the end of
-    /// the loop pays it instead — see the comment there.
+    /// Every row's strings, geometry and spinner policy are decided by
+    /// [`build_plan`](Self::build_plan); this method's only terminal contact
+    /// is the single `write_frame` pass, which repaints nothing when the
+    /// frame equals the last one written (spec AC1). The write goes through
+    /// the gate's paired terminal, so a configuration without one (the no-op
+    /// gate the test builders hand out) draws nothing here.
     ///
     /// This is the terminal path's single frame entry point; pre-roll is not
     /// part of it (see [`finalize`](Self::finalize)).
@@ -135,122 +129,40 @@ impl ProgressRenderer {
         debug_assert!(!self.in_frame.get(), "run_frame called while already in a frame");
         self.in_frame.set(true);
 
-        // Step 1: Suppress writes.
-        self.gate.suppress();
-
-        // Step 2: Recompute layout (styles buffered).
-        let mut pushed = self.recompute_layout();
-
-        // Step 3: Resize handling.
+        // Resize and height bookkeeping still own slots and orphans; they no
+        // longer restyle, because geometry comes from the plan.
         let resized = self.maybe_adjust_for_resize();
-        if resized {
-            // A resize re-syncs slots through paths that report their own
-            // pushes to no one (height growth rebinds orphaned bars and
-            // restyles fresh slots), so count the resize itself: those
-            // pushes owe a draw whether or not their dedup comparisons fired.
-            // Every frame re-syncs every slot by width anyway, so there is
-            // no per-slot dirtying left to do here.
-            pushed = true;
-        }
 
-        // Step 4: Sync every bound slot to its bar (still suppressed).
-        //
-        // No slot is skipped. The settled widths and the row's timing strings
-        // move with the clock and the terminal, so a slot that mutated is not
-        // distinguishable from one that did not, and filtering on it is how a
-        // row went stale — an elapsed string that grew from `0s` to `4m18s`
-        // between mutations never re-settled the row that carried it. String,
-        // position, and length dedup inside `sync_snapshot_to_bar` is what
-        // keeps the terminal writes down.
-        for (i, slot) in self.slots.iter().enumerate() {
-            if let Some(ref source) = *slot.source.borrow() {
-                let snap = source.snapshot();
-
-                if source.is_cleared() {
-                    // A cleared row is governed by `sync_slot`'s clear
-                    // transition: blank on the frame the clear lands, blank
-                    // while it stays cleared, and re-shown only by the rebind
-                    // that puts a live source in the slot. Pushing content
-                    // here would re-show a row the clear emptied and defeat
-                    // the one-shot blank.
-                    continue;
-                }
-
-                // One helper computes the timing for every caller: the strings
-                // below are what the measurement pass in `recompute_layout`
-                // reserved columns for on this very frame. Unlike the read-only
-                // callers, the frame's slot sync owns the EMA advance, so
-                // it applies the update for this snapshot before pushing.
-                let timing = timing_strings(&snap, &self.slots_timing[i], &*self.time_source);
-                if let Some(update) = timing.ema_update {
-                    let slot_timing = &mut self.slots_timing[i];
-                    slot_timing.rate = update.rate;
-                    slot_timing.prev_position = update.position;
-                    slot_timing.prev_instant = update.instant;
-                }
-
-                pushed |= self.sync_snapshot_to_bar(
-                    i,
-                    &snap,
-                    timing.rate_str.as_deref(),
-                    timing.eta_str.as_deref(),
-                );
-                if snap.status == TrackStatus::Active {
-                    // bar.tick() called in the spinner loop below.
-                } else if !slot.cache.has_terminal_finished_for(source) {
-                    // The terminal transition is applied once per source per
-                    // bar. A finished row keeps its done style through
-                    // `sync_slot`'s per-frame re-style; what must not repeat
-                    // is the abandon/finish and its extra tick, which would
-                    // re-draw a row that finished long ago on every frame —
-                    // while a source shifted onto a bar that has never
-                    // carried its transition applies it there exactly once.
-                    // A cleared row never reaches here: `sync_slot` in step 2
-                    // blanks it on the clear transition and holds it blank.
-                    pushed |= self.finish_slot(i, snap.status);
-                    slot.cache.mark_terminal_finished(source);
-                }
-            }
-        }
-
-        // Step 5: Emit the debug snapshot now that rate/ETA are current.
-        //
-        // This must come after Step 4, not before it: the snapshot reports
-        // `slots_timing[i].rate`, which Step 4 recomputes for every slot, so
-        // emitting earlier would make `rate_bytes_per_sec` and `eta_secs` one
-        // frame stale on terminal screens.
+        // One build, one write: everything a row shows is decided here.
+        let plan = self.build_plan();
+        // After the build, not before: the snapshot reports this frame's
+        // `slots_timing` rates, which `build_plan` just advanced.
         self.emit_debug_snapshot();
 
-        // Step 6: Advance spinners and draw once.
-        // Open the gate — indicatif draws on the next bar operation.
-        let _guard = self.gate.open();
-        let mut ticked = false;
-        for slot in &self.slots {
-            if let Some(ref source) = *slot.source.borrow()
-                && !source.is_finished()
+        let frame = plan.render();
+        if let Some(term) = self.gate.term() {
+            let previous = self.last_frame.borrow().as_deref().map(<[String]>::to_vec);
+            // A resize owed a write on the old path even when every dedup
+            // comparison landed (`pushed = true`), because the rebinds and
+            // re-synchs a resize triggers report no pushes of their own. The
+            // single-writer equivalent is `force`: the writer skips only its
+            // equality short-circuit and keeps the cursor back-up, so a resize
+            // repaints in place instead of appending a duplicated block.
+            let blank_first_frame =
+                previous.is_none() && frame.iter().all(|line| line.trim().is_empty());
+            if blank_first_frame {
+                // A screen that has never drawn content owes no first frame:
+                // an all-blank plan is the old no-bars contract
+                // (`gated_screen_without_bars_commits_nothing`) and writing it
+                // would scroll a real terminal for no pixels. Keep `last`
+                // unset — nothing exists on the terminal to back up over.
+            } else if write_frame(term, previous.as_deref(), &frame, resized)
+                .expect("terminal write")
             {
-                slot.bar.tick();
-                ticked = true;
+                let mut last = self.last_frame.borrow_mut();
+                *last = Some(frame);
             }
         }
-        // A frame whose bars are all finished has no tick of its own, but it
-        // can still owe the block a draw: a row that finished between frames
-        // had its final state pushed while the window was shut, and nothing
-        // else will flush that line before [`finalize`](Self::finalize). One
-        // bar's draw repaints every dirty line of the block, and re-pushing
-        // the first bound slot's prefix is a transmit that force-draws a
-        // finished bar without advancing its tick counter (an idle screen
-        // must not animate). Ungated configurations have no owed draws —
-        // every push already reached the term.
-        if !ticked
-            && pushed
-            && !self.gate.is_noop()
-            && let Some(slot) = self.slots.iter().find(|s| s.source.borrow().is_some())
-        {
-            let prefix = slot.cache.prefix.borrow().clone();
-            slot.bar.set_prefix(prefix);
-        }
-        // _guard drops → gate re-suppressed.
         self.in_frame.set(false);
     }
 
@@ -263,13 +175,10 @@ impl ProgressRenderer {
     /// `pub(super)` because the parent's slot bookkeeping calls it when a
     /// bound track reaches a terminal state.
     ///
-    /// Returns `true` unconditionally: the final `tick` is a real push that
-    /// the frame's open window has to draw, so the caller's owed-draw
-    /// bookkeeping must count the slot even when every string dedup landed.
-    /// Callers apply it once per source per bar — the frame guards it with
-    /// `SlotCache::has_terminal_finished_for` (a rebind re-applies it to the
-    /// bar the source just landed on), and [`finalize`](Self::finalize)
-    /// runs it once at screen teardown.
+    /// Returns `true` unconditionally: the final `tick` is a real push.
+    /// [`finalize`](Self::finalize) runs it once per terminal slot at screen
+    /// teardown; the frame no longer drives bar transitions — a row takes
+    /// its terminal style from the plan.
     pub(super) fn finish_slot(&self, i: usize, status: TrackStatus) -> bool {
         let slot = &self.slots[i];
         let prefix_w = self.prefix_w.get();

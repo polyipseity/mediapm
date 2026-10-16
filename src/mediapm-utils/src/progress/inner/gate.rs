@@ -205,14 +205,29 @@ impl WriteGate {
         Self { flag: Arc::new(AtomicBool::new(false)), committed_frame_term: None }
     }
 
-    /// Whether this gate is the no-op variant (no paired [`BufferedTerm`]).
+    /// Create a gate that never suppresses writes but still gives
+    /// [`run_frame`](super::ProgressRenderer::run_frame) a terminal to write
+    /// its plan through.
     ///
-    /// A no-op gate never suppresses a write, so a caller asking whether the
-    /// window still owes a block a draw can skip the question entirely:
-    /// every push already reached the term. See the flush at the end of
-    /// `ProgressRenderer::run_frame`.
-    pub(crate) fn is_noop(&self) -> bool {
-        self.committed_frame_term.is_none()
+    /// The ungated test harnesses pair their own
+    /// [`MultiProgress`](indicatif::MultiProgress) with an `InMemoryTerm`,
+    /// and under the single writer the plan — not the bars — is what reaches
+    /// that term: without this handle the frame would be rendered and
+    /// discarded. Suppression semantics stay absent (no buffered draws to
+    /// compensate for), and [`Self::commit_frame`] keeps its normal job: the
+    /// writer rests the cursor on the frame's last row, so `finalize`'s
+    /// CR+LF is what moves past it.
+    pub(crate) fn new_noop_with_term(term: Arc<dyn TermLike>) -> Self {
+        Self { flag: Arc::new(AtomicBool::new(false)), committed_frame_term: Some(term) }
+    }
+
+    /// The terminal the paired [`BufferedTerm`] wraps, when there is one.
+    ///
+    /// `None` only for an inert terminal ([`WriteGate::new_noop`]):
+    /// `run_frame` writes its rendered frame through this handle (one
+    /// `write_frame` pass) and skips the write when the gate has no term.
+    pub(crate) fn term(&self) -> Option<&dyn TermLike> {
+        self.committed_frame_term.as_deref()
     }
 
     /// Advance the terminal cursor past a frame that has just been committed.

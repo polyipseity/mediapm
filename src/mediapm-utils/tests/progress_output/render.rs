@@ -27,8 +27,8 @@ fn active_child_with_overall_renders_exactly() {
         &term.contents(),
         concat!(
             "\n",
-            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "⠋       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "active_child_with_overall_renders_exactly"
     );
@@ -60,9 +60,9 @@ fn every_row_shares_one_budget_when_a_suffix_grows() {
         &term.contents(),
         concat!(
             "\n",
-            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4m18s 0/d 5s\n",
-            "⠼     sibling ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/12k 4m18s 0/d 3h25m\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 4m18s 0/d 1s"
+            "⠙       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4m18s 0/d 5s\n",
+            "⠙     sibling ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/12k 4m18s 0/d 3h25m\n",
+            "⠙     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 4m18s 0/d 1s"
         ),
         "every_row_shares_one_budget_when_a_suffix_grows"
     );
@@ -86,7 +86,7 @@ fn an_unbound_slot_draws_an_empty_line() {
             "\n",
             "\n",
             "\n",
-            "⠸       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s"
+            "⠋       child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s"
         ),
         "an_unbound_slot_draws_an_empty_line"
     );
@@ -105,8 +105,8 @@ fn failed_child_with_overall_shows_marker() {
         &term.contents(),
         concat!(
             "\n",
-            "⠏              [F] child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
-            "⠸                overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "·              [F] child ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s\n",
+            "⠙                overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "failed_child_with_overall_shows_marker"
     );
@@ -126,8 +126,8 @@ fn success_child_with_overall_renders_full_bar() {
         &term.contents(),
         concat!(
             "\n",
-            "⠏       child ███████████████████████████████████████████████████  5/5 0s\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "·       child ███████████████████████████████████████████████████  5/5 0s\n",
+            "⠙     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "success_child_with_overall_renders_full_bar"
     );
@@ -157,8 +157,8 @@ fn both_child_and_overall_finish_render_exactly() {
         &term.contents(),
         concat!(
             "\n",
-            "⠏       child ██████████████████████████████████████████████████████████  5/5 1s\n",
-            "⠏     overall ██████████████████████████████████████████████████████████  3/3 1s",
+            "·       child ██████████████████████████████████████████████████████████  5/5 1s\n",
+            "·     overall ██████████████████████████████████████████████████████████  3/3 1s",
         ),
         "both_child_and_overall_finish_render_exactly"
     );
@@ -188,8 +188,8 @@ fn overall_failed_while_child_succeeded_renders_marker() {
         &term.contents(),
         concat!(
             "\n",
-            "⠏                    child █████████████████████████████████████████████  5/5 1s\n",
-            "⠏              [F] overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
+            "·                    child █████████████████████████████████████████████  5/5 1s\n",
+            "·              [F] overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 1s",
         ),
         "overall_failed_while_child_succeeded_renders_marker"
     );
@@ -214,8 +214,8 @@ fn failed_child_custom_suffix_renders() {
         &term.contents(),
         concat!(
             "\n",
-            "⠏              [F] child ███████████████████████░░░░░░░░░░░░░░░░  3/5 1s aborted\n",
-            "⠸                overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d 5s",
+            "·              [F] child ███████████████████████░░░░░░░░░░░░░░░░  3/5 1s aborted\n",
+            "⠙                overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d 5s",
         ),
         "failed_child_custom_suffix_renders"
     );
@@ -235,8 +235,8 @@ fn rate_and_eta_at_known_progress() {
         &term.contents(),
         concat!(
             "\n",
-            "⠼        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
+            "⠋        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
         ),
         "rate_and_eta_at_known_progress"
     );
@@ -270,8 +270,8 @@ fn a_stale_tick_still_draws_the_reserved_eta() {
         &term.contents(),
         concat!(
             "\n",
-            "⠦        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
+            "⠹        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 50/s 10s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
         ),
         "a_stale_tick_still_draws_the_reserved_eta"
     );
@@ -290,8 +290,8 @@ fn idle_bar_renders_zero_rate() {
         &term.contents(),
         concat!(
             "\n",
-            "⠸        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d 1m40s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d 1s",
+            "⠋        idle ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 2s 0/d 1m40s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 2s 0/d 1s",
         ),
         "idle_bar_renders_zero_rate"
     );
@@ -312,8 +312,8 @@ fn rate_stable_on_stale_ticks() {
         &term.contents(),
         concat!(
             "\n",
-            "⠼        test █████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 0s 0/d 8m20s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "⠋        test █████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 0s 0/d 8m20s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "rate_stable_on_stale_ticks/progress"
     );
@@ -326,8 +326,8 @@ fn rate_stable_on_stale_ticks() {
         &term.contents(),
         concat!(
             "\n",
-            "⠦        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 455/s 1s\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
+            "⠋        test ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  500/1.0k 1s 455/s 1s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 1s 0/d 1s",
         ),
         "rate_stable_on_stale_ticks/stale"
     );
@@ -356,8 +356,8 @@ fn rate_recomputed_after_more_progress() {
         &small,
         concat!(
             "\n",
-            "⠼        test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "⠋        test ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  10/2.0k 0s 500/s 3s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "rate_recomputed_after_more_progress/small"
     );
@@ -365,8 +365,8 @@ fn rate_recomputed_after_more_progress() {
         &large,
         concat!(
             "\n",
-            "⠦        test ███████████████████████████████░░░░░░░░░░░  1.5k/2.0k 0s 2.9k/s 0s\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "⠙        test ███████████████████████████████░░░░░░░░░░░  1.5k/2.0k 0s 2.9k/s 0s\n",
+            "⠙     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "rate_recomputed_after_more_progress/large"
     );
@@ -395,7 +395,7 @@ fn label_within_the_prefix_budget_is_not_truncated() {
             "\n",
             "\n",
             "\n",
-            "⠸     abcdefghijklmnopqrstuvwxyz ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s",
+            "⠋     abcdefghijklmnopqrstuvwxyz ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s",
         ),
         "label_within_the_prefix_budget_is_not_truncated"
     );
@@ -415,8 +415,8 @@ fn zero_total_bar_renders() {
             "\n",
             "\n",
             "\n",
-            "⠸        zero ██████████████████████████████████████████████████████  0/0 0s 0/d\n",
-            "⠹     overall ██████████████████████████████████████████████████████  0/0 0s 0/d",
+            "⠋        zero ██████████████████████████████████████████████████████  0/0 0s 0/d\n",
+            "⠋     overall ██████████████████████████████████████████████████████  0/0 0s 0/d",
         ),
         "zero_total_bar_renders"
     );
@@ -445,8 +445,8 @@ fn no_line_carries_an_elapsed_bracket() {
             "\n",
             "\n",
             "\n",
-            "⠸      tool-a ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
-            "⠹     overall ░░░░░░░░░░░  0/5 0s 0/d 5s",
+            "⠋      tool-a ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
+            "⠋     overall ░░░░░░░░░░░  0/5 0s 0/d 5s",
         ),
         "no_line_carries_an_elapsed_bracket"
     );

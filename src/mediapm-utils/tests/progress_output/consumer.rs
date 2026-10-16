@@ -39,9 +39,9 @@ fn parallel_workers_with_a_failed_worker() {
             "\n",
             "\n",
             "\n",
-            "⠏              [F] worker-a █████████████████████░░░░░░░░░░░░░░  3/5 1s\n",
-            "⠦                  worker-b █████████████████████░░░░░░░░░░░░░░  3/5 2s 17/m 7s\n",
-            "⠸                   overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d 10s",
+            "·              [F] worker-a █████████████████████░░░░░░░░░░░░░░  3/5 1s\n",
+            "⠙                  worker-b █████████████████████░░░░░░░░░░░░░░  3/5 2s 17/m 7s\n",
+            "⠙                   overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 2s 0/d 10s",
         ),
         "parallel_workers_with_a_failed_worker"
     );
@@ -63,10 +63,10 @@ fn tool_sync_recycles_finished_slots() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠏     tool4 ████████████████████████████████████████████████████████████  1/1 0s\n",
-            "⠏     tool5 ████████████████████████████████████████████████████████████  1/1 0s\n",
-            "⠏     tool6 ████████████████████████████████████████████████████████████  1/1 0s\n",
-            "⠏     tool7 ████████████████████████████████████████████████████████████  1/1 0s",
+            "·     tool4 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "·     tool5 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "·     tool6 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "·     tool7 ████████████████████████████████████████████████████████████  1/1 0s",
         ),
         // The spinner column follows how often a bar receives a position push
         // (`set_position` advances indicatif's tick counter), and the per-frame
@@ -92,10 +92,10 @@ fn finished_bars_are_retained() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠏     task0 ████████████████████████████████████████████████████████████  1/1 0s\n",
-            "⠏     task1 ████████████████████████████████████████████████████████████  1/1 0s\n",
-            "⠏     task2 ████████████████████████████████████████████████████████████  1/1 0s\n",
-            "⠏     task3 ████████████████████████████████████████████████████████████  1/1 0s",
+            "·     task0 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "·     task1 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "·     task2 ████████████████████████████████████████████████████████████  1/1 0s\n",
+            "·     task3 ████████████████████████████████████████████████████████████  1/1 0s",
         ),
         // Spinner column as in `tool_sync_recycles_finished_slots`: the glyph
         // tracks draw spacing under the per-frame sync; the retained row
@@ -120,7 +120,7 @@ fn materializer_consumer_lifecycle() {
             "\n",
             "\n",
             "\n",
-            "⠸     materializing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d 3s",
+            "⠋     materializing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 0s 0/d 3s",
         ),
         "materializer_consumer_lifecycle/running"
     );
@@ -135,7 +135,7 @@ fn materializer_consumer_lifecycle() {
             "\n",
             "\n",
             "\n",
-            "⠏     materializing ████████████████████████████████████████████████████  3/3 0s",
+            "·     materializing ████████████████████████████████████████████████████  3/3 0s",
         ),
         "materializer_consumer_lifecycle/finished"
     );
@@ -177,9 +177,9 @@ fn tool_sync_consumer_lifecycle() {
     assert_eq!(
         contents,
         concat!(
-            "⠏            yt-dlp █████████████████████████████████████████████  1/0 0s\n",
-            "⠏            ffmpeg █████████████████████████████████████████████  1/0 0s\n",
-            "⠏     syncing tools █████████████████████████████████████████████  0/2 0s 0/d 2s",
+            "·            yt-dlp █████████████████████████████████████████████  1/0 0s\n",
+            "·            ffmpeg █████████████████████████████████████████████  1/0 0s\n",
+            "⠹     syncing tools █████████████████████████████████████████████  0/2 0s 0/d 2s",
         ),
         "tool_sync_consumer_lifecycle"
     );
@@ -211,12 +211,20 @@ fn sequential_consumer_keeps_finished_bars() {
             "\n",
             "\n",
             "\n",
-            "⠏       fetch ███████████████████████████████████████████████████  5/5 0s\n",
-            "⠏       parse ██████████████████████████████████████████████████████████  2/2 0s\n",
-            "⠏     overall ██████████████████████████████████████████████████████████  3/3 0s",
+            "·       fetch ██████████████████████████████████████████████████████████  5/5 0s\n",
+            "·       parse ██████████████████████████████████████████████████████████  2/2 0s\n",
+            "·     overall ██████████████████████████████████████████████████████████  3/3 0s",
         ),
         "sequential_consumer_keeps_finished_bars"
     );
+    // Re-baselined with the plan-then-write swap: the fetch row's line is
+    // 80 columns wide, matching the frame it was captured with. The
+    // pre-swap capture froze that row at 73 columns — its width from an
+    // earlier frame, when `fetch` finished before `parse` joined and legacy
+    // indicatif stopped re-measuring it — the exact stale-width artifact
+    // the spec's retention contract removes (AC6: a retained row never
+    // carries an older frame's geometry). Done rows also render the parked
+    // dot (R3).
 }
 
 /// Three workers ending in different states (success, two failures) plus a
@@ -242,10 +250,10 @@ fn workers_with_mixed_finish_states() {
         &term.contents(),
         concat!(
             "\n",
-            "⠏                  worker-a ████████████████████████████████████████████  2/2 0s\n",
-            "⠏              [F] worker-b ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  1/2 0s\n",
-            "⠏              [F] worker-c ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  1/2 0s\n",
-            "⠏                   overall ████████████████████████████████████████████  3/3 0s",
+            "·                  worker-a ████████████████████████████████████████████  2/2 0s\n",
+            "·              [F] worker-b ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  1/2 0s\n",
+            "·              [F] worker-c ██████████████████████░░░░░░░░░░░░░░░░░░░░░░  1/2 0s\n",
+            "·                   overall ████████████████████████████████████████████  3/3 0s",
         ),
         "workers_with_mixed_finish_states"
     );
@@ -271,9 +279,9 @@ fn workers_with_interleaved_advances() {
         concat!(
             "\n",
             "\n",
-            "⠸        fast ██████████████████████████████████████░░░░░░░░░░  8/10 1s 48/m 2s\n",
-            "⠼        slow ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
-            "⠸     overall ████████████████████████████████████████████████  11/10 1s 1.1/s",
+            "⠋        fast ██████████████████████████████████████░░░░░░░░░░  8/10 1s 48/m 2s\n",
+            "⠋        slow ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  3/10 1s 18/m 23s\n",
+            "⠋     overall ████████████████████████████████████████████████  11/10 1s 1.1/s",
         ),
         "workers_with_interleaved_advances"
     );
@@ -299,10 +307,10 @@ fn worker_children_fill_the_small_grid() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠸     child-a ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/5 0s 0/d 3s\n",
-            "⠸     child-b ████████████████████████████████████████░░░░░░░░░░░  4/5 0s 0/d 1s\n",
-            "⠼     child-c ███████████████████████████████████████████████████  5/5 0s 0/d\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "⠋     child-a ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2/5 0s 0/d 3s\n",
+            "⠋     child-b ████████████████████████████████████████░░░░░░░░░░░  4/5 0s 0/d 1s\n",
+            "⠋     child-c ███████████████████████████████████████████████████  5/5 0s 0/d\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "worker_children_fill_the_small_grid"
     );
@@ -321,9 +329,9 @@ fn child_capacity_excludes_the_overall_slot() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠹       alpha ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
-            "⠸        beta ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
-            "⠹     overall ░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "⠋       alpha ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
+            "⠋        beta ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
+            "⠋     overall ░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "child_capacity_excludes_the_overall_slot/two_children"
     );
@@ -337,9 +345,9 @@ fn child_capacity_excludes_the_overall_slot() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠹       alpha ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
-            "⠸        beta ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
-            "⠹     overall ░░░░░░░░░░░  0/1 0s 0/d 1s",
+            "⠋       alpha ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
+            "⠋        beta ░░░░░░░░░░░  0/3 0s 0/d 3s\n",
+            "⠋     overall ░░░░░░░░░░░  0/1 0s 0/d 1s",
         ),
         "child_capacity_excludes_the_overall_slot/three_children"
     );
@@ -364,8 +372,8 @@ fn repeated_position_setting_yields_last_value() {
             "\n",
             "\n",
             "\n",
-            "⠼      worker ██████████████████████████████████░░░░░░░░░░░░  38/50 0s 0/d 12s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d 1m40s",
+            "⠋      worker ██████████████████████████████████░░░░░░░░░░░░  38/50 0s 0/d 12s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/100 0s 0/d 1m40s",
         ),
         "repeated_position_setting_yields_last_value"
     );
@@ -396,7 +404,7 @@ fn conductor_cli_step_progress_lifecycle() {
             "\n",
             "\n",
             "\n",
-            "⠹     steps █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 0s 0/d 2s",
+            "⠋     steps █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 0s 0/d 2s",
         ),
         "conductor_cli_step_progress_lifecycle/first_step"
     );
@@ -411,7 +419,7 @@ fn conductor_cli_step_progress_lifecycle() {
             "\n",
             "\n",
             "\n",
-            "⠏     steps ████████████████████████████████████████████████████████████  3/3 0s",
+            "·     steps ████████████████████████████████████████████████████████████  3/3 0s",
         ),
         "conductor_cli_step_progress_lifecycle/last_step"
     );
@@ -420,7 +428,7 @@ fn conductor_cli_step_progress_lifecycle() {
     assert_eq!(
         &term.contents(),
         concat!(
-            "⠏     steps ████████████████████████████████████████████████████████████",
+            "·     steps ████████████████████████████████████████████████████████████",
             "  3/3 0s",
         ),
         "conductor_cli_step_progress_lifecycle/after_join"

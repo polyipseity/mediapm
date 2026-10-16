@@ -4,13 +4,6 @@
 //! writer in [`super::writer`] can emit exactly one repaint and a row can
 //! never carry geometry from an older frame (spec §4.1).
 //
-// Nothing in this module is wired into the running renderer yet: the writer
-// (`super::writer`) will call `FramePlan::render` and the frame settle will
-// construct the rows. Until those land, every item here looks unused to the
-// plain-lib build, so `dead_code` is allowed module-wide; remove this
-// attribute when `FramePlan::render` has its production caller.
-#![allow(dead_code)]
-
 use super::{FRAME_OVERHEAD_COLUMNS, TICK_CHARS, visible_width};
 use console::style;
 
@@ -70,8 +63,10 @@ pub(crate) struct FramePlan {
     /// Settled suffix width, shared by every row.
     pub suffix_w: usize,
     /// The settled fill width for the frame: the cells between the prefix
-    /// and the message. Ignored when `draw_fill` is false, and the width a
-    /// `RenderStyle::Blank` row pads across.
+    /// and the message. Zero when `draw_fill` is false (a no-fill frame has
+    /// no fill column), and part of the width a `RenderStyle::Blank` row
+    /// pads across — a blank row always matches the live rows' width on the
+    /// same plan.
     pub fill_w: usize,
     /// Whether the frame is wide enough to draw fills at all.
     pub draw_fill: bool,
@@ -99,12 +94,34 @@ impl FramePlan {
     /// as empty.
     fn render_row(&self, row: &PlanRow) -> String {
         if row.style == RenderStyle::Blank {
-            return " "
-                .repeat(FRAME_OVERHEAD_COLUMNS + self.prefix_w + self.suffix_w + self.fill_w);
+            // A blank row occupies exactly the width a live row draws on this
+            // plan. The no-fill template drops the fill column and the
+            // separator in front of it, so padding unconditionally across
+            // `FRAME_OVERHEAD_COLUMNS + prefix_w + suffix_w + fill_w` would
+            // make a blank row one column wider than every live row beside it
+            // on a no-fill frame — the mismatch
+            // `blank_row_matches_live_width_on_both_fill_modes` pins. The
+            // content is still full-width spaces and nothing else: the
+            // `blank_bar_style` contract (`{wide_msg}` stretched across the
+            // line, no glyph, no fill).
+            let columns = if self.draw_fill {
+                FRAME_OVERHEAD_COLUMNS + self.prefix_w + self.suffix_w + self.fill_w
+            } else {
+                // `spinner` + two separator spaces, no fill and no separator:
+                // the `{spinner} {prefix} {msg}` template's width.
+                FRAME_OVERHEAD_COLUMNS - 1 + self.prefix_w + self.suffix_w
+            };
+            return " ".repeat(columns);
         }
         let spinner = self.render_spinner(row);
-        let prefix = pad_right(&row.prefix, self.prefix_w);
-        let message = pad_left(&row.message, self.suffix_w);
+        // Column alignment follows `frame_template`: the prefix is
+        // right-aligned (`{prefix:>{prefix_w}}`) and the message left-aligned
+        // (`{msg:<{suffix_w}}`). The built-in label path usually returns a
+        // pre-padded, full-width prefix (the pad is then a no-op), but the
+        // client `BarLabelTruncation` path returns shorter strings, so the pad
+        // direction decides where they sit in the column.
+        let prefix = pad_left(&row.prefix, self.prefix_w);
+        let message = pad_right(&row.message, self.suffix_w);
         if self.draw_fill {
             let fill = self.render_fill(row);
             format!("{spinner} {prefix} {fill} {message}")
@@ -139,11 +156,21 @@ impl FramePlan {
     /// Render the fill column: the done run in the style's palette color and
     /// the rest dimmed, split across `fill_w` by `position / total`.
     ///
-    /// A row with `total == 0` shades no done cells (nothing is known to be
-    /// complete).
+    /// Two cases render a full run instead of a ratio, both inherited from
+    /// the `{wide_bar}` template this replaces:
+    ///
+    /// - `Done` draws a full bar regardless of position — the done style is
+    ///   "full bar, elapsed only" (pinned by `finished_child_stays_visible`,
+    ///   which expects a `0/5` finished row fully filled).
+    /// - `total == 0` draws full rather than empty: indicatif rendered a
+    ///   zero/zero bar as complete (pinned by
+    ///   `zero_total_fill_depends_on_the_bar_style`, whose default-style
+    ///   row expects `█` at `0/0`). A `WorkerSpinner` idle row never reaches
+    ///   this arm — `layout.rs`'s guard pins its total to `1` — so it keeps
+    ///   its all-`░` empty bar.
     fn render_fill(&self, row: &PlanRow) -> String {
-        let done_columns = if row.total == 0 {
-            0
+        let done_columns = if row.style == RenderStyle::Done || row.total == 0 {
+            self.fill_w
         } else {
             // Cap at `total` so the ratio stays within `fill_w`; `u128` keeps
             // the multiply from overflowing for a huge position.
@@ -330,5 +357,46 @@ mod tests {
         let rendered = plan.render();
         let widths: Vec<usize> = rendered.iter().map(|l| visible_width(l)).collect();
         assert_eq!(widths[0], widths[1], "one settle, one width: {rendered:?}");
+    }
+
+    /// A blank row draws exactly as wide as the live rows on the same plan,
+    /// on both fill modes: the no-fill live template omits the fill column
+    /// and its separator, so a blank row padded across the fill's overhead
+    /// would be one column too wide (ruling B).
+    #[test]
+    fn blank_row_matches_live_width_on_both_fill_modes() {
+        for draw_fill in [true, false] {
+            let plan = FramePlan {
+                rows: vec![
+                    PlanRow {
+                        prefix: "a".into(),
+                        message: "1s".into(),
+                        position: 0,
+                        total: 1,
+                        style: RenderStyle::Active,
+                        animation: RowAnimation::Animate,
+                    },
+                    PlanRow {
+                        prefix: String::new(),
+                        message: String::new(),
+                        position: 0,
+                        total: 0,
+                        style: RenderStyle::Blank,
+                        animation: RowAnimation::Static("cleared"),
+                    },
+                ],
+                prefix_w: 4,
+                suffix_w: 3,
+                fill_w: 6,
+                draw_fill,
+                spinner_index: 0,
+            };
+            let rendered = plan.render();
+            assert_eq!(
+                visible_width(&rendered[0]),
+                visible_width(&rendered[1]),
+                "blank row must match the live width (draw_fill={draw_fill}): {rendered:?}"
+            );
+        }
     }
 }

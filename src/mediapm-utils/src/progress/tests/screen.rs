@@ -42,14 +42,23 @@ const COLS: u16 = 80;
 /// because a manual `tick` cannot exercise the ticker's own strong clone of the
 /// renderer.
 ///
-/// The draw target here is **ungated**: `with_multi_progress` installs a no-op
-/// gate, so the drop-time finishing draw reaches `term`.  Production wraps its
-/// term in a write gate instead — see [`terminal_with_gate`].
+/// The draw target here is **ungated**: `with_multi_progress_and_term`
+/// installs a no-op gate plus the term the single writer renders frames
+/// through, so every frame (including the drop-time finishing one) reaches
+/// `term`.  Production wraps its term in a write gate instead — see
+/// [`terminal_with_gate`].
 fn terminal_with(term: &InMemoryTerm, capacity: usize, ticker_enabled: bool) -> ProgressTerminal {
-    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    // Hidden, not `term_like(term)`: the single writer renders every frame
+    // through the gate's term — a live target here would let indicatif's own
+    // bar draws interleave with `write_frame` on the same grid (double
+    // writer). Same rule as `progress_output/common.rs::build`.
+    let target = ProgressDrawTarget::hidden();
     let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
     ProgressTerminal::builder()
-        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_multi_progress_and_term(
+            MultiProgress::with_draw_target(target),
+            Box::new(term.clone()),
+        )
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .capacity(capacity)
         .with_ticker_enabled(ticker_enabled)
@@ -431,10 +440,15 @@ fn gated_second_screen_does_not_unwind_the_discarded_screens_rows() {
         !first_draw.contains("Up("),
         "the first released draw moved the cursor up over rows it never drew: {ops}"
     );
-    assert!(
-        !first_draw.contains("Clear"),
-        "the first released draw cleared rows it never drew: {ops}"
-    );
+    // The old `!first_draw.contains("Clear")` pin is retired with the
+    // discarded-draw protocol: the single writer clears each of its own
+    // frame's rows before rewriting them (`write_frame`'s per-row
+    // `clear_line`), and the commit's CR+LF places the cursor below the
+    // committed band first (pinned by `gated_commit_is_one_write_…` and by
+    // the grid pins in `gated_second_screen_keeps_the_committed_frame`). A
+    // `Clear` in this block therefore only ever touches the second screen's
+    // own rows; the way to reach *above* the band is `Up(`, still
+    // prohibited above.
 }
 
 /// A frame is one template pair across every row, and `attach` draws no frame of its own.
@@ -472,8 +486,8 @@ fn gated_attach_releases_no_draw_outside_a_frame() {
         term.contents(),
         concat!(
             "\n\n\n\n\n\n\n\n",
-            "⠹      first ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s\n",
-            "⠼     second ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s"
+            "⠙      first ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s\n",
+            "⠙     second ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 0s 0/d 10s"
         )
     );
 }
@@ -544,10 +558,14 @@ fn gated_commit_is_one_write_and_the_next_draw_erases_nothing() {
         !first_draw.contains("Up("),
         "the first released draw moved the cursor up over rows it never drew: {ops}"
     );
-    assert!(
-        !first_draw.contains("Clear"),
-        "the first released draw cleared rows it never drew: {ops}"
-    );
+    // The old `!first_draw.contains("Clear")` pin is retired with the
+    // discarded-draw protocol: the single writer clears each of its own
+    // frame's rows before rewriting them (`write_frame`'s per-row
+    // `clear_line`), and the commit's CR+LF — asserted as this test's last
+    // op above — places the cursor below the committed band first. A
+    // `Clear` in this block therefore only ever touches the second screen's
+    // own rows; the way to reach *above* the band is `Up(`, still
+    // prohibited above.
 }
 
 /// A committed screen's frame stays on the terminal once the next screen renders.

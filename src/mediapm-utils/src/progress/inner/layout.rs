@@ -276,18 +276,27 @@ fn measure_suffix_width(
     visible_width(render_slot_suffix(suffix, truncation, ceiling, "").as_str())
 }
 
+/// The strings and numbers one slot's row shows on one frame.
+///
+/// Produced by [`ProgressRenderer::slot_row_strings`]; both consumers draw
+/// from it — the legacy bar pushes in
+/// [`sync_snapshot_to_bar`](ProgressRenderer::sync_snapshot_to_bar) and the
+/// frame's `PlanRow`s in the renderer's `build_plan` — so a plan's rows and
+/// the bar pushes cannot answer differently about the same snapshot.
+pub(super) struct SlotRowStrings {
+    /// Prefix, truncated and wrapped exactly as the bar's field drew it.
+    pub(super) prefix: String,
+    /// Message (suffix), rendered into the settled suffix slot.
+    pub(super) message: String,
+    /// Position after the `WorkerSpinner` zero-total guard.
+    pub(super) position: u64,
+    /// Total after the `WorkerSpinner` zero-total guard.
+    pub(super) total: u64,
+}
+
 impl ProgressRenderer {
-    /// Defensive sync: refresh all render slots from their tracked sources.
-    ///
-    /// Includes resize reactivity and full style re-application.
-    ///
-    /// When the write gate is active (production),
-    /// property-setter terminal writes are suppressed during the update
-    /// loop, then exactly one draw is released at the end.  This ensures
-    /// the 50 ms daemon ticker is the sole draw authority and eliminates
-    /// flicker from burst writes.
-    /// Recompute the uniform `prefix_w`/`suffix_w` applied to every visible
-    /// bar this frame.
+    /// Settle the uniform `prefix_w`/`suffix_w`/`draw_fill` every row of this
+    /// frame draws at.
     ///
     /// Measures the rendered prefix/suffix width of each bound slot (via
     /// [`SharedState::snapshot`](super::tracked::SharedState::snapshot)), takes the max across all bound slots, and
@@ -295,9 +304,12 @@ impl ProgressRenderer {
     /// the separators and [`MIN_BAR_FILL`] is split between the two, the
     /// suffix taking what it measured first and the prefix the remainder.
     ///
-    /// The result is stored in the `prefix_w`/`suffix_w` cells and every bound
-    /// slot is re-synced so all bars share the same alignment width — short
-    /// labels no longer waste space and long labels no longer overflow the bar.
+    /// The result is stored in the `prefix_w`/`suffix_w`/`draw_fill` cells,
+    /// and every consumer — the legacy bar re-sync
+    /// ([`recompute_layout`](Self::recompute_layout)) and the frame's plan
+    /// ([`build_plan`](super::ProgressRenderer::build_plan)) — reads the same
+    /// cells, so all rows share the same alignment width — short labels no
+    /// longer waste space and long labels no longer overflow the bar.
     ///
     /// This is the budget and nothing else: it says how many columns a label
     /// may use, not which of its fields survive. That is
@@ -344,10 +356,10 @@ impl ProgressRenderer {
     /// the measurement below uses, so the budget and the message cannot answer
     /// differently about the same row.
     ///
-    /// Returns whether the re-sync at the end pushed anything, which the
-    /// frame uses to know whether the window still owes the block a draw.
-    pub(crate) fn recompute_layout(&self) -> bool {
-        let (_, cols) = self.dim_source.dimensions();
+    /// Pure measurement: nothing is pushed and nothing is written, so
+    /// [`build_plan`](super::ProgressRenderer::build_plan) can settle and
+    /// then build this frame's rows without a second measurement pass.
+    pub(super) fn settle_layout(&self, cols: u16) {
         let prefix_ceiling = max_prefix_width(cols);
         let suffix_ceiling = max_suffix_width(cols);
         let mut max_prefix = 0usize;
@@ -470,6 +482,20 @@ impl ProgressRenderer {
         self.prefix_w.set(prefix_w);
         self.suffix_w.set(suffix_w);
         self.draw_fill.set(draw_fill);
+    }
+
+    /// Settle the frame's geometry, then re-sync every bound slot's bar to
+    /// the settled widths.
+    ///
+    /// This is the legacy push path: `attach` and the resize bookkeeping call
+    /// it so the indicatif bars still track the settled widths while they
+    /// exist. The frame itself settles through
+    /// [`settle_layout`](Self::settle_layout) and reaches the terminal through
+    /// the plan and `write_frame`, not through these pushes.
+    ///
+    /// Returns whether the re-sync pushed anything.
+    pub(crate) fn recompute_layout(&self) -> bool {
+        self.settle_layout(self.frame_width());
         let mut pushed = false;
         for (i, slot) in self.slots.iter().enumerate() {
             if slot.source.borrow().is_some() {
@@ -479,34 +505,23 @@ impl ProgressRenderer {
         pushed
     }
 
-    /// Apply a snapshot's position/length/suffix/prefix to the indicatif bar
-    /// at slot `i`. **This is the single authoritative push point for
-    /// `SharedState` → indicatif.** All code paths that reflect `SharedState`
-    /// (position, total, suffix, prefix) on the terminal bar must call
-    /// through here — both the daemon ticker and [`finalize`](Self::finalize)
-    /// do.
+    /// Compute slot `i`'s row strings for one snapshot — the single producer
+    /// of what a row shows this frame.
     ///
-    /// Does **not** change the bar's style — callers manage style
-    /// independently via [`finish_slot`](Self::finish_slot) or explicit
-    /// `set_style` calls during attach/resize.
-    ///
-    /// Returns whether anything was actually pushed (any dedup comparison
-    /// that fired). A frame uses that to know the open window still owes the
-    /// block a draw: every push here happens while the gate is shut, and a
-    /// frame whose bars are all finished has no tick of its own to flush the
-    /// pushed lines with — see the flush at the end of
-    /// [`run_frame`](super::ProgressRenderer::run_frame).
-    ///
-    /// `pub(super)` because the parent's [`recompute_layout`](Self::recompute_layout) and
-    /// [`finish_slot`](Self::finish_slot) both push
-    /// through it.
-    pub(super) fn sync_snapshot_to_bar(
+    /// A pure read of the settled cells ([`Self::settle_layout`] must have
+    /// run): the prefix through the client's
+    /// [`BarLabelTruncation`](crate::progress::BarLabelTruncation) when
+    /// installed or the built-in truncate-then-render pair otherwise, the
+    /// message through [`render_slot_suffix`] with the [`keeps_timing`]
+    /// decision, and the position/total after the `WorkerSpinner` zero-total
+    /// guard.
+    pub(super) fn slot_row_strings(
         &self,
         i: usize,
         snap: &TrackSnapshot,
         rate_str: Option<&str>,
         eta_str: Option<&str>,
-    ) -> bool {
+    ) -> SlotRowStrings {
         let slot = &self.slots[i];
         let is_overall = self.has_overall && i == self.slots.len() - 1;
         // Style-specific div-by-zero guard: a `WorkerSpinner` slot whose
@@ -516,7 +531,7 @@ impl ProgressRenderer {
         // a fully-dimmed empty bar (all `░`). `StepCount` bars keep their
         // real total/position.
         let style = slot.source.borrow().as_ref().map_or(BarStyle::StepCount, |s| s.style());
-        let (render_total, render_pos) = if style == BarStyle::WorkerSpinner && snap.total == 0 {
+        let (total, position) = if style == BarStyle::WorkerSpinner && snap.total == 0 {
             (1, 0)
         } else {
             (snap.total, snap.position)
@@ -534,7 +549,7 @@ impl ProgressRenderer {
             .and_then(|s| s.truncation.read().expect("shared_state truncation lock").clone());
         let has_client_truncation = truncation.is_some();
         let ansi_overhead = compute_ansi_overhead(snap.status, has_client_truncation);
-        let new_prefix = if let Some(t) = truncation.as_ref() {
+        let prefix = if let Some(t) = truncation.as_ref() {
             client_truncated_prefix(t, self.prefix_w.get().saturating_sub(ansi_overhead))
         } else {
             let truncated_prefix = semantic_truncate_prefix(
@@ -545,9 +560,8 @@ impl ProgressRenderer {
         };
         // Whether this row draws its timing depends on what the row holds
         // without it, which takes both of this frame's settled widths to
-        // render. The two are composed either way; the one that loses is the
-        // one the row draws. Decided before the prefix is pushed so the
-        // prefix is still in hand to answer it.
+        // render. The two are composed either way; the one that loses is
+        // the one the row draws.
         let timingless_suffix = compose_suffix(snap, rate_str, eta_str, false);
         let timingless_rendered = render_slot_suffix(
             &timingless_suffix,
@@ -555,38 +569,63 @@ impl ProgressRenderer {
             self.suffix_w.get(),
             color_code,
         );
-        let fresh_suffix = if keeps_timing(
-            self.draw_fill.get(),
-            new_prefix.as_str(),
-            timingless_rendered.as_str(),
-        ) {
-            compose_suffix(snap, rate_str, eta_str, true)
-        } else {
-            timingless_suffix
-        };
-        let mut pushed = false;
-        if new_prefix != *slot.cache.prefix.borrow() {
-            slot.bar.set_prefix(new_prefix.clone());
-            *slot.cache.prefix.borrow_mut() = new_prefix;
-            pushed = true;
-        }
-        // Build display suffix: client truncation when installed, else
-        // truncate the fresh component set then render.
-        let display_suffix =
+        let fresh_suffix =
+            if keeps_timing(self.draw_fill.get(), prefix.as_str(), timingless_rendered.as_str()) {
+                compose_suffix(snap, rate_str, eta_str, true)
+            } else {
+                timingless_suffix
+            };
+        let message =
             render_slot_suffix(&fresh_suffix, truncation.as_ref(), self.suffix_w.get(), color_code);
-        if display_suffix != *slot.cache.suffix.borrow() {
-            slot.bar.set_message(display_suffix.clone());
-            *slot.cache.suffix.borrow_mut() = display_suffix;
+        SlotRowStrings { prefix, message, position, total }
+    }
+
+    /// Apply a snapshot's position/length/suffix/prefix to the indicatif bar
+    /// at slot `i`. **This is the authoritative `SharedState` → indicatif
+    /// push point.** Every code path that still reflects `SharedState`
+    /// (position, total, suffix, prefix) on a bar — the `attach`/resize
+    /// re-syncs and [`finalize`](Self::finalize) — goes through here; the
+    /// frame itself no longer pushes bars, it renders the same strings, from
+    /// [`slot_row_strings`](Self::slot_row_strings), into a plan.
+    ///
+    /// Does **not** change the bar's style — callers manage style
+    /// independently via [`finish_slot`](Self::finish_slot) or explicit
+    /// `set_style` calls during attach/resize.
+    ///
+    /// Returns whether anything was actually pushed (any dedup comparison
+    /// that fired).
+    ///
+    /// `pub(super)` because the parent's [`recompute_layout`](Self::recompute_layout) and
+    /// [`finish_slot`](Self::finish_slot) both push
+    /// through it.
+    pub(super) fn sync_snapshot_to_bar(
+        &self,
+        i: usize,
+        snap: &TrackSnapshot,
+        rate_str: Option<&str>,
+        eta_str: Option<&str>,
+    ) -> bool {
+        let slot = &self.slots[i];
+        let strings = self.slot_row_strings(i, snap, rate_str, eta_str);
+        let mut pushed = false;
+        if strings.prefix != *slot.cache.prefix.borrow() {
+            slot.bar.set_prefix(strings.prefix.clone());
+            *slot.cache.prefix.borrow_mut() = strings.prefix;
             pushed = true;
         }
-        if render_total != slot.cache.total.get() {
-            slot.bar.set_length(render_total);
-            slot.cache.total.set(render_total);
+        if strings.message != *slot.cache.suffix.borrow() {
+            slot.bar.set_message(strings.message.clone());
+            *slot.cache.suffix.borrow_mut() = strings.message;
             pushed = true;
         }
-        if render_pos != slot.cache.position.get() {
-            slot.bar.set_position(render_pos);
-            slot.cache.position.set(render_pos);
+        if strings.total != slot.cache.total.get() {
+            slot.bar.set_length(strings.total);
+            slot.cache.total.set(strings.total);
+            pushed = true;
+        }
+        if strings.position != slot.cache.position.get() {
+            slot.bar.set_position(strings.position);
+            slot.cache.position.set(strings.position);
             pushed = true;
         }
         pushed

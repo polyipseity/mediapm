@@ -19,9 +19,16 @@
 //!   screens' output visible needs `capacity < rows`.
 //!
 //! `with_multi_progress` is used rather than `with_term_like` because it is the
-//! path the existing exact strings were captured on: it installs a no-op write
-//! gate, so frames are drawn by indicatif's own bar operations rather than by
-//! the terminal's buffered gate protocol.
+//! path the existing exact strings were captured on. Since the
+//! plan-then-write swap the frames themselves are produced by the terminal's
+//! write path, not by indicatif's bar operations: the harness pairs it with
+//! `with_multi_progress_and_term`, and the `MultiProgress` draw target it
+//! passes is **hidden**. Hiding it is what keeps the suite on a single writer
+//! — with a live target, indicatif's own draws and the write path's frames
+//! would interleave on the same grid (each side anchoring the cursor to its
+//! own idea of the block), which is exactly the double-write class this swap
+//! exists to remove. The bars therefore carry state only; the gate decides
+//! what reaches the terminal, and no bar draw ever does.
 //!
 //! The two paths are **not** interchangeable, and the number of writes is not
 //! the only difference. The gate changes what indicatif *erases*: a draw it
@@ -121,11 +128,13 @@ pub fn mk_with_capacity_and_ts(
 
 /// Build a terminal driven by a caller-owned dimension source.
 ///
-/// The caller keeps its own clone so it can change dimensions mid-test; the
-/// grid is sized `rows`×`cols` independently of the dimension source, which is
-/// what lets a test render at a narrow layout width inside a wide grid.
-/// `dynamic_height` enables the renderer's height adaptation, and `ts` supplies
-/// deterministic timing when the assertion needs it.
+/// The caller keeps its own clone so it can change dimensions mid-test. The
+/// grid is sized `rows`×`cols` independently of the dimension source: the
+/// grid's width is what frames budget from (`ProgressRenderer::frame_width`
+/// reads the draw target, never the source's columns — pinned by
+/// `dimension_source_columns_do_not_change_the_frame`), while the source's
+/// `rows` drive height adaptation, `dynamic_height` enables it, and `ts`
+/// supplies deterministic timing when the assertion needs it.
 pub fn mk_with_dims(
     rows: u16,
     cols: u16,
@@ -169,9 +178,14 @@ pub fn mk_with_pre_roll_term(
     term: Box<dyn TermLike>,
 ) -> (ProgressTerminal, InMemoryTerm) {
     let grid = InMemoryTerm::new(rows, cols);
-    let target = ProgressDrawTarget::term_like(Box::new(grid.clone()));
+    // Hidden for the same reason as in `build`: the write path is the only
+    // writer.
+    let target = ProgressDrawTarget::hidden();
     let builder = ProgressTerminal::builder()
-        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_multi_progress_and_term(
+            MultiProgress::with_draw_target(target),
+            Box::new(grid.clone()),
+        )
         .with_dim_source(
             Arc::new(TestDimensionSource::new((rows, cols))) as Arc<dyn DimensionSource>
         )
@@ -205,10 +219,16 @@ fn build(
     sink: Option<ProgressDebugSink>,
 ) -> (ProgressTerminal, InMemoryTerm) {
     let grid = InMemoryTerm::new(rows, cols);
-    let target = ProgressDrawTarget::term_like(Box::new(grid.clone()));
+    // Hidden, not `term_like(grid)`: the write path is the only writer (see
+    // the module docs). A live target here would let indicatif draw its own
+    // block onto the same grid the frames are written to.
+    let target = ProgressDrawTarget::hidden();
     let ts = ts.unwrap_or_else(|| Arc::new(TestTimeSource::new()));
     let mut builder = ProgressTerminal::builder()
-        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_multi_progress_and_term(
+            MultiProgress::with_draw_target(target),
+            Box::new(grid.clone()),
+        )
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .capacity(capacity)
         .dynamic_height(dynamic_height)

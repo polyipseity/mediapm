@@ -59,8 +59,8 @@ fn elapsed_starts_at_zero_and_advances() {
             "\n",
             "\n",
             "\n",
-            "⠼      tool-a █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 0s 0/d 2s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s",
+            "⠋      tool-a █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 0s 0/d 2s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 0s 0/d 5s",
         ),
         "elapsed_starts_at_zero_and_advances/zero"
     );
@@ -70,8 +70,8 @@ fn elapsed_starts_at_zero_and_advances() {
             "\n",
             "\n",
             "\n",
-            "⠴      tool-a ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 5s 1/m 1m40s\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 5s 0/d 5s",
+            "⠙      tool-a ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 5s 1/m 1m40s\n",
+            "⠙     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 5s 0/d 5s",
         ),
         "elapsed_starts_at_zero_and_advances/five"
     );
@@ -96,8 +96,8 @@ fn elapsed_is_stable_on_a_stale_tick() {
             "\n",
             "\n",
             "\n",
-            "⠸      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 3s 0/d 3s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 3s 0/d 5s",
+            "⠋      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 3s 0/d 3s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 3s 0/d 5s",
         ),
         "elapsed_is_stable_on_a_stale_tick/first"
     );
@@ -130,8 +130,8 @@ fn elapsed_is_stable_on_a_stale_tick() {
             "\n",
             "\n",
             "\n",
-            "⠴      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
+            "⠹      tool-a ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
         ),
         "elapsed_is_stable_on_a_stale_tick/third"
     );
@@ -156,9 +156,9 @@ fn elapsed_freezes_when_a_bar_finishes() {
         concat!(
             "\n",
             "\n",
-            "⠹     finishing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
-            "⠸       running ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
-            "⠹       overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
+            "⠋     finishing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
+            "⠋       running ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s 0/d 3s\n",
+            "⠋       overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
         ),
         "elapsed_freezes_when_a_bar_finishes/before"
     );
@@ -184,9 +184,9 @@ fn elapsed_freezes_when_a_bar_finishes() {
         concat!(
             "\n",
             "\n",
-            "⠏              [F] finishing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s\n",
-            "⠼                    running ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 14s 0/d 3s\n",
-            "⠸                    overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 14s 0/d 5s",
+            "·              [F] finishing ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 4s\n",
+            "⠙                    running ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/3 14s 0/d 3s\n",
+            "⠙                    overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 14s 0/d 5s",
         ),
         "elapsed_freezes_when_a_bar_finishes/after"
     );
@@ -213,8 +213,8 @@ fn elapsed_survives_orphan_reattach() {
             "\n",
             "\n",
             "\n",
-            "⠸      worker ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 3s 0/d 10s\n",
-            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 3s 0/d 5s",
+            "⠋      worker ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 3s 0/d 10s\n",
+            "⠋     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 3s 0/d 5s",
         ),
         "elapsed_survives_orphan_reattach/before"
     );
@@ -226,9 +226,17 @@ fn elapsed_survives_orphan_reattach() {
     assert!(!orphaned.contains("worker"), "the shrunken grid orphans the worker: {orphaned:?}");
     assert_eq!(
         orphaned,
+        // Re-baselined with the plan-then-write swap: when the worker
+        // orphans, the frame re-settles its widths from the rows that are
+        // actually drawn (spec AC6 — a retained frame never carries an older
+        // frame's geometry). The legacy capture froze the previous settle's
+        // 16-wide suffix, leaving a 49-cell fill beside a 14-wide row; the
+        // current settle reserves exactly what the remaining overall row
+        // needs (14) and gives the columns back to the fill (51), keeping
+        // the line at the full 80 columns.
         concat!(
-            "⠸     overall ",
-            "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+            "⠙     overall ",
+            "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
             "  0/5 5s 0/d 5s"
         ),
         "elapsed_survives_orphan_reattach/orphaned"
@@ -242,12 +250,18 @@ fn elapsed_survives_orphan_reattach() {
     assert_ne!(reattached, "0s", "reattaching must not restart the elapsed timer");
     assert_eq!(
         after,
+        // Re-baselined with the plan-then-write swap: a reattached bar with
+        // no EMA yet draws its eta at the nominal floor — the Task 1 contract
+        // `a_bar_before_the_ema_starts_reserves_the_eta_at_the_nominal_floor`
+        // (`10s` at the 1.0/s floor for 10 remaining). The legacy capture
+        // showed no eta here because indicatif hides an unknown one; the plan
+        // renders the reserved value the budget already reserves columns for.
         concat!(
             "\n",
             "\n",
             "\n",
-            "⠹      worker ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 7s 0/d\n",
-            "⠼     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 7s 0/d 5s",
+            "⠹      worker ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 7s 0/d 10s\n",
+            "⠹     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 7s 0/d 5s",
         ),
         "elapsed_survives_orphan_reattach/after"
     );
@@ -277,9 +291,9 @@ fn elapsed_survives_a_slot_shift() {
         concat!(
             "\n",
             "\n",
-            "⠹       alpha ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 4s 0/d 10s\n",
-            "⠼        beta ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d 5s\n",
-            "⠸     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
+            "⠙       alpha ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/10 4s 0/d 10s\n",
+            "⠙        beta ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 2s 0/d 5s\n",
+            "⠙     overall ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0/5 4s 0/d 5s",
         ),
         "elapsed_survives_a_slot_shift"
     );
@@ -306,8 +320,8 @@ fn elapsed_is_independent_of_progress() {
             "\n",
             "\n",
             "\n",
-            "⠸        idle ░░░░░░░░░░░  0/3 6s 0/d 3s\n",
-            "⠹     overall ░░░░░░░░░░░  0/1 6s 0/d 1s",
+            "⠋        idle ░░░░░░░░░░░  0/3 6s 0/d 3s\n",
+            "⠋     overall ░░░░░░░░░░░  0/1 6s 0/d 1s",
         ),
         "elapsed_is_independent_of_progress"
     );
