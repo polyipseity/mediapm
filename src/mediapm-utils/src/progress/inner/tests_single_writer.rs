@@ -152,8 +152,8 @@ fn one_row_repaint_replaces_the_row_in_place() {
 }
 
 /// A shrink followed by a change still repaints in place: the shrink's
-/// vacated rows are cleared and the exit anchor is one row past the NEW
-/// frame, not the old extent (regression for the drift where the next
+/// vacated rows are cleared and the exit anchor rests ON the new frame's
+/// last row (regression for the drift where the next
 /// back-up landed inside the frame).
 #[test]
 fn shrink_then_change_repaints_in_place() {
@@ -211,7 +211,8 @@ fn full_height_frame_keeps_every_row() {
 }
 
 /// Shrinking away from a full-height frame clears the vacated rows without
-/// scrolling and leaves the exit anchor one row past the new frame, so the
+/// scrolling and leaves the exit anchor resting on the new frame's last
+/// row, so the
 /// repaint after the shrink starts at the top row again.
 #[test]
 fn shrink_from_full_height_keeps_the_anchor() {
