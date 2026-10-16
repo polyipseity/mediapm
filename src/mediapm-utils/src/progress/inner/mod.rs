@@ -7,6 +7,7 @@
 mod components;
 mod debug;
 mod gate;
+mod plan;
 mod renderer;
 mod screen;
 mod sources;
@@ -45,3 +46,10 @@ pub(crate) use components::{
     visible_width,
 };
 pub(crate) use renderer::SharedState;
+// `FramePlan` and its row types are re-exported so renderer code and tests can
+// reach them through the `inner::FramePlan` path without naming the private
+// `plan` submodule. The allow mirrors the `components` re-export block above:
+// the types are consumed by path in later tasks, which does not satisfy the
+// `unused_imports` lint.
+#[allow(unused_imports)]
+pub(crate) use plan::{FramePlan, PlanRow, RenderStyle, RowAnimation};
