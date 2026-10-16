@@ -12,6 +12,9 @@ mod renderer;
 mod screen;
 mod sources;
 mod terminal;
+#[cfg(test)]
+mod tests_single_writer;
+mod writer;
 
 #[allow(unused_imports)]
 pub use components::{
