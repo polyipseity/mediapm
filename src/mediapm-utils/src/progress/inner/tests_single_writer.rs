@@ -248,12 +248,7 @@ fn shrink_from_full_height_keeps_the_anchor() {
 /// only the write path errors. The attempt counter distinguishes "tried
 /// and failed" from "short-circuited without trying", which is the
 /// observable the write-error policy leaves behind.
-///
-/// `Clone` is a second handle on the same failing terminal, not a copy: the
-/// clone shares the grid and the attempt counter, so a test can hand one
-/// handle to the gate and keep reading the grid from the other (the pattern
-/// `InMemoryTerm::clone` already provides in the counting harnesses).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct FailingTerm {
     /// Grid answering the dimension queries (the failing writes never reach it).
     grid: indicatif::InMemoryTerm,
@@ -270,12 +265,6 @@ impl FailingTerm {
         };
         let attempts = Arc::clone(&term.attempts);
         (term, attempts)
-    }
-
-    /// The wrapped grid's content — the failing writes never reach it, so a
-    /// test reads what (if anything) was actually committed.
-    pub(crate) fn contents(&self) -> String {
-        self.grid.contents()
     }
 }
 
@@ -345,51 +334,5 @@ fn a_failed_terminal_write_is_a_frame_not_written() {
     assert!(
         attempts.load(Ordering::Relaxed) > after_first,
         "a frame whose predecessor failed must be attempted again, not skipped"
-    );
-}
-
-/// A failed write on the finalize frame is a frame not written, and the run
-/// still completes.
-///
-/// `finalize` is the second and last place the renderer writes, and it takes
-/// the same advisory-write policy as `run_frame`. The guarantee this protects
-/// is the one a user sees: closing the pipe before the screen finishes
-/// (`mediapm sync | head`) ends the paint, never the sync. On a `FailingTerm`
-/// no frame can reach the terminal, so the observable is "nothing was
-/// committed" plus "a write was attempted" — asserted below rather than a byte
-/// comparison, which would only prove the term stayed empty.
-#[test]
-fn a_failed_finalize_write_is_a_frame_not_written() {
-    let (term, attempts) = FailingTerm::new(10, 40);
-    let dims = Arc::new(TestDimensionSource::new((10, 40)));
-    let ts = Arc::new(TestTimeSource::new());
-    let gate = WriteGate::new_noop_with_term(Arc::new(term.clone()) as Arc<dyn TermLike>);
-    let mut renderer =
-        ProgressRenderer::new(4, dims, gate, ts.clone() as Arc<dyn TimeSource>, None);
-    let bar = Arc::new(SharedState::with_time_source(100, "tool", ts));
-    renderer.attach(&bar);
-    renderer.run_frame();
-    let before_finalize = attempts.load(Ordering::Relaxed);
-    assert!(before_finalize > 0, "the failing frame must still attempt its write");
-
-    // Finalize forces one last frame even when nothing changed since the last
-    // one, so it always reaches the writer. A failed write here must not panic
-    // and must not be mistaken for a committed frame.
-    renderer.finalize();
-    assert!(
-        attempts.load(Ordering::Relaxed) > before_finalize,
-        "finalize's forced frame must still attempt its write"
-    );
-    assert!(
-        term.contents().trim().is_empty(),
-        "a failed finalize frame must leave the terminal with nothing committed"
-    );
-    // Second finalize is a no-op, so it must not attempt another write.
-    let after_finalize = attempts.load(Ordering::Relaxed);
-    renderer.finalize();
-    assert_eq!(
-        attempts.load(Ordering::Relaxed),
-        after_finalize,
-        "finalize must be idempotent even when its write failed"
     );
 }

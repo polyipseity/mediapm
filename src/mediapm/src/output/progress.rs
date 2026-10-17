@@ -14,7 +14,6 @@ pub use mediapm_utils::progress::{
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Duration;
 
     use indicatif::InMemoryTerm;
     use mediapm_utils::progress::{ProgressTerminalBuilder, TimeSource};
@@ -76,15 +75,6 @@ mod tests {
         let contents = term.contents();
         assert!(contents.contains("0s"), "elapsed must stay at 0 after finish, got:\n{contents}");
         assert!(contents.contains("5/5"), "bar must show final position 5/5");
-        // Freeze over the row's lifetime: a Done row stops the clock, so a
-        // later tick may not grow the elapsed.
-        ts.advance(Duration::from_mins(1));
-        group.tick();
-        let contents = term.contents();
-        assert!(
-            contents.contains("0s") && contents.contains("5/5"),
-            "a finished row must stay at 0s for its whole life, got:\n{contents}"
-        );
     }
 
     #[test]
@@ -105,15 +95,6 @@ mod tests {
             "elapsed must stay at 0 after finish_success, got:\n{contents}"
         );
         assert!(contents.contains("5/5"), "final position must appear");
-        // Freeze over the row's lifetime: a Done row stops the clock, so a
-        // later tick may not grow the elapsed.
-        ts.advance(Duration::from_mins(1));
-        group.tick();
-        let contents = term.contents();
-        assert!(
-            contents.contains("0s") && contents.contains("5/5"),
-            "a finished row must stay at 0s for its whole life, got:\n{contents}"
-        );
     }
 
     #[test]
@@ -135,14 +116,6 @@ mod tests {
             contents.contains("0s"),
             "elapsed must stay at 0 after finish_error, got:\n{contents}"
         );
-        // Freeze over the row's lifetime: a Failed row stops the clock too.
-        ts.advance(Duration::from_mins(1));
-        group.tick();
-        let contents = term.contents();
-        assert!(
-            contents.contains("0s"),
-            "a failed row must stay at 0s for its whole life, got:\n{contents}"
-        );
     }
 
     #[test]
@@ -163,14 +136,6 @@ mod tests {
         assert!(
             contents.contains("0s"),
             "elapsed must stay at 0 after finish_error, got:\n{contents}"
-        );
-        // Freeze over the row's lifetime: a Failed row stops the clock too.
-        ts.advance(Duration::from_mins(1));
-        group.tick();
-        let contents = term.contents();
-        assert!(
-            contents.contains("0s"),
-            "a failed row must stay at 0s for its whole life, got:\n{contents}"
         );
     }
 

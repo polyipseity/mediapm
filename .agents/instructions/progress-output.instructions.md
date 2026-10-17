@@ -30,7 +30,7 @@ FRAME_OVERHEAD_COLUMNS = 4 (spinner glyph plus the three spaces between the four
 MIN_BAR_FILL = 4           (floor held back under the fill, and the width at which a frame stops drawing one)
 ```
 
-`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs::max_prefix_width`) and `max_suffix_width(cols)` (`components.rs::max_suffix_width`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `settle_layout` (`layout.rs::settle_layout`) then spends what is left of `cols`, in two steps:
+`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs:660`) and `max_suffix_width(cols)` (`:666`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `settle_layout` (`layout.rs:360`) then spends what is left of `cols`, in two steps:
 
 ```text
 reserved = cols - (FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL)
@@ -47,13 +47,13 @@ suffix_w   = min(measured suffix without timing, suffix_ceiling, reserved)
 prefix_w   = min(measured prefix, prefix_ceiling, reserved - suffix_w)
 ```
 
-The suffix is settled first because it is the field that must not wrap: a suffix past the end of the line spills onto the row below, where it reads as a second bar. `cols` arrives from [`DimensionSource::dimensions`](`src/mediapm-utils/src/progress/inner/debug.rs::DimensionSource::dimensions`), which is `RealTerminalSource` on a terminal and `TestDimensionSource` under a test.
+The suffix is settled first because it is the field that must not wrap: a suffix past the end of the line spills onto the row below, where it reads as a second bar. `cols` arrives from [`DimensionSource::dimensions`](`src/mediapm-utils/src/progress/inner/debug.rs:14`), which is `RealTerminalSource` on a terminal and `TestDimensionSource` under a test.
 
-On a frame with no bar, the timing is the first thing the suffix gives up, because the columns it wants are the ones the label and the tally want. A row that would have nothing left keeps it: a worker slot has no tally of its own, so a stripped worker row would read `⠙` and nothing else, and a lone spinner is a worse frame than the four cells of bar that were dropped. `keeps_timing` (`layout.rs::keeps_timing`) is that condition, `compose_suffix` (`layout.rs::compose_suffix`) applies it, and `without_timing` (`layout.rs::without_timing`) is the one strip both the draw path and the measurement pass go through, so the two cannot answer differently about the same row.
+On a frame with no bar, the timing is the first thing the suffix gives up, because the columns it wants are the ones the label and the tally want. A row that would have nothing left keeps it: a worker slot has no tally of its own, so a stripped worker row would read `⠙` and nothing else, and a lone spinner is a worse frame than the four cells of bar that were dropped. `keeps_timing` (`layout.rs:235`) is that condition, `compose_suffix` (`layout.rs:187`) applies it, and `without_timing` (`layout.rs:212`) is the one strip both the draw path and the measurement pass go through, so the two cannot answer differently about the same row.
 
 ## Two layout facts to know before changing a label
 
-**The slot is measured from what a row draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` (`src/mediapm-utils/src/progress/inner/tracked.rs::with_time_source_and_style`) turns the seed into built-in prefix components, and `snap.prefix` is their render, which is the right width to measure for a row that draws them. A row with a `BarLabelTruncation` installed draws something else, so `settle_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`layout.rs::settle_layout`). `snap.prefix` is the wrong width for such a row, because the seeds are short by design and `idle` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs::run_workflow`). A client label may be longer or shorter than the string its row was created with, so the measurement has to follow the label.
+**The slot is measured from what a row draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` (`src/mediapm-utils/src/progress/inner/tracked.rs:129`) turns the seed into built-in prefix components, and `snap.prefix` is their render, which is the right width to measure for a row that draws them. A row with a `BarLabelTruncation` installed draws something else, so `settle_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`layout.rs:388`). `snap.prefix` is the wrong width for such a row, because the seeds are short by design and `idle` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:351`). A client label may be longer or shorter than the string its row was created with, so the measurement has to follow the label.
 
 **The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators and the suffix, capped at `MAX_PREFIX_WIDTH`, and the fill takes what neither label wants, down to a floor of `MIN_BAR_FILL` columns. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy.
 
@@ -130,14 +130,14 @@ All status-list suffixes use the **number-first** format: `{n} {word}`, comma-jo
 
 `sync_snapshot_to_slot` (in `layout.rs`) records each slot's strings in the `SlotCache`; it never writes a terminal. Whether client-defined truncation (`BarLabelTruncation` via `set_truncation`) or built-in truncation (`PrefixComponents` via `set_prefix_components`) applies is decided per row:
 
-- **Client-truncated rows**: `settle_layout` measures through `truncate_prefix(prefix_ceiling)` / `truncate_suffix(...)`, and the slot row applies the same calls, prepending the 4-byte ANSI reset `\x1b[0m` to the result (`layout.rs::client_truncated_prefix`). Suffix: `truncate_suffix(suffix_w, &fresh_suffix)` where `fresh_suffix` is the merged `SuffixComponents` (auto-derived + user-set fields), with the timing stripped on a frame that draws no fill unless the row would otherwise have nothing to say.
+- **Client-truncated rows**: `settle_layout` measures through `truncate_prefix(prefix_ceiling)` / `truncate_suffix(...)`, and the slot row applies the same calls, prepending the 4-byte ANSI reset `\x1b[0m` to the result (`layout.rs:177`). Suffix: `truncate_suffix(suffix_w, &fresh_suffix)` where `fresh_suffix` is the merged `SuffixComponents` (auto-derived + user-set fields), with the timing stripped on a frame that draws no fill unless the row would otherwise have nothing to say.
 - **Built-in rows**: the status-marker overhead is 13 for `Failed`/`Warning`, 4 otherwise. `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` then `render_prefix_components` wraps the prefix in colored markers.
 
 `settle_layout` applies the same overhead rule for width budgeting. It measures the suffix through the same `render_slot_suffix` the row renders through, so a client label is asked for its own output in both passes.
 
 ## Single writer and per-frame sync
 
-Every frame has exactly one writer. `run_frame()` (`frame.rs::run_frame`) does, in order: absorb a resize bookkeeping-only (`maybe_adjust_for_resize` — no restyle, no write), `build_plan` (which calls `settle_layout` for the width budget and builds one `PlanRow` per slot), emit the debug snapshot, render the plan to strings, then one `write_frame` through the gate's term. The facts that follow:
+Every frame has exactly one writer. `run_frame()` (frame.rs:117) does, in order: absorb a resize bookkeeping-only (`maybe_adjust_for_resize` — no restyle, no write), `build_plan` (which calls `settle_layout` for the width budget and builds one `PlanRow` per slot), emit the debug snapshot, render the plan to strings, then one `write_frame` through the gate's term. The facts that follow:
 
 - **Every bound slot syncs every frame**: there is no change-detection layer at the snapshot level. `sync_snapshot_to_slot` re-records position, timing strings, status and style key every frame — it is what retained rows and blank decisions read. An event that only moves the clock (an elapsed string growing, a rate or ETA changing length) is re-derived on the same frame it happens; nothing needs a "declare your change" call.
 - **The writer diffs frames per row**: `write_frame` repaints only rows that differ from the previous frame (skipping a write entirely when the frames are equal), so per-frame re-recording does not translate into per-row terminal writes. A resize forces a full repaint (`force = true` bypasses only the equality short-circuit).
@@ -178,7 +178,7 @@ Carries workflow, step and tool identity, plus a version and a tally. Production
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. This is the label the coordinator creates a bar for, one per pool member (`src/mediapm-conductor/src/orchestration/coordinator.rs::run_workflow`), and re-labels through `set_truncation` on every dispatch and every step outcome.
+Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. This is the label the coordinator creates a bar for, one per pool member (`src/mediapm-conductor/src/orchestration/coordinator.rs:351`), and re-labels through `set_truncation` on every dispatch and every step outcome.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -202,7 +202,7 @@ Carries file-path identity and phase. No version, no count/total, no workflow/st
 | `file_name` | Extracted file basename (sub-bars only) | `"cover.jpg"` |
 | `phase` | Phase this row is on, as `Option<MaterializationPhase>`; absent renders no tag | `Some(Staging)` |
 
-**Suffix:** the auto-derived timing, in the same order `WorkerBarLabel` uses (`src/mediapm/src/materializer/progress_labels.rs::MaterializationBarLabel::suffix_segments`). `truncate_suffix` fits `elapsed`, `rate` and `eta` through `fit_segments` and has to read them out of the merged `SuffixComponents` to do it: the client path replaces a bar's suffix with what this method returns rather than adding to it, so a label that returns an empty string takes elapsed, rate and eta off the screen rather than narrowing them.
+**Suffix:** the auto-derived timing, in the same order `WorkerBarLabel` uses (`src/mediapm/src/materializer/progress_labels.rs:109`). `truncate_suffix` fits `elapsed`, `rate` and `eta` through `fit_segments` and has to read them out of the merged `SuffixComponents` to do it: the client path replaces a bar's suffix with what this method returns rather than adding to it, so a label that returns an empty string takes elapsed, rate and eta off the screen rather than narrowing them.
 
 ### Why the structs are separate
 
@@ -226,21 +226,21 @@ The built-in path is used by Screen A (tool-sync) bars, which do not install `Ba
 
 Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases are shortened from longer names (`resolve` → `res`, `fetch` → `fch`, `process` → `pro`, `prune` → `prn`).
 
-- **Bar label** is `{tool_id} {version} [{phase}]`, space-separated (`src/mediapm/src/conductor_bridge/sync/provision.rs::fetch_and_import_tool_payload`). A tool reporting no human-readable version drops the version and the space, so the label is `media-tagger [fch]`.
-- **Resolve bar** totals `metadata_fetch_count` (`provision.rs::fetch_and_import_tool_payload`), which is 5 for ffmpeg (the BtbN autobuild tag, the martin-riedl macOS-leg probe, and three jellyfin fallback reads: the repo index plus one pointer file per macOS arch) and 1 for every other tool. It is a lookup count, never a byte total or a percentage. `resolve_tool_fetch_ffmpeg_leaves_version_and_vcs_hash_none` asserts the number against a fully seeded cache, so a new lookup fails the suite rather than silently making this line wrong.
+- **Bar label** is `{tool_id} {version} [{phase}]`, space-separated (`src/mediapm/src/conductor_bridge/sync/provision.rs:144` and `:213`). A tool reporting no human-readable version drops the version and the space, so the label is `media-tagger [fch]`.
+- **Resolve bar** totals `metadata_fetch_count` (`provision.rs:227`), which is 5 for ffmpeg (the BtbN autobuild tag, the martin-riedl macOS-leg probe, and three jellyfin fallback reads: the repo index plus one pointer file per macOS arch) and 1 for every other tool. It is a lookup count, never a byte total or a percentage. `resolve_tool_fetch_ffmpeg_leaves_version_and_vcs_hash_none` asserts the number against a fully seeded cache, so a new lookup fails the suite rather than silently making this line wrong.
 - **Resolve bar** shows `N cached` status list via `SuffixComponents::status_list`.
 - **Skip bar** shows `skipped, N cached` status list (when cached) vs `skipped` (when not cached).
-- **Byte columns** render through `format_count` (`src/mediapm-utils/src/progress/inner/components.rs::format_count`), which is decimal: 31 457 280 bytes reads `31M`, not `29.9MiB`.
+- **Byte columns** render through `format_count` (`src/mediapm-utils/src/progress/inner/components.rs:202`), which is decimal: 31 457 280 bytes reads `31M`, not `29.9MiB`.
 - **Prune bar** (`[prn]`) uses the `tools.len()` call before the `retain` block to count prune candidates and sets the total to that count. Zero-bar guard: `[prn]` bar is not created when there are no candidates. The bar advances once per document-rewrite removal, then once more for filesystem prune.
 - Overall bar renders in `RenderStyle::Overall` (magenta); child bars in `RenderStyle::Active` (yellow).
 
 ### Screen B: Workflow (`src/mediapm-conductor/src/orchestration/`)
 
-No row on this screen carries a phase tag. The seeds are `running workflows` for the overall bar — set by each screen owner, `src/mediapm/src/service.rs` for the library sync and `src/mediapm-conductor/src/cli.rs` for the conductor CLI — and `idle` for every worker slot (`coordinator.rs::run_workflow`). The overall bar's seed is never replaced — the coordinator installs no label on that row — while each worker slot is replaced by a client label as soon as the bar has one.
+No row on this screen carries a phase tag. The seeds are `running workflows` for the overall bar — set by each screen owner, `src/mediapm/src/service.rs` for the library sync and `src/mediapm-conductor/src/cli.rs` for the conductor CLI — and `idle` for every worker slot (`coordinator.rs:351`). The overall bar's seed is never replaced — the coordinator installs no label on that row — while each worker slot is replaced by a client label as soon as the bar has one.
 
 The overall row installs no label at all: its prefix is the static seed `running workflows`, and its progress comes from the built-in position/total, the run's status-list suffix (`N cached, M failed, K retried`), and the bar's terminal status, which still renders the built-in `[W]`/`[F]` marker. Worker slots use `WorkerBarLabel`, which ranks `status_marker`, `workflow_id`, `step_id`, `tool`, `activity` and leaves `tool` the only elastic segment, so a running slot reads `default s5 (echo) [active]` wherever the terminal has room for it. `fit_segments` walks from the tail, so a narrow row gives up the `[active]` tag and then the tool name and keeps the identifiers. The seed does not cap the slot: the label is measured from what the row draws, so a row keeps its names at widths where the four-column seed would have clipped them.
 
-Worker-slot states (`worker_slot_label` in `coordinator.rs::worker_slot_label`):
+Worker-slot states (`worker_slot_label` in `coordinator.rs:200`):
 
 | State | `workflow_id` | `step_id` | `tool` | `activity` | `status_marker` |
 |-------|---------------|-----------|--------|------------|------------------|
@@ -372,9 +372,9 @@ Each example's test walks its own fixture directory and compares what the screen
 
 ## Pre-roll, gap conversion, finalize
 
-- **Pre-roll**: owned by `ProgressTerminal` (`pre_roll_if_needed`, `terminal.rs::pre_roll_if_needed`): once per terminal, before the first screen's first frame, it writes blank lines to scroll existing terminal content into scrollback, then repositions the cursor. Only fires when `pre_roll_term` is `Some` (not in test mode).
+- **Pre-roll**: owned by `ProgressTerminal` (`pre_roll_if_needed`, terminal.rs:82): once per terminal, before the first screen's first frame, it writes blank lines to scroll existing terminal content into scrollback, then repositions the cursor. Only fires when `pre_roll_term` is `Some` (not in test mode).
 - **Gap conversion**: inactive or finished rows render where the frame has room for a fill. Idle workers are explicitly finished (via `finish_success`), which is what a `Done`-styled row shows. Below the fill crossing the frame draws no bar, so an idle worker reads `[idle]` and its timing on its own.
-- **Finalize**: `group.join()` runs `finalize` (`renderer.rs::finalize`): blank reserved slots are removed from the plan, and one last full-fill frame is written so only finished bars persist in scrollback. A screen whose frames were all blank writes nothing at all (`blank_first_frame` in `frame.rs::blank_first_frame` — a never-drawn screen owes no frame).
+- **Finalize**: `group.join()` runs `finalize` (renderer.rs:848): blank reserved slots are removed from the plan, and one last full-fill frame is written so only finished bars persist in scrollback. A screen whose frames were all blank writes nothing at all (`blank_first_frame` in frame.rs:144 — a never-drawn screen owes no frame).
 
 ## Authoritative tests
 
