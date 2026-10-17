@@ -1,8 +1,8 @@
-//! Tests for the terminal-owned draw target (Task 1).
+//! Tests for the terminal-owned frame writer (Task 1).
 //!
-//! A screen created from a [`ProgressTerminal`] must draw through that
-//! terminal's own draw target, gate, and debug sink, and pre-roll must fire
-//! exactly once per terminal no matter how many screens a sync creates.
+//! A screen created from a [`ProgressTerminal`] must write its frames into
+//! that terminal's gate-paired term, and pre-roll must fire exactly once per
+//! terminal no matter how many screens a sync creates.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -51,22 +51,18 @@ impl Write for SharedVec {
 /// The dimension source is pinned to the terminal size so layout and resize
 /// decisions match the captured frames, and `capacity` is the number of slots
 /// the screen reserves.  `capacity` must not exceed [`ROWS`] (see the module
-/// constants): a screen's frame is one line per reserved slot, and indicatif
-/// stops printing bars once the cumulative height would exceed the terminal
-/// height (`draw_target.rs`, "Stop here if printing this bar would exceed the
-/// terminal height").
+/// constants): a screen's frame is one line per reserved slot, and rows past
+/// the grid's own height scroll out of the captured content.
 fn terminal_with_term(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal {
-    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
-    // Pre-roll must be captured, not written to fd 2: `with_multi_progress`
-    // leaves the builder default (`console::Term::stderr()`), so without this
-    // every `screen().build()` below would emit ten newlines and cursor moves
+    // Pre-roll must be captured, not written to fd 2: the builder default
+    // (`console::Term::stderr()`) would emit ten newlines and cursor moves
     // straight past libtest's capture.  A dedicated terminal also keeps those
     // newlines out of the `contents()` assertions, which read `term` — the
-    // draw target — not this capture.
+    // gate-paired write target — not this capture.
     let pre_roll_capture = InMemoryTerm::new(ROWS, COLS);
     ProgressTerminal::builder()
-        .with_multi_progress(MultiProgress::with_draw_target(target))
+        .with_term_like(Box::new(term.clone()))
         .with_pre_roll_capture(Box::new(pre_roll_capture))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .capacity(capacity)
