@@ -114,12 +114,13 @@ async fn prune_bar_reaches_the_display() {
     };
     save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
-    // The caller-owned screen, drawing into a captured grid.
+    // The caller-owned screen, drawing into a captured grid. The gate is
+    // paired with the very `InMemoryTerm` the assertions read (`with_term_like`),
+    // so the writer's frames land in it.
     let term = indicatif::InMemoryTerm::new(24, 80);
-    let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
     let dims = Arc::new(TestDimensionSource::new((24, 80)));
     let terminal = ProgressTerminal::builder()
-        .with_multi_progress(indicatif::MultiProgress::with_draw_target(target))
+        .with_term_like(Box::new(term.clone()))
         .with_dim_source(dims as Arc<dyn DimensionSource>)
         .with_pre_roll_capture(Box::new(indicatif::InMemoryTerm::new(24, 80)))
         .with_ticker_enabled(false)

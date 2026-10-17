@@ -15,52 +15,58 @@ pub use mediapm_utils::progress::{
 mod tests {
     use std::sync::Arc;
 
-    use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
+    use indicatif::InMemoryTerm;
     use mediapm_utils::progress::{ProgressTerminalBuilder, TimeSource};
 
     use super::*;
 
-    fn mk_elapsed() -> (MultiProgress, InMemoryTerm, Arc<TestTimeSource>) {
-        let term = InMemoryTerm::new(24, 80);
-        let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-        let ts = Arc::new(TestTimeSource::new());
-        (MultiProgress::with_draw_target(target), term, ts)
+    /// An in-memory grid paired with the time source these elapsed tests drive.
+    fn mk_elapsed() -> (InMemoryTerm, Arc<TestTimeSource>) {
+        (InMemoryTerm::new(24, 80), Arc::new(TestTimeSource::new()))
     }
 
-    fn mk_resize(h: u16, w: u16) -> (MultiProgress, InMemoryTerm) {
-        let term = InMemoryTerm::new(h, w);
-        let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-        (MultiProgress::with_draw_target(target), term)
+    /// A fresh in-memory grid of the requested size for the resize tests.
+    fn mk_resize(h: u16, w: u16) -> InMemoryTerm {
+        InMemoryTerm::new(h, w)
     }
 
-    /// A terminal builder drawing into `mp`, with pre-roll captured.
+    /// A terminal builder whose gate is paired with `term`, the grid the test
+    /// reads back, with pre-roll captured.
     ///
     /// The capture keeps the terminal's one-shot pre-roll (one blank line per
-    /// terminal row) off fd 2 and out of the draw target these tests read.
-    /// An overall bar belongs to the *screen*: only
-    /// `terminal.screen().with_overall()` registers the bottom slot.
-    fn mk_terminal(mp: MultiProgress) -> ProgressTerminalBuilder {
+    /// terminal row) off fd 2 and out of that grid. An overall bar belongs to
+    /// the *screen*: only `terminal.screen().with_overall()` registers the
+    /// bottom slot.
+    fn mk_terminal(term: &InMemoryTerm) -> ProgressTerminalBuilder {
         ProgressTerminal::builder()
-            .with_multi_progress(mp)
+            .with_term_like(Box::new(term.clone()))
             .with_pre_roll_capture(Box::new(InMemoryTerm::new(24, 80)))
     }
 
     #[test]
     fn consumer_child_bar_elapsed_starts_at_zero() {
-        let (mp, term, ts) = mk_elapsed();
-        let terminal =
-            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let (term, ts) = mk_elapsed();
+        let terminal = mk_terminal(&term)
+            .capacity(4)
+            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+            .build();
         let group = terminal.screen().build();
         let _ = group.add_bar(5, "tool-a");
+        // The single writer paints on a frame and `tick` commits one: `add_bar`
+        // alone leaves the grid empty (the deleted bar path painted on
+        // creation). The elapsed string itself is unchanged — it starts at 0.
+        group.tick();
         let contents = term.contents();
         assert!(contents.contains("0s"), "elapsed must start at 0, got:\n{contents}");
     }
 
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish() {
-        let (mp, term, ts) = mk_elapsed();
-        let terminal =
-            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let (term, ts) = mk_elapsed();
+        let terminal = mk_terminal(&term)
+            .capacity(4)
+            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+            .build();
         let group = terminal.screen().build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(5);
@@ -73,9 +79,11 @@ mod tests {
 
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_success() {
-        let (mp, term, ts) = mk_elapsed();
-        let terminal =
-            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let (term, ts) = mk_elapsed();
+        let terminal = mk_terminal(&term)
+            .capacity(4)
+            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+            .build();
         let group = terminal.screen().build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(5);
@@ -91,13 +99,18 @@ mod tests {
 
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_error() {
-        let (mp, term, ts) = mk_elapsed();
-        let terminal =
-            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let (term, ts) = mk_elapsed();
+        let terminal = mk_terminal(&term)
+            .capacity(4)
+            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+            .build();
         let group = terminal.screen().build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(2);
         child.finish_error();
+        // The single writer paints on a frame; `tick` commits one (the
+        // deleted bar path repainted on finish_error directly).
+        group.tick();
         let contents = term.contents();
         assert!(
             contents.contains("0s"),
@@ -107,13 +120,18 @@ mod tests {
 
     #[test]
     fn consumer_child_bar_elapsed_frozen_after_finish_error_alt() {
-        let (mp, term, ts) = mk_elapsed();
-        let terminal =
-            mk_terminal(mp).capacity(4).with_time_source(ts.clone() as Arc<dyn TimeSource>).build();
+        let (term, ts) = mk_elapsed();
+        let terminal = mk_terminal(&term)
+            .capacity(4)
+            .with_time_source(ts.clone() as Arc<dyn TimeSource>)
+            .build();
         let group = terminal.screen().build();
         let child = group.add_bar(5, "tool-a");
         child.set_position(3);
         child.finish_error();
+        // The single writer paints on a frame; `tick` commits one (the
+        // deleted bar path repainted on finish_error directly).
+        group.tick();
         let contents = term.contents();
         assert!(
             contents.contains("0s"),
@@ -124,8 +142,8 @@ mod tests {
     #[test]
     fn sync_hierarchy_height_change() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
-        let (mp, term) = mk_resize(6, 80);
-        let terminal = mk_terminal(mp)
+        let term = mk_resize(6, 80);
+        let terminal = mk_terminal(&term)
             .capacity(4)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
             .dynamic_height(true)
@@ -152,14 +170,17 @@ mod tests {
     #[test]
     fn reconcile_desired_tools_width_change() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
-        let (mp, term) = mk_resize(4, 80);
-        let terminal = mk_terminal(mp)
+        let term = mk_resize(4, 80);
+        let terminal = mk_terminal(&term)
             // 3 child slots; the overall bar adds a fourth.
             .capacity(3)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
             .dynamic_height(false)
             .build();
         let (group, _overall) = terminal.screen().with_overall("syncing tools", 5).build();
+        // The single writer paints on a frame; `tick` commits the first one
+        // (the deleted bar path painted the overall row on screen build).
+        group.tick();
         let contents_wide = term.contents();
         assert!(contents_wide.contains("syncing tools"), "overall visible");
 
@@ -170,17 +191,24 @@ mod tests {
             contents_narrow.contains("syncing tools"),
             "overall still visible after width resize"
         );
-        assert_ne!(
+        // The dimension source's COLUMNS are inert for the drawn width: the
+        // frame is measured at the write target's own width, pinned by
+        // `dimension_source_columns_do_not_change_the_frame` in the utils
+        // suite (a pinned ruling, not a regression). So the row keeps its
+        // 80-column measurement across the dims change — what this pins at
+        // the integration level is that reconcile's overall row survives a
+        // width-resize signal undisturbed.
+        assert_eq!(
             contents_wide, contents_narrow,
-            "output changes when width narrows (different bar templates)"
+            "a dim-source width change must not disturb the drawn overall row"
         );
     }
 
     #[test]
     fn sync_hierarchy_complex_resize_scenario() {
         let dims = Arc::new(TestDimensionSource::new((4, 80)));
-        let (mp, term) = mk_resize(6, 80);
-        let terminal = mk_terminal(mp)
+        let term = mk_resize(6, 80);
+        let terminal = mk_terminal(&term)
             .capacity(4)
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
             .dynamic_height(true)

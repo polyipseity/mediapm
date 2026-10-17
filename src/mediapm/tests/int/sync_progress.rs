@@ -11,7 +11,7 @@
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
+    use indicatif::InMemoryTerm;
     use mediapm::{
         MediaRuntimeStorage, SyncLibraryOptions, SyncPhaseObserver, SyncPhaseReport,
         SyncProgressOverrides,
@@ -70,9 +70,7 @@ mod tests {
         let term = InMemoryTerm::new(ROWS, COLS);
         let dims = Arc::new(TestDimensionSource::new((ROWS, COLS)));
         let terminal = ProgressTerminal::builder()
-            .with_multi_progress(MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
-                Box::new(term.clone()),
-            )))
+            .with_term_like(Box::new(term.clone()))
             .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
             .with_pre_roll_capture(Box::new(InMemoryTerm::new(ROWS, COLS)))
             .with_ticker_enabled(false)

@@ -1436,7 +1436,7 @@ impl MediaPmService<InMemoryCas> {
 
 #[cfg(test)]
 mod tests {
-    use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
+    use indicatif::InMemoryTerm;
 
     use super::*;
 
@@ -1468,12 +1468,11 @@ mod tests {
     /// would silently suppress every sync.
     #[test]
     fn injected_terminal_is_used_as_given() {
-        // A live but silent terminal: its frames go to an in-memory grid and
-        // its pre-roll to a capture, so the test never writes to fd 2.
+        // A live but silent terminal: its frames go to an in-memory grid
+        // paired with the gate (`with_term_like`) and its pre-roll to a
+        // capture, so the test never writes to fd 2.
         let injected = ProgressTerminal::builder()
-            .with_multi_progress(MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
-                Box::new(InMemoryTerm::new(4, 80)),
-            )))
+            .with_term_like(Box::new(InMemoryTerm::new(4, 80)))
             .with_ticker_enabled(false)
             .with_pre_roll_capture(Box::new(InMemoryTerm::new(1, 1)))
             .build();

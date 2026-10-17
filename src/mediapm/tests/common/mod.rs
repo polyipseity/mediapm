@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget};
+use indicatif::InMemoryTerm;
 use mediapm::{MediaPmService, MediaRuntimeStorage};
 use mediapm_cas::CasApi;
 use mediapm_conductor::{NickelDocument, decode_document};
@@ -19,19 +19,19 @@ const TEST_TERM_COLS: u16 = 80;
 
 /// Builds a live [`ProgressTerminal`] whose draw target is an in-memory grid.
 ///
-/// The default build targets the process's real stderr, so a test that lets a
-/// sync open its own terminal paints progress frames into the test log. This
-/// terminal keeps the production draw path — write gate, layout, style, join —
-/// but routes every byte into an [`InMemoryTerm`] the caller can inspect or
-/// drop. Pre-roll capture is given a second in-memory term because the default
-/// swaps only the pre-roll term and would still write to stderr.
+/// The default build pairs its gate with the process's real stderr, so a test
+/// that lets a sync open its own terminal paints progress frames into the test
+/// log. This terminal keeps the production draw path — gate, plan, write,
+/// commit — but pairs the gate with an [`InMemoryTerm`] nothing reads, so the
+/// run stays silent. A test that asserts frame CONTENTS builds its own
+/// terminal with `with_term_like` over a grid it keeps a clone of. Pre-roll
+/// capture is given a second in-memory term because the default keeps the
+/// pre-roll term on stderr.
 pub(crate) fn test_progress_terminal() -> ProgressTerminal {
     let grid = InMemoryTerm::new(TEST_TERM_ROWS, TEST_TERM_COLS);
     let dims = Arc::new(TestDimensionSource::new((TEST_TERM_ROWS, TEST_TERM_COLS)));
     ProgressTerminal::builder()
-        .with_multi_progress(MultiProgress::with_draw_target(ProgressDrawTarget::term_like(
-            Box::new(grid),
-        )))
+        .with_term_like(Box::new(grid))
         .with_dim_source(Arc::clone(&dims) as Arc<dyn DimensionSource>)
         .with_pre_roll_capture(Box::new(InMemoryTerm::new(TEST_TERM_ROWS, TEST_TERM_COLS)))
         .with_ticker_enabled(false)
