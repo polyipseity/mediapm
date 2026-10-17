@@ -1,7 +1,7 @@
 use super::super::inner::*;
 use super::*;
 
-// ---- Phase 4: BufferedTerm / per-frame sync tests ---------------------
+// ---- Per-frame sync tests ---------------------------------------------------
 
 #[test]
 fn multiple_mutations_before_tick_single_draw() {
@@ -371,7 +371,7 @@ fn sync_slot_preserves_custom_suffix_on_attach() {
     //
     // Without the fix, sync_slot overwrites the suffix with only the
     // auto-computed RHS, dropping the custom part.  With the fix,
-    // sync_slot delegates to sync_snapshot_to_bar which appends the
+    // sync_slot delegates to sync_snapshot_to_slot which appends the
     // custom suffix.
     //
     // Bar A is kept ACTIVE (not finished) so a terminal row's finish path

@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 
 use super::TrackStatus;
@@ -384,10 +383,10 @@ pub struct SuffixComponents {
 impl SuffixComponents {
     /// Merge user-set components over auto-derived ticker fields.
     ///
-    /// Single implementation shared by the draw path
-    /// ([`crate::progress::inner::ProgressRenderer::sync_snapshot_to_bar`])
+    /// Single implementation shared by the slot cache sync
+    /// ([`crate::progress::inner::ProgressRenderer::sync_snapshot_to_slot`])
     /// and the layout estimator
-    /// ([`crate::progress::inner::ProgressRenderer::recompute_layout`]) so the
+    /// ([`crate::progress::inner::ProgressRenderer::settle_layout`]) so the
     /// width estimate matches what actually draws — otherwise a wider
     /// user-set `rate`/`eta`/`custom` would overflow the reserved `suffix_w`
     /// and get truncated away at draw time.
@@ -587,8 +586,9 @@ pub(crate) fn visible_width(s: &str) -> usize {
 
 /// Minimum reserved prefix width (decreasable floor). The floor is 0 — under
 /// terminal pressure the prefix shrinks before the bar fill is dropped. The
-/// *effective* prefix floor is ~4 because the leading `\x1b[0m` reset is
-/// counted as visible width by `indicatif`.
+/// *effective* prefix floor is ~4 because the built-in prefix carries a
+/// leading `\x1b[0m` reset that `compute_ansi_overhead` reserves out of the
+/// slot.
 pub(crate) const MIN_PREFIX_WIDTH: usize = 0;
 /// Maximum reserved prefix width (hard ceiling). Beyond this, prefixes are
 /// truncated by `semantic_truncate_prefix`.
@@ -600,29 +600,29 @@ pub(crate) const MIN_SUFFIX_WIDTH: usize = 0;
 pub(crate) const MAX_SUFFIX_WIDTH: usize = 65;
 
 /// Columns a frame spends outside its label fields: the spinner glyph and the
-/// single spaces between `{spinner}`, `{prefix}`, `{wide_bar}` and `{msg}`.
+/// single spaces between the spinner, the prefix, the fill and the message.
 ///
-/// Every template built in this module lays the line out as those four fields,
-/// so this is the width no label can have at any terminal size.
+/// Every frame lays its line out as those four fields, so this is the width
+/// no label can have at any terminal size.
 pub(crate) const FRAME_OVERHEAD_COLUMNS: usize = 4;
 
 /// Column a frame's spinner glyph occupies.
 ///
-/// [`frame_template`] writes `{spinner}` as its first field, before the spaces
-/// and the label slots that make up [`FRAME_OVERHEAD_COLUMNS`], so the glyph is
-/// the first character of the row. Code that has to find the spinner on a
-/// rendered frame reads this constant rather than counting a column itself, so
-/// a template that reorders its fields moves the answer with it.
+/// A frame writes its spinner as its first field, before the spaces and the
+/// label slots that make up [`FRAME_OVERHEAD_COLUMNS`], so the glyph is the
+/// first character of the row. Code that has to find the spinner on a
+/// rendered frame reads this constant rather than counting a column itself,
+/// so a frame that reorders its fields moves the answer with it.
 pub(crate) const SPINNER_COLUMN: usize = 0;
 
-/// Glyphs every production bar style cycles its spinner through.
+/// Glyphs every live row cycles its spinner through.
 ///
-/// [`bar_style`] hands this to `ProgressStyle::tick_chars`, which turns the
-/// string into one tick string per character. `indicatif` then indexes that list
-/// with `tick % (len - 1)`, so with these ten characters the first nine cycle
-/// and the tenth is the string a finished bar draws. Both kinds are reachable on
-/// a real screen, which is why the whole list is what a comparison has to
-/// accept and why nine would be the wrong size.
+/// The plan's spinner cycles this string with `spinner_index % len`, so with
+/// these ten characters every glyph is reachable on a live row. Which glyph a
+/// frame lands on is a function of timing, which is why
+/// [`assert_frames_match`](crate::progress::assert_frames_match) exempts the
+/// spinner column and why the whole list — not a nine-glyph slice — is what a
+/// comparison has to accept.
 pub(crate) const TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /// The spinner-column character a parked row draws (spec R3/AC2).
@@ -646,7 +646,7 @@ pub(crate) const PARKED_GLYPH: char = '·';
 /// labels stop overflowing the line, and grows by one cell per column above
 /// it. Four cells of `░░░░` carry a fixed quarter-resolution fraction that the
 /// count in the suffix already states, and they are paid for out of a label
-/// clipped down to its tail. `ProgressRenderer::recompute_layout` drops the fill at
+/// clipped down to its tail. `ProgressRenderer::settle_layout` drops the fill at
 /// that point and hands the columns to the label and the count instead.
 pub(crate) const MIN_BAR_FILL: usize = 4;
 
@@ -655,7 +655,7 @@ pub(crate) const MIN_BAR_FILL: usize = 4;
 /// Alignment follows the widest label on screen, so the ceiling is what stops
 /// one long label from taking the whole line, and `cols` is what stops the
 /// ceiling from being wider than the line.
-/// [`ProgressRenderer::recompute_layout`](super::ProgressRenderer::recompute_layout)
+/// [`ProgressRenderer::settle_layout`](super::ProgressRenderer::settle_layout)
 /// applies the per-frame budget on top of this.
 pub(crate) fn max_prefix_width(cols: u16) -> usize {
     usize::from(cols).min(MAX_PREFIX_WIDTH)
@@ -846,125 +846,6 @@ pub(crate) fn semantic_truncate_suffix(
     out
 }
 
-/// Build the template for one frame, with or without the fill.
-///
-/// Every style lays the line out as `{spinner} {prefix} {wide_bar} {msg}`, so a
-/// frame that drops the fill is the same four-field layout with the third field
-/// and the space in front of it removed: `{spinner} {prefix} {msg}`. The space
-/// in front of `{msg}` stays, which is why the message carries its own leading
-/// space in [`render_suffix_components`].
-///
-/// `spinner` and `fill` are the two `{spinner}` and `{wide_bar}` style
-/// specifiers, so each caller keeps its own colours and only chooses whether to
-/// draw a fill at all.
-///
-/// Field widths are single-number on purpose. indicatif parses a second number
-/// after the dot as a *style*, and console's numeric fallback turns it into
-/// `\x1b[38;5;{width}m` — a colour derived from the slot's own width, so a
-/// suffix of 18 columns renders xterm-blue and one of 16 renders black. Only
-/// the named specifiers above may colour a field. Padding is all the template
-/// owes the layout: every prefix and suffix string is pre-truncated to its
-/// slot by [`semantic_truncate_prefix`], [`semantic_truncate_suffix`], or the
-/// client's own truncation, so indicatif's slice path is never reached.
-fn frame_template(
-    spinner: &str,
-    fill: &str,
-    prefix_w: usize,
-    suffix_w: usize,
-    draw_fill: bool,
-) -> String {
-    if draw_fill {
-        format!(
-            "{{spinner:{spinner}}} {{prefix:>{prefix_w}}} {{wide_bar:0.{fill}}} {{msg:<{suffix_w}}}"
-        )
-    } else {
-        format!("{{spinner:{spinner}}} {{prefix:>{prefix_w}}} {{msg:<{suffix_w}}}")
-    }
-}
-
-/// Build a bar style from one frame template.
-///
-/// Every production style fills with `█` for the done part and `░` for the rest,
-/// and cycles the same braille spinner, so those two choices live here rather
-/// than in each caller.
-fn bar_style(tpl: &str) -> ProgressStyle {
-    ProgressStyle::with_template(tpl)
-        .expect("valid dynamic bar template")
-        .progress_chars("█░")
-        .tick_chars(TICK_CHARS)
-}
-
-/// Apply the overall aggregate bar's style.
-///
-/// `draw_fill` is `false` on a frame narrow enough that the fill would sit at
-/// [`MIN_BAR_FILL`]; `ProgressRenderer::recompute_layout` is where that is
-/// decided.
-pub(crate) fn apply_overall_bar_style(
-    pb: &ProgressBar,
-    prefix_w: usize,
-    suffix_w: usize,
-    draw_fill: bool,
-) {
-    pb.set_style(bar_style(&frame_template(
-        ".green",
-        "magenta/dim",
-        prefix_w,
-        suffix_w,
-        draw_fill,
-    )));
-}
-
-/// Apply an in-progress child bar's style. See [`apply_overall_bar_style`] for
-/// what `draw_fill` means.
-pub(crate) fn apply_bar_style(pb: &ProgressBar, prefix_w: usize, suffix_w: usize, draw_fill: bool) {
-    pb.set_style(bar_style(&frame_template(".green", "yellow/dim", prefix_w, suffix_w, draw_fill)));
-}
-
-/// Apply a finished bar's style. See [`apply_overall_bar_style`] for what
-/// `draw_fill` means.
-pub(crate) fn apply_done_bar_style(
-    pb: &ProgressBar,
-    prefix_w: usize,
-    suffix_w: usize,
-    draw_fill: bool,
-) {
-    pb.set_style(bar_style(&frame_template(
-        ".white/.dim",
-        "green/dim",
-        prefix_w,
-        suffix_w,
-        draw_fill,
-    )));
-}
-
-/// Apply a failed bar's style. See [`apply_overall_bar_style`] for what
-/// `draw_fill` means.
-pub(crate) fn apply_failed_bar_style(
-    pb: &ProgressBar,
-    prefix_w: usize,
-    suffix_w: usize,
-    draw_fill: bool,
-) {
-    pb.set_style(bar_style(&frame_template(".red", "red/dim", prefix_w, suffix_w, draw_fill)));
-}
-
-/// The style for a slot that has never held content: one dynamic field that
-/// stretches the message to the terminal width, so the row renders as blank
-/// spaces with no spinner and no fill.
-///
-/// Deliberately NOT the frame template: `frame_template` carries `{spinner}`
-/// and `{wide_bar}`, and a blank row drawing either is the observed desync
-/// class — a glyph or a fill on a row that must read as empty. A fixed-width
-/// no-spinner shape was considered and rejected: an unbound slot keeps its
-/// last drawn content (the retention contract) and is not re-styled while it
-/// holds it, so padding computed from a settled width could outlive a
-/// terminal shrink and spill onto the row below, which is the row-wrap defect
-/// class the sweep tests pin. The rendered pixels are the same either way —
-/// an empty line — and `{wide_msg}` follows the terminal width for free.
-pub(crate) fn blank_bar_style() -> ProgressStyle {
-    ProgressStyle::with_template("{wide_msg}").expect("invalid blank bar template")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1014,42 +895,6 @@ mod tests {
         assert!(s.elapsed.is_empty());
         assert!(s.rate.is_none());
         assert!(s.eta.is_none());
-    }
-
-    /// The frame template must carry exactly one width per field.
-    ///
-    /// Guards the reported "blue suffix" defect: indicatif parses a second
-    /// width after the dot as a style, and console's numeric fallback turns
-    /// it into `\x1b[38;5;{width}m` — a suffix slot of width 18 renders
-    /// xterm-blue. Only the explicitly named styles (`.green`,
-    /// `magenta/dim`, …) may colour a field, so these exact strings pin
-    /// every shape `recompute_layout` can build.
-    #[test]
-    fn frame_template_emits_single_width_fields() {
-        assert_eq!(
-            frame_template(".green", "magenta/dim", 12, 18, true),
-            "{spinner:.green} {prefix:>12} {wide_bar:0.magenta/dim} {msg:<18}"
-        );
-        assert_eq!(
-            frame_template(".green", "magenta/dim", 12, 18, false),
-            "{spinner:.green} {prefix:>12} {msg:<18}"
-        );
-        assert_eq!(
-            frame_template(".green", "yellow/dim", 40, 65, true),
-            "{spinner:.green} {prefix:>40} {wide_bar:0.yellow/dim} {msg:<65}"
-        );
-        assert_eq!(
-            frame_template(".white/.dim", "green/dim", 0, 0, true),
-            "{spinner:.white/.dim} {prefix:>0} {wide_bar:0.green/dim} {msg:<0}"
-        );
-        assert_eq!(
-            frame_template(".red", "red/dim", 7, 9, true),
-            "{spinner:.red} {prefix:>7} {wide_bar:0.red/dim} {msg:<9}"
-        );
-        assert_eq!(
-            frame_template(".red", "red/dim", 7, 9, false),
-            "{spinner:.red} {prefix:>7} {msg:<9}"
-        );
     }
 
     /// The suffix component renderer may only emit the intended count/total

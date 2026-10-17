@@ -31,8 +31,7 @@ pub use terminal::{ProgressScreen, ProgressTerminal, ProgressTerminalBuilder};
 
 pub(crate) use debug::detect_progress_debug_env;
 // `renderer.rs` names `WriteGate` through the `super::WriteGate` path, so it is
-// re-exported here. `BufferedTerm` and `WriteWindow` have no such consumer:
-// `terminal.rs` reaches them through the `gate` module directly.
+// re-exported here.
 pub(crate) use gate::WriteGate;
 // `strip_ansi`/`visible_width` are re-exported so `progress::tests` can reach
 // them via the `super::inner::strip_ansi` path (the `components` submodule is
@@ -41,10 +40,9 @@ pub(crate) use gate::WriteGate;
 #[allow(unused_imports)]
 pub(crate) use components::{
     FRAME_OVERHEAD_COLUMNS, MAX_PREFIX_WIDTH, MAX_SLOTS, MAX_SUFFIX_WIDTH, MIN_BAR_FILL,
-    MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH, PARKED_GLYPH, SPINNER_COLUMN, TICK_CHARS, apply_bar_style,
-    apply_done_bar_style, apply_failed_bar_style, apply_overall_bar_style, bar_color_code,
-    blank_bar_style, close_sgr_state, format_count, format_elapsed, format_eta, format_rate,
-    max_prefix_width, max_suffix_width, prefix_components_from_str, render_prefix_components,
+    MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH, PARKED_GLYPH, SPINNER_COLUMN, TICK_CHARS, bar_color_code,
+    close_sgr_state, format_count, format_elapsed, format_eta, format_rate, max_prefix_width,
+    max_suffix_width, prefix_components_from_str, render_prefix_components,
     render_suffix_components, semantic_truncate_prefix, semantic_truncate_suffix, strip_ansi,
     visible_width,
 };

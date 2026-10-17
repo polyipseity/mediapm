@@ -753,7 +753,7 @@ fn recycled_bar_spinner_animates() {
     let bar1 = bar("resolve", 1);
     bar1.finish_success();
 
-    // Tick to trigger finish_slot → bar.finish() → DoneVisible.
+    // Tick to give the finished bar its terminal row in the frame.
     ts.advance(std::time::Duration::from_millis(50));
     group.tick();
 

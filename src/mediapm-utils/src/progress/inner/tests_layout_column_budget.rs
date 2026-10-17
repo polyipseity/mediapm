@@ -1,34 +1,23 @@
-//! How `recompute_layout` spends terminal columns: the cross-bar prefix width, and the ceiling that clamps it.
+//! How `settle_layout` spends terminal columns: the cross-bar prefix width, and the ceiling that clamps it.
 
 use super::*;
 use crate::progress::TestDimensionSource;
 use crate::progress::TestTimeSource;
 use crate::progress::inner::components::MAX_PREFIX_WIDTH;
 use crate::progress::inner::components::MAX_SUFFIX_WIDTH;
-use indicatif::MultiProgress;
-use indicatif::ProgressDrawTarget;
 use std::sync::Arc;
 
 #[test]
-fn recompute_layout_uniform_widths() {
+fn settle_layout_uniform_widths() {
     // Two bars with different prefix widths must converge to a single
     // uniform prefix_w equal to the max measured width (clamped to the
     // [MIN_PREFIX_WIDTH, MAX_PREFIX_WIDTH] band), and suffix_w must stay
     // within its own band.  This guards the dynamic cross-bar alignment.
-    let term = indicatif::InMemoryTerm::new(10, 80);
-    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(TestDimensionSource::new((10, 80)));
     let ts = Arc::new(TestTimeSource::new());
 
-    let mut renderer = ProgressRenderer::from_mp(
-        mp,
-        4,
-        dims,
-        WriteGate::new_noop(),
-        ts as Arc<dyn TimeSource>,
-        None,
-    );
+    let mut renderer =
+        ProgressRenderer::new(4, dims, WriteGate::new_noop(), ts as Arc<dyn TimeSource>, None);
 
     // Short label ("a") and a 20-char label ("aaaaaaaaaaaaaaaaaaaa").
     let short =
@@ -41,12 +30,11 @@ fn recompute_layout_uniform_widths() {
     renderer.attach(&short);
     renderer.attach(&long);
 
-    renderer.recompute_layout();
+    renderer.settle_layout(renderer.frame_width());
 
-    // The long label is 20 visible columns, but `snap.prefix` is rendered
-    // WITH its leading `\x1b[0m` status escape (4 bytes) and indicatif
-    // counts those escape bytes as visible characters in the
-    // `{prefix:N.N}` field. So the uniform `prefix_w` must reserve
+    // The long label is 20 visible columns, and the built-in prefix carries
+    // a leading `\x1b[0m` status escape (4 bytes) that `compute_ansi_overhead`
+    // reserves out of the slot. So the uniform `prefix_w` must reserve
     // 20 + 4 = 24 columns to fit it without truncation.
     assert_eq!(
         renderer.prefix_w.get(),
@@ -70,23 +58,14 @@ fn recompute_layout_uniform_widths() {
 /// Both are read out before the renderer drops, so the caller asserts on
 /// the two cells the budget writes rather than on a frame.
 fn settle_one_built_in_bar(label: &str, cols: u16) -> (usize, bool) {
-    let term = indicatif::InMemoryTerm::new(10, cols);
-    let target = ProgressDrawTarget::term_like(Box::new(term));
-    let mp = MultiProgress::with_draw_target(target);
     let dims = Arc::new(TestDimensionSource::new((10, cols)));
     let ts = Arc::new(TestTimeSource::new());
-    let mut renderer = ProgressRenderer::from_mp(
-        mp,
-        4,
-        dims,
-        WriteGate::new_noop(),
-        ts as Arc<dyn TimeSource>,
-        None,
-    );
+    let mut renderer =
+        ProgressRenderer::new(4, dims, WriteGate::new_noop(), ts as Arc<dyn TimeSource>, None);
     let bar =
         Arc::new(SharedState::with_time_source(100, label, Arc::clone(&renderer.time_source)));
     renderer.attach(&bar);
-    renderer.recompute_layout();
+    renderer.settle_layout(renderer.frame_width());
     (renderer.prefix_w.get(), renderer.draw_fill.get())
 }
 

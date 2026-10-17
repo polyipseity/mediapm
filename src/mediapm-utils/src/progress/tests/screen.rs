@@ -72,9 +72,10 @@ fn terminal_with_term(term: &InMemoryTerm, capacity: usize) -> ProgressTerminal 
     terminal_with(term, capacity, false)
 }
 
-/// A [`terminal_with_term`] on the **production draw path**: `with_term_like` wraps
-/// `term` in a `BufferedTerm` write gate — the configuration `ProgressTerminal`
-/// builds outside tests — instead of the no-op gate `with_multi_progress` installs.
+/// A [`terminal_with_term`] on the **production draw path**: `with_term_like` pairs
+/// `term` with the frame writer's gate — the configuration `ProgressTerminal`
+/// builds outside tests — instead of the termless gate `with_multi_progress`
+/// installs.
 ///
 /// Use this for tests that pin what production actually does with the gate in
 /// place; keep [`terminal_with_term`] for tests that need the drop-time draw to
@@ -132,7 +133,7 @@ fn drop_without_join_commits() {
 
 /// A join commits the line of a bar that is still **unfinished**, not only the lines of bars that were finished first.
 ///
-/// The retention contract is total: whatever the screen last drew becomes committed output.  indicatif's default `ProgressFinish::AndClear` breaks that for an unfinished bar — `BarState::drop` runs `finish_using_style`, which sets `Status::DoneHidden` and clears the line on the way out — so the screen sets [`ProgressFinish::AndLeave`](indicatif::ProgressFinish::AndLeave) on every slot bar.  This is the failure path that matters: a `?` early return drops a screen mid-flight, and the partially-filled line is the information a user most wants to keep.
+/// The retention contract is total: whatever the screen last drew becomes committed output — a `?` early return drops a screen mid-flight, and the partially-filled line is the information a user most wants to keep.  Retention is the finalize frame's job: `ProgressRenderer::finalize` re-renders the plan with the rows that exist and commits it, so an unfinished row's line is whatever the plan drew.
 ///
 /// Measured red at `bfa740bc` in this test's configuration: [`terminal_with_term`] builds the terminal with `with_multi_progress`, whose gate is a no-op, so the drop-time `AndClear` draw reaches `term`.  At `bfa740bc` release is already fixed but the finish policy is still indicatif's default, and the join leaves `contents()` with no `alpha` at all.  The same assertions pass with *and* without the policy on the write-gated configuration production uses, where the gate suppresses that draw; that half of the contract is pinned by [`gated_terminal_retains_an_unfinished_bar`].
 ///
@@ -194,9 +195,9 @@ fn drop_without_join_keeps_an_unfinished_bar() {
 
 /// The production draw configuration retains an unfinished bar's line: this is what production actually does when a screen is committed mid-flight, measured on the write-gated target instead of on the no-op gate the other tests here use.
 ///
-/// [`terminal_with_gate`] goes through `with_term_like`, the builder path whose `BufferedTerm` suppresses every write outside an open window.  `BarState::drop` finishes the unfinished bar and draws it after `finalize`'s window has closed, so that draw is suppressed and the frame `finalize` drew — both the bar's label and its `1/60` position — is the last one the terminal sees.
+/// [`terminal_with_gate`] goes through `with_term_like`, the builder path whose gate carries the term the frame writer draws through.  The line the terminal keeps is the frame `finalize` wrote — both the bar's label and its `1/60` position.
 ///
-/// This is a **characterization/regression pin, not a red/green test**: it passes at both `bfa740bc` and `960fdc60`, because production retention is gate-provided and `with_slot_finish_policy`'s `AndLeave` policy is inert there.  Its value is that the configuration production depends on is measured rather than inferred, and that a change which routes the drop-time draw through an open window — or drops the gate from this path — fails a test instead of silently invalidating the reasoning in `ProgressScreen::join`.
+/// This is a **characterization/regression pin, not a red/green test**: it passes at both `bfa740bc` and `960fdc60`.  Its value is that the configuration production depends on is measured rather than inferred, and that a change which erases or overwrites the committed frame — or drops the gate from this path — fails a test instead of silently invalidating the reasoning in `ProgressScreen::join`.
 ///
 /// Not vacuous, and measured: running these assertions on the **ungated** configuration ([`terminal_with_term`]) fails as soon as the finish policy is also removed, which is the pre-`960fdc60` behavior of the ungated tests (see the `task-2` report for the command and the failing output).  With the policy in place the ungated configuration passes too, which is exactly why this pin is needed to tell the two mechanisms apart.
 #[test]
@@ -308,7 +309,7 @@ fn second_screen_renders_at_full_capacity() {
 ///
 /// The retained handle is the probe, not the subject: `ProgressBarHandle` is the public way to mutate a bar, and once the screen is committed the bar must no longer be reachable through it.  The `join erased the committed frame` assertion is a precondition here, not the erasure detector: an erasing commit built on `MultiProgress::remove` passes it (see [`next_screen_draws_below_the_committed_lines`], which catches that shape).
 ///
-/// `alpha` is finished before the join on purpose: this test probes a *finished* bar, whose reaping indicatif never routes through the finish policy at all.  The unfinished case is the separate assertion of [`join_commits_an_unfinished_bar`], which is what pins the screen's `ProgressFinish::AndLeave` policy.
+/// `alpha` is finished before the join on purpose: this test probes a *finished* bar, whose line the finalize frame keeps like any other row's.  The unfinished case is the separate assertion of [`join_commits_an_unfinished_bar`], which pins the unfinished-row retention contract.
 #[test]
 fn retired_screen_cannot_repaint_the_committed_frame() {
     let term = InMemoryTerm::new(ROWS, COLS);
@@ -453,18 +454,18 @@ fn gated_second_screen_does_not_unwind_the_discarded_screens_rows() {
 
 /// A frame is one template pair across every row, and `attach` draws no frame of its own.
 ///
-/// A `MultiProgress` draw repaints the whole block from each bar's CURRENT state, so a
-/// write window open while `attach` shifts the band and re-measures the layout releases
-/// the shift-phase syncs before `recompute_layout` has walked its slot-order loop to the
-/// last row — and the block the user sees mixes rows drawn at the previous
-/// `(prefix_w, suffix_w)` with rows drawn at the new ones. That is the per-row geometry
-/// divergence the live demo capture caught (`.superpowers/sdd/progress-labels-alignment/`
-/// `task-1-report.md`, Verdict 2: one frame whose rows ended their bars at column 51
-/// beside rows that ended at 62).
+/// `attach` shifts the band and re-measures the layout without writing: a
+/// frame is one `write_frame` pass, so the block the user sees is always the
+/// one plan the next tick settles — never a mix of rows drawn at the previous
+/// `(prefix_w, suffix_w)` with rows drawn at the new ones. That is the
+/// per-row geometry divergence the live demo capture caught
+/// (`.superpowers/sdd/progress-labels-alignment/` `task-1-report.md`, Verdict
+/// 2: one frame whose rows ended their bars at column 51 beside rows that
+/// ended at 62).
 ///
-/// The invariant has two halves, both pinned here: `attach` releases no ops at all
-/// (suppressed pushes fail with retry and hold their draw until the next frame), and the next frame's single
-/// release draws the whole block at one template pair — asserted as the exact grid,
+/// The invariant has two halves, both pinned here: `attach` writes nothing of
+/// its own, and the next frame's single
+/// write draws the whole block at one template pair — asserted as the exact grid,
 /// whose column alignment is itself the proof that no two rows disagree.
 #[test]
 fn gated_attach_releases_no_draw_outside_a_frame() {

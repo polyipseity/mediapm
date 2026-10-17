@@ -1,34 +1,31 @@
-//! The [`ProgressRenderer`]: a fixed-size grid of indicatif bars that a
+//! The [`ProgressRenderer`]: a fixed-size grid of row slots that a
 //! [`ProgressScreen`](super::ProgressScreen) fills and commits, and the state
-//! that decides which row each bar shows.
+//! that decides which row each slot shows.
 //!
-//! A renderer owns one indicatif bar per slot and moves rows through them as
+//! A renderer owns one slot per row and moves rows through them as
 //! handles attach, tick and finish. Slots are handed out from the bottom of
 //! the active band upwards, so an attach never reshuffles the rows already on
 //! screen. A capacity change prepends or drains blank slots rather than
 //! rebuilding the grid, which keeps a resize from reordering live rows.
 //!
-//! The renderer is the meeting point between the parts it is split across. [`tracked`] holds what a producer advances and knows nothing about
-//! indicatif; [`layout`] spends terminal columns and is the single push point
-//! from tracked state to a bar; and [`frame`] runs one frame end to end. This
-//! module holds the renderer itself: the slot grid, its per-slot cache and
-//! timing, and the lifecycle that binds a handle to a slot and commits the
-//! result.
+//! The renderer is the meeting point between the parts it is split across. [`tracked`] holds what a producer advances; [`layout`] spends terminal
+//! columns and syncs a snapshot into a slot's cache; and [`frame`] runs one
+//! frame end to end. This module holds the renderer itself: the slot grid,
+//! its per-slot cache and timing, and the lifecycle that binds a handle to a
+//! slot and commits the result. The renderer owns no draw target: every
+//! frame reaches the terminal through the gate's paired term via
+//! [`write_frame`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
-
-use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
 
 use super::plan::{FramePlan, PlanRow, RenderStyle, RowAnimation};
 use super::writer::write_frame;
 use super::{
     DimensionSource, FRAME_OVERHEAD_COLUMNS, MAX_SLOTS, MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH,
-    ProgressDebugSink, TimeSource, WriteGate, apply_bar_style, apply_done_bar_style,
-    apply_failed_bar_style, apply_overall_bar_style, blank_bar_style,
+    ProgressDebugSink, TimeSource, WriteGate,
 };
 use layout::timing_strings;
 
@@ -58,18 +55,16 @@ use layout::{client_truncated_prefix, compute_ansi_overhead};
 
 /// A single slot in the renderer's fixed-size grid.
 struct RenderedSlot {
-    /// The indicatif [`ProgressBar`] that draws to the terminal.
-    bar: ProgressBar,
     /// Optional tracking state this slot is currently bound to.
     /// `None` means the slot is blank (unused).
     source: RefCell<Option<Arc<SharedState>>>,
-    /// Cached last values pushed to the bar, used to skip redundant
-    /// indicatif calls and reduce terminal flicker.
+    /// The last values this slot's row showed, which decide what a later
+    /// frame retains and what a blank transition must overwrite.
     cache: SlotCache,
 }
 
-/// Manages a fixed-size grid of [`ProgressBar`] slots in [`MultiProgress`]
-/// with shift-based allocation and automatic recycling of finished slots.
+/// Manages a fixed-size grid of row slots with shift-based allocation and
+/// automatic recycling of finished slots.
 ///
 /// All slots are pre-allocated at construction so the draw height never
 /// changes — eliminating the root cause of terminal ghosting.
@@ -85,10 +80,9 @@ struct RenderedSlot {
 /// 3. When no finished slot can be recycled, the new handle is pushed into
 ///    `orphaned_states` — tracked but with no render slot until the terminal
 ///    grows.
-/// 4. Finished bars stay visible — their slots are only recycled when new
+/// 4. Finished rows stay visible — their slots are only recycled when new
 ///    handles need display space.
 pub struct ProgressRenderer {
-    inner: MultiProgress,
     /// Render slots in draw order: children first, the overall bar last when
     /// one exists. Slot count is fixed per terminal height (see
     /// `dynamic_height`), and slots are recycled rather than removed.
@@ -98,7 +92,7 @@ pub struct ProgressRenderer {
     last_width: Option<u16>,
     /// When `true`, the slot count may be adjusted on terminal height
     /// changes.  `false` when the caller specified an explicit capacity
-    /// (e.g. via [`from_mp`](Self::from_mp)).
+    /// (e.g. via [`new`](Self::new)).
     pub(crate) dynamic_height: bool,
     /// Queue of [`SharedState`] handles evicted from render slots during
     /// height shrink.  Reattached (FIFO) when the terminal grows back.
@@ -112,9 +106,8 @@ pub struct ProgressRenderer {
 
     /// EMA-smoothed rate tracking, one entry per slot.
     slots_timing: Vec<SlotTiming>,
-    /// Write gate controlling terminal-write suppression during frames.
-    /// Owned exclusively by the renderer — the only way to open/close
-    /// the write window is through `gate.open()` (private to `gate.rs`).
+    /// The terminal handle frames are written through, plus the screen
+    /// commit's cursor advance. Owned exclusively by the renderer.
     gate: WriteGate,
 
     /// Nesting guard: `true` while inside [`run_frame`](Self::run_frame).  Panics
@@ -177,65 +170,62 @@ impl SlotTiming {
     }
 }
 
-/// Message a blanked slot carries.
+/// Message a blanked slot carries as its cache marker.
 ///
-/// One space rather than the empty string, because an empty message writes no
-/// line at all and the rows above would lose their anchor.
+/// One space rather than the empty string: [`SlotCache::is_blanked`] matches
+/// this exact suffix to tell "blanked and untouched since" from "bound and
+/// content recorded", and the empty string would also describe a fresh cache.
 const BLANK_MESSAGE: &str = " ";
 
-/// Cached last values pushed to a bar, used to skip redundant indicatif
-/// setter calls and reduce terminal flicker.
+/// Cached last values a slot's row showed, kept so a later frame can retain
+/// the row and a sync can skip a value the slot already holds.
 ///
-/// The cache describes **the bar**, not the source bound to it. A slot's
-/// source moves between bars as the band shifts, but the bar's own state does
-/// not, so a rebind keeps the cache and the next sync can still tell whether
-/// the value it is about to push is already on screen. Rebuilding the cache on
-/// a rebind throws that away and makes every rebind push a value the bar
-/// already shows.
+/// The cache describes **the slot**, not the source bound to it. A slot's
+/// source moves between slots as the band shifts, but the slot's own shown
+/// state does not, so a rebind keeps the cache and the next sync can still
+/// tell whether the value it is about to record is already the slot's.
+/// Rebuilding the cache on a rebind throws that away and makes every rebind
+/// re-record values the slot already holds.
 struct SlotCache {
-    /// Last position sent to `set_position`.
+    /// Last position the slot's row showed.
     position: Cell<u64>,
-    /// Last total sent to `set_length`.
+    /// Last total the slot's row showed.
     total: Cell<u64>,
-    /// Last display suffix sent to the bar.
+    /// Last display suffix the slot's row showed.
     suffix: RefCell<String>,
-    /// Last prefix sent to `set_prefix`.
+    /// Last prefix the slot's row showed.
     prefix: RefCell<String>,
-    /// `true` while the slot's bar carries the blank state
-    /// [`blank_new_bar`] pushed. Cleared by the first real
-    /// content pushed onto the bar, so a rebound-and-released slot is never
-    /// reported as blank.
+    /// `true` while the slot carries the blank state
+    /// [`mark_blanked`](SlotCache::mark_blanked) recorded. The first real
+    /// content a sync records breaks the blank (see [`is_blanked`](Self::is_blanked)),
+    /// so a rebound-and-released slot is never reported as blank.
     blank: Cell<bool>,
     /// `true` while this slot holds the blank a cleared source drew. A cleared
     /// row stays blank until a rebind — [`attach`](ProgressRenderer::attach)
     /// or the height-growth reattach — lands a source in the slot, which
     /// clears the flag and lets the row be drawn again.
     cleared_blank_held: Cell<bool>,
-    /// The style inputs last pushed through `set_style`: settled
-    /// `prefix_w`, settled `suffix_w`, the overall-row flag, the draw-fill
-    /// decision, and the row's status code.
+    /// The style inputs the last sync derived: settled `prefix_w`, settled
+    /// `suffix_w`, the overall-row flag, the draw-fill decision, and the
+    /// row's status code.
     ///
-    /// This tuple is **write suppression, not staleness gating**, and the
-    /// difference is what makes it safe after the dirty-flag removal: every
-    /// member is derived by the frame itself — the settled widths come from
-    /// `recompute_layout` on this very frame, the status from the source's
+    /// Every member is derived by the frame itself — the settled widths come
+    /// from `settle_layout` on this very frame, the status from the source's
     /// snapshot, the flags from the renderer's own layout — so nothing a
-    /// caller could forget to declare feeds it. A moved input re-applies the
-    /// style immediately. What it suppresses is the indicatif tick a
-    /// `set_style` carries: re-styling an unchanged row every frame would
-    /// advance that row's spinner glyph on a finished bar.
+    /// caller could forget to declare feeds it. `retained_row` reads the
+    /// overall flag and the status code back out to keep a retained row's
+    /// colour, and `sync_slot` reads the previous status code to notice a
+    /// source that is active again after a terminal state.
     style_key: Cell<StyleKey>,
 }
 
-/// The derived inputs of one row's bar style, compared to suppress the
-/// redundant `set_style` write (and the spinner tick it carries).
+/// The derived inputs of one row's style, recorded by each sync so a
+/// retained row can be re-styled and a restart can be noticed.
 ///
-/// [`StyleKey::unknown`] is the value no settled frame can produce. A slot
+/// [`StyleKey::unknown`] is the value no settled frame produces. A slot
 /// carries it before its first real sync and after a blank, so the next bind
-/// re-applies the style even when every derived input happens to match what
-/// the blank's own bar was last styled with — the blank is a style input the
-/// frame does not derive, and a key that ignored it left a re-bound row
-/// drawing its content through the blank `{wide_msg}` template.
+/// re-derives the row's style from its own inputs rather than trusting what
+/// the blank recorded — the blank is a style input the frame does not derive.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct StyleKey {
     /// Settled prefix slot width.
@@ -264,11 +254,11 @@ impl StyleKey {
 }
 
 impl SlotCache {
-    /// A cache that has never pushed onto its bar.
+    /// A cache that has never recorded content for its slot.
     ///
-    /// `position` and `total` hold the `u64::MAX` never-pushed sentinel, so
-    /// nothing a fresh bar already shows can be mistaken for a repeat of an
-    /// earlier push.
+    /// `position` and `total` hold the `u64::MAX` never-recorded sentinel,
+    /// so nothing a fresh slot could show can be mistaken for a repeat of
+    /// an earlier record.
     fn new() -> Self {
         Self {
             position: Cell::new(u64::MAX),
@@ -281,68 +271,46 @@ impl SlotCache {
         }
     }
 
-    /// Forget the position last pushed, because the bar no longer holds it.
+    /// Forget the position last recorded, because the row starts over.
     ///
-    /// [`indicatif::ProgressBar::reset`] returns the bar's position to zero and
-    /// leaves its length alone, so only the position has to be invalidated:
-    /// [`total`](Self::total) still describes the bar.
+    /// Only the position has to be invalidated: [`total`](Self::total)
+    /// still describes the row's work. `sync_slot` calls it when a source
+    /// turns active again after a terminal state (slot recycling or
+    /// `restart()`), the port of the old `bar.reset()`.
     fn invalidate_position(&self) {
         self.position.set(u64::MAX);
     }
 
-    /// Record the blank state [`blank_new_bar`] just pushed onto a fresh bar.
+    /// Put a slot into the blank state a fresh row starts in.
     fn mark_blanked(&self) {
         self.prefix.borrow_mut().clear();
         *self.suffix.borrow_mut() = BLANK_MESSAGE.to_string();
         self.blank.set(true);
         // The blank is a style input the frame does not derive, so the key
         // goes unknown: the next bind re-styles the row whatever its derived
-        // inputs say, which is what keeps a re-bound slot from drawing real
-        // content through the blank `{wide_msg}` template.
+        // inputs say, rather than trusting the blank's own record.
         self.style_key.set(StyleKey::unknown());
     }
 
-    /// Whether this slot was blanked and nothing has touched its bar since.
+    /// Whether this slot was blanked and nothing has recorded content since.
     ///
     /// A fresh cache carries a cleared blank flag and an empty suffix, so the
-    /// two cannot be confused. A real bind pushes content onto the bar through
-    /// [`sync_snapshot_to_bar`](ProgressRenderer::sync_snapshot_to_bar), which
-    /// clears the flag, so a slot that was rebound and released again is never
-    /// reported as blank.
+    /// two cannot be confused. A real bind records content through
+    /// [`sync_snapshot_to_slot`](ProgressRenderer::sync_snapshot_to_slot),
+    /// whose suffix write breaks the blank check, so a slot that was
+    /// rebound and released again is never reported as blank.
     fn is_blanked(&self) -> bool {
         self.blank.get() && self.suffix.borrow().as_str() == BLANK_MESSAGE
     }
 }
 
-/// Put a freshly created bar into the blank state a new slot starts in.
-///
-/// Shared by slot construction and height growth so the state a fresh slot's
-/// cache records is the state its bar is really in, and so the first
-/// [`ProgressRenderer::blank_bar`] on it has nothing to do.
-fn blank_new_bar(bar: &ProgressBar, cache: &SlotCache) {
-    bar.set_style(blank_bar_style());
-    bar.set_message(BLANK_MESSAGE);
-    bar.set_prefix("");
-    cache.mark_blanked();
-}
-
-/// Apply the screen's slot finish policy to a bar that has just been added to a [`MultiProgress`].
-///
-/// Slot bars use [`ProgressFinish::AndLeave`] so that a bar which is still **unfinished** when its screen is committed keeps the last line it drew, just like a finished one: indicatif's default [`ProgressFinish::AndClear`] makes `BarState::drop` run `finish_using_style`, which sets `Status::DoneHidden` and clears the line, so a partially-filled line — exactly what a `?` early return leaves behind — would be cleared instead of committed. That clearing draw only reaches a target that writes it: an **ungated** [`MultiProgress`] does, while the production target is a `BufferedTerm` write gate that suppresses every write outside an open window, leaving the frame [`ProgressRenderer::finalize`] drew as the last one the terminal sees.
-///
-/// The policy is therefore **defense-in-depth**, not a fix for an observed production defect: it keeps the retention contract from depending on the gate's window timing. See [`ProgressScreen::join`](super::terminal::ProgressScreen::join) for the full per-configuration statement.
-///
-/// `AndLeave` cannot change the finished-bar path: `BarState::drop` short-circuits on `is_finished()` (`indicatif/src/state.rs`), returns before `finish_using_style` is reached, and therefore never consults this policy.
-///
-/// Callers must add the bar to the [`MultiProgress`] first (as `from_mp` documents); this only returns the same bar with the policy applied.
-fn with_slot_finish_policy(bar: ProgressBar) -> ProgressBar {
-    bar.with_finish(ProgressFinish::AndLeave)
-}
-
 impl ProgressRenderer {
-    /// Pre-allocate `capacity` blank bars in an existing [`MultiProgress`].
-    pub(crate) fn from_mp(
-        mp: MultiProgress,
+    /// Reserve `capacity` blank slots for the screen's rows.
+    ///
+    /// The renderer owns no draw target: every frame reaches the terminal
+    /// through the gate's paired term (see [`WriteGate::term`]), so a
+    /// capacity reservation is a slot-grid reservation and nothing more.
+    pub(crate) fn new(
         capacity: usize,
         dim_source: Arc<dyn DimensionSource>,
         gate: WriteGate,
@@ -351,23 +319,12 @@ impl ProgressRenderer {
     ) -> Self {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity {
-            let pb = ProgressBar::new(0);
-            // IMPORTANT: add to MultiProgress FIRST, then configure.
-            // Configuring before mp.add() prevents InMemoryTerm from
-            // capturing blank bar output in tests.
-            let bar = with_slot_finish_policy(mp.add(pb));
             let cache = SlotCache::new();
-            blank_new_bar(&bar, &cache);
-            slots.push(RenderedSlot { bar, source: RefCell::new(None), cache });
-        }
-        // Trigger a final draw so all bars are captured by InMemoryTerm
-        // even when capacity == terminal height.
-        if let Some(slot) = slots.last() {
-            slot.bar.tick();
+            cache.mark_blanked();
+            slots.push(RenderedSlot { source: RefCell::new(None), cache });
         }
         let slots_timing = (0..capacity).map(|_| SlotTiming::new(&*time_source)).collect();
         Self {
-            inner: mp,
             slots,
             has_overall: false,
             dim_source,
@@ -388,51 +345,35 @@ impl ProgressRenderer {
         }
     }
 
-    /// Add an overall aggregate bar pinned at the bottom slot, drawing from
-    /// `state`.
+    /// Register the overall aggregate row pinned at the bottom slot, drawing
+    /// from `state`.
     ///
     /// `state` is the caller's own handle state, and the new slot adopts that
     /// very `Arc` as its render source: the caller's handle and the drawn
-    /// overall bar are two views of one state, so every mutation made through
-    /// the handle reaches the next frame. The bar's total and prefix are read
-    /// from `state`, which stays the single source of truth for the overall bar
-    /// — this method never fabricates a second state of its own.
+    /// overall row are two views of one state, so every mutation made through
+    /// the handle reaches the next frame. The row's total and prefix are read
+    /// from `state`, which stays the single source of truth for the overall
+    /// row — this method never fabricates a second state of its own. The
+    /// row's style is the plan's [`RenderStyle::Overall`], decided per frame
+    /// in [`build_plan`](Self::build_plan).
     pub(crate) fn add_overall(&mut self, state: Arc<SharedState>) {
-        let total = state.total.load(Ordering::Acquire);
-        let label = {
-            let guard = state.label.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard.clone()
-        };
-        let inner = ProgressBar::new(total);
-        let overall_bar = with_slot_finish_policy(self.inner.add(inner));
-        // The style set here is the first frame's, before any
-        // `recompute_layout` has run, so it carries the initial `draw_fill` and
-        // is replaced on that first layout pass.
-        apply_overall_bar_style(
-            &overall_bar,
-            MIN_PREFIX_WIDTH,
-            MIN_SUFFIX_WIDTH,
-            self.draw_fill.get(),
-        );
-        overall_bar.set_prefix(label);
-        self.slots.push(RenderedSlot {
-            bar: overall_bar,
-            source: RefCell::new(Some(state)),
-            cache: SlotCache::new(),
-        });
+        self.slots
+            .push(RenderedSlot { source: RefCell::new(Some(state)), cache: SlotCache::new() });
         self.has_overall = true;
         self.slots_timing.push(SlotTiming::new(&*self.time_source));
     }
 
-    /// Re-configure the bar at slot index `i` to reflect its current
-    /// tracked source (or blank state if unbound).
+    /// Re-sync slot `i`'s cache to its current tracked source (or blank
+    /// state if unbound).
     ///
-    /// Runs every frame for every slot, bound or not: the settled widths and
-    /// the row's own timing are re-derived each frame, so nothing about a
-    /// row's geometry can go stale between mutations.
+    /// Runs on attach, on resize, and on the cleared-source transition: the
+    /// cache records what the slot's row holds so a retained row and a
+    /// blank decision cannot go stale between frames. The frame itself
+    /// renders from the source through [`build_plan`](Self::build_plan).
     ///
-    /// Returns whether anything was pushed — the [`sync_snapshot_to_bar`](Self::sync_snapshot_to_bar)
-    /// report, or `true` when a blank transition actually re-blanked the bar.
+    /// Returns whether anything was recorded — the
+    /// [`sync_snapshot_to_slot`](Self::sync_snapshot_to_slot) report, or
+    /// `true` when a blank transition actually re-blanked the slot.
     pub(crate) fn sync_slot(&self, i: usize) -> bool {
         let slot = &self.slots[i];
         if let Some(ref source) = *slot.source.borrow() {
@@ -460,15 +401,12 @@ impl ProgressRenderer {
             let suffix_w = self.suffix_w.get();
             let draw_fill = self.draw_fill.get();
 
-            // The style is re-applied whenever one of its derived inputs
-            // moved, and suppressed otherwise. The suppression is a write
-            // filter, not a change-detection gate: every member of the key is
-            // computed by this frame (see `StyleKey`), so there is no event a
-            // caller must remember to declare — a moved settled width, status,
-            // overall flag or draw-fill decision re-styles the row on the
-            // same frame. What it prevents is the indicatif `set_style` tick
-            // animating the spinner of a row whose style did not change,
-            // finished rows above all.
+            // Record the style inputs this sync derived. The record is what
+            // [`retained_row`](Self::retained_row) re-styles a detached row
+            // from, and its status code is what tells the next sync a source
+            // is active again after a terminal state. Every member of the
+            // key is computed by this frame (see `StyleKey`), so there is
+            // no event a caller must remember to declare.
             let style_key = StyleKey {
                 prefix_w,
                 suffix_w,
@@ -477,21 +415,16 @@ impl ProgressRenderer {
                 status_code: snap.status.code(),
             };
             if style_key != slot.cache.style_key.get() {
-                if is_overall {
-                    apply_overall_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
-                } else if snap.status == TrackStatus::Failed {
-                    apply_failed_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
-                } else if snap.status != TrackStatus::Active {
-                    apply_done_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
-                } else {
-                    // Slot recycling may leave the indicatif bar with
-                    // Status::DoneVisible from the previous phase.  Reset
-                    // it to InProgress so the spinner cycles again.
-                    if slot.bar.is_finished() {
-                        slot.bar.reset();
-                        slot.cache.invalidate_position();
-                    }
-                    apply_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
+                let previous = slot.cache.style_key.get();
+                if !is_overall
+                    && snap.status == TrackStatus::Active
+                    && previous.status_code != style_key.status_code
+                {
+                    // Slot recycling or a `restart()` turned this source
+                    // active again after a terminal state: forget the
+                    // recorded position so the row re-binds from scratch —
+                    // the port of the old `bar.reset()`.
+                    slot.cache.invalidate_position();
                 }
                 slot.cache.style_key.set(style_key);
             }
@@ -502,14 +435,14 @@ impl ProgressRenderer {
             // this path is read-only and the frame's slot sync applies
             // the same update for the same snapshot.
             let timing = timing_strings(&snap, &self.slots_timing[i], &*self.time_source);
-            self.sync_snapshot_to_bar(
+            self.sync_snapshot_to_slot(
                 i,
                 &snap,
                 timing.rate_str.as_deref(),
                 timing.eta_str.as_deref(),
             )
         } else {
-            // An unbound slot keeps whatever its bar last drew.
+            // An unbound slot keeps whatever its row last showed.
             //
             // This is the retention contract: a slot whose source was
             // recycled or evicted still shows the line it last drew — the
@@ -526,21 +459,17 @@ impl ProgressRenderer {
 
     /// Return slot `i` to a blank row and record that it is blank.
     ///
-    /// Returns whether the bar was actually re-blanked: a slot already blank
-    /// pushes nothing, and the caller's frame-owed-draw bookkeeping must not
-    /// count it.
-    ///
-    /// All three pushes are real `update_estimate_and_draw` calls, so blanking
-    /// a slot that is already blank spends three draws to change nothing. The
-    /// skip is what makes this safe to call from the paths that walk every slot
-    /// on a height change, and it holds because a rebind clears the marker: see
-    /// [`SlotCache::is_blanked`].
+    /// Returns whether the slot was actually re-blanked: a slot already
+    /// blank records nothing, and the caller's bookkeeping must not count
+    /// it. The skip is what makes this safe to call from the paths that
+    /// walk every slot on a height change, and it holds because a rebind
+    /// clears the marker: see [`SlotCache::is_blanked`].
     fn blank_bar(&self, i: usize) -> bool {
         let slot = &self.slots[i];
         if slot.cache.is_blanked() {
             return false;
         }
-        blank_new_bar(&slot.bar, &slot.cache);
+        slot.cache.mark_blanked();
         true
     }
 
@@ -560,28 +489,14 @@ impl ProgressRenderer {
     /// no render slot until the terminal grows back.
     ///
     /// Every slot keeps its [`SlotCache`]. The shift moves sources between
-    /// slots, never bars between slots, so a slot's cache still describes
-    /// what its own bar shows, and the sync that follows a rebind can skip
-    /// a value that bar already holds. Rebuilding the cache here is what
-    /// made every added bar cost a second `set_position` on the slot it
-    /// landed in.
+    /// slots, never state between slots, so a slot's cache still describes
+    /// what its own row showed, and the sync that follows a rebind records
+    /// only what changed.
     pub(crate) fn attach(&mut self, state: &Arc<SharedState>) {
-        // Buffer all draws during attach — slot shifts + sync_slot + recompute_layout.
-        //
-        // Every push here goes through `sync_slot`, and a `MultiProgress` draw
-        // repaints the whole block from each bar's CURRENT state. A write
-        // window open across this body would release the shift-phase syncs and
-        // the first part of `recompute_layout`'s slot-order loop before it has
-        // reached the last row, so the block a user sees would mix rows drawn
-        // at the previous template widths with rows drawn at the new ones —
-        // the per-row geometry divergence the live demo capture caught
-        // (`.superpowers/sdd/progress-labels-alignment/task-1-report.md`,
-        // Verdict 2). Suppressed pushes fail with retry, so every line stays
-        // dirty and the next frame's open window draws the whole block at the
-        // one `(prefix_w, suffix_w)` pair that frame settled: the daemon
-        // ticker is the sole draw authority, and attach costs at most one
-        // tick (≤50 ms on an active screen, ≤1 s on an idle one) of latency.
-        self.gate.suppress();
+        // The band shift moves sources between slots; nothing here writes to
+        // the terminal. Each affected slot's cache is re-synced so a row
+        // that later detaches retains what this frame showed, and the
+        // settle at the end re-derives the widths the next plan draws at.
         let child_cap = self.slots.len() - usize::from(self.has_overall);
         let bottom = child_cap.saturating_sub(1);
         // A rebind re-enables every row in the band: a slot this attach moves
@@ -610,7 +525,7 @@ impl ProgressRenderer {
             self.slots[bottom].source.replace(Some(Arc::clone(state)));
             self.slots_timing[bottom] = SlotTiming::new(&*self.time_source);
             self.sync_slot(bottom);
-            self.recompute_layout();
+            self.settle_layout(self.frame_width());
             return;
         }
 
@@ -634,7 +549,7 @@ impl ProgressRenderer {
                 self.slots[bottom].source.replace(Some(Arc::clone(state)));
                 self.slots_timing[bottom] = SlotTiming::new(&*self.time_source);
                 self.sync_slot(bottom);
-                self.recompute_layout();
+                self.settle_layout(self.frame_width());
                 return;
             }
         }
@@ -655,13 +570,13 @@ impl ProgressRenderer {
     /// Build this frame's [`FramePlan`]: settle the geometry, then decide one
     /// [`PlanRow`] per slot in screen order.
     ///
-    /// This is the frame's decision point: the strings come from the same
-    /// [`slot_row_strings`](Self::slot_row_strings) the legacy bar pushes use,
-    /// the style from the row's status and the overall flag, and the EMA
-    /// advance moves here with the row build so the debug snapshot
-    /// [`run_frame`](Self::run_frame) emits right after reads the timing this
-    /// very frame computed. Nothing is written here — the caller renders the
-    /// plan and writes it once through `write_frame`.
+    /// This is the frame's decision point: the strings come from
+    /// [`slot_row_strings`](Self::slot_row_strings), the style from the
+    /// row's status and the overall flag, and the EMA advance moves here with
+    /// the row build so the debug snapshot [`run_frame`](Self::run_frame)
+    /// emits right after reads the timing this very frame computed. Nothing
+    /// is written here — the caller renders the plan and writes it once
+    /// through `write_frame`.
     ///
     /// A cleared source draws a blank row until a rebind lands a live source
     /// in the slot; an unbound slot redraws what its bar last held (the
@@ -732,7 +647,7 @@ impl ProgressRenderer {
             );
             let (style, animation) = if is_overall {
                 // The pinned aggregate row wears `Overall` at every status,
-                // exactly as `apply_overall_bar_style` painted it; only a
+                // exactly as the plan's fill palette paints it; only a
                 // live one cycles, and only while its owner declared the run
                 // active through `set_animating(true)` (Task 6).
                 let animation = if snap.status == TrackStatus::Active && snap.animating {
@@ -774,9 +689,9 @@ impl ProgressRenderer {
     }
 
     /// A retained row for unbound slot `i`: the cached prefix/message the
-    /// slot's bar last held, at this frame's settle, never animating.
+    /// slot's row last held, at this frame's settle, never animating.
     ///
-    /// The style comes from the `StyleKey` the last push recorded (the slot's
+    /// The style comes from the `StyleKey` the last sync recorded (the slot's
     /// status code and overall flag), so a retained row keeps the colour it
     /// was drawn with while its geometry is re-derived here — it cannot carry
     /// an older frame's widths.
@@ -823,12 +738,12 @@ impl ProgressRenderer {
     ///
     /// Adjusts the slot capacity when height changes (prepending or
     /// draining blank slots) and records a width change so the frame counts
-    /// the redraw it owes. Styles are not applied here: every frame re-derives
-    /// the settled widths and re-styles every slot itself, which is what makes
+    /// the redraw it owes. Nothing is rendered here: every frame re-derives
+    /// the settled widths and re-styles every row itself, which is what makes
     /// a width change take effect on all rows.
     ///
-    /// No template is selected by width. The styles in `components.rs`
-    /// are built per frame from the live `prefix_w`/`suffix_w` cells, and those
+    /// No template is selected by width. A frame's rows are built per frame
+    /// from the live `prefix_w`/`suffix_w` cells, and those
     /// cells are already paid for out of the terminal width, so a narrower
     /// terminal takes columns from the label first and only then from the
     /// fill. The width at which a screen runs out of fill is therefore a
@@ -875,11 +790,9 @@ impl ProgressRenderer {
                 // naturally instead of shifting existing bars.
                 let insert_pos = self.slots.len() - usize::from(self.has_overall);
                 for _ in 0..(desired_cap - current_cap) {
-                    let pb = ProgressBar::new(0);
-                    let bar = with_slot_finish_policy(self.inner.insert(insert_pos, pb));
                     let cache = SlotCache::new();
-                    blank_new_bar(&bar, &cache);
-                    let slot = RenderedSlot { bar, source: RefCell::new(None), cache };
+                    cache.mark_blanked();
+                    let slot = RenderedSlot { source: RefCell::new(None), cache };
                     if let Some(orphan) = self.orphaned_states.borrow_mut().pop_back() {
                         slot.source.replace(Some(orphan));
                         // The reattach is a rebind: the row may be drawn again
@@ -902,7 +815,6 @@ impl ProgressRenderer {
                     if let Some(source) = self.slots[0].source.borrow_mut().take() {
                         self.orphaned_states.borrow_mut().push_back(source);
                     }
-                    self.inner.remove(&self.slots[0].bar);
                     self.slots.remove(0);
                     self.slots_timing.remove(0);
                 }
@@ -911,18 +823,19 @@ impl ProgressRenderer {
         changed
     }
 
-    /// Remove blank (unbound) reserved slots from [`MultiProgress`] and
-    /// trigger a final draw so that only the non-blank finished bars
-    /// remain visible in the terminal and in scrollback.
+    /// Remove blank (unbound) reserved slots and commit the screen's final
+    /// frame.
     ///
-    /// This is intended as a replacement for [`MultiProgress::clear`]
-    /// when the caller wants the final state of progress bars to
-    /// persist in scrollback without empty reserved lines.
+    /// The final frame is built from the same plan `run_frame` writes, so
+    /// the screen's last image is what the plan describes: blank slots are
+    /// gone before the plan is built, live rows draw at full fill, and the
+    /// write is forced so a byte-identical final frame still lands after
+    /// the removals.
     ///
     /// The commit is completed by advancing the cursor past the frame
-    /// ([`WriteGate::commit_frame`]): the draw protocol alone leaves the
-    /// cursor on the frame's last row, which would leave the committed frame
-    /// inside the next screen's band instead of below it.
+    /// ([`WriteGate::commit_frame`]): the writer alone leaves the cursor on
+    /// the frame's last row, which would leave the committed frame inside
+    /// the next screen's band instead of below it.
     ///
     /// Safe to call multiple times — only the first call has any effect.
     pub(crate) fn finalize(&mut self) {
@@ -937,49 +850,18 @@ impl ProgressRenderer {
         // on-screen bar gets the scroll of existing terminal content it needs
         // before its first frame. Do not add a renderer-side pre-roll fallback:
         // one pre-roll owner is the point of the split.
-        // No write window is opened for this method. The final frame reaches
-        // the terminal through `gate.term()` — the paired terminal directly —
-        // so it never needs the window, and keeping suppression ON is what
-        // keeps a *pending* legacy `MultiProgress` push (a `finish_slot` bar
-        // finish queued earlier) from flushing its old block below the
-        // frame mid-write: with the window closed that pending draw stays
-        // discarded for good, and the renderer is about to be dropped anyway.
-        // Only `commit_frame` below earns a window (its debug contract).
-        // Finish all bound bars that have reached a terminal state:
-        // sync their final state FIRST (so position/total/elapsed/suffix
-        // is up-to-date), then call finish_slot which applies the done
-        // visual style.
-        for (i, slot) in self.slots.iter().enumerate() {
-            let snap = slot.source.borrow().as_ref().map(|s| s.snapshot());
-            if let Some(ref snap) = snap
-                && snap.status != TrackStatus::Active
-            {
-                // Routed through the same helper the measurement pass uses, so
-                // this terminal sync cannot drift from what the budget
-                // reserved: for a terminal row the helper answers
-                // `(None, None)`, which is exactly what this loop passed by
-                // hand before the helper existed.
-                let timing = timing_strings(snap, &self.slots_timing[i], &*self.time_source);
-                self.sync_snapshot_to_bar(
-                    i,
-                    snap,
-                    timing.rate_str.as_deref(),
-                    timing.eta_str.as_deref(),
-                );
-                self.finish_slot(i, snap.status);
-            }
-        }
-        // Remove all blank (unbound) slots: from `MultiProgress` for the
-        // legacy push path, and from the frame's own slot list — finalize's
-        // contract is that the committed frame carries no empty reserved
-        // lines (its doc: "only the non-blank finished bars remain visible").
-        // The old capture path got this by omitting removed bars from the
-        // final `MultiProgress` draw; the plan renders one row per slot, so
-        // the slots themselves must go before the final plan is built.
+        // Nothing writes to the terminal between the last frame and this one:
+        // the renderer has no draw target of its own, so the plan frame below
+        // is the only writer and its image is what gets committed.
+        //
+        // Remove all blank (unbound) slots from the frame's own slot list:
+        // finalize's contract is that the committed frame carries no empty
+        // reserved lines (its doc: "only the non-blank finished bars remain
+        // visible"). The plan renders one row per slot, so the slots
+        // themselves must go before the final plan is built.
         let mut i = 0;
         while i < self.slots.len() {
             if self.slots[i].source.borrow().is_none() {
-                self.inner.remove(&self.slots[i].bar);
                 self.slots.remove(i);
                 self.slots_timing.remove(i);
             } else {
@@ -991,17 +873,12 @@ impl ProgressRenderer {
         // final draw recorded, kept as the commit's condition below.
         let drew_frame = self.slots.iter().any(|slot| slot.source.borrow().is_some());
 
-        // One final frame from the plan — the same path `run_frame` takes, so
-        // the screen's last image is what the plan describes rather than
-        // whatever the legacy bar path would draw: the terminal-state sync
-        // above keeps rates current, and the write is forced so even a
-        // byte-identical final frame lands after the blank-slot removals.
+        // One final frame from the plan — the same path `run_frame` takes,
+        // so the screen's last image is what the plan describes.
         let plan = self.build_plan();
-        // A committed frame draws its live rows full: the legacy final draw
-        // ran every bar through `finish`, whose side effect left `pos =
-        // length` in the template while the last pushed count string stayed
-        // on the row — hence `0/5` text beside a full bar in every join /
-        // finalize fixture (`active_bar_survives_join_and_its_line_is_frozen`,
+        // A committed frame draws its live rows full: the join/finalize
+        // fixtures pin `0/5` text beside a full bar
+        // (`active_bar_survives_join_and_its_line_is_frozen`,
         // `finalized_overall_bar_persists`,
         // `join_and_clear_collapses_blank_slots_only`). Failed rows keep
         // their position fill (the progress they made is the point of
@@ -1036,17 +913,12 @@ impl ProgressRenderer {
         // cursor ON the frame's last row (no trailing newline), so every
         // frame with a bound slot owes this one CR+LF: it is what places
         // the next screen's band below the committed frame instead of
-        // inside it. The advance stays inside the open window this method
-        // owns (opened just around the call, below) and keeps its old
-        // condition — a slot is bound NOW, not "a frame is on the
-        // terminal" — so a screen that bound no bar commits nothing
-        // (`gated_screen_without_bars_commits_nothing`). The accepted
-        // orphaned-row gap and the never-bound case it must not disturb are
-        // documented on `WriteGate::commit_frame`.
+        // inside it. It keeps its old condition — a slot is bound NOW, not
+        // "a frame is on the terminal" — so a screen that bound no bar
+        // commits nothing (`gated_screen_without_bars_commits_nothing`).
+        // The accepted orphaned-row gap and the never-bound case it must
+        // not disturb are documented on `WriteGate::commit_frame`.
         if drew_frame {
-            // Narrow window: satisfies `commit_frame`'s open-window debug
-            // contract; the write itself bypasses suppression by design.
-            let _window = self.gate.open();
             self.gate.commit_frame();
         }
     }

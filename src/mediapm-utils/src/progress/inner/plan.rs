@@ -8,8 +8,8 @@ use super::{FRAME_OVERHEAD_COLUMNS, PARKED_GLYPH, TICK_CHARS, visible_width};
 use console::style;
 
 /// Which color treatment a row renders with. Selected from the frame's
-/// overall/child flag and the row's status, exactly as the four
-/// `apply_*_bar_style` builders selected a template before the rewrite.
+/// overall/child flag and the row's status, exactly as the old bar path
+/// selected one of its four style templates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RenderStyle {
     /// The pinned aggregate bar (`syncing tools`, `running workflows`).
@@ -87,11 +87,10 @@ impl FramePlan {
 
     /// Render one row into its final terminal line.
     ///
-    /// Columns follow `frame_template` in `components`: spinner, prefix,
+    /// Columns are the four fields every frame spends: spinner, prefix,
     /// optional fill, message, joined by single spaces. A `RenderStyle::Blank`
-    /// row short-circuits to full-width spaces — the `blank_bar_style`
-    /// contract: neither glyph nor fill may appear on a row that must read
-    /// as empty.
+    /// row short-circuits to full-width spaces — neither glyph nor fill may
+    /// appear on a row that must read as empty.
     fn render_row(&self, row: &PlanRow) -> String {
         if row.style == RenderStyle::Blank {
             // A blank row occupies exactly the width a live row draws on this
@@ -101,9 +100,8 @@ impl FramePlan {
             // make a blank row one column wider than every live row beside it
             // on a no-fill frame — the mismatch
             // `blank_row_matches_live_width_on_both_fill_modes` pins. The
-            // content is still full-width spaces and nothing else: the
-            // `blank_bar_style` contract (`{wide_msg}` stretched across the
-            // line, no glyph, no fill).
+            // content is still full-width spaces and nothing else: no
+            // glyph, no fill.
             let columns = if self.draw_fill {
                 FRAME_OVERHEAD_COLUMNS + self.prefix_w + self.suffix_w + self.fill_w
             } else {
@@ -114,9 +112,9 @@ impl FramePlan {
             return " ".repeat(columns);
         }
         let spinner = self.render_spinner(row);
-        // Column alignment follows `frame_template`: the prefix is
-        // right-aligned (`{prefix:>{prefix_w}}`) and the message left-aligned
-        // (`{msg:<{suffix_w}}`). The built-in label path usually returns a
+        // Column alignment matches the template fields the old bar path
+        // spelled out: the prefix is right-aligned in its slot and the
+        // message left-aligned. The built-in label path usually returns a
         // pre-padded, full-width prefix (the pad is then a no-op), but the
         // client `BarLabelTruncation` path returns shorter strings, so the pad
         // direction decides where they sit in the column.
@@ -194,7 +192,7 @@ impl FramePlan {
 
 /// Style the done run of a fill in its palette color: `magenta` for
 /// `RenderStyle::Overall`, `yellow` for `Active`, `green` for `Done`, `red`
-/// for `Failed` — the four `apply_*_bar_style` templates.
+/// for `Failed` — the four colors a row can wear.
 ///
 /// `RenderStyle::Blank` is unreachable here: `render_row` short-circuits it
 /// to full-width spaces before any fill is built, so its arm returns the run

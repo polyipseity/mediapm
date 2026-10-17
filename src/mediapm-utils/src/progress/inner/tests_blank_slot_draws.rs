@@ -4,10 +4,10 @@ use super::super::tests_single_writer::counting_term;
 use super::*;
 use crate::progress::TestDimensionSource;
 use crate::progress::TestTimeSource;
-use indicatif::MultiProgress;
-use indicatif::ProgressDrawTarget;
+use indicatif::TermLike;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 /// A renderer over the shared [`counting_term`] terminal, plus the draw
 /// counter it writes to.
@@ -17,33 +17,25 @@ fn counting_renderer(
     capacity: usize,
 ) -> (ProgressRenderer, Arc<AtomicUsize>) {
     let (term, lines, _flushes) = counting_term(rows, cols);
-    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term)));
     let dims = Arc::new(TestDimensionSource::new((rows, cols)));
     let ts = Arc::new(TestTimeSource::new());
-    let renderer = ProgressRenderer::from_mp(
-        mp,
-        capacity,
-        dims,
-        WriteGate::new_noop(),
-        ts as Arc<dyn TimeSource>,
-        None,
-    );
+    let gate = WriteGate::new_noop_with_term(Arc::new(term) as Arc<dyn TermLike>);
+    let renderer = ProgressRenderer::new(capacity, dims, gate, ts as Arc<dyn TimeSource>, None);
     (renderer, lines)
 }
 
 /// Blanking a slot that is already blank spends nothing.
 ///
-/// All three pushes `blank_bar` makes are real `update_estimate_and_draw`
-/// calls, and `maybe_adjust_for_resize` walks every slot on a height
-/// change, so a terminal that grows twice blanks the slots it added on the
-/// second pass too. The skip is safe because a rebind clears the marker:
-/// the second half of this test blanks a slot that has since been bound and
-/// does draw.
+/// `blank_bar` records the blank state without writing, and
+/// `maybe_adjust_for_resize` walks every slot on a height change, so a
+/// terminal that grows twice blanks the slots it added on the second pass
+/// too. The skip is safe because a rebind clears the marker: the second
+/// half of this test blanks a slot that has since been bound.
 #[test]
 fn blanking_an_already_blank_slot_draws_nothing() {
     let (mut renderer, lines) = counting_renderer(10, 80, 4);
-    // Construction ends with one tick of the last slot, so measure from
-    // here rather than from zero.
+    // Construction used to end with one tick of the last slot; measure from
+    // here rather than from zero either way.
     let baseline = lines.load(Ordering::Relaxed);
 
     // Slot 0 is blank from construction.

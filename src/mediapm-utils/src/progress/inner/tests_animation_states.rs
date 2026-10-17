@@ -8,22 +8,20 @@ use super::ProgressRenderer;
 use super::SharedState;
 use super::WriteGate;
 use crate::progress::{TestDimensionSource, TestTimeSource, TimeSource};
-use indicatif::{InMemoryTerm, MultiProgress, ProgressDrawTarget, TermLike};
+use indicatif::{InMemoryTerm, TermLike};
 use std::sync::Arc;
 
 /// A renderer whose single writer draws into `term`, plus one attached child
 /// bar in its initial state (`Active`, not opted in).
 ///
-/// Same construction the blank-slot tests use, except the gate carries the
-/// term (`new_noop_with_term`) so `run_frame`'s plan actually reaches the
-/// grid a test reads back.
+/// The gate carries the term (`new_noop_with_term`) so `run_frame`'s plan
+/// actually reaches the grid a test reads back.
 fn renderer_with_active_child(term: &InMemoryTerm) -> (ProgressRenderer, ProgressBarHandle) {
-    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(term.clone())));
     let dims = Arc::new(TestDimensionSource::new((term.height(), term.width())));
     let ts = Arc::new(TestTimeSource::new());
     let gate = WriteGate::new_noop_with_term(Arc::new(term.clone()) as Arc<dyn TermLike>);
     let mut renderer =
-        ProgressRenderer::from_mp(mp, 4, dims, gate, ts.clone() as Arc<dyn TimeSource>, None);
+        ProgressRenderer::new(4, dims, gate, ts.clone() as Arc<dyn TimeSource>, None);
     let handle =
         ProgressBarHandle { state: Arc::new(SharedState::with_time_source(10, "tool", ts)) };
     renderer.attach(&handle.state);

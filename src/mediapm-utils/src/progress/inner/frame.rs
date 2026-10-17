@@ -1,33 +1,25 @@
 //! One frame of drawing: [`ProgressRenderer::tick`] into
-//! [`ProgressRenderer::run_frame`], the debug snapshot the tick emits, and the
-//! terminal-state pass a finished slot gets.
+//! [`ProgressRenderer::run_frame`], and the debug snapshot the tick emits.
 //!
 //! `run_frame` is the whole sequence in one place: absorb a resize, build the
 //! frame plan, emit the debug snapshot, write the rendered frame once. Every
 //! other entry point either delegates here or is a step of it, so there is one
 //! place to read to know what a frame contains and in what order.
-//!
-//! [`ProgressRenderer::finish_slot`] is the pass that runs outside that
-//! sequence, when a row reaches a terminal state and has to stop looking
-//! active.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::super::writer::write_frame;
-use super::super::{
-    DebugSlotState, DebugTickSnapshot, PrefixComponents, SuffixComponents, apply_done_bar_style,
-    apply_failed_bar_style, apply_overall_bar_style,
-};
+use super::super::{DebugSlotState, DebugTickSnapshot, PrefixComponents, SuffixComponents};
 use super::ProgressRenderer;
 use super::tracked::{TrackSnapshot, TrackStatus};
 
 impl ProgressRenderer {
-    /// Advance all progress bars by one frame.
+    /// Advance the screen by one frame.
     ///
     /// Recomputes the uniform alignment width, then redraws every visible
-    /// bar from its tracked source state. Delegates entirely to `run_frame`
-    /// to guarantee exactly one draw per tick.
+    /// row from its tracked source state. Delegates entirely to `run_frame`
+    /// to guarantee exactly one write per tick.
     pub fn tick(&mut self) {
         self.run_frame();
     }
@@ -165,38 +157,5 @@ impl ProgressRenderer {
             }
         }
         self.in_frame.set(false);
-    }
-
-    /// Apply finish/abandon visual state to a completed slot.
-    ///
-    /// Sets the correct style for the slot's terminal status, calls
-    /// `bar.finish()` or `bar.abandon()`, disables steady tick, and
-    /// forces a final render.
-    ///
-    /// `pub(super)` because the parent's slot bookkeeping calls it when a
-    /// bound track reaches a terminal state.
-    ///
-    /// Returns `true` unconditionally: the final `tick` is a real push.
-    /// [`finalize`](Self::finalize) runs it once per terminal slot at screen
-    /// teardown; the frame no longer drives bar transitions — a row takes
-    /// its terminal style from the plan.
-    pub(super) fn finish_slot(&self, i: usize, status: TrackStatus) -> bool {
-        let slot = &self.slots[i];
-        let prefix_w = self.prefix_w.get();
-        let suffix_w = self.suffix_w.get();
-        let draw_fill = self.draw_fill.get();
-        if self.has_overall && i == self.slots.len() - 1 {
-            apply_overall_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
-        } else if status == TrackStatus::Failed {
-            apply_failed_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
-        } else {
-            apply_done_bar_style(&slot.bar, prefix_w, suffix_w, draw_fill);
-        }
-        match status {
-            TrackStatus::Failed | TrackStatus::Warning => slot.bar.abandon(),
-            _ => slot.bar.finish(),
-        }
-        slot.bar.tick();
-        true
     }
 }

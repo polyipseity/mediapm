@@ -1,5 +1,5 @@
-//! `ProgressTerminal`: the single owner of a draw target, write gate,
-//! ticker thread, and pre-roll state for one sync operation.
+//! `ProgressTerminal`: the single owner of the frame writer's terminal
+//! handle, ticker thread, and pre-roll state for one sync operation.
 //!
 //! Exactly one [`ProgressScreen`] may be live inside a terminal at any time.
 //! Creating a second screen while one is already live panics — the caller
@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use indicatif::{MultiProgress, ProgressDrawTarget, TermLike};
+use indicatif::{MultiProgress, TermLike};
 
 use super::HasOverall;
 use super::NoOverall;
@@ -17,7 +17,7 @@ use super::PrefixComponents;
 use super::{
     DimensionSource, MAX_SLOTS, ProgressBarHandle, ProgressDebugSink, ProgressRenderer,
     RealTerminalSource, RealTimeSource, SharedState, TimeSource, detect_progress_debug_env,
-    gate::{BufferedTerm, WriteGate},
+    gate::WriteGate,
 };
 use crate::progress::BarStyle;
 
@@ -31,14 +31,13 @@ struct ScreenId(u64);
 
 /// Shared inner state of a [`ProgressTerminal`].
 ///
-/// Holds the [`MultiProgress`], write gate, injectable sources, pre-roll
+/// Holds the frame writer's gate, injectable sources, pre-roll
 /// state, and mutable screen tracking. The ticker thread holds a [`Weak`]
 /// reference to the current renderer and exits cleanly when the terminal
 /// is dropped or a new screen is created.
 struct TerminalInner {
-    /// Draw target for all bars created inside this terminal.
-    mp: MultiProgress,
-    /// Write gate controlling terminal-write suppression during frames.
+    /// The frame writer's terminal handle plus the screen-commit cursor
+    /// advance. Every frame of every screen is written through this gate.
     gate: WriteGate,
     /// Mutable state protected by a mutex — the ticker and screen
     /// operations contend on this.
@@ -122,7 +121,10 @@ struct ScreenState {
 /// belongs to a screen, added with
 /// [`ProgressTerminal::screen`] + `with_overall()`.
 pub struct ProgressTerminalBuilder {
-    mp_and_gate: Option<(MultiProgress, WriteGate)>,
+    /// The frame writer's terminal handle. `None` until a builder method
+    /// installs one; [`build`](Self::build) defaults it to a gate over
+    /// [`console::Term::stderr`].
+    gate: Option<WriteGate>,
     dim_source: Arc<dyn DimensionSource>,
     capacity: Option<usize>,
     dynamic_height: bool,
@@ -135,7 +137,7 @@ pub struct ProgressTerminalBuilder {
 impl Default for ProgressTerminalBuilder {
     fn default() -> Self {
         Self {
-            mp_and_gate: None,
+            gate: None,
             dim_source: Arc::new(RealTerminalSource),
             capacity: None,
             dynamic_height: false,
@@ -149,48 +151,54 @@ impl Default for ProgressTerminalBuilder {
 
 /// Configuration methods for [`ProgressTerminalBuilder`].
 impl ProgressTerminalBuilder {
-    /// Use an injectable [`TermLike`] instead of creating a `BufferedTerm`
-    /// over [`console::Term::stderr`]. Always wraps the term in a
-    /// `BufferedTerm` so the write-gate protocol is exercised in tests.
+    /// Use an injectable [`TermLike`] as the frame writer's terminal.
+    ///
+    /// The gate is created here rather than taken from a caller, so a screen
+    /// is always built against the term its frames are written to.
     #[must_use]
     pub fn with_term_like(mut self, term: Box<dyn TermLike>) -> Self {
-        let (buffered, gate) = super::gate::BufferedTerm::new(term);
-        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
-        self.mp_and_gate = Some((mp, gate));
+        self.gate = Some(WriteGate::new_noop_with_term(Arc::from(term)));
         self
     }
 
-    /// Use an existing [`MultiProgress`] directly.
+    /// Ignore `mp`: build the band's own frame writer instead.
     ///
-    /// Prefer [`with_term_like()`](Self::with_term_like) for new code;
-    /// this method exists for incremental test migration. The write gate
-    /// is a noop — tests using this path do not exercise the
-    /// draw-per-frame guarantee.
+    /// Screens are built against the frame writer (see
+    /// [`with_term_like`](Self::with_term_like)); a band drawn through an
+    /// indicatif `MultiProgress` is the retired path, and its tests are
+    /// migrating onto the frame writer. The parameter is kept so those call
+    /// sites compile unchanged while they migrate; the gate handed out here
+    /// has no term, so a screen built through this seam discards its frames.
+    /// [`MultiProgress`] no longer draws anything — the frame writer is the
+    /// screen's single draw path. This legacy method therefore installs a
+    /// gate with no terminal (frames are built and discarded) so legacy
+    /// call sites keep compiling through the migration; a test that wants to
+    /// read rendered output must pair its target with
+    /// [`with_multi_progress_and_term`](Self::with_multi_progress_and_term) or
+    /// [`with_term_like`](Self::with_term_like).
     #[must_use]
-    pub fn with_multi_progress(mut self, mp: MultiProgress) -> Self {
-        self.mp_and_gate = Some((mp, super::gate::WriteGate::new_noop()));
-        self
+    pub fn with_multi_progress(self, _mp: MultiProgress) -> Self {
+        Self { gate: Some(WriteGate::new_noop()), ..self }
     }
 
-    /// Use an existing [`MultiProgress`] directly **and** give the single
-    /// writer a terminal to write its plan through.
+    /// Use an existing [`MultiProgress`] **and** give the frame writer a
+    /// terminal to write its plans through.
     ///
     /// The ungated test harnesses build their draw target over an injectable
     /// term (the `InMemoryTerm` a fixture asserts on) while managing their
     /// own bars; under the single writer, `run_frame` renders one frame plan
     /// and writes it through this term — without it the frame would be built
-    /// and discarded. The gate stays a no-op: there are no buffered draws to
-    /// suppress or compensate for. This is the `with_multi_progress`
-    /// companion for the plan-then-write path; the harness keeps ownership
-    /// of the same term instance it passes as the draw target.
+    /// and discarded. The gate is a no-op beyond that pairing: there are no
+    /// buffered draws to suppress or compensate for. The `MultiProgress`
+    /// parameter is deliberately unused; the harness keeps ownership of the
+    /// same term instance it passes as the draw target.
     #[must_use]
     pub fn with_multi_progress_and_term(
         mut self,
-        mp: MultiProgress,
+        _mp: MultiProgress,
         term: Box<dyn TermLike>,
     ) -> Self {
-        let gate = super::gate::WriteGate::new_noop_with_term(Arc::from(term));
-        self.mp_and_gate = Some((mp, gate));
+        self.gate = Some(WriteGate::new_noop_with_term(Arc::from(term)));
         self
     }
 
@@ -258,16 +266,12 @@ impl ProgressTerminalBuilder {
             let (rows, _) = self.dim_source.dimensions();
             (rows as usize).clamp(1, MAX_SLOTS)
         });
-        let (mp, gate) = self.mp_and_gate.unwrap_or_else(|| {
-            let (buffered, gate) = BufferedTerm::new(Box::new(console::Term::stderr()));
-            let mp =
-                MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(buffered)));
-            (mp, gate)
-        });
+        let gate = self
+            .gate
+            .unwrap_or_else(|| WriteGate::new_noop_with_term(Arc::new(console::Term::stderr())));
         let debug_sink = self.debug_sink.or_else(detect_progress_debug_env).map(Arc::new);
         ProgressTerminal {
             inner: Arc::new(TerminalInner {
-                mp,
                 gate,
                 state: Mutex::new(TerminalState {
                     screen: None,
@@ -337,9 +341,8 @@ impl ProgressTerminal {
     pub fn disabled() -> Self {
         Self {
             inner: Arc::new(TerminalInner {
-                // A hidden draw target: even a bar that somehow reached this
-                // terminal's `MultiProgress` would render nowhere.
-                mp: MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
+                // A termless gate: even a frame that somehow reached this
+                // terminal is built and discarded.
                 gate: super::gate::WriteGate::new_noop(),
                 state: Mutex::new(TerminalState {
                     screen: None,
@@ -526,10 +529,11 @@ impl TerminalScreenBuilder<'_, HasOverall> {
 
 /// Internal: create the one live [`ProgressScreen`] on the given terminal.
 ///
-/// The screen's renderer draws through the terminal's single [`MultiProgress`]
-/// and honours the terminal's [`WriteGate`], so every screen of a sync renders
-/// into the same draw target and frames are buffered as a unit. The screen also
-/// inherits the terminal's dimension source, time source and JSONL debug sink.
+/// The screen's renderer writes through the terminal's frame writer and
+/// honours the terminal's [`WriteGate`], so every screen of a sync renders
+/// into the same terminal and frames are committed one at a time. The screen
+/// also inherits the terminal's dimension source, time source and JSONL
+/// debug sink.
 ///
 /// `overall` is the caller's overall handle state; when `Some`, the renderer
 /// registers it as the pinned bottom slot, adopting that exact `Arc` so the
@@ -539,7 +543,7 @@ impl TerminalScreenBuilder<'_, HasOverall> {
 /// # Panics
 ///
 /// Panics when a screen is already live on this terminal: two live screens
-/// would mean two renderers driving one [`MultiProgress`].
+/// would mean two renderers driving one terminal.
 fn build_screen(terminal: &ProgressTerminal, overall: Option<Arc<SharedState>>) -> ProgressScreen {
     // Check that no screen is live.
     {
@@ -557,8 +561,7 @@ fn build_screen(terminal: &ProgressTerminal, overall: Option<Arc<SharedState>>) 
         // the bars must appear below the scrolled content, not over it.
         terminal.inner.pre_roll_if_needed();
 
-        let mut r = ProgressRenderer::from_mp(
-            terminal.inner.mp.clone(),
+        let mut r = ProgressRenderer::new(
             terminal.capacity,
             Arc::clone(&terminal.inner.dim_source),
             terminal.inner.gate.clone(),
@@ -608,10 +611,9 @@ pub struct ProgressScreen {
     ///
     /// Deliberately [`Weak`]: the terminal's `TerminalState.renderer` is the
     /// only strong owner, so [`join`](Self::join) can drop the renderer (and
-    /// with it every [`ProgressBar`](indicatif::ProgressBar) the screen
-    /// reserved) by clearing its own field.  A strong clone here would keep
-    /// the bars in the shared [`MultiProgress`] forever, which is the
-    /// accumulated-reservation defect this handle exists to avoid.
+    /// with it every slot the screen reserved) by clearing its own field. A
+    /// strong clone here would keep the retired grid alive forever, which is
+    /// the accumulated-reservation defect this handle exists to avoid.
     renderer: Option<Weak<Mutex<ProgressRenderer>>>,
     /// Unique identifier for this screen.
     screen_id: ScreenId,
@@ -728,57 +730,28 @@ impl ProgressScreen {
         ProgressBarHandle { state }
     }
 
-    /// Commit this screen's bars into scrollback.
+    /// Commit this screen's frame into scrollback.
     ///
-    /// Renders the final frame, clears the terminal's live-screen slot and
-    /// releases the terminal's strong reference to the per-screen renderer.
-    /// That drop cascades to every [`ProgressBar`](indicatif::ProgressBar) the
-    /// screen reserved, which is what commits their lines: indicatif reaps a
-    /// dropped bar as a zombie and retains its drawn lines, while returning the
-    /// bar's slot index to the [`MultiProgress`] free set for the next screen.
+    /// Renders the final frame, advances the cursor past it, clears the
+    /// terminal's live-screen slot and releases the terminal's strong
+    /// reference to the per-screen renderer, which drops the slot grid.
     ///
-    /// What retains the line of a bar that is still **unfinished** here depends on the draw target, so it is stated per configuration:
+    /// What retains the screen's last image is the final frame itself:
+    /// `ProgressRenderer::finalize` renders the plan one
+    /// more time with the blank rows gone and the live rows full, writes it,
+    /// and advances the cursor past it (`WriteGate::commit_frame`), so the
+    /// committed frame is no longer the live region the next output would
+    /// overwrite. Nothing else needs to hold the renderer or its slots open
+    /// for the lines to stay.
     ///
-    /// - **Write-gated target** (the `BufferedTerm` a terminal wraps around its
-    ///   term, which is what production draws through): the **write gate**
-    ///   retains it. indicatif's `BarState::drop` finishes an unfinished bar and
-    ///   draws it, but that draw lands after the window `finalize` closes, so
-    ///   the gate suppresses it and the frame `finalize` drew is the last one
-    ///   the terminal ever sees. The gate's role here is real: production
-    ///   retention rests on it, and deleting this reasoning is not safe.
-    /// - **Ungated target** (a bare [`MultiProgress`] whose gate is a no-op):
-    ///   the **finish policy** retains it. Every slot bar carries
-    ///   `ProgressFinish::AndLeave` (see `with_slot_finish_policy` in
-    ///   [`ProgressRenderer`]); without it, indicatif's default
-    ///   `ProgressFinish::AndClear` sets `Status::DoneHidden` in
-    ///   `BarState::drop` and clears the bar's line on the way out.
-    ///
-    /// `with_slot_finish_policy` is therefore **defense-in-depth**, not a fix
-    /// for an observed production defect: it keeps the retention contract from
-    /// depending on the gate's window timing, so an ungated target, or a future
-    /// drop path that draws inside an open window, still keeps the line. No
-    /// production configuration was measured to lose an unfinished bar's line
-    /// with the policy absent. The gated behavior is pinned by
-    /// `progress::tests::screen::gated_terminal_retains_an_unfinished_bar`; the
-    /// ungated half by `join_commits_an_unfinished_bar` and
-    /// `drop_without_join_keeps_an_unfinished_bar`.
-    ///
-    /// One measured limit of that retention, and one derived bound:
-    ///
-    /// - On either configuration, a bar that was **finished** before the drop
-    ///   keeps its line through `BarState::drop`'s `is_finished()` short-circuit,
-    ///   which returns before the finish policy is ever consulted. Exercised by
-    ///   `progress::tests::screen`.
-    /// - Derived, **not** measured: the ticker's `Weak::upgrade()` fails here,
-    ///   but a tick already in flight holds a strong clone of the renderer until
-    ///   it returns, so the retired reservation can outlive `join` by up to one
-    ///   tick. That bound follows from `ProgressRenderer::run_frame` returning
-    ///   immediately once finalized (the guard `finalize` sets): the window is
-    ///   a single no-op tick that drops the reservation when it ends, so a
-    ///   screen built and drawn inside the window sees the retired reservation
-    ///   for one frame. The overlap itself is unmeasured and cannot be forced
-    ///   from a test, because it needs a join to land inside another thread's
-    ///   upgrade.
+    /// One bound worth stating: a tick already in flight holds a strong
+    /// clone of the renderer when the join lands, so the retired reservation
+    /// can outlive `join` by up to one tick. That bound follows from
+    /// `ProgressRenderer::run_frame` returning immediately once finalized
+    /// (the guard `finalize` sets): the overlap is a single no-op tick that
+    /// drops the reservation when it ends. The overlap itself is unmeasured
+    /// and cannot be forced from a test, because it needs a join to land
+    /// inside another thread's upgrade.
     ///
     /// Idempotent: joining an already-joined (or never-live) screen is a no-op,
     /// which is what makes `Drop` safe to route through here.
@@ -796,7 +769,8 @@ impl ProgressScreen {
         if !state.screen.as_ref().is_some_and(|s| s.id == self.screen_id) {
             return; // another screen is live; this one was already retired
         }
-        // Finalize the renderer (render final frame, remove blank slots).
+        // Finalize the renderer (render the final plan frame, remove blank
+        // slots, advance the cursor past the committed frame).
         if let Some(ref renderer) = state.renderer {
             renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finalize();
         }

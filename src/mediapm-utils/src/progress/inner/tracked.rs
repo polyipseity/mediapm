@@ -39,9 +39,10 @@ impl TrackStatus {
     /// Compact numeric encoding of the status (Active=0, Success=1, Failed=2,
     /// Warning=3).
     ///
-    /// Feeds the renderer's per-slot style key, which suppresses a redundant
-    /// `set_style` write: the style's colours are a function of the status, so
-    /// two frames with the same key draw the same style.
+    /// Feeds the renderer's per-slot style key: the row's style is a
+    /// function of the status, so two frames with the same key wear the same
+    /// style — and a changed code is how `sync_slot` notices a source that
+    /// is active again after a terminal state.
     pub(super) fn code(self) -> u8 {
         match self {
             Self::Active => 0,
@@ -409,7 +410,7 @@ impl ProgressBarHandle {
     /// API has been removed, and the suffix always flows through this
     /// structured path.
     ///
-    /// Merge semantics (applied at `sync_snapshot_to_bar` time): user-set
+    /// Merge semantics (applied at `sync_snapshot_to_slot` time): user-set
     /// fields override the auto-derived fields composed from ticker data;
     /// empty user fields fall back to fresh ticker data, so callers may set
     /// just the fields they care about (typically `custom`) and leave the

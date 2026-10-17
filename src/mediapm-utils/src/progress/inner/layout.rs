@@ -1,10 +1,10 @@
 //! The column budget: how many columns the prefix and the suffix get, and the
-//! single push point that spends them on a slot's indicatif bar.
+//! single sync point that spends them on a slot's cache.
 //!
-//! A frame answers two questions in order. [`ProgressRenderer::recompute_layout`]
+//! A frame answers two questions in order. [`ProgressRenderer::settle_layout`]
 //! measures every row the frame would draw and settles one prefix width and one
 //! suffix width for all of them, so rows align across the screen;
-//! [`ProgressRenderer::sync_snapshot_to_bar`] then renders one row into the
+//! [`ProgressRenderer::sync_snapshot_to_slot`] then records one row into the
 //! widths that pass settled. The free helpers below are the row-shaped halves
 //! of those two steps: they compose and measure a single suffix, they own the
 //! ANSI overhead the prefix slot has to reserve before a label is measured,
@@ -74,10 +74,10 @@ pub(super) struct EmaUpdate {
 
 /// Compute one slot's rate and eta suffix segments — the single rule set.
 ///
-/// `recompute_layout` (measurement), `sync_slot`, the frame's slot sync
-/// and `finalize` all call this instead of computing the pair themselves, which
-/// is what makes the columns the budget reserves equal the columns the row
-/// renders. The rules, in order:
+/// `settle_layout` (measurement), `sync_slot`, the frame's slot sync
+/// and `build_plan` all call this instead of computing the pair themselves,
+/// which is what makes the columns the budget reserves equal the columns the
+/// row renders. The rules, in order:
 ///
 /// - A terminal row gets `(None, None)` — no rate, no eta.
 /// - A live row's rate is the EMA, **prospectively** updated when the snapshot's
@@ -132,12 +132,11 @@ pub(super) fn timing_strings(
 
 /// Compute the ANSI byte overhead for the prefix template field.
 ///
-/// The `{prefix:N.N}` template in indicatif counts ANSI escape bytes as
-/// visible characters. Client-truncated bars add only a 4-byte reset
-/// (`\x1b[0m`); built-in rendering adds 13 bytes for failed/warning
-/// status markers (`\x1b[0m\x1b[3Xm\x1b[0m`). This helper centralizes
-/// the calculation so both `sync_snapshot_to_bar` and `recompute_layout`
-/// use the same value.
+/// The prefix field counts ANSI escape bytes as visible characters.
+/// Client-truncated bars add only a 4-byte reset (`\x1b[0m`); built-in
+/// rendering adds 13 bytes for failed/warning status markers
+/// (`\x1b[0m\x1b[3Xm\x1b[0m`). This helper centralizes the calculation so
+/// both `sync_snapshot_to_slot` and `settle_layout` use the same value.
 ///
 /// `pub(super)` because the layout test sibling measures a prefix width against
 /// this value through the parent module.
@@ -183,7 +182,7 @@ pub(super) fn client_truncated_prefix(
 /// `keep_timing` decides whether the row draws its timing columns. See
 /// [`keeps_timing`] for why a row that has dropped its fill sometimes keeps
 /// them anyway. The strip itself lives in [`without_timing`], so the draw path
-/// and the measurement pass in [`ProgressRenderer::recompute_layout`] cannot
+/// and the measurement pass in [`ProgressRenderer::settle_layout`] cannot
 /// disagree about what a row without its timing would hold.
 fn compose_suffix(
     snap: &TrackSnapshot,
@@ -221,7 +220,7 @@ fn without_timing(suffix: &SuffixComponents) -> SuffixComponents {
 /// first. That trade is only worth making while the row still says something
 /// without it, so the condition is about the row rather than about the frame:
 /// `prefix` and `timingless_suffix` are what this row would draw with the
-/// timing stripped, at the widths [`ProgressRenderer::recompute_layout`]
+/// timing stripped, at the widths [`ProgressRenderer::settle_layout`]
 /// settled.
 ///
 /// A row with nothing left keeps its timing instead. A worker slot on the
@@ -241,8 +240,8 @@ fn keeps_timing(draw_fill: bool, prefix: &str, timingless_suffix: &str) -> bool 
 ///
 /// A client label decides which of its fields render, so it is asked; a bar
 /// with no client label truncates the built-in components and renders those.
-/// `sync_snapshot_to_bar` draws through this and
-/// [`ProgressRenderer::recompute_layout`] measures through it, so what the
+/// `sync_snapshot_to_slot` records through this and
+/// [`ProgressRenderer::settle_layout`] measures through it, so what the
 /// budget reserves and what the row shows are the same string.
 ///
 /// Both branches close their result through [`close_sgr_state`]: a suffix that
@@ -279,10 +278,9 @@ fn measure_suffix_width(
 /// The strings and numbers one slot's row shows on one frame.
 ///
 /// Produced by [`ProgressRenderer::slot_row_strings`]; both consumers draw
-/// from it — the legacy bar pushes in
-/// [`sync_snapshot_to_bar`](ProgressRenderer::sync_snapshot_to_bar) and the
-/// frame's `PlanRow`s in the renderer's `build_plan` — so a plan's rows and
-/// the bar pushes cannot answer differently about the same snapshot.
+/// from it — the cache sync in [`sync_snapshot_to_slot`](ProgressRenderer::sync_snapshot_to_slot)
+/// and the frame's `PlanRow`s in the renderer's `build_plan` — so a plan's
+/// rows and the slot cache cannot answer differently about the same snapshot.
 pub(super) struct SlotRowStrings {
     /// Prefix, truncated and wrapped exactly as the bar's field drew it.
     pub(super) prefix: String,
@@ -305,8 +303,8 @@ impl ProgressRenderer {
     /// suffix taking what it measured first and the prefix the remainder.
     ///
     /// The result is stored in the `prefix_w`/`suffix_w`/`draw_fill` cells,
-    /// and every consumer — the legacy bar re-sync
-    /// ([`recompute_layout`](Self::recompute_layout)) and the frame's plan
+    /// and every consumer — the slot cache sync
+    /// ([`sync_snapshot_to_slot`](Self::sync_snapshot_to_slot)) and the frame's plan
     /// ([`build_plan`](super::ProgressRenderer::build_plan)) — reads the same
     /// cells, so all rows share the same alignment width — short labels no
     /// longer waste space and long labels no longer overflow the bar.
@@ -484,27 +482,6 @@ impl ProgressRenderer {
         self.draw_fill.set(draw_fill);
     }
 
-    /// Settle the frame's geometry, then re-sync every bound slot's bar to
-    /// the settled widths.
-    ///
-    /// This is the legacy push path: `attach` and the resize bookkeeping call
-    /// it so the indicatif bars still track the settled widths while they
-    /// exist. The frame itself settles through
-    /// [`settle_layout`](Self::settle_layout) and reaches the terminal through
-    /// the plan and `write_frame`, not through these pushes.
-    ///
-    /// Returns whether the re-sync pushed anything.
-    pub(crate) fn recompute_layout(&self) -> bool {
-        self.settle_layout(self.frame_width());
-        let mut pushed = false;
-        for (i, slot) in self.slots.iter().enumerate() {
-            if slot.source.borrow().is_some() {
-                pushed |= self.sync_slot(i);
-            }
-        }
-        pushed
-    }
-
     /// Compute slot `i`'s row strings for one snapshot — the single producer
     /// of what a row shows this frame.
     ///
@@ -580,25 +557,23 @@ impl ProgressRenderer {
         SlotRowStrings { prefix, message, position, total }
     }
 
-    /// Apply a snapshot's position/length/suffix/prefix to the indicatif bar
-    /// at slot `i`. **This is the authoritative `SharedState` → indicatif
-    /// push point.** Every code path that still reflects `SharedState`
-    /// (position, total, suffix, prefix) on a bar — the `attach`/resize
-    /// re-syncs and [`finalize`](Self::finalize) — goes through here; the
-    /// frame itself no longer pushes bars, it renders the same strings, from
-    /// [`slot_row_strings`](Self::slot_row_strings), into a plan.
+    /// Record a snapshot's position/length/suffix/prefix into the cache of
+    /// the slot at `i`. **This is the authoritative `SharedState` → slot-cache
+    /// sync point.** Every code path that still reflects `SharedState`
+    /// (position, total, suffix, prefix) in a slot's cache — the `attach`/
+    /// resize re-syncs — goes through here; the frame itself renders the same
+    /// strings, from [`slot_row_strings`](Self::slot_row_strings), into a
+    /// plan.
     ///
-    /// Does **not** change the bar's style — callers manage style
-    /// independently via [`finish_slot`](Self::finish_slot) or explicit
-    /// `set_style` calls during attach/resize.
+    /// Does **not** record the row's style — that is
+    /// [`sync_slot`](Self::sync_slot)'s `StyleKey` record.
     ///
-    /// Returns whether anything was actually pushed (any dedup comparison
+    /// Returns whether anything was actually recorded (any dedup comparison
     /// that fired).
     ///
-    /// `pub(super)` because the parent's [`recompute_layout`](Self::recompute_layout) and
-    /// [`finish_slot`](Self::finish_slot) both push
-    /// through it.
-    pub(super) fn sync_snapshot_to_bar(
+    /// `pub(super)` because the parent's [`sync_slot`](Self::sync_slot) both
+    /// record through it.
+    pub(super) fn sync_snapshot_to_slot(
         &self,
         i: usize,
         snap: &TrackSnapshot,
@@ -609,22 +584,18 @@ impl ProgressRenderer {
         let strings = self.slot_row_strings(i, snap, rate_str, eta_str);
         let mut pushed = false;
         if strings.prefix != *slot.cache.prefix.borrow() {
-            slot.bar.set_prefix(strings.prefix.clone());
             *slot.cache.prefix.borrow_mut() = strings.prefix;
             pushed = true;
         }
         if strings.message != *slot.cache.suffix.borrow() {
-            slot.bar.set_message(strings.message.clone());
             *slot.cache.suffix.borrow_mut() = strings.message;
             pushed = true;
         }
         if strings.total != slot.cache.total.get() {
-            slot.bar.set_length(strings.total);
             slot.cache.total.set(strings.total);
             pushed = true;
         }
         if strings.position != slot.cache.position.get() {
-            slot.bar.set_position(strings.position);
             slot.cache.position.set(strings.position);
             pushed = true;
         }
