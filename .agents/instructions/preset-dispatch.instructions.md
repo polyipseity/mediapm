@@ -18,7 +18,7 @@ Case-insensitive routing to per-tool `apply()` functions:
 | `yt-dlp`       | `yt_dlp.rs`       | URL-based command, subtitle/thumbnail outputs, format selectors |
 | `deno`         | `deno.rs`         | Deno runtime command with permissions                           |
 | `rsgain`       | `rsgain.rs`       | ReplayGain analysis command, single-track mode                  |
-| `media-tagger` | `media_tagger.rs` | Picard-based tagging command, CAA provider config               |
+| `media-tagger` | `media_tagger.rs` | Native builtin tagging command, CAA provider config             |
 | `sd`           | `sd.rs`           | Stable Diffusion command, model paths                           |
 
 Each preset builds:

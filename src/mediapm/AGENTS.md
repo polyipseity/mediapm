@@ -157,6 +157,16 @@ Two caches are enabled by default, both workspace-scoped under `<runtime>/cache/
 
 `ffprobe` is the only source-metadata probe. Online `${media.metadata.*}` values are resolved during materialization from the yt-dlp `info.json` sidecar held in CAS (`materializer/metadata.rs`, `resolve_variant_metadata_key`); `media add` never contacts a remote source, and `add_media_source_with_position` takes its title, description, and media id from the caller.
 
+### Media-tagger network contract
+
+The media-tagger's MusicBrainz and Cover Art Archive traffic is bounded, injectable, and fails loudly. The module docs in `builtins/media_tagger/{mod,musicbrainz,cover_art}.rs` carry the deep spec; `tests/int/media_tagger_hermetic.rs` drives the whole metadata stage against `wiremock` hosts with both endpoints injected.
+
+The 10 boolean options (`strict_identification`, `write_all_tags`, `write_all_images`, `save_images_to_tags`, `embed_only_one_front_image`, `caa_approved_only`, `preserve_images`, `clear_existing_tags`, `enable_tag_saving`, `release_ars`) are value arguments (`--write-all-images false` is accepted; a bare `--flag` is a parse error) and their workflow token specs are `TokenSpec::Pair`, so a configured `false` reaches the process. An equality-gated `Bool` token spec combined with clap's `true` default used to flip every configured `false` to `true`.
+
+`musicbrainz_endpoint` and `caa_endpoint` are honored for real: the former's host[:port] selects the `musicbrainz_rs` fetch domain (the crate appends `/ws/2` and speaks plain HTTP, so scheme and path are ignored), the latter (`DEFAULT_CAA_ENDPOINT`, `https://coverartarchive.org`) replaces the once-hardcoded archive URLs. One `MUSICBRAINZ_FETCH_DEADLINE` (90s) wraps the recording+release fetch, because `api_bindium`'s 503 handling sleeps on the server's `Retry-After` with no cap; every cover-art GET carries a 30s per-request timeout and the whole cover-art phase runs under one `COVER_ART_PHASE_BUDGET` (60s) deadline.
+
+Fetch failures are loud: a MusicBrainz or cover-art fetch error fails the step — the stale-cache-on-error fallbacks are gone, though a fresh cache hit still short-circuits — and HTTP 404 from the archive is the only legitimate "no art" answer. Cover-art failures are unconditional, not gated by `strict_identification`, because a failed image fetch is a missing asset rather than missing metadata.
+
 ### Global tool cache CLI
 
 `mediapm global tool-cache` inspects and prunes the user-level tool cache (`<os-cache-dir>/mediapm/cache/`), distinct from the workspace metadata caches. Implemented in `src/mediapm/src/global.rs`, it reuses the `mediapm-conductor` `Cache` engine directly (no background loop).
