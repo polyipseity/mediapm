@@ -6,18 +6,23 @@ applyTo: "src/mediapm-utils/src/progress/mod.rs, src/mediapm-utils/src/progress/
 
 # Progress bar rendered output format
 
-This file records the rules the renderer follows: what goes in a prefix, how a label is ranked for truncation, and which screen installs which label. For what a frame actually looks like, the authority is the three runnable examples listed under "Worked examples" and the transcripts they generate. Any agent editing progress code MUST read this before changing templates, glyphs, colors, prefix/suffix shapes, or ordering, and MUST NOT hand-write a terminal frame into documentation.
+This file records the rules the renderer follows: what goes in a prefix, how a label is ranked for truncation, and which screen installs which label. For what a frame actually looks like, the authority is the three runnable examples listed under "Worked examples" and the transcripts they generate. Any agent editing progress code MUST read this before changing row rendering, glyphs, colors, prefix/suffix shapes, or ordering, and MUST NOT hand-write a terminal frame into documentation.
 
 ## Source of truth
 
-- `src/mediapm-utils/src/progress/inner/components.rs`: templates, styles, truncation functions (`semantic_truncate_prefix`, `semantic_truncate_suffix`, `render_prefix_components`, `render_suffix_components`), plus `StatusCount` (`:19`) and `format_status_list` (`:31`)
-- `src/mediapm-utils/src/progress/inner/renderer.rs`: layout (`recompute_layout`), single push point (`sync_snapshot_to_bar`), pre-roll, resize handling, debug sink
+- `src/mediapm-utils/src/progress/inner/plan.rs`: the frame as a value — `FramePlan`, `PlanRow`, `RenderStyle`, `RowAnimation`, and every row render (`render`, `render_row`, `render_spinner`, `render_fill`)
+- `src/mediapm-utils/src/progress/inner/frame.rs`: the frame sequence — `tick()` → `run_frame()`: resize absorb, `build_plan`, debug snapshot, one `write_frame`
+- `src/mediapm-utils/src/progress/inner/writer.rs`: `write_frame(term, previous, next, force)` — the only terminal writer (per-row diff repaint)
+- `src/mediapm-utils/src/progress/inner/gate.rs`: `WriteGate` — the term handle plus `commit_frame` (the CR+LF that advances past a committed frame); no write suppression exists
+- `src/mediapm-utils/src/progress/inner/renderer.rs`: `build_plan`, `sync_slot` (cache-only), `retained_row`, `blank_row`, `finalize`, `SlotCache`/`StyleKey`, resize handling
+- `src/mediapm-utils/src/progress/inner/layout.rs`: `settle_layout` (the width budget), `slot_row_strings`, `sync_snapshot_to_slot`, `keeps_timing`/`without_timing`
+- `src/mediapm-utils/src/progress/inner/components.rs`: truncation (`semantic_truncate_prefix`, `semantic_truncate_suffix`, `render_prefix_components`, `render_suffix_components`), colors (`bar_color_code`), format helpers, `StatusCount` (`:19`), `format_status_list` (`:31`), `PARKED_GLYPH` (`:633`)
 - Verified by `src/mediapm-utils/tests/progress_output/*.rs` using exact `assert_eq!(term.contents(), concat!(...))`, and by the three runnable screen examples listed under "Worked examples"
 
 ## Width constants
 
 ```text
-MIN_PREFIX_WIDTH = 0       (decreasable floor, effective floor ~4 from ANSI reset in sync_snapshot_to_bar)
+MIN_PREFIX_WIDTH = 0       (decreasable floor, effective floor ~4 from the ANSI reset the client-truncation path prepends)
 MAX_PREFIX_WIDTH = 40      (hard ceiling, prefixes truncate beyond this)
 MIN_SUFFIX_WIDTH = 0       (decreasable floor, no ANSI overhead on suffix side)
 MAX_SUFFIX_WIDTH = 65
@@ -25,7 +30,7 @@ FRAME_OVERHEAD_COLUMNS = 4 (spinner glyph plus the three spaces between the four
 MIN_BAR_FILL = 4           (floor held back under the fill, and the width at which a frame stops drawing one)
 ```
 
-`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs:622`) and `max_suffix_width(cols)` (`:628`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `recompute_layout` (`layout.rs:230`) then spends what is left of `cols`, in two steps:
+`max_prefix_width(cols)` (`src/mediapm-utils/src/progress/inner/components.rs:622`) and `max_suffix_width(cols)` (`:628`) are `const fn` capping those two ceilings at the terminal width, so neither reserves more than the line holds. `settle_layout` (`layout.rs:360`) then spends what is left of `cols`, in two steps:
 
 ```text
 reserved = cols - (FRAME_OVERHEAD_COLUMNS + MIN_BAR_FILL)
@@ -34,7 +39,7 @@ prefix_w = min(measured prefix, prefix_ceiling, reserved - suffix_w)
 fill     = cols - (FRAME_OVERHEAD_COLUMNS + prefix_w + suffix_w)
 ```
 
-`draw_fill` is `fill > MIN_BAR_FILL`. A frame that answers no draws itself from the same four fields with `{wide_bar}` and the space in front of it left out, and re-settles the two label slots over the columns the floor was holding, with the suffix measured again without its timing:
+`draw_fill` is `fill > MIN_BAR_FILL`. A frame that draws no fill renders the same four fields minus the fill column and the space in front of it, and re-settles the two label slots over the columns the floor was holding, with the suffix measured again without its timing:
 
 ```text
 reserved   = cols - FRAME_OVERHEAD_COLUMNS
@@ -48,7 +53,7 @@ On a frame with no bar, the timing is the first thing the suffix gives up, becau
 
 ## Two layout facts to know before changing a label
 
-**The slot is measured from what a bar draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` turns the seed into built-in prefix components at `src/mediapm-utils/src/progress/inner/tracked.rs:122`, and `snap.prefix` is their render, which is the right width to measure for a bar that draws them. A bar with a `BarLabelTruncation` installed draws something else, so `recompute_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`layout.rs:378`). `snap.prefix` is the wrong width for such a bar, because the seeds are short by design and `idle` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:348`). A client label may be longer or shorter than the string its bar was created with, so the measurement has to follow the label.
+**The slot is measured from what a row draws, not from the seed it was built with.** `SharedState::with_time_source_and_style` (`src/mediapm-utils/src/progress/inner/tracked.rs:129`) turns the seed into built-in prefix components, and `snap.prefix` is their render, which is the right width to measure for a row that draws them. A row with a `BarLabelTruncation` installed draws something else, so `settle_layout` asks the client for that instead: it calls `truncate_prefix` at the ceiling and measures the result (`layout.rs:388`). `snap.prefix` is the wrong width for such a row, because the seeds are short by design and `idle` is what the conductor installs on every worker slot (`src/mediapm-conductor/src/orchestration/coordinator.rs:348`). A client label may be longer or shorter than the string its row was created with, so the measurement has to follow the label.
 
 **The budget is the terminal's, and the ceiling only trims it.** The slot is what is left after the spinner, the separators and the suffix, capped at `MAX_PREFIX_WIDTH`, and the fill takes what neither label wants, down to a floor of `MIN_BAR_FILL` columns. Narrowing the terminal shrinks the fill first and takes columns from the label one ranked field at a time, so what changes across widths is which field survives, not how much of the line the labels occupy.
 
@@ -58,26 +63,25 @@ Every width the progress examples accept draws one line per row on all three scr
 
 A frame drops its fill when the fill the budget affords is at or below `MIN_BAR_FILL`. Four cells of `░░░░` or `████` carry a quarter-resolution fraction that the count beside them already states, and they are paid for out of a label being clipped down to its tail. So at that point the frame stops drawing a bar and gives the columns to the label and the count instead, which is what `{spinner} {prefix} {msg}` is for.
 
-Above a screen's own crossing nothing changes: the fill is back, the four template fields are back, and a frame looks the way it always did. The crossings differ per screen because each screen's labels differ, and the width at which the labels stop overflowing the line is a property of those labels. Measured over the three example screens at every width from 8 to 120, the fill is at the floor at every width up to 58 on tool sync and materialization and up to 65 on the workflow screen, whose labels are seven columns wider. Read `recompute_layout` for the question it asks; there is no width constant to look up.
+Above a screen's own crossing nothing changes: the fill is back, the four row fields are back, and a frame looks the way it always did. The crossings differ per screen because each screen's labels differ, and the width at which the labels stop overflowing the line is a property of those labels. Measured over the three example screens at every width from 8 to 120, the fill is at the floor at every width up to 58 on tool sync and materialization and up to 65 on the workflow screen, whose labels are seven columns wider. Read `settle_layout` for the question it asks; there is no width constant to look up.
 
 A row still says something at the bottom of the range, and that is the property the `*_screen_rows_never_go_empty` sweeps pin. Two things carry a row once the bar is gone: the label, and the count and timing in the suffix. A row with neither renders its timing rather than nothing, as `keeps_timing` decides above. What is left is the bottom of the range on a screen whose suffixes are timing-only, where the suffix slot measures nothing and there are no columns for the timing either. That is measured per screen in the doc comment of `assert_narrow_rows_carry_a_label_or_a_count` in `src/mediapm/examples/support/mod.rs`.
 
-## Production templates
+## Row rendering
 
-Templates are **dynamic `format!` strings** built inside `apply_*_bar_style` functions using live `prefix_w`/`suffix_w` values and the frame's `draw_fill`. There are NO static `CHILD_BAR_TEMPLATE`/`OVERALL_BAR_TEMPLATE` constants.
+A frame is an `FramePlan` (one per tick) that `plan.rs` renders to strings. Each `PlanRow` carries the four fields the old templates held — spinner, prefix, fill, message — plus its `RenderStyle` and `RowAnimation`; there are no `format!` templates and no style-builder functions anywhere.
 
-| Function | Template pattern | Wide bar style |
-|---|---|---|
-| `apply_overall_bar_style` | `{spinner:.green} {prefix:>{pw}.{pw}} {wide_bar:0.magenta/dim} {msg:<{sw}.{sw}}` | magenta/dim |
-| `apply_bar_style` | `{spinner:.green} {prefix:>{pw}.{pw}} {wide_bar:0.yellow/dim} {msg:<{sw}.{sw}}` | yellow/dim |
-| `apply_done_bar_style` | `{spinner:.white/.dim} {prefix:>{pw}.{pw}} {wide_bar:0.green/dim} {msg:<{sw}.{sw}}` | green/dim |
-| `apply_failed_bar_style` | `{spinner:.red} {prefix:>{pw}.{pw}} {wide_bar:0.red/dim} {msg:<{sw}.{sw}}` | red/dim |
+| RenderStyle | Spinner | Fill run color | RowAnimation |
+|---|---|---|---|
+| `Overall` | green | magenta/dim | `Animate` only when the source is Active and opted in, else `Static("idle")`/`Static("terminal")` |
+| `Active` | green | yellow/dim | `Animate` only when the source opted in via `set_animating(true)`, else `Static("idle")` |
+| `Done` | white/dim | green/dim | `Static("terminal")` — the fill draws a full run regardless of position |
+| `Failed` | red | red/dim | `Static("terminal")` |
+| `Blank` | (no glyph) | (no fill) | `Static` — `render_row` returns full-width spaces before any fill is built |
 
-Where `{pw}` = `prefix_w` and `{sw}` = `suffix_w`, both read from the cells `recompute_layout` writes. There is no static template to fall back to.
+`draw_fill == false` drops the fill field and the space in front of it: the row is spinner, prefix, message. The space in front of the message stays, which is why `render_suffix_components` gives the count/total segment its own leading space.
 
-`draw_fill == false` builds the same four fields with `{wide_bar}` and the space in front of it left out: `{spinner:.green} {prefix:>{pw}.{pw}} {msg:<{sw}.{sw}}`, so a frame with no bar is the same layout minus the third field. The space in front of `{msg}` stays, which is why `render_suffix_components` gives the count/total segment its own leading space. `frame_template` in `components.rs` holds both shapes and takes each caller's colours as arguments, so a style is one call rather than two.
-
-All styles: `tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")`, `progress_chars("█░")`.
+All styles: `TICK_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"`, `progress chars "█░"`. The fill matrix is in `render_fill`: a `Done` row and a `total == 0` row draw a full `█` run; every other row splits `fill_w` by `position / total`.
 
 ## Coloring reference
 
@@ -85,14 +89,14 @@ All color is applied via ANSI SGR escapes (`\x1b[{code}m`). The `console` crate 
 
 ### Bar fill and spinner colors
 
-Applied by the `apply_*_bar_style` functions in `components.rs`. Each function sets the spinner color, the bar fill color, and the dim suffix color.
+`RenderStyle` selects the colors at render time in `plan.rs`; `bar_color_code` supplies the numeric code per status. A parked row's `·` carries no color.
 
-| State | Spinner | Bar fill | Applied by |
+| State | Spinner | Bar fill | Rendered by |
 |---|---|---|---|
-| Active overall | green | magenta/dim | `apply_overall_bar_style` |
-| Active child | green | yellow/dim | `apply_bar_style` |
-| Success/Warning finished | white/dim | green/dim | `apply_done_bar_style` |
-| Failed | red | red/dim | `apply_failed_bar_style` |
+| Active overall | green | magenta/dim | `RenderStyle::Overall` |
+| Active child | green | yellow/dim | `RenderStyle::Active` |
+| Success/Warning finished | white/dim | green/dim | `RenderStyle::Done` |
+| Failed | red | red/dim | `RenderStyle::Failed` |
 
 ### Prefix marker colors
 
@@ -124,26 +128,26 @@ All status-list suffixes use the **number-first** format: `{n} {word}`, comma-jo
 
 ## Truncation dispatch
 
-`sync_snapshot_to_bar` (in `renderer.rs`) is the single push point from `SharedState` → indicatif. It determines whether client-defined truncation (`BarLabelTruncation` via `set_truncation`) or built-in truncation (`PrefixComponents` via `set_prefix_components`) applies:
+`sync_snapshot_to_slot` (in `layout.rs`) records each slot's strings in the `SlotCache`; it never writes a terminal. Whether client-defined truncation (`BarLabelTruncation` via `set_truncation`) or built-in truncation (`PrefixComponents` via `set_prefix_components`) applies is decided per row:
 
-- **Client-truncated bars**: `ansi_overhead = 4`. Calls `truncation.truncate_prefix(prefix_w - 4)` then prepends `\x1b[0m` to the result. Suffix path: calls `truncation.truncate_suffix(suffix_w, &fresh_suffix)` where `fresh_suffix` is the merged `SuffixComponents` (auto-derived + user-set fields), with the timing stripped on a frame that draws no bar unless the row would otherwise have nothing to say.
-- **Built-in bars**: `ansi_overhead` is 13 for `Failed`/`Warning`, 4 otherwise. Calls `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` then `render_prefix_components` to wrap the prefix in colored markers.
+- **Client-truncated rows**: `settle_layout` measures through `truncate_prefix(prefix_ceiling)` / `truncate_suffix(...)`, and the slot row applies the same calls, prepending the 4-byte ANSI reset `\x1b[0m` to the result (`layout.rs:177`). Suffix: `truncate_suffix(suffix_w, &fresh_suffix)` where `fresh_suffix` is the merged `SuffixComponents` (auto-derived + user-set fields), with the timing stripped on a frame that draws no fill unless the row would otherwise have nothing to say.
+- **Built-in rows**: the status-marker overhead is 13 for `Failed`/`Warning`, 4 otherwise. `semantic_truncate_prefix(&components, prefix_w - ansi_overhead)` then `render_prefix_components` wraps the prefix in colored markers.
 
-`recompute_layout` checks for installed client truncation to apply the same overhead rule for width budgeting. It measures the suffix through the same `render_slot_suffix` the draw path renders through, so a client label is asked for its own output in both passes.
+`settle_layout` applies the same overhead rule for width budgeting. It measures the suffix through the same `render_slot_suffix` the row renders through, so a client label is asked for its own output in both passes.
 
-## Buffer ordering and per-frame sync
+## Single writer and per-frame sync
 
-The tick loop and attach operation are designed to minimize visible flicker:
+Every frame has exactly one writer. `run_frame()` (frame.rs:117) does, in order: absorb a resize bookkeeping-only (`maybe_adjust_for_resize` — no restyle, no write), `build_plan` (which calls `settle_layout` for the width budget and builds one `PlanRow` per slot), emit the debug snapshot, render the plan to strings, then one `write_frame` through the gate's term. The facts that follow:
 
-- **Every slot syncs every tick**: there is no change-detection layer. `run_frame` step 2 re-measures every bound slot (`recompute_layout`) and re-settles one shared `(prefix_w, suffix_w)` for the frame; step 4 then re-syncs every bound slot — position, timing strings and status — unconditionally. An event that only moves the clock (an elapsed string growing, a rate or ETA changing length) is re-derived on the same frame it happens; nothing needs a "declare your change" call. String and position dedup inside `sync_snapshot_to_bar` survives purely as write suppression.
-- **Buffer-first tick**: `tick()` enables the `WriteGate` (suppresses writes) BEFORE calling `recompute_layout()`. This ensures all `set_style` calls from `recompute_layout` → `sync_slot` → `apply_*_bar_style` are suppressed until `WriteGate::open()` releases them atomically.
-- **Buffered attach**: `attach()` wraps its entire body in a `WriteGate::suppress()`/`open()` pair so slot shifts, sync_slot, and recompute_layout during bar attachment are buffered and appear atomically.
-- **Style write suppression**: `sync_slot` caches a `StyleKey` of `(prefix_w, suffix_w, is_overall, draw_fill, status_code)` in `SlotCache` and only calls `apply_*_bar_style` when the key differs. This is a write filter, not change detection: every member is derived by the frame itself (settled widths from this frame's `recompute_layout`, status from the source's snapshot), so no caller can forget to declare an input. It suppresses the indicatif tick a `set_style` carries, which would otherwise animate a finished row's spinner every frame. `mark_blanked` resets the key to `StyleKey::unknown()` so a re-bound slot re-styles whatever the derived inputs say.
-- **Terminal transitions apply once**: `finish_slot` runs once per source per bar (guarded by `SlotCache::terminal_finished_for`, a record that travels with the rebind), and a clear's blank is a one-shot announced by `finish_and_clear` (`SharedState::take_cleared_blank`) held until a rebind clears it. An unbound slot keeps whatever its bar last drew — the retention contract. A slot that never held content draws through `blank_bar_style()` (`{wide_msg}`, deliberately not the frame template: a fixed-width blank could wrap after a terminal shrink, and its pixels are an empty line either way).
+- **Every bound slot syncs every frame**: there is no change-detection layer at the snapshot level. `sync_snapshot_to_slot` re-records position, timing strings, status and style key every frame — it is what retained rows and blank decisions read. An event that only moves the clock (an elapsed string growing, a rate or ETA changing length) is re-derived on the same frame it happens; nothing needs a "declare your change" call.
+- **The writer diffs frames per row**: `write_frame` repaints only rows that differ from the previous frame (skipping a write entirely when the frames are equal), so per-frame re-recording does not translate into per-row terminal writes. A resize forces a full repaint (`force = true` bypasses only the equality short-circuit).
+- **`StyleKey` feeds retention and restart, not writes**: `sync_slot` caches a `StyleKey` of `(prefix_w, suffix_w, is_overall, draw_fill, status_code)` in `SlotCache`; a retained row restyles itself from it, and a source that goes Active again after a terminal state gets `invalidate_position()` so its position restarts from the new baseline. `mark_blanked` resets the key to `StyleKey::unknown()` so a re-bound slot re-styles whatever the derived inputs say.
+- **Terminal transitions apply once**: a clear's blank is a one-shot announced by `finish_and_clear` (`SharedState::take_cleared_blank`) held until a rebind clears it. An unbound slot keeps whatever it last drew — the retention contract (`retained_row`, re-settled at current widths). A slot that never held content draws a full-width blank line (`blank_row` / `RenderStyle::Blank` — deliberately plain spaces: a fixed-width blank could wrap after a terminal shrink, and its pixels are an empty line either way).
+- **Between screens**: `join()` finalizes the screen and `commit_frame` advances the cursor past the committed frame (CR+LF), so the next screen's frame starts on the row below the retained one.
 
 ## Three bar-label structs
 
-All three structs implement [`BarLabelTruncation`] (defined in `src/mediapm-utils/src/progress/truncation.rs`) and are rendered via the client-truncation path in `sync_snapshot_to_bar`. The renderer prepends `\x1b[0m` (4-byte ANSI reset) to all client-truncated prefixes; no colored markers are embedded in the truncated string.
+All three structs implement [`BarLabelTruncation`] (defined in `src/mediapm-utils/src/progress/truncation.rs`) and flow through the client-truncation path: `settle_layout` measures them via `truncate_prefix`/`truncate_suffix`, and the slot row renders them the same way. The renderer prepends `\x1b[0m` (4-byte ANSI reset) to all client-truncated prefixes; no colored markers are embedded in the truncated string.
 
 All three are installed by production code: the conductor coordinator puts `WorkerBarLabel` on each worker slot, the mediapm materializer installs `MaterializationBarLabel`, and the workflow example puts `StepBarLabel` on its per-step rows. The coordinator installs no label on the pinned overall row at all — its prefix is the static seed `running workflows` — so production renders no `StepBarLabel` anywhere.
 
@@ -228,7 +232,7 @@ Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases a
 - **Skip bar** shows `skipped, N cached` status list (when cached) vs `skipped` (when not cached).
 - **Byte columns** render through `format_count` (`src/mediapm-utils/src/progress/inner/components.rs:205`), which is decimal: 31 457 280 bytes reads `31M`, not `29.9MiB`.
 - **Prune bar** (`[prn]`) uses the `tools.len()` call before the `retain` block to count prune candidates and sets the total to that count. Zero-bar guard: `[prn]` bar is not created when there are no candidates. The bar advances once per document-rewrite removal, then once more for filesystem prune.
-- Overall bar uses `apply_overall_bar_style` (magenta); child bars use `apply_bar_style` (yellow).
+- Overall bar renders in `RenderStyle::Overall` (magenta); child bars in `RenderStyle::Active` (yellow).
 
 ### Screen B: Workflow (`src/mediapm-conductor/src/orchestration/`)
 
@@ -368,9 +372,9 @@ Each example's test walks its own fixture directory and compares what the screen
 
 ## Pre-roll, gap conversion, finalize
 
-- **Pre-roll**: On first draw, writes blank lines to scroll existing terminal content into scrollback, then repositions cursor. Only fires when `pre_roll_term` is `Some` (not in test mode).
-- **Gap conversion**: Child bars that are inactive or finished show a fully-dimmed empty bar (`total=1, pos=0`) where the frame has room for a fill. Idle workers are explicitly finished (via `finish_success`), so that is the bar they show. `WorkerSpinner` detects the state. Below the fill crossing the frame draws no bar, so an idle worker reads `[idle]` and its timing on its own.
-- **Finalize**: `group.join()` returns after all bars finish; the renderer removes blank reserved slots and triggers a final draw so only finished bars persist in scrollback.
+- **Pre-roll**: owned by `ProgressTerminal` (`pre_roll_if_needed`, terminal.rs:82): once per terminal, before the first screen's first frame, it writes blank lines to scroll existing terminal content into scrollback, then repositions the cursor. Only fires when `pre_roll_term` is `Some` (not in test mode).
+- **Gap conversion**: inactive or finished rows render where the frame has room for a fill. Idle workers are explicitly finished (via `finish_success`), which is what a `Done`-styled row shows. Below the fill crossing the frame draws no bar, so an idle worker reads `[idle]` and its timing on its own.
+- **Finalize**: `group.join()` runs `finalize` (renderer.rs:841): blank reserved slots are removed from the plan, and one last full-fill frame is written so only finished bars persist in scrollback. A screen whose frames were all blank writes nothing at all (`blank_first_frame` in frame.rs:144 — a never-drawn screen owes no frame).
 
 ## Authoritative tests
 
@@ -383,23 +387,21 @@ The `mediapm-utils` suite uses `assert_eq!(term.contents(), concat!(...))` again
 
 ## Global toggle and auto-detection
 
-Progress is suppressed by passing `no_progress: true` or by constructing a `ProgressScreen::disabled()`. Progress bars are also automatically hidden when stderr is not a TTY (indicatif self-detects via `console::Term::stderr()`). The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress.
+Progress is suppressed by passing `no_progress: true` or by constructing a `ProgressScreen::disabled()`. Progress bars are also automatically hidden when stderr is not a TTY (`console::Term::stderr()` detection). The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress.
 
 ## Spinner animation
 
-Every progress bar uses a daemon ticker at 50 ms intervals, keeping the spinner animating even during long periods without position updates. The spinner uses braille dots: `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`. For deterministic tests, disable the ticker with `.with_ticker_enabled(false)`.
+The terminal runs a daemon ticker at 50 ms intervals, so a frame is computed even during long periods without position updates. Animation is **park-by-default**: a row cycles the braille spinner `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` only when its status is Active AND its source opted in via `set_animating(true)` (`ProgressBarApi`); every other row parks on the fixed `·` (`PARKED_GLYPH`) — idle slots, finished rows, terminal rows. Production call sites opt in where the caller is genuinely working (the tool-sync phases, the materializer); an idle worker slot parks. For deterministic tests, disable the ticker with `.with_ticker_enabled(false)`.
 
 ### Which glyph a row ends on is not the renderer's to decide
 
-The glyph comes out of `indicatif`'s tick counter, and the counter moves on real time. `ProgressBar::set_position` and `ProgressBar::inc` both ask `AtomicPosition::allow(now)` (`indicatif-0.17/src/state.rs`) before they tick, and `allow` is a token bucket: `MAX_BURST` tokens to start, one more per `INTERVAL` (1 ms) of wall-clock time since the bar was created, and a call that gets a token advances `BarState::state.tick`. `ProgressStyle::get_tick_str` then picks `tick_strings[tick % (len - 1)]`.
+An animated row's glyph is `TICK_CHARS[frame_counter % 10]`, and the frame counter advances once per computed frame — not per row. So the glyph on a row is a function of how many frames were drawn while it was animating, and the frame count is a function of everything else on screen: handing another row more ticks moves this row's glyph too. Two runs that drive the same rows in the same order can end on different glyphs, and nothing in this repository controls which.
 
-So the glyph on a row is a function of how much real time passed between that row's position updates, and how much real time passed is a function of everything else on screen. Handing another row more advances spends more time, which hands this row's bucket refills it would not otherwise have had. Two runs that drive the same bars in the same order can end on different glyphs, and nothing in this repository controls which.
-
-That is what the transcript comparison is for. `assert_frames_match` (`src/mediapm-utils/src/progress/frame_match.rs`) compares every column of two frames exactly and exempts the spinner column alone, so a frame is checked for layout without being checked for animation phase. Its own doc records what it cannot see, and the swap it cannot name is stated there as a fact about the output rather than as a defect. Reach for it instead of a byte comparison anywhere a fixture records a frame, and do not re-tighten the spinner column: a fixture that pins the glyph records the machine that captured it.
+That is what the transcript comparison is for. `assert_frames_match` (`src/mediapm-utils/src/progress/frame_match.rs`) compares every column of two frames exactly and exempts the spinner column alone, so a frame is checked for layout without being checked on animation phase. Its own doc records what it cannot see, and the swap it cannot name is stated there as a fact about the output rather than as a defect. Reach for it instead of a byte comparison anywhere a fixture records a frame, and do not re-tighten the spinner column: a fixture that pins the glyph records the machine that captured it.
 
 ## Library stack
 
-The styling stack uses `indicatif` 0.17 (`ProgressBar`, `MultiProgress`, `ProgressStyle`, `HumanBytes`, `HumanCount`) and `console` 0.15 (`Term::stderr().size()` for terminal width detection, `style()` for ANSI coloring). Do not add `owo-colors`, `colored`, `termion`, or other styling crates; `console::style()` is the single styling entry point.
+The stack is `console` 0.15 (`Term::stderr().size()` for terminal width detection, `style()` for ANSI coloring) plus `indicatif` 0.17 for its terminal types (`TermLike`, `InMemoryTerm`, and the `MultiProgress` type the migration-seam builder methods still accept) and `HumanBytes`/`HumanCount` formatting. The renderer draws frames itself; it owns no `ProgressBar`. Do not add `owo-colors`, `colored`, `termion`, or other styling crates; `console::style()` is the single styling entry point.
 
 ## Duration formatting
 
