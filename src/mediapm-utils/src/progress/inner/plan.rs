@@ -208,7 +208,7 @@ fn done_fill_color(run: &str, render_style: RenderStyle) -> String {
 }
 
 /// Right-pad `s` with spaces to exactly `width` visible columns, truncating
-/// from the right when it is longer — the contract `{prefix:>width}` provided.
+/// from the right when it is longer — the contract `{msg:<width}` provided.
 fn pad_right(s: &str, width: usize) -> String {
     let kept = truncate_visible(s, width);
     let mut out = kept;
@@ -218,7 +218,7 @@ fn pad_right(s: &str, width: usize) -> String {
 }
 
 /// Left-pad `s` with spaces to exactly `width` visible columns, truncating
-/// from the right when it is longer — the contract `{msg:<width}` provided.
+/// from the right when it is longer — the contract `{prefix:>width}` provided.
 fn pad_left(s: &str, width: usize) -> String {
     let kept = truncate_visible(s, width);
     let pad = width.saturating_sub(visible_width(&kept));

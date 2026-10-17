@@ -82,13 +82,42 @@ impl WriteGate {
     /// # Caller contract
     ///
     /// Call this after the frame's final write. The only caller is
-    /// `ProgressRenderer::finalize`, which issues it right after the forced
-    /// final-frame pass.
+    /// `ProgressRenderer::finalize`, which guards the call on "a slot is
+    /// bound NOW" (`drew_frame`) rather than on "a frame is on the
+    /// terminal". The two coincide only for a screen that never bound a
+    /// bar, where no draw ever reached the terminal, so advancing there
+    /// would write a blank row the screen never drew
+    /// (`gated_screen_without_bars_commits_nothing`).
+    ///
+    /// # Accepted gap: an orphaned-row commit advance
+    ///
+    /// The "a slot is bound NOW" guard is not equivalent to "this screen
+    /// left a frame on the terminal", and the divergence is a known,
+    /// accepted, cosmetic gap (public API only). A screen that binds a bar,
+    /// draws it, then has that bar evicted by a height shrink leaves its
+    /// frame on the terminal while the guard reads false at `finalize`, so
+    /// the advance is skipped and the next screen reclaims the row. It is
+    /// reachable only through the public builder with no overall bar,
+    /// `dynamic_height(true)`, and a dimension source whose row count grows
+    /// past the drawn slot and then shrinks back: the shrink evicts from the
+    /// top of the band, so the blank reserved slots above the drawn bar go
+    /// first and the drawn bar is orphaned only once they are gone. No
+    /// in-repo screen is measured to reach it — every production screen built
+    /// from a dynamic-height terminal registers an overall bar
+    /// (`mediapm-conductor/src/cli.rs`, `mediapm/src/service.rs`), whose slot
+    /// is still bound at `finalize`, and the no-overall test screens that
+    /// shrink their injected source never join with an empty band. The
+    /// consequence is a stale row of a bar this screen has already orphaned
+    /// being reclaimed, which is why it is accepted rather than fixed. Any
+    /// future fix must keep the never-bound case, which
+    /// `gated_screen_without_bars_commits_nothing` pins.
     ///
     /// No-op on a gate with no term ([`WriteGate::new_noop`]). A failed
     /// write is not actionable — the frame stays committed either way, and
-    /// the commit path has no error channel (`ProgressBar::tick` discards
-    /// its own draw error for the same reason).
+    /// the commit path has no error channel: `run_frame` and `finalize`
+    /// both count a failed frame write as "not written" and continue
+    /// (advisory rendering), and this CR+LF discards its own error for the
+    /// same reason.
     pub(crate) fn commit_frame(&self) {
         let Some(term) = &self.committed_frame_term else { return };
         // Best effort by contract: the frame is committed whether or not the
