@@ -321,6 +321,15 @@ mod tests {
     /// from, so a transcript of it would need its own directory, and the
     /// filenames in that directory would have to parse against a different
     /// stem. One screen, one directory is the shape the walk above relies on.
+    ///
+    /// Re-baselined for the single writer (Task 7 phase 2). The changed bytes
+    /// are the three accepted classes and nothing else: the spinner column is
+    /// the frame counter's parked glyphs (a), the two `░` runs are now the
+    /// terminal full fill the fill matrix draws (b), and the elapsed/rate
+    /// strings carry the scripted final frame rather than the tick the legacy
+    /// block froze (e). The tails this test protects — `You Up
+    /// [youtube.dQw4w9WgXcQ]`, `Up [youtube.dQw4w9WgXcQ] links`, and
+    /// `he Wall` — are untouched.
     #[test]
     fn materialization_screen_keeps_the_tail_of_a_folder_name_wider_than_the_budget() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -331,11 +340,11 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "⠏     01 - Telepathy.flac o Children [cmt] ████████████████████████ 6s\n",
-                "⠼     e You Up [youtube.dQw4w9WgXcQ] [wrt] ░░░░░░░░░░░░░░░░░░░░░░░░ 6s 0/d 1s\n",
-                "⠦     Up [youtube.dQw4w9WgXcQ] links [wrt] ████████░░░░░░░░░░░░░░░░ 4s 2/m 1m20s\n",
-                "⠴     01 - In the Flesh?.m4a he Wall [vrf] ████████████████████████ 0s 0/d\n",
-                "⠋                            materializing ████████░░░░░░░░░░░░░░░░ 13s 1/m 2m"
+                "·     01 - Telepathy.flac o Children [cmt] ████████████████████████ 6s\n",
+                "⠧     e You Up [youtube.dQw4w9WgXcQ] [wrt] ████████████████████████ 8s 0/d 1s\n",
+                "⠧     Up [youtube.dQw4w9WgXcQ] links [wrt] ████████████████████████ 6s 2/m 1m20s\n",
+                "⠧     01 - In the Flesh?.m4a he Wall [vrf] ████████████████████████ 2s 3/m\n",
+                "⠧                            materializing ████████████████████████ 15s 1/m 2m"
             )
         );
     }

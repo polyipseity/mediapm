@@ -1,12 +1,12 @@
-⠏                          [idle]
-⠏                          [idle]
-⠏                          [idle]
-⠏                          [idle]
-⠏                          [idle]
-⠏                          [idle]
-⠏                      [W] [idle]
-⠧       default s8 (media-tagger)
-⠦             default s9 (import)
-⠴           default s10 (archive)
-⠴            default s11 (ffmpeg)
-⠏               running workflows  7/26
+·                          [idle]
+·                          [idle]
+·                          [idle]
+·                          [idle]
+·                          [idle]
+·                          [idle]
+·                      [W] [idle]
+⠙       default s8 (media-tagger)
+⠙             default s9 (import)
+⠙           default s10 (archive)
+⠙            default s11 (ffmpeg)
+·               running workflows  7/26

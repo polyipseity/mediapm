@@ -1,12 +1,12 @@
-⠏                [idle]
-⠏                [idle]
-⠏                [idle]
-⠏                [idle]
-⠏                [idle]
-⠏                [idle]
-⠏            [W] [idle]
-⠧     ault s8 ia-tagger
-⠦     fault s9 (import)
-⠴      ault s10 archive
-⠴     ault s11 (ffmpeg)
-⠏              running   7/26
+·                [idle]
+·                [idle]
+·                [idle]
+·                [idle]
+·                [idle]
+·                [idle]
+·            [W] [idle]
+⠙     ault s8 ia-tagger
+⠙     fault s9 (import)
+⠙      ault s10 archive
+⠙     ault s11 (ffmpeg)
+·              running   7/26

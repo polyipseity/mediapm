@@ -1,7 +1,7 @@
-⠸      ault s7
-⠏          [W]
-⠏          [F]
-⠏       [idle]
-⠋      ault s7 2/5
-⠦      ault s8 1/3
-⠏               2/9
+⠇      ault s7
+·          [W]
+·          [F]
+·       [idle]
+⠇      ault s7 2/5
+⠇      ault s8 1/3
+·               2/9

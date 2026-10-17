@@ -1,12 +1,12 @@
-⠏     y.flac [cmt]
-⠏     on.wav [cmt]
-⠏     h?.m4a [cmt]
-⠹     ce.m4a [vrf]
+·     y.flac [cmt]
+·     on.wav [cmt]
+·     h?.m4a [cmt]
+⠸     ce.m4a [vrf]
 ⠸     al.m4a [stg]
-⠼
-⠏
-⠇
-⠏     l.m3u8 [cmt]
-⠙     You Up [wrt]
+⠸
+·
+⠸
+·     l.m3u8 [cmt]
+⠸     You Up [wrt]
 ⠸       thumbnails
-⠋     aterializing
+⠸     aterializing
