@@ -5,11 +5,12 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 
 use mediapm_conductor::http::client::shared_http_client;
 
@@ -487,7 +488,26 @@ pub(super) fn now_unix_seconds() -> u64 {
     mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
+/// Per-request ceiling for one Cover Art Archive HTTP call.
+///
+/// The shared client's own request timeout is the conductor's 30-minute
+/// default; a single stalled image download must not hold the tagging step
+/// that long on its own.
+const MEDIA_TAGGER_COVER_ART_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Wall-clock ceiling for the whole cover-art phase.
+///
+/// The phase is the sequential image-index lookups plus the image downloads,
+/// each of those requests individually capped at
+/// [`MEDIA_TAGGER_COVER_ART_REQUEST_TIMEOUT`]. The total is capped here so a
+/// slow-but-alive server cannot stall the step across many requests.
+pub(super) const COVER_ART_PHASE_BUDGET: Duration = Duration::from_mins(1);
+
 /// Executes one HTTP GET with retry/backoff for transient failures.
+///
+/// Each attempt carries the cover-art per-request timeout so one request
+/// cannot outlive [`MEDIA_TAGGER_COVER_ART_REQUEST_TIMEOUT`] regardless of
+/// the shared client's own default.
 pub(super) async fn http_get_with_retry(
     http_client: &reqwest::Client,
     url: &str,
@@ -495,7 +515,7 @@ pub(super) async fn http_get_with_retry(
     let mut backoff_millis = MEDIA_TAGGER_HTTP_RETRY_BASE_DELAY_MILLIS;
 
     for attempt in 0..MEDIA_TAGGER_HTTP_RETRY_ATTEMPTS {
-        match http_client.get(url).send().await {
+        match http_client.get(url).timeout(MEDIA_TAGGER_COVER_ART_REQUEST_TIMEOUT).send().await {
             Ok(response)
                 if response.status().is_server_error()
                     && attempt + 1 < MEDIA_TAGGER_HTTP_RETRY_ATTEMPTS =>
@@ -517,18 +537,28 @@ pub(super) async fn http_get_with_retry(
 }
 
 /// Fetches all discoverable cover-art entries for release/release-group entities.
+///
+/// `caa_endpoint` selects the Cover Art Archive base URL (scheme and host are
+/// both honored), and `deadline` caps the whole phase's wall clock.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each cover-art option mirrors one CAA query parameter; bundling them would obscure the Picard-compatible surface"
+)]
 pub(super) async fn collect_musicbrainz_cover_art(
     payload: &MusicBrainzPayload,
     cache: &MediaTaggerHttpCache,
+    caa_endpoint: &str,
     providers_expression: &str,
     caa_image_types_expression: &str,
     caa_image_size: &str,
     caa_approved_only: bool,
     release_ars: bool,
+    deadline: Instant,
 ) -> anyhow::Result<Vec<SelectedCoverArt>> {
     let providers = parse_cover_art_providers_expression(providers_expression)?;
     let allowed_types = parse_caa_image_types_expression(caa_image_types_expression)?;
     let image_size = parse_caa_image_size_preference(caa_image_size)?;
+    let caa_base = caa_endpoint.trim_end_matches('/');
 
     let mut unique = BTreeMap::new();
 
@@ -536,13 +566,14 @@ pub(super) async fn collect_musicbrainz_cover_art(
         for provider in providers {
             match provider {
                 CoverArtProvider::CaaRelease => {
-                    let endpoint = format!("https://coverartarchive.org/release/{}", release.id);
+                    let endpoint = format!("{caa_base}/release/{}", release.id);
                     for entry in fetch_cover_art_entries(
                         &endpoint,
                         cache,
                         &allowed_types,
                         image_size,
                         caa_approved_only,
+                        deadline,
                     )
                     .await?
                     {
@@ -551,14 +582,14 @@ pub(super) async fn collect_musicbrainz_cover_art(
                 }
                 CoverArtProvider::CaaReleaseGroup => {
                     if let Some(group) = release.release_group.as_ref() {
-                        let endpoint =
-                            format!("https://coverartarchive.org/release-group/{}", group.id);
+                        let endpoint = format!("{caa_base}/release-group/{}", group.id);
                         for entry in fetch_cover_art_entries(
                             &endpoint,
                             cache,
                             &allowed_types,
                             image_size,
                             caa_approved_only,
+                            deadline,
                         )
                         .await?
                         {
@@ -587,6 +618,10 @@ pub(super) async fn collect_musicbrainz_cover_art(
 
 /// Queries one Cover Art Archive endpoint and returns one selected URL per entry.
 ///
+/// The whole request (including retries and body read) runs under `deadline`;
+/// exhausting it is an error naming the cover-art phase, never a silent
+/// stale-cache substitution.
+///
 /// # HTTP client policy
 ///
 /// Uses the process-wide shared client from
@@ -599,6 +634,7 @@ async fn fetch_cover_art_entries(
     allowed_types: &BTreeSet<String>,
     image_size: CaaImageSizePreference,
     caa_approved_only: bool,
+    deadline: Instant,
 ) -> anyhow::Result<Vec<SelectedCoverArt>> {
     let http_client = shared_http_client()
         .map_err(|error| anyhow::anyhow!("initializing shared HTTP client failed: {error}"))?;
@@ -610,29 +646,31 @@ async fn fetch_cover_art_entries(
         return Ok(cached.payload.clone());
     }
 
-    let stale_or_fresh_cached_payload =
-        cached_entries.as_ref().map_or_else(Vec::new, |cached| cached.payload.clone());
+    let (status, body) = tokio::time::timeout_at(deadline, async {
+        let response = http_get_with_retry(http_client, endpoint).await?;
+        let status = response.status();
+        let body = response.text().await.context("reading cover-art response body")?;
+        anyhow::Ok((status, body))
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "cover-art phase budget of {}s exhausted while fetching '{endpoint}'",
+            COVER_ART_PHASE_BUDGET.as_secs()
+        )
+    })
+    .with_context(|| format!("fetching cover-art endpoint '{endpoint}'"))??;
 
-    let Ok(response) = http_get_with_retry(http_client, endpoint).await else {
-        return Ok(stale_or_fresh_cached_payload.clone());
-    };
-
-    let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         let empty = Vec::<SelectedCoverArt>::new();
         let _ = cache.write_cover_art_entries(endpoint, &empty).await;
         return Ok(empty);
     }
 
-    if status.is_server_error() {
-        return Ok(stale_or_fresh_cached_payload.clone());
-    }
-
     if !status.is_success() {
-        return Ok(stale_or_fresh_cached_payload.clone());
+        bail!("cover-art endpoint '{endpoint}' answered HTTP {status}");
     }
 
-    let body = response.text().await.context("reading cover-art response body")?;
     let payload = serde_json::from_str::<CoverArtArchiveResponse>(&body)
         .context("decoding cover-art JSON")?;
 
@@ -987,6 +1025,9 @@ pub(super) fn select_cover_art_for_tag_embedding(
 
 /// Writes deterministic cover-art slot members consumed by apply-stage ffmpeg.
 ///
+/// Image downloads run under `deadline`; exhausting it fails the step rather
+/// than silently leaving slots empty.
+///
 /// # HTTP client policy
 ///
 /// Uses the process-wide shared client from
@@ -998,6 +1039,7 @@ pub(super) async fn persist_cover_art_slot_artifacts(
     selected_cover_art: &[SelectedCoverArt],
     slot_count: usize,
     cache: &MediaTaggerHttpCache,
+    deadline: Instant,
 ) -> anyhow::Result<()> {
     let artifact_directory = resolve_cover_art_artifact_directory(output_path);
     fs::create_dir_all(&artifact_directory).with_context(|| {
@@ -1020,7 +1062,7 @@ pub(super) async fn persist_cover_art_slot_artifacts(
 
     let mut downloaded = Vec::new();
     for image in selected_cover_art {
-        let Some(bytes) = download_cover_art_bytes(http_client, &image.url, cache)
+        let Some(bytes) = download_cover_art_bytes(http_client, &image.url, cache, deadline)
             .await
             .with_context(|| format!("downloading cover-art payload '{}'", image.url))?
         else {
@@ -1076,47 +1118,52 @@ pub(super) fn resolve_cover_art_artifact_directory(output_path: &Path) -> PathBu
         .map_or_else(|| metadata_dir.join("coverart"), |sandbox_root| sandbox_root.join("coverart"))
 }
 
-/// Downloads one cover-art payload, returning `None` when URL is unreachable.
+/// Downloads one cover-art payload under the shared phase deadline.
+///
+/// A `404` is the archive's "no art at this URL" answer and yields `None`;
+/// transport failures, server errors, and an empty `200` body are hard
+/// errors, never silent stale-cache substitutions. A cached row that is
+/// fresh but holds no bytes is a corrupt leftover from an older write path
+/// and is refetched rather than serving a silently empty slot.
 pub(super) async fn download_cover_art_bytes(
     http_client: &reqwest::Client,
     url: &str,
     cache: &MediaTaggerHttpCache,
+    deadline: Instant,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let cached_bytes = cache.read_cover_art_bytes(url).await;
     if let Some(cached) = cached_bytes.as_ref()
         && cached.is_fresh
+        && !cached.payload.is_empty()
     {
-        return Ok((!cached.payload.is_empty()).then(|| cached.payload.clone()));
+        return Ok(Some(cached.payload.clone()));
     }
 
-    let stale_cached_payload = cached_bytes
-        .as_ref()
-        .and_then(|cached| (!cached.payload.is_empty()).then(|| cached.payload.clone()));
+    let (status, bytes) = tokio::time::timeout_at(deadline, async {
+        let response = http_get_with_retry(http_client, url).await?;
+        let status = response.status();
+        let bytes = response.bytes().await.context("reading cover-art payload bytes")?;
+        anyhow::Ok((status, bytes))
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "cover-art phase budget of {}s exhausted while downloading '{url}'",
+            COVER_ART_PHASE_BUDGET.as_secs()
+        )
+    })
+    .with_context(|| format!("fetching cover-art payload '{url}'"))??;
 
-    let Ok(response) = http_get_with_retry(http_client, url).await else {
-        return Ok(stale_cached_payload);
-    };
-
-    let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
 
-    if status.is_server_error() {
-        return Ok(stale_cached_payload);
-    }
-
     if !status.is_success() {
-        return Ok(stale_cached_payload);
+        bail!("cover-art endpoint '{url}' answered HTTP {status}");
     }
-
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("reading cover-art payload bytes from '{url}'"))?;
 
     if bytes.is_empty() {
-        return Ok(stale_cached_payload);
+        bail!("cover-art endpoint '{url}' answered an empty payload");
     }
 
     let payload = bytes.to_vec();
@@ -1272,6 +1319,362 @@ mod tests {
                 .entries
                 .contains_key(&live_key),
             "the live row must be readable once every rewrite has landed"
+        );
+    }
+
+    /// One Cover Art Archive index response in the wire format the archive
+    /// actually serves, with one front image at full quality.
+    fn caa_index_json(image_url: &str) -> String {
+        format!(
+            r#"{{"images":[{{"image":"{image_url}","thumbnails":{{"250":"{image_url}?thumb","1200":"{image_url}?large"}},"types":["Front"],"comment":"","approved":true}}]}}"#
+        )
+    }
+
+    /// A minimal recording+release payload whose release-group lets the
+    /// release-group provider fire; the ids are valid MBID UUIDs because the
+    /// entity types parse them.
+    fn payload_with_release() -> MusicBrainzPayload {
+        serde_json::from_str(
+            r#"{
+                "recording":{"id":"8f3471b5-7e6a-48da-86a9-c1c07a0f47ae","title":"Song"},
+                "release":{
+                    "id":"11111111-1111-1111-1111-111111111111",
+                    "title":"Album",
+                    "release-group":{"id":"22222222-2222-2222-2222-222222222222","title":"Album"}
+                }
+            }"#,
+        )
+        .expect("minimal recording+release payload")
+    }
+
+    /// The whole cover-art phase runs under one deadline, so a server that
+    /// answers slower than the budget has left is cut at the budget instead
+    /// of holding the tagging step hostage. This is the stall class a
+    /// 30-minute client default used to allow: the request is individually
+    /// healthy, but the step cannot wait for it.
+    #[tokio::test]
+    async fn the_cover_art_phase_budget_cuts_a_slow_endpoint() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(1))
+                    .set_body_raw(
+                        caa_index_json("https://example.test/front.jpg"),
+                        "application/json",
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
+        let allowed = parse_caa_image_types_expression("all").expect("all types");
+        let endpoint = format!("{}/release/11111111-1111-1111-1111-111111111111", server.uri());
+
+        let started = Instant::now();
+        let result = fetch_cover_art_entries(
+            &endpoint,
+            &cache,
+            &allowed,
+            CaaImageSizePreference::Full,
+            false,
+            started + Duration::from_millis(200),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        let error =
+            result.expect_err("a response slower than the phase budget must fail the phase");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("cover-art phase budget") && rendered.contains(&endpoint),
+            "the budget error must name the cover-art phase and the endpoint, got: {rendered}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(900),
+            "the deadline must fire at 200 ms, not after the server's 1 s delay: {elapsed:?}"
+        );
+    }
+
+    /// The same deadline covers image downloads, not just index lookups —
+    /// the download is the request that actually fetches megabytes from
+    /// archive.org in production.
+    #[tokio::test]
+    async fn the_phase_budget_cuts_a_slow_image_download() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+            .mount(&server)
+            .await;
+
+        let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
+        let http_client = shared_http_client().expect("shared HTTP client");
+        let url = format!("{}/front.jpg", server.uri());
+
+        let started = Instant::now();
+        let result = download_cover_art_bytes(
+            http_client,
+            &url,
+            &cache,
+            started + Duration::from_millis(200),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        let error = result.expect_err("a download slower than the phase budget must fail");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("cover-art phase budget") && rendered.contains(&url),
+            "the budget error must name the cover-art phase and the image URL, got: {rendered}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(900),
+            "the deadline must fire at 200 ms, not after the server's 1 s delay: {elapsed:?}"
+        );
+    }
+
+    /// A server error is a hard failure, not a silent empty result: the old
+    /// code answered `500` with the stale cache (or an empty list), so a
+    /// tagging step could quietly ship without cover art while the archive
+    /// was down. The retries still burn their cap first, then the status
+    /// fails the phase.
+    #[tokio::test]
+    async fn a_cover_art_server_error_is_an_error_not_a_stale_fallback() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
+        let allowed = parse_caa_image_types_expression("all").expect("all types");
+        let endpoint = format!("{}/release/11111111-1111-1111-1111-111111111111", server.uri());
+
+        let result = fetch_cover_art_entries(
+            &endpoint,
+            &cache,
+            &allowed,
+            CaaImageSizePreference::Full,
+            false,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+
+        let error = result.expect_err("a 500 must fail the fetch, not answer with stale data");
+        assert!(
+            format!("{error:#}").contains(&endpoint),
+            "the error must name the endpoint that failed, got: {error:#}"
+        );
+    }
+
+    /// A transport failure is a hard failure for the same reason: a closed
+    /// port used to be answered with stale cache bytes, hiding an outage
+    /// behind outdated cover art. The port is closed, so the failure is
+    /// instant and hermetic.
+    #[tokio::test]
+    async fn a_cover_art_transport_failure_is_an_error_not_a_stale_fallback() {
+        let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
+        let allowed = parse_caa_image_types_expression("all").expect("all types");
+        let endpoint = "http://127.0.0.1:9/release/11111111-1111-1111-1111-111111111111";
+
+        let result = fetch_cover_art_entries(
+            endpoint,
+            &cache,
+            &allowed,
+            CaaImageSizePreference::Full,
+            false,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+
+        let error =
+            result.expect_err("a connection failure must fail the fetch, not serve stale data");
+        assert!(
+            format!("{error:#}").contains(endpoint),
+            "the error must name the endpoint that failed, got: {error:#}"
+        );
+    }
+
+    /// A stale row is data, not a fallback: even when the cache holds a
+    /// previously fetched payload, a failed fetch must surface the failure
+    /// so the step cannot quietly write outdated cover-art links while the
+    /// archive is down. The row ages past its one-second budget in real
+    /// time (whole unix seconds, hence the 2.5 s sleep), then the endpoint
+    /// — a local wiremock — answers 500.
+    #[tokio::test]
+    async fn a_stale_row_is_not_served_when_the_fetch_fails() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(1),
+        );
+        let endpoint = format!("{}/release/11111111-1111-1111-1111-111111111111", server.uri());
+        let stale_entry = SelectedCoverArt {
+            url: "https://example.test/stale.jpg".to_string(),
+            maintype: "front".to_string(),
+            types: vec!["front".to_string()],
+            comment: String::new(),
+        };
+        cache
+            .write_cover_art_entries(&endpoint, std::slice::from_ref(&stale_entry))
+            .await
+            .expect("seed stale row");
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+
+        let allowed = parse_caa_image_types_expression("all").expect("all types");
+        let result = fetch_cover_art_entries(
+            &endpoint,
+            &cache,
+            &allowed,
+            CaaImageSizePreference::Full,
+            false,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+
+        let error = result.expect_err("a stale row must not stand in for a failed fetch");
+        assert!(
+            !format!("{error:#}").contains("stale.jpg"),
+            "the error must be the fetch failure itself, not the stale payload, got: {error:#}"
+        );
+    }
+
+    /// An image download that comes back empty on a `200` is a broken
+    /// payload, not a reason to fall back to stale bytes or skip the slot
+    /// silently.
+    #[tokio::test]
+    async fn an_empty_200_image_body_is_an_error() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
+        let http_client = shared_http_client().expect("shared HTTP client");
+        let url = format!("{}/front.jpg", server.uri());
+
+        let result = download_cover_art_bytes(
+            http_client,
+            &url,
+            &cache,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+
+        let error = result.expect_err("an empty 200 body must fail the download");
+        assert!(
+            format!("{error:#}").contains(&url),
+            "the error must name the image URL, got: {error:#}"
+        );
+    }
+
+    /// A `404` is the archive's "no art exists" answer and stays an empty
+    /// result — that is the API speaking, not a skip. Both call sites keep
+    /// it: the index lookup resolves to zero entries, the image download to
+    /// `None`.
+    #[tokio::test]
+    async fn a_cover_art_404_is_the_no_art_answer() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
+        let allowed = parse_caa_image_types_expression("all").expect("all types");
+        let endpoint = format!("{}/release/11111111-1111-1111-1111-111111111111", server.uri());
+
+        let entries = fetch_cover_art_entries(
+            &endpoint,
+            &cache,
+            &allowed,
+            CaaImageSizePreference::Full,
+            false,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await
+        .expect("404 is the no-art answer for an index lookup");
+        assert!(entries.is_empty(), "a 404 index must resolve to zero entries");
+
+        let http_client = shared_http_client().expect("shared HTTP client");
+        let url = format!("{}/front.jpg", server.uri());
+        let bytes = download_cover_art_bytes(
+            http_client,
+            &url,
+            &cache,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await
+        .expect("404 is the no-art answer for an image download");
+        assert!(bytes.is_none(), "a 404 image must resolve to no payload");
+    }
+
+    /// The `caa-endpoint` option really redirects traffic: one local server
+    /// stands in for the archive, both provider paths hit it with the right
+    /// MBIDs, and the front image comes back selected. Without this the
+    /// option would be cosmetic and hermetic cover-art tests impossible.
+    #[tokio::test]
+    async fn the_caa_endpoint_selects_where_cover_art_requests_go() {
+        let server = wiremock::MockServer::start().await;
+        let release_id = "11111111-1111-1111-1111-111111111111";
+        let group_id = "22222222-2222-2222-2222-222222222222";
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!("/release/{release_id}")))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+                caa_index_json("https://example.test/release-front.jpg"),
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!("/release-group/{group_id}")))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+                caa_index_json("https://example.test/group-front.jpg"),
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+
+        let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
+        let selected = collect_musicbrainz_cover_art(
+            &payload_with_release(),
+            &cache,
+            &server.uri(),
+            "caa_release,caa_release_group",
+            "all",
+            "full",
+            false,
+            false,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await
+        .expect("cover-art collection against the mock archive");
+
+        let urls = selected.iter().map(|entry| entry.url.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            urls,
+            vec!["https://example.test/group-front.jpg", "https://example.test/release-front.jpg"],
+            "both provider paths must resolve their front image through the configured endpoint"
+        );
+
+        let paths = server
+            .received_requests()
+            .await
+            .expect("request recorder is enabled")
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![format!("/release/{release_id}"), format!("/release-group/{group_id}")],
+            "the configured endpoint must receive both provider requests at their MBID paths"
         );
     }
 }

@@ -1,7 +1,6 @@
 //! MusicBrainz payload fetching and FFmetadata mapping helpers.
 
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -38,17 +37,6 @@ const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_HTTP_TIMEOUT_SECONDS";
 /// recoverable and a 503 storm terminal.
 const MUSICBRAINZ_MAX_RETRIES: u32 = 2;
 
-/// The client every MusicBrainz request in this builtin rides on.
-///
-/// Built once through [`musicbrainz_client`] so the bounded construction
-/// cannot drift from the fetch path, which passes it explicitly instead of
-/// using `musicbrainz_rs`'s unbounded global.
-///
-/// The env is read once per process, at first fetch: a test that sets
-/// `MEDIAPM_HTTP_TIMEOUT_SECONDS` and wants `musicbrainz_client()` to see it
-/// must call `musicbrainz_client()` directly rather than waiting on this.
-static MUSICBRAINZ: LazyLock<MusicBrainzClient> = LazyLock::new(musicbrainz_client);
-
 /// Parse the request timeout from the documented env var: whole seconds,
 /// floored at the conductor client's documented 30-second floor, defaulting
 /// to 30 rather than the conductor's 1800 — a tagging step that stalls on
@@ -81,6 +69,16 @@ fn musicbrainz_user_agent() -> String {
     format!("mediapm/{} (+https://github.com/mediapm/mediapm)", env!("CARGO_PKG_VERSION"))
 }
 
+/// The outer wall-clock budget for one recording+release fetch pair.
+///
+/// The per-request timeout bounds a single HTTP call, but `api_bindium`'s
+/// 503 handling sleeps until the server's `Retry-After` instant with no
+/// cap — a server-controlled wait no request-level timeout reaches.
+/// Wrapping the whole fetch in this deadline cuts that sleep without
+/// patching the dependency, and 90 seconds sits above the worst legitimate
+/// two-attempt-per-entity time so a slow-but-working fetch still completes.
+pub(super) const MUSICBRAINZ_FETCH_DEADLINE: Duration = Duration::from_secs(90);
+
 /// Build an agent that identifies this application and aborts a stalled
 /// request at `timeout`.
 ///
@@ -95,55 +93,87 @@ fn bounded_agent(timeout: Duration) -> musicbrainz_rs::api_bindium::ureq::Agent 
     musicbrainz_rs::api_bindium::ureq::Agent::new_with_config(config)
 }
 
-/// The bounded MusicBrainz client this module fetches with.
+/// The bounded MusicBrainz client for one configured endpoint URL.
 ///
-/// Every input that used to be unbounded is set here: the request timeout,
-/// the retry cap, and the user agent. Point it at another endpoint or
-/// timeout only in tests, which build their own through [`bounded_agent`].
-fn musicbrainz_client() -> MusicBrainzClient {
-    MusicBrainzClient::builder()
+/// `musicbrainz_rs` appends `/ws/2` itself and always speaks plain HTTP, so
+/// only the host (and port, when the endpoint names one) is taken from the
+/// configured URL; the default `https://musicbrainz.org/ws/2` therefore
+/// yields the same `musicbrainz.org` traffic as the crate's stock domain.
+/// The per-request timeout, retry cap, and user agent are set exactly as
+/// the module's other client construction: this is the fetch path's single
+/// client builder.
+///
+/// An endpoint that does not parse, or that names no host, fails here — a
+/// tagging step pointed at a broken endpoint must surface that broken
+/// configuration instead of quietly fetching from somewhere else.
+fn musicbrainz_client_for_endpoint(endpoint: &str) -> anyhow::Result<MusicBrainzClient> {
+    let url = url::Url::parse(endpoint)
+        .with_context(|| format!("parsing MusicBrainz endpoint '{endpoint}'"))?;
+    let host =
+        url.host_str().with_context(|| format!("MusicBrainz endpoint '{endpoint}' has no host"))?;
+    let domain = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    };
+
+    Ok(MusicBrainzClient::builder()
+        .musicbrainz_domain(domain)
         .api_client(
             musicbrainz_rs::api_bindium::ApiClient::builder()
                 .agent(bounded_agent(musicbrainz_timeout()))
                 .max_retries(MUSICBRAINZ_MAX_RETRIES)
                 .build(),
         )
-        .build()
+        .build())
 }
 
-/// Fetches recording/release payloads through `musicbrainz_rs`, on the
-/// bounded client [`MUSICBRAINZ`] rather than the crate's unbounded global.
+/// Fetches recording/release payloads through `musicbrainz_rs`, on a client
+/// built for `endpoint` rather than the crate's unbounded global.
 ///
-/// The client-parameterized sibling exists so a test can point a fetch at a
-/// broken endpoint and exercise the stale-cache fallback without touching the
-/// static that production reads.
+/// The whole recording+release fetch is bounded by `deadline`, which caps
+/// the server-controlled `Retry-After` sleep the per-request timeout cannot
+/// reach. A fetch failure propagates: the caller decides what a failure
+/// means for the tagging step, and no stale cache row is served in its
+/// place.
 pub(super) async fn fetch_musicbrainz_payloads(
+    endpoint: &str,
     recording_mbid: &str,
     release_mbid: Option<&str>,
     write_all_tags: bool,
     release_ars: bool,
+    deadline: Duration,
     cache: &MediaTaggerHttpCache,
 ) -> anyhow::Result<MusicBrainzPayload> {
+    let client = musicbrainz_client_for_endpoint(endpoint)?;
     fetch_musicbrainz_payloads_on(
-        &MUSICBRAINZ,
+        &client,
+        endpoint,
         recording_mbid,
         release_mbid,
         write_all_tags,
         release_ars,
+        deadline,
         cache,
     )
     .await
 }
 
-/// The fetch itself, against an explicit client: production passes
-/// [`MUSICBRAINZ`]; a test points it at a broken endpoint to reach the
-/// stale-cache fallback without touching the static.
+/// The fetch itself, against an explicit client: tests point it at a local
+/// wiremock server or a broken endpoint without touching production
+/// construction. The endpoint string is carried for the deadline error so
+/// a stalled fetch names where it stalled.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fetch seam takes the client, the five fetch inputs, and the deadline individually; bundling them would invent a config type only this seam uses"
+)]
 async fn fetch_musicbrainz_payloads_on(
     client: &MusicBrainzClient,
+    endpoint: &str,
     recording_mbid: &str,
     release_mbid: Option<&str>,
     write_all_tags: bool,
     release_ars: bool,
+    deadline: Duration,
     cache: &MediaTaggerHttpCache,
 ) -> anyhow::Result<MusicBrainzPayload> {
     let cached_payload = cache.read_musicbrainz_payload(recording_mbid, release_mbid).await;
@@ -153,9 +183,7 @@ async fn fetch_musicbrainz_payloads_on(
         return Ok(cached.payload.clone());
     }
 
-    let stale_cached_payload = cached_payload.as_ref().map(|cached| cached.payload.clone());
-
-    let fetched_payload = async {
+    let fetched_payload = tokio::time::timeout(deadline, async {
         let mut recording_fetch_base = Recording::fetch();
         let mut recording_fetch = recording_fetch_base
             .id(recording_mbid)
@@ -215,16 +243,18 @@ async fn fetch_musicbrainz_payloads_on(
         };
 
         Ok::<_, anyhow::Error>(MusicBrainzPayload { recording, release })
-    }
-    .await;
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "fetching MusicBrainz entities from '{endpoint}' for recording \
+             '{recording_mbid}' within {deadline:?}"
+        )
+    })?;
+    let fetched_payload = fetched_payload?;
 
-    match fetched_payload {
-        Ok(payload) => {
-            let _ = cache.write_musicbrainz_payload(recording_mbid, release_mbid, &payload).await;
-            Ok(payload)
-        }
-        Err(error) => stale_cached_payload.ok_or(error),
-    }
+    let _ = cache.write_musicbrainz_payload(recording_mbid, release_mbid, &fetched_payload).await;
+    Ok(fetched_payload)
 }
 
 /// Builds deterministic cache key for one recording/release metadata lookup pair.
@@ -426,7 +456,8 @@ mod tests {
     /// step for minutes.
     #[test]
     fn musicbrainz_client_is_bounded() {
-        let client = musicbrainz_client();
+        let client = musicbrainz_client_for_endpoint("https://musicbrainz.org/ws/2")
+            .expect("default endpoint");
         assert_eq!(
             client.api_client.max_retries, MUSICBRAINZ_MAX_RETRIES,
             "a MusicBrainz request may not be retried more than the seam allows"
@@ -485,7 +516,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = musicbrainz_client();
+        let client = musicbrainz_client_for_endpoint("https://musicbrainz.org/ws/2")
+            .expect("default endpoint");
         let mut request: ApiRequest<TextParser> = ApiRequest::builder()
             .uri(
                 format!("http://{}/ws/2/recording/test", server.address())
@@ -506,15 +538,14 @@ mod tests {
         );
     }
 
-    /// A fetch that fails falls back to the stale cache instead of losing the
-    /// step's metadata.
+    /// A failed fetch surfaces its error even when a stale cache row exists.
     ///
-    /// The endpoint points at a closed local port, so the failure is instant
-    /// and hermetic; the cache holds a previously fetched payload past its
-    /// expiry budget, which is the state `fetch_musicbrainz_payloads` reads
-    /// before deciding the stale value is better than the error.
+    /// This is the anti-silent-skip contract: the stale row used to be served
+    /// in place of the failure, so a tagging step could quietly write outdated
+    /// metadata while MusicBrainz was down. The endpoint points at a closed
+    /// local port, so the failure is instant and hermetic.
     #[tokio::test]
-    async fn a_failed_fetch_falls_back_to_the_stale_cache() {
+    async fn a_failed_fetch_with_only_stale_cache_is_an_error() {
         use musicbrainz_rs::api_bindium::ApiClient;
         use musicbrainz_rs::entity::recording::Recording;
 
@@ -533,8 +564,10 @@ mod tests {
             .await
             .expect("cache write");
 
-        // Let the row age past its one-second budget so the fetch is attempted.
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        // Let the row age past its one-second budget — measured in whole
+        // unix seconds, so this needs more than two seconds of wall clock —
+        // before the fetch is attempted.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
 
         // A closed local port: the connection fails instantly, one attempt
         // (cap 1 — the loop condition `0 < 1` admits a single try), no waits.
@@ -548,19 +581,101 @@ mod tests {
             )
             .build();
 
+        let endpoint = "http://127.0.0.1:1/ws/2";
         let fetched = fetch_musicbrainz_payloads_on(
             &broken,
+            endpoint,
             "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
             None,
             false,
             false,
+            Duration::from_secs(30),
             &cache,
         )
-        .await
-        .expect("the stale cache answers when the endpoint fails");
+        .await;
+        let error = fetched.expect_err("a stale row must not stand in for a fetch failure");
+        assert!(
+            error.to_string().contains("fetching MusicBrainz recording"),
+            "the error must be the fetch failure itself, got: {error:#}"
+        );
+    }
+
+    /// The outer deadline cuts the server-controlled `Retry-After` sleep.
+    ///
+    /// `api_bindium` sleeps until the server's `Retry-After` instant with no
+    /// cap, so a 503 that asks for a one-hour retry would otherwise hold the
+    /// tagging step for an hour past the per-request timeout. The sleep is an
+    /// await point, so the fetch's own deadline preempts it.
+    #[tokio::test]
+    async fn a_retry_after_sleep_is_cut_by_the_fetch_deadline() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(503).insert_header("Retry-After", "3600"))
+            .mount(&server)
+            .await;
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = super::super::cover_art::MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            super::super::cover_art::CacheExpiryPolicy::from_seconds(60),
+        );
+
+        let endpoint = format!("http://{}/ws/2", server.address());
+        let client = musicbrainz_client_for_endpoint(&endpoint).expect("local wiremock endpoint");
+        let started = Instant::now();
+        let fetched = fetch_musicbrainz_payloads_on(
+            &client,
+            &endpoint,
+            "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
+            None,
+            false,
+            false,
+            Duration::from_secs(2),
+            &cache,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(fetched.is_err(), "a Retry-After storm must fail, not sleep for an hour");
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the fetch deadline must cut the server-controlled sleep, took {elapsed:?}"
+        );
+        let error = fetched.expect_err("the deadline error is inspected below");
+        assert!(
+            format!("{error:#}").contains(&endpoint),
+            "the deadline error must name the endpoint that stalled, got: {error:#}"
+        );
+    }
+
+    /// The endpoint override extracts the domain the crate builds URLs from,
+    /// with an explicit port carried through when the endpoint names one.
+    #[test]
+    fn musicbrainz_client_for_endpoint_extracts_the_domain() {
+        let production = musicbrainz_client_for_endpoint("https://musicbrainz.org/ws/2")
+            .expect("production endpoint parses");
         assert_eq!(
-            fetched.recording.id, payload.recording.id,
-            "the fallback returns the payload the cache held"
+            production.musicbrainz_domain, "musicbrainz.org",
+            "the default endpoint must keep today's production traffic"
+        );
+
+        let local = musicbrainz_client_for_endpoint("http://127.0.0.1:18080/ws/2")
+            .expect("local endpoint parses");
+        assert_eq!(
+            local.musicbrainz_domain, "127.0.0.1:18080",
+            "an explicit port must survive into the domain"
+        );
+    }
+
+    /// An endpoint that does not parse fails with the offending value in the
+    /// error instead of silently fetching from the default domain.
+    #[test]
+    fn musicbrainz_client_for_endpoint_rejects_an_unparseable_endpoint() {
+        let error = musicbrainz_client_for_endpoint("not a url")
+            .expect_err("an unparseable endpoint must not fall back to a default");
+        assert!(
+            format!("{error:#}").contains("not a url"),
+            "the error must name the endpoint, got: {error:#}"
         );
     }
 }

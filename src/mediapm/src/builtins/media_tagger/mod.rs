@@ -11,7 +11,10 @@
 //! Failure policy is controlled by `strict_identification`: when enabled,
 //! unresolved identity or metadata-fetch failures abort the step; when disabled,
 //! an empty `FFmetadata` document is written so downstream apply stages may
-//! continue deterministically.
+//! continue deterministically. Cover-art index lookups and image downloads
+//! are unconditional hard failures regardless of `strict_identification` —
+//! a failed image fetch is a missing asset, not missing metadata — with `404`
+//! as the sole exception: the archive's "no art exists" answer.
 //! AcoustID lookup itself is only attempted when no recording MBID override is
 //! supplied. Missing/empty lookup credentials are a hard error on that
 //! autodetection path; when credentials are provided, lookup/authentication
@@ -43,8 +46,8 @@ mod tests {
 
     use crate::builtins::media_tagger::acoustid::require_acoustid_api_key_for_lookup;
     use crate::builtins::media_tagger::cover_art::{
-        CacheExpiryPolicy, CoverArtArchiveImage, MediaTaggerHttpCache, SelectedCoverArt,
-        insert_musicbrainz_image_tags, normalized_cover_art_types,
+        COVER_ART_PHASE_BUDGET, CacheExpiryPolicy, CoverArtArchiveImage, MediaTaggerHttpCache,
+        SelectedCoverArt, insert_musicbrainz_image_tags, normalized_cover_art_types,
         persist_cover_art_slot_artifacts, select_cover_art_for_tag_embedding,
         select_highest_quality_cover_url,
     };
@@ -70,6 +73,7 @@ mod tests {
             acoustid_api_key: Some("   ".to_string()),
             acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
             musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+            caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
             cache_dir: None,
             cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
             strict_identification: false,
@@ -137,6 +141,7 @@ mod tests {
             acoustid_api_key: Some("demo-key".to_string()),
             acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
             musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+            caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
             cache_dir: None,
             cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
             strict_identification: false,
@@ -184,6 +189,7 @@ mod tests {
             acoustid_api_key: None,
             acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
             musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+            caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
             cache_dir: None,
             cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
             strict_identification: true,
@@ -224,6 +230,7 @@ mod tests {
             acoustid_api_key: Some("demo-key".to_string()),
             acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
             musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+            caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
             cache_dir: None,
             cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
             strict_identification: false,
@@ -401,9 +408,15 @@ mod tests {
         let output_path = root.path().join("metadata").join("output.ffmeta");
         let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(0));
 
-        persist_cover_art_slot_artifacts(&output_path, &[], 3, &cache)
-            .await
-            .expect("empty slot artifact write should succeed");
+        persist_cover_art_slot_artifacts(
+            &output_path,
+            &[],
+            3,
+            &cache,
+            tokio::time::Instant::now() + COVER_ART_PHASE_BUDGET,
+        )
+        .await
+        .expect("empty slot artifact write should succeed");
 
         let artifact_dir = root.path().join("coverart");
         for slot_index in 1..=3 {
@@ -546,18 +559,22 @@ use self::acoustid::{
     resolve_acoustid_api_key,
 };
 use self::cover_art::{
-    CacheExpiryPolicy, MediaTaggerHttpCache, collect_musicbrainz_cover_art,
+    COVER_ART_PHASE_BUDGET, CacheExpiryPolicy, MediaTaggerHttpCache, collect_musicbrainz_cover_art,
     insert_musicbrainz_image_tags, persist_cover_art_slot_artifacts,
     select_cover_art_for_tag_embedding,
 };
 use self::ffmetadata::parse_ffmetadata_global_map;
-use self::musicbrainz::{build_ffmetadata_map, fetch_musicbrainz_payloads};
+use self::musicbrainz::{
+    MUSICBRAINZ_FETCH_DEADLINE, build_ffmetadata_map, fetch_musicbrainz_payloads,
+};
 use self::util::{normalize_optional_text, resolve_ffmpeg_executable, write_ffmetadata_document};
 
 /// Default AcoustID lookup endpoint used by the internal tagger.
 pub const DEFAULT_ACOUSTID_ENDPOINT: &str = "https://api.acoustid.org/v2/lookup";
-/// Default MusicBrainz API endpoint label used for diagnostics.
+/// Default MusicBrainz API endpoint; its host[:port] selects the fetch domain.
 pub const DEFAULT_MUSICBRAINZ_ENDPOINT: &str = "https://musicbrainz.org/ws/2";
+/// Default Cover Art Archive endpoint; scheme and host are both honored.
+pub const DEFAULT_CAA_ENDPOINT: &str = "https://coverartarchive.org";
 
 /// Target sample rate used for deterministic fingerprint extraction.
 const FINGERPRINT_SAMPLE_RATE: u32 = 44_100;
@@ -662,8 +679,15 @@ pub struct InternalMediaTaggerOptions {
     pub acoustid_api_key: Option<String>,
     /// AcoustID lookup endpoint.
     pub acoustid_endpoint: String,
-    /// MusicBrainz API endpoint used in diagnostics.
+    /// MusicBrainz API endpoint whose host[:port] selects the fetch domain.
+    ///
+    /// `musicbrainz_rs` speaks plain HTTP and appends `/ws/2` itself, so the
+    /// scheme and path are ignored; a mock or mirror only needs to supply a
+    /// reachable host[:port].
     pub musicbrainz_endpoint: String,
+    /// Cover Art Archive endpoint whose scheme and host both select where
+    /// image-index lookups and image downloads go.
+    pub caa_endpoint: String,
     /// Optional media-tagger HTTP cache root directory.
     ///
     /// When provided, endpoint and cover-art payload responses are cached
@@ -838,6 +862,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
             &[],
             options.cover_art_slot_count,
             &media_tagger_cache,
+            tokio::time::Instant::now() + COVER_ART_PHASE_BUDGET,
         )
         .await
         .context("writing media-tagger cover-art slot artifacts")?;
@@ -903,10 +928,12 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
     };
 
     let metadata_payload = fetch_musicbrainz_payloads(
+        &options.musicbrainz_endpoint,
         &recording_mbid,
         detected_release_mbid.as_deref(),
         options.write_all_tags,
         options.release_ars,
+        MUSICBRAINZ_FETCH_DEADLINE,
         &media_tagger_cache,
     )
     .await
@@ -933,15 +960,18 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         .context("building FFmetadata mapping from MusicBrainz payload")?;
 
     let mut selected_cover_art = Vec::new();
+    let cover_art_deadline = tokio::time::Instant::now() + COVER_ART_PHASE_BUDGET;
     if options.write_all_images && options.save_images_to_tags {
         let discovered_cover_art = collect_musicbrainz_cover_art(
             &metadata_payload,
             &media_tagger_cache,
+            &options.caa_endpoint,
             &options.ca_providers,
             &options.caa_image_types,
             &options.caa_image_size,
             options.caa_approved_only,
             options.release_ars,
+            cover_art_deadline,
         )
         .await
         .context("collecting MusicBrainz cover-art entries")?;
@@ -979,6 +1009,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         &selected_cover_art,
         options.cover_art_slot_count,
         &media_tagger_cache,
+        cover_art_deadline,
     )
     .await
     .context("writing media-tagger cover-art slot artifacts")?;

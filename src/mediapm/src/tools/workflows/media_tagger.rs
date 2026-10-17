@@ -43,6 +43,7 @@ const MEDIA_TAGGER_OUTPUT_FILE: &str = "metadata/output.ffmeta";
 /// output regardless of the container-override extension.
 const MEDIA_TAGGER_APPLY_OUTPUT_FILE_REGEX: &str = r"^output-0(?:[.][^/\\]+)?$";
 
+/// Managed input defaults every synthesized media-tagger step starts from.
 const MEDIA_TAGGER_INPUT_DEFAULTS: &[(&str, &str)] = &[
     ("strict_identification", "true"),
     ("write_all_tags", "true"),
@@ -60,37 +61,43 @@ const MEDIA_TAGGER_INPUT_DEFAULTS: &[(&str, &str)] = &[
     ("cover_art_slot_count", "16"),
     ("acoustid_endpoint", "https://api.acoustid.org/v2/lookup"),
     ("musicbrainz_endpoint", "https://musicbrainz.org/ws/2"),
+    ("caa_endpoint", "https://coverartarchive.org"),
     ("cache_dir", ""),
     ("cache_expiry_seconds", "86400"),
 ];
 
+/// Per-input command-token shape: value booleans and scalars render as
+/// `--flag ${*inputs.x}` pairs so a configured `false` reaches the process.
 const MEDIA_TAGGER_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
     ("acoustid_endpoint", TokenSpec::Pair("--acoustid-endpoint")),
     ("musicbrainz_endpoint", TokenSpec::Pair("--musicbrainz-endpoint")),
+    ("caa_endpoint", TokenSpec::Pair("--caa-endpoint")),
     ("cache_dir", TokenSpec::Pair("--cache-dir")),
     ("cache_expiry_seconds", TokenSpec::Pair("--cache-expiry-seconds")),
-    ("strict_identification", TokenSpec::Bool("--strict-identification")),
-    ("write_all_tags", TokenSpec::Bool("--write-all-tags")),
-    ("write_all_images", TokenSpec::Bool("--write-all-images")),
-    ("save_images_to_tags", TokenSpec::Bool("--save-images-to-tags")),
-    ("embed_only_one_front_image", TokenSpec::Bool("--embed-only-one-front-image")),
+    ("strict_identification", TokenSpec::Pair("--strict-identification")),
+    ("write_all_tags", TokenSpec::Pair("--write-all-tags")),
+    ("write_all_images", TokenSpec::Pair("--write-all-images")),
+    ("save_images_to_tags", TokenSpec::Pair("--save-images-to-tags")),
+    ("embed_only_one_front_image", TokenSpec::Pair("--embed-only-one-front-image")),
     ("ca_providers", TokenSpec::Pair("--ca-providers")),
     ("caa_image_types", TokenSpec::Pair("--caa-image-types")),
     ("caa_image_size", TokenSpec::Pair("--caa-image-size")),
-    ("caa_approved_only", TokenSpec::Bool("--caa-approved-only")),
-    ("preserve_images", TokenSpec::Bool("--preserve-images")),
-    ("clear_existing_tags", TokenSpec::Bool("--clear-existing-tags")),
-    ("enable_tag_saving", TokenSpec::Bool("--enable-tag-saving")),
-    ("release_ars", TokenSpec::Bool("--release-ars")),
+    ("caa_approved_only", TokenSpec::Pair("--caa-approved-only")),
+    ("preserve_images", TokenSpec::Pair("--preserve-images")),
+    ("clear_existing_tags", TokenSpec::Pair("--clear-existing-tags")),
+    ("enable_tag_saving", TokenSpec::Pair("--enable-tag-saving")),
+    ("release_ars", TokenSpec::Pair("--release-ars")),
     ("cover_art_slot_count", TokenSpec::Pair("--cover-art-slot-count")),
     ("recording_mbid", TokenSpec::Pair("--recording-mbid")),
     ("release_mbid", TokenSpec::Pair("--release-mbid")),
 ];
 
+/// Ordered option inputs a media-tagger step accepts, in template order.
 const MEDIA_TAGGER_OPTION_INPUTS: &[&str] = &[
     "option_args",
     "acoustid_endpoint",
     "musicbrainz_endpoint",
+    "caa_endpoint",
     "cache_dir",
     "cache_expiry_seconds",
     "strict_identification",
@@ -567,6 +574,7 @@ mod tests {
         assert!(inputs.contains_key("strict_identification"));
         assert!(inputs.contains_key("ca_providers"));
         assert!(inputs.contains_key("cover_art_slot_count"));
+        assert!(inputs.contains_key("caa_endpoint"));
     }
 
     #[test]
@@ -591,6 +599,11 @@ mod tests {
         assert_eq!(
             defaults.get("cache_expiry_seconds"),
             Some(&InputBinding::String("86400".to_string()))
+        );
+        assert_eq!(
+            defaults.get("caa_endpoint"),
+            Some(&InputBinding::String("https://coverartarchive.org".to_string())),
+            "caa_endpoint must default to the Cover Art Archive like its CLI sibling"
         );
     }
 
@@ -650,5 +663,59 @@ mod tests {
             Some("/user/cache"),
             "user-set cache_dir must override the workspace default"
         );
+    }
+
+    /// The names of the ten media-tagger options that the CLI accepts as
+    /// value-style booleans (`--flag true` / `--flag false`) rather than
+    /// presence flags.
+    const MEDIA_TAGGER_VALUE_BOOL_INPUTS: &[&str] = &[
+        "strict_identification",
+        "write_all_tags",
+        "write_all_images",
+        "save_images_to_tags",
+        "embed_only_one_front_image",
+        "caa_approved_only",
+        "preserve_images",
+        "clear_existing_tags",
+        "enable_tag_saving",
+        "release_ars",
+    ];
+
+    /// Every boolean toggle the media-tagger CLI declares as a value argument
+    /// must be paired (`--flag false` reaches the process) — an equality-gated
+    /// `Bool` spec silently drops "false" and the clap default of `true` wins.
+    #[test]
+    fn media_tagger_boolean_inputs_use_pair_token_specs() {
+        for input in MEDIA_TAGGER_VALUE_BOOL_INPUTS {
+            let spec = MEDIA_TAGGER_TOKEN_SPECS
+                .iter()
+                .find(|(name, _)| name == input)
+                .unwrap_or_else(|| panic!("no token spec entry for '{input}'"))
+                .1;
+            assert!(
+                matches!(spec, TokenSpec::Pair(_)),
+                "'{input}' must use TokenSpec::Pair so a 'false' value reaches the CLI"
+            );
+        }
+    }
+
+    /// The same pairing applies to every boolean toggle the CLI declares as a
+    /// value argument — a lone `--flag` token with no scalar cannot carry a
+    /// "false" value to the process, so the flag guard plus the scalar must
+    /// render for each one.
+    #[test]
+    fn every_value_boolean_renders_flag_and_scalar_tokens() {
+        for input in MEDIA_TAGGER_VALUE_BOOL_INPUTS {
+            let flag = format!("--{}", input.replace('_', "-"));
+            let rendered = command_option_tokens_for_tool(&[input], MEDIA_TAGGER_TOKEN_SPECS);
+            assert_eq!(
+                rendered,
+                vec![
+                    format!("${{*inputs.{input} ? {flag} | ''}}"),
+                    format!("${{*inputs.{input}}}"),
+                ],
+                "'{input}' must render the Pair flag guard plus the scalar value"
+            );
+        }
     }
 }

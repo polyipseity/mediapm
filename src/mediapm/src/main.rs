@@ -895,6 +895,9 @@ struct InternalMediaTaggerArgs {
     /// `MusicBrainz` endpoint URL.
     #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_MUSICBRAINZ_ENDPOINT)]
     musicbrainz_endpoint: String,
+    /// `Cover Art Archive` endpoint URL.
+    #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_CAA_ENDPOINT)]
+    caa_endpoint: String,
     /// Cache directory path.
     #[arg(long)]
     cache_dir: Option<String>,
@@ -902,19 +905,19 @@ struct InternalMediaTaggerArgs {
     #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CACHE_EXPIRY_SECONDS as u64)]
     cache_expiry_seconds: u64,
     /// Enable strict identification.
-    #[arg(long, default_value_t = true)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
     strict_identification: bool,
     /// Write all tags.
-    #[arg(long, default_value_t = true)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
     write_all_tags: bool,
     /// Write all images.
-    #[arg(long, default_value_t = true)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
     write_all_images: bool,
     /// Save images to tags.
-    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_SAVE_IMAGES_TO_TAGS)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = mediapm::builtins::media_tagger::DEFAULT_SAVE_IMAGES_TO_TAGS)]
     save_images_to_tags: bool,
     /// Embed only one front image.
-    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = mediapm::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE)]
     embed_only_one_front_image: bool,
     /// Cover art providers.
     #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CA_PROVIDERS.to_string())]
@@ -926,19 +929,19 @@ struct InternalMediaTaggerArgs {
     #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CAA_IMAGE_SIZE.to_string())]
     caa_image_size: String,
     /// Restrict CAA entries to approved-only.
-    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CAA_APPROVED_ONLY)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CAA_APPROVED_ONLY)]
     caa_approved_only: bool,
     /// Preserve existing embedded images.
-    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_PRESERVE_IMAGES)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = mediapm::builtins::media_tagger::DEFAULT_PRESERVE_IMAGES)]
     preserve_images: bool,
     /// Clear existing textual tags.
-    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CLEAR_EXISTING_TAGS)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CLEAR_EXISTING_TAGS)]
     clear_existing_tags: bool,
     /// Enable tag writing.
-    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_ENABLE_TAG_SAVING)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = mediapm::builtins::media_tagger::DEFAULT_ENABLE_TAG_SAVING)]
     enable_tag_saving: bool,
     /// Release relationship processing.
-    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_RELEASE_ARS)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = mediapm::builtins::media_tagger::DEFAULT_RELEASE_ARS)]
     release_ars: bool,
     /// Cover art slot count.
     #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_COVER_ART_SLOT_COUNT)]
@@ -1114,6 +1117,7 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
             acoustid_api_key: args.acoustid_api_key,
             acoustid_endpoint: args.acoustid_endpoint,
             musicbrainz_endpoint: args.musicbrainz_endpoint,
+            caa_endpoint: args.caa_endpoint,
             cache_dir: args.cache_dir.map(std::path::PathBuf::from),
             cache_expiry_seconds: args.cache_expiry_seconds as i64,
             strict_identification: args.strict_identification,
@@ -1426,6 +1430,101 @@ mod tests {
     fn tool_prune_route_is_parsed() {
         let parsed = Cli::try_parse_from(["mediapm", "tool", "prune", "tool-id"]);
         assert!(parsed.is_ok(), "tool prune route must parse");
+    }
+
+    /// Extracts the parsed media-tagger arguments from a `builtin
+    /// media-tagger` CLI invocation.
+    #[cfg(feature = "media-tagger")]
+    fn parse_media_tagger_args(
+        extra: &[&str],
+    ) -> Result<super::InternalMediaTaggerArgs, clap::Error> {
+        let mut argv = vec![
+            "mediapm",
+            "builtin",
+            "media-tagger",
+            "--input",
+            "in.mkv",
+            "--output",
+            "out.ffmeta",
+        ];
+        argv.extend_from_slice(extra);
+        let parsed = Cli::try_parse_from(argv)?;
+        match parsed.command {
+            super::Command::Builtin { command } => match *command {
+                super::BuiltinCommand::MediaTagger(tagger_args) => Ok(tagger_args),
+            },
+            other => panic!("expected builtin route, got {other:?}"),
+        }
+    }
+
+    /// Protects the CLI contract that a media-tagger boolean option accepts
+    /// an explicit `false` value in both `--flag false` and `--flag=false`
+    /// spellings — the workflow renders these as value pairs, and a parse
+    /// failure would surface as a step error on every sync.
+    #[cfg(feature = "media-tagger")]
+    #[test]
+    fn media_tagger_boolean_option_accepts_explicit_false() {
+        let spaced = parse_media_tagger_args(&["--write-all-images", "false"])
+            .expect("--write-all-images false must parse");
+        assert!(!spaced.write_all_images, "--write-all-images false must parse to false");
+
+        let equals = parse_media_tagger_args(&["--write-all-images=false"])
+            .expect("--write-all-images=false must parse");
+        assert!(!equals.write_all_images, "--write-all-images=false must parse to false");
+    }
+
+    /// Protects the defaults every absent boolean flag must keep: toggles
+    /// the managed defaults set to `true` stay true, and the ones defaulting
+    /// to `false` stay false, so omitting a flag never changes behavior.
+    #[cfg(feature = "media-tagger")]
+    #[test]
+    fn media_tagger_boolean_option_defaults_are_preserved() {
+        let args = parse_media_tagger_args(&[]).expect("baseline media-tagger args must parse");
+        assert!(args.write_all_images, "absent --write-all-images must default to true");
+        assert!(args.strict_identification, "absent --strict-identification must default to true");
+        assert!(args.write_all_tags, "absent --write-all-tags must default to true");
+        assert!(args.save_images_to_tags, "absent --save-images-to-tags must default to true");
+        assert!(args.enable_tag_saving, "absent --enable-tag-saving must default to true");
+        assert!(args.release_ars, "absent --release-ars must default to true");
+        assert!(
+            !args.embed_only_one_front_image,
+            "absent --embed-only-one-front-image must default to false"
+        );
+        assert!(!args.caa_approved_only, "absent --caa-approved-only must default to false");
+        assert!(!args.preserve_images, "absent --preserve-images must default to false");
+        assert!(!args.clear_existing_tags, "absent --clear-existing-tags must default to false");
+    }
+
+    /// Protects the accepted CLI break: a boolean option is a value argument,
+    /// so a bare flag without its value is a parse error rather than a silent
+    /// fallback to `true`.
+    #[cfg(feature = "media-tagger")]
+    #[test]
+    fn media_tagger_boolean_option_bare_flag_is_rejected() {
+        let result = parse_media_tagger_args(&["--write-all-images"]);
+        assert!(result.is_err(), "bare --write-all-images without a value must fail to parse");
+    }
+
+    /// Protects the `caa-endpoint` option: the default is the real Cover Art
+    /// Archive, and an explicit value reaches the process so hermetic tests
+    /// (and mirrors) can redirect image traffic the same way
+    /// `--musicbrainz-endpoint` redirects entity traffic.
+    #[cfg(feature = "media-tagger")]
+    #[test]
+    fn media_tagger_caa_endpoint_option_parses() {
+        let args = parse_media_tagger_args(&[]).expect("baseline media-tagger args must parse");
+        assert_eq!(
+            args.caa_endpoint,
+            mediapm::builtins::media_tagger::DEFAULT_CAA_ENDPOINT,
+            "absent --caa-endpoint must default to the Cover Art Archive"
+        );
+
+        let args = parse_media_tagger_args(&["--caa-endpoint", "http://127.0.0.1:9/ws"])
+            .expect("explicit --caa-endpoint must parse");
+        assert_eq!(
+            args.caa_endpoint, "http://127.0.0.1:9/ws",
+            "an explicit --caa-endpoint value must reach the options unchanged"
+        );
     }
 
     /// Protects tool-prune with metadata flag.
