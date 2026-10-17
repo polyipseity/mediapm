@@ -287,7 +287,8 @@ pub fn render_materialization_screen_for_folder(
 fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -> String {
     /// Entries in the synthetic library, which is what the overall bar totals.
     const ENTRY_COUNT: u64 = 3;
-    /// Seed the overall bar carries, from `src/mediapm/src/service.rs:1349`.
+    /// Seed the overall bar carries, from
+    /// `src/mediapm/src/service.rs::sync_library_with_progress_overrides`.
     const OVERALL_SEED: &str = "materializing";
     /// Variant whose ZIP members the folder entry unpacks. The name doubles as
     /// the sub-bar's seed and its `file_name` segment, as the folder arm's
@@ -309,7 +310,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall(OVERALL_SEED, 1).build();
     // The worked examples mirror production, where the owner of a run's
-    // overall bar opts it in while the run is active (review R1, Important 1).
+    // overall bar opts it in while the run is active.
     overall.set_animating(true);
     // `sync_hierarchy` replaces the placeholder total with the entry count and
     // installs the label on the caller's own handle, whether that is the handle
@@ -328,7 +329,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // one. The ticks stay where they were, so each tag still gets a frame of
     // its own.
     let finished = screen.add_bar(ENTRY_TOTAL, &format!("{album_name} [stg]"));
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
     finished.set_animating(true);
     finished.set_truncation(phase_label(album_path, album_name, MaterializationPhase::Staging));
     frames.draw(&screen, &clock, Duration::from_secs(2));
@@ -349,14 +350,14 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // per-extracted-file sub-bar opens underneath it at the variant it
     // unpacks.
     let folder = screen.add_bar(ENTRY_TOTAL, &format!("{folder_name} [stg]"));
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
     folder.set_animating(true);
     folder.set_truncation(phase_label(folder_path, folder_name, MaterializationPhase::Staging));
     frames.draw(&screen, &clock, Duration::from_secs(2));
 
     folder.set_truncation(phase_label(folder_path, folder_name, MaterializationPhase::Write));
     let write = screen.add_bar(LINK_VARIANT_MEMBERS, &format!("{LINK_VARIANT} [wrt]"));
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
     write.set_animating(true);
     write.set_truncation(Arc::new(MaterializationBarLabel {
         entry_path: folder_path.to_string(),
@@ -371,7 +372,7 @@ fn render_materialization_screen_for(config: ScreenConfig, folder_entry: &str) -
     // The third entry is a media file that has resolved its hash and is on the
     // verify tag, still running when the transcript is read.
     let verifying = screen.add_bar(ENTRY_TOTAL, &format!("{single_name} [stg]"));
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
     verifying.set_animating(true);
     verifying.set_truncation(phase_label(single_path, single_name, MaterializationPhase::Staging));
     verifying.advance(1);
@@ -432,7 +433,7 @@ const THUMBNAIL_MEMBERS: u64 = 2;
 fn add_entry_bar(screen: &ProgressScreen, relative_path: &str) -> ProgressBarHandle {
     let (entry_path, entry_name) = split_entry_path(relative_path);
     let bar = screen.add_bar(ENTRY_TOTAL, &format!("{relative_path} [stg]"));
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
     bar.set_animating(true);
     bar.set_truncation(phase_label(entry_path, entry_name, MaterializationPhase::Staging));
     bar
@@ -483,7 +484,7 @@ fn add_write_bar(
 ) -> ProgressBarHandle {
     let (entry_path, entry_name) = split_entry_path(entry_relative_path);
     let bar = screen.add_bar(members, &format!("{variant_name} [wrt]"));
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
     bar.set_animating(true);
     bar.set_truncation(Arc::new(MaterializationBarLabel {
         entry_path: entry_path.to_string(),
@@ -523,7 +524,8 @@ fn commit_media_entry(bar: &ProgressBarHandle, relative_path: &str) {
 fn render_dense(config: ScreenConfig) -> String {
     /// Entries in the synthetic library, which is what the overall bar totals.
     const ENTRY_COUNT: u64 = 8;
-    /// Seed the overall bar carries, from `src/mediapm/src/service.rs:1349`.
+    /// Seed the overall bar carries, from
+    /// `src/mediapm/src/service.rs::sync_library_with_progress_overrides`.
     const OVERALL_SEED: &str = "materializing";
     /// Variant that unpacks the JPEG and the WebP.
     const THUMBNAILS: &str = "thumbnails";
@@ -535,7 +537,7 @@ fn render_dense(config: ScreenConfig) -> String {
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall(OVERALL_SEED, 1).build();
     // The worked examples mirror production, where the owner of a run's
-    // overall bar opts it in while the run is active (review R1, Important 1).
+    // overall bar opts it in while the run is active.
     overall.set_animating(true);
     overall.set_total(ENTRY_COUNT);
     overall.set_truncation(Arc::new(MaterializationBarLabel {
@@ -627,7 +629,8 @@ fn render_dense(config: ScreenConfig) -> String {
 fn render_states(config: ScreenConfig) -> String {
     /// Entries in the synthetic library, which is what the overall bar totals.
     const ENTRY_COUNT: u64 = 7;
-    /// Seed the overall bar carries, from `src/mediapm/src/service.rs:1349`.
+    /// Seed the overall bar carries, from
+    /// `src/mediapm/src/service.rs::sync_library_with_progress_overrides`.
     const OVERALL_SEED: &str = "materializing";
     /// Entries whose task had returned when the collect loop broke.
     const ENTRIES_RETURNED: u64 = 3;
@@ -639,7 +642,7 @@ fn render_states(config: ScreenConfig) -> String {
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall(OVERALL_SEED, 1).build();
     // The worked examples mirror production, where the owner of a run's
-    // overall bar opts it in while the run is active (review R1, Important 1).
+    // overall bar opts it in while the run is active.
     overall.set_animating(true);
     overall.set_total(ENTRY_COUNT);
     overall.set_truncation(Arc::new(MaterializationBarLabel {

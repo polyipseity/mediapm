@@ -6,7 +6,8 @@
 //!
 //! Every bar here carries the seed `idle`, the string the coordinator
 //! installs at
-//! `src/mediapm-conductor/src/orchestration/coordinator.rs:348`, and every
+//! `src/mediapm-conductor/src/orchestration/coordinator.rs::worker_slot_label`,
+//! and every
 //! worker row overrides what it draws with its own [`WorkerBarLabel`]. The
 //! renderer sizes the prefix slot from what a bar will draw rather than from
 //! the seed it was constructed with (`recompute_layout`), so the seed is four
@@ -214,13 +215,13 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     /// Outputs the per-step bar tracks.
     const STEP_OUTPUTS: u64 = 3;
     /// Seed the coordinator installs on every worker slot, quoted from
-    /// `coordinator.rs:348`.
+    /// `coordinator.rs::worker_slot_label`.
     const WORKFLOW_SEED: &str = "idle";
 
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("running workflows", 1).build();
     // The worked examples mirror production, where the owner of a run's
-    // overall bar opts it in while the run is active (review R1, Important 1).
+    // overall bar opts it in while the run is active.
     overall.set_animating(true);
     // The caller pins the overall bar with a placeholder total; the coordinator
     // sets the step count once the workflow is resolved.
@@ -231,7 +232,7 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     let workers: Vec<_> = (0..POOL_SIZE)
         .map(|_| {
             let bar = screen.add_bar(0, WORKFLOW_SEED);
-            // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+            // Demo bars all carry in-flight work; their finish parks the row.
             bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
             WorkerSlot::Idle.apply(&bar);
@@ -249,7 +250,7 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
     // to copy for this one. It takes the worker seed: the slot follows what a
     // bar draws, so a longer seed here would buy nothing.
     let step_bar = screen.add_bar(STEP_OUTPUTS, WORKFLOW_SEED);
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
     step_bar.set_animating(true);
     step_bar.set_truncation(Arc::new(StepBarLabel {
         status_marker: String::new(),
@@ -318,9 +319,9 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
 ///
 /// The coordinator sizes the pool from the host's available parallelism and lets
 /// `MEDIAPM_CONDUCTOR_WORKER_POOL_SIZE` override it
-/// (`orchestration/config.rs:40`), so a machine with room for it runs a level's
-/// steps side by side. Eleven slots is a host with the cores to fill it, which the
-/// five-slot baseline never draws.
+/// (`orchestration/config.rs::default_worker_pool_size`), so a machine with
+/// room for it runs a level's steps side by side. Eleven slots is a host with
+/// the cores to fill it, which the five-slot baseline never draws.
 ///
 /// The frame is caught part-way through the level rather than at the moment it
 /// starts. A level that has just begun is eleven copies of the same `[active]`
@@ -356,7 +357,7 @@ fn render_dense(config: ScreenConfig) -> String {
     /// it have finished.
     const RETRYING: usize = RETURNED;
     /// Seed the coordinator installs on every worker slot, quoted from
-    /// `coordinator.rs:348`.
+    /// `coordinator.rs::worker_slot_label`.
     const WORKFLOW_SEED: &str = "idle";
     /// The step each slot runs and the tool it runs.
     const LEVEL_STEPS: [(&str, &str); POOL_SIZE] = [
@@ -376,14 +377,14 @@ fn render_dense(config: ScreenConfig) -> String {
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("running workflows", 1).build();
     // The worked examples mirror production, where the owner of a run's
-    // overall bar opts it in while the run is active (review R1, Important 1).
+    // overall bar opts it in while the run is active.
     overall.set_animating(true);
     overall.set_total(STEP_COUNT);
 
     let workers: Vec<_> = (0..POOL_SIZE)
         .map(|_| {
             let bar = screen.add_bar(0, WORKFLOW_SEED);
-            // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+            // Demo bars all carry in-flight work; their finish parks the row.
             bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
             WorkerSlot::Idle.apply(&bar);
@@ -464,7 +465,7 @@ fn render_states(config: ScreenConfig) -> String {
     /// Outputs the per-step bar tracking the wide tool name tracks.
     const WIDE_TOOL_OUTPUTS: u64 = 3;
     /// Seed the coordinator installs on every worker slot, quoted from
-    /// `coordinator.rs:348`.
+    /// `coordinator.rs::worker_slot_label`.
     const WORKFLOW_SEED: &str = "idle";
     /// ffmpeg's `human_readable_version` is its `BtbN` autobuild tag and the
     /// martin-riedl macOS-leg build id as one string (`tools/provider/mod.rs`).
@@ -475,14 +476,14 @@ fn render_states(config: ScreenConfig) -> String {
     let (terminal, grid, clock) = capture_terminal(config);
     let (screen, overall) = terminal.screen().with_overall("running workflows", 1).build();
     // The worked examples mirror production, where the owner of a run's
-    // overall bar opts it in while the run is active (review R1, Important 1).
+    // overall bar opts it in while the run is active.
     overall.set_animating(true);
     overall.set_total(STEP_COUNT);
 
     let workers: Vec<_> = (0..POOL_SIZE)
         .map(|_| {
             let bar = screen.add_bar(0, WORKFLOW_SEED);
-            // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+            // Demo bars all carry in-flight work; their finish parks the row.
             bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
             WorkerSlot::Idle.apply(&bar);
@@ -529,7 +530,7 @@ fn render_states(config: ScreenConfig) -> String {
     // The wide version and the wide tool name are on separate steps so each row
     // shows one shrink biting rather than both at once.
     let wide_version = screen.add_bar(WIDE_VERSION_OUTPUTS, WORKFLOW_SEED);
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
     wide_version.set_animating(true);
     wide_version.set_truncation(Arc::new(StepBarLabel {
         status_marker: String::new(),
@@ -544,7 +545,7 @@ fn render_states(config: ScreenConfig) -> String {
 
     let wide_tool = screen.add_bar(WIDE_TOOL_OUTPUTS, WORKFLOW_SEED);
 
-    // Demo bars all carry in-flight work (Task 6); their finish parks the row.
+    // Demo bars all carry in-flight work; their finish parks the row.
 
     wide_tool.set_animating(true);
     wide_tool.set_truncation(Arc::new(StepBarLabel {
