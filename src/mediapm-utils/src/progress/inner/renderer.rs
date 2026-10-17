@@ -587,6 +587,13 @@ impl ProgressRenderer {
         let prefix_w = self.prefix_w.get();
         let suffix_w = self.suffix_w.get();
         let draw_fill = self.draw_fill.get();
+        // Deliberately re-derived rather than read from a `settle_layout`
+        // cell: it is the rows' render width, computed from the settled
+        // labels and the same frame width `settle_layout` was given. The
+        // threshold probe in `settle_layout` (its local `fill`, which decides
+        // only the `draw_fill` boolean) is the same subtraction by
+        // construction — both sit beside the constants they use — and neither
+        // function needs the other's result.
         let fill_w = if draw_fill {
             usize::from(self.frame_width())
                 .saturating_sub(FRAME_OVERHEAD_COLUMNS + prefix_w + suffix_w)
@@ -899,7 +906,11 @@ impl ProgressRenderer {
                 // `gated_screen_without_bars_commits_nothing` contract.
                 false
             } else {
-                write_frame(term, previous.as_deref(), &frame, true).expect("terminal write")
+                // STATED-REASON exception to fail-fast (same policy as
+                // `run_frame`): an advisory terminal write that fails counts
+                // as not written; `last_frame` stays as-is and the commit
+                // below is skipped for this frame. See `run_frame`.
+                write_frame(term, previous.as_deref(), &frame, true).unwrap_or(false)
             }
         } else {
             false

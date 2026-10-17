@@ -456,6 +456,11 @@ impl ProgressRenderer {
         // nothing the count beside it does not. Once the labels take the rest
         // of the line the fill is pinned there at every narrower width, so this
         // is the widest terminal at which the bar has still stopped growing.
+        // This subtraction is deliberately local: it is a threshold probe for
+        // the `draw_fill` decision below. `build_plan` re-derives the same
+        // arithmetic for the rows' render width (see the `fill_w` comment
+        // there) — one is the boolean, the other the columns, and neither
+        // function needs the other's result.
         let fill = usize::from(cols).saturating_sub(FRAME_OVERHEAD_COLUMNS + prefix_w + suffix_w);
         let draw_fill = fill > MIN_BAR_FILL;
         let (prefix_w, suffix_w) = if draw_fill {

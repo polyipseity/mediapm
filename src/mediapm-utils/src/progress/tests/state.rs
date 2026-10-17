@@ -497,7 +497,7 @@ fn progress_group_excess_bars_return_active_handles() {
     // Fill slots beyond capacity, verify excess handle still tracks.
 
     // ProgressScreen::with_overall allocates terminal_height() slots
-    // (clamped to 4-200).  Use a MultiProgress with small term to force
+    // (clamped to 4-200).  Use a small in-memory term to force
     // small capacity.
     let term = indicatif::InMemoryTerm::new(4, 40);
     let terminal = ProgressTerminal::builder()

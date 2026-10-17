@@ -149,9 +149,15 @@ impl ProgressRenderer {
                 // (`gated_screen_without_bars_commits_nothing`) and writing it
                 // would scroll a real terminal for no pixels. Keep `last`
                 // unset — nothing exists on the terminal to back up over.
-            } else if write_frame(term, previous.as_deref(), &frame, resized)
-                .expect("terminal write")
-            {
+            } else if write_frame(term, previous.as_deref(), &frame, resized).unwrap_or(false) {
+                // STATED-REASON exception to fail-fast: progress rendering is
+                // advisory. A failed terminal write (EPIPE — e.g. `mediapm
+                // sync | head` closed the pipe) counts as a frame NOT written:
+                // `last_frame` stays as-is so the next frame diffs against the
+                // last frame actually on the terminal, and the sync keeps
+                // running. This mirrors indicatif, which never propagates
+                // draw errors. The sync's own result is the only error
+                // channel that must abort the run.
                 let mut last = self.last_frame.borrow_mut();
                 *last = Some(frame);
             }

@@ -4,8 +4,14 @@
 //! `tests_blank_slot_draws` so both inner test modules measure terminal
 //! writes the same way: it wraps an [`indicatif::InMemoryTerm`] grid and
 //! counts the `write_line` and `flush` calls that reach it.
+//! [`FailingTerm`] is its failure twin: same dimensions, every write
+//! errors, counting the attempts — the pair behind the write-error policy
+//! test.
 
+use super::renderer::ProgressRenderer;
 use super::writer::write_frame;
+use super::{SharedState, TimeSource, WriteGate};
+use crate::progress::{TestDimensionSource, TestTimeSource};
 use indicatif::TermLike;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -233,4 +239,100 @@ fn shrink_from_full_height_keeps_the_anchor() {
     write_frame(&term, Some(&short), &next, false).expect("change after shrink");
     let contents = term.grid.contents();
     assert_eq!(contents, "next-1\nnext-2", "post-shrink repaint drifted: {contents:?}");
+}
+
+/// A [`TermLike`] whose every write fails, counting the attempts.
+///
+/// Models a closed output pipe (EPIPE — `mediapm sync | head` closes the
+/// reader mid-paint). Width and height stay real so layout is unaffected;
+/// only the write path errors. The attempt counter distinguishes "tried
+/// and failed" from "short-circuited without trying", which is the
+/// observable the write-error policy leaves behind.
+#[derive(Debug)]
+pub(crate) struct FailingTerm {
+    /// Grid answering the dimension queries (the failing writes never reach it).
+    grid: indicatif::InMemoryTerm,
+    /// Number of `write_line`/`write_str` calls that returned `Err`.
+    attempts: Arc<AtomicUsize>,
+}
+
+impl FailingTerm {
+    /// `(term, attempt counter)` for a `rows x cols` grid.
+    pub(crate) fn new(rows: u16, cols: u16) -> (Self, Arc<AtomicUsize>) {
+        let term = Self {
+            grid: indicatif::InMemoryTerm::new(rows, cols),
+            attempts: Arc::new(AtomicUsize::new(0)),
+        };
+        let attempts = Arc::clone(&term.attempts);
+        (term, attempts)
+    }
+}
+
+impl TermLike for FailingTerm {
+    fn width(&self) -> u16 {
+        self.grid.width()
+    }
+    fn height(&self) -> u16 {
+        self.grid.height()
+    }
+    fn move_cursor_up(&self, n: usize) -> std::io::Result<()> {
+        self.grid.move_cursor_up(n)
+    }
+    fn move_cursor_down(&self, n: usize) -> std::io::Result<()> {
+        self.grid.move_cursor_down(n)
+    }
+    fn move_cursor_right(&self, n: usize) -> std::io::Result<()> {
+        self.grid.move_cursor_right(n)
+    }
+    fn move_cursor_left(&self, n: usize) -> std::io::Result<()> {
+        self.grid.move_cursor_left(n)
+    }
+    fn write_line(&self, _s: &str) -> std::io::Result<()> {
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "simulated EPIPE"))
+    }
+    fn write_str(&self, _s: &str) -> std::io::Result<()> {
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "simulated EPIPE"))
+    }
+    fn clear_line(&self) -> std::io::Result<()> {
+        self.grid.clear_line()
+    }
+    fn flush(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A failed terminal write counts as a frame not written; the run continues.
+///
+/// The policy (documented on `run_frame` and `write_frame`): progress
+/// rendering is advisory, so a closed pipe must not abort the sync — this
+/// replaces the old `expect("terminal write")` panic (the parked
+/// "error-policy" review item). `last_frame` stays unset when the write
+/// fails, so the next identical frame is attempted again instead of
+/// short-circuiting against a frame that never reached the terminal.
+#[test]
+fn a_failed_terminal_write_is_a_frame_not_written() {
+    let (term, attempts) = FailingTerm::new(10, 40);
+    let dims = Arc::new(TestDimensionSource::new((10, 40)));
+    let ts = Arc::new(TestTimeSource::new());
+    let gate = WriteGate::new_noop_with_term(Arc::new(term) as Arc<dyn TermLike>);
+    let mut renderer =
+        ProgressRenderer::new(4, dims, gate, ts.clone() as Arc<dyn TimeSource>, None);
+    let bar = Arc::new(SharedState::with_time_source(100, "tool", ts));
+    renderer.attach(&bar);
+
+    // Frame one: the write fails — before the policy this panicked.
+    renderer.run_frame();
+    let after_first = attempts.load(Ordering::Relaxed);
+    assert!(after_first > 0, "the failing frame must still attempt its write");
+
+    // Frame two, identical content: because the failed write left
+    // `last_frame` unset, the writer is attempted again rather than
+    // short-circuiting against a frame that never landed.
+    renderer.run_frame();
+    assert!(
+        attempts.load(Ordering::Relaxed) > after_first,
+        "a frame whose predecessor failed must be attempted again, not skipped"
+    );
 }

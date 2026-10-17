@@ -16,6 +16,13 @@ use indicatif::TermLike;
 /// that equality short-circuit — a resize owes a write even when the new
 /// frame's strings match the old ones — and never the cursor arithmetic.
 ///
+/// Callers treat `Err` the same as `false`: a failed terminal write counts
+/// as a frame not written, and the run continues. Progress rendering is
+/// advisory, so a closed pipe (EPIPE, e.g. `mediapm sync | head`) must not
+/// abort the sync — the policy and its rationale live on
+/// [`super::renderer::ProgressRenderer::run_frame`]; this mirrors
+/// indicatif, which never propagates draw errors either.
+///
 /// The cursor contract (legacy-compatible): the writer's last line is
 /// written **without** its trailing newline, so the cursor rests *on* the
 /// frame's last row — never one row past it, which on a bottom-anchored
