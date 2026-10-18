@@ -142,7 +142,6 @@ async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
         vec![
             "materializing".to_string(),
             "[src1] album".to_string(),
-            "[src1] album".to_string(),
             "[src1] [default] album".to_string(),
         ],
         "the parent row names the entry's identity, and the member row under it adds the \
@@ -186,9 +185,9 @@ async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
         })
         .count();
     assert_eq!(
-        parent_installs_before, 2,
-        "the parent row opens and reaches its write phase — its second identity install — \
-         before the member rows exist; got {recorded:?}",
+        parent_installs_before, 1,
+        "the parent row opens with its identity once — there is no write-phase re-install now the \
+         label carries no phase — before the member rows exist; got {recorded:?}",
     );
 
     let member_advances = recorded

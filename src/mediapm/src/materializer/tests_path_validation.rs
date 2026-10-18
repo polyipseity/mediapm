@@ -149,13 +149,8 @@ async fn regression_sync_hierarchy_sanitizes_interpolated_path_component() {
             // The entry bar declares live work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
             ProgressOp::SetTruncation { prefix: "[src1] AC_DC".into(), suffix: String::new() },
-            // The resolved variant joins the identity, and the later phase
-            // reinstalls the same row text: the label no longer carries the
-            // phase.
-            ProgressOp::SetTruncation {
-                prefix: "[src1] [default] AC_DC".into(),
-                suffix: String::new(),
-            },
+            // The resolved variant joins the identity. The label no longer
+            // carries the phase, so there is no later phase re-install.
             ProgressOp::SetTruncation {
                 prefix: "[src1] [default] AC_DC".into(),
                 suffix: String::new(),

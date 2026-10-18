@@ -19,6 +19,7 @@ use mediapm_utils::progress::{
     BarLabelTruncation, Brackets, Segment, SuffixComponents, fit_segments,
 };
 
+#[cfg(test)]
 use self::MaterializationPhase::{Commit, Staging, Verify, Write};
 
 /// One phase of the materialization screen.
@@ -77,6 +78,7 @@ impl HierarchyEntryKind {
     /// two granularities. That is the point of declaring it here rather than
     /// on the sub-bar alone.
     #[must_use]
+    #[cfg(test)]
     pub fn phases(self) -> &'static [MaterializationPhase] {
         match self {
             Self::Media => &[Staging, Verify, Commit],
@@ -91,6 +93,7 @@ impl HierarchyEntryKind {
     /// const item cannot index a slice. `phases_agree_with_first_phase` holds
     /// the two to each other.
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn first_phase(self) -> MaterializationPhase {
         match self {
             Self::Media | Self::MediaFolder | Self::Playlist => Staging,

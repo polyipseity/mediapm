@@ -147,13 +147,8 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
             // The entry bar declares live work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
             ProgressOp::SetTruncation { prefix: "[src1] test_file".into(), suffix: String::new() },
-            // The resolved variant joins the identity, and the later phase
-            // reinstalls the same row text: the label no longer carries the
-            // phase.
-            ProgressOp::SetTruncation {
-                prefix: "[src1] [default] test_file".into(),
-                suffix: String::new(),
-            },
+            // The resolved variant joins the identity. The label no longer
+            // carries the phase, so there is no later phase re-install.
             ProgressOp::SetTruncation {
                 prefix: "[src1] [default] test_file".into(),
                 suffix: String::new(),

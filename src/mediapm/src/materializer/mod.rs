@@ -23,7 +23,7 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
-use self::progress_labels::{MaterializationBarLabel, MaterializationPhase, split_entry_path};
+use self::progress_labels::{MaterializationBarLabel, split_entry_path};
 use crate::config::hierarchy_types::{
     FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, ValidatedHierarchyEntry,
     collect_playlist_media_index, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
@@ -450,152 +450,115 @@ fn sanitize_and_validate_hierarchy_paths(
         .collect()
 }
 
-/// Open the sub-bar for one extracted folder variant and label it.
+/// Drives one hierarchy row: its label, its identity, and the files it has
+/// written out of the files it totals.
 ///
-/// The parent row and the rows under it name the same work at two
-/// granularities: the parent carries the folder's identity, and this row
-/// carries the folder's identity plus the variant it is writing. The seed
-/// names the variant alone, because the seed is what a row shows before its
-/// first render and the variant is the one fact that separates these rows
-/// from each other.
-///
-/// `relative_path` is the folder's own path, so the label's basename is the
-/// folder's; `media_id` is the entry the variant belongs to, so a member row
-/// can be traced to its folder from the row alone.
-///
-/// Returns `None` when the caller has no screen, which is the shape every use
-/// of the handle already reads: it is advanced and finished conditionally.
-fn add_variant_sub_bar(
-    progress_group: Option<&Arc<dyn ProgressScreenApi + Send + Sync>>,
-    relative_path: &str,
-    media_id: &str,
-    variant_name: &str,
-    member_count: usize,
-) -> Option<Arc<dyn ProgressBarApi>> {
-    let pg = progress_group?;
-    let (_, entry_name) = split_entry_path(relative_path);
-    let bar = pg.add_bar(member_count as u64, variant_name);
-    // Live write work (Task 6); the entry arm's finish parks the row.
-    bar.set_animating(true);
-    bar.set_truncation(Arc::new(MaterializationBarLabel {
-        media_id: media_id.to_string(),
-        variant: variant_name.to_string(),
-        entry_name: entry_name.to_string(),
-        ..Default::default()
-    }));
-    Some(bar)
-}
-
-/// Drives one hierarchy entry's bar: its label, its identity, and the phase
-/// the arm has the row on.
-///
-/// The label carries the entry's identity — media id, effective variant and
+/// The label carries the row's identity — media id, effective variant and
 /// basename — and no phase tag; the fraction, the outcome colour and the
-/// finish marker say what the row is doing. The phase is bookkeeping:
-/// [`EntryPhaseBar::enter_once`] compares it to skip redundant label
-/// installs, and it is what lets a caller reason about where an arm stopped.
-/// It never reaches the row's text.
-struct EntryPhaseBar<'a> {
+/// finish marker say what the row is doing. A media or playlist entry gets
+/// one row, totalling the one file that entry writes. A folder entry opens
+/// one of these per variant from inside the write, and the total is the
+/// files that variant writes — the archive's member count for a ZIP
+/// variant, one for a plain one.
+struct EntryRowBar<'a> {
     /// The bar, absent when the caller asked for no progress output. Every
     /// method is a no-op without it, so an arm never re-checks for progress.
     handle: Option<Arc<dyn ProgressBarApi>>,
     /// Identity the row is materializing for: the entry's media id, or its
     /// hierarchy id when it is a playlist entry that has no media id.
     media_id: &'a str,
-    /// Effective variant the arm resolved for this entry, installed once the
-    /// selector resolves. Empty until then, and empty for a row that covers
-    /// a whole folder entry's variants.
+    /// Effective variant this row writes. Empty for a media row before its
+    /// selector resolves, for a playlist row, which writes no variant, and
+    /// for any row whose identity is the entry alone.
     variant: String,
     /// Basename half of the hierarchy-relative path.
     entry_name: &'a str,
-    /// Phase the row is on, always one of the kind's declared phases.
-    phase: MaterializationPhase,
 }
 
-impl<'a> EntryPhaseBar<'a> {
+impl<'a> EntryRowBar<'a> {
     /// Split `relative_path`, take `media_id` as the row's identity slot, and
-    /// open a bar for `kind`, on its first declared phase. Holds nothing when
-    /// `progress_group` is `None`.
+    /// open a bar totalling `total` files. Holds nothing when `progress_group`
+    /// is `None`.
+    ///
+    /// The seed names the variant when the row is one variant's row — that is
+    /// what the folder writers walk one of at a time — and the entry's path
+    /// otherwise. The seed is what a row shows before its first render, and
+    /// the identity label is installed immediately after.
     fn create(
         progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
         relative_path: &'a str,
         media_id: &'a str,
-        kind: HierarchyEntryKind,
-    ) -> EntryPhaseBar<'a> {
+        variant: &str,
+        total: u64,
+    ) -> EntryRowBar<'a> {
         let (_, entry_name) = split_entry_path(relative_path);
-        let phase = kind.first_phase();
         let handle = progress_group.map(|pg| {
-            // The total is the number of advances the row will see, and an
-            // entry arm advances once after its work returns, so a finished
-            // entry reads 1/1 whether it succeeded, warned or failed. The
-            // outcome rides on the colour and the status marker the arm
-            // installs at the finish.
-            let bar = pg.add_bar(1, relative_path);
-            // Live phase work (Task 6); the arm's finish parks the row.
+            // The total is the files this row writes: one for a media or
+            // playlist entry, the archive's member count or one for a folder
+            // variant. The writer advances once per file written, so a
+            // finished row reads full exactly when every file landed.
+            let seed = if variant.is_empty() { relative_path } else { variant };
+            let bar = pg.add_bar(total, seed);
+            // Live write work (Task 6); the arm's finish parks the row.
             bar.set_animating(true);
             bar.set_truncation(Arc::new(MaterializationBarLabel {
                 media_id: media_id.to_string(),
+                variant: variant.to_string(),
                 entry_name: entry_name.to_string(),
                 ..Default::default()
             }));
             bar
         });
-        EntryPhaseBar { handle, media_id, variant: String::new(), entry_name, phase }
-    }
-
-    /// Record `phase` as the row's current phase and re-install the row's
-    /// identity label.
-    ///
-    /// Takes `&mut self` because the phase is this row's own bookkeeping, so
-    /// moving on changes the row rather than something the bar is told
-    /// separately. The reinstall keeps the label in step with any identity
-    /// change — a variant installed since the last transition — at the point
-    /// the arm declares its new phase.
-    fn enter(&mut self, phase: MaterializationPhase) {
-        self.phase = phase;
-        self.label("");
-    }
-
-    /// Record `phase` only when the row is somewhere else.
-    ///
-    /// The folder arm writes one variant after another and never comes back
-    /// off its write phase, so calling [`Self::enter`] per variant would
-    /// re-install a label the row already carries once per variant for no
-    /// new fact. A caller that moves forward through distinct phases wants
-    /// [`Self::enter`] instead, because a second call there would mean a
-    /// phase went backwards.
-    fn enter_once(&mut self, phase: MaterializationPhase) {
-        if self.phase != phase {
-            self.enter(phase);
-        }
+        EntryRowBar { handle, media_id, variant: variant.to_string(), entry_name }
     }
 
     /// Install the effective variant this row writes.
     ///
     /// The selector resolves inside the arm rather than at bar creation, so
     /// the variant reaches the label after the row exists. Takes `&mut self`
-    /// for the same reason [`Self::enter`] does: the variant is this row's
-    /// own identity, and every later label install carries it.
+    /// because the variant is this row's own identity, and every later label
+    /// install carries it.
     fn set_variant(&mut self, variant: &str) {
         self.variant = variant.to_string();
         self.label("");
     }
 
+    /// Advance the row by `files` written files, or do nothing without a screen.
+    fn advance(&self, files: u64) {
+        if let Some(ref bar) = self.handle {
+            bar.advance(files);
+        }
+    }
+
+    /// Finish the row as a success, or do nothing without a screen.
+    fn finish_success(&self) {
+        if let Some(ref bar) = self.handle {
+            bar.finish_success();
+        }
+    }
+
+    /// Finish the row as a warning, or do nothing without a screen.
+    fn finish_warning(&self) {
+        if let Some(ref bar) = self.handle {
+            bar.finish_warning();
+        }
+    }
+
+    /// Finish the row as an error, or do nothing without a screen.
+    fn finish_error(&self) {
+        if let Some(ref bar) = self.handle {
+            bar.finish_error();
+        }
+    }
+
     /// Re-install the row's identity label with a terminal-state marker.
     ///
     /// `finish_warning` and `finish_error` change a bar's colour and nothing
-    /// else, so the text of a finished entry never said what happened. The
+    /// else, so the text of a finished row never said what happened. The
     /// marker is the caller's, because it is the finish that decides between
-    /// them: a skipped media entry warns and a rejected one errors.
+    /// them: a skipped media entry warns and a rejected playlist errors.
     fn finish(&self, status_marker: &str) {
         self.label(status_marker);
-    }
-
-    /// The bar itself, for the calls an arm makes on the work rather than on
-    /// its label. Returns a handle the caller owns, so holding it cannot
-    /// borrow the row for the duration.
-    fn handle(&self) -> Option<Arc<dyn ProgressBarApi>> {
-        self.handle.clone()
     }
 
     /// Install `status_marker` on the row's current identity, the one place a
@@ -651,23 +614,27 @@ async fn prepare_hierarchy_entry(
     // there is no `&str` here for a caller to hand unvalidated text to.
     let target_path = shared.hierarchy_root.join(commit::join_path_components(&entry.path));
 
-    // Per-entry bar, owned by mediapm (not the conductor). Its label carries
-    // the entry's identity — media id, effective variant, basename — and no
-    // phase tag; the phases this row walks are the kind's declaration, and
-    // the driver records them as the arm enters them.
+    // Media and playlist entries open one row of their own, owned by
+    // mediapm (not the conductor). Its label carries the entry's identity —
+    // media id, effective variant, basename — and its fraction is the files
+    // the row has written out of the files the entry produces.
     //
     // A playlist entry carries no media id, so its row names itself by the
     // hierarchy id instead; an entry with neither renders its basename alone.
+    // A folder entry opens no row here: each of its variants opens a row of
+    // its own from inside the write, totalled by the files that variant
+    // writes.
     let media_slot = if entry.entry.media_id.is_empty() {
         entry.hierarchy_id.as_deref().unwrap_or("")
     } else {
         entry.entry.media_id.as_str()
     };
-    let mut entry_bar =
-        EntryPhaseBar::create(progress_group.clone(), &relative_path, media_slot, entry.entry.kind);
 
     match entry.entry.kind {
         HierarchyEntryKind::Media => {
+            let mut entry_bar =
+                EntryRowBar::create(progress_group.clone(), &relative_path, media_slot, "", 1);
+
             // Resolve the source spec (playlist entries carry no media id).
             let source = resolve_hierarchy_source(document, &entry.entry)?;
             let media_id = &entry.entry.media_id;
@@ -691,18 +658,15 @@ async fn prepare_hierarchy_entry(
             // The selector resolves here rather than at bar creation, so this
             // is the first point the row can name the variant it writes.
             entry_bar.set_variant(&effective_variant);
-            entry_bar.enter(MaterializationPhase::Verify);
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
             if let Some(hash) = hash {
                 if shared.target_already_holds(&relative_path, &hash, &target_path).await {
-                    // Nothing is written on this path, so the row finishes on
-                    // the verify phase it entered: it measured the target
-                    // against the resolved content and had nothing to commit.
-                    if let Some(bar) = entry_bar.handle() {
-                        bar.advance(1);
-                        bar.finish_success();
-                    }
+                    // Nothing is written on this path, so the row finishes
+                    // full: it measured the target against the resolved
+                    // content and had nothing to commit.
+                    entry_bar.advance(1);
+                    entry_bar.finish_success();
                     return Ok(PreparedHierarchyEntryResult {
                         outcome: EntryOutcome::AlreadyCorrect,
                         managed_files: BTreeMap::from([(
@@ -715,8 +679,6 @@ async fn prepare_hierarchy_entry(
                         )]),
                     });
                 }
-
-                entry_bar.enter(MaterializationPhase::Commit);
 
                 // Check if this variant has a zip_member binding (e.g., subtitles_en
                 // produces a ZIP containing `.en.vtt`). The raw CAS hash points at the
@@ -770,10 +732,8 @@ async fn prepare_hierarchy_entry(
                 };
 
                 let record = record_for(media_id, &effective_variant, &materialized_hash);
-                if let Some(bar) = entry_bar.handle() {
-                    bar.advance(1);
-                    bar.finish_success();
-                }
+                entry_bar.advance(1);
+                entry_bar.finish_success();
                 Ok(PreparedHierarchyEntryResult {
                     outcome: EntryOutcome::Materialized,
                     managed_files: BTreeMap::from([(relative_path.clone(), record)]),
@@ -790,14 +750,12 @@ async fn prepare_hierarchy_entry(
                     "media '{media_id}' variant '{effective_variant}' has no content hash, so its \
                      output was not written"
                 ));
-                if let Some(bar) = entry_bar.handle() {
-                    bar.advance(1);
-                    // The media arm last installed `[vrf]` and never moved on,
-                    // because there is no hash to commit, so the warning names
-                    // the phase the row is actually on.
-                    entry_bar.finish("W");
-                    bar.finish_warning();
-                }
+                entry_bar.advance(1);
+                // There is no hash to commit, so the row ends where it
+                // stands: the marker is what tells the text apart from a row
+                // that wrote its file.
+                entry_bar.finish("W");
+                entry_bar.finish_warning();
                 Ok(PreparedHierarchyEntryResult {
                     outcome: EntryOutcome::Missing,
                     managed_files: BTreeMap::new(),
@@ -810,7 +768,13 @@ async fn prepare_hierarchy_entry(
             let source = resolve_hierarchy_source(document, &entry.entry)?;
             let media_id = &entry.entry.media_id;
 
-            // Multi-variant materialization (directory output).
+            // Multi-variant materialization (directory output). The folder
+            // opens its own entry row (total one, advanced once when its work
+            // returns) and each variant opens its file-count sub-row inside the
+            // write; the entry advance lands after the last sub-bar so a
+            // sub-bar's advances stay out of the entry total.
+            let entry_bar =
+                EntryRowBar::create(progress_group.clone(), &relative_path, media_slot, "", 1);
             let result = materialize_media_folder_entry(
                 entry,
                 source,
@@ -820,28 +784,20 @@ async fn prepare_hierarchy_entry(
                 shared,
                 lookup,
                 progress_group,
-                &mut entry_bar,
             )
             .await;
-            if let Some(bar) = entry_bar.handle() {
-                finish_entry_row(&result, &mut entry_bar, &bar);
-            }
+            finish_entry_row(&result, &entry_bar);
             result
         }
         HierarchyEntryKind::Playlist => {
-            // Playlist generation.
-            let result = materialize_playlist_entry(
-                entry,
-                document,
-                &target_path,
-                &relative_path,
-                shared,
-                &mut entry_bar,
-            )
-            .await;
-            if let Some(bar) = entry_bar.handle() {
-                finish_entry_row(&result, &mut entry_bar, &bar);
-            }
+            // Playlist generation. A playlist renders to one file, so its row
+            // totals one and finishes when the arm's work returns.
+            let entry_bar =
+                EntryRowBar::create(progress_group.clone(), &relative_path, media_slot, "", 1);
+            let result =
+                materialize_playlist_entry(entry, document, &target_path, &relative_path, shared)
+                    .await;
+            finish_entry_row(&result, &entry_bar);
             result
         }
     }
@@ -852,29 +808,27 @@ async fn prepare_hierarchy_entry(
 /// The row reports what the entry did, not only whether it raised. An entry
 /// whose output could not be written left the library short of something the
 /// document asked for, so that row warns and the overall row errors. An entry
-/// that raised errors on both. The folder and playlist arms reach here from the
-/// same kind of collision, and this is the one place that says which finish a
+/// that raised errors on both. This is the one place that says which finish a
 /// [`EntryOutcome::Missing`] gets.
 ///
-/// The phase a failure names is the row's own, so a multi-phase entry reports
-/// where it stopped. The folder arm moves to `[wrt]` when it starts writing a
-/// variant and stays there, so a failure during the write names that phase while
-/// one raised before the first write names `[stg]`.
+/// Only the playlist arm reaches here. A media entry finishes its row on each
+/// path its arm returns through, and a folder's rows belong to its variants,
+/// which finish themselves inside the write; a playlist renders to one file,
+/// so one row totals it and this call is its finish.
 fn finish_entry_row(
     result: &Result<PreparedHierarchyEntryResult, MediaPmError>,
-    entry_bar: &mut EntryPhaseBar<'_>,
-    bar: &Arc<dyn ProgressBarApi>,
+    row: &EntryRowBar<'_>,
 ) {
-    bar.advance(1);
+    row.advance(1);
     match result {
         Ok(prepared) if matches!(prepared.outcome, EntryOutcome::Missing) => {
-            entry_bar.finish("W");
-            bar.finish_warning();
+            row.finish("W");
+            row.finish_warning();
         }
-        Ok(_) => bar.finish_success(),
+        Ok(_) => row.finish_success(),
         Err(_) => {
-            entry_bar.finish("F");
-            bar.finish_error();
+            row.finish("F");
+            row.finish_error();
         }
     }
 }
@@ -1170,13 +1124,14 @@ async fn write_zip_folder_variant(
         ));
         return Ok(false);
     }
-    let file_bar = add_variant_sub_bar(
-        progress_group,
+    let file_bar = EntryRowBar::create(
+        progress_group.cloned(),
         relative_path,
         media_id,
         &variant.name,
-        extracted.len(),
+        extracted.len() as u64,
     );
+    let file_bar = Some(file_bar);
     let mut wrote_member = true;
     for (file_rel_path, content) in extracted {
         let file_rel_path = resolve_extracted_member_path(&file_rel_path, media_id, &variant.name)?;
@@ -1326,7 +1281,6 @@ async fn materialize_media_folder_entry(
     shared: &SyncSharedState,
     lookup: &MaterializationLookupContext,
     progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
-    entry_bar: &mut EntryPhaseBar<'_>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     // Resolve variant selectors.
     let available = collect_media_source_available_variants(source);
@@ -1446,13 +1400,9 @@ async fn materialize_media_folder_entry(
         && let Some(members) = &expected_members
         && shared.every_output_holds(members).await
     {
-        // The row stays on `[stg]`: it measured the folder against what the
-        // document resolves and then had nothing to commit, the way the media
-        // arm stays on `[vrf]` when it declines an entry.
-        if let Some(bar) = entry_bar.handle() {
-            bar.advance(1);
-            bar.finish_success();
-        }
+        // Nothing was written, so no per-variant row was opened; the folder
+        // matched what the document resolves and has nothing to commit, the way
+        // the media arm declines an entry without advancing a row.
         return Ok(PreparedHierarchyEntryResult {
             outcome: EntryOutcome::AlreadyCorrect,
             managed_files: members
@@ -1471,10 +1421,6 @@ async fn materialize_media_folder_entry(
 
     let mut managed_files = BTreeMap::new();
     for variant in &resolved_variants {
-        // The parent row moves to `[wrt]` here, before the ZIP test decides
-        // whether this variant opens a sub-bar or writes a plain file, because
-        // both arms write and both belong to the phase the folder declares.
-        entry_bar.enter_once(MaterializationPhase::Write);
         let wrote_variant = if is_zip_content(&variant.data) {
             write_zip_folder_variant(
                 variant,
@@ -1509,7 +1455,6 @@ async fn materialize_playlist_entry(
     target_path: &Path,
     relative_path: &str,
     shared: &SyncSharedState,
-    entry_bar: &mut EntryPhaseBar<'_>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     // Build playlist entries from the media ids referenced by this playlist
     // node. The references are carried on `entry.entry.ids` as
@@ -1589,10 +1534,6 @@ async fn materialize_playlist_entry(
         })?;
     }
 
-    // The row reaches `[cmt]` at the write rather than at the top of the
-    // function, because a playlist that failed while resolving a reference, or
-    // that had nothing to commit, has not committed anything and should say so.
-    entry_bar.enter(MaterializationPhase::Commit);
     // A directory already sitting on this path is refused rather than cleared.
     // The shared writer removes whatever is in the way so a body this run
     // marked read-only can be replaced, and here what is in the way is the
