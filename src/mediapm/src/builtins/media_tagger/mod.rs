@@ -854,6 +854,12 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         options.cache_dir.clone(),
         CacheExpiryPolicy::from_seconds(options.cache_expiry_seconds),
     );
+    media_tagger_cache.evict_expired().await.with_context(|| {
+        format!(
+            "evicting expired media-tagger cache rows under '{}'",
+            options.cache_dir.as_deref().unwrap_or(Path::new("<disabled cache>")).display()
+        )
+    })?;
     if !options.enable_tag_saving {
         let fallback_map = if options.clear_existing_tags {
             BTreeMap::new()

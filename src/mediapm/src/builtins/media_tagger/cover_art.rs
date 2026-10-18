@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::time::{Instant, sleep};
 
@@ -521,6 +521,96 @@ impl MediaTaggerHttpCache {
             .with_context(|| format!("replacing media-tagger cache index '{}'", path.display()))?;
 
         Ok(())
+    }
+
+    /// Retires every row the read path would already treat as stale or
+    /// unreadable, reclaims the blobs only those rows referenced, and
+    /// persists each prune once.
+    ///
+    /// Age is judged by [`Self::expiry_for_namespace`], the same policy the
+    /// reads consult: a stale row costs its next use a refetch either way,
+    /// so dropping it now loses nothing. Rows whose store blob is missing
+    /// go too — nothing can ever read them again. Blob reclamation walks
+    /// [`CasMaintenanceApi::list_hashes`], the store's own content listing,
+    /// so it depends on no filesystem layout of `store/`.
+    ///
+    /// Runs once per invocation before any fetch, so no concurrent writer
+    /// exists to coordinate with. A disabled cache is a no-op. A poisoned
+    /// lock, a failed listing, an unremovable blob, or an index that cannot
+    /// be persisted is a hard error: a cache dir broken enough to fail
+    /// cleanup will fail the writes meant to use it.
+    pub(super) async fn evict_expired(&self) -> anyhow::Result<usize> {
+        if self.index_path.is_none() || self.store_dir.is_none() {
+            return Ok(0);
+        }
+
+        let now = now_unix_seconds();
+        let dropped = {
+            let mut index = self
+                .index
+                .lock()
+                .map_err(|_| anyhow::anyhow!("locking media-tagger cache index mutex failed"))?;
+            let mut dropped = 0usize;
+            index.entries.retain(|logical_key, entry| {
+                let namespace = logical_key.split_once('|').map_or("", |(namespace, _)| namespace);
+                if self.expiry_for_namespace(namespace).is_fresh(entry.fetched_unix_seconds, now) {
+                    true
+                } else {
+                    dropped += 1;
+                    false
+                }
+            });
+            if dropped > 0 {
+                self.write_index_file(&index)
+                    .context("persisting media-tagger cache index after the age prune")?;
+            }
+            dropped
+        };
+
+        let Some(cas) = self.open_cache_cas().await? else {
+            return Ok(dropped);
+        };
+        let present: BTreeSet<String> = cas
+            .list_hashes()
+            .await
+            .context("listing media-tagger cache store blobs for eviction")?
+            .into_iter()
+            .map(|hash| hash.to_string())
+            .collect();
+
+        let (surviving, dangling_dropped) = {
+            let mut index = self
+                .index
+                .lock()
+                .map_err(|_| anyhow::anyhow!("locking media-tagger cache index mutex failed"))?;
+            let mut surviving = BTreeSet::new();
+            let mut dangling_dropped = 0usize;
+            index.entries.retain(|_, entry| {
+                if present.contains(&entry.hash) {
+                    surviving.insert(entry.hash.clone());
+                    true
+                } else {
+                    dangling_dropped += 1;
+                    false
+                }
+            });
+            if dangling_dropped > 0 {
+                self.write_index_file(&index)
+                    .context("persisting media-tagger cache index after the dangling prune")?;
+            }
+            (surviving, dangling_dropped)
+        };
+
+        for orphan in present.difference(&surviving) {
+            let hash = orphan
+                .parse::<Hash>()
+                .with_context(|| format!("parsing media-tagger cache blob hash '{orphan}'"))?;
+            cas.delete(hash)
+                .await
+                .with_context(|| format!("reclaiming media-tagger cache blob '{orphan}'"))?;
+        }
+
+        Ok(dropped + dangling_dropped)
     }
 }
 
@@ -1257,6 +1347,8 @@ pub(super) async fn download_cover_art_bytes(
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    use mediapm_cas::CasError;
 
     use super::*;
 
@@ -2025,6 +2117,225 @@ mod tests {
         assert!(
             images.is_fresh,
             "raising the base past the long-lived constant must raise image-row freshness with it"
+        );
+    }
+
+    /// Reads one index row's blob hash for store-level assertions.
+    fn index_row_hash(cache: &MediaTaggerHttpCache, namespace: &str, key: &str) -> Hash {
+        let logical_key = MediaTaggerHttpCache::cache_key(namespace, key);
+        cache
+            .index
+            .lock()
+            .expect("index lock")
+            .entries
+            .get(&logical_key)
+            .expect("index row")
+            .hash
+            .parse()
+            .expect("blob hash")
+    }
+
+    /// A metadata row past its budget is retired while a long-lived image
+    /// row of the same age survives, and only the expired row's blob leaves
+    /// the store.
+    #[tokio::test]
+    async fn eviction_drops_expired_rows_and_reclaims_only_their_blobs() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(1),
+        );
+        let one_hour = 60 * 60;
+
+        cache
+            .write_json_payload(
+                "caa-entries",
+                "https://example.test/expired",
+                &serde_json::json!({"images": []}),
+            )
+            .await
+            .expect("seed expired row");
+        cache
+            .write_bytes_payload("caa-images", "https://example.test/live.jpg", b"jpeg")
+            .await
+            .expect("seed live row");
+        age_index_row(&cache, "caa-entries", "https://example.test/expired", one_hour);
+        age_index_row(&cache, "caa-images", "https://example.test/live.jpg", one_hour);
+        let expired_hash = index_row_hash(&cache, "caa-entries", "https://example.test/expired");
+        let live_hash = index_row_hash(&cache, "caa-images", "https://example.test/live.jpg");
+
+        let dropped = cache.evict_expired().await.expect("eviction");
+        assert_eq!(dropped, 1, "only the expired metadata row is retired");
+
+        let expired_key =
+            MediaTaggerHttpCache::cache_key("caa-entries", "https://example.test/expired");
+        assert!(
+            !cache.index.lock().expect("index lock").entries.contains_key(&expired_key),
+            "the expired row must be gone from the index"
+        );
+        let live = cache
+            .read_bytes_payload("caa-images", "https://example.test/live.jpg")
+            .await
+            .expect("live row");
+        assert!(live.is_fresh, "the long-lived image row stays fresh and readable");
+
+        let cas = cache.open_cache_cas().await.expect("cas").expect("store enabled");
+        assert!(
+            matches!(cas.stat(expired_hash).await, Err(CasError::NotFound(_))),
+            "the expired row's blob must be reclaimed"
+        );
+        assert!(cas.stat(live_hash).await.is_ok(), "the live blob must stay in the store");
+    }
+
+    /// A row whose blob vanished behind the index's back drops out, and the
+    /// prune persists so a reopened cache does not resurrect it.
+    #[tokio::test]
+    async fn eviction_drops_a_dangling_row_and_persists_the_prune() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(60),
+        );
+        let endpoint = "https://example.test/dangling";
+        cache
+            .write_json_payload("caa-entries", endpoint, &serde_json::json!({"images": []}))
+            .await
+            .expect("seed row");
+        let blob = index_row_hash(&cache, "caa-entries", endpoint);
+        let cas = cache.open_cache_cas().await.expect("cas").expect("store enabled");
+        cas.delete(blob).await.expect("delete blob behind the index's back");
+        drop(cas);
+
+        let dropped = cache.evict_expired().await.expect("eviction");
+        assert_eq!(dropped, 1, "a row without a blob can never be read again");
+
+        let reopened = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(60),
+        );
+        let key = MediaTaggerHttpCache::cache_key("caa-entries", endpoint);
+        assert!(
+            !reopened.index.lock().expect("index lock").entries.contains_key(&key),
+            "the prune must persist so a fresh cache does not resurrect the row"
+        );
+    }
+
+    /// A never-expire base retires no rows, however old.
+    #[tokio::test]
+    async fn eviction_keeps_every_row_under_a_never_expire_base() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(-1),
+        );
+        let ten_years = 10 * 365 * 24 * 60 * 60;
+        let rows = [
+            ("musicbrainz-payloads", "recording=ancient|release="),
+            ("caa-entries", "https://example.test/ancient"),
+            ("caa-images", "https://example.test/ancient.jpg"),
+            ("acoustid-lookups", "fingerprint=ancient|endpoint=https://api.acoustid.org/v2/lookup"),
+        ];
+
+        for (namespace, key) in rows {
+            cache
+                .write_json_payload(namespace, key, &serde_json::json!({"status": "ok"}))
+                .await
+                .expect("seed row");
+            age_index_row(&cache, namespace, key, ten_years);
+        }
+
+        let dropped = cache.evict_expired().await.expect("eviction");
+        assert_eq!(dropped, 0, "a never-expire base retires no rows");
+        let index = cache.index.lock().expect("index lock");
+        for (namespace, key) in rows {
+            let logical_key = MediaTaggerHttpCache::cache_key(namespace, key);
+            assert!(
+                index.entries.contains_key(&logical_key),
+                "{namespace}: a never-expire row must survive eviction"
+            );
+        }
+    }
+
+    /// A disabled cache retires nothing and touches no disk.
+    #[tokio::test]
+    async fn eviction_is_a_no_op_on_a_disabled_cache() {
+        let cache = MediaTaggerHttpCache::new(None, CacheExpiryPolicy::from_seconds(1));
+        let dropped = cache.evict_expired().await.expect("eviction on a disabled cache");
+        assert_eq!(dropped, 0, "a disabled cache holds no rows to retire");
+    }
+
+    /// A cache dir that cannot persist the prune fails loudly.
+    ///
+    /// `write_index_file` persists by temp-file-plus-rename, so a read-only
+    /// *file* would still accept the rename — the write fails only when the
+    /// directory itself refuses new files. The chmod therefore seals the
+    /// cache root, and is lifted again before the temp dir cleans up.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn eviction_fails_loudly_when_the_index_cannot_be_persisted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(1),
+        );
+        cache
+            .write_json_payload(
+                "caa-entries",
+                "https://example.test/sealed",
+                &serde_json::json!({"images": []}),
+            )
+            .await
+            .expect("seed row");
+        age_index_row(&cache, "caa-entries", "https://example.test/sealed", 3600);
+
+        let mut sealed = fs::metadata(root.path()).expect("root metadata").permissions();
+        sealed.set_mode(0o555);
+        fs::set_permissions(root.path(), sealed).expect("seal cache root");
+
+        let result = cache.evict_expired().await;
+
+        let mut open = fs::metadata(root.path()).expect("root metadata").permissions();
+        open.set_mode(0o755);
+        fs::set_permissions(root.path(), open).expect("unseal cache root");
+
+        let error = result.expect_err("a sealed cache dir must fail eviction, not skip it");
+        assert!(
+            format!("{error:#}").contains("media-tagger cache index"),
+            "the error must name the failing index persist, got: {error:#}"
+        );
+    }
+
+    /// The return value counts exactly the rows the index lost.
+    #[tokio::test]
+    async fn eviction_returns_the_number_of_rows_dropped() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(1),
+        );
+        let one_hour = 60 * 60;
+
+        for key in ["https://example.test/gone-a", "https://example.test/gone-b"] {
+            cache
+                .write_json_payload("caa-entries", key, &serde_json::json!({"images": []}))
+                .await
+                .expect("seed row");
+            age_index_row(&cache, "caa-entries", key, one_hour);
+        }
+        cache
+            .write_bytes_payload("caa-images", "https://example.test/stays.jpg", b"jpeg")
+            .await
+            .expect("seed live row");
+        age_index_row(&cache, "caa-images", "https://example.test/stays.jpg", one_hour);
+
+        let dropped = cache.evict_expired().await.expect("eviction");
+        assert_eq!(dropped, 2, "the count must equal the rows the index lost");
+        assert_eq!(
+            cache.index.lock().expect("index lock").entries.len(),
+            1,
+            "one live row remains after eviction"
         );
     }
 }
