@@ -123,6 +123,12 @@ pub(crate) struct StepExecutionRequest {
     /// Impure timestamp captured before the level starts, when required.
     pub impure_timestamp: Option<Timestamp>,
     /// State snapshot used for cache-key and rematerialization checks.
+    ///
+    /// Dependency-scoped: the run-entry state plus exactly the tool-call
+    /// instances (and aux records) this step's transitive dependencies
+    /// contributed during this run. Instances from unrelated or in-flight
+    /// steps are never visible, so a cache probe depends only on the step's
+    /// own dependency closure — not on dispatch timing.
     pub state_snapshot: Arc<ConductorState>,
     /// Absolute directory that directly contains the outermost conductor
     /// configuration file used for this run.
@@ -131,7 +137,14 @@ pub(crate) struct StepExecutionRequest {
     pub outermost_config_dir: PathBuf,
     /// Root path for per-step temporary directories.
     pub conductor_tmp_dir: PathBuf,
-    /// Output hashes already produced by earlier steps in the workflow.
+    /// Output hashes already produced by this step's transitive dependencies
+    /// in this run.
+    ///
+    /// Dependency-scoped at dispatch: an entry is present iff the producing
+    /// step is a transitive `depends_on` ancestor of this step, so
+    /// `$step_output.<id>.<name>` resolution succeeds for ancestors and
+    /// deterministically fails for unrelated steps regardless of what
+    /// settled earlier in the run.
     pub step_outputs: Arc<StepOutputs>,
     /// Declared output names from this step that are actually referenced by
     /// downstream `$step_output` input bindings.

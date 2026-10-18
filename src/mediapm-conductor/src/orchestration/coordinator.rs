@@ -24,7 +24,7 @@ use super::progress_labels::WorkerBarLabel;
 
 use crate::config::WorkflowStepSpec;
 use crate::error::ConductorError;
-use crate::state::ConductorState;
+use crate::state::{ConductorState, InstanceAux, ToolCallInstance};
 
 use ractor::rpc::CallResult;
 
@@ -150,6 +150,21 @@ struct StepCompletion {
     result: Result<StepExecutionBundle, (StepFailureKind, ConductorError)>,
 }
 
+/// One settled step's contribution to orchestration state.
+///
+/// Retained per producing step id so the scheduler can rebuild a
+/// dependency-scoped state snapshot at each spawn: a request's
+/// `state_snapshot` is the run-entry state plus exactly the contributions
+/// of its transitive ancestors (see [`scoped_state_snapshot`]).
+struct StepStateContribution {
+    /// The tool-call instance the step settled with (fresh or cache-hit
+    /// replay of a pre-existing one).
+    instance: ToolCallInstance,
+    /// The aux record stored alongside the instance in the live state
+    /// (per-output save modes + the GC last-reference clock).
+    aux: InstanceAux,
+}
+
 /// Resolves `$step_output.<step_id>.<name>` references in input values.
 fn compute_required_outputs(steps: &[WorkflowStepSpec]) -> BTreeMap<String, BTreeSet<String>> {
     let mut required: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -171,6 +186,83 @@ fn compute_required_outputs(steps: &[WorkflowStepSpec]) -> BTreeMap<String, BTre
     }
 
     required
+}
+
+/// Computes each step's transitive dependency closure (its ancestor set).
+///
+/// Built once per run before dispatch, over the static graph
+/// `DependencyGraph::build` already validated (unknown ids and cycles are
+/// rejected before this runs, so every direct dep resolves and the
+/// recursion terminates). The closure EXCLUDES the step itself: outputs
+/// and state contributions are keyed by the producing step, and a step
+/// produces nothing before it dispatches. Dispatch uses the closure to
+/// scope each request's `step_outputs` and `state_snapshot` to exactly
+/// what the step's dependencies produced (see [`scoped_step_outputs`] and
+/// [`scoped_state_snapshot`]).
+fn compute_ancestor_closures(steps: &[WorkflowStepSpec]) -> BTreeMap<String, BTreeSet<String>> {
+    /// Memoized DFS over the direct-dependency edges: the ancestors of a
+    /// step are its direct deps plus every dep's own closure.
+    fn ancestors_of<'a>(
+        step_id: &str,
+        direct_deps: &BTreeMap<&'a str, Vec<&'a str>>,
+        memo: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> BTreeSet<String> {
+        if let Some(closure) = memo.get(step_id) {
+            return closure.clone();
+        }
+        let mut closure = BTreeSet::new();
+        for dep in direct_deps.get(step_id).into_iter().flatten().copied() {
+            closure.insert(dep.to_string());
+            closure.extend(ancestors_of(dep, direct_deps, memo));
+        }
+        memo.insert(step_id.to_string(), closure.clone());
+        closure
+    }
+
+    let direct_deps: BTreeMap<&str, Vec<&str>> = steps
+        .iter()
+        .map(|step| (step.id.as_str(), step.depends_on.iter().map(String::as_str).collect()))
+        .collect();
+    let mut memo = BTreeMap::new();
+    steps
+        .iter()
+        .map(|step| (step.id.clone(), ancestors_of(&step.id, &direct_deps, &mut memo)))
+        .collect()
+}
+
+/// Filters a run's merged outputs down to the entries produced by
+/// `ancestors`, so a request's `step_outputs` never depends on which
+/// unrelated branches happened to settle before this step dispatched.
+fn scoped_step_outputs(outputs: &StepOutputs, ancestors: &BTreeSet<String>) -> StepOutputs {
+    outputs
+        .iter()
+        .filter(|(step_id, _)| ancestors.contains(*step_id))
+        .map(|(step_id, outputs)| (step_id.clone(), outputs.clone()))
+        .collect()
+}
+
+/// Builds a dependency-scoped state snapshot: the run-entry state plus
+/// exactly the instance/aux contributions merged by `ancestors` during
+/// this run. A step's cache probe therefore sees its ancestors' fresh
+/// executions (same-run cache hits) but never an unrelated branch's.
+///
+/// The additive build starts from the run-entry state — instances from
+/// previous runs stay visible to every step, so cross-run cache hits are
+/// preserved — while this run's contributions are limited to the closure.
+fn scoped_state_snapshot(
+    run_entry: &ConductorState,
+    ancestors: &BTreeSet<String>,
+    contributions: &BTreeMap<String, StepStateContribution>,
+) -> ConductorState {
+    let mut scoped = run_entry.clone();
+    for ancestor in ancestors {
+        if let Some(contribution) = contributions.get(ancestor) {
+            let instance_key = contribution.instance.instance_key;
+            scoped.tool_call_instances.insert(instance_key, contribution.instance.clone());
+            scoped.aux.instances.insert(instance_key, contribution.aux.clone());
+        }
+    }
+    scoped
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +435,10 @@ where
     /// graph, and dispatches steps from a ready queue over the worker pool: a
     /// step becomes eligible the moment its own `depends_on` edges have
     /// settled, and takes any free worker — there is no level barrier.
+    /// Each dispatched step receives a dependency-scoped view: its
+    /// `step_outputs` and `state_snapshot` contain exactly what its
+    /// transitive dependencies produced in this run, never another
+    /// branch's contributions (see [`compute_ancestor_closures`]).
     ///
     /// # Errors
     ///
@@ -369,6 +465,10 @@ where
 
             let dependency_graph = DependencyGraph::build(&workflow.steps)?;
             let required_outputs = compute_required_outputs(&workflow.steps);
+            // Per-step transitive-dependency closures, computed once per run
+            // from the static graph; dispatch scopes each request's outputs
+            // and state to its step's closure.
+            let ancestor_closures = compute_ancestor_closures(&workflow.steps);
 
             let total_steps = workflow.steps.len();
             let mut executed_steps = 0usize;
@@ -433,17 +533,24 @@ where
             }
 
             let mut step_outputs: StepOutputs = BTreeMap::new();
-            let state_snapshot = Arc::new(state.clone());
+            // The pre-run state, cloned once: the base of every
+            // dependency-scoped request snapshot (see
+            // `scoped_state_snapshot`). Instances merged during this run
+            // are tracked per producing step, so a spawn adds only what its
+            // own ancestors produced.
+            let run_entry_state = Arc::new(state.clone());
+            // This run's per-step state contributions, recorded at each
+            // successful settlement and overlaid onto the run-entry state
+            // for the settling step's descendants only.
+            let mut step_state_contributions: BTreeMap<String, StepStateContribution> =
+                BTreeMap::new();
 
             // Ready-queue dispatch: a step becomes eligible the moment its
             // own `depends_on` edges have settled, and pulls any free worker
-            // from the pool — there is no level barrier.  Output visibility
-            // stays dependency-scoped in practice: a step spawns only after
-            // all of its dependencies merged their outputs, so the
-            // cumulative `step_outputs` snapshot taken at spawn contains
-            // them (and possibly unrelated branches' outputs that finished
-            // even earlier — narrowing to the transitive-dep subset is a
-            // separate change).
+            // from the pool — there is no level barrier. Both request views
+            // are scoped to the step's precomputed transitive-dep closure
+            // at spawn, so what a step sees never depends on which
+            // unrelated branches happened to settle earlier.
             let mut in_degree = dependency_graph.in_degree;
             let mut ready: VecDeque<(String, u32)> = in_degree
                 .iter()
@@ -481,7 +588,34 @@ where
                     let required_output_names =
                         required_outputs.get(&step.id).cloned().unwrap_or_default();
 
-                    let current_step_outputs = Arc::new(step_outputs.clone());
+                    // Dependency-scoped request views: both maps handed to
+                    // the worker contain exactly what this step's
+                    // transitive dependencies produced in this run, so
+                    // neither depends on unrelated branches' settlement
+                    // timing.
+                    let ancestors = ancestor_closures.get(&step_id).ok_or_else(|| {
+                        ConductorError::Internal(format!(
+                            "no ancestor closure computed for step '{step_id}'"
+                        ))
+                    })?;
+                    let current_step_outputs =
+                        Arc::new(scoped_step_outputs(&step_outputs, ancestors));
+                    let current_state_snapshot = if ancestors
+                        .iter()
+                        .any(|ancestor| step_state_contributions.contains_key(ancestor))
+                    {
+                        Arc::new(scoped_state_snapshot(
+                            &run_entry_state,
+                            ancestors,
+                            &step_state_contributions,
+                        ))
+                    } else {
+                        // No ancestor merged anything this run (a root, or
+                        // ancestors that all failed): the run-entry state
+                        // IS the scoped view, and sharing its `Arc` keeps
+                        // the common case free of a deep clone.
+                        run_entry_state.clone()
+                    };
 
                     let request = StepExecutionRequest {
                         unified: Arc::new(unified.clone()),
@@ -491,7 +625,7 @@ where
                         } else {
                             None
                         },
-                        state_snapshot: state_snapshot.clone(),
+                        state_snapshot: current_state_snapshot,
                         outermost_config_dir: Path::new(".").to_path_buf(),
                         conductor_tmp_dir: self.conductor_tmp_dir.clone(),
                         step_outputs: current_step_outputs,
@@ -600,12 +734,22 @@ where
                         // creation and cache-hit mirrors the pre-redesign
                         // executor behavior (`conductor_gc_last_referenced_at =
                         // now` on every bundle), keeping instances alive across
-                        // GC sweeps.
+                        // GC sweeps. The contribution is retained so later
+                        // spawns scope their state snapshot to their own
+                        // ancestors (see `scoped_state_snapshot`).
                         let instance_key = bundle.instance.instance_key;
-                        state.tool_call_instances.insert(instance_key, bundle.instance);
-                        let aux = state.aux.instances.entry(instance_key).or_default();
-                        aux.save_modes = bundle.save_modes;
-                        aux.last_referenced_at = Timestamp::now();
+                        let contribution = StepStateContribution {
+                            instance: bundle.instance,
+                            aux: InstanceAux {
+                                save_modes: bundle.save_modes,
+                                last_referenced_at: Timestamp::now(),
+                            },
+                        };
+                        state
+                            .tool_call_instances
+                            .insert(instance_key, contribution.instance.clone());
+                        state.aux.instances.insert(instance_key, contribution.aux.clone());
+                        step_state_contributions.insert(step_id.clone(), contribution);
                         #[cfg(feature = "progress")]
                         if options.progress_group.is_some() {
                             worker_steps_succeeded[worker_idx] += 1;
@@ -995,5 +1139,150 @@ mod tests {
         let required = compute_required_outputs(&steps);
         assert!(required.contains_key("step-1"));
         assert!(required["step-1"].is_empty());
+    }
+
+    /// Builds a minimal tool-call instance for state-scoping tests.
+    fn test_instance(instance_key: Hash) -> ToolCallInstance {
+        ToolCallInstance {
+            instance_key,
+            tool_call_id: "echo@v1".to_string(),
+            impure: false,
+            executed_at: Timestamp::default(),
+            command_args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        }
+    }
+
+    /// Verifies the ancestor closure is transitive (a join sees its root),
+    /// spans every diamond branch, and never contains the step itself —
+    /// the closure is what scopes each request's outputs and state.
+    #[test]
+    fn ancestor_closures_are_transitive_and_exclude_self() {
+        let steps = vec![
+            WorkflowStepSpec {
+                id: "a".to_string(),
+                tool: "echo".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                max_retries: 0,
+                depends_on: Vec::new(),
+            },
+            WorkflowStepSpec {
+                id: "b".to_string(),
+                tool: "echo".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                max_retries: 0,
+                depends_on: vec!["a".to_string()],
+            },
+            WorkflowStepSpec {
+                id: "c".to_string(),
+                tool: "echo".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                max_retries: 0,
+                depends_on: vec!["a".to_string()],
+            },
+            WorkflowStepSpec {
+                id: "d".to_string(),
+                tool: "echo".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                max_retries: 0,
+                depends_on: vec!["b".to_string(), "c".to_string()],
+            },
+            WorkflowStepSpec {
+                id: "x".to_string(),
+                tool: "echo".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                max_retries: 0,
+                depends_on: Vec::new(),
+            },
+        ];
+
+        let closures = compute_ancestor_closures(&steps);
+        assert_eq!(closures["a"], BTreeSet::new(), "a root has no ancestors");
+        assert_eq!(closures["x"], BTreeSet::new(), "an independent root has no ancestors");
+        assert_eq!(closures["b"], BTreeSet::from(["a".to_string()]), "b sees only its parent");
+        assert_eq!(closures["c"], BTreeSet::from(["a".to_string()]), "c sees only its parent");
+        assert_eq!(
+            closures["d"],
+            BTreeSet::from(["a".to_string(), "b".to_string(), "c".to_string()]),
+            "the join sees the whole diamond including the root"
+        );
+    }
+
+    /// Verifies `scoped_step_outputs` keeps only ancestor-produced entries,
+    /// so a request never sees a sibling branch's outputs.
+    #[test]
+    fn scoped_step_outputs_filters_to_ancestor_entries() {
+        let outputs: StepOutputs = BTreeMap::from([
+            (
+                "a".to_string(),
+                BTreeMap::from([("result".to_string(), Hash::from_content(b"a-output"))]),
+            ),
+            (
+                "c".to_string(),
+                BTreeMap::from([("result".to_string(), Hash::from_content(b"c-output"))]),
+            ),
+        ]);
+
+        let scoped = scoped_step_outputs(&outputs, &BTreeSet::from(["a".to_string()]));
+        assert_eq!(
+            scoped.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["a"],
+            "only the ancestor's entry survives the filter"
+        );
+        assert_eq!(scoped["a"]["result"], Hash::from_content(b"a-output"));
+    }
+
+    /// Verifies `scoped_state_snapshot` starts from the run-entry state and
+    /// overlays only ancestor contributions: pre-existing instances stay,
+    /// ancestor instances merge in, unrelated instances stay out.
+    #[test]
+    fn scoped_state_snapshot_overlays_only_ancestor_contributions() {
+        let run_entry_key = Hash::from_content(b"run-entry");
+        let ancestor_key = Hash::from_content(b"ancestor-a");
+        let unrelated_key = Hash::from_content(b"unrelated-c");
+        let mut run_entry = ConductorState::new_empty();
+        run_entry.tool_call_instances.insert(run_entry_key, test_instance(run_entry_key));
+        let contribution = |key: Hash| StepStateContribution {
+            instance: test_instance(key),
+            aux: InstanceAux::default(),
+        };
+        let contributions = BTreeMap::from([
+            ("a".to_string(), contribution(ancestor_key)),
+            ("c".to_string(), contribution(unrelated_key)),
+        ]);
+
+        let scoped = scoped_state_snapshot(
+            &run_entry,
+            &BTreeSet::from(["a".to_string(), "declared-but-failed".to_string()]),
+            &contributions,
+        );
+
+        assert!(
+            scoped.tool_call_instances.contains_key(&run_entry_key),
+            "cross-run instances from the run-entry state remain visible"
+        );
+        assert!(
+            scoped.tool_call_instances.contains_key(&ancestor_key),
+            "the ancestor's instance merges into the scoped snapshot"
+        );
+        assert!(
+            !scoped.tool_call_instances.contains_key(&unrelated_key),
+            "the unrelated step's instance must not leak into the scoped snapshot"
+        );
+        assert!(
+            scoped.aux.instances.contains_key(&ancestor_key),
+            "the ancestor's aux record merges alongside its instance"
+        );
+        assert!(
+            !scoped.aux.instances.contains_key(&unrelated_key),
+            "the unrelated step's aux record must not leak either"
+        );
     }
 }
