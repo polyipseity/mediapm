@@ -319,9 +319,12 @@ where
 /// already been represented by those states. After each successfully consumed
 /// step the worker returns to idle (Active), not Success.
 ///
-/// Prefix `count/total` is emitted only when both item count and size count
-/// are known (real progress); worker-slot bars lack that information, so all
-/// states leave the fields empty. Truncation never special-cases by bar kind.
+/// Suffix `completed/total` is emitted whenever the slot has been assigned
+/// at least one step: `total` counts every assignment (including in-flight
+/// attempts and retry re-dispatches) and `completed` counts the assignments
+/// that reached a terminal outcome, so the fraction never exceeds 1. A slot
+/// nothing has been assigned to yet (`total == 0`) leaves both fields empty
+/// and renders timing only; truncation never special-cases by bar kind.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerSlotState {
@@ -343,16 +346,26 @@ enum WorkerSlotState {
 /// client-side truncation order (`WorkerBarLabel`) can drop trailing parts
 /// independently. Every other state leaves `tool` empty: there is no step
 /// running, so there is no conductor tool to name, and the row ends at
-/// `[idle]`. A worker bar carries no workflow phase, and no arm fills a
-/// tally: `completed`/`total` stay empty here, so the row's suffix carries
-/// only timing (see [`WorkerSlotState`]).
+/// `[idle]`. A worker bar carries no workflow phase.
+///
+/// `completed`/`total` fill the slot's live tally (see [`WorkerSlotState`]):
+/// the caller passes the slot's terminal-outcome count and assignment count,
+/// and a `total` of zero — a slot nothing has been assigned to yet — leaves
+/// both fields empty so the row renders timing only.
 #[cfg(feature = "progress")]
 fn worker_slot_label(
     state: WorkerSlotState,
     workflow_name: &str,
     step_id: &str,
     tool: &str,
+    completed: usize,
+    total: usize,
 ) -> WorkerBarLabel {
+    let (completed_str, total_str) = if total == 0 {
+        (String::new(), String::new())
+    } else {
+        (completed.to_string(), total.to_string())
+    };
     match state {
         WorkerSlotState::Active => WorkerBarLabel {
             status_marker: String::new(),
@@ -360,8 +373,8 @@ fn worker_slot_label(
             step_id: step_id.to_string(),
             tool: tool.to_string(),
             activity: "active".to_string(),
-            completed: String::new(),
-            total: String::new(),
+            completed: completed_str,
+            total: total_str,
         },
         WorkerSlotState::PendingRetry => WorkerBarLabel {
             status_marker: "W".to_string(),
@@ -369,8 +382,8 @@ fn worker_slot_label(
             step_id: String::new(),
             tool: String::new(),
             activity: "idle".to_string(),
-            completed: String::new(),
-            total: String::new(),
+            completed: completed_str,
+            total: total_str,
         },
         WorkerSlotState::Failed => WorkerBarLabel {
             status_marker: "F".to_string(),
@@ -378,8 +391,8 @@ fn worker_slot_label(
             step_id: String::new(),
             tool: String::new(),
             activity: "idle".to_string(),
-            completed: String::new(),
-            total: String::new(),
+            completed: completed_str,
+            total: total_str,
         },
         WorkerSlotState::Idle | WorkerSlotState::Succeeded => WorkerBarLabel {
             status_marker: String::new(),
@@ -387,8 +400,8 @@ fn worker_slot_label(
             step_id: String::new(),
             tool: String::new(),
             activity: "idle".to_string(),
-            completed: String::new(),
-            total: String::new(),
+            completed: completed_str,
+            total: total_str,
         },
     }
 }
@@ -524,6 +537,8 @@ where
                         "",
                         "",
                         "",
+                        0,
+                        0,
                     )));
                     worker_bars.push(bar.clone());
                     // Start idle bars as finished — no spinner animation
@@ -651,6 +666,11 @@ where
                             workflow_name,
                             &step_id,
                             &step.tool,
+                            // Terminal outcomes so far; the step just
+                            // dispatched is in flight, so it counts toward
+                            // the total only.
+                            worker_steps_succeeded[worker_idx] + worker_failures[worker_idx],
+                            assigned,
                         )));
                         bar.set_total(assigned as u64);
                         // Dispatch declares in-flight work (Task 6):
@@ -760,6 +780,10 @@ where
                                 "",
                                 "",
                                 "",
+                                // This settlement is terminal, so it moves
+                                // the completed count.
+                                worker_steps_succeeded[worker_idx] + worker_failures[worker_idx],
+                                assigned,
                             )));
                             bar.set_total(assigned as u64);
                             bar.advance(1);
@@ -791,6 +815,12 @@ where
                                     "",
                                     "",
                                     "",
+                                    // A retryable failure is not terminal:
+                                    // the assignment stays in the total but
+                                    // the completed count does not move.
+                                    worker_steps_succeeded[worker_idx]
+                                        + worker_failures[worker_idx],
+                                    assigned,
                                 )));
                                 bar.set_total(assigned as u64);
                                 bar.advance(1);
@@ -819,6 +849,11 @@ where
                                     "",
                                     "",
                                     "",
+                                    // A final failure is terminal, so it
+                                    // moves the completed count.
+                                    worker_steps_succeeded[worker_idx]
+                                        + worker_failures[worker_idx],
+                                    assigned,
                                 )));
                                 bar.set_total(assigned as u64);
                                 bar.advance(1);
@@ -858,11 +893,20 @@ where
             // `[W]`) when any step failed, otherwise success. Failed steps
             // are recorded in `RunSummary.failed_steps` and surfaced to the
             // caller, so the bar must not claim unconditional success.
+            //
+            // The status list always reports the run's executed count so a
+            // clean run no longer renders an empty suffix; zero-count
+            // entries (including `executed` on a fully-cached or zero-step
+            // run) are dropped by the status-list builder.
             #[cfg(feature = "progress")]
             if let Some(ref bar) = overall_bar {
                 #[allow(clippy::cast_possible_truncation)]
                 bar.set_suffix_components(mediapm_utils::progress::SuffixComponents::status_list(
                     &[
+                        mediapm_utils::progress::StatusCount {
+                            word: "executed",
+                            count: Some(executed_steps as u32),
+                        },
                         mediapm_utils::progress::StatusCount {
                             word: "cached",
                             count: Some(cached_steps as u32),

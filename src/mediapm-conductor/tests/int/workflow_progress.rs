@@ -96,50 +96,75 @@ fn broken_tool(name: &str) -> mediapm_conductor::ToolSpec {
     }
 }
 
-/// Idle worker-slot prefix components (no step assigned yet).
+/// Builds the `SetTruncation` op a worker-slot bar records, with the slot's
+/// live tally filled in.
 ///
-/// Mirrors `worker_slot_label` in the coordinator: a slot with no step on it
-/// has no tool to name, so `tool` is empty.
-fn idle_pc() -> ProgressOp {
+/// Mirrors `worker_slot_label` in the coordinator: the tally renders in the
+/// suffix only when `total` is above zero (a slot nothing has been assigned
+/// to yet renders timing only), and the suffix is measured through the
+/// label's own `truncate_suffix` so the assertion follows the same rendering
+/// path the coordinator's label goes through.
+fn slot_pc(
+    status_marker: &str,
+    workflow_id: &str,
+    step_id: &str,
+    tool: &str,
+    activity: &str,
+    completed: usize,
+    total: usize,
+) -> ProgressOp {
     use mediapm_conductor::orchestration::progress_labels::WorkerBarLabel;
     let label = WorkerBarLabel {
-        status_marker: String::new(),
-        workflow_id: String::new(),
-        step_id: String::new(),
-        tool: String::new(),
-        activity: "idle".into(),
-        completed: String::new(),
-        total: String::new(),
-    };
-    ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
-}
-
-/// Idle worker-slot label after `succeeded`/`assigned` steps.
-///
-/// Worker-slot bars omit the `count/total` text (no real item+size progress),
-/// so this matches [`idle_pc`] exactly — the counts are tracked internally
-/// for the bar fill but never rendered.
-fn idle_pc_count(_succeeded: usize, _assigned: usize) -> ProgressOp {
-    idle_pc()
-}
-
-/// Dispatch label for a step assigned to a worker slot.
-///
-/// After the Phase 2 fix, `workflow_id`, `step_id`, and `tool` are populated
-/// as separate fields so the client-side truncation order can drop trailing
-/// parts independently.
-fn dispatch_pc(workflow_id: &str, step_id: &str, tool: &str, _assigned: usize) -> ProgressOp {
-    use mediapm_conductor::orchestration::progress_labels::WorkerBarLabel;
-    let label = WorkerBarLabel {
-        status_marker: String::new(),
+        status_marker: status_marker.into(),
         workflow_id: workflow_id.into(),
         step_id: step_id.into(),
         tool: tool.into(),
-        activity: "active".into(),
-        completed: String::new(),
-        total: String::new(),
+        activity: activity.into(),
+        completed: if total == 0 { String::new() } else { completed.to_string() },
+        total: if total == 0 { String::new() } else { total.to_string() },
     };
-    ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
+    ProgressOp::SetTruncation {
+        prefix: label.truncate_prefix(usize::MAX),
+        suffix: label.truncate_suffix(usize::MAX, &SuffixComponents::default()),
+    }
+}
+
+/// Idle worker-slot label for a slot that has not been assigned any work yet
+/// (the pre-creation op): no tally, so the suffix stays empty.
+fn idle_pc() -> ProgressOp {
+    slot_pc("", "", "", "", "idle", 0, 0)
+}
+
+/// Idle worker-slot label after `completed` terminal outcomes on `total`
+/// assignments.
+fn idle_pc_count(completed: usize, total: usize) -> ProgressOp {
+    slot_pc("", "", "", "", "idle", completed, total)
+}
+
+/// Dispatch label for a step assigned to a worker slot, carrying the slot's
+/// tally: `completed` terminal outcomes over `total` assignments. The
+/// just-dispatched step is in flight, so it counts toward `total` only.
+fn dispatch_pc(
+    workflow_id: &str,
+    step_id: &str,
+    tool: &str,
+    completed: usize,
+    total: usize,
+) -> ProgressOp {
+    slot_pc("", workflow_id, step_id, tool, "active", completed, total)
+}
+
+/// Pending-retry worker-slot label: the failed attempt counts toward `total`
+/// (it consumed an assignment) but not toward `completed` — a retryable
+/// failure is not a terminal outcome.
+fn pending_retry_pc(completed: usize, total: usize) -> ProgressOp {
+    slot_pc("W", "", "", "", "idle", completed, total)
+}
+
+/// Final-failure worker-slot label: the step reached its terminal outcome,
+/// so it counts toward both `completed` and `total`.
+fn final_failure_pc(completed: usize, total: usize) -> ProgressOp {
+    slot_pc("F", "", "", "", "idle", completed, total)
 }
 
 /// Counts dispatch operations (truncation prefixes whose activity marker
@@ -313,21 +338,24 @@ async fn single_step_success_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            // Dispatch s1 to worker-0 (re-activate idle bar).
+            // Dispatch s1 to worker-0 (re-activate idle bar); 0 terminal
+            // outcomes over 1 assignment (the step is in flight).
             ProgressOp::Restart,
-            dispatch_pc("default", "s1", "echo@v1", 1),
+            dispatch_pc("default", "s1", "echo@v1", 0, 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Step completes — idle count1/total1, advance, finish success.
+            // Step completes — worker-0 reaches 1 terminal outcome on 1
+            // assignment, advance, finish success.
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Overall bar finished with a status-list suffix.
+            // Overall bar finished with the run's status list: one executed
+            // step, everything else zero-count and dropped.
             ProgressOp::SetSuffixComponents {
-                components: SuffixComponents { custom: String::new(), ..Default::default() },
+                components: SuffixComponents { custom: "1 executed".into(), ..Default::default() },
             },
             ProgressOp::FinishSuccess,
         ],
@@ -371,15 +399,16 @@ async fn two_step_same_level_success_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            // Dispatch s1 to worker-0 (re-activate idle bar).
+            // Dispatch s1 to worker-0 (re-activate idle bar): 0 terminal
+            // outcomes over 1 assignment.
             ProgressOp::Restart,
-            dispatch_pc("default", "s1", "echo@v1", 1),
+            dispatch_pc("default", "s1", "echo@v1", 0, 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Dispatch s2 to worker-1 (re-activate idle bar).
+            // Dispatch s2 to worker-1 (re-activate idle bar): 0/1.
             ProgressOp::Restart,
-            dispatch_pc("default", "s2", "echo@v1", 1),
+            dispatch_pc("default", "s2", "echo@v1", 0, 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
@@ -395,9 +424,10 @@ async fn two_step_same_level_success_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Overall bar finished with a status-list suffix.
+            // Overall bar finished with the run's status list: two executed
+            // steps.
             ProgressOp::SetSuffixComponents {
-                components: SuffixComponents { custom: String::new(), ..Default::default() },
+                components: SuffixComponents { custom: "2 executed".into(), ..Default::default() },
             },
             ProgressOp::FinishSuccess,
         ],
@@ -448,16 +478,16 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            // Dispatch s1 to worker-0 (re-activate, assigned 1).
+            // Dispatch s1 to worker-0 (re-activate, 0/1).
             ProgressOp::Restart,
-            dispatch_pc("default", "s1", "echo@v1", 1),
+            dispatch_pc("default", "s1", "echo@v1", 0, 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Dispatch s2 to worker-1 (re-activate, assigned 1). Both workers
+            // Dispatch s2 to worker-1 (re-activate, 0/1). Both workers
             // are now busy, so s3 waits in the ready queue.
             ProgressOp::Restart,
-            dispatch_pc("default", "s2", "echo@v1", 1),
+            dispatch_pc("default", "s2", "echo@v1", 0, 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
@@ -467,9 +497,10 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // The freed worker immediately takes s3 (worker-0: assigned 2).
+            // The freed worker immediately takes s3 (worker-0: 1 terminal
+            // outcome over 2 assignments).
             ProgressOp::Restart,
-            dispatch_pc("default", "s3", "echo@v1", 2),
+            dispatch_pc("default", "s3", "echo@v1", 1, 2),
             ProgressOp::SetTotal { total: 2 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
@@ -485,9 +516,10 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Overall bar finished with a status-list suffix.
+            // Overall bar finished with the run's status list: three
+            // executed steps.
             ProgressOp::SetSuffixComponents {
-                components: SuffixComponents { custom: String::new(), ..Default::default() },
+                components: SuffixComponents { custom: "3 executed".into(), ..Default::default() },
             },
             ProgressOp::FinishSuccess,
         ],
@@ -605,9 +637,9 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            // Dispatch s1 to worker-0 (re-activate, assigned 1).
+            // Dispatch s1 to worker-0 (re-activate, 0/1).
             ProgressOp::Restart,
-            dispatch_pc("default", "s1", "echo@v1", 1),
+            dispatch_pc("default", "s1", "echo@v1", 0, 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
@@ -619,9 +651,9 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             // s2 becomes ready and takes the first free worker. Worker-1 sat
             // idle the whole run and fronts the FIFO queue, so s2 dispatches
-            // there (assigned 1), not on worker-0.
+            // there (0/1), not on worker-0.
             ProgressOp::Restart,
-            dispatch_pc("default", "s2", "echo@v1", 1),
+            dispatch_pc("default", "s2", "echo@v1", 0, 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
@@ -631,9 +663,10 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Overall bar finished with a status-list suffix.
+            // Overall bar finished with the run's status list: two
+            // executed steps.
             ProgressOp::SetSuffixComponents {
-                components: SuffixComponents { custom: String::new(), ..Default::default() },
+                components: SuffixComponents { custom: "2 executed".into(), ..Default::default() },
             },
             ProgressOp::FinishSuccess,
         ],
@@ -1036,7 +1069,8 @@ async fn overall_bar_suffix_status_list() {
 
 /// When all steps succeed, the overall bar's status-list suffix contains no
 /// `failed` word (the zero-count entry is dropped) and no `cached`/`retried`
-/// words either.
+/// words either — and it carries the executed count, so a clean run no
+/// longer renders an empty suffix.
 #[tokio::test]
 async fn overall_bar_suffix_no_failed_on_success() {
     fix_worker_pool_size();
@@ -1062,6 +1096,10 @@ async fn overall_bar_suffix_no_failed_on_success() {
     assert!(!suffix.contains("failed"), "no failed word on success: {suffix:?}");
     assert!(!suffix.contains("cached"), "zero-count cached dropped: {suffix:?}");
     assert!(!suffix.contains("retried"), "zero-count retried dropped: {suffix:?}");
+    assert_eq!(
+        suffix, "1 executed",
+        "a clean run reports its executed count instead of an empty suffix: {suffix:?}"
+    );
 }
 
 /// The pinned overall row finishes as a warning when the run ends in
@@ -1165,5 +1203,150 @@ async fn overall_bar_finishes_warning_when_a_step_failed() {
         Some("1 failed".to_string()),
         "the warning is reported with the tally that caused it; a count of zero is \
          not rendered, so the two phases this run did not enter leave no word behind"
+    );
+}
+
+/// Regression: the worker-bar tally counts a retryable failed attempt in
+/// `total` only, never in `completed` — a step that fails once and then
+/// succeeds shows `0/1` through the pending-retry settlement, `0/1` on the
+/// re-dispatch, and only the terminal success moves the tally to `1/1`.
+///
+/// The re-dispatch takes the other free worker (the FIFO hands worker-1 the
+/// retry), so the step's two assignments land on different slots: worker-0
+/// ends at `0/1` with its `[W]` marker because its one assignment never
+/// terminated there, and worker-1 closes at `1/1`. Both fractions stay at
+/// or below 1 at every recorded frame.
+#[tokio::test]
+async fn retry_tally_counts_the_attempt_in_total_only() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("flaky@v1".into(), crate::flaky_tool("flaky@v1"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![flaky_step("s1", "flaky@v1", 1, 1, "tally_retry")],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 1);
+    assert_eq!(summary.retried_steps, 1);
+    assert_eq!(summary.failed_steps, 0);
+
+    assert_eq!(
+        tracker.ops(),
+        vec![
+            ProgressOp::AddBar { total: 1, label: "workflow".into() },
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::SetAnimating { animating: true },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
+            idle_pc(),
+            ProgressOp::FinishSuccess,
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
+            idle_pc(),
+            ProgressOp::FinishSuccess,
+            // Attempt 1 dispatches to worker-0: the assignment counts toward
+            // total immediately, before any outcome exists.
+            ProgressOp::Restart,
+            dispatch_pc("default", "s1", "flaky@v1", 0, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::SetAnimating { animating: true },
+            // Attempt 1 fails retryably: the assignment stays in total, and
+            // completed does not move — a retryable failure is not terminal.
+            pending_retry_pc(0, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::Advance { delta: 1 },
+            ProgressOp::FinishWarning,
+            // Attempt 2 re-dispatches to worker-1 (FIFO): 0/1 there.
+            ProgressOp::Restart,
+            dispatch_pc("default", "s1", "flaky@v1", 0, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::SetAnimating { animating: true },
+            // Attempt 2 succeeds: the terminal outcome closes worker-1's
+            // tally at 1/1.
+            idle_pc_count(1, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::Advance { delta: 1 },
+            ProgressOp::FinishSuccess,
+            ProgressOp::Advance { delta: 1 },
+            // The status list reports the executed step and the retry.
+            ProgressOp::SetSuffixComponents {
+                components: SuffixComponents {
+                    custom: "1 executed, 1 retried".into(),
+                    ..Default::default()
+                },
+            },
+            ProgressOp::FinishSuccess,
+        ],
+    );
+}
+
+/// Regression: a final failure is a terminal outcome, so the worker-bar
+/// tally counts it in `completed` as well as `total` — the exhausted-retry
+/// slot ends at `1/1` behind its `[F]` marker, not at `0/1`.
+#[tokio::test]
+async fn final_failure_tally_counts_the_terminal_outcome() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("broken".into(), broken_tool("broken"))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![WorkflowStepSpec { max_retries: 1, ..step("s1", "broken", "") }],
+        }],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    assert_eq!(summary.executed_steps, 0);
+    assert_eq!(summary.failed_steps, 1);
+
+    assert_eq!(
+        tracker.ops(),
+        vec![
+            ProgressOp::AddBar { total: 1, label: "workflow".into() },
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::SetAnimating { animating: true },
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
+            idle_pc(),
+            ProgressOp::FinishSuccess,
+            ProgressOp::AddBar { total: 0, label: "idle".into() },
+            idle_pc(),
+            ProgressOp::FinishSuccess,
+            // Attempt 1 dispatches to worker-0 (0/1) and fails retryably:
+            // total counts the assignment, completed does not move.
+            ProgressOp::Restart,
+            dispatch_pc("default", "s1", "broken", 0, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::SetAnimating { animating: true },
+            pending_retry_pc(0, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::Advance { delta: 1 },
+            ProgressOp::FinishWarning,
+            // Attempt 2 re-dispatches to worker-1 and fails for good: the
+            // terminal failure moves completed, closing the tally at 1/1.
+            ProgressOp::Restart,
+            dispatch_pc("default", "s1", "broken", 0, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::SetAnimating { animating: true },
+            final_failure_pc(1, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::Advance { delta: 1 },
+            ProgressOp::FinishWarning,
+            ProgressOp::Advance { delta: 1 },
+            // The status list reports the failed step; the executed count is
+            // zero and is dropped by the builder.
+            ProgressOp::SetSuffixComponents {
+                components: SuffixComponents { custom: "1 failed".into(), ..Default::default() },
+            },
+            ProgressOp::FinishWarning,
+        ],
     );
 }
