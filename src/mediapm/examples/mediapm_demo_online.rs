@@ -950,7 +950,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 ),
                 ("release_mbid".to_string(), TransformInputValue::String(String::new())),
                 ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
-                ("write_all_tags".to_string(), TransformInputValue::String("false".to_string())),
+                ("write_all_tags".to_string(), TransformInputValue::String("true".to_string())),
             ]),
         },
         MediaStep {
