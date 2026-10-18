@@ -178,7 +178,7 @@ Carries workflow, step and tool identity, plus a version and a tally. Production
 
 **File**: `src/mediapm-conductor/src/orchestration/progress_labels.rs`
 
-Carries activity flag only, with no workflow phase and no progress tally. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. This is the label the coordinator creates a bar for, one per pool member (`src/mediapm-conductor/src/orchestration/coordinator.rs::run_workflow`), and re-labels through `set_truncation` on every dispatch and every step outcome.
+Carries the slot's activity flag and live tally, with no workflow phase. Prefix segments are ordered `status_marker`, `workflow_id`, `step_id`, `tool`, `activity`, so the activity marker trails and the tool name is the only elastic segment. The tally is a suffix segment: `suffix_segments` leads with a `Segment::keep` `{completed}/{total}`, rendered only when both fields are non-empty, with the auto-derived `elapsed`, `rate`, `eta` behind it and elastic `custom` last. The renderer's built-in `count`/`total` are not read here, so the bar's own position never doubles as a second tally. This is the label the coordinator creates a bar for, one per pool member (`src/mediapm-conductor/src/orchestration/coordinator.rs::run_workflow`), and re-labels through `set_truncation` on every dispatch and every step outcome.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -187,6 +187,8 @@ Carries activity flag only, with no workflow phase and no progress tally. Prefix
 | `step_id` | Step identifier | `"s5"` |
 | `tool` | Conductor tool name | `"echo"` |
 | `activity` | Current activity | `"active"` / `"idle"` |
+| `completed` | Terminal outcomes on this slot (successes + final failures); numerator of the suffix-leading tally | `"2"` |
+| `total` | Dispatches to this slot, growing as it pulls work and counting each attempt again on re-dispatch; denominator, rendered only with `completed` | `"5"` |
 
 ### Struct 3: `MaterializationBarLabel` (mediapm materialization bars)
 
@@ -206,7 +208,7 @@ Carries file-path identity and phase. No version, no count/total, no workflow/st
 
 ### Why the structs are separate
 
-They carry different fields, and the truncation order is a per-screen decision rather than a property of a label type. A worker bar wants its activity marker first and has no tally; a materialization bar wants its phase first and a path, where the path shortens from the head because its tail is the informative end. Merging them would force every screen's ranking through one shared struct, and the ranking is the part that has to be right.
+They carry different fields, and the truncation order is a per-screen decision rather than a property of a label type. A worker bar wants its activity marker first and keeps its tally in the suffix; a materialization bar wants its phase first and a path, where the path shortens from the head because its tail is the informative end. Merging them would force every screen's ranking through one shared struct, and the ranking is the part that has to be right.
 
 ### Built-in `PrefixComponents` truncation order
 
@@ -238,7 +240,7 @@ Phases: `[res]` resolve, `[fch]` fetch, `[pro]` process, `[prn]` prune. Phases a
 
 No row on this screen carries a phase tag. The seeds are `running workflows` for the overall bar — set by each screen owner, `src/mediapm/src/service.rs` for the library sync and `src/mediapm-conductor/src/cli.rs` for the conductor CLI — and `idle` for every worker slot (`coordinator.rs::run_workflow`). The overall bar's seed is never replaced — the coordinator installs no label on that row — while each worker slot is replaced by a client label as soon as the bar has one.
 
-The overall row installs no label at all: its prefix is the static seed `running workflows`, and its progress comes from the built-in position/total, the run's status-list suffix (`N cached, M failed, K retried`), and the bar's terminal status, which still renders the built-in `[W]`/`[F]` marker. Worker slots use `WorkerBarLabel`, which ranks `status_marker`, `workflow_id`, `step_id`, `tool`, `activity` and leaves `tool` the only elastic segment, so a running slot reads `default s5 (echo) [active]` wherever the terminal has room for it. `fit_segments` walks from the tail, so a narrow row gives up the `[active]` tag and then the tool name and keeps the identifiers. The seed does not cap the slot: the label is measured from what the row draws, so a row keeps its names at widths where the four-column seed would have clipped them.
+The overall row installs no label at all: its prefix is the static seed `running workflows`, and its progress comes from the built-in position/total, the run's status-list suffix, and the bar's terminal status, which still renders the built-in `[W]`/`[F]` marker. The status list is set once at run end from four counters — `executed`, `cached`, `failed`, `retried`, in that order — and is always populated; `format_status_list` drops zero counts, so a clean run's suffix reads exactly `N executed` (e.g. `3 executed`) and a run with drops reads them comma-joined in the same order (`2 executed, 1 cached, 1 failed`). Worker slots use `WorkerBarLabel`, which ranks `status_marker`, `workflow_id`, `step_id`, `tool`, `activity` and leaves `tool` the only elastic segment, so a running slot reads `default s5 (echo) [active]` wherever the terminal has room for it. Each slot's suffix leads with its live tally `A/B` — terminal outcomes on that slot over dispatches to it; a retryable attempt counts in the total when dispatched and moves no completed count until it settles terminally, possibly on another slot. Dispatch is a dependency-aware ready queue over a free-worker FIFO pool, so steps of independent branches appear concurrently across slots and which slot runs which step is schedule-dependent. `fit_segments` walks from the tail, so a narrow row gives up the `[active]` tag and then the tool name and keeps the identifiers. The seed does not cap the slot: the label is measured from what the row draws, so a row keeps its names at widths where the four-column seed would have clipped them.
 
 Worker-slot states (`worker_slot_label` in `coordinator.rs::worker_slot_label`):
 
@@ -249,7 +251,7 @@ Worker-slot states (`worker_slot_label` in `coordinator.rs::worker_slot_label`):
 | Failed | (empty) | (empty) | (empty) | `idle` | `F` |
 | Idle / Succeeded | (empty) | (empty) | (empty) | `idle` | (empty) |
 
-`tool` is empty in every state but `Active`, because a slot with no step on it has no tool to name. The row stops at its activity marker: `[idle]`, or `[W] [idle]` and `[F] [idle]` for a retry and a final failure. Earlier revisions filled `tool` with the string `idle`, which rendered as `(idle)` beside the `[idle]` that `activity` had already said.
+`tool` is empty in every state but `Active`, because a slot with no step on it has no tool to name. The prefix stops at its activity marker: `[idle]`, or `[W] [idle]` and `[F] [idle]` for a retry and a final failure; the tally and timing follow as suffix segments. Earlier revisions filled `tool` with the string `idle`, which rendered as `(idle)` beside the `[idle]` that `activity` had already said.
 
 Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec.name`, never a managed-tool name.
 
