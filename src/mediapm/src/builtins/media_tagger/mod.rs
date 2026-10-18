@@ -571,7 +571,7 @@ use self::util::{normalize_optional_text, resolve_ffmpeg_executable, write_ffmet
 
 /// Default AcoustID lookup endpoint used by the internal tagger.
 pub const DEFAULT_ACOUSTID_ENDPOINT: &str = "https://api.acoustid.org/v2/lookup";
-/// Default MusicBrainz API endpoint; its host[:port] selects the fetch domain.
+/// Default MusicBrainz API endpoint; its host\[:port\] selects the fetch domain.
 pub const DEFAULT_MUSICBRAINZ_ENDPOINT: &str = "https://musicbrainz.org/ws/2";
 /// Default Cover Art Archive endpoint; scheme and host are both honored.
 pub const DEFAULT_CAA_ENDPOINT: &str = "https://coverartarchive.org";
@@ -679,11 +679,11 @@ pub struct InternalMediaTaggerOptions {
     pub acoustid_api_key: Option<String>,
     /// AcoustID lookup endpoint.
     pub acoustid_endpoint: String,
-    /// MusicBrainz API endpoint whose host[:port] selects the fetch domain.
+    /// MusicBrainz API endpoint whose host\[:port\] selects the fetch domain.
     ///
     /// `musicbrainz_rs` speaks plain HTTP and appends `/ws/2` itself, so the
     /// scheme and path are ignored; a mock or mirror only needs to supply a
-    /// reachable host[:port].
+    /// reachable host\[:port\].
     pub musicbrainz_endpoint: String,
     /// Cover Art Archive endpoint whose scheme and host both select where
     /// image-index lookups and image downloads go.
