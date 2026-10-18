@@ -14,6 +14,7 @@ use tokio::time::{Instant, sleep};
 
 use mediapm_conductor::http::client::shared_http_client;
 
+use super::acoustid::AcoustIdLookupResponse;
 use super::musicbrainz::MusicBrainzPayload;
 use super::util::{join_unique, normalize_optional_text};
 use super::{
@@ -115,6 +116,22 @@ enum CoverArtProvider {
     LocalFiles,
 }
 
+/// Long-lived cache budget for rows that answer near-immutable lookups.
+///
+/// Downloaded image bytes and AcoustID fingerprint answers rarely change,
+/// so their rows outlive the metadata namespaces; see
+/// [`MediaTaggerHttpCache::expiry_for_namespace`].
+pub(super) const MEDIA_TAGGER_LONG_LIVED_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// Cache namespace for MusicBrainz recording/release payloads.
+const MUSICBRAINZ_PAYLOADS_NAMESPACE: &str = "musicbrainz-payloads";
+/// Cache namespace for raw Cover Art Archive index responses.
+const CAA_ENTRIES_NAMESPACE: &str = "caa-entries";
+/// Cache namespace for downloaded cover-art image bytes.
+const CAA_IMAGES_NAMESPACE: &str = "caa-images";
+/// Cache namespace for AcoustID fingerprint lookup answers.
+const ACOUSTID_LOOKUPS_NAMESPACE: &str = "acoustid-lookups";
+
 /// Cache-expiry policy used by media-tagger HTTP response caches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CacheExpiryPolicy {
@@ -139,6 +156,15 @@ impl CacheExpiryPolicy {
             Self::Seconds(max_age_seconds) => {
                 now_unix_seconds.saturating_sub(fetched_unix_seconds) <= max_age_seconds
             }
+        }
+    }
+
+    /// Returns the longer-lived of two policies; [`Self::Never`] wins outright.
+    #[must_use]
+    pub(super) fn longer(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Never, _) | (_, Self::Never) => Self::Never,
+            (Self::Seconds(left), Self::Seconds(right)) => Self::Seconds(left.max(right)),
         }
     }
 }
@@ -205,13 +231,29 @@ impl MediaTaggerHttpCache {
         Self { store_dir, index_path, index: Arc::new(Mutex::new(index)), expiry }
     }
 
+    /// Expiry policy governing one cache namespace.
+    ///
+    /// This is the single source of truth for how long rows of each
+    /// namespace live: metadata namespaces follow the configured
+    /// `cache_expiry_seconds`; image bytes and AcoustID answers live at
+    /// least [`MEDIA_TAGGER_LONG_LIVED_MAX_AGE_SECS`], or the configured
+    /// base when that is longer. A never-expire base wins everywhere.
+    fn expiry_for_namespace(&self, namespace: &str) -> CacheExpiryPolicy {
+        match namespace {
+            CAA_IMAGES_NAMESPACE | ACOUSTID_LOOKUPS_NAMESPACE => self
+                .expiry
+                .longer(CacheExpiryPolicy::from_seconds(MEDIA_TAGGER_LONG_LIVED_MAX_AGE_SECS)),
+            _ => self.expiry,
+        }
+    }
+
     /// Reads the cached raw archive response for one CAA endpoint URL.
     #[must_use]
     pub(super) async fn read_cover_art_entries(
         &self,
         endpoint: &str,
     ) -> Option<CachedValue<CoverArtArchiveResponse>> {
-        self.read_json_payload("caa-entries", endpoint).await
+        self.read_json_payload(CAA_ENTRIES_NAMESPACE, endpoint).await
     }
 
     /// Persists the raw archive response for one CAA endpoint URL.
@@ -220,13 +262,13 @@ impl MediaTaggerHttpCache {
         endpoint: &str,
         payload: &CoverArtArchiveResponse,
     ) -> anyhow::Result<()> {
-        self.write_json_payload("caa-entries", endpoint, payload).await
+        self.write_json_payload(CAA_ENTRIES_NAMESPACE, endpoint, payload).await
     }
 
     /// Reads cached cover-art bytes for one artwork URL.
     #[must_use]
     pub(super) async fn read_cover_art_bytes(&self, url: &str) -> Option<CachedValue<Vec<u8>>> {
-        self.read_bytes_payload("caa-images", url).await
+        self.read_bytes_payload(CAA_IMAGES_NAMESPACE, url).await
     }
 
     /// Persists cached cover-art bytes for one artwork URL.
@@ -235,7 +277,28 @@ impl MediaTaggerHttpCache {
         url: &str,
         payload: &[u8],
     ) -> anyhow::Result<()> {
-        self.write_bytes_payload("caa-images", url, payload).await
+        self.write_bytes_payload(CAA_IMAGES_NAMESPACE, url, payload).await
+    }
+
+    /// Reads the cached AcoustID lookup answer for one fingerprint/endpoint key.
+    ///
+    /// The key comes from [`super::acoustid::acoustid_lookup_cache_key`];
+    /// this method only pins the namespace.
+    #[must_use]
+    pub(super) async fn read_acoustid_lookup(
+        &self,
+        cache_key: &str,
+    ) -> Option<CachedValue<AcoustIdLookupResponse>> {
+        self.read_json_payload(ACOUSTID_LOOKUPS_NAMESPACE, cache_key).await
+    }
+
+    /// Persists one AcoustID lookup answer under its fingerprint/endpoint key.
+    pub(super) async fn write_acoustid_lookup(
+        &self,
+        cache_key: &str,
+        payload: &AcoustIdLookupResponse,
+    ) -> anyhow::Result<()> {
+        self.write_json_payload(ACOUSTID_LOOKUPS_NAMESPACE, cache_key, payload).await
     }
 
     /// Reads one MusicBrainz payload row by its shape-built cache key.
@@ -247,7 +310,7 @@ impl MediaTaggerHttpCache {
         &self,
         cache_key: &str,
     ) -> Option<CachedValue<MusicBrainzPayload>> {
-        self.read_json_payload("musicbrainz-payloads", cache_key).await
+        self.read_json_payload(MUSICBRAINZ_PAYLOADS_NAMESPACE, cache_key).await
     }
 
     /// Persists one MusicBrainz payload row by its shape-built cache key.
@@ -256,7 +319,7 @@ impl MediaTaggerHttpCache {
         cache_key: &str,
         payload: &MusicBrainzPayload,
     ) -> anyhow::Result<()> {
-        self.write_json_payload("musicbrainz-payloads", cache_key, payload).await
+        self.write_json_payload(MUSICBRAINZ_PAYLOADS_NAMESPACE, cache_key, payload).await
     }
 
     /// Builds deterministic logical index key for one namespace/key pair.
@@ -292,7 +355,9 @@ impl MediaTaggerHttpCache {
 
         let now = now_unix_seconds();
         Some(CachedValue {
-            is_fresh: self.expiry.is_fresh(entry.fetched_unix_seconds, now),
+            is_fresh: self
+                .expiry_for_namespace(namespace)
+                .is_fresh(entry.fetched_unix_seconds, now),
             payload,
         })
     }
@@ -319,7 +384,9 @@ impl MediaTaggerHttpCache {
 
         let now = now_unix_seconds();
         Some(CachedValue {
-            is_fresh: self.expiry.is_fresh(entry.fetched_unix_seconds, now),
+            is_fresh: self
+                .expiry_for_namespace(namespace)
+                .is_fresh(entry.fetched_unix_seconds, now),
             payload: bytes.to_vec(),
         })
     }
@@ -1794,6 +1861,170 @@ mod tests {
             received.len(),
             1,
             "the second read must hit the cache: filter changes may not cost a refetch"
+        );
+    }
+
+    /// Back-dates one cache row, standing in for elapsed wall time.
+    fn age_index_row(cache: &MediaTaggerHttpCache, namespace: &str, key: &str, age_seconds: u64) {
+        let index_key = MediaTaggerHttpCache::cache_key(namespace, key);
+        let mut index = cache.index.lock().expect("index lock");
+        let entry = index.entries.get_mut(&index_key).expect("row to back-date");
+        entry.fetched_unix_seconds = now_unix_seconds().saturating_sub(age_seconds);
+    }
+
+    /// Metadata rows age on the configured clock; image bytes outlive them.
+    #[tokio::test]
+    async fn image_rows_outlive_metadata_rows_on_a_short_base_policy() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(1),
+        );
+        let one_hour = 60 * 60;
+
+        cache
+            .write_bytes_payload("caa-images", "https://example.test/art.jpg", b"jpeg")
+            .await
+            .expect("seed image row");
+        cache
+            .write_json_payload(
+                "caa-entries",
+                "https://example.test/release",
+                &serde_json::json!({"images": []}),
+            )
+            .await
+            .expect("seed entries row");
+        age_index_row(&cache, "caa-images", "https://example.test/art.jpg", one_hour);
+        age_index_row(&cache, "caa-entries", "https://example.test/release", one_hour);
+
+        let images = cache
+            .read_bytes_payload("caa-images", "https://example.test/art.jpg")
+            .await
+            .expect("image row");
+        let entries = cache
+            .read_json_payload::<serde_json::Value>("caa-entries", "https://example.test/release")
+            .await
+            .expect("entries row");
+
+        assert!(images.is_fresh, "a one-hour-old image row stays fresh under the long-lived tier");
+        assert!(!entries.is_fresh, "a one-hour-old metadata row is stale under a one-second base");
+    }
+
+    /// On a day-long base, AcoustID answers still outlive the MusicBrainz rows.
+    #[tokio::test]
+    async fn acoustid_rows_outlive_musicbrainz_rows_on_a_day_base_policy() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(24 * 60 * 60),
+        );
+        let twenty_five_hours = 25 * 60 * 60;
+
+        cache
+            .write_json_payload(
+                "musicbrainz-payloads",
+                "recording=old|release=|all_tags=1|ars=0|endpoint=musicbrainz.org",
+                &serde_json::json!({"recording": {"id": "old", "title": "old"}}),
+            )
+            .await
+            .expect("seed musicbrainz row");
+        cache
+            .write_json_payload(
+                "acoustid-lookups",
+                "fingerprint=old|endpoint=https://api.acoustid.org/v2/lookup",
+                &serde_json::json!({"status": "ok"}),
+            )
+            .await
+            .expect("seed acoustid row");
+        age_index_row(
+            &cache,
+            "musicbrainz-payloads",
+            "recording=old|release=|all_tags=1|ars=0|endpoint=musicbrainz.org",
+            twenty_five_hours,
+        );
+        age_index_row(
+            &cache,
+            "acoustid-lookups",
+            "fingerprint=old|endpoint=https://api.acoustid.org/v2/lookup",
+            twenty_five_hours,
+        );
+
+        let musicbrainz = cache
+            .read_json_payload::<serde_json::Value>(
+                "musicbrainz-payloads",
+                "recording=old|release=|all_tags=1|ars=0|endpoint=musicbrainz.org",
+            )
+            .await
+            .expect("musicbrainz row");
+        let acoustid = cache
+            .read_json_payload::<serde_json::Value>(
+                "acoustid-lookups",
+                "fingerprint=old|endpoint=https://api.acoustid.org/v2/lookup",
+            )
+            .await
+            .expect("acoustid row");
+
+        assert!(
+            !musicbrainz.is_fresh,
+            "a twenty-five-hour-old MusicBrainz row is stale on a day-long base"
+        );
+        assert!(
+            acoustid.is_fresh,
+            "a twenty-five-hour-old AcoustID answer stays fresh under the long-lived tier"
+        );
+    }
+
+    /// A never-expire base keeps every namespace fresh, however old the rows.
+    #[tokio::test]
+    async fn a_never_expire_base_keeps_every_namespace_fresh() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(-1),
+        );
+        let ten_years = 10 * 365 * 24 * 60 * 60;
+
+        for (namespace, key) in [
+            ("musicbrainz-payloads", "recording=ancient|release="),
+            ("caa-entries", "https://example.test/ancient"),
+            ("caa-images", "https://example.test/ancient.jpg"),
+            ("acoustid-lookups", "fingerprint=ancient|endpoint=https://api.acoustid.org/v2/lookup"),
+        ] {
+            cache
+                .write_json_payload(namespace, key, &serde_json::json!({"status": "ok"}))
+                .await
+                .expect("seed row");
+            age_index_row(&cache, namespace, key, ten_years);
+
+            let row =
+                cache.read_json_payload::<serde_json::Value>(namespace, key).await.expect("row");
+            assert!(row.is_fresh, "{namespace}: a never-expire base must hold for every namespace");
+        }
+    }
+
+    /// A raised base policy carries the long-lived tier with it.
+    #[tokio::test]
+    async fn a_raised_base_policy_carries_the_long_lived_tier() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(60 * 24 * 60 * 60),
+        );
+        let forty_days = 40 * 24 * 60 * 60;
+
+        cache
+            .write_bytes_payload("caa-images", "https://example.test/aged.jpg", b"jpeg")
+            .await
+            .expect("seed image row");
+        age_index_row(&cache, "caa-images", "https://example.test/aged.jpg", forty_days);
+
+        let images = cache
+            .read_bytes_payload("caa-images", "https://example.test/aged.jpg")
+            .await
+            .expect("image row");
+        assert!(
+            images.is_fresh,
+            "raising the base past the long-lived constant must raise image-row freshness with it"
         );
     }
 }

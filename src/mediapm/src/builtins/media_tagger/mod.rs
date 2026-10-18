@@ -900,6 +900,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
             &acoustid_api_key,
             &fingerprint_payload.fingerprint,
             fingerprint_payload.duration_seconds,
+            &media_tagger_cache,
         )
         .await
         .with_context(|| {
