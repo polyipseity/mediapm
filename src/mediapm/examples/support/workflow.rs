@@ -145,6 +145,8 @@ impl WorkerSlot {
                 step_id: String::new(),
                 tool: String::new(),
                 activity: "idle".to_string(),
+                completed: String::new(),
+                total: String::new(),
             },
             Self::Active { workflow_id, step_id, tool } => WorkerBarLabel {
                 status_marker: String::new(),
@@ -152,6 +154,8 @@ impl WorkerSlot {
                 step_id: step_id.clone(),
                 tool: tool.clone(),
                 activity: "active".to_string(),
+                completed: String::new(),
+                total: String::new(),
             },
             Self::PendingRetry => WorkerBarLabel {
                 status_marker: "W".to_string(),
@@ -159,6 +163,8 @@ impl WorkerSlot {
                 step_id: String::new(),
                 tool: String::new(),
                 activity: "idle".to_string(),
+                completed: String::new(),
+                total: String::new(),
             },
             Self::Failed => WorkerBarLabel {
                 status_marker: "F".to_string(),
@@ -166,6 +172,8 @@ impl WorkerSlot {
                 step_id: String::new(),
                 tool: String::new(),
                 activity: "idle".to_string(),
+                completed: String::new(),
+                total: String::new(),
             },
         }
     }

@@ -194,8 +194,9 @@ enum WorkerSlotState {
 /// client-side truncation order (`WorkerBarLabel`) can drop trailing parts
 /// independently. Every other state leaves `tool` empty: there is no step
 /// running, so there is no conductor tool to name, and the row ends at
-/// `[idle]`. A worker bar carries no workflow phase and no progress tally, so
-/// those fields are absent by construction (see [`WorkerSlotState`]).
+/// `[idle]`. A worker bar carries no workflow phase, and no arm fills a
+/// tally: `completed`/`total` stay empty here, so the row's suffix carries
+/// only timing (see [`WorkerSlotState`]).
 #[cfg(feature = "progress")]
 fn worker_slot_label(
     state: WorkerSlotState,
@@ -210,6 +211,8 @@ fn worker_slot_label(
             step_id: step_id.to_string(),
             tool: tool.to_string(),
             activity: "active".to_string(),
+            completed: String::new(),
+            total: String::new(),
         },
         WorkerSlotState::PendingRetry => WorkerBarLabel {
             status_marker: "W".to_string(),
@@ -217,6 +220,8 @@ fn worker_slot_label(
             step_id: String::new(),
             tool: String::new(),
             activity: "idle".to_string(),
+            completed: String::new(),
+            total: String::new(),
         },
         WorkerSlotState::Failed => WorkerBarLabel {
             status_marker: "F".to_string(),
@@ -224,6 +229,8 @@ fn worker_slot_label(
             step_id: String::new(),
             tool: String::new(),
             activity: "idle".to_string(),
+            completed: String::new(),
+            total: String::new(),
         },
         WorkerSlotState::Idle | WorkerSlotState::Succeeded => WorkerBarLabel {
             status_marker: String::new(),
@@ -231,6 +238,8 @@ fn worker_slot_label(
             step_id: String::new(),
             tool: String::new(),
             activity: "idle".to_string(),
+            completed: String::new(),
+            total: String::new(),
         },
     }
 }

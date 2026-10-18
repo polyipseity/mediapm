@@ -1,9 +1,10 @@
 //! Client-defined bar-label truncation contract tests.
 //!
 //! Validates that the conductor-owned label structs implement
-//! [`BarLabelTruncation`] with the allocation policy: a worker bar never
-//! carries a `completed`/`total` progress tally, while a step bar carries
-//! that tally in the suffix only, so the prefix holds names and the suffix
+//! [`BarLabelTruncation`] with the allocation policy: a worker bar renders
+//! a tally only from its own `completed`/`total` fields (and drops the
+//! renderer-supplied pair), while a step bar carries that tally in the
+//! suffix only, so the prefix holds names and the suffix
 //! holds counts. The status marker is reserved first and always drawn whole;
 //! the tool is sized next; workflow and step split what remains evenly; and
 //! the worker's activity tag is drawn only from columns left after those,
@@ -22,11 +23,14 @@ fn worker_label_ignores_a_populated_tally_in_the_suffix() {
         step_id: "s1".into(),
         tool: "echo@v1".into(),
         activity: "active".into(),
+        completed: String::new(),
+        total: String::new(),
     };
-    // A worker slot has no tally of its own. The renderer still offers one in
-    // the suffix components, so the label has to drop it deliberately rather
-    // than merely lack the field: this fails if `suffix_segments` ever starts
-    // emitting count/total.
+    // The tally a worker renders comes only from the label's own fields,
+    // which are empty here. The renderer separately offers a count/total
+    // pair in the suffix components, so the label has to drop that pair
+    // deliberately rather than echo it: this fails if `suffix_segments`
+    // ever starts emitting the renderer's count/total.
     let suffix = SuffixComponents {
         count: "3".into(),
         total: "10".into(),
@@ -51,6 +55,8 @@ fn worker_label_tight_prefix_keeps_the_names_and_sheds_the_tag() {
         step_id: "s1".into(),
         tool: "mediapm-conductor-builtin-archive".into(),
         activity: "active".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     // Narrow enough that the names need the room: each is held at its
     // 4-column floor and the tool — which outranks both — gives columns
@@ -69,6 +75,8 @@ fn worker_label_idle_renders_its_activity_marker() {
         step_id: String::new(),
         tool: "archive".into(),
         activity: "idle".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     // The tool name is deliberately not "idle", so it cannot stand in for the
     // marker; the assertion is on the bracketed form the label renders.
@@ -221,6 +229,8 @@ fn worker_label_head_survives_across_narrow_widths() {
         step_id: "s1".into(),
         tool: "echo@v1".into(),
         activity: "active".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     for width in WORKER_HEAD_WIDTH..=20 {
         let out = label.truncate_prefix(width);
@@ -242,6 +252,8 @@ fn worker_label_sheds_the_activity_tag_after_the_names_and_tool() {
         step_id: "s1".into(),
         tool: "echo@v1".into(),
         activity: "active".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     // 18: names at floor, tool clipped bare to what the floor left, no
     // room for the 8-column tag.
@@ -323,6 +335,8 @@ fn worker_label_clips_a_very_long_tool_name_from_the_front() {
         step_id: String::new(),
         tool: "a-very-long-tool-name-that-exceeds-the-maximum-width-limit".into(),
         activity: "active".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     let tight = label.truncate_prefix(20);
     assert_eq!(tight, "-maximum-width-limit");
@@ -332,9 +346,10 @@ fn worker_label_clips_a_very_long_tool_name_from_the_front() {
 
 #[test]
 fn worker_suffix_keeps_auto_derived_timing_fields() {
-    // A worker slot has no progress tally of its own, but the renderer
-    // still supplies auto-derived elapsed, rate, and ETA in the suffix
-    // argument it passes to `truncate_suffix`. Those fields must survive:
+    // A worker suffix may carry a tally from the label's own fields, but
+    // the renderer separately supplies auto-derived elapsed, rate, and ETA
+    // in the suffix argument it passes to `truncate_suffix`. Those fields
+    // must survive:
     // dropping them would silently remove timing information from every
     // worker bar, which no other test in this file would catch.
     let label = WorkerBarLabel {
@@ -343,6 +358,8 @@ fn worker_suffix_keeps_auto_derived_timing_fields() {
         step_id: String::new(),
         tool: String::new(),
         activity: "active".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     let suffix = SuffixComponents {
         elapsed: "1m 30s".into(),
@@ -471,6 +488,8 @@ fn worker_suffix_yields_eta_then_rate_before_the_elapsed() {
         step_id: String::new(),
         tool: String::new(),
         activity: "active".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     let suffix = SuffixComponents {
         elapsed: "1m 30s".into(),

@@ -8,8 +8,8 @@
 //! coordinator no longer installs it at all — the pinned overall row is a
 //! static seed — and its tally is filled only by a bar that tracks outputs;
 //! [`WorkerBarLabel`] labels one pool slot, carrying an `activity` marker
-//! (`active`/`idle`) alongside its identifiers and tool name, and never a
-//! tally.
+//! (`active`/`idle`) alongside its identifiers and tool name, plus its own
+//! tally in the suffix whenever a caller fills one.
 //!
 //! The prefix allocation decouples survival rank from display order. The
 //! status marker is reserved first and always drawn whole; the tool is sized
@@ -207,9 +207,11 @@ impl BarLabelTruncation for StepBarLabel {
 /// reserved, tool sized, names split evenly, and the `activity` tag drawn
 /// only from columns left after those three, so it yields first — matching
 /// the tail-drop behavior it replaces, where the tag was the last segment
-/// and the first to go. A worker carries no workflow phase and no progress
-/// tally, so the suffix has no tally segment; the auto-derived `elapsed`,
-/// `rate`, and `eta` still render, ahead of an elastic `custom`.
+/// and the first to go. A worker carries no workflow phase; its tally comes
+/// from its own [`Self::completed`]/[`Self::total`] fields and renders at the
+/// head of the suffix the same way [`StepBarLabel`]'s does, while the
+/// auto-derived `elapsed`, `rate`, and `eta` render behind it, ahead of an
+/// elastic `custom`.
 #[cfg(feature = "progress")]
 #[derive(Debug, Clone)]
 pub struct WorkerBarLabel {
@@ -235,6 +237,17 @@ pub struct WorkerBarLabel {
     /// marker, tool and names, so a narrowed row gives up the tag before it
     /// gives up what is running.
     pub activity: String,
+    /// Completed count for the progress tally: the steps this worker has
+    /// finished. Rendered as
+    /// `{completed}/{total}` at the head of the suffix. Names belong in the
+    /// prefix and counts in the suffix, so this field has no prefix
+    /// rendering. An empty value omits the tally segment entirely, so a slot
+    /// nobody has counted for yet renders timing only.
+    pub completed: String,
+    /// Total count for the progress tally: the steps assigned to this worker
+    /// so far, which grows as the worker pulls more work. Rendered only when
+    /// this field and [`Self::completed`] are both non-empty.
+    pub total: String,
 }
 
 #[cfg(feature = "progress")]
@@ -264,17 +277,25 @@ impl WorkerBarLabel {
 
     /// Build the suffix segments, most important first.
     ///
-    /// Takes no `&self`: a worker slot has no suffix fields of its own, so
-    /// nothing from the label can contribute to the suffix.
+    /// The tally leads when this label carries one: [`Self::completed`] and
+    /// [`Self::total`] are the label's own fields, filled by whoever assigned
+    /// steps to the slot, and render as a leading [`Segment::keep`]
+    /// `{completed}/{total}` — the same shape [`StepBarLabel`]'s tally uses.
+    /// An empty `completed` or `total` omits the segment, so a slot with no
+    /// tally of its own renders only what the merged [`SuffixComponents`]
+    /// carry.
     ///
-    /// A worker slot has no progress tally of its own, but that does not
-    /// mean it has no timing information: the renderer passes its merged
-    /// [`SuffixComponents`] to `truncate_suffix`, and the auto-derived
-    /// `elapsed`, `rate`, and `eta` fields arrive there. They are rendered
-    /// as `Segment::keep` so width pressure drops them whole rather than
-    /// shortening them. Only free-form `custom` text is elastic.
-    fn suffix_segments(suffix: &SuffixComponents) -> Vec<Segment> {
+    /// `elapsed`, `rate`, and `eta` are auto-derived: they reach this
+    /// builder only through the merged [`SuffixComponents`] the renderer
+    /// passes in, so a suffix that stopped reading them would strip timing
+    /// from every worker bar. They are `Segment::keep`, so width pressure
+    /// drops them whole rather than shortening them, and `eta` is rendered
+    /// only when `rate` is present. Only free-form `custom` text is elastic.
+    fn suffix_segments(&self, suffix: &SuffixComponents) -> Vec<Segment> {
         let mut segs = Vec::new();
+        if !self.completed.is_empty() && !self.total.is_empty() {
+            segs.push(Segment::keep(format!("{}/{}", self.completed, self.total)));
+        }
         if !suffix.elapsed.is_empty() {
             segs.push(Segment::keep(suffix.elapsed.clone()));
         }
@@ -306,7 +327,7 @@ impl BarLabelTruncation for WorkerBarLabel {
     }
 
     fn truncate_suffix(&self, max_width: usize, suffix: &SuffixComponents) -> String {
-        fit_segments(&Self::suffix_segments(suffix), max_width)
+        fit_segments(&self.suffix_segments(suffix), max_width)
     }
 }
 
@@ -571,6 +592,8 @@ mod allocation_policy_tests {
                 step_id: String::new(),
                 tool: String::new(),
                 activity: "idle".into(),
+                completed: String::new(),
+                total: String::new(),
             };
             let expected =
                 if marker.is_empty() { "[idle]".to_string() } else { format!("[{marker}] [idle]") };
@@ -597,6 +620,8 @@ mod allocation_policy_tests {
             step_id: "s12-transform".into(),
             tool: "ffmpeg".into(),
             activity: "active".into(),
+            completed: String::new(),
+            total: String::new(),
         };
         // 26 columns: names split evenly 8/8 (no marker, so two
         // separators), tool whole, nothing left for the tag.
@@ -643,5 +668,75 @@ mod allocation_policy_tests {
             total: String::new(),
         };
         assert_eq!(label.truncate_prefix(usize::MAX), "default s1 (managed@v1 v9.9.9)");
+    }
+}
+
+/// Tally-field tests for [`WorkerBarLabel`]: a filled `completed`/`total`
+/// pair renders as a leading `{completed}/{total}` segment in the suffix —
+/// the shape [`StepBarLabel`]'s tally already uses — and an empty `completed`
+/// or `total` omits the segment outright, so a slot nobody has counted for
+/// yet renders timing only rather than a `0/0` placeholder. Each test also asserts the
+/// prefix, pinning that counts never move out of the suffix into the names.
+#[cfg(all(test, feature = "progress"))]
+mod worker_tally_tests {
+    use super::WorkerBarLabel;
+    use mediapm_utils::progress::{BarLabelTruncation, SuffixComponents};
+
+    /// A worker bar whose tally is filled renders `A/B` at the head of the
+    /// suffix, ahead of the renderer-supplied timing, and keeps its prefix
+    /// to names and the activity tag: the row names who is running in the
+    /// prefix and how far the worker got in the suffix.
+    #[test]
+    fn worker_bar_label_renders_its_own_tally_in_the_suffix() {
+        let label = WorkerBarLabel {
+            status_marker: String::new(),
+            workflow_id: "default".into(),
+            step_id: "s5".into(),
+            tool: "echo".into(),
+            activity: "active".into(),
+            completed: "3".into(),
+            total: "5".into(),
+        };
+        assert_eq!(label.truncate_prefix(60), "default s5 (echo) [active]");
+        let suffix = SuffixComponents { elapsed: "2m 05s".into(), ..Default::default() };
+        assert_eq!(label.truncate_suffix(80, &suffix), "3/5 2m 05s");
+    }
+
+    /// An empty `completed` omits the tally segment even when `total` is
+    /// set: the tally renders only when both fields are non-empty, so a
+    /// label can never render a lone denominator or a `0/` fragment.
+    #[test]
+    fn worker_bar_label_omits_the_tally_when_completed_is_empty() {
+        let label = WorkerBarLabel {
+            status_marker: String::new(),
+            workflow_id: "default".into(),
+            step_id: "s5".into(),
+            tool: "echo".into(),
+            activity: "active".into(),
+            completed: String::new(),
+            total: "5".into(),
+        };
+        assert_eq!(label.truncate_prefix(60), "default s5 (echo) [active]");
+        let suffix = SuffixComponents { elapsed: "2m 05s".into(), ..Default::default() };
+        assert_eq!(label.truncate_suffix(80, &suffix), "2m 05s");
+    }
+
+    /// An empty `total` omits the tally segment even when `completed` is
+    /// set — the mirror of the case above and the one that would otherwise
+    /// render the `3/` fragment, half a count that reads as a broken row.
+    #[test]
+    fn worker_bar_label_omits_the_tally_when_total_is_empty() {
+        let label = WorkerBarLabel {
+            status_marker: String::new(),
+            workflow_id: "default".into(),
+            step_id: "s5".into(),
+            tool: "echo".into(),
+            activity: "active".into(),
+            completed: "3".into(),
+            total: String::new(),
+        };
+        assert_eq!(label.truncate_prefix(60), "default s5 (echo) [active]");
+        let suffix = SuffixComponents { elapsed: "2m 05s".into(), ..Default::default() };
+        assert_eq!(label.truncate_suffix(80, &suffix), "2m 05s");
     }
 }

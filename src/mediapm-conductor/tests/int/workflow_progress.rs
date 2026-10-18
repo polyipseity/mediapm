@@ -108,6 +108,8 @@ fn idle_pc() -> ProgressOp {
         step_id: String::new(),
         tool: String::new(),
         activity: "idle".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
 }
@@ -134,6 +136,8 @@ fn dispatch_pc(workflow_id: &str, step_id: &str, tool: &str, _assigned: usize) -
         step_id: step_id.into(),
         tool: tool.into(),
         activity: "active".into(),
+        completed: String::new(),
+        total: String::new(),
     };
     ProgressOp::SetTruncation { prefix: label.truncate_prefix(usize::MAX), suffix: String::new() }
 }

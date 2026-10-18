@@ -214,9 +214,7 @@ impl MaterializationBarLabel {
     /// Build the suffix segments, most important first.
     ///
     /// Takes no `&self`: a materialization row has no suffix field of its own
-    /// to contribute, which is the same reason
-    /// `WorkerBarLabel::suffix_segments` takes none, and it is why this body
-    /// is identical to that one.
+    /// to contribute.
     ///
     /// The renderer passes its merged `SuffixComponents` in, and
     /// `elapsed`, `rate`, and `eta` arrive through it, so reading them here
@@ -225,9 +223,8 @@ impl MaterializationBarLabel {
     /// rather than clipping `0m12s` down to `2s`. Only free-form `custom`
     /// text is elastic.
     ///
-    /// The count and the total are not rendered. This label has no tally of
-    /// its own to name the numbers, which is the same reason
-    /// `WorkerBarLabel::suffix_segments` skips them.
+    /// The count and the total are not rendered: this label has no tally of
+    /// its own to name the numbers.
     fn suffix_segments(suffix: &SuffixComponents) -> Vec<Segment> {
         let mut segs = Vec::new();
         if !suffix.elapsed.is_empty() {
