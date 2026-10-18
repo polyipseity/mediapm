@@ -14,7 +14,7 @@ use tokio::time::{Instant, sleep};
 
 use mediapm_conductor::http::client::shared_http_client;
 
-use super::musicbrainz::{MusicBrainzPayload, musicbrainz_payload_cache_key};
+use super::musicbrainz::MusicBrainzPayload;
 use super::util::{join_unique, normalize_optional_text};
 use super::{
     MEDIA_TAGGER_CACHE_INDEX_FILE_NAME, MEDIA_TAGGER_CACHE_INDEX_VERSION,
@@ -36,7 +36,11 @@ pub(super) struct SelectedCoverArt {
 }
 
 /// Cover Art Archive response payload.
-#[derive(Debug, Deserialize)]
+///
+/// This is the raw archive answer, cached as received: the cache stores
+/// what the server said, never our filtered view of it, so filter options
+/// can change without a refetch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct CoverArtArchiveResponse {
     /// Artwork entries published for one release/release-group entity.
     #[serde(default)]
@@ -44,7 +48,7 @@ pub(super) struct CoverArtArchiveResponse {
 }
 
 /// One Cover Art Archive image entry.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct CoverArtArchiveImage {
     /// Canonical original-quality artwork URL.
     #[serde(default)]
@@ -201,22 +205,22 @@ impl MediaTaggerHttpCache {
         Self { store_dir, index_path, index: Arc::new(Mutex::new(index)), expiry }
     }
 
-    /// Reads cached cover-art endpoint rows for one CAA endpoint URL.
+    /// Reads the cached raw archive response for one CAA endpoint URL.
     #[must_use]
     pub(super) async fn read_cover_art_entries(
         &self,
         endpoint: &str,
-    ) -> Option<CachedValue<Vec<SelectedCoverArt>>> {
+    ) -> Option<CachedValue<CoverArtArchiveResponse>> {
         self.read_json_payload("caa-entries", endpoint).await
     }
 
-    /// Persists cached cover-art endpoint rows for one CAA endpoint URL.
+    /// Persists the raw archive response for one CAA endpoint URL.
     pub(super) async fn write_cover_art_entries(
         &self,
         endpoint: &str,
-        payload: &[SelectedCoverArt],
+        payload: &CoverArtArchiveResponse,
     ) -> anyhow::Result<()> {
-        self.write_json_payload("caa-entries", endpoint, &payload.to_vec()).await
+        self.write_json_payload("caa-entries", endpoint, payload).await
     }
 
     /// Reads cached cover-art bytes for one artwork URL.
@@ -234,33 +238,25 @@ impl MediaTaggerHttpCache {
         self.write_bytes_payload("caa-images", url, payload).await
     }
 
-    /// Reads cached MusicBrainz metadata payloads for one recording/release selection.
+    /// Reads one MusicBrainz payload row by its shape-built cache key.
+    ///
+    /// The key comes from [`super::musicbrainz::MusicBrainzFetchShape::cache_key`];
+    /// this method only pins the namespace.
     #[must_use]
     pub(super) async fn read_musicbrainz_payload(
         &self,
-        recording_mbid: &str,
-        release_mbid: Option<&str>,
+        cache_key: &str,
     ) -> Option<CachedValue<MusicBrainzPayload>> {
-        self.read_json_payload(
-            "musicbrainz-payloads",
-            &musicbrainz_payload_cache_key(recording_mbid, release_mbid),
-        )
-        .await
+        self.read_json_payload("musicbrainz-payloads", cache_key).await
     }
 
-    /// Persists cached MusicBrainz metadata payloads for one recording/release selection.
+    /// Persists one MusicBrainz payload row by its shape-built cache key.
     pub(super) async fn write_musicbrainz_payload(
         &self,
-        recording_mbid: &str,
-        release_mbid: Option<&str>,
+        cache_key: &str,
         payload: &MusicBrainzPayload,
     ) -> anyhow::Result<()> {
-        self.write_json_payload(
-            "musicbrainz-payloads",
-            &musicbrainz_payload_cache_key(recording_mbid, release_mbid),
-            payload,
-        )
-        .await
+        self.write_json_payload("musicbrainz-payloads", cache_key, payload).await
     }
 
     /// Builds deterministic logical index key for one namespace/key pair.
@@ -616,11 +612,55 @@ pub(super) async fn collect_musicbrainz_cover_art(
     Ok(selected)
 }
 
+/// Filters one raw archive response down to the entries the current options ask for.
+///
+/// This runs on every read — cached or fresh — so `caa_image_types`,
+/// `caa_approved_only`, and the size preference shape the selection without
+/// ever entering the cache key. The cache row stays what the server said.
+fn select_cover_art_images(
+    response: &CoverArtArchiveResponse,
+    allowed_types: &BTreeSet<String>,
+    image_size: CaaImageSizePreference,
+    caa_approved_only: bool,
+) -> Vec<SelectedCoverArt> {
+    let mut entries = Vec::new();
+    for image in &response.images {
+        if caa_approved_only && image.approved != Some(true) {
+            continue;
+        }
+
+        let types = normalized_cover_art_types(image);
+        if !types.iter().any(|kind| allowed_types.contains(kind)) {
+            continue;
+        }
+
+        let Some(url) = select_highest_quality_cover_url_with_preference(image, image_size) else {
+            continue;
+        };
+
+        let maintype = types
+            .iter()
+            .min_by_key(|value| cover_art_type_priority(value))
+            .cloned()
+            .unwrap_or_else(|| "other".to_string());
+
+        entries.push(SelectedCoverArt {
+            url,
+            maintype,
+            types,
+            comment: normalize_optional_text(image.comment.as_deref()).unwrap_or_default(),
+        });
+    }
+    entries
+}
+
 /// Queries one Cover Art Archive endpoint and returns one selected URL per entry.
 ///
-/// The whole request (including retries and body read) runs under `deadline`;
-/// exhausting it is an error naming the cover-art phase, never a silent
-/// stale-cache substitution.
+/// The raw archive response is cached under the endpoint URL and the caller's
+/// filters are applied to it on every read, so changing a filter re-derives
+/// instead of refetching. The whole request (including retries and body read)
+/// runs under `deadline`; exhausting it is an error naming the cover-art
+/// phase, never a silent stale-cache substitution.
 ///
 /// # HTTP client policy
 ///
@@ -643,7 +683,12 @@ async fn fetch_cover_art_entries(
     if let Some(cached) = cached_entries.as_ref()
         && cached.is_fresh
     {
-        return Ok(cached.payload.clone());
+        return Ok(select_cover_art_images(
+            &cached.payload,
+            allowed_types,
+            image_size,
+            caa_approved_only,
+        ));
     }
 
     let (status, body) = tokio::time::timeout_at(deadline, async {
@@ -662,9 +707,9 @@ async fn fetch_cover_art_entries(
     .with_context(|| format!("fetching cover-art endpoint '{endpoint}'"))??;
 
     if status == reqwest::StatusCode::NOT_FOUND {
-        let empty = Vec::<SelectedCoverArt>::new();
+        let empty = CoverArtArchiveResponse::default();
         let _ = cache.write_cover_art_entries(endpoint, &empty).await;
-        return Ok(empty);
+        return Ok(Vec::new());
     }
 
     if !status.is_success() {
@@ -673,38 +718,9 @@ async fn fetch_cover_art_entries(
 
     let payload = serde_json::from_str::<CoverArtArchiveResponse>(&body)
         .context("decoding cover-art JSON")?;
+    let _ = cache.write_cover_art_entries(endpoint, &payload).await;
 
-    let mut entries = Vec::new();
-    for image in payload.images {
-        if caa_approved_only && image.approved != Some(true) {
-            continue;
-        }
-
-        let types = normalized_cover_art_types(&image);
-        if !types.iter().any(|kind| allowed_types.contains(kind)) {
-            continue;
-        }
-
-        let Some(url) = select_highest_quality_cover_url_with_preference(&image, image_size) else {
-            continue;
-        };
-
-        let maintype = types
-            .iter()
-            .min_by_key(|value| cover_art_type_priority(value))
-            .cloned()
-            .unwrap_or_else(|| "other".to_string());
-
-        entries.push(SelectedCoverArt {
-            url,
-            maintype,
-            types,
-            comment: normalize_optional_text(image.comment.as_deref()).unwrap_or_default(),
-        });
-    }
-
-    let _ = cache.write_cover_art_entries(endpoint, &entries).await;
-    Ok(entries)
+    Ok(select_cover_art_images(&payload, allowed_types, image_size, caa_approved_only))
 }
 
 /// Returns one normalized highest-quality URL for one CAA image entry.
@@ -1515,16 +1531,11 @@ mod tests {
             CacheExpiryPolicy::from_seconds(1),
         );
         let endpoint = format!("{}/release/11111111-1111-1111-1111-111111111111", server.uri());
-        let stale_entry = SelectedCoverArt {
-            url: "https://example.test/stale.jpg".to_string(),
-            maintype: "front".to_string(),
-            types: vec!["front".to_string()],
-            comment: String::new(),
-        };
-        cache
-            .write_cover_art_entries(&endpoint, std::slice::from_ref(&stale_entry))
-            .await
-            .expect("seed stale row");
+        let stale_response: CoverArtArchiveResponse = serde_json::from_str(
+            r#"{"images":[{"image":"https://example.test/stale.jpg","thumbnails":{},"types":["front"],"comment":"","approved":true}]}"#,
+        )
+        .expect("stale raw response");
+        cache.write_cover_art_entries(&endpoint, &stale_response).await.expect("seed stale row");
         tokio::time::sleep(Duration::from_millis(2500)).await;
 
         let allowed = parse_caa_image_types_expression("all").expect("all types");
@@ -1675,6 +1686,114 @@ mod tests {
             paths,
             vec![format!("/release/{release_id}"), format!("/release-group/{group_id}")],
             "the configured endpoint must receive both provider requests at their MBID paths"
+        );
+    }
+
+    /// A `caa-entries` row written by the old post-filter cache reads as a
+    /// miss and drops out of the index.
+    ///
+    /// Upgrade builds ship rows whose cached value was the filtered
+    /// selection, not the raw archive response. The new reader must not
+    /// serve them — the filters that shaped them are unknown — and the
+    /// self-heal path must clear them so they stop paying decode cost on
+    /// every lookup.
+    #[tokio::test]
+    async fn regression_a_post_filter_caa_row_reads_as_a_miss() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(60),
+        );
+        let endpoint = "https://coverartarchive.org/release/11111111-1111-1111-1111-111111111111";
+        let old_row = serde_json::json!([{
+            "url": "https://example.test/legacy.jpg",
+            "maintype": "front",
+            "types": ["front"],
+            "comment": ""
+        }]);
+        cache
+            .write_json_payload("caa-entries", endpoint, &old_row)
+            .await
+            .expect("seed post-filter row");
+
+        let read = cache.read_cover_art_entries(endpoint).await;
+        assert!(read.is_none(), "a post-filter row must not satisfy a raw-response read");
+
+        let key = MediaTaggerHttpCache::cache_key("caa-entries", endpoint);
+        assert!(
+            !cache.index.lock().expect("index lock").entries.contains_key(&key),
+            "the undecodable row must drop out of the index so it stops costing a decode per lookup"
+        );
+    }
+
+    /// One cached raw archive response serves every filter combination.
+    ///
+    /// The cache stores the archive's answer, not our selection, so changing
+    /// `caa_image_types`, `caa_approved_only`, or the size preference
+    /// re-derives from the cached response instead of pinning the first
+    /// run's choices — and without a second request. The server's request
+    /// count is the cache-hit proof; the two differing selections are the
+    /// filter-independence proof.
+    #[tokio::test]
+    async fn one_raw_archive_response_serves_every_filter_combination() {
+        let server = wiremock::MockServer::start().await;
+        let body = r#"{"images":[
+            {"image":"https://example.test/front.jpg","thumbnails":{"250":"https://example.test/front-250.jpg","1200":"https://example.test/front-1200.jpg"},"types":["Front"],"comment":"","approved":true},
+            {"image":"https://example.test/back.jpg","thumbnails":{"250":"https://example.test/back-250.jpg"},"types":["Back"],"comment":"","approved":false}
+        ]}"#;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_raw(body, "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(60),
+        );
+        let endpoint = format!("{}/release/11111111-1111-1111-1111-111111111111", server.uri());
+
+        let front_only = parse_caa_image_types_expression("front").expect("front type");
+        let strict = fetch_cover_art_entries(
+            &endpoint,
+            &cache,
+            &front_only,
+            CaaImageSizePreference::Medium,
+            true,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await
+        .expect("approved front under strict filters");
+        assert_eq!(
+            strict.iter().map(|entry| entry.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://example.test/front-1200.jpg"],
+            "the strict filter keeps only the approved front at its preferred size"
+        );
+
+        let everything = parse_caa_image_types_expression("all").expect("all types");
+        let loose = fetch_cover_art_entries(
+            &endpoint,
+            &cache,
+            &everything,
+            CaaImageSizePreference::Full,
+            false,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .await
+        .expect("loose filters over the same release");
+        assert_eq!(
+            loose.iter().map(|entry| entry.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://example.test/front.jpg", "https://example.test/back.jpg"],
+            "loose filters re-derive both images at full quality from the same cached response"
+        );
+
+        let received = server.received_requests().await.expect("request recorder is enabled");
+        assert_eq!(
+            received.len(),
+            1,
+            "the second read must hit the cache: filter changes may not cost a refetch"
         );
     }
 }

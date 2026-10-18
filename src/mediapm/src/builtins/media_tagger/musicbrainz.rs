@@ -93,28 +93,36 @@ fn bounded_agent(timeout: Duration) -> musicbrainz_rs::api_bindium::ureq::Agent 
     musicbrainz_rs::api_bindium::ureq::Agent::new_with_config(config)
 }
 
-/// The bounded MusicBrainz client for one configured endpoint URL.
+/// The host\[:port\] one configured endpoint URL resolves to.
 ///
 /// `musicbrainz_rs` appends `/ws/2` itself and always speaks plain HTTP, so
 /// only the host (and port, when the endpoint names one) is taken from the
-/// configured URL; the default `https://musicbrainz.org/ws/2` therefore
-/// yields the same `musicbrainz.org` traffic as the crate's stock domain.
-/// The per-request timeout, retry cap, and user agent are set exactly as
-/// the module's other client construction: this is the fetch path's single
-/// client builder.
+/// configured URL. Both the client builder and the cache-key builder call
+/// this, so the row a fetch writes is the row the next fetch with the same
+/// shape reads — they cannot parse the endpoint differently.
 ///
 /// An endpoint that does not parse, or that names no host, fails here — a
 /// tagging step pointed at a broken endpoint must surface that broken
 /// configuration instead of quietly fetching from somewhere else.
-fn musicbrainz_client_for_endpoint(endpoint: &str) -> anyhow::Result<MusicBrainzClient> {
+fn musicbrainz_host_for_endpoint(endpoint: &str) -> anyhow::Result<String> {
     let url = url::Url::parse(endpoint)
         .with_context(|| format!("parsing MusicBrainz endpoint '{endpoint}'"))?;
     let host =
         url.host_str().with_context(|| format!("MusicBrainz endpoint '{endpoint}' has no host"))?;
-    let domain = match url.port() {
+    Ok(match url.port() {
         Some(port) => format!("{host}:{port}"),
         None => host.to_owned(),
-    };
+    })
+}
+
+/// The bounded MusicBrainz client for one configured endpoint URL.
+///
+/// The default `https://musicbrainz.org/ws/2` therefore yields the same
+/// `musicbrainz.org` traffic as the crate's stock domain. The per-request
+/// timeout, retry cap, and user agent are set exactly as the module's other
+/// client construction: this is the fetch path's single client builder.
+fn musicbrainz_client_for_endpoint(endpoint: &str) -> anyhow::Result<MusicBrainzClient> {
+    let domain = musicbrainz_host_for_endpoint(endpoint)?;
 
     Ok(MusicBrainzClient::builder()
         .musicbrainz_domain(domain)
@@ -127,8 +135,51 @@ fn musicbrainz_client_for_endpoint(endpoint: &str) -> anyhow::Result<MusicBrainz
         .build())
 }
 
+/// Every input that changes what one MusicBrainz fetch asks for, bundled so
+/// the fetch and its cache row cannot drift apart.
+///
+/// `write_all_tags` and `release_ars` add annotation/relation includes to
+/// the requests, and `endpoint` selects the server. A payload cached under
+/// one combination must not satisfy a fetch that would ask differently, so
+/// the shape owns the cache key and the fetch takes the shape — adding a
+/// field here becomes a compile error at both sites instead of a silent
+/// stale-cache bug.
+#[derive(Debug, Clone)]
+pub(super) struct MusicBrainzFetchShape {
+    /// Whether the extended Picard tag block was requested.
+    pub(super) write_all_tags: bool,
+    /// Whether recording/release-group level relations were requested.
+    pub(super) release_ars: bool,
+    /// MusicBrainz endpoint URL whose host\[:port\] selects the fetch domain.
+    pub(super) endpoint: String,
+}
+
+impl MusicBrainzFetchShape {
+    /// The cache key for one recording/release pair under this fetch shape.
+    ///
+    /// The scheme is deliberately absent: `musicbrainz_rs` speaks plain HTTP
+    /// whatever the configured scheme says, so `http://x` and `https://x`
+    /// produce identical traffic and share one row. The deadline and API
+    /// credentials are absent too — one is latency policy, the other must
+    /// never land in the on-disk index.
+    pub(super) fn cache_key(
+        &self,
+        recording_mbid: &str,
+        release_mbid: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let release_mbid =
+            release_mbid.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("");
+        let domain = musicbrainz_host_for_endpoint(&self.endpoint)?;
+        Ok(format!(
+            "recording={recording_mbid}|release={release_mbid}|all_tags={}|ars={}|endpoint={domain}",
+            u8::from(self.write_all_tags),
+            u8::from(self.release_ars),
+        ))
+    }
+}
+
 /// Fetches recording/release payloads through `musicbrainz_rs`, on a client
-/// built for `endpoint` rather than the crate's unbounded global.
+/// built from `shape.endpoint` rather than the crate's unbounded global.
 ///
 /// The whole recording+release fetch is bounded by `deadline`, which caps
 /// the server-controlled `Retry-After` sleep the per-request timeout cannot
@@ -136,47 +187,33 @@ fn musicbrainz_client_for_endpoint(endpoint: &str) -> anyhow::Result<MusicBrainz
 /// means for the tagging step, and no stale cache row is served in its
 /// place.
 pub(super) async fn fetch_musicbrainz_payloads(
-    endpoint: &str,
+    shape: &MusicBrainzFetchShape,
     recording_mbid: &str,
     release_mbid: Option<&str>,
-    write_all_tags: bool,
-    release_ars: bool,
     deadline: Duration,
     cache: &MediaTaggerHttpCache,
 ) -> anyhow::Result<MusicBrainzPayload> {
-    let client = musicbrainz_client_for_endpoint(endpoint)?;
-    fetch_musicbrainz_payloads_on(
-        &client,
-        endpoint,
-        recording_mbid,
-        release_mbid,
-        write_all_tags,
-        release_ars,
-        deadline,
-        cache,
-    )
-    .await
+    let client = musicbrainz_client_for_endpoint(&shape.endpoint)?;
+    fetch_musicbrainz_payloads_on(&client, shape, recording_mbid, release_mbid, deadline, cache)
+        .await
 }
 
 /// The fetch itself, against an explicit client: tests point it at a local
 /// wiremock server or a broken endpoint without touching production
-/// construction. The endpoint string is carried for the deadline error so
-/// a stalled fetch names where it stalled.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "fetch seam takes the client, the five fetch inputs, and the deadline individually; bundling them would invent a config type only this seam uses"
-)]
+/// construction. The shape carries both the fetch inputs and the cache key,
+/// so a payload is only ever read from or written to the row of the exact
+/// shape that produced it. The endpoint string also rides the deadline
+/// error so a stalled fetch names where it stalled.
 async fn fetch_musicbrainz_payloads_on(
     client: &MusicBrainzClient,
-    endpoint: &str,
+    shape: &MusicBrainzFetchShape,
     recording_mbid: &str,
     release_mbid: Option<&str>,
-    write_all_tags: bool,
-    release_ars: bool,
     deadline: Duration,
     cache: &MediaTaggerHttpCache,
 ) -> anyhow::Result<MusicBrainzPayload> {
-    let cached_payload = cache.read_musicbrainz_payload(recording_mbid, release_mbid).await;
+    let cache_key = shape.cache_key(recording_mbid, release_mbid)?;
+    let cached_payload = cache.read_musicbrainz_payload(&cache_key).await;
     if let Some(cached) = cached_payload.as_ref()
         && cached.is_fresh
     {
@@ -193,7 +230,7 @@ async fn fetch_musicbrainz_payloads_on(
             .with_genres()
             .with_tags();
 
-        if write_all_tags {
+        if shape.write_all_tags {
             recording_fetch = recording_fetch.with_annotations().with_work_level_relations();
         }
 
@@ -223,10 +260,10 @@ async fn fetch_musicbrainz_payloads_on(
                 .with_genres()
                 .with_tags();
 
-            if write_all_tags {
+            if shape.write_all_tags {
                 release_fetch = release_fetch.with_annotations();
             }
-            if write_all_tags || release_ars {
+            if shape.write_all_tags || shape.release_ars {
                 release_fetch = release_fetch
                     .with_recording_level_relations()
                     .with_release_group_level_relations();
@@ -247,24 +284,15 @@ async fn fetch_musicbrainz_payloads_on(
     .await
     .with_context(|| {
         format!(
-            "fetching MusicBrainz entities from '{endpoint}' for recording \
-             '{recording_mbid}' within {deadline:?}"
+            "fetching MusicBrainz entities from '{}' for recording \
+             '{recording_mbid}' within {deadline:?}",
+            shape.endpoint
         )
     })?;
     let fetched_payload = fetched_payload?;
 
-    let _ = cache.write_musicbrainz_payload(recording_mbid, release_mbid, &fetched_payload).await;
+    let _ = cache.write_musicbrainz_payload(&cache_key, &fetched_payload).await;
     Ok(fetched_payload)
-}
-
-/// Builds deterministic cache key for one recording/release metadata lookup pair.
-#[must_use]
-pub(super) fn musicbrainz_payload_cache_key(
-    recording_mbid: &str,
-    release_mbid: Option<&str>,
-) -> String {
-    let release_mbid = release_mbid.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("");
-    format!("recording={recording_mbid}|release={release_mbid}")
 }
 
 /// Converts MusicBrainz payload into FFmetadata key/value map.
@@ -559,8 +587,16 @@ mod tests {
         )
         .expect("minimal recording payload");
         let payload = super::MusicBrainzPayload { recording, release: None };
+        let shape = super::MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: "http://127.0.0.1:1/ws/2".to_string(),
+        };
         cache
-            .write_musicbrainz_payload("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae", None, &payload)
+            .write_musicbrainz_payload(
+                &shape.cache_key("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae", None).expect("shape key"),
+                &payload,
+            )
             .await
             .expect("cache write");
 
@@ -581,14 +617,11 @@ mod tests {
             )
             .build();
 
-        let endpoint = "http://127.0.0.1:1/ws/2";
         let fetched = fetch_musicbrainz_payloads_on(
             &broken,
-            endpoint,
+            &shape,
             "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
             None,
-            false,
-            false,
             Duration::from_secs(30),
             &cache,
         )
@@ -622,14 +655,17 @@ mod tests {
 
         let endpoint = format!("http://{}/ws/2", server.address());
         let client = musicbrainz_client_for_endpoint(&endpoint).expect("local wiremock endpoint");
+        let shape = super::MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: endpoint.clone(),
+        };
         let started = Instant::now();
         let fetched = fetch_musicbrainz_payloads_on(
             &client,
-            &endpoint,
+            &shape,
             "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
             None,
-            false,
-            false,
             Duration::from_secs(2),
             &cache,
         )
@@ -676,6 +712,163 @@ mod tests {
         assert!(
             format!("{error:#}").contains("not a url"),
             "the error must name the endpoint, got: {error:#}"
+        );
+    }
+
+    /// A payload cached under one fetch shape is invisible to every other shape.
+    ///
+    /// `write_all_tags`, `release_ars`, and the endpoint all change what the
+    /// fetch asks MusicBrainz for, so each combination owns its own row.
+    /// The scheme is deliberately not part of the key: `musicbrainz_rs`
+    /// speaks plain HTTP whatever the endpoint says, so `http://x` and
+    /// `https://x` dial the same server and share one row.
+    #[tokio::test]
+    async fn payloads_cached_under_one_fetch_shape_are_invisible_to_other_shapes() {
+        use musicbrainz_rs::api_bindium::ApiClient;
+        use musicbrainz_rs::entity::recording::Recording;
+
+        const RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae";
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = super::super::cover_art::MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            super::super::cover_art::CacheExpiryPolicy::from_seconds(60),
+        );
+
+        let base = MusicBrainzFetchShape {
+            write_all_tags: true,
+            release_ars: false,
+            endpoint: "http://127.0.0.1:18080/ws/2".to_string(),
+        };
+        let recording: Recording = serde_json::from_str(
+            r#"{"id":"8f3471b5-7e6a-48da-86a9-c1c07a0f47ae","title":"cached"}"#,
+        )
+        .expect("minimal recording payload");
+        let payload = MusicBrainzPayload { recording, release: None };
+        cache
+            .write_musicbrainz_payload(
+                &base.cache_key(RECORDING_MBID, None).expect("base key"),
+                &payload,
+            )
+            .await
+            .expect("seed shaped row");
+
+        // A client that fails on connection, so a cache miss surfaces as the
+        // fetch error rather than a real request.
+        let broken = MusicBrainzClient::builder()
+            .musicbrainz_domain("127.0.0.1:1".to_string())
+            .api_client(
+                ApiClient::builder()
+                    .agent(bounded_agent(Duration::from_secs(30)))
+                    .max_retries(1)
+                    .build(),
+            )
+            .build();
+
+        for (label, shape) in [
+            ("all_tags=false", MusicBrainzFetchShape { write_all_tags: false, ..base.clone() }),
+            ("ars=true", MusicBrainzFetchShape { release_ars: true, ..base.clone() }),
+            (
+                "other host",
+                MusicBrainzFetchShape {
+                    endpoint: "http://127.0.0.1:18081/ws/2".to_string(),
+                    ..base.clone()
+                },
+            ),
+        ] {
+            let fetched = fetch_musicbrainz_payloads_on(
+                &broken,
+                &shape,
+                RECORDING_MBID,
+                None,
+                Duration::from_secs(30),
+                &cache,
+            )
+            .await;
+            assert!(
+                fetched.is_err(),
+                "{label}: a differently-shaped fetch must not read the base shape's row"
+            );
+        }
+
+        let scheme_variant = MusicBrainzFetchShape {
+            endpoint: "https://127.0.0.1:18080/ws/2".to_string(),
+            ..base.clone()
+        };
+        let fetched = fetch_musicbrainz_payloads_on(
+            &broken,
+            &scheme_variant,
+            RECORDING_MBID,
+            None,
+            Duration::from_secs(30),
+            &cache,
+        )
+        .await
+        .expect("scheme-only endpoint variants must share one row");
+        assert_eq!(fetched.recording.title, "cached");
+    }
+
+    /// A row cached under the pre-shape key is invisible to a shaped fetch.
+    ///
+    /// Upgrade builds ship with rows written by the old key format; the
+    /// shaped fetch must miss them and refetch rather than silently serve a
+    /// payload whose fetch shape is unknown. The client fails on connection,
+    /// so a miss surfaces as the fetch error.
+    #[tokio::test]
+    async fn regression_a_pre_shape_cache_key_is_not_read_by_a_shaped_fetch() {
+        use musicbrainz_rs::api_bindium::ApiClient;
+        use musicbrainz_rs::entity::recording::Recording;
+
+        const RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae";
+
+        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
+        let cache = super::super::cover_art::MediaTaggerHttpCache::new(
+            Some(root.path().to_path_buf()),
+            super::super::cover_art::CacheExpiryPolicy::from_seconds(60),
+        );
+
+        let recording: Recording = serde_json::from_str(
+            r#"{"id":"8f3471b5-7e6a-48da-86a9-c1c07a0f47ae","title":"legacy"}"#,
+        )
+        .expect("minimal recording payload");
+        let payload = MusicBrainzPayload { recording, release: None };
+        cache
+            .write_json_payload(
+                "musicbrainz-payloads",
+                &format!("recording={RECORDING_MBID}|release="),
+                &payload,
+            )
+            .await
+            .expect("seed pre-shape row");
+
+        let broken = MusicBrainzClient::builder()
+            .musicbrainz_domain("127.0.0.1:1".to_string())
+            .api_client(
+                ApiClient::builder()
+                    .agent(bounded_agent(Duration::from_secs(30)))
+                    .max_retries(1)
+                    .build(),
+            )
+            .build();
+        let shape = MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: "http://127.0.0.1:1/ws/2".to_string(),
+        };
+
+        let fetched = fetch_musicbrainz_payloads_on(
+            &broken,
+            &shape,
+            RECORDING_MBID,
+            None,
+            Duration::from_secs(30),
+            &cache,
+        )
+        .await;
+        let error = fetched.expect_err("the pre-shape key must not satisfy a shaped fetch");
+        assert!(
+            error.to_string().contains("fetching MusicBrainz recording"),
+            "the error must be the fetch failure itself, got: {error:#}"
         );
     }
 }

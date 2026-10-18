@@ -46,14 +46,14 @@ mod tests {
 
     use crate::builtins::media_tagger::acoustid::require_acoustid_api_key_for_lookup;
     use crate::builtins::media_tagger::cover_art::{
-        COVER_ART_PHASE_BUDGET, CacheExpiryPolicy, CoverArtArchiveImage, MediaTaggerHttpCache,
-        SelectedCoverArt, insert_musicbrainz_image_tags, normalized_cover_art_types,
-        persist_cover_art_slot_artifacts, select_cover_art_for_tag_embedding,
-        select_highest_quality_cover_url,
+        COVER_ART_PHASE_BUDGET, CacheExpiryPolicy, CoverArtArchiveImage, CoverArtArchiveResponse,
+        MediaTaggerHttpCache, SelectedCoverArt, insert_musicbrainz_image_tags,
+        normalized_cover_art_types, persist_cover_art_slot_artifacts,
+        select_cover_art_for_tag_embedding, select_highest_quality_cover_url,
     };
     use crate::builtins::media_tagger::ffmetadata::parse_ffmetadata_global_map;
     use crate::builtins::media_tagger::musicbrainz::{
-        insert_extended_picard_tags, musicbrainz_payload_cache_key,
+        MusicBrainzFetchShape, insert_extended_picard_tags,
     };
     use crate::builtins::media_tagger::util::resolve_ffmpeg_executable_from_configured_path;
     use crate::builtins::media_tagger::*;
@@ -464,8 +464,8 @@ mod tests {
         assert!(!one_second.is_fresh(98, 100));
     }
 
-    /// Protects media-tagger JSON cache persistence so cached cover-art rows
-    /// can be reused after transient upstream failures.
+    /// Protects media-tagger JSON cache persistence so the raw archive
+    /// response is reused after transient upstream failures.
     #[tokio::test]
     async fn media_tagger_http_cache_round_trips_cover_entries() {
         let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
@@ -474,14 +474,12 @@ mod tests {
             CacheExpiryPolicy::from_seconds(60),
         );
 
-        let entries = vec![SelectedCoverArt {
-            url: "https://example.test/front.jpg".to_string(),
-            maintype: "front".to_string(),
-            types: vec!["front".to_string()],
-            comment: "cover".to_string(),
-        }];
+        let response: CoverArtArchiveResponse = serde_json::from_str(
+            r#"{"images":[{"image":"https://example.test/front.jpg","thumbnails":{},"types":["front"],"comment":"cover","approved":true}]}"#,
+        )
+        .expect("raw archive response");
         cache
-            .write_cover_art_entries("https://coverartarchive.org/release/demo", &entries)
+            .write_cover_art_entries("https://coverartarchive.org/release/demo", &response)
             .await
             .expect("write cached entries");
 
@@ -490,7 +488,7 @@ mod tests {
             .await
             .expect("read cached entries");
         assert!(loaded.is_fresh);
-        assert_eq!(loaded.payload, entries);
+        assert_eq!(loaded.payload, response);
 
         assert!(root.path().join("cache-store").join("store").exists());
         assert!(root.path().join("cache-store").join("media-tagger.json").exists());
@@ -506,7 +504,12 @@ mod tests {
             Some(root.path().join("cache-store")),
             CacheExpiryPolicy::from_seconds(60),
         );
-        let cache_key = musicbrainz_payload_cache_key("recording-demo", Some("release-demo"));
+        let shape = MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: "https://musicbrainz.org/ws/2".to_string(),
+        };
+        let cache_key = shape.cache_key("recording-demo", Some("release-demo")).expect("shape key");
         let payload = serde_json::json!({
             "recording": {
                 "id": "recording-demo",
@@ -565,7 +568,8 @@ use self::cover_art::{
 };
 use self::ffmetadata::parse_ffmetadata_global_map;
 use self::musicbrainz::{
-    MUSICBRAINZ_FETCH_DEADLINE, build_ffmetadata_map, fetch_musicbrainz_payloads,
+    MUSICBRAINZ_FETCH_DEADLINE, MusicBrainzFetchShape, build_ffmetadata_map,
+    fetch_musicbrainz_payloads,
 };
 use self::util::{normalize_optional_text, resolve_ffmpeg_executable, write_ffmetadata_document};
 
@@ -928,11 +932,13 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
     };
 
     let metadata_payload = fetch_musicbrainz_payloads(
-        &options.musicbrainz_endpoint,
+        &MusicBrainzFetchShape {
+            write_all_tags: options.write_all_tags,
+            release_ars: options.release_ars,
+            endpoint: options.musicbrainz_endpoint.clone(),
+        },
         &recording_mbid,
         detected_release_mbid.as_deref(),
-        options.write_all_tags,
-        options.release_ars,
         MUSICBRAINZ_FETCH_DEADLINE,
         &media_tagger_cache,
     )
