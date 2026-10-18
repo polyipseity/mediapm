@@ -194,20 +194,20 @@ Carries the slot's activity flag and live tally, with no workflow phase. Prefix 
 
 **File**: `src/mediapm/src/materializer/progress_labels.rs`
 
-Carries file-path identity. No version, no count/total, no workflow/step.
+Carries entry identity. No version, no count/total, no workflow/step, no phase, no path directory.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
-| `status_marker` | Terminal state marker | `""` / `"W"` / `"F"` |
-| `entry_path` | Directory portion of hierarchy path | `"Music/Artist/Album"` |
-| `entry_name` | Basename of hierarchy entry. `split_entry_id` lifts a square-bracket id out of it into its own bracketed segment, with whatever the group leaves behind joined directly to the id | `"song [youtube.abc].link.mkv"` |
-| `file_name` | Extracted file basename (sub-bars only) | `"cover.jpg"` |
+| `status_marker` | Terminal-state marker, rendered bracketed; empty omits the segment | `""` / `"W"` / `"F"` |
+| `media_id` | Identity the row materializes for, bracketed and elastic; a playlist row carries no media id, so it passes the hierarchy id here (empty omits) | `"youtube.dQw4w9WgXcQ"` |
+| `variant` | Variant the row writes, bracketed and elastic; empty while unresolved, on a folder row covering every variant, and on the overall bar | `"remaster"` |
+| `entry_name` | Basename of the hierarchy entry, elastic and cut from the left so the extension-bearing tail survives | `"song.mkv"` |
 
-**Suffix:** the auto-derived timing, in the same order `WorkerBarLabel` uses (`src/mediapm/src/materializer/progress_labels.rs::MaterializationBarLabel::suffix_segments`). `truncate_suffix` fits `elapsed`, `rate` and `eta` through `fit_segments` and has to read them out of the merged `SuffixComponents` to do it: the client path replaces a bar's suffix with what this method returns rather than adding to it, so a label that returns an empty string takes elapsed, rate and eta off the screen rather than narrowing them.
+**Suffix:** the auto-derived timing, in the same order `WorkerBarLabel` uses (`src/mediapm/src/materializer/progress_labels.rs::MaterializationBarLabel::suffix_segments`): `elapsed`, `rate`, `eta`, then an elastic `custom`. `truncate_suffix` fits them through `fit_segments` and has to read `elapsed`, `rate` and `eta` out of the merged `SuffixComponents` to do it: the client path replaces a bar's suffix with what this method returns rather than adding to it, so a label that returns an empty string takes the timing off the screen rather than narrowing it. The label renders no `count`/`total` — it has no tally of its own to name the numbers.
 
 ### Why the structs are separate
 
-They carry different fields, and the truncation order is a per-screen decision rather than a property of a label type. A worker bar wants its activity marker first and keeps its tally in the suffix; a materialization bar wants its phase first and a path, where the path shortens from the head because its tail is the informative end. Merging them would force every screen's ranking through one shared struct, and the ranking is the part that has to be right.
+They carry different fields, and the truncation order is a per-screen decision rather than a property of a label type. A worker bar wants its activity marker first and keeps its tally in the suffix; a materialization bar wants the media id and variant that identify the entry, and its basename shortens from the left because its tail — the extension — is the informative end. Merging them would force every screen's ranking through one shared struct, and the ranking is the part that has to be right.
 
 ### Built-in `PrefixComponents` truncation order
 
@@ -256,7 +256,7 @@ Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec
 
 ### Screen C: Materialization (`src/mediapm/src/materializer/`)
 
-Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`, and `split_entry_id` then takes a square-bracket id out of the basename. Prefix segments are ordered `status_marker`, the `entry_name` stem, `entry_id`, the tail the id leaves behind, `entry_path`, `file_name`, `phase`, so the phase tag trails the way it does on tool-sync and is the first whole segment a narrow row gives up, both halves of the path are elastic and shorten from the head, and columns come back in the order `entry_path` shrinks, then `entry_name` shrinks, then whole segments drop from the tail: `phase`, `file_name`, and the tail, id and path after them. The id and its tail are `Keep`, so the elastic halves are spent before either is given up, and the tail ranks last of the three so a narrow row gives up the extension first. `entry_name` is elastic rather than kept whole because a name kept whole is a name that vanishes once nothing else can shrink, and its tail still carries the extension and the bracketed media id that separates one entry from another.
+Uses `MaterializationBarLabel` for client-defined truncation. The label carries identity only — `status_marker`, `media_id`, `variant`, `entry_name`, in that truncation order. The materializer splits each entry's relative path via `split_entry_path` and puts the basename in `entry_name`; the directory portion is dropped, so the label carries no path. Under width pressure the fields yield in reverse rank: the basename gives columns first, then the variant, then the media id, and an elastic segment that is shortened drops its bracket pair rather than leaving half of one, so a squeezed id renders bare (`media-001`) instead of `a-001]`. `entry_name` is elastic rather than kept whole because a name kept whole is a name `fit_segments` drops once nothing else can shrink; cutting it from the left keeps its informative tail — the extension. There is no phase tag, no extracted-file name, and no count/total on the label: the `A/B` fraction, the outcome colour and the finish marker already say what a row is doing.
 
 The screen has no phase model: a row's total is the files it writes and it advances once per file written, so the `A/B` fraction, the outcome colour and the finish marker carry the row's state, and a row's label is identity only — no tag repeats what the fraction already says.
 

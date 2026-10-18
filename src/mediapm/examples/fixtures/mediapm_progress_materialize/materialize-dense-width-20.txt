@@ -1,12 +1,12 @@
-·     y.flac [cmt]
-·     on.wav [cmt]
-·     h?.m4a [cmt]
-⠸     ce.m4a [vrf]
-⠸     al.m4a [stg]
-⠸
-·
-⠸
-·     l.m3u8 [cmt]
-⠸     You Up [wrt]
-⠸       thumbnails
+·     lepathy.flac
+·      - Olson.wav
+·     e Flesh?.m4a
+⠸     Thin Ice.m4a
+⠸     2 - Xtal.m4a
+⠸     dQw4w9WgXcQ]
+·     [thumbnails]
+⠸     [links] XcQ]
+·     ickroll.m3u8
+⠸      Give You Up
+⠸     [thumbnails]
 ⠸     aterializing

@@ -1,12 +1,12 @@
-·     - Telepathy.flac [cmt]
-·     02 - Olson.wav i [cmt]
-·     n the Flesh?.m4a [cmt]
-⠸     The Thin Ice.m4a [vrf]
-⠸     02 - Xtal.m4a 92 [stg]
+·        01 - Telepathy.flac
+·             02 - Olson.wav
+·     01 - In the Flesh?.m4a
+⠸      02 - The Thin Ice.m4a
+⠸              02 - Xtal.m4a
 ⠸      [youtube.dQw4w9WgXcQ]
-·      [youtube.dQw4w9WgXcQ]
-⠸      [youtube.dQw4w9WgXcQ]
-·     rickroll.m3u8 ts [cmt]
-⠸     onna Give You Up [wrt]
-⠸     ou Up thumbnails [wrt]
+·     [thumbnails] 4w9WgXcQ]
+⠸     [links] e.dQw4w9WgXcQ]
+·              rickroll.m3u8
+⠸     ever Gonna Give You Up
+⠸     [thumbnails] ve You Up
 ⠸              materializing

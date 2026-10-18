@@ -1515,9 +1515,9 @@ async fn materialize_playlist_entry(
         len: bytes.len() as u64,
     };
     if shared.every_output_holds(&[body]).await {
-        // The row stays on `[stg]`: it rendered the body and then had nothing
-        // to commit, the way the media arm stays on `[vrf]` when it declines an
-        // entry and the folder arm on `[stg]`.
+        // Nothing to commit: the row rendered the body and matched what was
+        // already on disk, so the entry is already correct and no file changed
+        // hands.
         return Ok(PreparedHierarchyEntryResult {
             outcome: EntryOutcome::AlreadyCorrect,
             managed_files: BTreeMap::new(),

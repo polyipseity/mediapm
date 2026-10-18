@@ -289,17 +289,24 @@ mod tests {
     /// The frame a folder entry wider than the client budget produces.
     ///
     /// The folder is the online demo's. Its `entry_name` is 59 columns against
-    /// the slot the terminal leaves, and `entry_name` is elastic, so the name
-    /// is cut back to a boundary and rows two and three keep
-    /// `Up [youtube.dQw4w9WgXcQ]`, the part that names the video. A name kept
-    /// whole is a name `fit_segments` drops once nothing can shrink, and those
-    /// two rows would render as a bare phase tag with no identity at all.
+    /// the slot the terminal leaves, and `entry_name` is elastic and cut from
+    /// the left, so a row that names the folder keeps the tail that identifies
+    /// the video rather than the stem a reader can already infer. A name kept
+    /// whole is a name `fit_segments` drops once nothing else can shrink, and
+    /// the row would render as bare identity with no file on it.
     ///
-    /// Row two shows what a cut costs when the directory behind the name can
-    /// yield no tail at all: the path is dropped, so the name takes the
-    /// overage in its place and keeps `You Up [youtube.dQw4w9WgXcQ]` rather
-    /// than the whole 58 columns. Row three keeps `links`, the extracted
-    /// member the sub-bar is writing.
+    /// Row two is the folder's own entry bar: `entry_name` alone, shortened
+    /// from the front to `na Give You Up [youtube.dQw4w9WgXcQ]`. Row three is
+    /// the `links` sub-bar underneath it, so its `variant` segment `[links]`
+    /// leads and the entry name, sharing the slot with that segment, shortens
+    /// one step further to `You Up [youtube.dQw4w9WgXcQ]`. The
+    /// `[youtube.dQw4w9WgXcQ]` both rows keep is part of the folder's own
+    /// name, not a separate identity segment: this example's synthetic labels
+    /// carry the basename only.
+    ///
+    /// No row names a phase. The `A/B` fraction, the outcome colour and the
+    /// finish marker already carry what a row is doing and how it ended, so
+    /// the label spends its columns on identity alone.
     ///
     /// The other rows are unchanged from the wide frame the transcripts carry,
     /// because their own labels already fill the slot. The slot is what the
@@ -314,14 +321,10 @@ mod tests {
     /// filenames in that directory would have to parse against a different
     /// stem. One screen, one directory is the shape the walk above relies on.
     ///
-    /// Re-baselined for the single writer (Task 7 phase 2). The changed bytes
-    /// are the three accepted classes and nothing else: the spinner column is
-    /// the frame counter's parked glyphs (a), the two `░` runs are now the
-    /// terminal full fill the fill matrix draws (b), and the elapsed/rate
-    /// strings carry the scripted final frame rather than the tick the legacy
-    /// block froze (e). The tails this test protects — `You Up
-    /// [youtube.dQw4w9WgXcQ]`, `Up [youtube.dQw4w9WgXcQ] links`, and
-    /// `he Wall` — are untouched.
+    /// The tails this test protects — `na Give You Up [youtube.dQw4w9WgXcQ]`
+    /// on the entry bar and `[links] You Up [youtube.dQw4w9WgXcQ]` on the
+    /// sub-bar — are the elastic basename and the variant-led sub-bar keeping
+    /// the part of the name that identifies the video.
     #[test]
     fn materialization_screen_keeps_the_tail_of_a_folder_name_wider_than_the_budget() {
         let config = ScreenConfig { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -332,10 +335,10 @@ mod tests {
         assert_eq!(
             grid,
             concat!(
-                "·     01 - Telepathy.flac o Children [cmt] ████████████████████████ 6s\n",
-                "⠧     e You Up [youtube.dQw4w9WgXcQ] [wrt] ████████████████████████ 8s 0/d 1s\n",
-                "⠧     Up [youtube.dQw4w9WgXcQ] links [wrt] ████████████████████████ 6s 2/m 1m20s\n",
-                "⠧     01 - In the Flesh?.m4a he Wall [vrf] ████████████████████████ 2s 3/m\n",
+                "·                      01 - Telepathy.flac ████████████████████████ 6s\n",
+                "⠧     na Give You Up [youtube.dQw4w9WgXcQ] ████████████████████████ 8s 0/d 1s\n",
+                "⠧     [links] You Up [youtube.dQw4w9WgXcQ] ████████████████████████ 6s 2/m 1m20s\n",
+                "⠧                   01 - In the Flesh?.m4a ████████████████████████ 2s 3/m\n",
                 "⠧                            materializing ████████████████████████ 15s 1/m 2m"
             )
         );

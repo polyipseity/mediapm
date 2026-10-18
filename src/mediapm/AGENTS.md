@@ -237,7 +237,7 @@ See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cac
 
 Direct CAS→output-path writes; no staging commit. Materialized paths marked read-only after sync. Link fallback order configurable in `runtime.materialization_preference_order` (default: hardlink → symlink → reflink → copy). NFD filenames enforced at two stages: config-declared components are rejected when not NFD-normalized, resolved components (which carry interpolated metadata) are normalized instead. Reserved path chars rejected. ZIP extraction under `<mediapm_dir>/tmp/`.
 
-The rendered materialization progress screen (per-entry `[stg]`/`[vrf]`/`[cmt]`/`[wrt]` phases; the overall bar carries no phase tag) is documented in `.agents/instructions/progress-output.instructions.md` (Screen C).
+The rendered materialization progress screen (per-(entry,variant) file-count bars; rows carry media id / variant / basename with no phase tag) is documented in `.agents/instructions/progress-output.instructions.md` (Screen C).
 
 ## CAS Integrity Verification
 
