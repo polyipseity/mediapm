@@ -9,12 +9,6 @@ use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
 use super::*;
 
-/// The phase tag a rendered prefix ends with, or `None` when it carries
-/// none, which is how a row is checked against its declaration.
-pub(super) fn rendered_phase_tag(prefix: &str) -> Option<&str> {
-    prefix.rsplit_once('[').and_then(|(_, tail)| tail.strip_suffix(']'))
-}
-
 /// Builds a ZIP payload holding `members`, stored without compression.
 ///
 /// Stored rather than deflated on purpose: it keeps the archive readable

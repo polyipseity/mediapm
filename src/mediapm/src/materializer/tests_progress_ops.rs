@@ -56,7 +56,7 @@ async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
 }
 
 /// Single media entry with no CAS content emits the full progress
-/// sequence: overall bar → per-entry `[stg]`/`[vrf]` phases →
+/// sequence: overall bar → the entry row's identity installs →
 /// `Advance(1)` + `FinishWarning` (skipped) → overall
 /// `Advance(1)` + `FinishError`.
 ///
@@ -130,8 +130,8 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
     assert!(result.is_ok(), "sync_hierarchy should succeed: {result:?}");
     let ops = recording.ops();
     // Exact op sequence: overall bar (AddBar from with_overall,
-    // then SetTotal + SetTruncation from sync_hierarchy) → per-entry
-    // `[stg]`/`[vrf]` phases → `Advance(1)` + `FinishWarning` (skipped, no
+    // then SetTotal + SetTruncation from sync_hierarchy) → the entry
+    // row's identity installs → `Advance(1)` + `FinishWarning` (skipped, no
     // CAS content) → overall `Advance(1)` + `FinishError`.
     assert_eq!(
         ops,
@@ -142,18 +142,27 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
             ProgressOp::SetTruncation { prefix: "materializing".into(), suffix: String::new() },
             // The phase declares live work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Per-entry bar: staging.
-            ProgressOp::AddBar { total: 1, label: "test_file [stg]".into() },
+            // Per-entry bar: created on the entry's identity.
+            ProgressOp::AddBar { total: 1, label: "test_file".into() },
             // The entry bar declares live work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            ProgressOp::SetTruncation { prefix: "test_file [stg]".into(), suffix: String::new() },
-            // Per-entry bar: verify phase (set before hash resolution).
-            ProgressOp::SetTruncation { prefix: "test_file [vrf]".into(), suffix: String::new() },
+            ProgressOp::SetTruncation { prefix: "[src1] test_file".into(), suffix: String::new() },
+            // The resolved variant joins the identity, and the later phase
+            // reinstalls the same row text: the label no longer carries the
+            // phase.
+            ProgressOp::SetTruncation {
+                prefix: "[src1] [default] test_file".into(),
+                suffix: String::new(),
+            },
+            ProgressOp::SetTruncation {
+                prefix: "[src1] [default] test_file".into(),
+                suffix: String::new(),
+            },
             // Skipped: advance(1) on entry_bar, the `[W]` label that
             // names the skip in the text, then FinishWarning.
             ProgressOp::Advance { delta: 1 },
             ProgressOp::SetTruncation {
-                prefix: "[W] test_file [vrf]".into(),
+                prefix: "[W] [src1] [default] test_file".into(),
                 suffix: String::new(),
             },
             ProgressOp::FinishWarning,
@@ -162,7 +171,8 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishError,
         ],
-        "\nops mismatch — expected the overall bar + [stg]→[vrf] skip path",
+        "\nops mismatch — expected the overall bar + the entry's identity installs down the \
+         skip path",
     );
 }
 
@@ -170,9 +180,8 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
 ///
 /// `finish_warning` on its own only changes the bar's colour, and the
 /// materialization label has no marker, so a skipped entry and a failed
-/// one used to be indistinguishable in the text. The phase in the marker
-/// label is the one the bar already shows, so the marker adds a fact
-/// instead of replacing one.
+/// one used to be indistinguishable in the text. The marker sits on the
+/// row's identity, so it adds a fact to what the row already shows.
 #[tokio::test]
 async fn sync_hierarchy_marks_a_skipped_entry_warning() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
@@ -207,7 +216,7 @@ async fn sync_hierarchy_marks_a_skipped_entry_warning() {
     assert_eq!(
         ops.get(finish.saturating_sub(1)),
         Some(&ProgressOp::SetTruncation {
-            prefix: "[W] test_file [vrf]".into(),
+            prefix: "[W] [src1] [default] test_file".into(),
             suffix: String::new(),
         }),
         "the label installed before the warning finish must carry [W]; got {ops:?}",
@@ -264,7 +273,7 @@ async fn sync_hierarchy_marks_a_failed_folder_entry() {
     assert_eq!(
         ops.get(finish.saturating_sub(1)),
         Some(&ProgressOp::SetTruncation {
-            prefix: "[F] album [stg]".into(),
+            prefix: "[F] [src1] album".into(),
             suffix: String::new(),
         }),
         "the label installed before the error finish must carry [F]; got {ops:?}",

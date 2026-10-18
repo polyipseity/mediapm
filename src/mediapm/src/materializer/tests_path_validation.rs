@@ -95,7 +95,7 @@ async fn regression_sync_hierarchy_rejects_parent_traversal_component() {
 /// string, an upstream title), and `${media.metadata.<key>}` interpolation
 /// is how it first reaches a hierarchy path component. Before the chain was
 /// wired in, the per-entry staging bar was labelled with the raw
-/// `AC/DC [stg]`, i.e. the separator survived into a path component that
+/// `AC/DC`, i.e. the separator survived into a path component that
 /// `hierarchy_root.join(...)` would split. The effective
 /// `SanitizeNamesConfig` for this entry resolves to `Enabled` (the
 /// flattening default), so the separator is rewritten to `_` and the commit
@@ -145,13 +145,26 @@ async fn regression_sync_hierarchy_sanitizes_interpolated_path_component() {
             ProgressOp::SetTruncation { prefix: "materializing".into(), suffix: String::new() },
             // The phase declares live work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            ProgressOp::AddBar { total: 1, label: "AC_DC [stg]".into() },
+            ProgressOp::AddBar { total: 1, label: "AC_DC".into() },
             // The entry bar declares live work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            ProgressOp::SetTruncation { prefix: "AC_DC [stg]".into(), suffix: String::new() },
-            ProgressOp::SetTruncation { prefix: "AC_DC [vrf]".into(), suffix: String::new() },
+            ProgressOp::SetTruncation { prefix: "[src1] AC_DC".into(), suffix: String::new() },
+            // The resolved variant joins the identity, and the later phase
+            // reinstalls the same row text: the label no longer carries the
+            // phase.
+            ProgressOp::SetTruncation {
+                prefix: "[src1] [default] AC_DC".into(),
+                suffix: String::new(),
+            },
+            ProgressOp::SetTruncation {
+                prefix: "[src1] [default] AC_DC".into(),
+                suffix: String::new(),
+            },
             ProgressOp::Advance { delta: 1 },
-            ProgressOp::SetTruncation { prefix: "[W] AC_DC [vrf]".into(), suffix: String::new() },
+            ProgressOp::SetTruncation {
+                prefix: "[W] [src1] [default] AC_DC".into(),
+                suffix: String::new(),
+            },
             ProgressOp::FinishWarning,
             ProgressOp::Advance { delta: 1 },
             // The entry was skipped, so the overall row ends as an error.

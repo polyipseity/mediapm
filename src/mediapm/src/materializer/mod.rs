@@ -452,128 +452,143 @@ fn sanitize_and_validate_hierarchy_paths(
 
 /// Open the sub-bar for one extracted folder variant and label it.
 ///
-/// The parent row has already entered [`MaterializationPhase::Write`] by the
-/// time this runs, and both rows render that one phase through
-/// [`MaterializationPhase::tag`], so the parent and the rows under it carry
-/// the same word while the folder is being written. The seed label names the
-/// tag too, since the seed is what a row shows before its first render, and a
-/// seed carrying its own literal is a second answer to a question
-/// [`MaterializationPhase::tag`] already answers.
+/// The parent row and the rows under it name the same work at two
+/// granularities: the parent carries the folder's identity, and this row
+/// carries the folder's identity plus the variant it is writing. The seed
+/// names the variant alone, because the seed is what a row shows before its
+/// first render and the variant is the one fact that separates these rows
+/// from each other.
 ///
-/// `relative_path` is the folder's own path, so the label carries the folder
-/// as its entry and the variant as `file_name`; that is what lets a member
-/// row name itself beside the entry it belongs to.
+/// `relative_path` is the folder's own path, so the label's basename is the
+/// folder's; `media_id` is the entry the variant belongs to, so a member row
+/// can be traced to its folder from the row alone.
 ///
 /// Returns `None` when the caller has no screen, which is the shape every use
 /// of the handle already reads: it is advanced and finished conditionally.
 fn add_variant_sub_bar(
     progress_group: Option<&Arc<dyn ProgressScreenApi + Send + Sync>>,
     relative_path: &str,
+    media_id: &str,
     variant_name: &str,
     member_count: usize,
 ) -> Option<Arc<dyn ProgressBarApi>> {
     let pg = progress_group?;
-    let (entry_path, entry_name) = split_entry_path(relative_path);
-    let bar = pg.add_bar(
-        member_count as u64,
-        &format!("{variant_name} [{}]", MaterializationPhase::Write.tag()),
-    );
+    let (_, entry_name) = split_entry_path(relative_path);
+    let bar = pg.add_bar(member_count as u64, variant_name);
     // Live write work (Task 6); the entry arm's finish parks the row.
     bar.set_animating(true);
     bar.set_truncation(Arc::new(MaterializationBarLabel {
-        entry_path: entry_path.to_string(),
+        media_id: media_id.to_string(),
+        variant: variant_name.to_string(),
         entry_name: entry_name.to_string(),
-        file_name: variant_name.to_string(),
-        phase: Some(MaterializationPhase::Write),
         ..Default::default()
     }));
     Some(bar)
 }
 
-/// Drives one hierarchy entry's phase bar from the phases its kind declares.
+/// Drives one hierarchy entry's bar: its label, its identity, and the phase
+/// the arm has the row on.
 ///
-/// The bar opens on [`HierarchyEntryKind::first_phase`] and every later phase
-/// arrives through [`EntryPhaseBar::enter`], so a row's tag follows the arm
-/// instead of following a literal beside it. Holding the phase here is what
-/// lets [`EntryPhaseBar::finish`] name the phase an entry was actually in when
-/// it failed, rather than the phase the arm that failed used to hardcode.
+/// The label carries the entry's identity — media id, effective variant and
+/// basename — and no phase tag; the fraction, the outcome colour and the
+/// finish marker say what the row is doing. The phase is bookkeeping:
+/// [`EntryPhaseBar::enter_once`] compares it to skip redundant label
+/// installs, and it is what lets a caller reason about where an arm stopped.
+/// It never reaches the row's text.
 struct EntryPhaseBar<'a> {
     /// The bar, absent when the caller asked for no progress output. Every
     /// method is a no-op without it, so an arm never re-checks for progress.
     handle: Option<Arc<dyn ProgressBarApi>>,
-    /// Directory half of the hierarchy-relative path.
-    entry_path: &'a str,
-    /// Basename half of the same path.
+    /// Identity the row is materializing for: the entry's media id, or its
+    /// hierarchy id when it is a playlist entry that has no media id.
+    media_id: &'a str,
+    /// Effective variant the arm resolved for this entry, installed once the
+    /// selector resolves. Empty until then, and empty for a row that covers
+    /// a whole folder entry's variants.
+    variant: String,
+    /// Basename half of the hierarchy-relative path.
     entry_name: &'a str,
     /// Phase the row is on, always one of the kind's declared phases.
     phase: MaterializationPhase,
 }
 
 impl<'a> EntryPhaseBar<'a> {
-    /// Split `relative_path` and open a bar for `kind`, on its first declared
-    /// phase. Holds nothing when `progress_group` is `None`.
+    /// Split `relative_path`, take `media_id` as the row's identity slot, and
+    /// open a bar for `kind`, on its first declared phase. Holds nothing when
+    /// `progress_group` is `None`.
     fn create(
         progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
         relative_path: &'a str,
+        media_id: &'a str,
         kind: HierarchyEntryKind,
     ) -> EntryPhaseBar<'a> {
-        let (entry_path, entry_name) = split_entry_path(relative_path);
+        let (_, entry_name) = split_entry_path(relative_path);
         let phase = kind.first_phase();
         let handle = progress_group.map(|pg| {
             // The total is the number of advances the row will see, and an
             // entry arm advances once after its work returns, so a finished
             // entry reads 1/1 whether it succeeded, warned or failed. The
-            // phases the row passed through are on the tag, not in the
-            // fraction, and the outcome rides on the colour and the status
-            // marker the arm installs at the finish.
-            let bar = pg.add_bar(1, &format!("{relative_path} [{}]", phase.tag()));
+            // outcome rides on the colour and the status marker the arm
+            // installs at the finish.
+            let bar = pg.add_bar(1, relative_path);
             // Live phase work (Task 6); the arm's finish parks the row.
             bar.set_animating(true);
             bar.set_truncation(Arc::new(MaterializationBarLabel {
-                entry_path: entry_path.to_string(),
+                media_id: media_id.to_string(),
                 entry_name: entry_name.to_string(),
-                phase: Some(phase),
                 ..Default::default()
             }));
             bar
         });
-        EntryPhaseBar { handle, entry_path, entry_name, phase }
+        EntryPhaseBar { handle, media_id, variant: String::new(), entry_name, phase }
     }
 
-    /// Install `phase` as the row's current phase.
+    /// Record `phase` as the row's current phase and re-install the row's
+    /// identity label.
     ///
-    /// Takes `&mut self` because the phase the row is on is the one a later
-    /// `finish` reports, so moving on changes this row rather than something
-    /// the bar is told separately.
+    /// Takes `&mut self` because the phase is this row's own bookkeeping, so
+    /// moving on changes the row rather than something the bar is told
+    /// separately. The reinstall keeps the label in step with any identity
+    /// change — a variant installed since the last transition — at the point
+    /// the arm declares its new phase.
     fn enter(&mut self, phase: MaterializationPhase) {
         self.phase = phase;
-        self.label(phase, "");
+        self.label("");
     }
 
-    /// Install `phase` only when the row is somewhere else.
+    /// Record `phase` only when the row is somewhere else.
     ///
     /// The folder arm writes one variant after another and never comes back
-    /// off `[wrt]`, so calling [`Self::enter`] per variant would re-install a
-    /// label the row already carries once per variant for no new fact. A
-    /// caller that moves forward through distinct phases wants [`Self::enter`]
-    /// instead, because a second call there would mean a phase went backwards.
+    /// off its write phase, so calling [`Self::enter`] per variant would
+    /// re-install a label the row already carries once per variant for no
+    /// new fact. A caller that moves forward through distinct phases wants
+    /// [`Self::enter`] instead, because a second call there would mean a
+    /// phase went backwards.
     fn enter_once(&mut self, phase: MaterializationPhase) {
         if self.phase != phase {
             self.enter(phase);
         }
     }
 
-    /// Re-install the row's current phase with a terminal-state marker.
+    /// Install the effective variant this row writes.
+    ///
+    /// The selector resolves inside the arm rather than at bar creation, so
+    /// the variant reaches the label after the row exists. Takes `&mut self`
+    /// for the same reason [`Self::enter`] does: the variant is this row's
+    /// own identity, and every later label install carries it.
+    fn set_variant(&mut self, variant: &str) {
+        self.variant = variant.to_string();
+        self.label("");
+    }
+
+    /// Re-install the row's identity label with a terminal-state marker.
     ///
     /// `finish_warning` and `finish_error` change a bar's colour and nothing
     /// else, so the text of a finished entry never said what happened. The
     /// marker is the caller's, because it is the finish that decides between
     /// them: a skipped media entry warns and a rejected one errors.
-    ///
-    /// The phase is the one the row is on, not a fresh literal, so a failure
-    /// part-way through a multi-phase entry reports where it stopped.
     fn finish(&self, status_marker: &str) {
-        self.label(self.phase, status_marker);
+        self.label(status_marker);
     }
 
     /// The bar itself, for the calls an arm makes on the work rather than on
@@ -583,17 +598,16 @@ impl<'a> EntryPhaseBar<'a> {
         self.handle.clone()
     }
 
-    /// Install `phase` and `status_marker` together, the one place a row's
-    /// label text is built.
-    fn label(&self, phase: MaterializationPhase, status_marker: &str) {
+    /// Install `status_marker` on the row's current identity, the one place a
+    /// row's label text is built.
+    fn label(&self, status_marker: &str) {
         let Some(ref bar) = self.handle else {
             return;
         };
         bar.set_truncation(Arc::new(MaterializationBarLabel {
-            entry_path: self.entry_path.to_string(),
+            media_id: self.media_id.to_string(),
+            variant: self.variant.clone(),
             entry_name: self.entry_name.to_string(),
-            file_name: String::new(),
-            phase: Some(phase),
             status_marker: status_marker.to_string(),
         }));
     }
@@ -637,12 +651,20 @@ async fn prepare_hierarchy_entry(
     // there is no `&str` here for a caller to hand unvalidated text to.
     let target_path = shared.hierarchy_root.join(commit::join_path_components(&entry.path));
 
-    // Per-entry phase bar, owned by mediapm (not the conductor), so it carries
-    // the `[stg]`/`[vrf]`/`[cmt]` phase tags. Which phases this row walks is
-    // the kind's declaration, and the driver installs them as the arm enters
-    // them, so a kind that gains a phase cannot leave its row on the old tag.
+    // Per-entry bar, owned by mediapm (not the conductor). Its label carries
+    // the entry's identity — media id, effective variant, basename — and no
+    // phase tag; the phases this row walks are the kind's declaration, and
+    // the driver records them as the arm enters them.
+    //
+    // A playlist entry carries no media id, so its row names itself by the
+    // hierarchy id instead; an entry with neither renders its basename alone.
+    let media_slot = if entry.entry.media_id.is_empty() {
+        entry.hierarchy_id.as_deref().unwrap_or("")
+    } else {
+        entry.entry.media_id.as_str()
+    };
     let mut entry_bar =
-        EntryPhaseBar::create(progress_group.clone(), &relative_path, entry.entry.kind);
+        EntryPhaseBar::create(progress_group.clone(), &relative_path, media_slot, entry.entry.kind);
 
     match entry.entry.kind {
         HierarchyEntryKind::Media => {
@@ -666,15 +688,17 @@ async fn prepare_hierarchy_entry(
 
             let effective_variant = variant_selector.first().cloned().unwrap_or(variant_name);
 
+            // The selector resolves here rather than at bar creation, so this
+            // is the first point the row can name the variant it writes.
+            entry_bar.set_variant(&effective_variant);
             entry_bar.enter(MaterializationPhase::Verify);
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
             if let Some(hash) = hash {
                 if shared.target_already_holds(&relative_path, &hash, &target_path).await {
-                    // The row stays on `[vrf]`: it measured the target
-                    // against the resolved content and then had nothing to
-                    // commit, so a `[cmt]` tag here would name a write that
-                    // never happened.
+                    // Nothing is written on this path, so the row finishes on
+                    // the verify phase it entered: it measured the target
+                    // against the resolved content and had nothing to commit.
                     if let Some(bar) = entry_bar.handle() {
                         bar.advance(1);
                         bar.finish_success();
@@ -1146,8 +1170,13 @@ async fn write_zip_folder_variant(
         ));
         return Ok(false);
     }
-    let file_bar =
-        add_variant_sub_bar(progress_group, relative_path, &variant.name, extracted.len());
+    let file_bar = add_variant_sub_bar(
+        progress_group,
+        relative_path,
+        media_id,
+        &variant.name,
+        extracted.len(),
+    );
     let mut wrote_member = true;
     for (file_rel_path, content) in extracted {
         let file_rel_path = resolve_extracted_member_path(&file_rel_path, media_id, &variant.name)?;

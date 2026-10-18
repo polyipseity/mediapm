@@ -1,4 +1,4 @@
-//! The phases each materialization arm walks, observed through a real `sync_hierarchy`.
+//! The rows each materialization arm advances and finishes, observed through a real `sync_hierarchy`.
 
 use crate::config::hierarchy_types::HierarchyNodeKind;
 use mediapm_utils::progress::recording::{
@@ -7,32 +7,28 @@ use mediapm_utils::progress::recording::{
 
 use super::tests_common::{
     folder_and_playlist_document, open_hierarchy_cas, playlist_with_unknown_reference_document,
-    rendered_phase_tag, zip_payload,
+    zip_payload,
 };
 
 use super::*;
 
-/// A folder row moves to `[wrt]` where it starts writing a variant and
-/// stays there, and a playlist row reaches `[cmt]` where it writes.
+/// A folder row and a playlist row each advance once and finish on success.
 ///
-/// Both were `[stg]` for their whole run before a kind declared the
-/// phases its arm walks, so a finished folder read exactly like a folder
-/// still staging. The folder's row and the sub-bars under it now name the
-/// same work at two granularities, which is the point of declaring write
-/// on the folder: during a folder sync the parent says what its children
-/// say.
+/// Both rows used to be checked by the phase tag they carried, which the
+/// label no longer renders. What the tag walk was standing in for is still
+/// real and is what this pins: each arm advances its row once when its
+/// work returns and terminates the row on success. This drives a real
+/// `sync_hierarchy` rather than bars in isolation, because the arms
+/// advance and finish deep inside the folder and playlist work, and a
+/// test that reached for the bar directly would pass with the arms no
+/// longer driving their rows at all.
 ///
-/// This drives a real `sync_hierarchy` rather than a bar in isolation,
-/// because the arms install these phases deep inside the folder and
-/// playlist work, and a test that reached for the bar directly would pass
-/// with the arms still sitting on `[stg]`.
-///
-/// The variant here is a plain file rather than a ZIP, so no `[wrt]`
-/// sub-bar opens. The archive case, where a parent on `[wrt]` opens a
+/// The variant here is a plain file rather than a ZIP, so no sub-bar
+/// opens under the folder. The archive case, where a parent row opens a
 /// sub-bar of its own, is in
-/// `a_zip_folder_variant_opens_a_wrt_sub_bar_under_a_wrt_parent`.
+/// `a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row`.
 #[tokio::test]
-async fn a_folder_row_reaches_wrt_and_a_playlist_row_reaches_cmt() {
+async fn a_folder_row_and_a_playlist_row_advance_and_terminate() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -59,46 +55,26 @@ async fn a_folder_row_reaches_wrt_and_a_playlist_row_reaches_cmt() {
     .await
     .expect("sync_hierarchy should succeed");
 
-    let ops = recording.ops();
-    // Only the folder's own row carries these two prefixes, so the pair is
-    // everything that row said. It never comes back off `[wrt]`.
-    let folder_tags: Vec<Option<&str>> = ops
-        .iter()
-        .filter_map(|op| match op {
-            ProgressOp::SetTruncation { prefix, .. }
-                if prefix == "album [stg]" || prefix == "album [wrt]" =>
-            {
-                Some(rendered_phase_tag(prefix))
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        folder_tags,
-        [Some("stg"), Some("wrt")],
-        "the folder row must leave [stg] for [wrt] and finish there; got {ops:?}",
-    );
-
-    let playlist_tags: Vec<Option<&str>> = ops
-        .iter()
-        .filter_map(|op| match op {
-            ProgressOp::SetTruncation { prefix, .. } if prefix.starts_with("rickroll.m3u8 ") => {
-                Some(rendered_phase_tag(prefix))
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        playlist_tags,
-        [Some("stg"), Some("cmt")],
-        "a playlist reaches [cmt] at the write; got {ops:?}",
-    );
+    let recorded = recording.recorded();
+    for label in ["album", "playlists/rickroll.m3u8"] {
+        let bar = bar_opened_as(&recorded, label);
+        let ops = row_ops(&recorded, bar);
+        assert_eq!(
+            ops.iter().filter(|op| matches!(op, ProgressOp::Advance { delta: 1 })).count(),
+            1,
+            "the {label:?} row advances once when its arm's work returns; got {ops:?}",
+        );
+        assert!(
+            matches!(ops.last(), Some(ProgressOp::FinishSuccess)),
+            "the {label:?} row terminates on success; got {ops:?}",
+        );
+    }
 }
 
-/// A ZIP folder variant opens a `[wrt]` sub-bar under a parent that is
-/// already reading `[wrt]`, with one unit per member the archive held.
+/// A ZIP folder variant opens a sub-bar under its parent row, with one
+/// unit per member the archive held.
 ///
-/// The sibling test `a_folder_row_and_its_variant_sub_bar_render_the_same_phase`
+/// The sibling test `a_folder_row_and_its_variant_sub_bar_share_the_media_id`
 /// builds both labels from their constructors and so pins the agreement
 /// between the two rows without ever opening an archive. It cannot see
 /// whether the arm takes the ZIP branch at all: the branch is one
@@ -109,9 +85,10 @@ async fn a_folder_row_reaches_wrt_and_a_playlist_row_reaches_cmt() {
 /// This one drives the whole `sync_hierarchy`, so the archive is what
 /// decides the arm. What it pins:
 ///
-/// the parent row reaches `[wrt]` before the sub-bar exists, which is what
-/// makes the two rows read as one piece of work rather than a parent that
-/// moved on while its children still write;
+/// the parent row reaches its write phase — its second identity install —
+/// before the sub-bar exists, which is what makes the two rows read as one
+/// piece of work rather than a parent that moved on while its children
+/// still write;
 ///
 /// the sub-bar's total is the number of members the archive held, not the
 /// one file a non-archive variant writes, so the fraction beside the member
@@ -124,7 +101,7 @@ async fn a_folder_row_reaches_wrt_and_a_playlist_row_reaches_cmt() {
 /// and the members land on disk, so the extraction ran rather than a bar
 /// having been opened over an archive that was never read.
 #[tokio::test]
-async fn a_zip_folder_variant_opens_a_wrt_sub_bar_under_a_wrt_parent() {
+async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -164,11 +141,12 @@ async fn a_zip_folder_variant_opens_a_wrt_sub_bar_under_a_wrt_parent() {
         rendered,
         vec![
             "materializing".to_string(),
-            "album [stg]".to_string(),
-            "album [wrt]".to_string(),
-            "album default [wrt]".to_string(),
+            "[src1] album".to_string(),
+            "[src1] album".to_string(),
+            "[src1] [default] album".to_string(),
         ],
-        "the folder row reads the write, and the member row under it reads the same one",
+        "the parent row names the entry's identity, and the member row under it adds the \
+         variant; got {ops:?}",
     );
 
     let seeds: Vec<(u64, String)> = ops
@@ -182,31 +160,36 @@ async fn a_zip_folder_variant_opens_a_wrt_sub_bar_under_a_wrt_parent() {
         seeds,
         vec![
             (1, "materializing".to_string()),
-            (1, "album [stg]".to_string()),
-            (2, "default [wrt]".to_string()),
+            (1, "album".to_string()),
+            (2, "default".to_string()),
         ],
-        "the sub-bar's total is the archive's member count, not the one file a plain variant writes",
-    );
-
-    let parent_at = ops
-        .iter()
-        .position(
-            |op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix == "album [wrt]"),
-        )
-        .expect("the folder row reaches the write");
-    let sub_bar_at = ops
-        .iter()
-        .position(|op| matches!(op, ProgressOp::AddBar { label, .. } if label == "default [wrt]"))
-        .expect("the archive opens one sub-bar for its variant");
-    assert!(
-        parent_at < sub_bar_at,
-        "the parent must be on the write before the member rows exist; got {ops:?}",
+        "the sub-bar's total is the archive's member count, not the one file a plain variant \
+         writes; got {ops:?}",
     );
 
     let recorded = recording.recorded();
-    let parent_bar = bar_opened_as(&recorded, "album [stg]");
-    let sub_bar = bar_opened_as(&recorded, "default [wrt]");
+    let parent_bar = bar_opened_as(&recorded, "album");
+    let sub_bar = bar_opened_as(&recorded, "default");
     assert_ne!(parent_bar, sub_bar, "the member rows are their own row, not the folder's");
+
+    let sub_bar_at = recorded
+        .iter()
+        .position(
+            |entry| matches!(&entry.op, ProgressOp::AddBar { label, .. } if label == "default"),
+        )
+        .expect("the archive opens one sub-bar for its variant");
+    let parent_installs_before = recorded
+        .iter()
+        .take(sub_bar_at)
+        .filter(|entry| {
+            entry.bar == parent_bar && matches!(entry.op, ProgressOp::SetTruncation { .. })
+        })
+        .count();
+    assert_eq!(
+        parent_installs_before, 2,
+        "the parent row opens and reaches its write phase — its second identity install — \
+         before the member rows exist; got {recorded:?}",
+    );
 
     let member_advances = recorded
         .iter()
@@ -243,20 +226,27 @@ fn bar_opened_as(recorded: &[RecordedProgressOp], label: &str) -> BarId {
         .unwrap_or_else(|| panic!("a bar opened as '{label}'; got {recorded:?}"))
 }
 
-/// A media entry that writes its variant walks `[stg]`, `[vrf]`, `[cmt]`.
+/// The ops one row recorded, in order.
 ///
-/// The fixture the `[cmt]` row of the coverage matrix leaned on was a
-/// media entry with no variant hash. That entry stops at the verify
-/// phase and finishes as skipped, so its row never reached the commit
-/// phase and the tag had nothing behind it. This entry carries a hash the
-/// workspace can resolve, so the arm gets as far as the write.
+/// Bar-attributed, so a sibling row's interleaved ops cannot be mistaken
+/// for this row's sequence.
+fn row_ops(recorded: &[RecordedProgressOp], bar: BarId) -> Vec<ProgressOp> {
+    recorded.iter().filter(|entry| entry.bar == bar).map(|entry| entry.op.clone()).collect()
+}
+
+/// A media entry that writes its variant advances once and finishes on success.
 ///
-/// The tags are read off the recorded ops rather than off a drawn frame,
-/// so the assertion is which phase the row was on, not which glyph that
-/// phase happened to draw. The bytes come back off disk as well, so a row
-/// cannot claim a commit that did not land.
+/// The fixture this leaned on used to be a media entry with no variant
+/// hash, which stops earlier and finishes as skipped; this entry carries a
+/// hash the workspace can resolve, so the arm gets as far as the write.
+/// The label no longer names the phases the arm walked, so what is pinned
+/// is the row's progress instead: one advance when the arm's work returns,
+/// then a success terminal.
+///
+/// The bytes come back off disk as well, so a row cannot claim a
+/// successful finish that did not land.
 #[tokio::test]
-async fn a_written_media_entry_walks_stg_vrf_cmt() {
+async fn a_written_media_entry_row_advances_and_finishes() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -280,43 +270,37 @@ async fn a_written_media_entry_walks_stg_vrf_cmt() {
     .await
     .expect("a media entry holding a resolvable variant hash should write");
 
-    let ops = recording.ops();
-    let tags: Vec<Option<&str>> = ops
-        .iter()
-        .filter_map(|op| match op {
-            ProgressOp::SetTruncation { prefix, .. } if prefix.contains("song ") => {
-                Some(rendered_phase_tag(prefix))
-            }
-            _ => None,
-        })
-        .collect();
+    let recorded = recording.recorded();
+    let bar = bar_opened_as(&recorded, "song");
+    let ops = row_ops(&recorded, bar);
     assert_eq!(
-        tags,
-        [Some("stg"), Some("vrf"), Some("cmt")],
-        "a written media entry stages, verifies, then commits, and names no other phase; \
-             got {ops:?}",
+        ops.iter().filter(|op| matches!(op, ProgressOp::Advance { delta: 1 })).count(),
+        1,
+        "the song row advances once when the arm's work returns; got {ops:?}",
+    );
+    assert!(
+        matches!(ops.last(), Some(ProgressOp::FinishSuccess)),
+        "an entry whose variant landed terminates on success; got {ops:?}",
     );
 
     assert_eq!(
         std::fs::read(root.path().join("song")).unwrap_or_default().as_slice(),
         payload.as_slice(),
-        "the row reached [cmt] because the variant it staged landed in the library",
+        "the row finished on success because the variant it staged landed in the library",
     );
 }
 
-/// A playlist that fails before its write stays on `[stg]`.
+/// A playlist that fails before its write ends its row with the failure marker.
 ///
-/// The playlist arm reaches `[cmt]` at the write, not at the top of the
-/// function, so an entry that fails while resolving a reference has
-/// committed nothing and says so. This is deliberate rather than an
-/// oversight: a row that reached `[cmt]` before the write would claim a
-/// commit that never happened.
-///
-/// The same failure was previously visible only in the
-/// `mediapm_progress_materialize` transcripts, which pin what a row looks
-/// like and not that the phase is a consequence of where the arm failed.
+/// The playlist arm writes at the end of its work, so an entry that fails
+/// while resolving a reference has committed nothing and its row must not
+/// read like a completed one. The marker the finish installs is what says
+/// so in the text; before the label carried markers, this failure was
+/// visible only in the `mediapm_progress_materialize` transcripts, which
+/// pin what a row looks like and not that the marker is a consequence of
+/// where the arm failed.
 #[tokio::test]
-async fn a_failed_playlist_stays_on_stg() {
+async fn a_failed_playlist_row_carries_the_failure_marker() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -336,29 +320,23 @@ async fn a_failed_playlist_stays_on_stg() {
     .await;
 
     assert!(result.is_err(), "an unknown reference must fail the playlist: {result:?}");
-    let ops = recording.ops();
-    let playlist_tags: Vec<Option<&str>> = ops
-        .iter()
-        .filter_map(|op| match op {
-            ProgressOp::SetTruncation { prefix, .. } if prefix.contains("broken.m3u8 ") => {
-                Some(rendered_phase_tag(prefix))
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        playlist_tags,
-        [Some("stg"), Some("stg")],
-        "a playlist that never reached the write must never claim [cmt]; got {ops:?}",
+    let recorded = recording.recorded();
+    let bar = bar_opened_as(&recorded, "playlists/broken.m3u8");
+    let ops = row_ops(&recorded, bar);
+    assert!(
+        matches!(ops.last(), Some(ProgressOp::FinishError)),
+        "a playlist that never wrote terminates on error; got {ops:?}",
+    );
+    assert!(
+        !ops.iter().any(|op| matches!(op, ProgressOp::FinishSuccess)),
+        "a playlist that never wrote must not finish success; got {ops:?}",
     );
     assert_eq!(
         ops.iter().rev().find_map(|op| match op {
-            ProgressOp::SetTruncation { prefix, .. } if prefix.contains("broken.m3u8 ") => {
-                Some(prefix.as_str())
-            }
+            ProgressOp::SetTruncation { prefix, .. } => Some(prefix.as_str()),
             _ => None,
         }),
-        Some("[F] broken.m3u8 playlists [stg]"),
-        "the failure must finish the row on the phase it stopped at; got {ops:?}",
+        Some("[F] broken.m3u8"),
+        "the failure marker must sit on the row's identity; got {ops:?}",
     );
 }

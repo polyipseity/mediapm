@@ -311,7 +311,7 @@ async fn the_overall_row_finishes_error_when_a_zip_folder_variant_holds_no_membe
         folder.display()
     );
     assert_eq!(
-        finish_of_bar_opened_as(&recording, &format!("{FOLDER_PATH} [stg]")),
+        finish_of_bar_opened_as(&recording, FOLDER_PATH),
         Some(ProgressOp::FinishWarning),
         "the folder row must carry the warning, the way a folder with a blocked variant does; \
          got {ops:?}",

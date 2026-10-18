@@ -262,7 +262,7 @@ async fn a_playlist_whose_path_is_a_directory_is_counted_as_missing() {
          above is what a run that wrote nothing reports"
     );
     assert_eq!(
-        finish_of_bar_opened_as(&recording, &format!("{PLAYLIST_PATH} [stg]")),
+        finish_of_bar_opened_as(&recording, PLAYLIST_PATH),
         Some(ProgressOp::FinishWarning),
         "an entry left unwritten is the same warning a folder with a blocked variant carries, so \
          the playlist row must warn rather than error; got {ops:?}",

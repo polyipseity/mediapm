@@ -2,26 +2,18 @@
 //!
 //! The bars are the ones `sync_hierarchy` registers: the pinned
 //! `materializing` overall bar, one bar per hierarchy entry seeded with
-//! `{relative_path} [stg]`, and, inside a media folder entry, one sub-bar per
-//! extracted variant seeded with `{variant_name} [wrt]`. A media entry walks
-//! its bar through `[stg]`, `[vrf]`, and `[cmt]`; a folder or playlist entry
-//! keeps the phase it was created with, because only the media arm installs a
-//! later one. See the module doc in `support/materialization.rs`.
-//!
-//! What each tag stands for is tabulated under "Materialization phase tags" in
-//! `.agents/instructions/progress-output.instructions.md`: `stg` copies CAS
-//! content into the staging area, `vrf` checks the staged bytes, `cmt` writes
-//! into the library, and `wrt` is one file inside a folder variant. The
-//! overall bar carries no tag, since the word beside it already names the
-//! phase.
+//! `{relative_path}`, and, inside a media folder entry, one sub-bar per
+//! extracted variant seeded with `{variant_name}`. Each row's label carries
+//! the entry's basename; the materializer's own rows add the media id and
+//! variant the document resolves. See the module doc in
+//! `support/materialization.rs`.
 //!
 //! The shared prefix slot is the widest label the screen draws, held to what
 //! the terminal has left after the spinner, the separators and the suffix, with
 //! a fill floor under the bar while there is room for a bar at all. Every entry
-//! label here carries a path, so the path shortens from the front as the
-//! terminal narrows, and the phase tag trails, which makes it the first field
-//! a narrow row gives up. Where that leaves the labels is a measured fact
-//! about these seed paths and it moves when they move, so it is recorded in
+//! label here carries a name, so the name shortens from the front as the
+//! terminal narrows. Where that leaves the labels is a measured fact about
+//! these seed paths and it moves when they move, so it is recorded in
 //! `support/materialization.rs` rather than pinned here.
 //!
 //! `--scenario` picks which of three shapes to draw, and each one is captured
