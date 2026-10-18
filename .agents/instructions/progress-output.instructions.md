@@ -194,7 +194,7 @@ Carries the slot's activity flag and live tally, with no workflow phase. Prefix 
 
 **File**: `src/mediapm/src/materializer/progress_labels.rs`
 
-Carries file-path identity and phase. No version, no count/total, no workflow/step.
+Carries file-path identity. No version, no count/total, no workflow/step.
 
 | Field | Meaning | Example |
 |-------|---------|---------|
@@ -202,7 +202,6 @@ Carries file-path identity and phase. No version, no count/total, no workflow/st
 | `entry_path` | Directory portion of hierarchy path | `"Music/Artist/Album"` |
 | `entry_name` | Basename of hierarchy entry. `split_entry_id` lifts a square-bracket id out of it into its own bracketed segment, with whatever the group leaves behind joined directly to the id | `"song [youtube.abc].link.mkv"` |
 | `file_name` | Extracted file basename (sub-bars only) | `"cover.jpg"` |
-| `phase` | Phase this row is on, as `Option<MaterializationPhase>`; absent renders no tag | `Some(Staging)` |
 
 **Suffix:** the auto-derived timing, in the same order `WorkerBarLabel` uses (`src/mediapm/src/materializer/progress_labels.rs::MaterializationBarLabel::suffix_segments`). `truncate_suffix` fits `elapsed`, `rate` and `eta` through `fit_segments` and has to read them out of the merged `SuffixComponents` to do it: the client path replaces a bar's suffix with what this method returns rather than adding to it, so a label that returns an empty string takes elapsed, rate and eta off the screen rather than narrowing them.
 
@@ -259,22 +258,13 @@ Worker labels are mediapm-agnostic; `tool` is the conductor step's own `ToolSpec
 
 Uses `MaterializationBarLabel` for client-defined truncation. Paths are split into `entry_path` (directory) and `entry_name` (basename) via `split_entry_path`, and `split_entry_id` then takes a square-bracket id out of the basename. Prefix segments are ordered `status_marker`, the `entry_name` stem, `entry_id`, the tail the id leaves behind, `entry_path`, `file_name`, `phase`, so the phase tag trails the way it does on tool-sync and is the first whole segment a narrow row gives up, both halves of the path are elastic and shorten from the head, and columns come back in the order `entry_path` shrinks, then `entry_name` shrinks, then whole segments drop from the tail: `phase`, `file_name`, and the tail, id and path after them. The id and its tail are `Keep`, so the elastic halves are spent before either is given up, and the tail ranks last of the three so a narrow row gives up the extension first. `entry_name` is elastic rather than kept whole because a name kept whole is a name that vanishes once nothing else can shrink, and its tail still carries the extension and the bracketed media id that separates one entry from another.
 
-The phase is a `MaterializationPhase` enum, not a string. `HierarchyEntryKind::phases()` declares what each kind walks, and the match on the enum is exhaustive, so an arm that forgot to declare a phase it runs is a compile error: `Media` walks `[stg]`, `[vrf]` and `[cmt]`, while `MediaFolder` declares `[stg]` and `[wrt]` and `Playlist` declares `[stg]` and `[cmt]`. A folder row reads `[stg]` while it stages and `[wrt]` while it writes. See "Materialization phase tags" below for what each phase does.
+The screen has no phase model: a row's total is the files it writes and it advances once per file written, so the `A/B` fraction, the outcome colour and the finish marker carry the row's state, and a row's label is identity only — no tag repeats what the fraction already says.
 
-A warning or a failure carries its marker in the text as well as in the bar colour. `EntryPhaseBar::finish` (`src/mediapm/src/materializer/mod.rs`) re-installs the row's current phase with `status_marker` set to `W` or `F` immediately before `finish_warning` or `finish_error`, so `[W]` and `[F]` are readable on the row itself and a row that stopped part-way through a multi-phase entry reports where. A row also carries the timing the renderer derives for it, for the reason given under `MaterializationBarLabel` above, except on a frame that has dropped its bar where the timing gives way to the label unless the row would then have nothing at all.
+A warning or a failure carries its marker in the text as well as in the bar colour. `EntryRowBar::finish` (`src/mediapm/src/materializer/mod.rs`) re-installs the row's identity with `status_marker` set to `W` or `F` immediately before `finish_warning` or `finish_error`, so `[W]` and `[F]` are readable on the row itself. A row also carries the timing the renderer derives for it, for the reason given under `MaterializationBarLabel` above, except on a frame that has dropped its bar where the timing gives way to the label unless the row would then have nothing at all.
 
-### Materialization phase tags
+### Overall bar seeds
 
-The tags cost three columns each in the prefix slot, which is why the full word is not spelled out there. They render bracketed, so `[cmt]` on a row is the commit phase.
-
-| Tag | Phase | What the row is doing |
-|-----|-------|------------------------|
-| `stg` | staging | copying CAS content into the staging area |
-| `vrf` | verify | checking staged bytes before committing |
-| `cmt` | commit | writing into the library |
-| `wrt` | write | writing the members of a folder variant, and the tag on the sub-bar for each one |
-
-`stg`, `vrf` and `cmt` are the three phases a media entry walks, and `wrt` labels a sub-bar for a single extracted file inside a folder variant. No overall bar on any screen carries a tag: the seeds are `syncing tools` on tool-sync, `workflow` on the conductor screen, `materializing` on the materialization example, and `idle` on every worker slot.
+No overall bar on any screen carries a tag: the seeds are `syncing tools` on tool-sync, `workflow` on the conductor screen, `materializing` on the materialization example, and `idle` on every worker slot.
 
 ## Post-finish result messages
 

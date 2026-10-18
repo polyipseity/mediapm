@@ -2032,9 +2032,9 @@ mod tests_common;
 #[cfg(test)]
 mod tests_content_verdicts;
 #[cfg(test)]
-mod tests_entry_row_phases;
-#[cfg(test)]
 mod tests_entry_row_total;
+#[cfg(test)]
+mod tests_entry_rows;
 #[cfg(test)]
 mod tests_folder_members;
 #[cfg(test)]

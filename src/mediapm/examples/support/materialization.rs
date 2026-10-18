@@ -10,7 +10,7 @@
 //! - `materializing` on the overall bar, created by
 //!   `with_overall` at `src/mediapm/src/service.rs` and quoted by the
 //!   recorder tests in the materializer.
-//! - `{relative_path}` on a per-entry bar, from `EntryPhaseBar::create`.
+//! - `{relative_path}` on a per-entry bar, from `EntryRowBar::create`.
 //! - `{variant_name}` on a per-extracted-file sub-bar, from the folder
 //!   arm.
 //!
@@ -189,7 +189,7 @@ impl Frames {
     }
 }
 
-/// A per-entry bar's total, which is what `EntryPhaseBar::create` hands to
+/// A per-entry bar's total, which is what `EntryRowBar::create` hands to
 /// `add_bar` in the materializer.
 ///
 /// One, because an entry arm advances once after its work returns, so a
@@ -386,7 +386,7 @@ const THUMBNAIL_MEMBERS: u64 = 2;
 
 /// Open a per-entry bar the way `prepare_hierarchy_entry` does.
 ///
-/// The seed is `{relative_path}` (`EntryPhaseBar::create`) and the label
+/// The seed is `{relative_path}` (`EntryRowBar::create`) and the label
 /// carries the basename the materializer splits off that path, so the row
 /// reads what a live row reads rather than what a longer seed would fit. The
 /// total is [`ENTRY_TOTAL`], so a row that has advanced is already full.
@@ -399,18 +399,18 @@ fn add_entry_bar(screen: &ProgressScreen, relative_path: &str) -> ProgressBarHan
     bar
 }
 
-/// Re-install an entry bar's label on a later phase, as the media arm does
-/// through `EntryPhaseBar::enter` at each of its two transitions. The folder
-/// arm makes one of these calls as well, at the variant it starts writing.
-/// The label no longer carries the phase, so the re-install renders the same
-/// text the row already draws — which is what a live sync renders too.
+/// Re-install an entry bar's label with the row's current identity, as the
+/// media arm does through `EntryRowBar::set_variant` when its selector
+/// resolves. This demo label carries no variant, so the re-install renders
+/// the same text the row already draws — which is what a live sync renders
+/// too.
 fn set_entry_identity(bar: &ProgressBarHandle, relative_path: &str) {
     let (_, entry_name) = split_entry_path(relative_path);
     bar.set_truncation(entry_label(entry_name));
 }
 
 /// Re-install an entry bar's label with a terminal marker, as
-/// `EntryPhaseBar::finish` does.
+/// `EntryRowBar::finish` does.
 ///
 /// The marker is the caller's, because it is the finish that decides between
 /// them: the warned media arm passes `W`, and the failed playlist passes `F`

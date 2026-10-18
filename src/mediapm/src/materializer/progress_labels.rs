@@ -9,97 +9,13 @@
 //!
 //! The label renders no phase tag. The `A/B` fraction, the outcome colour
 //! and the status marker already say what a row is doing and how it ended;
-//! `[stg]`/`[vrf]`/`[cmt]`/`[wrt]` cost three columns each to repeat it. The
-//! [`MaterializationPhase`] enum still drives which phases a bar enters — it
-//! is the bar's bookkeeping, not the row's text.
-
-use crate::config::hierarchy_types::HierarchyEntryKind;
+//! a bracketed phase tag cost three columns each to repeat it. The screen
+//! has no phase model: a row's total is the number of files it writes and
+//! its label carries only identity.
 
 use mediapm_utils::progress::{
     BarLabelTruncation, Brackets, Segment, SuffixComponents, fit_segments,
 };
-
-#[cfg(test)]
-use self::MaterializationPhase::{Commit, Staging, Verify, Write};
-
-/// One phase of the materialization screen.
-///
-/// The set is closed, so a bar cannot name a phase this screen does not have
-/// and a typo cannot reach a rendered row. The tag is fixed per variant here
-/// rather than spelled at each call site, which is what let the folder and
-/// playlist arms drift: each named its finish tag with its own literal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaterializationPhase {
-    /// Staging CAS content into the entry's target directory.
-    Staging,
-    /// Checking staged bytes against the expected hash before they are
-    /// committed into the library.
-    Verify,
-    /// Writing the entry into the library.
-    Commit,
-    /// Writing one extracted member of a ZIP folder variant, on the sub-bar
-    /// under a folder row rather than on the folder row itself.
-    Write,
-}
-
-impl MaterializationPhase {
-    /// Text inside the brackets, as [`MaterializationBarLabel`] renders it.
-    #[must_use]
-    pub const fn tag(self) -> &'static str {
-        match self {
-            Self::Staging => "stg",
-            Self::Verify => "vrf",
-            Self::Commit => "cmt",
-            Self::Write => "wrt",
-        }
-    }
-}
-
-impl HierarchyEntryKind {
-    /// Phases a bar for this kind installs, in the order its arm enters them.
-    ///
-    /// Declared here, next to the tag that renders it, rather than inside each
-    /// arm of the materializer's entry match, because that is where the two
-    /// agreed by accident: the folder and playlist arms never installed a
-    /// second phase, so their rows kept `[stg]` for their whole run and the
-    /// failure path repeated the same literal. The match is exhaustive over the
-    /// enum, so a kind cannot exist without saying what it walks.
-    ///
-    /// A kind lists only phases its arm really runs. A folder makes its target
-    /// directory and then writes each selected variant, so it walks staging
-    /// and write. A playlist resolves its references, builds the bytes and
-    /// writes one file, so it walks staging and commit. Neither verifies, so
-    /// neither lists [`Verify`]: it is the one phase only [`Self::Media`]
-    /// claims, which is why a reader counting four tags against three kinds
-    /// is not looking at a dead variant.
-    ///
-    /// A folder's write phase is also the tag its sub-bars carry, so during a
-    /// folder sync the parent row and the rows under it name the same work at
-    /// two granularities. That is the point of declaring it here rather than
-    /// on the sub-bar alone.
-    #[must_use]
-    #[cfg(test)]
-    pub fn phases(self) -> &'static [MaterializationPhase] {
-        match self {
-            Self::Media => &[Staging, Verify, Commit],
-            Self::MediaFolder => &[Staging, Write],
-            Self::Playlist => &[Staging, Commit],
-        }
-    }
-
-    /// The phase a bar for this kind is created on, which is `phases()[0]`.
-    ///
-    /// Stated as its own match rather than read off [`Self::phases`] because a
-    /// const item cannot index a slice. `phases_agree_with_first_phase` holds
-    /// the two to each other.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn first_phase(self) -> MaterializationPhase {
-        match self {
-            Self::Media | Self::MediaFolder | Self::Playlist => Staging,
-        }
-    }
-}
 
 /// Truncation order for a materialization bar.
 ///
@@ -252,39 +168,6 @@ pub fn split_entry_path(path: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The two declarations of a kind's first phase cannot drift apart: the
-    /// bar a kind creates itself opens on `first_phase`, and the list an arm
-    /// walks starts at `phases()[0]`. A kind added to one and not the other
-    /// would create a row on a phase its arm never enters.
-    #[test]
-    fn phases_agree_with_first_phase() {
-        for kind in [
-            HierarchyEntryKind::Media,
-            HierarchyEntryKind::MediaFolder,
-            HierarchyEntryKind::Playlist,
-        ] {
-            assert_eq!(
-                kind.phases().first(),
-                Some(&kind.first_phase()),
-                "{kind:?} declares a first phase its own list does not start with",
-            );
-            assert!(
-                !kind.phases().is_empty(),
-                "{kind:?} declares no phase, so its bar would have no phase to open on",
-            );
-        }
-    }
-
-    /// The tag is the only thing that differs between phases, so a mistyped
-    /// variant cannot render as free text.
-    #[test]
-    fn phase_tags_are_the_documented_three_letters() {
-        assert_eq!(MaterializationPhase::Staging.tag(), "stg");
-        assert_eq!(MaterializationPhase::Verify.tag(), "vrf");
-        assert_eq!(MaterializationPhase::Commit.tag(), "cmt");
-        assert_eq!(MaterializationPhase::Write.tag(), "wrt");
-    }
 
     /// A row with all three identity fields renders them in truncation-
     /// priority order: media id, variant, basename.
