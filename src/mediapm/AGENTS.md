@@ -175,8 +175,8 @@ Fetch failures are loud: a MusicBrainz or cover-art fetch error fails the step �
 | --- | --- | --- |
 | `musicbrainz-payloads` | recording/release MBIDs, `write_all_tags`, `release_ars`, MusicBrainz host\[:port\] | `cache_expiry_seconds` (24h default) |
 | `caa-entries` — the raw archive response; the selection filters run on every read | CAA endpoint URL | `cache_expiry_seconds` |
-| `caa-images` — downloaded image bytes | image URL (size already encoded there) | 30 days (`MEDIA_TAGGER_LONG_LIVED_MAX_AGE_SECS`) |
-| `acoustid-lookups` — the decoded answer, zero-match included | fingerprint, full AcoustID endpoint URL | 30 days |
+| `caa-images` — downloaded image bytes | image URL (size already encoded there) | 30 days base (`MEDIA_TAGGER_LONG_LIVED_MAX_AGE_SECS`) |
+| `acoustid-lookups` — the decoded answer, zero-match included | fingerprint, full AcoustID endpoint URL | 30 days base |
 
 The two long-lived namespaces follow `max(cache_expiry_seconds, 30 days)`; a negative `cache_expiry_seconds` is never-expire for every namespace. The freshness ladder: a fresh row is used directly, a stale row is refetched (fetch failure stays a hard error, never stale-serving), an undecodable row drops from the index and reads as a miss. API keys never enter keys or index entries. Old-format rows (pre-shape MusicBrainz keys, post-filter CAA entries) miss and self-heal; regression tests pin both. Cache construction runs one `evict_expired` pass: stale rows dropped, dangling rows dropped, unreferenced blobs reclaimed through the CAS maintenance listing.
 

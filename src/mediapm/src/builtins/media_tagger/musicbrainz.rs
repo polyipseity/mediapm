@@ -139,11 +139,10 @@ fn musicbrainz_client_for_endpoint(endpoint: &str) -> anyhow::Result<MusicBrainz
 /// the fetch and its cache row cannot drift apart.
 ///
 /// `write_all_tags` and `release_ars` add annotation/relation includes to
-/// the requests, and `endpoint` selects the server. A payload cached under
-/// one combination must not satisfy a fetch that would ask differently, so
-/// the shape owns the cache key and the fetch takes the shape — adding a
-/// field here becomes a compile error at both sites instead of a silent
-/// stale-cache bug.
+/// the requests, and `endpoint` selects the server. The fetch and the cache
+/// key are built from this one value, so adding a field forces the
+/// construction site that fills the shape into view instead of leaving a
+/// stale-cache hole.
 #[derive(Debug, Clone)]
 pub(super) struct MusicBrainzFetchShape {
     /// Whether the extended Picard tag block was requested.
