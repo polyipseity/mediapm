@@ -44,6 +44,13 @@ mod http_decoupling;
 /// `FinishSuccess`/`FinishWarning`.
 mod workflow_progress;
 
+/// Ready-queue scheduler: dependency-counter dispatch over a free worker
+/// pool, with no level barrier. Ordering is observed through the test-only
+/// `slow@v1` builtin, so the module shares the progress-feature gate that
+/// compiles that builtin in for integration tests.
+#[cfg(feature = "progress")]
+mod workflow_scheduler;
+
 /// Client-defined bar-label truncation: worker bars drop progress tally,
 /// step bars yield the version before the tool name.
 #[cfg(feature = "progress")]

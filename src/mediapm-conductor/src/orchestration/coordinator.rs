@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi, Hash};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
@@ -29,68 +30,124 @@ use ractor::rpc::CallResult;
 
 use super::config::{default_worker_pool_size, rpc_timeout_ms};
 use super::protocol::{
-    StepExecutionRequest, StepOutputs, UnifiedNickelDocument, find_tool_by_name,
+    StepExecutionBundle, StepExecutionRequest, StepOutputs, UnifiedNickelDocument,
+    find_tool_by_name,
 };
 use super::step_worker::{StepWorkerMessage, spawn_step_worker_pool};
 
 // ---------------------------------------------------------------------------
-// Topological sort
+// Dependency graph
 // ---------------------------------------------------------------------------
 
-/// Returns a topological ordering of step IDs, or an error when a cycle is
-/// detected.
-fn topological_sort(steps: &[WorkflowStepSpec]) -> Result<Vec<Vec<String>>, ConductorError> {
-    let step_ids: BTreeSet<String> = steps.iter().map(|s| s.id.clone()).collect();
-    let mut in_degree: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut adj: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+/// The step-dependency graph the ready-queue scheduler dispatches over.
+///
+/// Built once per run from `workflow.steps[].depends_on`. The scheduler
+/// copies `in_degree` and mutates its own version as steps settle; this
+/// struct keeps the pristine counts used to seed the initial ready queue and
+/// the reverse edges used to release dependents on every settlement.
+#[derive(Debug)]
+struct DependencyGraph {
+    /// Unsatisfied-dependency count per step id, pristine at build time.
+    in_degree: BTreeMap<String, usize>,
+    /// Direct dependents per step id, for decrementing on settlement.
+    dependents: BTreeMap<String, Vec<String>>,
+}
 
-    for step in steps {
-        in_degree.entry(&step.id).or_insert(0);
-        for dep in &step.depends_on {
-            if !step_ids.contains(dep) {
-                return Err(ConductorError::Workflow(format!(
-                    "step '{}' depends on unknown step '{dep}'",
-                    step.id,
-                )));
+impl DependencyGraph {
+    /// Builds the dependency graph, rejecting unknown dependency ids and
+    /// cycles.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Workflow`] when a step depends on a step id
+    /// that no step declares, or when the dependency graph contains a cycle
+    /// (detected by an exhaustive Kahn reduction that fails to settle every
+    /// step).
+    fn build(steps: &[WorkflowStepSpec]) -> Result<Self, ConductorError> {
+        let step_ids: BTreeSet<&String> = steps.iter().map(|s| &s.id).collect();
+        let mut in_degree: BTreeMap<String, usize> = BTreeMap::new();
+        let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for step in steps {
+            in_degree.entry(step.id.clone()).or_insert(0);
+            for dep in &step.depends_on {
+                if !step_ids.contains(dep) {
+                    return Err(ConductorError::Workflow(format!(
+                        "step '{}' depends on unknown step '{dep}'",
+                        step.id,
+                    )));
+                }
+                dependents.entry(dep.clone()).or_default().push(step.id.clone());
+                *in_degree.entry(step.id.clone()).or_insert(0) += 1;
             }
-            adj.entry(dep.as_str()).or_default().push(&step.id);
-            *in_degree.entry(&step.id).or_insert(0) += 1;
         }
-    }
 
-    // Kahn's algorithm producing levels.
-    let mut levels: Vec<Vec<String>> = Vec::new();
-    let mut queue: VecDeque<&str> =
-        in_degree.iter().filter(|(_, deg)| **deg == 0).map(|(id, _)| *id).collect();
-
-    while !queue.is_empty() {
-        let mut level = Vec::new();
-        let mut next_queue = VecDeque::new();
-        for id in &queue {
-            level.push((*id).to_string());
-            if let Some(neighbors) = adj.get(id) {
-                for n in neighbors {
-                    if let Some(deg) = in_degree.get_mut(n) {
-                        *deg = deg.saturating_sub(1);
+        // Cycle detection: a Kahn reduction that cannot settle every step
+        // leaves the remainder inside a cycle. This runs on a scratch copy so
+        // the pristine counts survive to seed the ready queue.
+        let mut reducible = in_degree.clone();
+        let mut queue: VecDeque<String> =
+            reducible.iter().filter(|(_, deg)| **deg == 0).map(|(id, _)| id.clone()).collect();
+        let mut settled = 0usize;
+        while let Some(id) = queue.pop_front() {
+            settled += 1;
+            if let Some(deps) = dependents.get(&id) {
+                for dependent in deps {
+                    if let Some(deg) = reducible.get_mut(dependent) {
+                        *deg -= 1;
                         if *deg == 0 {
-                            next_queue.push_back(*n);
+                            queue.push_back(dependent.clone());
                         }
                     }
                 }
             }
         }
-        levels.push(level);
-        queue = next_queue;
-    }
+        if settled != step_ids.len() {
+            return Err(ConductorError::Workflow(
+                "workflow contains a cycle in step dependency graph".to_string(),
+            ));
+        }
 
-    let total_steps: usize = levels.iter().map(Vec::len).sum();
-    if total_steps != step_ids.len() {
-        return Err(ConductorError::Workflow(
-            "workflow contains a cycle in step dependency graph".to_string(),
-        ));
+        Ok(Self { in_degree, dependents })
     }
+}
 
-    Ok(levels)
+// ---------------------------------------------------------------------------
+// In-flight step bookkeeping
+// ---------------------------------------------------------------------------
+
+/// Classifies where a failed step attempt failed.
+///
+/// The coordinator reports the two on distinct log lines (`failed` vs
+/// `RPC failed`) while treating them identically for retry and settlement
+/// purposes, so the classification travels with the error instead of being
+/// re-derived from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepFailureKind {
+    /// The worker executed the step and the step returned an error.
+    Step,
+    /// The actor RPC itself failed (timeout, channel closed, actor error).
+    Rpc,
+}
+
+/// One settled step attempt, produced by the in-flight future polled by the
+/// scheduler's settlement arm.
+///
+/// Carrying the dispatch-time snapshot (`worker_idx`, `step`, `attempt`)
+/// alongside the result lets the settlement arm update the fixed worker-slot
+/// bar, decide retry eligibility, and merge outputs without re-deriving any
+/// dispatch state.
+struct StepCompletion {
+    /// Step id of the attempt.
+    step_id: String,
+    /// Attempt number (1-based; the first dispatch is attempt 1).
+    attempt: u32,
+    /// Worker-pool index the attempt ran on (index into the fixed bar grid).
+    worker_idx: usize,
+    /// Step spec captured at dispatch, for retry policy and output merging.
+    step: WorkflowStepSpec,
+    /// Worker outcome: a merge-ready bundle, or the classified failure.
+    result: Result<StepExecutionBundle, (StepFailureKind, ConductorError)>,
 }
 
 /// Resolves `$step_output.<step_id>.<name>` references in input values.
@@ -123,8 +180,8 @@ fn compute_required_outputs(steps: &[WorkflowStepSpec]) -> BTreeMap<String, BTre
 /// Deterministic workflow coordinator rooted in one CAS implementation.
 ///
 /// The coordinator owns a pool of step-worker actors and orchestrates
-/// multi-step workflow execution with dependency resolution, parallel dispatch
-/// within each topological level, and state merging.
+/// multi-step workflow execution with dependency resolution, ready-queue
+/// dispatch over a free worker pool (no level barrier), and state merging.
 pub(crate) struct WorkflowCoordinator<C>
 where
     C: CasApi + CasMaintenanceApi,
@@ -283,15 +340,18 @@ where
     /// Runs a workflow by name.
     ///
     /// Finds the workflow in the unified config, resolves its dependency
-    /// graph, and dispatches steps to the worker pool level by level.
+    /// graph, and dispatches steps from a ready queue over the worker pool: a
+    /// step becomes eligible the moment its own `depends_on` edges have
+    /// settled, and takes any free worker — there is no level barrier.
     ///
     /// # Errors
     ///
-    /// Returns [`ConductorError::Workflow`] when the workflow is not found or
+    /// Returns [`ConductorError::Workflow`] when the workflow is not found,
+    /// when the dependency graph is invalid (unknown dependency or cycle), or
     /// when step execution fails.
     #[expect(
         clippy::too_many_lines,
-        reason = "level-by-level dispatch and result aggregation stay in one pass"
+        reason = "ready-queue dispatch, settlement, and result aggregation stay in one pass"
     )]
     pub(crate) async fn run_workflow(
         &mut self,
@@ -307,7 +367,7 @@ where
                 ConductorError::Workflow(format!("workflow '{workflow_name}' not found in config"))
             })?;
 
-            let levels = topological_sort(&workflow.steps)?;
+            let dependency_graph = DependencyGraph::build(&workflow.steps)?;
             let required_outputs = compute_required_outputs(&workflow.steps);
 
             let total_steps = workflow.steps.len();
@@ -375,22 +435,34 @@ where
             let mut step_outputs: StepOutputs = BTreeMap::new();
             let state_snapshot = Arc::new(state.clone());
 
-            // Process dispatch batches level by level.  The initial batches
-            // come from the topological sort (attempt = 1).  When a step fails
-            // but is still eligible for retry, it is appended to a new
-            // single-step batch processed after the current batch's await
-            // completes — retries reuse the same worker slot and never grow the
-            // fixed bar grid.
-            let mut pending_levels: VecDeque<Vec<(String, u32)>> = levels
-                .into_iter()
-                .map(|lvl| lvl.into_iter().map(|id| (id, 1u32)).collect())
+            // Ready-queue dispatch: a step becomes eligible the moment its
+            // own `depends_on` edges have settled, and pulls any free worker
+            // from the pool — there is no level barrier.  Output visibility
+            // stays dependency-scoped in practice: a step spawns only after
+            // all of its dependencies merged their outputs, so the
+            // cumulative `step_outputs` snapshot taken at spawn contains
+            // them (and possibly unrelated branches' outputs that finished
+            // even earlier — narrowing to the transitive-dep subset is a
+            // separate change).
+            let mut in_degree = dependency_graph.in_degree;
+            let mut ready: VecDeque<(String, u32)> = in_degree
+                .iter()
+                .filter(|(_, deg)| **deg == 0)
+                .map(|(id, _)| (id.clone(), 1u32))
                 .collect();
+            let mut free_workers: VecDeque<usize> = (0..self.workers.len()).collect();
+            let mut in_flight = futures_util::stream::FuturesUnordered::new();
+            let mut settled_steps = 0usize;
 
-            while let Some(level) = pending_levels.pop_front() {
-                let mut handles = Vec::new();
-                let mut level_steps: Vec<(String, u32, WorkflowStepSpec)> = Vec::new();
+            while settled_steps < total_steps {
+                // Dispatch every ready step onto a free worker; when no
+                // worker is free, park the step and wait for a completion.
+                'dispatch: while let Some((step_id, attempt)) = ready.pop_front() {
+                    let Some(worker_idx) = free_workers.pop_front() else {
+                        ready.push_back((step_id, attempt));
+                        break 'dispatch;
+                    };
 
-                for (step_id, attempt) in level {
                     let step =
                         workflow.steps.iter().find(|s| s.id == *step_id).ok_or_else(|| {
                             ConductorError::Internal(format!(
@@ -426,213 +498,215 @@ where
                         required_output_names,
                     };
 
-                    let worker_idx = handles.len() % self.workers.len().max(1);
                     let worker = self.workers[worker_idx].clone();
 
                     // Update the fixed worker-slot bar before dispatch so it
                     // appears immediately.  The slot is reused (never
                     // recreated), so the bar count stays fixed at `pool_size`.
                     #[cfg(feature = "progress")]
-                    let step_bar: Option<Arc<dyn ProgressBarApi>> =
-                        if options.progress_group.is_some() {
-                            worker_steps_assigned[worker_idx] += 1;
-                            let bar = worker_bars[worker_idx].clone();
-                            // Re-activate the worker bar from finished-idle
-                            // to active — restart() clears the terminal state
-                            // marker and resets elapsed tracking.
-                            bar.restart();
-                            let assigned = worker_steps_assigned[worker_idx];
-                            bar.set_truncation(Arc::new(worker_slot_label(
-                                WorkerSlotState::Active,
-                                workflow_name,
-                                &step_id,
-                                &step.tool,
-                            )));
-                            bar.set_total(assigned as u64);
-                            // Dispatch declares in-flight work (Task 6):
-                            // the bar spins until its settlement finishes
-                            // it, and the terminal status parks the row
-                            // afterwards.
-                            bar.set_animating(true);
-                            Some(bar)
-                        } else {
-                            None
-                        };
-                    #[cfg(not(feature = "progress"))]
-                    let step_bar: Option<Arc<dyn ProgressBarApi>> = None;
+                    if options.progress_group.is_some() {
+                        worker_steps_assigned[worker_idx] += 1;
+                        let bar = worker_bars[worker_idx].clone();
+                        // Re-activate the worker bar from finished-idle
+                        // to active — restart() clears the terminal state
+                        // marker and resets elapsed tracking.
+                        bar.restart();
+                        let assigned = worker_steps_assigned[worker_idx];
+                        bar.set_truncation(Arc::new(worker_slot_label(
+                            WorkerSlotState::Active,
+                            workflow_name,
+                            &step_id,
+                            &step.tool,
+                        )));
+                        bar.set_total(assigned as u64);
+                        // Dispatch declares in-flight work (Task 6):
+                        // the bar spins until its settlement finishes
+                        // it, and the terminal status parks the row
+                        // afterwards.
+                        bar.set_animating(true);
+                    }
 
-                    let handle = tokio::spawn(async move {
+                    let step = step.clone();
+                    in_flight.push(async move {
                         let result = worker
                             .call(
                                 |reply| StepWorkerMessage::ExecuteStep(Box::new(request), reply),
                                 Some(Duration::from_millis(rpc_timeout_ms())),
                             )
                             .await;
-                        match result {
-                            Ok(CallResult::Success(v)) => v,
-                            Ok(CallResult::Timeout) => {
-                                Err(ConductorError::rpc_error("StepWorker", "RPC timeout"))
-                            }
-                            Ok(_) => {
-                                Err(ConductorError::rpc_error("StepWorker", "RPC channel closed"))
-                            }
-                            Err(e) => Err(ConductorError::rpc_error("StepWorker", e)),
-                        }
+                        let result = match result {
+                            Ok(CallResult::Success(v)) => v.map_err(|e| (StepFailureKind::Step, e)),
+                            Ok(CallResult::Timeout) => Err((
+                                StepFailureKind::Rpc,
+                                ConductorError::rpc_error("StepWorker", "RPC timeout"),
+                            )),
+                            Ok(_) => Err((
+                                StepFailureKind::Rpc,
+                                ConductorError::rpc_error("StepWorker", "RPC channel closed"),
+                            )),
+                            Err(e) => Err((
+                                StepFailureKind::Rpc,
+                                ConductorError::rpc_error("StepWorker", e),
+                            )),
+                        };
+                        StepCompletion { step_id, attempt, worker_idx, step, result }
                     });
-
-                    handles.push((step_id.clone(), worker_idx, handle, step_bar, attempt));
-                    level_steps.push((step_id, attempt, step.clone()));
                 }
 
-                let mut retry_batch: Vec<(String, u32)> = Vec::new();
+                let completion = in_flight.next().await.ok_or_else(|| {
+                    ConductorError::Internal(format!(
+                        "scheduler stalled with {} steps still unsettled",
+                        total_steps - settled_steps
+                    ))
+                })?;
+                let StepCompletion { step_id, attempt, worker_idx, step, result } = completion;
 
-                for ((step_id, worker_idx, handle, step_bar, attempt), (_sid, _att, step)) in
-                    handles.into_iter().zip(level_steps)
-                {
-                    let may_retry = step.max_retries > 0
-                        && match find_tool_by_name(&unified.tools, &step.tool) {
-                            Some(t) => !t.is_impure || options.retry_impure,
-                            None => false,
-                        };
-                    match handle.await {
-                        Ok(Ok(bundle)) => {
-                            if bundle.cache_hit {
-                                cached_steps += 1;
-                            } else {
-                                executed_steps += 1;
+                // Retry policy is decided per attempt: a step retries while
+                // attempts remain (`attempt <= max_retries`, so a step is
+                // dispatched at most `max_retries + 1` times) and either the
+                // tool is not impure or the run opted into retrying impure
+                // steps.
+                let may_retry = (attempt as usize) <= step.max_retries
+                    && step.max_retries > 0
+                    && match find_tool_by_name(&unified.tools, &step.tool) {
+                        Some(t) => !t.is_impure || options.retry_impure,
+                        None => false,
+                    };
+
+                // `settled` is false only for a retry: the step re-enters the
+                // ready queue without releasing its dependents and without
+                // advancing the overall bar.
+                let mut settled = true;
+                match result {
+                    Ok(bundle) => {
+                        if bundle.cache_hit {
+                            cached_steps += 1;
+                        } else {
+                            executed_steps += 1;
+                        }
+                        if attempt > 1 {
+                            retried_steps += 1;
+                        }
+                        for (name, record) in &bundle.instance.outputs {
+                            step_outputs
+                                .entry(step_id.clone())
+                                .or_default()
+                                .insert(name.clone(), record.hash);
+                        }
+                        // Insert executed instance into state so subsequent
+                        // steps (and future runs) can find cache hits, plus
+                        // the per-output persistence modes and GC last-reference
+                        // clock on the aux record. Refreshing the clock on both
+                        // creation and cache-hit mirrors the pre-redesign
+                        // executor behavior (`conductor_gc_last_referenced_at =
+                        // now` on every bundle), keeping instances alive across
+                        // GC sweeps.
+                        let instance_key = bundle.instance.instance_key;
+                        state.tool_call_instances.insert(instance_key, bundle.instance);
+                        let aux = state.aux.instances.entry(instance_key).or_default();
+                        aux.save_modes = bundle.save_modes;
+                        aux.last_referenced_at = Timestamp::now();
+                        #[cfg(feature = "progress")]
+                        if options.progress_group.is_some() {
+                            worker_steps_succeeded[worker_idx] += 1;
+                            let bar = &worker_bars[worker_idx];
+                            let assigned = worker_steps_assigned[worker_idx];
+                            bar.set_truncation(Arc::new(worker_slot_label(
+                                WorkerSlotState::Idle,
+                                "",
+                                "",
+                                "",
+                            )));
+                            bar.set_total(assigned as u64);
+                            bar.advance(1);
+                            bar.finish_success();
+                        }
+                        #[cfg(feature = "progress")]
+                        if let Some(ref ob) = overall_bar {
+                            ob.advance(1);
+                        }
+                    }
+                    Err((kind, e)) => {
+                        if may_retry {
+                            settled = false;
+                            match kind {
+                                StepFailureKind::Step => tracing::warn!(
+                                    "step '{step_id}' failed (attempt {attempt}), retrying: {e}"
+                                ),
+                                StepFailureKind::Rpc => tracing::warn!(
+                                    "step '{step_id}' RPC failed (attempt {attempt}), retrying: {e}"
+                                ),
                             }
-                            if attempt > 1 {
-                                retried_steps += 1;
-                            }
-                            for (name, record) in &bundle.instance.outputs {
-                                step_outputs
-                                    .entry(step_id.clone())
-                                    .or_default()
-                                    .insert(name.clone(), record.hash);
-                            }
-                            // Insert executed instance into state so subsequent levels
-                            // (and future runs) can find cache hits, plus the
-                            // per-output persistence modes and GC last-reference
-                            // clock on the aux record. Refreshing the clock on both
-                            // creation and cache-hit mirrors the pre-redesign
-                            // executor behavior (`conductor_gc_last_referenced_at =
-                            // now` on every bundle), keeping instances alive across
-                            // GC sweeps.
-                            let instance_key = bundle.instance.instance_key;
-                            state.tool_call_instances.insert(instance_key, bundle.instance);
-                            let aux = state.aux.instances.entry(instance_key).or_default();
-                            aux.save_modes = bundle.save_modes;
-                            aux.last_referenced_at = Timestamp::now();
                             #[cfg(feature = "progress")]
-                            if let Some(ref bar) = step_bar {
-                                worker_steps_succeeded[worker_idx] += 1;
+                            if options.progress_group.is_some() {
+                                worker_pending_retries[worker_idx] += 1;
+                                let bar = &worker_bars[worker_idx];
                                 let assigned = worker_steps_assigned[worker_idx];
                                 bar.set_truncation(Arc::new(worker_slot_label(
-                                    WorkerSlotState::Idle,
+                                    WorkerSlotState::PendingRetry,
                                     "",
                                     "",
                                     "",
                                 )));
                                 bar.set_total(assigned as u64);
                                 bar.advance(1);
-                                bar.finish_success();
+                                bar.finish_warning();
+                            }
+                            // The step re-enters the queue; the worker it just
+                            // used is freed below like any other settlement.
+                            ready.push_back((step_id.clone(), attempt + 1));
+                        } else {
+                            failed_steps += 1;
+                            match kind {
+                                StepFailureKind::Step => {
+                                    tracing::error!("step '{step_id}' failed: {e}");
+                                }
+                                StepFailureKind::Rpc => {
+                                    tracing::error!("step '{step_id}' RPC failed: {e}");
+                                }
+                            }
+                            #[cfg(feature = "progress")]
+                            if options.progress_group.is_some() {
+                                worker_failures[worker_idx] += 1;
+                                let bar = &worker_bars[worker_idx];
+                                let assigned = worker_steps_assigned[worker_idx];
+                                bar.set_truncation(Arc::new(worker_slot_label(
+                                    WorkerSlotState::Failed,
+                                    "",
+                                    "",
+                                    "",
+                                )));
+                                bar.set_total(assigned as u64);
+                                bar.advance(1);
+                                bar.finish_warning();
                             }
                             #[cfg(feature = "progress")]
                             if let Some(ref ob) = overall_bar {
                                 ob.advance(1);
                             }
                         }
-                        Ok(Err(e)) => {
-                            if attempt as usize <= step.max_retries && may_retry {
-                                tracing::warn!(
-                                    "step '{step_id}' failed (attempt {attempt}), retrying"
-                                );
-                                #[cfg(feature = "progress")]
-                                if let Some(ref bar) = step_bar {
-                                    worker_pending_retries[worker_idx] += 1;
-                                    let assigned = worker_steps_assigned[worker_idx];
-                                    bar.set_truncation(Arc::new(worker_slot_label(
-                                        WorkerSlotState::PendingRetry,
-                                        "",
-                                        "",
-                                        "",
-                                    )));
-                                    bar.set_total(assigned as u64);
-                                    bar.advance(1);
-                                    bar.finish_warning();
-                                }
-                                retry_batch.push((step_id.clone(), attempt + 1));
-                            } else {
-                                failed_steps += 1;
-                                tracing::error!("step '{step_id}' failed: {e}");
-                                #[cfg(feature = "progress")]
-                                if let Some(ref bar) = step_bar {
-                                    worker_failures[worker_idx] += 1;
-                                    let assigned = worker_steps_assigned[worker_idx];
-                                    bar.set_truncation(Arc::new(worker_slot_label(
-                                        WorkerSlotState::Failed,
-                                        "",
-                                        "",
-                                        "",
-                                    )));
-                                    bar.set_total(assigned as u64);
-                                    bar.advance(1);
-                                    bar.finish_warning();
-                                }
-                                #[cfg(feature = "progress")]
-                                if let Some(ref ob) = overall_bar {
-                                    ob.advance(1);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            if attempt as usize <= step.max_retries && may_retry {
-                                tracing::warn!(
-                                    "step '{step_id}' RPC failed (attempt {attempt}), retrying"
-                                );
-                                #[cfg(feature = "progress")]
-                                if let Some(ref bar) = step_bar {
-                                    worker_pending_retries[worker_idx] += 1;
-                                    let assigned = worker_steps_assigned[worker_idx];
-                                    bar.set_truncation(Arc::new(worker_slot_label(
-                                        WorkerSlotState::PendingRetry,
-                                        "",
-                                        "",
-                                        "",
-                                    )));
-                                    bar.set_total(assigned as u64);
-                                    bar.advance(1);
-                                    bar.finish_warning();
-                                }
-                                retry_batch.push((step_id.clone(), attempt + 1));
-                            } else {
-                                failed_steps += 1;
-                                tracing::error!("step '{step_id}' RPC failed: {e}");
-                                #[cfg(feature = "progress")]
-                                if let Some(ref bar) = step_bar {
-                                    worker_failures[worker_idx] += 1;
-                                    let assigned = worker_steps_assigned[worker_idx];
-                                    bar.set_truncation(Arc::new(worker_slot_label(
-                                        WorkerSlotState::Failed,
-                                        "",
-                                        "",
-                                        "",
-                                    )));
-                                    bar.set_total(assigned as u64);
-                                    bar.advance(1);
-                                    bar.finish_warning();
-                                }
-                                #[cfg(feature = "progress")]
-                                if let Some(ref ob) = overall_bar {
-                                    ob.advance(1);
+                    }
+                }
+
+                // The worker is free again the moment the attempt settles —
+                // including a retry, whose step holds no worker while queued.
+                free_workers.push_back(worker_idx);
+                if settled {
+                    settled_steps += 1;
+                    // Release the dependents: on any settlement — including a
+                    // terminal failure, whose outputs simply never appear —
+                    // decrement each dependent's in-degree and enqueue those
+                    // that reach zero.
+                    if let Some(deps) = dependency_graph.dependents.get(&step_id) {
+                        for dependent in deps {
+                            if let Some(deg) = in_degree.get_mut(dependent) {
+                                *deg -= 1;
+                                if *deg == 0 {
+                                    ready.push_back((dependent.clone(), 1));
                                 }
                             }
                         }
                     }
-                }
-
-                if !retry_batch.is_empty() {
-                    pending_levels.push_back(retry_batch);
                 }
             }
 
@@ -777,9 +851,10 @@ where
 mod tests {
     use super::*;
 
-    /// Verifies topological sort produces correct levels for a DAG.
+    /// Verifies the dependency graph records in-degree and reverse edges for
+    /// a basic DAG, so the scheduler seeds the right initial ready queue.
     #[test]
-    fn topological_sort_basic_dag() {
+    fn dependency_graph_basic_dag() {
         let steps = vec![
             WorkflowStepSpec {
                 id: "a".to_string(),
@@ -807,11 +882,15 @@ mod tests {
             },
         ];
 
-        let levels = topological_sort(&steps).expect("sort should succeed");
-        assert_eq!(levels.len(), 2);
-        assert_eq!(levels[0], vec!["a"]);
-        assert!(levels[1].contains(&"b".to_string()));
-        assert!(levels[1].contains(&"c".to_string()));
+        let graph = DependencyGraph::build(&steps).expect("graph should build");
+        assert_eq!(graph.in_degree.get("a"), Some(&0), "a is initially ready");
+        assert_eq!(graph.in_degree.get("b"), Some(&1), "b waits on a");
+        assert_eq!(graph.in_degree.get("c"), Some(&1), "c waits on a");
+        assert_eq!(
+            graph.dependents.get("a"),
+            Some(&vec!["b".to_string(), "c".to_string()]),
+            "settling a releases both b and c"
+        );
     }
 
     /// Verifies the background CAS GC loop starts, runs a cycle without
@@ -831,9 +910,9 @@ mod tests {
         // we verify the sleep-and-drop cycle completes without panic.)
     }
 
-    /// Verifies topological sort detects cycles.
+    /// Verifies the dependency graph detects cycles.
     #[test]
-    fn topological_sort_detects_cycle() {
+    fn dependency_graph_detects_cycle() {
         let steps = vec![
             WorkflowStepSpec {
                 id: "a".to_string(),
@@ -853,12 +932,12 @@ mod tests {
             },
         ];
 
-        assert!(topological_sort(&steps).is_err());
+        assert!(DependencyGraph::build(&steps).is_err());
     }
 
-    /// Verifies topological sort returns error for unknown dependency.
+    /// Verifies the dependency graph returns error for unknown dependency.
     #[test]
-    fn topological_sort_unknown_dependency() {
+    fn dependency_graph_unknown_dependency() {
         let steps = vec![WorkflowStepSpec {
             id: "a".to_string(),
             tool: "echo".to_string(),
@@ -868,7 +947,7 @@ mod tests {
             depends_on: vec!["nonexistent".to_string()],
         }];
 
-        assert!(topological_sort(&steps).is_err());
+        assert!(DependencyGraph::build(&steps).is_err());
     }
 
     /// Verifies `compute_required_outputs` finds references in input values.

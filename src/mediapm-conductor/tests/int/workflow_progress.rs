@@ -404,10 +404,11 @@ async fn two_step_same_level_success_progress_ops() {
     );
 }
 
-/// A workflow with three independent steps at the same level — verifies
-/// correct `count`/`total` progression and that all steps finish before
-/// the overall bar.  With `pool_size=2`, the third step reuses worker-0's
-/// slot, so its dispatch/terminal counts advance to 2.
+/// A workflow with three independent steps — verifies the ready-queue
+/// scheduler's `count`/`total` progression and that all steps settle before
+/// the overall bar. With `pool_size=2`, the third step cannot dispatch until
+/// a worker frees; it takes worker-0's slot the moment s1 settles, so its
+/// dispatch/terminal counts advance to 2.
 #[tokio::test]
 async fn three_step_same_level_progress_ops() {
     fix_worker_pool_size();
@@ -453,25 +454,25 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Dispatch s2 to worker-1 (re-activate, assigned 1).
+            // Dispatch s2 to worker-1 (re-activate, assigned 1). Both workers
+            // are now busy, so s3 waits in the ready queue.
             ProgressOp::Restart,
             dispatch_pc("default", "s2", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Dispatch s3 to worker-0 (re-activate, assigned 2).
+            // Step 1 completes and frees worker-0 (succeeded 1 / assigned 1).
+            idle_pc_count(1, 1),
+            ProgressOp::SetTotal { total: 1 },
+            ProgressOp::Advance { delta: 1 },
+            ProgressOp::FinishSuccess,
+            ProgressOp::Advance { delta: 1 },
+            // The freed worker immediately takes s3 (worker-0: assigned 2).
             ProgressOp::Restart,
             dispatch_pc("default", "s3", "echo@v1", 2),
             ProgressOp::SetTotal { total: 2 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Step 1 completes (worker-0: succeeded 1 / assigned 2 — s3 already
-            // dispatched on the same slot before s1 terminated).
-            idle_pc_count(1, 2),
-            ProgressOp::SetTotal { total: 2 },
-            ProgressOp::Advance { delta: 1 },
-            ProgressOp::FinishSuccess,
-            ProgressOp::Advance { delta: 1 },
             // Step 2 completes (worker-1: succeeded 1 / assigned 1).
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
@@ -604,27 +605,29 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::AddBar { total: 0, label: "idle".into() },
             idle_pc(),
             ProgressOp::FinishSuccess,
-            // Level 0: dispatch s1 to worker-0 (re-activate, assigned 1).
+            // Dispatch s1 to worker-0 (re-activate, assigned 1).
             ProgressOp::Restart,
             dispatch_pc("default", "s1", "echo@v1", 1),
             ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Level 0 await — step 1 completes.
+            // Step 1 completes and frees worker-0 (succeeded 1 / assigned 1).
             idle_pc_count(1, 1),
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },
-            // Level 1: dispatch s2 to worker-0 (re-activate, assigned 2).
+            // s2 becomes ready and takes the first free worker. Worker-1 sat
+            // idle the whole run and fronts the FIFO queue, so s2 dispatches
+            // there (assigned 1), not on worker-0.
             ProgressOp::Restart,
-            dispatch_pc("default", "s2", "echo@v1", 2),
-            ProgressOp::SetTotal { total: 2 },
+            dispatch_pc("default", "s2", "echo@v1", 1),
+            ProgressOp::SetTotal { total: 1 },
             // The dispatch declares in-flight work (Task 6 opt-in).
             ProgressOp::SetAnimating { animating: true },
-            // Level 1 await — step 2 completes.
-            idle_pc_count(2, 2),
-            ProgressOp::SetTotal { total: 2 },
+            // Step 2 completes (worker-1: succeeded 1 / assigned 1).
+            idle_pc_count(1, 1),
+            ProgressOp::SetTotal { total: 1 },
             ProgressOp::Advance { delta: 1 },
             ProgressOp::FinishSuccess,
             ProgressOp::Advance { delta: 1 },

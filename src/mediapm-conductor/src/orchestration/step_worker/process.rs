@@ -16,6 +16,23 @@ use crate::error::ConductorError;
 #[cfg(any(test, feature = "progress"))]
 const FLAKY_BUILTIN_ID: &str = "flaky@v1";
 
+/// Test-only builtin that records `start`/`finish` events to a log file and
+/// optionally holds until the log contains an awaited line. Used by the
+/// ready-queue scheduler tests to observe dispatch order as schedule facts
+/// rather than timing guesses.
+#[cfg(any(test, feature = "progress"))]
+const SLOW_BUILTIN_ID: &str = "slow@v1";
+
+/// Poll interval while a `slow@v1` invocation holds for an awaited line.
+#[cfg(any(test, feature = "progress"))]
+const SLOW_HOLD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Fallback cap (milliseconds) on a `slow@v1` hold when the step declares
+/// no `hold_timeout_ms` input. Bounds the wait so a run whose schedule never
+/// produces the awaited line fails instead of hanging.
+#[cfg(any(test, feature = "progress"))]
+const SLOW_HOLD_TIMEOUT_DEFAULT_MS: u64 = 5_000;
+
 /// Per-key attempt counter for [`FLAKY_BUILTIN_ID`].
 #[cfg(any(test, feature = "progress"))]
 static FLAKY_ATTEMPTS: std::sync::Mutex<std::collections::BTreeMap<String, usize>> =
@@ -227,8 +244,78 @@ pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
             .map_err(|e| ConductorError::Workflow(format!("flaky serialization failed: {e}")))?;
             Ok(ExecutionResult { stdout, stderr: Vec::new(), exit_code: 0 })
         }
+        #[cfg(any(test, feature = "progress"))]
+        n if n == SLOW_BUILTIN_ID => run_slow_builtin(args).await,
         name => Err(ConductorError::Workflow(format!(
             "builtin tool '{name}' has no execute implementation"
         ))),
     }
+}
+
+/// Runs the `slow@v1` test builtin: appends `start <label>` to the log file
+/// named by the `log` argument, optionally waits until the log contains the
+/// `hold_until` line, then appends `finish <label>`.
+///
+/// The hold is what lets scheduler tests assert cross-branch ordering
+/// deterministically: a held step can only finish after the awaited line was
+/// appended, so "the held step finished after X started" is a schedule fact,
+/// not a wall-clock race. The wait is bounded by `hold_timeout_ms` (default
+/// [`SLOW_HOLD_TIMEOUT_DEFAULT_MS`]) so a schedule that never produces the
+/// line fails the step instead of deadlocking the run.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Workflow`] when `log` or `label` is missing or
+/// empty, when the log file cannot be opened or written, or when the hold
+/// times out waiting for the awaited line.
+#[cfg(any(test, feature = "progress"))]
+async fn run_slow_builtin(
+    args: &BTreeMap<String, String>,
+) -> Result<ExecutionResult, ConductorError> {
+    use std::io::Write as _;
+
+    let log_path = args.get("log").filter(|path| !path.is_empty()).ok_or_else(|| {
+        ConductorError::Workflow("slow builtin requires a non-empty 'log' path".to_string())
+    })?;
+    let label = args.get("label").filter(|label| !label.is_empty()).ok_or_else(|| {
+        ConductorError::Workflow("slow builtin requires a non-empty 'label'".to_string())
+    })?;
+    let mut log =
+        std::fs::OpenOptions::new().create(true).append(true).open(log_path).map_err(|e| {
+            ConductorError::Workflow(format!("slow builtin could not open log '{log_path}': {e}"))
+        })?;
+
+    writeln!(log, "start {label}").map_err(|e| {
+        ConductorError::Workflow(format!("slow builtin could not write to log '{log_path}': {e}"))
+    })?;
+
+    if let Some(hold_until) = args.get("hold_until").filter(|line| !line.is_empty()) {
+        let timeout_ms: u64 = args
+            .get("hold_timeout_ms")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(SLOW_HOLD_TIMEOUT_DEFAULT_MS);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            // A transient read error or a line still being appended just
+            // defers to the next poll; the deadline below is the failure
+            // authority, so nothing is masked here.
+            if let Ok(contents) = std::fs::read_to_string(log_path)
+                && contents.lines().any(|line| line == hold_until)
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ConductorError::Workflow(format!(
+                    "slow builtin '{label}' timed out after {timeout_ms}ms waiting for \
+                     '{hold_until}' in '{log_path}'"
+                )));
+            }
+            tokio::time::sleep(SLOW_HOLD_POLL_INTERVAL).await;
+        }
+    }
+
+    writeln!(log, "finish {label}").map_err(|e| {
+        ConductorError::Workflow(format!("slow builtin could not write to log '{log_path}': {e}"))
+    })?;
+    Ok(ExecutionResult::default())
 }
