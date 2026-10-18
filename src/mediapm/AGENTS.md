@@ -167,6 +167,19 @@ The 10 boolean options (`strict_identification`, `write_all_tags`, `write_all_im
 
 Fetch failures are loud: a MusicBrainz or cover-art fetch error fails the step — the stale-cache-on-error fallbacks are gone, though a fresh cache hit still short-circuits — and HTTP 404 from the archive is the only legitimate "no art" answer. Cover-art failures are unconditional, not gated by `strict_identification`, because a failed image fetch is a missing asset rather than missing metadata.
 
+### Media-tagger cache contract
+
+`MediaTaggerHttpCache` (implementation home: `builtins/media_tagger/cover_art.rs`) is a JSON index (`media-tagger.json`) plus a CAS `store/` under the step's `cache_dir`. Each namespace is keyed by every input that changes the server's answer, so an option change re-derives locally instead of serving another run's shapes:
+
+| Namespace | Key inputs | TTL |
+| --- | --- | --- |
+| `musicbrainz-payloads` | recording/release MBIDs, `write_all_tags`, `release_ars`, MusicBrainz host\[:port\] | `cache_expiry_seconds` (24h default) |
+| `caa-entries` — the raw archive response; the selection filters run on every read | CAA endpoint URL | `cache_expiry_seconds` |
+| `caa-images` — downloaded image bytes | image URL (size already encoded there) | 30 days (`MEDIA_TAGGER_LONG_LIVED_MAX_AGE_SECS`) |
+| `acoustid-lookups` — the decoded answer, zero-match included | fingerprint, full AcoustID endpoint URL | 30 days |
+
+The two long-lived namespaces follow `max(cache_expiry_seconds, 30 days)`; a negative `cache_expiry_seconds` is never-expire for every namespace. The freshness ladder: a fresh row is used directly, a stale row is refetched (fetch failure stays a hard error, never stale-serving), an undecodable row drops from the index and reads as a miss. API keys never enter keys or index entries. Old-format rows (pre-shape MusicBrainz keys, post-filter CAA entries) miss and self-heal; regression tests pin both. Cache construction runs one `evict_expired` pass: stale rows dropped, dangling rows dropped, unreferenced blobs reclaimed through the CAS maintenance listing.
+
 ### Global tool cache CLI
 
 `mediapm global tool-cache` inspects and prunes the user-level tool cache (`<os-cache-dir>/mediapm/cache/`), distinct from the workspace metadata caches. Implemented in `src/mediapm/src/global.rs`, it reuses the `mediapm-conductor` `Cache` engine directly (no background loop).

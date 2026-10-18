@@ -124,12 +124,20 @@ enum CoverArtProvider {
 pub(super) const MEDIA_TAGGER_LONG_LIVED_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// Cache namespace for MusicBrainz recording/release payloads.
+///
+/// Key: [`super::musicbrainz::MusicBrainzFetchShape::cache_key`]. TTL: the configured base policy.
 const MUSICBRAINZ_PAYLOADS_NAMESPACE: &str = "musicbrainz-payloads";
 /// Cache namespace for raw Cover Art Archive index responses.
+///
+/// Key: the CAA endpoint URL; the selection filters run on every read. TTL: the configured base policy.
 const CAA_ENTRIES_NAMESPACE: &str = "caa-entries";
 /// Cache namespace for downloaded cover-art image bytes.
+///
+/// Key: the image URL, which already encodes the size. TTL: the long-lived tier.
 const CAA_IMAGES_NAMESPACE: &str = "caa-images";
 /// Cache namespace for AcoustID fingerprint lookup answers.
+///
+/// Key: [`super::acoustid::acoustid_lookup_cache_key`]. TTL: the long-lived tier.
 const ACOUSTID_LOOKUPS_NAMESPACE: &str = "acoustid-lookups";
 
 /// Cache-expiry policy used by media-tagger HTTP response caches.
@@ -204,6 +212,14 @@ pub(super) struct MediaTaggerCacheIndexEntry {
 }
 
 /// Persistent on-disk HTTP cache used by media-tagger metadata helpers.
+///
+/// A JSON index (`media-tagger.json`) plus a CAS `store/` of payload bytes
+/// under one cache root; an empty root disables caching. Rows age by
+/// [`Self::expiry_for_namespace`]: a fresh row is used directly, a stale
+/// row is refetched (never served over a fetch failure), an undecodable
+/// row drops from the index and reads as a miss. Cache construction runs
+/// [`Self::evict_expired`] once to retire stale and dangling rows and
+/// reclaim their blobs.
 #[derive(Debug, Clone)]
 pub(super) struct MediaTaggerHttpCache {
     /// Optional CAS storage directory under the cache root.
