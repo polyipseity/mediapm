@@ -184,7 +184,12 @@ impl ConductorActorClient {
     /// # Errors
     ///
     /// Returns [`ConductorError::Internal`] when the actor is unreachable or
-    /// the RPC times out.
+    /// the run exceeds the RPC budget (`MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS`,
+    /// captured when this client was created). A budget timeout names the
+    /// budget and the knob so the caller can tell a policy timeout from a
+    /// transport failure; per-step execution is separately bounded by the
+    /// worker's executable watchdog
+    /// (`MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS`).
     pub(crate) async fn run_workflow(
         &self,
         workflow_name: &str,
@@ -208,9 +213,26 @@ impl ConductorActorClient {
         {
             Ok(CallResult::Success(Ok(pair))) => Ok(pair),
             Ok(CallResult::Success(Err(e))) => Err(e),
-            Ok(CallResult::Timeout) => {
-                Err(ConductorError::rpc_error("ConductorActor", "RPC timeout"))
-            }
+            // A run-level budget expiry, not a transport fault: report which
+            // policy layer stopped the run and how to give it more room. The
+            // default seconds come from `DEFAULT_RPC_TIMEOUT_MS` so the
+            // message cannot drift from the fallback the config applies.
+            // The executable-timeout knob name is inlined because its
+            // constant (`step_worker::EXECUTABLE_TIMEOUT_ENV_VAR`) is private
+            // to that module.
+            Ok(CallResult::Timeout) => Err(ConductorError::rpc_error(
+                "ConductorActor",
+                format!(
+                    "workflow run exceeded its RPC budget of {budget:?} \
+                     ({rpc_env}, default {default_secs}s); raise the budget above the run's \
+                     expected duration; per-step execution is separately bounded by \
+                     {executable_env}",
+                    budget = self.rpc_timeout,
+                    rpc_env = super::config::ENV_RPC_TIMEOUT_SECONDS,
+                    default_secs = crate::defaults::DEFAULT_RPC_TIMEOUT_MS / 1000,
+                    executable_env = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS",
+                ),
+            )),
             Ok(_) => Err(ConductorError::rpc_error("ConductorActor", "RPC channel closed")),
             Err(e) => Err(ConductorError::rpc_error("ConductorActor", e)),
         }
