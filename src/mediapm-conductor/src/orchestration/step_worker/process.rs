@@ -46,6 +46,10 @@ pub(super) struct ExecutionResult {
     /// Captured stderr bytes.
     pub(crate) stderr: Vec<u8>,
     /// Process exit code.
+    ///
+    /// `-1` is the sentinel for a child killed by a signal: the code is
+    /// rendered from `status.code().unwrap_or(-1)`, so a signal death is
+    /// distinguishable from a real exit status of 0..255.
     pub(crate) exit_code: i32,
 }
 
@@ -383,15 +387,18 @@ mod tests {
     /// RAII guard that overrides [`EXECUTABLE_TIMEOUT_ENV_VAR`] for one test
     /// and restores the prior value (or removes the variable) on drop, so a
     /// panicking assertion cannot leak the override into sibling tests.
+    ///
+    /// Every guard user holds `EXECUTABLE_TIMEOUT_ENV_LOCK` for the whole
+    /// override window — see that lock's docs for the race this closes.
     struct ExecutableTimeoutOverride(Option<String>);
 
     impl ExecutableTimeoutOverride {
         /// Sets the executable-timeout env override to `secs` for this guard's lifetime.
         fn set(secs: u64) -> Self {
             let prior = std::env::var(EXECUTABLE_TIMEOUT_ENV_VAR).ok();
-            // Safety: env mutation is process-global; the guard restores the
-            // prior value on drop, and tests relying on this variable are
-            // serialized by the per-test process boundary under nextest.
+            // Safety: env mutation is process-global; EXECUTABLE_TIMEOUT_ENV_LOCK
+            // is held for the override window, and the guard restores the
+            // prior value on drop before the lock is released.
             unsafe { std::env::set_var(EXECUTABLE_TIMEOUT_ENV_VAR, secs.to_string()) };
             Self(prior)
         }
@@ -417,6 +424,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn executable_timeout_error_carries_captured_output_tails() {
+        let _lock = super::super::EXECUTABLE_TIMEOUT_ENV_LOCK.lock().await;
         let _timeout_override = ExecutableTimeoutOverride::set(1);
         let sandbox_dir = std::env::current_dir().expect("current dir");
         let command: Vec<String> =
@@ -432,7 +440,64 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("timed out"), "timeout wording missing: {message}");
+        assert!(
+            message.contains("MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS"),
+            "timeout error must name the knob: {message}"
+        );
         assert!(message.contains("marker-stdout"), "stdout tail missing: {message}");
         assert!(message.contains("marker-stderr"), "stderr tail missing: {message}");
+    }
+
+    /// Proves the concurrent stream drain cannot be wedged by a chatty child.
+    ///
+    /// The child floods stderr with ~300KB (20000 lines) before sleeping, so
+    /// a sequential stdout-then-stderr drain would block on the full stderr
+    /// pipe while stdout never reaches EOF — wedging the step until the
+    /// watchdog fires with no progress. With the concurrent drain, the flood
+    /// is consumed as it is written, and the watchdog's error carries the
+    /// last 2048 bytes of it (truncated) plus an empty stdout tail.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn executable_timeout_stderr_flood_does_not_wedge_the_drain() {
+        let _lock = super::super::EXECUTABLE_TIMEOUT_ENV_LOCK.lock().await;
+        let _timeout_override = ExecutableTimeoutOverride::set(1);
+        let sandbox_dir = std::env::current_dir().expect("current dir");
+        let command: Vec<String> = [
+            "sh",
+            "-c",
+            "i=0; while [ $i -lt 20000 ]; do echo stderr-line-$i >&2; i=$((i+1)); done; sleep 30",
+        ]
+        .iter()
+        .map(|part| (*part).to_string())
+        .collect();
+
+        let error =
+            run_executable_process(&command, &[], &sandbox_dir, &BTreeMap::<String, String>::new())
+                .await
+                .expect_err("watchdog timeout must fail the wedged-free step");
+
+        let message = error.to_string();
+        assert!(message.contains("timed out"), "timeout wording missing: {message}");
+        assert!(
+            message.contains("stdout tail (last 2048 bytes): (empty);"),
+            "child wrote nothing to stdout: {message}"
+        );
+        // Everything after the stderr marker is the tail itself: assert it
+        // exists, is capped near 2048 bytes, and holds the flood's end —
+        // proof the drain consumed the stream rather than deadlocking.
+        let tail = message
+            .split_once("stderr tail (last 2048 bytes): ")
+            .expect("stderr tail section present")
+            .1;
+        assert!(
+            tail.len() <= 2048,
+            "stderr tail must be capped near 2048 bytes, got {}: {message}",
+            tail.len()
+        );
+        assert!(tail.contains("stderr-line-"), "stderr tail must carry the flood's end: {message}");
+        assert!(
+            !tail.contains("stderr-line-0\n"),
+            "stderr tail must be truncated, not the whole flood: {message}"
+        );
     }
 }

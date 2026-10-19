@@ -73,9 +73,11 @@ async fn a_step_longer_than_the_per_step_rpc_budget_still_completes() {
         .get_runtime_diagnostics()
         .await
         .expect("diagnostics pin the run-level budget");
-    // Shrink the budget the coordinator re-reads per dispatch to 1s — below
-    // the 3s step below. Set AFTER client init on purpose: the client has
-    // already captured its own copy (see rpc_env_lock docs).
+    // Regression tripwire: set a 1s knob value AFTER the client captured
+    // its budget. The passing run must not be affected — production reads
+    // the knob exactly once, at client-init capture — but if a per-dispatch
+    // read of the knob ever returns, this 1s value kills the 3s step and
+    // the summary assertions below fail (see rpc_env_lock docs).
     let _shrink = RpcEnvGuard::set_seconds("1");
 
     sleeping_workflow(&tc);
@@ -126,7 +128,7 @@ async fn a_run_workflow_rpc_timeout_names_the_budget_and_the_knob() {
         message.contains("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS"),
         "timeout error must name the knob: {message}"
     );
-    assert!(message.contains("1s"), "timeout error must report the budget: {message}");
+    assert!(message.contains("budget of 1s"), "timeout error must report the budget: {message}");
     assert!(
         message.contains("MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS"),
         "timeout error must name the per-step bound: {message}"

@@ -56,6 +56,18 @@ fn executable_timeout() -> Duration {
     if secs > 0 { Duration::from_secs(secs) } else { DEFAULT_EXECUTABLE_TIMEOUT }
 }
 
+/// Serializes tests that read or mutate [`EXECUTABLE_TIMEOUT_ENV_VAR`].
+///
+/// The variable is process-global and both env-mutating tests live in this
+/// lib test binary: `executable_timeout_default_when_unset` here and the
+/// output-tail tests in `process.rs`. Each holds this lock across its whole
+/// mutate-or-read window (including the awaited `run_executable_process`
+/// call), so a threads-mode `cargo test` run cannot interleave them. A
+/// `tokio::sync::Mutex` (not std) because the `process.rs` tests hold the
+/// guard across `.await` (`clippy::await_holding_lock`, not `Send`).
+#[cfg(test)]
+static EXECUTABLE_TIMEOUT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // ---------------------------------------------------------------------------
 // Actor types
 // ---------------------------------------------------------------------------
@@ -266,9 +278,12 @@ mod tests {
     }
 
     /// Verifies `executable_timeout` returns default when env is unset.
-    #[test]
-    fn executable_timeout_default_when_unset() {
-        // Safety: not thread-safe but fine in single-threaded test.
+    #[tokio::test]
+    async fn executable_timeout_default_when_unset() {
+        // Serializes against the env-mutating tests in `process.rs` (see
+        // EXECUTABLE_TIMEOUT_ENV_LOCK).
+        let _lock = super::EXECUTABLE_TIMEOUT_ENV_LOCK.lock().await;
+        // Safety: set_var is not thread-safe; the shared lock is held.
         unsafe {
             std::env::remove_var(EXECUTABLE_TIMEOUT_ENV_VAR);
         }

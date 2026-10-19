@@ -167,22 +167,31 @@ impl TestConductor {
 
 /// Serializes tests that read or mutate `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS`.
 ///
-/// The knob is read at two different times: the lazily-initialised
+/// The knob has exactly one production read: the lazily-initialised
 /// `ConductorActorClient` captures it once on first client use (any
-/// `run_workflow` / `get_runtime_diagnostics` call), while the coordinator
-/// re-reads it per `ExecuteStep` dispatch. Tests that shrink the budget
-/// between those two moments must serialize against each other so a
-/// concurrent run cannot observe the mutated value at capture time.
-/// Mutex poisoning is ignored so one failing test does not cascade.
+/// `run_workflow` / `get_runtime_diagnostics` call). The coordinator reads
+/// it no more — the `ExecuteStep` dispatch carries no transport timeout.
+/// Tests that mutate the knob between client construction and that first
+/// RPC must serialize against each other so a concurrent run cannot
+/// capture the mutated value at capture time. (A `tokio::sync::Mutex` has
+/// no poisoning, so a failing test cannot cascade here.)
 ///
-/// A `tokio::sync::Mutex` guards the mutation window: it is held across
-/// `.await` points (the client-init and workflow calls inside the window),
-/// which a `std::sync::MutexGuard` cannot be (`clippy::await_holding_lock`,
+/// Sibling workflow tests read the knob at client init *without* this
+/// lock, so the pre-push gate (nextest, one process per test) is the safe
+/// runner; `cargo test` threads mode is best-effort for these tests. The
+/// lock is a `tokio::sync::Mutex` because the mutation window spans
+/// `.await` points (client init and the workflow calls), which a
+/// `std::sync::MutexGuard` cannot cover (`clippy::await_holding_lock`,
 /// and it is not `Send`).
 ///
 /// Note: the lib-side constant is `orchestration::config::ENV_RPC_TIMEOUT_SECONDS`,
 /// which is not visible from this integration-test crate; the literal here
 /// must stay in sync with it.
+//
+// The `cfg(unix)` gate mirrors this module's only consumer
+// (`int::step_rpc_layering`, itself unix-gated); un-gated items would be
+// dead code on other platforms and trip the workspace `warnings = "deny"`.
+#[cfg(unix)]
 pub(crate) async fn rpc_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     LOCK.lock().await
@@ -194,11 +203,15 @@ pub(crate) async fn rpc_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
 ///
 /// Hold [`rpc_env_lock`] for the guard's whole lifetime — `set_var` is not
 /// thread-safe and sibling tests construct nodes that capture this value.
+// The gate mirrors this module's only consumer; see [`rpc_env_lock`].
+#[cfg(unix)]
 pub(crate) struct RpcEnvGuard {
     /// Value the variable held before the guard mutated it, if any.
     previous: Option<String>,
 }
 
+// The gate mirrors this module's only consumer; see [`rpc_env_lock`].
+#[cfg(unix)]
 impl RpcEnvGuard {
     /// Removes the variable for the guard's lifetime (the lib falls back to
     /// its default budget while unset).
@@ -226,6 +239,8 @@ impl RpcEnvGuard {
     }
 }
 
+// The gate mirrors this module's only consumer; see [`rpc_env_lock`].
+#[cfg(unix)]
 impl Drop for RpcEnvGuard {
     fn drop(&mut self) {
         // SAFETY: caller holds rpc_env_lock for the guard's lifetime; see struct docs.
