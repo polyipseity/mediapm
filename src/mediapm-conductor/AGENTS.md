@@ -272,8 +272,8 @@ Guidance:
 
     provided without spelling the key, but explicit keyed input must remain supported and map to the same API key. Builtin execution must fail fast on undeclared keys, missing required keys, and invalid argument combinations; do not silently ignore mismatches. When a builtin's successful non-error result is pure, the success payload may be deterministic bytes or `BTreeMap<String, String>`. Impure builtins may instead primarily communicate success through side effects. The only allowed API-vs-CLI difference is argument encoding ergonomics (flag transport on CLI vs key/value map in API). CLI failures may use ordinary Rust error types; do not coerce failures into fake string-only success payloads.
 - Builtin crates must use explicit crate versions in their own `Cargo.toml` (`version = "..."`) instead of inheriting workspace package version.
-- Ensure process execution errors preserve useful stderr context.
-- Guard external executable subprocesses with a bounded timeout (default `900` seconds) so stuck child processes cannot stall worker actors forever; allow explicit operator override via `MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS`.
+- Ensure process execution errors preserve useful stderr context; an executable-timeout error additionally carries lossy last-2048-byte tails of the child's captured stdout/stderr (`step_worker/process.rs`).
+- Guard external executable subprocesses with a bounded timeout (default `900` seconds) so stuck child processes cannot stall worker actors forever; allow explicit operator override via `MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS`. The `ExecuteStep` dispatch itself carries no transport timeout (`coordinator.rs`); the run-level bound is the `run_workflow` RPC budget (`orchestration/node.rs`).
 - Execute external tools with stdin disconnected (`Stdio::null`) so accidental interactive prompts cannot block worker actors indefinitely.
 - Create an isolated temporary cwd only when a step actually needs to execute.
 - The temporary cwd is ad hoc execution scratch space, not a directory tied to tool identity or cached instances.
@@ -609,8 +609,12 @@ During `reconcile_desired_tools` in `sync/mod.rs`, when an existing active tool 
 | --- | --- | --- |
 | Delta chain depth | 32 | `MAX_DELTA_DEPTH` |
 | Actor RPC timeout (CAS) | 8 sec | `FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS` |
-| Conductor RPC timeout | 300 sec | `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` |
+| Run-workflow RPC budget | 300 sec | `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` |
 | Materialization workers | CPU cores | Derived from hardware |
+
+### Watchdog layering
+
+Two conductor bounds nest so each layer fires only after its inner layer could speak: the executable watchdog (per step, `orchestration/step_worker/mod.rs`) inside the `run_workflow` RPC budget (per run, captured when the actor client initializes on first use, `orchestration/node.rs`). The per-step `ExecuteStep` dispatch carries no transport timeout (`orchestration/coordinator.rs`); a dead worker still fails its call through the closed reply channel, and a wedged in-process builtin is bounded only by the run-level budget. Timeout errors state their layer: executable timeouts carry captured stdout/stderr tails (`step_worker/process.rs`), and run-workflow timeouts name the budget and the knob (`orchestration/node.rs`).
 
 ### Mmap Lease & Actor RPC Deadlock Prevention
 

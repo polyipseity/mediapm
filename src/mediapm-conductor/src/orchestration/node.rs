@@ -165,7 +165,8 @@ where
 pub(crate) struct ConductorActorClient {
     /// Reference to the spawned actor.
     actor_ref: ActorRef<ConductorMessage>,
-    /// RPC timeout duration.
+    /// Run-level RPC budget, captured when this client initializes on first
+    /// use (the actor client is a lazily-built `OnceCell`).
     rpc_timeout: std::time::Duration,
 }
 
