@@ -106,6 +106,31 @@ fn slow_step(
     }
 }
 
+/// Creates a `slow@v1` `ToolSpec` with a `max_concurrent_calls` cap (`0` =
+/// unlimited), mirroring [`slow_tool`].
+fn capped_slow_tool(name: &str, cap: usize) -> ToolSpec {
+    ToolSpec {
+        runtime: ToolRuntime { max_concurrent_calls: cap, ..ToolRuntime::default() },
+        ..slow_tool(name)
+    }
+}
+
+/// Creates a `slow@v1` step routed at a named tool variant: the cap tests
+/// register several `slow@v1`-backed tools under distinct names, and
+/// `step.tool` — not the tool map key — is what the scheduler resolves
+/// and caps on.
+fn slow_step_for_tool(
+    id: &str,
+    tool: &str,
+    log: &Path,
+    label: &str,
+    hold_until: Option<&str>,
+) -> WorkflowStepSpec {
+    let mut step = slow_step(id, log, label, hold_until, &[]);
+    step.tool = tool.into();
+    step
+}
+
 /// Runs the named workflow with default options, asserting a clean run.
 async fn run_clean(tc: &TestConductor, workflow_name: &str, expected_steps: usize) {
     let summary = tc
@@ -780,4 +805,210 @@ async fn dependency_scoped_state_exposes_only_ancestor_instances() {
         "a, x, and y execute — y must not see a's instance: {summary:?}"
     );
     assert_eq!(summary.failed_steps, 0, "no step fails: {summary:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Tool concurrency cap (`max_concurrent_calls`)
+// ---------------------------------------------------------------------------
+
+/// A tool's `max_concurrent_calls` cap serializes that tool's steps: with
+/// cap=1 and two independent steps of one tool on a 2-worker pool, the
+/// second step can only start after the first finished — even though the
+/// pool holds a free worker throughout.
+///
+/// This is the yt-dlp regression test: every step of a capped tool used to
+/// dispatch concurrently (the scheduler never read the cap), so two
+/// yt-dlp steps overlapped and saturated the tool.
+#[tokio::test]
+async fn tool_cap_serializes_a_single_tool() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    let log = tc.path().join("events.log");
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", 1))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![
+                slow_step_for_tool("a", "slow-cap@v1", &log, "a", None),
+                slow_step_for_tool("b", "slow-cap@v1", &log, "b", None),
+            ],
+        }],
+    ));
+
+    run_clean(&tc, "default", 2).await;
+
+    let events = read_event_log(&log);
+    // Serialization under cap=1: b starts strictly after a finished, so the
+    // two calls never overlap on the tool.
+    assert!(
+        pos(&events, "finish a") < pos(&events, "start b"),
+        "b must not start before a finished under cap=1: {events:?}"
+    );
+}
+
+/// Parking behind a cap is per-tool: tool X (cap=1) serializes its two
+/// steps while tool Y (uncapped) starts and finishes in between — X's
+/// saturation never blocks Y's dispatch.
+///
+/// `x1` holds until the log records `finish y`, so y provably started and
+/// finished while x1 was still in flight and x2 still parked. Under the
+/// old uncapped dispatch x1 and x2 would occupy both workers, and y could
+/// only start after one of them finished — the last assertion is the
+/// discriminator.
+#[tokio::test]
+async fn tool_cap_does_not_block_other_tools() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    let log = tc.path().join("events.log");
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([
+            ("slow-x@v1".into(), capped_slow_tool("slow-x@v1", 1)),
+            ("slow-y@v1".into(), capped_slow_tool("slow-y@v1", 0)),
+        ]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![
+                slow_step_for_tool("x1", "slow-x@v1", &log, "x1", Some("finish y")),
+                slow_step_for_tool("x2", "slow-x@v1", &log, "x2", None),
+                slow_step_for_tool("y", "slow-y@v1", &log, "y", None),
+            ],
+        }],
+    ));
+
+    run_clean(&tc, "default", 3).await;
+
+    let events = read_event_log(&log);
+    // y started while the capped tool's x1 was still in flight (held) …
+    assert!(
+        pos(&events, "start y") < pos(&events, "finish x1"),
+        "y must start while the capped tool's x1 is still in flight: {events:?}"
+    );
+    // … and finished before x1, i.e. X's saturation never blocked it.
+    assert!(
+        pos(&events, "finish y") < pos(&events, "finish x1"),
+        "y must finish while capped-tool x1 is still running: {events:?}"
+    );
+    // x2 was parked behind the cap and dispatches only after x1's slot frees.
+    assert!(
+        pos(&events, "finish x1") < pos(&events, "start x2"),
+        "x2 must stay parked until x1 releases the tool slot: {events:?}"
+    );
+}
+
+/// `max_concurrent_calls = 0` means unlimited: three independent steps of
+/// one uncapped tool dispatch together on the 2-worker pool instead of
+/// serializing.
+///
+/// `a` holds until the log records `start b`: any implicit serialization
+/// (e.g. treating 0 as a cap of 1) would make a's hold time out and the
+/// step fail, while a "never run" reading of 0 parks everything and trips
+/// the scheduler's stall guard — either regression fails loudly.
+#[tokio::test]
+async fn tool_cap_zero_runs_all_steps() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    let log = tc.path().join("events.log");
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("slow-cap0@v1".into(), capped_slow_tool("slow-cap0@v1", 0))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![
+                slow_step_for_tool("a", "slow-cap0@v1", &log, "a", Some("start b")),
+                slow_step_for_tool("b", "slow-cap0@v1", &log, "b", None),
+                slow_step_for_tool("c", "slow-cap0@v1", &log, "c", None),
+            ],
+        }],
+    ));
+
+    run_clean(&tc, "default", 3).await;
+
+    let events = read_event_log(&log);
+    // a and b overlapped: a's hold on `start b` resolved while a was still
+    // running, which is only possible if both dispatched in the same pass.
+    assert!(pos(&events, "start a") < pos(&events, "finish a"), "a must run: {events:?}");
+    assert!(
+        pos(&events, "start b") < pos(&events, "finish a"),
+        "b must start while the uncapped a still runs: {events:?}"
+    );
+}
+
+/// A settle releases the capped tool's slot to a parked step: with cap=1
+/// and two steps, the parked step dispatches as soon as the running one
+/// finishes, and the run completes without stalling.
+#[tokio::test]
+async fn tool_cap_settle_releases_a_parked_step() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    let log = tc.path().join("events.log");
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", 1))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![
+                slow_step_for_tool("a", "slow-cap@v1", &log, "a", None),
+                slow_step_for_tool("b", "slow-cap@v1", &log, "b", None),
+            ],
+        }],
+    ));
+
+    // No stall: the parked step re-admits on a's settlement instead of
+    // wedging the scheduler with everything parked and nothing in flight.
+    run_clean(&tc, "default", 2).await;
+
+    let events = read_event_log(&log);
+    assert!(
+        pos(&events, "finish a") < pos(&events, "start b"),
+        "the parked step must dispatch once a releases the tool slot: {events:?}"
+    );
+}
+
+/// Parking never livelocks: with cap=1 and three independent steps, each
+/// parked step re-admits as the slot frees and the run completes. If the
+/// cap accounting ever left every remaining step parked with nothing in
+/// flight, the scheduler's stall guard fails loudly instead of hanging.
+#[tokio::test]
+async fn tool_cap_park_does_not_livelock() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    let log = tc.path().join("events.log");
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", 1))]),
+        vec![WorkflowSpec {
+            name: "default".into(),
+            display_name: None,
+            description: None,
+            impure: false,
+            steps: vec![
+                slow_step_for_tool("a", "slow-cap@v1", &log, "a", None),
+                slow_step_for_tool("b", "slow-cap@v1", &log, "b", None),
+                slow_step_for_tool("c", "slow-cap@v1", &log, "c", None),
+            ],
+        }],
+    ));
+
+    run_clean(&tc, "default", 3).await;
+
+    let events = read_event_log(&log);
+    // The three calls serialize in queue order: each parked step follows
+    // the previous one's finish, so no call ever overlaps another.
+    assert!(
+        pos(&events, "finish a") < pos(&events, "start b"),
+        "b must follow a under cap=1: {events:?}"
+    );
+    assert!(
+        pos(&events, "finish b") < pos(&events, "start c"),
+        "c must follow b under cap=1: {events:?}"
+    );
 }

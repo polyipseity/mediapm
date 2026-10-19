@@ -575,6 +575,12 @@ where
             let mut free_workers: VecDeque<usize> = (0..self.workers.len()).collect();
             let mut in_flight = futures_util::stream::FuturesUnordered::new();
             let mut settled_steps = 0usize;
+            // Run-wide in-flight call count per tool name. Compared against each
+            // tool's `max_concurrent_calls` before dispatch; `0` means no cap.
+            let mut in_flight_by_tool: BTreeMap<String, usize> = BTreeMap::new();
+            // Steps whose dependencies settled but whose tool is at its cap. Kept
+            // out of `ready` so a saturated tool never blocks unrelated steps.
+            let mut parked: Vec<(String, u32)> = Vec::new();
 
             while settled_steps < total_steps {
                 // Dispatch every ready step onto a free worker; when no
@@ -599,6 +605,18 @@ where
                                 step.id, step.tool,
                             ))
                         })?;
+
+                    // Tool concurrency cap: a step dispatches only while its
+                    // tool is under `max_concurrent_calls`. A saturated tool's
+                    // step parks (kept out of `ready`) and yields its worker, so
+                    // the cap serializes one tool without blocking others.
+                    let cap = tool_spec.max_concurrent_calls;
+                    let running = in_flight_by_tool.get(&step.tool).copied().unwrap_or(0);
+                    if cap > 0 && running >= cap {
+                        free_workers.push_back(worker_idx);
+                        parked.push((step_id.clone(), attempt));
+                        continue;
+                    }
 
                     let required_output_names =
                         required_outputs.get(&step.id).cloned().unwrap_or_default();
@@ -680,6 +698,8 @@ where
                         bar.set_animating(true);
                     }
 
+                    *in_flight_by_tool.entry(step.tool.clone()).or_insert(0) += 1;
+
                     let step = step.clone();
                     in_flight.push(async move {
                         let result = worker
@@ -705,6 +725,20 @@ where
                         };
                         StepCompletion { step_id, attempt, worker_idx, step, result }
                     });
+                }
+
+                // Livelock guard: every remaining step parked on a capped tool
+                // while nothing is in flight means the cap accounting broke — a
+                // cap is only reachable while that tool has a step genuinely in
+                // flight. Fail loudly with the parked ids instead of falling
+                // through to the opaque stall error below.
+                if in_flight.is_empty() && ready.is_empty() && !parked.is_empty() {
+                    let ids: Vec<&str> = parked.iter().map(|(id, _)| id.as_str()).collect();
+                    return Err(ConductorError::Internal(format!(
+                        "scheduler stalled: {} step(s) parked on capped tools with nothing in flight: {:?}",
+                        parked.len(),
+                        ids
+                    )));
                 }
 
                 let completion = in_flight.next().await.ok_or_else(|| {
@@ -870,6 +904,33 @@ where
                 // The worker is free again the moment the attempt settles —
                 // including a retry, whose step holds no worker while queued.
                 free_workers.push_back(worker_idx);
+
+                // Release this tool's slot, then re-admit any parked step whose
+                // tool just dropped back below its cap. Runs on every settlement
+                // (retries included), matching the increment on dispatch, so the
+                // counter can never stay elevated above the steps actually in
+                // flight.
+                if let Some(count) = in_flight_by_tool.get_mut(&step.tool) {
+                    *count = count.saturating_sub(1);
+                }
+                let mut still_parked = Vec::new();
+                for (parked_id, parked_attempt) in parked.drain(..) {
+                    let parked_tool = workflow
+                        .steps
+                        .iter()
+                        .find(|s| s.id == parked_id)
+                        .map(|s| s.tool.as_str())
+                        .unwrap_or_default();
+                    let parked_spec = find_tool_by_name(&unified.tools, parked_tool);
+                    let cap = parked_spec.map_or(0, |t| t.max_concurrent_calls);
+                    let running = in_flight_by_tool.get(parked_tool).copied().unwrap_or(0);
+                    if cap > 0 && running >= cap {
+                        still_parked.push((parked_id, parked_attempt));
+                    } else {
+                        ready.push_back((parked_id, parked_attempt));
+                    }
+                }
+                parked = still_parked;
                 if settled {
                     settled_steps += 1;
                     // Release the dependents: on any settlement — including a
