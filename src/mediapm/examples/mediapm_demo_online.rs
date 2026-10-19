@@ -424,7 +424,7 @@ fn configure_demo_conductor_executable_timeout(sync_timeout: Duration) {
 /// overall sync budget minus [`DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS`].
 ///
 /// The conductor captures this budget on first actor use; if the caller has
-/// already set the knob, that value is respected and only reported. A
+/// already set the knob, that value is respected. A
 /// saturating subtraction can compute zero for a sync budget below the
 /// margin, in which case the conductor falls back to its own default (the
 /// demo's wrapper still bounds the run).
@@ -3209,10 +3209,13 @@ mod tests {
         // assertion below protects.
         let previous_rpc_budget = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).ok();
         let previous_sync_budget = std::env::var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV).ok();
+        let previous_exec_timeout =
+            std::env::var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV).ok();
         // SAFETY: same controlled-scope mutation and restore as above.
         unsafe {
             std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV);
             std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV);
+            std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV);
         }
 
         super::main().expect("example main should run to completion");
@@ -3248,6 +3251,12 @@ mod tests {
             match previous_sync_budget {
                 Some(value) => std::env::set_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV, value),
                 None => std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV),
+            }
+            match previous_exec_timeout {
+                Some(value) => {
+                    std::env::set_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV, value)
+                }
+                None => std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV),
             }
         }
 
