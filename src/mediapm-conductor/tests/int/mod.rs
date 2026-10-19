@@ -6,6 +6,11 @@ mod external_data_and_validation;
 /// Bootstrap, validation, and state-shape focused checks.
 mod bootstrap;
 
+/// Per-step RPC layering — no transport timeout on `ExecuteStep` dispatch
+/// (unix-only: the test step is a real `sh` process).
+#[cfg(unix)]
+mod step_rpc_layering;
+
 /// Instance GC with configurable TTL.
 mod gc;
 

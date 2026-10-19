@@ -164,3 +164,76 @@ impl TestConductor {
         write_conductor_config(self.dir.path(), doc);
     }
 }
+
+/// Serializes tests that read or mutate `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS`.
+///
+/// The knob is read at two different times: the lazily-initialised
+/// `ConductorActorClient` captures it once on first client use (any
+/// `run_workflow` / `get_runtime_diagnostics` call), while the coordinator
+/// re-reads it per `ExecuteStep` dispatch. Tests that shrink the budget
+/// between those two moments must serialize against each other so a
+/// concurrent run cannot observe the mutated value at capture time.
+/// Mutex poisoning is ignored so one failing test does not cascade.
+///
+/// A `tokio::sync::Mutex` guards the mutation window: it is held across
+/// `.await` points (the client-init and workflow calls inside the window),
+/// which a `std::sync::MutexGuard` cannot be (`clippy::await_holding_lock`,
+/// and it is not `Send`).
+///
+/// Note: the lib-side constant is `orchestration::config::ENV_RPC_TIMEOUT_SECONDS`,
+/// which is not visible from this integration-test crate; the literal here
+/// must stay in sync with it.
+pub(crate) async fn rpc_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
+/// RAII guard for `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS`: applies one
+/// mutation and restores the prior state (value or absence) on drop, so a
+/// panicking test cannot leak the mutated budget into sibling tests.
+///
+/// Hold [`rpc_env_lock`] for the guard's whole lifetime — `set_var` is not
+/// thread-safe and sibling tests construct nodes that capture this value.
+pub(crate) struct RpcEnvGuard {
+    /// Value the variable held before the guard mutated it, if any.
+    previous: Option<String>,
+}
+
+impl RpcEnvGuard {
+    /// Removes the variable for the guard's lifetime (the lib falls back to
+    /// its default budget while unset).
+    ///
+    /// # Safety
+    ///
+    /// Caller must hold [`rpc_env_lock`].
+    pub(crate) fn remove() -> Self {
+        let previous = std::env::var("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS").ok();
+        // SAFETY: caller holds rpc_env_lock; see struct docs.
+        unsafe { std::env::remove_var("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS") };
+        Self { previous }
+    }
+
+    /// Sets the variable to `seconds` for the guard's lifetime.
+    ///
+    /// # Safety
+    ///
+    /// Caller must hold [`rpc_env_lock`].
+    pub(crate) fn set_seconds(seconds: &str) -> Self {
+        let previous = std::env::var("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS").ok();
+        // SAFETY: caller holds rpc_env_lock; see struct docs.
+        unsafe { std::env::set_var("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS", seconds) };
+        Self { previous }
+    }
+}
+
+impl Drop for RpcEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: caller holds rpc_env_lock for the guard's lifetime; see struct docs.
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS", value),
+                None => std::env::remove_var("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS"),
+            }
+        }
+    }
+}

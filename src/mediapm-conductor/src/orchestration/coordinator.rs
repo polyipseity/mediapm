@@ -28,7 +28,7 @@ use crate::state::{ConductorState, InstanceAux, ToolCallInstance};
 
 use ractor::rpc::CallResult;
 
-use super::config::{default_worker_pool_size, rpc_timeout_ms};
+use super::config::default_worker_pool_size;
 use super::protocol::{
     StepExecutionBundle, StepExecutionRequest, StepOutputs, UnifiedNickelDocument,
     find_tool_by_name,
@@ -706,14 +706,25 @@ where
 
                     let step = step.clone();
                     in_flight.push(async move {
+                        // No transport timeout on this dispatch: the step's
+                        // duration bound is the executable watchdog inside
+                        // its worker, and the run-level bound is the
+                        // `run_workflow` RPC budget in `node.rs`. A wedged
+                        // in-process builtin is bounded only by that
+                        // run-level budget.
                         let result = worker
                             .call(
                                 |reply| StepWorkerMessage::ExecuteStep(Box::new(request), reply),
-                                Some(Duration::from_millis(rpc_timeout_ms())),
+                                None,
                             )
                             .await;
                         let result = match result {
                             Ok(CallResult::Success(v)) => v.map_err(|e| (StepFailureKind::Step, e)),
+                            // Unreachable at this call site: the reply port
+                            // carries no timeout, so only worker death
+                            // (`RPC channel closed`) or a step error can end
+                            // the call early. The arm stays for enum
+                            // exhaustiveness.
                             Ok(CallResult::Timeout) => Err((
                                 StepFailureKind::Rpc,
                                 ConductorError::rpc_error("StepWorker", "RPC timeout"),
