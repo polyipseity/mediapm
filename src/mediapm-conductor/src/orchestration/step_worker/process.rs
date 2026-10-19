@@ -8,7 +8,7 @@ use mediapm_cas::{CasApi, Hash};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 
-use super::executable_timeout;
+use super::{EXECUTABLE_TIMEOUT_ENV_VAR, executable_timeout};
 use crate::error::ConductorError;
 
 /// Test-only builtin that fails its first `failures` invocations (keyed by
@@ -50,6 +50,19 @@ pub(super) struct ExecutionResult {
 }
 
 /// Runs an executable process with the given inputs and env vars.
+///
+/// The child is spawned with piped stdout/stderr and `kill_on_drop`: on a
+/// watchdog timeout the surrounding future is dropped, which terminates the
+/// process, while the caller-owned capture buffers survive for diagnostics.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Io`] when the process cannot be spawned, a
+/// captured stream cannot be read, or the child cannot be waited on, and
+/// [`ConductorError::Workflow`] when the watchdog times the process out or
+/// its exit code is not in `success_codes`. A timeout error carries the
+/// captured output tails (last 2048 bytes of each stream) so a killed step
+/// still reports what its child wrote before the kill.
 pub(super) async fn run_executable_process(
     command_parts: &[String],
     success_codes: &[i32],
@@ -85,40 +98,82 @@ pub(super) async fn run_executable_process(
         .spawn()
         .map_err(|source| ConductorError::io("spawn executable process", command, source))?;
 
-    let result = timeout(timeout_duration, collect_child_output(child)).await.map_err(|_| {
-        ConductorError::Workflow(format!(
-            "executable process '{command}' timed out after {timeout_duration:?}",
-        ))
-    })??;
+    // Buffers live outside the timed future: a timeout drops the future (and
+    // with it the child, killed via `kill_on_drop`), but bytes the child
+    // wrote before the kill stay readable for the timeout error below.
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
 
-    let exit_code = result.exit_code;
+    let result = timeout(timeout_duration, collect_child_output(child, &mut stdout, &mut stderr))
+        .await
+        .map_err(|_| {
+            ConductorError::Workflow(format!(
+                "executable process '{command}' timed out after {timeout_duration:?} \
+             ({EXECUTABLE_TIMEOUT_ENV_VAR}); stdout tail (last 2048 bytes): {}; \
+             stderr tail (last 2048 bytes): {}",
+                output_tail(&stdout),
+                output_tail(&stderr),
+            ))
+        })??;
+
+    let exit_code = result;
     if !success_codes.is_empty() && !success_codes.contains(&exit_code) {
-        let stderr_str = String::from_utf8_lossy(&result.stderr);
+        let stderr_str = String::from_utf8_lossy(&stderr);
         return Err(ConductorError::Workflow(format!(
             "executable process '{command}' exited with code {exit_code}: {stderr_str}",
         )));
     }
 
-    Ok(result)
+    Ok(ExecutionResult { stdout, stderr, exit_code })
 }
 
-/// Collects stdout, stderr, and exit code from a spawned child process.
-async fn collect_child_output(mut child: Child) -> Result<ExecutionResult, ConductorError> {
+/// Renders the last 2048 bytes of one captured output stream for timeout
+/// diagnostics; an empty buffer renders as `(empty)`.
+fn output_tail(bytes: &[u8]) -> String {
+    const TAIL_BYTES: usize = 2048;
+    if bytes.is_empty() {
+        return "(empty)".to_string();
+    }
+    String::from_utf8_lossy(&bytes[bytes.len() - TAIL_BYTES.min(bytes.len())..]).into_owned()
+}
+
+/// Collects stdout, stderr, and exit code from a spawned child process into
+/// caller-owned buffers, which outlive this future on a watchdog timeout.
+///
+/// Both streams are drained concurrently: a child blocked writing one stream
+/// while the parent reads the other must not wedge the run, and a watchdog
+/// timeout must leave both buffers populated for the timeout diagnostic.
+async fn collect_child_output(
+    mut child: Child,
+    stdout: &mut Vec<u8>,
+    stderr: &mut Vec<u8>,
+) -> Result<i32, ConductorError> {
     use tokio::io::AsyncReadExt;
 
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
+    let mut out = child.stdout.take();
+    let mut err = child.stderr.take();
 
-    if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut stdout)
-            .await
-            .map_err(|source| ConductorError::io("read child stdout", "stdout", source))?;
-    }
-    if let Some(mut err) = child.stderr.take() {
-        err.read_to_end(&mut stderr)
-            .await
-            .map_err(|source| ConductorError::io("read child stderr", "stderr", source))?;
-    }
+    let drain_stdout = async {
+        match out.as_mut() {
+            Some(reader) => reader
+                .read_to_end(stdout)
+                .await
+                .map(|_| ())
+                .map_err(|source| ConductorError::io("read child stdout", "stdout", source)),
+            None => Ok(()),
+        }
+    };
+    let drain_stderr = async {
+        match err.as_mut() {
+            Some(reader) => reader
+                .read_to_end(stderr)
+                .await
+                .map(|_| ())
+                .map_err(|source| ConductorError::io("read child stderr", "stderr", source)),
+            None => Ok(()),
+        }
+    };
+    tokio::try_join!(drain_stdout, drain_stderr)?;
 
     let status = child
         .wait()
@@ -128,11 +183,11 @@ async fn collect_child_output(mut child: Child) -> Result<ExecutionResult, Condu
     let exit_code = status.code().unwrap_or(-1);
 
     if !status.success() {
-        let stderr_str = String::from_utf8_lossy(&stderr);
+        let stderr_str = String::from_utf8_lossy(stderr);
         tracing::warn!("process exited with code {exit_code}: {stderr_str}",);
     }
 
-    Ok(ExecutionResult { stdout, stderr, exit_code })
+    Ok(exit_code)
 }
 
 /// Runs a builtin tool by dispatching to the appropriate handler through the
@@ -318,4 +373,66 @@ async fn run_slow_builtin(
         ConductorError::Workflow(format!("slow builtin could not write to log '{log_path}': {e}"))
     })?;
     Ok(ExecutionResult::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orchestration::step_worker::EXECUTABLE_TIMEOUT_ENV_VAR;
+
+    /// RAII guard that overrides [`EXECUTABLE_TIMEOUT_ENV_VAR`] for one test
+    /// and restores the prior value (or removes the variable) on drop, so a
+    /// panicking assertion cannot leak the override into sibling tests.
+    struct ExecutableTimeoutOverride(Option<String>);
+
+    impl ExecutableTimeoutOverride {
+        /// Sets the executable-timeout env override to `secs` for this guard's lifetime.
+        fn set(secs: u64) -> Self {
+            let prior = std::env::var(EXECUTABLE_TIMEOUT_ENV_VAR).ok();
+            // Safety: env mutation is process-global; the guard restores the
+            // prior value on drop, and tests relying on this variable are
+            // serialized by the per-test process boundary under nextest.
+            unsafe { std::env::set_var(EXECUTABLE_TIMEOUT_ENV_VAR, secs.to_string()) };
+            Self(prior)
+        }
+    }
+
+    impl Drop for ExecutableTimeoutOverride {
+        fn drop(&mut self) {
+            // Safety: mirrors `set`; restores the pre-test env state.
+            unsafe {
+                match &self.0 {
+                    Some(value) => std::env::set_var(EXECUTABLE_TIMEOUT_ENV_VAR, value),
+                    None => std::env::remove_var(EXECUTABLE_TIMEOUT_ENV_VAR),
+                }
+            }
+        }
+    }
+
+    /// Protects the guarantee that a watchdog-killed executable keeps its
+    /// captured stdout/stderr: the error message must carry both output
+    /// tails, because that message is the only evidence surviving the kill
+    /// (the demo's stalled media-tagger step lost everything written by the
+    /// child when the timeout dropped the buffers).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn executable_timeout_error_carries_captured_output_tails() {
+        let _timeout_override = ExecutableTimeoutOverride::set(1);
+        let sandbox_dir = std::env::current_dir().expect("current dir");
+        let command: Vec<String> =
+            ["sh", "-c", "echo marker-stdout; echo marker-stderr >&2; sleep 30"]
+                .iter()
+                .map(|part| (*part).to_string())
+                .collect();
+
+        let error =
+            run_executable_process(&command, &[], &sandbox_dir, &BTreeMap::<String, String>::new())
+                .await
+                .expect_err("watchdog timeout must fail the step");
+
+        let message = error.to_string();
+        assert!(message.contains("timed out"), "timeout wording missing: {message}");
+        assert!(message.contains("marker-stdout"), "stdout tail missing: {message}");
+        assert!(message.contains("marker-stderr"), "stderr tail missing: {message}");
+    }
 }
