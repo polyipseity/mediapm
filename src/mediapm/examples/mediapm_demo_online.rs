@@ -231,6 +231,18 @@ const DEMO_ONLINE_TIMEOUT_SECS_DEFAULT: u64 =
 const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV: &str =
     "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";
 
+/// Conductor run-level RPC budget knob. Mirrors the library's
+/// `orchestration::config::ENV_RPC_TIMEOUT_SECONDS` (`pub(crate)` there, so
+/// the example re-declares the literal) at
+/// `src/mediapm-conductor/src/orchestration/config.rs`.
+const DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV: &str = "MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS";
+
+/// Margin the demo holds back from its overall sync budget when sizing the
+/// conductor's run-level RPC budget, so the conductor-layer timeout error
+/// (which names the budget and the knob) fires before the demo's blind
+/// hard-timeout wrapper.
+const DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS: u64 = 60;
+
 const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_DEFAULT_SECS: u64 = 5 * 60;
 
 const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_RESERVE_SECS: u64 = 30;
@@ -405,6 +417,30 @@ fn configure_demo_conductor_executable_timeout(sync_timeout: Duration) {
     }
     emit_watchdog_notice(&format!(
         "demo_online defaulted {DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV}={computed_timeout} to fail long-running external steps before the overall demo timeout; set {DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV} to override"
+    ));
+}
+
+/// Exports the conductor's run-level RPC budget, sized from the demo's own
+/// overall sync budget minus [`DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS`].
+///
+/// The conductor captures this budget on first actor use; if the caller has
+/// already set the knob, that value is respected and only reported. A
+/// saturating subtraction can compute zero for a sync budget below the
+/// margin, in which case the conductor falls back to its own default (the
+/// demo's wrapper still bounds the run).
+fn configure_demo_conductor_rpc_timeout(sync_timeout: Duration) {
+    if std::env::var_os(DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).is_some() {
+        return;
+    }
+
+    let computed_budget =
+        sync_timeout.as_secs().saturating_sub(DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS);
+
+    unsafe {
+        std::env::set_var(DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, computed_budget.to_string());
+    }
+    emit_watchdog_notice(&format!(
+        "demo_online defaulted {DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV}={computed_budget} so the conductor's run-workflow watchdog fires (with its diagnosable error) before the demo's hard timeout; set {DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV} to override"
     ));
 }
 
@@ -3019,6 +3055,12 @@ async fn main() -> ExampleResult<()> {
     let run_sync = example_isolation::parse_run_online_sync_override(
         std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok().as_deref(),
     )?;
+    // Watchdog budgets resolve before the mode branch so both modes export
+    // the same knobs: a bad timeout env value fails fast everywhere, and the
+    // conductor sees the same budget whenever it is constructed.
+    let sync_timeout = online_demo_timeout()?;
+    configure_demo_conductor_executable_timeout(sync_timeout);
+    configure_demo_conductor_rpc_timeout(sync_timeout);
     if !run_sync {
         let paths = run_online_demo_config_only().await?;
         println!("generated artifacts root: {}", paths.artifact_root.display());
@@ -3028,8 +3070,6 @@ async fn main() -> ExampleResult<()> {
         return Ok(());
     }
 
-    let sync_timeout = online_demo_timeout()?;
-    configure_demo_conductor_executable_timeout(sync_timeout);
     let hard_timeout_guard = spawn_hard_timeout_guard(sync_timeout);
 
     let paths = match run_online_demo(sync_timeout).await {
@@ -3164,14 +3204,50 @@ mod tests {
             std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
         }
 
+        // Clear the watchdog knobs so the defaulted path is deterministic:
+        // a value leaked by a sibling test would shadow the computation the
+        // assertion below protects.
+        let previous_rpc_budget = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).ok();
+        let previous_sync_budget = std::env::var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV).ok();
+        // SAFETY: same controlled-scope mutation and restore as above.
+        unsafe {
+            std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV);
+            std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV);
+        }
+
         super::main().expect("example main should run to completion");
 
-        // SAFETY: restore previous env var value for test isolation.
+        // The demo must export a conductor RPC budget strictly below its own
+        // overall sync budget: the conductor-layer timeout error names the
+        // budget and knob, so it has to fire before the demo's blind
+        // hard-timeout wrapper to keep the failure diagnosable.
+        let rpc_budget = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV)
+            .expect("main must export the conductor RPC budget");
+        let expected = (super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT
+            - super::DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS)
+            .to_string();
+        assert_eq!(rpc_budget, expected, "RPC budget must default to sync budget minus the margin");
+        assert!(
+            rpc_budget.parse::<u64>().expect("budget renders as seconds")
+                < super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT,
+            "RPC budget must stay below the demo's overall sync budget"
+        );
+
+        // SAFETY: restore previous env var values for test isolation.
         unsafe {
-            if let Some(value) = previous {
-                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
-            } else {
-                std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
+            match previous {
+                Some(value) => std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value),
+                None => std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV),
+            }
+            match previous_rpc_budget {
+                Some(value) => {
+                    std::env::set_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, value)
+                }
+                None => std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV),
+            }
+            match previous_sync_budget {
+                Some(value) => std::env::set_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV, value),
+                None => std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV),
             }
         }
 
