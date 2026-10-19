@@ -783,6 +783,52 @@ fn fill_at_its_floor_gives_its_columns_to_the_label_and_count() {
     );
 }
 
+/// A bar whose position counts discrete units drops the rate and eta a byte
+/// budget would render, and the width it no longer reserves lengthens the
+/// fill.
+///
+/// The first frame carries both rows: identical tally, identical elapsed,
+/// identical position, and only the suppression flag differs, so the two
+/// trailing segments (`0/d` rate, `2s` eta) are the flag's whole visible
+/// effect. The second frame is the suppressed row alone: with no sibling
+/// asking for wider suffix columns, the budget reserves only what the row
+/// draws and the fill inherits the rest — which is what pins the
+/// measurement/draw equality for the flag rather than only its text.
+#[test]
+fn suppressed_row_drops_rate_and_eta_and_the_fill_takes_their_columns() {
+    let (terminal, term) = mk_with_capacity(3, 60, 2);
+    let screen = terminal.screen().build();
+    let plain = screen.add_bar(3, "plain");
+    plain.set_animating(true);
+    plain.advance(1);
+    let suppressed = screen.add_bar(3, "steps");
+    suppressed.set_animating(true);
+    suppressed.set_suppress_rate_eta(true);
+    suppressed.advance(1);
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        concat!(
+            "⠋     plain ███████████░░░░░░░░░░░░░░░░░░░░░░  1/3 0s 0/d 2s\n",
+            "⠋     steps ███████████░░░░░░░░░░░░░░░░░░░░░░  1/3 0s",
+        ),
+        "only the suppressed row's rate and eta segments disappear"
+    );
+
+    let (terminal, term) = mk_with_capacity(2, 60, 1);
+    let screen = terminal.screen().build();
+    let suppressed = screen.add_bar(3, "steps");
+    suppressed.set_animating(true);
+    suppressed.set_suppress_rate_eta(true);
+    suppressed.advance(1);
+    screen.tick();
+    assert_eq!(
+        &term.contents(),
+        "⠋     steps █████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  1/3 0s",
+        "the suppressed row reserves only what it draws, so its fill grows"
+    );
+}
+
 /// A label that renders a tally, a timing, a rate, and an ETA, the way the
 /// conductor's `StepBarLabel` renders the pinned overall workflow row.
 ///

@@ -98,9 +98,11 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             status: TrackStatus::Active,
             elapsed: recording::RecordingTrackedHandle::snapshot_elapsed(self),
             // Stub snapshot: like `position: 0` and the constant `Active`
-            // status, the display-only animation flag is not modeled here;
-            // assert `set_animating` through the recorded ops instead.
+            // status, the display-only flags are not modeled here; assert
+            // `set_animating`/`set_suppress_rate_eta` through the recorded
+            // ops instead.
             animating: false,
+            suppress_rate_eta: false,
         }
     }
     fn is_finished(&self) -> bool {
@@ -141,6 +143,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     }
     fn set_animating(&self, animating: bool) {
         recording::RecordingTrackedHandle::set_animating(self, animating);
+    }
+    fn set_suppress_rate_eta(&self, suppress: bool) {
+        recording::RecordingTrackedHandle::set_suppress_rate_eta(self, suppress);
     }
 }
 

@@ -306,6 +306,47 @@ async fn overall_row_installs_no_label_and_sets_total_once() {
     assert_eq!(totals, 1, "the overall row's total is set exactly once per workflow: {overall:?}");
 }
 
+/// Worker-slot bars suppress their auto rate and eta; the overall row keeps
+/// its timing.
+///
+/// A worker slot counts steps, so a rate and eta derived from that count say
+/// nothing — the coordinator drops both on every slot it pre-creates. The
+/// overall row counts the run's steps against a byte-free total too, but it
+/// is the row a user reads the run's pace from, so its timing stays.
+#[tokio::test]
+async fn worker_slots_suppress_rate_and_eta_but_the_overall_row_keeps_them() {
+    fix_worker_pool_size();
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        vec![crate::echo_workflow("default", "echo@v1", "hello")],
+    ));
+
+    let (tracker, summary) = run_with_progress(&tc, "default").await;
+    assert_eq!(summary.total_steps, 1);
+    let recorded = tracker.recorded();
+
+    let worker_ops = ops_on_worker_slots(&recorded);
+    let suppressions: Vec<&ProgressOp> = worker_ops
+        .iter()
+        .filter(|op| matches!(op, ProgressOp::SetSuppressRateEta { .. }))
+        .collect();
+    // Pool size is pinned to 2, and each pre-created slot sets the flag once.
+    assert_eq!(
+        suppressions,
+        vec![
+            &ProgressOp::SetSuppressRateEta { suppress: true },
+            &ProgressOp::SetSuppressRateEta { suppress: true },
+        ],
+        "each pre-created worker slot suppresses rate and eta exactly once: {worker_ops:?}"
+    );
+
+    let overall = ops_on_overall(&recorded);
+    let overall_suppressions =
+        overall.iter().filter(|op| matches!(op, ProgressOp::SetSuppressRateEta { .. })).count();
+    assert_eq!(overall_suppressions, 0, "the overall row keeps its rate and eta: {overall:?}");
+}
+
 /// Single-step echo workflow emits the expected progress sequence:
 /// overall bar (total set by coordinator) → per-worker idle bars → step bar
 /// via worker-0 slot → advance → finish → overall advance → finish.
@@ -333,9 +374,11 @@ async fn single_step_success_progress_ops() {
             ProgressOp::SetAnimating { animating: true },
             // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Dispatch s1 to worker-0 (re-activate idle bar); 0 terminal
@@ -394,9 +437,11 @@ async fn two_step_same_level_success_progress_ops() {
             ProgressOp::SetAnimating { animating: true },
             // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Dispatch s1 to worker-0 (re-activate idle bar): 0 terminal
@@ -473,9 +518,11 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::SetAnimating { animating: true },
             // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Dispatch s1 to worker-0 (re-activate, 0/1).
@@ -632,9 +679,11 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::SetAnimating { animating: true },
             // Per-worker idle bars (2 workers), created finished.
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Dispatch s1 to worker-0 (re-activate, 0/1).
@@ -1244,9 +1293,11 @@ async fn retry_tally_counts_the_attempt_in_total_only() {
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::SetAnimating { animating: true },
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Attempt 1 dispatches to worker-0: the assignment counts toward
@@ -1315,9 +1366,11 @@ async fn final_failure_tally_counts_the_terminal_outcome() {
             ProgressOp::SetTotal { total: 1 },
             ProgressOp::SetAnimating { animating: true },
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             ProgressOp::AddBar { total: 0, label: "idle".into() },
+            ProgressOp::SetSuppressRateEta { suppress: true },
             idle_pc(),
             ProgressOp::FinishSuccess,
             // Attempt 1 dispatches to worker-0 (0/1) and fails retryably:

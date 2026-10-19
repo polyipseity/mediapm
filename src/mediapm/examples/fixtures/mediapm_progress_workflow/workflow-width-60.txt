@@ -1,5 +1,5 @@
-⠏       default s3 (ffmpeg) [active] ███████ 22s 0/d 1s
-⠏       default s4 (yt-dlp) [active] ███████ 19s 0/d 1s
+⠏       default s3 (ffmpeg) [active] ███████ 22s
+⠏       default s4 (yt-dlp) [active] ███████ 19s
 ·                         [W] [idle] ███████ 4s
 ·                         [F] [idle] ███████ 5s
 ·                             [idle] ███████ 6s

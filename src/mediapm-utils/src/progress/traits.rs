@@ -104,6 +104,13 @@ pub trait ProgressBarApi: Send + Sync {
     /// regardless of this flag; see
     /// [`ProgressBarHandle::set_animating`] for the full contract.
     fn set_animating(&self, animating: bool);
+    /// Drop the auto-derived rate and eta segments on this row.
+    ///
+    /// A bar whose position counts steps rather than bytes renders a rate and
+    /// eta derived from that count that say nothing, so its owner sets this
+    /// flag and the row keeps only `elapsed`, `count` and `total`. See
+    /// [`ProgressBarHandle::set_suppress_rate_eta`] for the full contract.
+    fn set_suppress_rate_eta(&self, suppress: bool);
 }
 
 #[cfg(feature = "progress")]
@@ -149,6 +156,9 @@ impl ProgressBarApi for ProgressBarHandle {
     }
     fn set_animating(&self, animating: bool) {
         ProgressBarHandle::set_animating(self, animating);
+    }
+    fn set_suppress_rate_eta(&self, suppress: bool) {
+        ProgressBarHandle::set_suppress_rate_eta(self, suppress);
     }
 }
 

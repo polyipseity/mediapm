@@ -91,6 +91,11 @@ pub(crate) struct SharedState {
     /// [`status`](Self::snapshot) is `Active` (spec R3/AC2), so a forgotten
     /// declaration is a still row rather than a spinning one.
     animating: AtomicBool,
+    /// Drop the auto-derived rate and eta segments on this row (see
+    /// [`set_suppress_rate_eta`](ProgressBarHandle::set_suppress_rate_eta)).
+    /// Defaults to `false`: an unset flag leaves timing untouched, so a bar
+    /// that carries a byte or work budget keeps rendering both.
+    suppress_rate_eta: AtomicBool,
     time_source: Arc<dyn TimeSource>,
 }
 
@@ -172,6 +177,7 @@ impl SharedState {
             finished_elapsed: RwLock::new(None),
             cleared_blank_pending: AtomicBool::new(false),
             animating: AtomicBool::new(false),
+            suppress_rate_eta: AtomicBool::new(false),
             time_source,
         }
     }
@@ -210,6 +216,7 @@ impl SharedState {
             status,
             elapsed: self.elapsed(),
             animating: self.animating.load(Ordering::Relaxed),
+            suppress_rate_eta: self.suppress_rate_eta.load(Ordering::Relaxed),
         }
     }
 
@@ -272,6 +279,12 @@ impl SharedState {
         self.animating.store(animating, Ordering::Relaxed);
     }
 
+    /// Store the rate/eta suppression flag (see
+    /// [`ProgressBarHandle::set_suppress_rate_eta`]).
+    fn set_suppress_rate_eta(&self, suppress: bool) {
+        self.suppress_rate_eta.store(suppress, Ordering::Relaxed);
+    }
+
     fn set_style(&self, style: BarStyle) {
         self.style.store(style as u8, Ordering::Relaxed);
     }
@@ -303,6 +316,12 @@ pub struct TrackSnapshot {
     /// animates a row only when this is `true` **and** `status` is
     /// [`Active`](TrackStatus::Active); otherwise the row renders parked.
     pub animating: bool,
+    /// Whether the auto-derived rate and eta segments are dropped on this
+    /// row (see
+    /// [`set_suppress_rate_eta`](ProgressBarHandle::set_suppress_rate_eta)).
+    /// `elapsed`, `count` and `total` are unaffected: the flag suppresses
+    /// only the two segments a derived rate would otherwise produce.
+    pub suppress_rate_eta: bool,
 }
 
 // ---- ProgressBarHandle ----------------------------------------------------
@@ -318,7 +337,8 @@ pub struct TrackSnapshot {
 /// screen with no draw target can hand one out and a caller may drive it
 /// harmlessly. It is not inert, though: position and status mutations still land
 /// in its shared state, so what a disabled run reported stays inspectable. Only
-/// `set_suffix_components`, `set_truncation`, and `set_style` consult the disabled
+/// `set_suffix_components`, `set_truncation`, `set_style`, and
+/// `set_suppress_rate_eta` consult the disabled
 /// flag and discard their input; every other mutator, `set_prefix_components`
 /// included, writes straight through.
 ///
@@ -490,6 +510,22 @@ impl ProgressBarHandle {
     /// alone: it re-activates a row, it does not declare work.
     pub fn set_animating(&self, animating: bool) {
         self.state.set_animating(animating);
+    }
+
+    /// Drop the auto-derived rate and eta segments on this row.
+    ///
+    /// For a bar whose position counts steps or other discrete units, a rate
+    /// and eta derived from that position are noise (a step-count bar would
+    /// render `0/d 1s` forever). Setting this flag removes both segments from
+    /// the row's suffix on every frame; `elapsed`, `count` and `total` are
+    /// unaffected, and the width budget is settled as if the segments did not
+    /// exist, so the reserved columns and the rendered string stay equal.
+    /// Defaults to `false`, which leaves timing untouched.
+    pub fn set_suppress_rate_eta(&self, suppress: bool) {
+        if self.state.disabled.load(Ordering::Relaxed) {
+            return; // disabled handle
+        }
+        self.state.set_suppress_rate_eta(suppress);
     }
 
     /// Mark the bar as finished successfully (keeps it visible).

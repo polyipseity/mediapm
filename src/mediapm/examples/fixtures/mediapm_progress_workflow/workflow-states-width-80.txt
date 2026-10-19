@@ -1,4 +1,4 @@
-⠇     ault s7 (transcode-lossless-to-flac) ████████████████████ 13s 0/d 1s
+⠇     ault s7 (transcode-lossless-to-flac) ████████████████████ 13s
 ·                               [W] [idle] ████████████████████ 2s
 ·                               [F] [idle] ████████████████████ 2s
 ·                                   [idle] ████████████████████ 0s

@@ -52,6 +52,7 @@ impl ProgressRenderer {
                                 status: TrackStatus::Active,
                                 elapsed: Duration::ZERO,
                                 animating: false,
+                                suppress_rate_eta: false,
                             },
                         ),
                     };

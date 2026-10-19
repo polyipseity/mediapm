@@ -532,6 +532,10 @@ where
                 for _ in 0..pool_size {
                     let bar = pg.add_bar(0, "idle");
                     bar.set_style(BarStyle::WorkerSpinner);
+                    // A worker slot counts steps, not bytes: an auto rate
+                    // and eta derived from that count (`0/d 1s`) say
+                    // nothing, so the row keeps its tally and elapsed only.
+                    bar.set_suppress_rate_eta(true);
                     bar.set_truncation(Arc::new(worker_slot_label(
                         WorkerSlotState::Idle,
                         "",

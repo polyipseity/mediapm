@@ -91,6 +91,11 @@ pub(super) struct EmaUpdate {
 ///   divided by that same prospective rate — falling back to
 ///   [`NOMINAL_ETA_RATE_FLOOR`] while the EMA has not started, so a just-attached
 ///   bar reserves the eta width it will draw on its first progressed frame.
+/// - A row whose [`suppress_rate_eta`](TrackSnapshot::suppress_rate_eta) flag
+///   is set reports neither segment, whatever its status: its position counts
+///   steps rather than bytes, so a derived rate and eta say nothing. The EMA
+///   still advances, so the debug sink and a later unset of the flag read a
+///   live rate rather than a stale one.
 ///
 /// `time_source` is read only when an update is actually simulated, so two
 /// calls over unchanged state return identical strings.
@@ -115,8 +120,9 @@ pub(super) fn timing_strings(
             ema_update = Some(EmaUpdate { rate, position: snap.position, instant: now });
         }
     }
-    let rate_str = if active { Some(format_rate(rate)) } else { None };
-    let eta_str = if active && snap.total > snap.position {
+    let suppress = snap.suppress_rate_eta;
+    let rate_str = if active && !suppress { Some(format_rate(rate)) } else { None };
+    let eta_str = if active && !suppress && snap.total > snap.position {
         let divisor = if rate > 0.0 { rate } else { NOMINAL_ETA_RATE_FLOOR };
         #[expect(
             clippy::cast_precision_loss,
@@ -640,6 +646,7 @@ mod tests {
             status,
             elapsed: Duration::ZERO,
             animating: false,
+            suppress_rate_eta: false,
         }
     }
 
@@ -718,6 +725,34 @@ mod tests {
             "an active row still reports its rate"
         );
         assert_eq!(strings.eta_str, None, "and no eta once the work is done");
+    }
+
+    /// A suppressed row reports neither segment even while active and
+    /// incomplete, yet its EMA still advances: the rate stays live for the
+    /// debug sink and for a later unset of the flag.
+    #[test]
+    fn a_suppressed_row_reports_no_rate_or_eta_but_still_advances_the_ema() {
+        let time_source = TestTimeSource::new();
+        let mut slot_timing = timing(&time_source);
+        let mut row = snap(TrackStatus::Active, 0, 10);
+        row.suppress_rate_eta = true;
+
+        time_source.advance(Duration::from_secs(5));
+        row.position = 5;
+        let strings = timing_strings(&row, &slot_timing, &time_source);
+        assert_eq!(strings.rate_str, None, "a suppressed row draws no rate");
+        assert_eq!(strings.eta_str, None, "a suppressed row draws no eta");
+        let update = strings.ema_update.expect("a suppressed row still advances its EMA");
+        assert_eq!(update.position, 5, "the window ends at the observed position");
+
+        // Committing the handed-back update must not resurrect the segments:
+        // suppression is a property of the row, not of the smoothing window.
+        slot_timing.rate = update.rate;
+        slot_timing.prev_position = update.position;
+        slot_timing.prev_instant = update.instant;
+        let again = timing_strings(&row, &slot_timing, &time_source);
+        assert_eq!(again.rate_str, None, "a committed window stays suppressed");
+        assert_eq!(again.eta_str, None, "and still reports no eta");
     }
 
     /// A client label that ends mid-escape must be closed at the push point.

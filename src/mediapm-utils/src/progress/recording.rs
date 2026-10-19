@@ -127,6 +127,14 @@ pub enum ProgressOp {
         /// The declared in-flight-work flag.
         animating: bool,
     },
+    /// `set_suppress_rate_eta(suppress)` was called. Drops the row's
+    /// auto-derived rate and eta segments; display-only state this harness
+    /// does not model (its `ProgressBarApi::snapshot` is a stub), so a test
+    /// asserts the call through the recorded op.
+    SetSuppressRateEta {
+        /// The suppression flag as the bar received it.
+        suppress: bool,
+    },
     /// `finish_success()` was called.
     FinishSuccess,
     /// `finish_error()` was called.
@@ -380,6 +388,15 @@ impl RecordingTrackedHandle {
     /// [`ops()`](RecordingTrackedHandle::ops) rather than a snapshot.
     pub fn set_animating(&self, animating: bool) {
         self.push(ProgressOp::SetAnimating { animating });
+    }
+
+    /// Drop the auto-derived rate and eta segments on this row.
+    ///
+    /// Recorded like the other mutators; the flag itself is display-only
+    /// state this harness does not model, so a test asserts the call through
+    /// [`ops()`](RecordingTrackedHandle::ops) rather than a snapshot.
+    pub fn set_suppress_rate_eta(&self, suppress: bool) {
+        self.push(ProgressOp::SetSuppressRateEta { suppress });
     }
 
     /// Mark as finished with success.

@@ -243,6 +243,8 @@ pub fn render_workflow_screen(config: ScreenConfig) -> String {
             // Demo bars all carry in-flight work; their finish parks the row.
             bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
+            // The coordinator suppresses rate and eta on worker-slot bars.
+            bar.set_suppress_rate_eta(true);
             WorkerSlot::Idle.apply(&bar);
             bar.finish_success();
             bar
@@ -395,6 +397,8 @@ fn render_dense(config: ScreenConfig) -> String {
             // Demo bars all carry in-flight work; their finish parks the row.
             bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
+            // The coordinator suppresses rate and eta on worker-slot bars.
+            bar.set_suppress_rate_eta(true);
             WorkerSlot::Idle.apply(&bar);
             bar.finish_success();
             bar
@@ -494,6 +498,8 @@ fn render_states(config: ScreenConfig) -> String {
             // Demo bars all carry in-flight work; their finish parks the row.
             bar.set_animating(true);
             bar.set_style(BarStyle::WorkerSpinner);
+            // The coordinator suppresses rate and eta on worker-slot bars.
+            bar.set_suppress_rate_eta(true);
             WorkerSlot::Idle.apply(&bar);
             bar.finish_success();
             bar
