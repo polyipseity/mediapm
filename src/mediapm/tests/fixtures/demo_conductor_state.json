@@ -1,8 +1,8 @@
 {
   "version": 2,
   "tool_call_instances": {
-    "blake3:639b060da70c82f6c418eca2e30c6abf9bad4fe2c24adb85257167a602112161": {
-      "instance_key": "blake3:639b060da70c82f6c418eca2e30c6abf9bad4fe2c24adb85257167a602112161",
+    "blake3:0cdc1375c25f1ddfdad477e4deeaaaaa8b60f0e7ae7acb3fbb0a5983690bee20": {
+      "instance_key": "blake3:0cdc1375c25f1ddfdad477e4deeaaaaa8b60f0e7ae7acb3fbb0a5983690bee20",
       "tool_call_id": "import@v1",
       "impure": true,
       "executed_at": 1785987849238789000,
@@ -28,8 +28,8 @@
         }
       }
     },
-    "blake3:559c1df5a575f36917f56b7e60e9eb416d37161440303fb84b7530bb173633e7": {
-      "instance_key": "blake3:559c1df5a575f36917f56b7e60e9eb416d37161440303fb84b7530bb173633e7",
+    "blake3:22a961e247d7eaa0828314d3e1cb29a7586647b2a6e70338d6a178e4ba3e49e1": {
+      "instance_key": "blake3:22a961e247d7eaa0828314d3e1cb29a7586647b2a6e70338d6a178e4ba3e49e1",
       "tool_call_id": "media-tagger@blake3:7d51827f1043df72adea899d45dbcca6cb1ef16eb1bfd0021662e80715e53b90",
       "impure": true,
       "executed_at": 1785987882536740000,
@@ -173,8 +173,8 @@
         }
       }
     },
-    "blake3:88ec605bf2d1d010317a6f16f4fd81c29ec0c05e63c3282a01e2fa524fe70578": {
-      "instance_key": "blake3:88ec605bf2d1d010317a6f16f4fd81c29ec0c05e63c3282a01e2fa524fe70578",
+    "blake3:616e050eeb1a69519d9e88f07bfb3ee9dcbd6a9a2ab8552378fbffe0436d4d31": {
+      "instance_key": "blake3:616e050eeb1a69519d9e88f07bfb3ee9dcbd6a9a2ab8552378fbffe0436d4d31",
       "tool_call_id": "rsgain@blake3:754a0e4d9cf5df2cc61b5336d9d543b2765a85cbbbab890cca34a0eee4c2db98",
       "impure": false,
       "executed_at": 1785987881255817000,
@@ -274,8 +274,8 @@
         }
       }
     },
-    "blake3:c44a0793e414e3989346531d87eb6c1e16e939faa6609630eb9aa436f118f614": {
-      "instance_key": "blake3:c44a0793e414e3989346531d87eb6c1e16e939faa6609630eb9aa436f118f614",
+    "blake3:c4733481427bb9d886920d169efca3b2be73c051e04db89283c073b7771c5686": {
+      "instance_key": "blake3:c4733481427bb9d886920d169efca3b2be73c051e04db89283c073b7771c5686",
       "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
       "impure": false,
       "executed_at": 1785987849261570000,
@@ -379,8 +379,8 @@
         }
       }
     },
-    "blake3:bc902984616958229b44b35cd1fc0f2f52162e00e2dfaeb880dee176fb17aef9": {
-      "instance_key": "blake3:bc902984616958229b44b35cd1fc0f2f52162e00e2dfaeb880dee176fb17aef9",
+    "blake3:cd83f30db96ae561990e42e4e5712013048924863de805fa7aa3fab6f97ebf91": {
+      "instance_key": "blake3:cd83f30db96ae561990e42e4e5712013048924863de805fa7aa3fab6f97ebf91",
       "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
       "impure": false,
       "executed_at": 1785987892263567000,
@@ -485,7 +485,7 @@
     "tool_call_instance_counter": 0,
     "conductor_gc_epoch": 0,
     "instances": {
-      "blake3:639b060da70c82f6c418eca2e30c6abf9bad4fe2c24adb85257167a602112161": {
+      "blake3:0cdc1375c25f1ddfdad477e4deeaaaaa8b60f0e7ae7acb3fbb0a5983690bee20": {
         "save_modes": {
           "process_code": "Saved",
           "stderr": "Saved",
@@ -494,7 +494,7 @@
         },
         "last_referenced_at": 1785987849261165000
       },
-      "blake3:559c1df5a575f36917f56b7e60e9eb416d37161440303fb84b7530bb173633e7": {
+      "blake3:22a961e247d7eaa0828314d3e1cb29a7586647b2a6e70338d6a178e4ba3e49e1": {
         "save_modes": {
           "content": "Saved",
           "process_code": "Saved",
@@ -503,7 +503,7 @@
         },
         "last_referenced_at": 1785987892262614000
       },
-      "blake3:88ec605bf2d1d010317a6f16f4fd81c29ec0c05e63c3282a01e2fa524fe70578": {
+      "blake3:616e050eeb1a69519d9e88f07bfb3ee9dcbd6a9a2ab8552378fbffe0436d4d31": {
         "save_modes": {
           "output_content": "Saved",
           "process_code": "Saved",
@@ -512,7 +512,7 @@
         },
         "last_referenced_at": 1785987882536660000
       },
-      "blake3:c44a0793e414e3989346531d87eb6c1e16e939faa6609630eb9aa436f118f614": {
+      "blake3:c4733481427bb9d886920d169efca3b2be73c051e04db89283c073b7771c5686": {
         "save_modes": {
           "primary": "Saved",
           "process_code": "Saved",
@@ -521,7 +521,7 @@
         },
         "last_referenced_at": 1785987881255441000
       },
-      "blake3:bc902984616958229b44b35cd1fc0f2f52162e00e2dfaeb880dee176fb17aef9": {
+      "blake3:cd83f30db96ae561990e42e4e5712013048924863de805fa7aa3fab6f97ebf91": {
         "save_modes": {
           "primary": "Saved",
           "process_code": "Saved",

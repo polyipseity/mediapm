@@ -958,7 +958,13 @@ mod tests {
     /// `pub(crate)` inside `mediapm-conductor`, and this oracle exists to pin the
     /// documented value, so a changed domain string must fail the oracle rather
     /// than move both sides together.
-    const ORACLE_INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2";
+    const ORACLE_INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2.1";
+
+    /// Domain separator under which the checked-in fixture was recorded,
+    /// before wall-clock time left the instance-key scheme.
+    ///
+    /// Pairing only — see [`previously_recorded_instance_key`].
+    const LEGACY_INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2";
 
     /// Returns whether a raw binding source is deterministic, per the documented
     /// spec: a source naming `${env.`, `context.os`, `:file(`, or `:folder(`
@@ -1045,10 +1051,12 @@ mod tests {
     /// Recomputes one recorded instance's key from the spec.
     ///
     /// Components, in order: the versioned domain separator, the unified
-    /// tools-catalog key, `executed_at` only when the instance is impure, the
-    /// deterministic binding hashes, and the instance's materialized-input hashes
-    /// in `BTreeMap` order. The deterministic environment term is empty on the
-    /// mediapm path, which passes no env hashes at all.
+    /// tools-catalog key, the deterministic binding hashes, and the
+    /// instance's materialized-input hashes in `BTreeMap` order. No time
+    /// component exists: the recorded `executed_at` is provenance, never key
+    /// material, so a stored impure instance keeps matching across runs. The
+    /// deterministic environment term is empty on the mediapm path, which
+    /// passes no env hashes at all.
     ///
     /// Written out here rather than delegating to `derive_instance_key_v2` (or its
     /// `derive_tool_call_instance_key` re-export), for the reason given on
@@ -1057,9 +1065,6 @@ mod tests {
         let mut parts = Vec::new();
         parts.push(Hash::from_content(ORACLE_INSTANCE_KEY_DOMAIN_V2.as_bytes()));
         parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
-        if instance.impure {
-            parts.push(Hash::from_content(&instance.executed_at.as_unix_nanos().to_le_bytes()));
-        }
         parts.extend_from_slice(binding_hashes);
         parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
         Hash::composite(&parts)
@@ -1332,24 +1337,43 @@ mod tests {
             .collect()
     }
 
+    /// The key scheme the checked-in fixture was recorded under: the `/v2`
+    /// domain separator plus the `executed_at` time term for impure
+    /// instances, over the caller's argument hashes.
+    ///
+    /// Pairing only, never production: [`plan_demo_instance_key_rewrites`]
+    /// accepts a recorded key that matches under this historical scheme, or
+    /// under an older input-hash rule, or under the current scheme (a
+    /// re-run against an already-regenerated fixture), and always rewrites
+    /// it to the current [`derived_instance_key`] result. Keeping the
+    /// historical composition here is what lets an instance-key derivation
+    /// change regenerate the fixture instead of orphaning it.
+    fn previously_recorded_instance_key(instance: &ToolCallInstance, arg_hashes: &[Hash]) -> Hash {
+        let mut parts = Vec::new();
+        parts.push(Hash::from_content(LEGACY_INSTANCE_KEY_DOMAIN_V2.as_bytes()));
+        parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
+        if instance.impure {
+            parts.push(Hash::from_content(&instance.executed_at.as_unix_nanos().to_le_bytes()));
+        }
+        parts.extend_from_slice(arg_hashes);
+        parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
+        Hash::composite(&parts)
+    }
+
     /// Derives the instance key `instance` is recorded under for a given list of
     /// deterministic input hashes.
     ///
-    /// Mirrors the executor's `derive_instance_key_v2` call exactly: impure
-    /// instances embed `executed_at` and pure ones do not, and the deterministic
-    /// materialized-input hashes come from the instance's own content map. The
-    /// caller supplies only the input-hash list, which is the sole term a change
-    /// to the instance-key material moves.
+    /// Mirrors the executor's `derive_instance_key_v2` call exactly: every
+    /// key derives from content alone (no time term, impure or pure), and the
+    /// deterministic materialized-input hashes come from the instance's own
+    /// content map. The caller supplies only the input-hash list, which is the
+    /// sole term a change to the instance-key material moves.
     fn derived_instance_key(
         instance: &mediapm_conductor::ToolCallInstance,
         arg_hashes: &[Hash],
     ) -> Hash {
-        let executed_at_nanos =
-            if instance.impure { instance.executed_at.as_unix_nanos() } else { 0 };
         mediapm_conductor::derive_tool_call_instance_key(
             &instance.tool_call_id,
-            instance.impure,
-            executed_at_nanos,
             arg_hashes,
             &[],
             &mediapm_conductor::deterministic_materialized_input_hashes(instance),
@@ -1407,11 +1431,15 @@ mod tests {
                 if instance.tool_call_id != conductor_tool_key {
                     continue;
                 }
+                let recorded_key = previously_recorded_instance_key(instance, &current_hashes);
                 let previous_key = derived_instance_key(instance, &previous_hashes);
                 let current_key = derived_instance_key(instance, &current_hashes);
                 // `current_key == stored_key` also covers a re-run against an
                 // already-regenerated fixture, which must be a no-op.
-                if previous_key != *stored_key && current_key != *stored_key {
+                if recorded_key != *stored_key
+                    && previous_key != *stored_key
+                    && current_key != *stored_key
+                {
                     continue;
                 }
                 assert!(
@@ -1429,16 +1457,19 @@ mod tests {
                         stored_key.to_hex(),
                     );
                 } else {
+                    let paired_under = if recorded_key == *stored_key {
+                        " (paired under the recorded scheme)"
+                    } else if previous_key == *stored_key {
+                        " (paired)"
+                    } else {
+                        " (already current)"
+                    };
                     println!(
                         "step {}\n  instance {}\n  previous {}{}\n  current  {}",
                         step.id,
                         instance.tool_call_id,
                         stored_key.to_hex(),
-                        if previous_key == *stored_key {
-                            " (paired)"
-                        } else {
-                            " (already current)"
-                        },
+                        paired_under,
                         current_key.to_hex(),
                     );
                     rewrites.insert(*stored_key, (current_key, step.id.clone()));

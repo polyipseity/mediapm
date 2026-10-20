@@ -667,6 +667,7 @@ where
                         conductor_tmp_dir: self.conductor_tmp_dir.clone(),
                         step_outputs: current_step_outputs,
                         required_output_names,
+                        force_rerun: options.force_rerun,
                     };
 
                     let worker = self.workers[worker_idx].clone();

@@ -195,6 +195,15 @@ pub trait ConductorApi<C: CasApi>: Send + Sync {
 pub struct RunWorkflowOptions {
     /// Number of retry attempts for impure steps.
     pub retry_impure: bool,
+    /// Explicit invalidation for this run: skip the per-step instance-cache
+    /// probe so every step executes fresh, even when its instance was just
+    /// recorded.
+    ///
+    /// Instances are never invalidated by the passage of time — an impure
+    /// step's recorded timestamp is provenance, not an expiry — so this flag
+    /// (or changed key material) is the only way to re-execute a cached
+    /// step. Whole-run scope: per-step force granularity does not exist.
+    pub force_rerun: bool,
     /// Optional tool selector override (managed tool id).
     pub tool_selector: Option<String>,
     /// Optional progress group the conductor composes its own workflow
@@ -218,7 +227,9 @@ pub struct RunWorkflowOptions {
 impl std::fmt::Debug for RunWorkflowOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("RunWorkflowOptions");
-        dbg.field("retry_impure", &self.retry_impure).field("tool_selector", &self.tool_selector);
+        dbg.field("retry_impure", &self.retry_impure)
+            .field("force_rerun", &self.force_rerun)
+            .field("tool_selector", &self.tool_selector);
         #[cfg(feature = "progress")]
         {
             dbg.field("progress_group", &self.progress_group.as_ref().map(|_| "…"));

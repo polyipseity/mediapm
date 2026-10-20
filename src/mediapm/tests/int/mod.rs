@@ -29,6 +29,9 @@ mod resync;
 mod runtime_gitignore;
 /// State JSON persistence and migration tests.
 mod state_persistence;
+/// Double-run idempotency: an immediate second sync must execute no workflow
+/// step and re-materialize no path.
+mod sync_idempotency_double_run;
 /// Per-phase sync observer wiring and centralized output primitives.
 mod sync_observer;
 /// One-terminal-per-sync progress ownership across all three sync phases.

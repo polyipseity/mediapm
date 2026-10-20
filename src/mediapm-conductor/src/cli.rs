@@ -52,6 +52,13 @@ enum CliCommand {
     Run {
         /// Name of the workflow to execute.
         workflow: String,
+        /// Re-execute every step even when its instance is cached.
+        ///
+        /// Explicit invalidation: instances are never invalidated by the
+        /// passage of time, so this flag (or changed step material) is the
+        /// way to force a fresh run.
+        #[arg(long)]
+        force_rerun: bool,
     },
     /// Inspect or manipulate orchestration state.
     State(StateArgs),
@@ -240,7 +247,7 @@ async fn run(cli: Cli) -> Result<(), ConductorError> {
         },
     );
     match cli.command {
-        CliCommand::Run { workflow } => cmd_run(&workflow).await,
+        CliCommand::Run { workflow, force_rerun } => cmd_run(&workflow, force_rerun).await,
         CliCommand::State(state_args) => cmd_state(state_args).await,
         CliCommand::Import(import_args) => cmd_import(import_args).await,
         CliCommand::Remove(remove_args) => cmd_remove(remove_args).await,
@@ -278,7 +285,7 @@ async fn ensure_conductor() -> Result<&'static Conductor<ConfiguredCas>, Conduct
         .await
 }
 
-async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
+async fn cmd_run(workflow_name: &str, force_rerun: bool) -> Result<(), ConductorError> {
     use mediapm_utils::progress::ProgressTerminal;
     let conductor = ensure_conductor().await?;
 
@@ -293,6 +300,7 @@ async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
     };
     let options = RunWorkflowOptions {
         retry_impure: false,
+        force_rerun,
         tool_selector: None,
         progress_group: Some(group.clone()),
         overall_bar: Some(overall),

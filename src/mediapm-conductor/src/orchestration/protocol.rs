@@ -152,6 +152,14 @@ pub(crate) struct StepExecutionRequest {
     /// This set drives rematerialization checks: missing unreferenced outputs
     /// do not force rerun of otherwise cache-hit instances.
     pub required_output_names: BTreeSet<String>,
+    /// Run-scoped explicit invalidation: skip the per-step instance-cache
+    /// probe so every step executes fresh.
+    ///
+    /// Instances are never invalidated by the passage of time (an impure
+    /// step's recorded `executed_at` is provenance); changed key material or
+    /// this flag re-executes a step. Set from
+    /// [`crate::RunWorkflowOptions::force_rerun`].
+    pub force_rerun: bool,
 }
 
 /// Result of one worker step execution.

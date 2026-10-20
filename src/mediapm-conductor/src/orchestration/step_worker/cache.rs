@@ -30,7 +30,6 @@ mod proptests {
     use super::*;
     use crate::state::ResolvedInput;
     use crate::state::versions::derive_instance_key_v2;
-    use mediapm_utils::Timestamp;
     use proptest::prelude::*;
     use proptest::strategy::BoxedStrategy;
 
@@ -88,8 +87,8 @@ mod proptests {
             prop_assume!(inputs1 != inputs2);
             let args1 = arg_hashes(&inputs1);
             let args2 = arg_hashes(&inputs2);
-            let key1 = derive_instance_key_v2("test", false, 0, &args1, &[], &[]);
-            let key2 = derive_instance_key_v2("test", false, 0, &args2, &[], &[]);
+            let key1 = derive_instance_key_v2("test", &args1, &[], &[]);
+            let key2 = derive_instance_key_v2("test", &args2, &[], &[]);
             prop_assert_ne!(key1, key2);
         }
 
@@ -98,34 +97,25 @@ mod proptests {
             inputs in proptest::collection::vec(any::<ResolvedInput>(), 0..10),
         ) {
             let args = arg_hashes(&inputs);
-            let key1 = derive_instance_key_v2("test", false, 0, &args, &[], &[]);
-            let key2 = derive_instance_key_v2("test", false, 0, &args, &[], &[]);
+            let key1 = derive_instance_key_v2("test", &args, &[], &[]);
+            let key2 = derive_instance_key_v2("test", &args, &[], &[]);
             prop_assert_eq!(key1, key2);
         }
     }
 
+    /// The same inputs derive the same key across wall-clock time, impure or
+    /// not: the pre-revision scheme embedded `executed_at` for impure steps
+    /// (covered by `derive_instance_key_v2_impure_keys_ignore_time` in the
+    /// key-derivation module); this pins the executor-level callers see the
+    /// same contract.
     #[test]
-    fn different_impure_timestamps_produce_different_keys() {
+    fn impure_timestamps_do_not_change_the_key() {
         let args = arg_hashes(&[ResolvedInput {
             key: "url".to_string(),
             value: "https://example.com".to_string(),
         }]);
-        let key1 = derive_instance_key_v2(
-            "test",
-            true,
-            Timestamp::from_unix_nanos(0).as_unix_nanos(),
-            &args,
-            &[],
-            &[],
-        );
-        let key2 = derive_instance_key_v2(
-            "test",
-            true,
-            Timestamp::from_unix_nanos(1).as_unix_nanos(),
-            &args,
-            &[],
-            &[],
-        );
-        assert_ne!(key1, key2);
+        let key1 = derive_instance_key_v2("test", &args, &[], &[]);
+        let key2 = derive_instance_key_v2("test", &args, &[], &[]);
+        assert_eq!(key1, key2);
     }
 }

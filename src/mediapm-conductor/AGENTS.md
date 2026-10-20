@@ -430,14 +430,15 @@ Instance TTL uses `Option<u64>` with `#[serde(deserialize_with = "deserialize_op
 Instance keys in Conductor are derived deterministically:
 
 ```text
-instance_key = blake3(tool_id || sorted_inputs_hash || impure_timestamp)
+instance_key = blake3(domain || tool_id || sorted_inputs_hash || materialized_inputs_hash)
 ```
 
 Where:
 
+- `domain` = the versioned separator (`mediapm/conductor/tool call instances/v2.1`); bumping it invalidates every previously derived key once.
 - `tool_id` = the tool name+version from config (content-map details excluded from identity).
 - `sorted_inputs_hash` = blake3 over the sorted `(name, hash)` pairs of `ResolvedInputKey` entries.
-- `impure_timestamp` = `Some(timestamp)` for impure steps, `None` for pure (deterministic) steps.
+- Time never participates: an impure step's recorded `executed_at` is provenance, not key material, so an immediate second sync hits the step cache (`executed_instances == 0`) for unchanged inputs, pure and impure alike. Re-execution follows changed key material or the run-scoped `RunWorkflowOptions::force_rerun` explicit invalidation (API), `--force-rerun` (CLI). Pins: `impure_keys_ignore_time`, `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`, `force_rerun_reexecutes_the_cached_workflow`.
 
 ### Failure Recovery Safety
 
@@ -456,7 +457,7 @@ The design ensures prior successful instances remain reachable after a step fail
 - Step 1 succeeds → instance key K1 stored in `instances` → CAS blob B1 created.
 - Step 2 fails → coordinator calls `commit_run(state.clone(), ...)` → CAS blob B2 created (contains K1 from Step 1, no entry for failed Step 2).
 - `state_pointer` references B2 (containing K1) → K1 remains reachable.
-- Step 2 retried → new instance key K2 derived (may differ if impure) → on success, K2 added alongside K1.
+- Step 2 retried → same instance key K2 (keys derive from content alone; impure steps embed no time) → on success, K2 lands under the same key rather than accumulating a fresh one per run.
 - Outcome: Step 1's I/O is always available via K1.
 
 ### Instance GC Lifecycle

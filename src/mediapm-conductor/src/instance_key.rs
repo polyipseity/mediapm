@@ -134,17 +134,19 @@ pub fn deterministic_materialized_input_hashes(instance: &ToolCallInstance) -> V
 }
 
 /// Returns true when `instance.instance_key` matches re-derived key material.
+///
+/// The derivation is content-only (tool id, deterministic input hashes,
+/// materialized-input hashes), so an impure instance's stored key keeps
+/// matching no matter how much wall-clock time separates the recording from
+/// the check.
 #[must_use]
 pub fn instance_matches_stored_key(
     instance: &ToolCallInstance,
     deterministic_input_hashes: &[Hash],
     deterministic_materialized_input_hashes: &[Hash],
 ) -> bool {
-    let executed_at_nanos = if instance.impure { instance.executed_at.as_unix_nanos() } else { 0 };
     let derived = crate::state::derive_tool_call_instance_key(
         &instance.tool_call_id,
-        instance.impure,
-        executed_at_nanos,
         deterministic_input_hashes,
         &[],
         deterministic_materialized_input_hashes,

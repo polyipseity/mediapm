@@ -120,9 +120,13 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
     Ok(())
 }
 
-/// Re-syncing the same workspace resumes from the persisted conductor state;
-/// the impure import step re-executes (impure steps get a fresh per-run
-/// instance key) and the state file keeps accumulating instances.
+/// Re-syncing the same workspace resumes from the persisted conductor state.
+///
+/// Under the time-free key scheme this is the sharpest persistence proof
+/// available: the second sync's cache hit can only come from the first run's
+/// instances having been persisted and re-loaded, so `executed_instances`
+/// drops to zero, the cached count matches the first run, and the state file
+/// keeps the same instances instead of accumulating fresh per-run copies.
 #[tokio::test]
 async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
@@ -144,12 +148,18 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
     let first_state = read_conductor_state(&state_path)?;
 
     // Second service on the same root: mediapm document and conductor state
-    // persist across service instances; the impure import re-executes.
+    // persist across service instances; the re-run is served entirely from
+    // the persisted instances.
     let mut service = service_at(root.path(), None).await?;
     let second_summary = sync_library_with_test_terminal(&mut service, false).await?;
-    assert!(
-        second_summary.executed_instances >= 1,
-        "second sync should execute the import workflow again"
+    assert_eq!(
+        second_summary.executed_instances, 0,
+        "the second sync must be served from the persisted instance state: {second_summary:?}"
+    );
+    assert_eq!(
+        second_summary.cached_instances, first_executed,
+        "every instance the first run executed must be a cache hit on the second sync: \
+         {second_summary:?}"
     );
     assert!(
         second_summary.warnings.iter().all(|warning| !warning.contains("failed step")),
@@ -158,13 +168,10 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
     );
 
     let second_state = read_conductor_state(&state_path)?;
-    assert!(
-        second_state.tool_call_instances.len() > first_state.tool_call_instances.len(),
-        "state file should accumulate the second run's instance"
-    );
     assert_eq!(
-        first_executed, second_summary.executed_instances,
-        "each sync executes exactly one import step"
+        second_state.tool_call_instances.len(),
+        first_state.tool_call_instances.len(),
+        "a cache-hit re-run must not accumulate new instances in the state file"
     );
 
     Ok(())

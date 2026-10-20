@@ -36,12 +36,15 @@ pub(crate) const fn is_conductor_state_version_v2(marker: u32) -> bool {
     marker == CONDUCTOR_STATE_VERSION_V2
 }
 
-/// Domain separator for tool-call-instance keys (v2 scheme).
+/// Domain separator for tool-call-instance keys (v2 scheme, first revision).
 ///
 /// Bumping this string invalidates every previously derived instance key.
-/// It stays `/v2` because the instance-key scheme and the state schema
-/// version advance together (no separate key-scheme version).
-const INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2";
+/// The `.1` revision removed wall-clock time from impure keys in place: the
+/// key scheme advanced while the state schema stayed at v2 (the wire
+/// fields persist as provenance), so the string carries the key-scheme
+/// revision rather than the schema version. Old persisted keys miss once
+/// and re-execute one time after the bump.
+const INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2.1";
 
 // ---------------------------------------------------------------------------
 // V2 wire format types
@@ -92,10 +95,16 @@ pub(crate) struct ToolCallInstanceV2 {
     /// Tool call identifier: the unified tools-catalog map key (e.g.
     /// `"ffmpeg@v1"`).
     pub tool_call_id: String,
-    /// Whether the tool is impure (impure instances embed `executed_at` in
-    /// the key, so every run creates a fresh entry).
+    /// Whether the tool is impure.
+    ///
+    /// Impure steps depend on externals not captured in their inputs. The
+    /// flag records that fact (it drives `retry_impure` retry semantics and
+    /// `last_impure_sync_at` provenance) but never alters the instance key:
+    /// time never invalidates an instance. Re-execution follows changed key
+    /// material or the run-scoped explicit `force_rerun` invalidation.
     pub impure: bool,
-    /// Execution timestamp recorded at run time. Never part of pure keys.
+    /// Execution timestamp recorded at run time. Provenance only; never part
+    /// of any instance key.
     pub executed_at: ImpureTimestampV2,
     /// Effective command argv recorded at execution time, in order.
     pub command_args: Vec<HashedValueRecordV2>,
@@ -159,34 +168,34 @@ pub(crate) struct ConductorStateV2 {
 /// The key is the composite hash of, in order:
 /// 1. the versioned domain separator,
 /// 2. the tool call identifier (unified tools-catalog map key),
-/// 3. `executed_at` (only when `impure` — pure keys ignore time),
-/// 4. deterministic command args in order,
-/// 5. deterministic environment records sorted by name,
-/// 6. deterministic materialized inputs sorted by path.
+/// 3. deterministic command args in order,
+/// 4. deterministic environment records sorted by name,
+/// 5. deterministic materialized inputs sorted by path.
+///
+/// Every step derives its key from content alone — time never participates,
+/// pure and impure alike (`impure_keys_ignore_time`; the sync-level pin is
+/// `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`).
+/// The `executed_at` timestamp stays on the instance as provenance; an
+/// impure step re-executes only when its key material changes or the run
+/// sets the explicit `force_rerun` invalidation.
 ///
 /// Outputs are never part of the key. Non-deterministic records are stored
-/// on the instance but excluded here so an impure/env-dependent run still
+/// on the instance but excluded here so an env-dependent run still
 /// re-executes instead of colliding on stale content.
 #[must_use]
 pub(crate) fn derive_instance_key_v2(
     tool_call_id: &str,
-    impure: bool,
-    executed_at_nanos: u64,
     deterministic_command_args: &[Hash],
     deterministic_env_vars: &[Hash],
     deterministic_materialized_inputs: &[Hash],
 ) -> Hash {
     let mut parts = Vec::with_capacity(
-        2 + usize::from(impure)
-            + deterministic_command_args.len()
+        2 + deterministic_command_args.len()
             + deterministic_env_vars.len()
             + deterministic_materialized_inputs.len(),
     );
     parts.push(Hash::from_content(INSTANCE_KEY_DOMAIN_V2.as_bytes()));
     parts.push(Hash::from_content(tool_call_id.as_bytes()));
-    if impure {
-        parts.push(Hash::from_content(&executed_at_nanos.to_le_bytes()));
-    }
     parts.extend_from_slice(deterministic_command_args);
     parts.extend_from_slice(deterministic_env_vars);
     parts.extend_from_slice(deterministic_materialized_inputs);
@@ -330,27 +339,35 @@ mod tests {
     /// Deriving twice with identical inputs yields identical keys.
     #[test]
     fn derive_instance_key_v2_is_deterministic() {
-        let a = derive_instance_key_v2("echo@v1", false, 0, &[], &[], &[]);
-        let b = derive_instance_key_v2("echo@v1", false, 0, &[], &[], &[]);
+        let a = derive_instance_key_v2("echo@v1", &[], &[], &[]);
+        let b = derive_instance_key_v2("echo@v1", &[], &[], &[]);
         assert_eq!(a, b);
     }
 
-    /// Pure keys ignore `executed_at`; impure keys embed it.
+    /// Time never participates in any instance key, impure or pure.
+    ///
+    /// Earlier key schemes embedded `executed_at` for impure steps, which
+    /// made every run mint a fresh instance and re-execute the step. The
+    /// timestamp parameters are gone from the signature, so time-independence
+    /// is compile-enforced at this level; this test pins the contract through
+    /// the public `derive_tool_call_instance_key` wrapper (the API the
+    /// mediapm materializer matches through) and names the behavioral pin:
+    /// `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`.
     #[test]
-    fn derive_instance_key_v2_impure_includes_time() {
-        let pure_0 = derive_instance_key_v2("tool", false, 0, &[], &[], &[]);
-        let pure_1 = derive_instance_key_v2("tool", false, 1, &[], &[], &[]);
-        assert_eq!(pure_0, pure_1, "pure keys must ignore executed_at");
-
-        let impure_0 = derive_instance_key_v2("tool", true, 0, &[], &[], &[]);
-        let impure_1 = derive_instance_key_v2("tool", true, 1, &[], &[], &[]);
-        assert_ne!(impure_0, impure_1, "impure keys must embed executed_at");
+    fn impure_keys_ignore_time() {
+        let args = [Hash::from_content(b"arg")];
+        let first = crate::state::derive_tool_call_instance_key("tool", &args, &[], &[]);
+        let second = crate::state::derive_tool_call_instance_key("tool", &args, &[], &[]);
+        assert_eq!(
+            first, second,
+            "identical material must derive identical keys regardless of wall-clock time",
+        );
     }
 
     /// The versioned domain prefix participates in the key.
     #[test]
     fn derive_instance_key_v2_domain_prefix() {
-        let with_domain = derive_instance_key_v2("tool", false, 0, &[], &[], &[]);
+        let with_domain = derive_instance_key_v2("tool", &[], &[], &[]);
         let without_domain = Hash::composite(&[Hash::from_content(b"tool")]);
         assert_ne!(with_domain, without_domain);
     }
@@ -361,32 +378,34 @@ mod tests {
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
         assert_ne!(
-            derive_instance_key_v2("t", false, 0, &[a, b], &[], &[]),
-            derive_instance_key_v2("t", false, 0, &[b, a], &[], &[]),
+            derive_instance_key_v2("t", &[a, b], &[], &[]),
+            derive_instance_key_v2("t", &[b, a], &[], &[]),
             "command arg order must matter",
         );
         assert_ne!(
-            derive_instance_key_v2("t", false, 0, &[], &[], &[]),
-            derive_instance_key_v2("t", false, 0, &[], &[a], &[]),
+            derive_instance_key_v2("t", &[], &[], &[]),
+            derive_instance_key_v2("t", &[], &[a], &[]),
             "deterministic env records must participate",
         );
         assert_ne!(
-            derive_instance_key_v2("t", false, 0, &[], &[], &[]),
-            derive_instance_key_v2("t", false, 0, &[], &[], &[b]),
+            derive_instance_key_v2("t", &[], &[], &[]),
+            derive_instance_key_v2("t", &[], &[], &[b]),
             "deterministic materialized inputs must participate",
         );
     }
 
     /// Env-excluded / outputs-excluded: the key is exactly
-    /// `composite(domain, id, [time iff impure], args, env, inputs)`. Outputs
-    /// are structurally excluded — the API accepts no outputs — and env is
-    /// excluded in practice because the executor always passes an empty env
-    /// slice. Pinning the exact component list guards both: adding outputs or
-    /// a keyed env to the composite breaks this test.
+    /// `composite(domain, id, args, env, inputs)`. Outputs are structurally
+    /// excluded — the API accepts no outputs — and env is excluded in
+    /// practice because the executor always passes an empty env slice. No
+    /// time component exists either (the pre-revision scheme embedded
+    /// `executed_at` for impure steps). Pinning the exact component list
+    /// guards all of it: adding an output, a keyed env, or a time term to
+    /// the composite breaks this test.
     #[test]
     fn derive_instance_key_v2_composite_components_exact() {
         let a = Hash::from_content(b"arg");
-        let key = derive_instance_key_v2("t", false, 0, &[a], &[], &[]);
+        let key = derive_instance_key_v2("t", &[a], &[], &[]);
         let expected = Hash::composite(&[
             Hash::from_content(INSTANCE_KEY_DOMAIN_V2.as_bytes()),
             Hash::from_content(b"t"),

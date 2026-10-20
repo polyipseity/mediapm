@@ -112,8 +112,6 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
     let instance_key = derive_instance_key_v2(
         &tool_call_id,
-        tool_spec.is_impure,
-        request.impure_timestamp.map_or(0, Timestamp::as_unix_nanos),
         &deterministic_input_hashes,
         &[], // env is nondeterministic by default; never keyed
         &deterministic_materialized_hashes,
@@ -123,9 +121,15 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     // is the non-empty configured execution env vars.
     let env_vars = build_env_vars(&tool_spec.execution_env_vars);
 
-    // Cache probe.
-    let (cache_hit, _cached_instance) =
-        probe_cache(&instance_key, &request.state_snapshot, &request.required_output_names);
+    // Cache probe. `force_rerun` is the run-scoped explicit invalidation: it
+    // skips the probe so every step executes fresh, no matter how recently
+    // its instance was recorded. Time never invalidates an instance;
+    // changed key material or this flag does.
+    let (cache_hit, _cached_instance) = if request.force_rerun {
+        (false, None)
+    } else {
+        probe_cache(&instance_key, &request.state_snapshot, &request.required_output_names)
+    };
 
     if cache_hit {
         // Return the cached instance unchanged; GC refresh happens through

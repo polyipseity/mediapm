@@ -188,21 +188,9 @@ mod tests {
         let args: Vec<Hash> =
             inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
 
-        let key1 = derive_instance_key_v2("test_tool", false, 0, &args, &[], &[]);
-        let key2 = derive_instance_key_v2("test_tool", false, 0, &args, &[], &[]);
+        let key1 = derive_instance_key_v2("test_tool", &args, &[], &[]);
+        let key2 = derive_instance_key_v2("test_tool", &args, &[], &[]);
         assert_eq!(key1, key2);
-    }
-
-    /// Verifies `derive_instance_key_v2` varies with impure timestamp.
-    #[test]
-    fn derive_instance_key_varies_with_impure_timestamp() {
-        let inputs = [ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
-        let args: Vec<Hash> =
-            inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
-
-        let key1 = derive_instance_key_v2("test_tool", true, 1000, &args, &[], &[]);
-        let key2 = derive_instance_key_v2("test_tool", true, 2000, &args, &[], &[]);
-        assert_ne!(key1, key2);
     }
 
     /// Verifies `probe_cache` finds cached instances.

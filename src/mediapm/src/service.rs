@@ -123,6 +123,14 @@ pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'stati
     runtime_storage_overrides: MediaRuntimeStorage,
     /// Persistent local-source metadata cache (`<runtime>/cache/mediapm`).
     metadata_cache: MetadataCache,
+    /// Run-scoped explicit workflow invalidation forwarded to
+    /// [`mediapm_conductor::RunWorkflowOptions::force_rerun`].
+    ///
+    /// `false` (the default) serves every step whose key material is
+    /// unchanged from the conductor instance cache; `true` re-executes all
+    /// steps once. Never persisted — callers opt in per sync via
+    /// [`Self::set_force_workflow_rerun`].
+    force_workflow_rerun: bool,
 }
 
 /// Converts a `PathBuf` into an `Option`, treating empty buffers as `None`
@@ -146,6 +154,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             paths,
             runtime_storage_overrides: MediaRuntimeStorage::default(),
             metadata_cache,
+            force_workflow_rerun: false,
         }
     }
 
@@ -157,7 +166,24 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Self {
         let metadata_cache = MetadataCache::open(&paths.workspace_mediapm_cache_dir());
-        Self { conductor, paths, runtime_storage_overrides, metadata_cache }
+        Self {
+            conductor,
+            paths,
+            runtime_storage_overrides,
+            metadata_cache,
+            force_workflow_rerun: false,
+        }
+    }
+
+    /// Sets the run-scoped explicit workflow invalidation for subsequent
+    /// syncs.
+    ///
+    /// When `true`, the next sync re-executes every workflow step even if
+    /// its instance is cached (steps are never invalidated by the passage of
+    /// time; this flag or changed step material re-executes them). The
+    /// setting is not persisted and resets to `false` on a new service.
+    pub fn set_force_workflow_rerun(&mut self, force: bool) {
+        self.force_workflow_rerun = force;
     }
 
     /// Returns a shared reference to the paths layout.
@@ -1284,30 +1310,21 @@ impl MediaPmService<FileSystemCas> {
         let workflow_overall: Option<Arc<dyn ProgressBarApi>> =
             Some(Arc::new(workflow_overall_handle));
         for workflow_name in workflow_names {
-            let before = self.conductor.get_state()?;
-            let summary = self
-                .conductor
-                .run_workflow(
-                    &workflow_name,
-                    conductor_run_workflow_options(
-                        &effective_paths,
-                        &merged,
-                        workflow_pg.clone(),
-                        workflow_overall.clone(),
-                    ),
-                )
-                .await?;
-            let after = self.conductor.get_state()?;
-            let new_keys = after
-                .tool_call_instances
-                .keys()
-                .filter(|key| !before.tool_call_instances.contains_key(key))
-                .count();
-            executed_instances += new_keys;
-            // Steps that ran but produced no new instance key were cache hits
-            // (executed = new keys; cached = ran - executed).
-            let ran = summary.executed_steps + summary.cached_steps;
-            cached_instances += ran.saturating_sub(new_keys);
+            let mut run_options = conductor_run_workflow_options(
+                &effective_paths,
+                &merged,
+                workflow_pg.clone(),
+                workflow_overall.clone(),
+            );
+            run_options.force_rerun = self.force_workflow_rerun;
+            let summary = self.conductor.run_workflow(&workflow_name, run_options).await?;
+            // Counted from the run summary directly: a step's instance key is
+            // content-derived, so a forced re-execution of unchanged material
+            // re-lands on its existing key — counting "new keys in state"
+            // would report that run as cached. Executed = steps that actually
+            // ran this run; cached = steps served from the instance cache.
+            executed_instances += summary.executed_steps;
+            cached_instances += summary.cached_steps;
             if summary.failed_steps > 0 {
                 workflow_failed_steps += summary.failed_steps;
                 warnings.push(format!(
