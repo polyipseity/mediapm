@@ -1144,6 +1144,132 @@ mod tests {
         );
     }
 
+    /// Proves the offline demo is idempotent: an immediate second sync does
+    /// no workflow work, rewrites no library paths, and churns no tool state.
+    ///
+    /// The demo's own contract is that re-running it against an unchanged
+    /// workspace is a no-op a user can watch: every conductor instance is
+    /// served from the content-derived instance cache (task 3 removed the
+    /// wall-clock term from impure keys), every materialized path is already
+    /// recorded at the hash the run resolved, and every configured tool is
+    /// already deployed at its canonical version. Failure here means the
+    /// second run paid for work the first run already paid for, which is the
+    /// bug class `force_rerun` exists to opt into rather than suffer.
+    #[tokio::test]
+    async fn an_immediate_second_demo_sync_is_fully_cached() {
+        let _isolated = IsolatedExampleRoots::with_cache();
+        let _tracing = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_test_writer()
+            .try_init();
+
+        let run = super::generate_demo_artifacts(true).await.expect("first demo sync");
+
+        let manifest_text = std::fs::read_to_string(&run.manifest_path).expect("read manifest");
+        let manifest_json: serde_json::Value =
+            serde_json::from_str(&manifest_text).expect("manifest JSON");
+        let first_executed = manifest_json
+            .get("executed_instances")
+            .and_then(serde_json::Value::as_u64)
+            .expect("first-run executed_instances");
+        let first_materialized = manifest_json
+            .get("materialized_paths")
+            .and_then(serde_json::Value::as_u64)
+            .expect("first-run materialized_paths");
+        assert!(first_executed > 0, "first sync must execute steps");
+        assert!(first_materialized > 0, "first sync must materialize paths");
+
+        // Reopen the same workspace the first sync left behind; the service's
+        // CAS lock is released when `generate_demo_artifacts` returns, so the
+        // second open does not hit store-lock contention.
+        let mut second_service = mediapm::MediaPmService::new_fs_at_with_runtime_storage_overrides(
+            &run.workspace_root,
+            super::example_runtime_storage(),
+        )
+        .await
+        .expect("reopen demo workspace");
+
+        // The generated conductor document is the artifact manifest: the
+        // dual-write policy rewrites it only when tool payloads change, so
+        // identical bytes after the second sync are the strongest form of
+        // "no tool churn" available.
+        let generated_ncl = run.workspace_root.join("mediapm.conductor.generated.ncl");
+        let generated_before = std::fs::read(&generated_ncl).expect("read generated doc");
+        let state_json = run.workspace_root.join(".mediapm").join("state.json");
+        let state_before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state_json).expect("read state.json"))
+                .expect("state.json parses");
+
+        let second = second_service
+            .sync_library_with_options(mediapm::SyncLibraryOptions {
+                no_progress: true,
+                ..Default::default()
+            })
+            .await
+            .expect("second demo sync");
+
+        assert_eq!(
+            second.executed_instances, 0,
+            "second sync must serve every conductor instance from cache; warnings: {:?}",
+            second.warnings
+        );
+        assert_eq!(
+            second.cached_instances, first_executed as usize,
+            "second sync must cache exactly the steps the first run executed"
+        );
+        assert_eq!(second.materialized_paths, 0, "second sync must rewrite no library path");
+        assert_eq!(
+            second.skipped_paths, first_materialized as usize,
+            "second sync must report every first-run path as skipped"
+        );
+        assert_eq!(second.removed_paths, 0, "second sync must remove no path");
+        assert_eq!(second.missing_paths, 0, "second sync must leave no path missing");
+        assert!(
+            second.warnings.is_empty(),
+            "second sync must be warning-free; warnings: {:?}",
+            second.warnings
+        );
+        assert_eq!(second.workflow_failed_steps, 0, "second sync must fail no step");
+        assert_eq!(second.added_tools, 0, "second sync must register no new tool");
+        // Exactly one "updated": the `import` builtin re-registers on every
+        // sync because the second skip check requires a non-empty content-map
+        // hash and a no-payload builtin has none, so its provision — a local
+        // no-op that fetches nothing — is counted as an update. Pinning the
+        // count at exactly one keeps the claim strong: a payload tool that
+        // started churning would raise it and fail here.
+        assert_eq!(
+            second.updated_tools, 1,
+            "second sync must re-register only the no-payload import builtin; warnings: {:?}",
+            second.warnings
+        );
+        assert_eq!(second.pruned_tools, 0, "second sync must prune no tool");
+        assert_eq!(second.removed_tools, 0, "second sync must remove no tool");
+        // Nothing skips: the only configured tool is the no-payload `import`
+        // builtin, whose skip path is structurally closed (empty content-map
+        // hash), so it re-registers instead — accounted for above as the one
+        // "updated".
+        assert_eq!(
+            second.skipped_tools, 0,
+            "second sync must skip no tool; the import builtin re-registers instead"
+        );
+
+        let generated_after = std::fs::read(&generated_ncl).expect("re-read generated doc");
+        assert_eq!(
+            generated_before, generated_after,
+            "second sync must leave the generated conductor document byte-identical"
+        );
+        let state_after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state_json).expect("re-read state.json"))
+                .expect("state.json parses");
+        // state.json is the always-write audit trail, so its bytes legitimately
+        // change (deploy timestamps); the tool registry must not grow.
+        assert_eq!(
+            state_before["managed_tools"].as_array().map(Vec::len),
+            state_after["managed_tools"].as_array().map(Vec::len),
+            "second sync must add no managed_tools entry"
+        );
+    }
+
     /// Pins the demo's own hardlink verification against the single
     /// interleaving that makes
     /// `generate_demo_artifacts_writes_manifest_and_import_metadata`

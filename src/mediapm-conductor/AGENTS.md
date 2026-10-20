@@ -319,6 +319,8 @@ See `nickel.instructions.md` (schema strictness S1-S13) and `versioning-and-migr
 
 See `example-execution-policy.instructions.md` for the full three-level run model, `example-temp-isolation.instructions.md` for temp isolation, and `demo-hierarchy-golden.instructions.md` for the online demo hierarchy.
 
+Examples that run a workflow run it a second time and their embedded tests assert the second-run summary (cache hits for unchanged material, fresh execution only under `force_rerun`): `conductor_demo`, `conductor_cache_and_rematerialization`.
+
 ## Validation Workflow
 
 See `rust-workflow.instructions.md` for the canonical validation workflow and command reference, and `ci-workflow.instructions.md` for hook mechanics and CI parity.

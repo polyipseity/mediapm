@@ -279,6 +279,28 @@ impl std::fmt::Display for DemoOnlineTimeoutError {
 
 impl Error for DemoOnlineTimeoutError {}
 
+/// Tally of the second, idempotency-proving sync a full demo run performs.
+///
+/// Recorded in [`DemoManifest::second_run`] so the artifact itself shows the
+/// re-run did no work: every conductor instance came from the content-derived
+/// instance cache, every library path was already recorded at the resolved
+/// hash, and every payload tool was already deployed. `updated_tools` counts
+/// only the no-payload `import` builtin, whose skip path is structurally
+/// closed (empty content-map hash), so it re-registers as an update.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct SecondRunTally {
+    executed_instances: usize,
+    cached_instances: usize,
+    materialized_paths: usize,
+    skipped_paths: usize,
+    removed_paths: usize,
+    added_tools: usize,
+    updated_tools: usize,
+    skipped_tools: usize,
+    pruned_tools: usize,
+    warning_count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct DemoManifest {
     generated_unix_epoch_seconds: u64,
@@ -305,6 +327,9 @@ struct DemoManifest {
     added_tools: usize,
     updated_tools: usize,
     warning_count: usize,
+    /// Present only when the full-sync path ran its second idempotency sync;
+    /// reduced (config-only) runs record `None`.
+    second_run: Option<SecondRunTally>,
     profile_path: String,
     store_size_without_delta_bytes: u64,
     store_size_with_delta_bytes: u64,
@@ -683,6 +708,133 @@ async fn summarize_store_sizes(
     }
 
     Ok(StoreSizeStats { without_delta_bytes: without_delta, with_delta_bytes: with_delta })
+}
+
+/// Snapshots every file under the hierarchy root as `(relative path, length)`
+/// pairs, sorted for order-independent comparison.
+///
+/// Used by the full demo run's idempotency proof: the second sync must not
+/// create, rewrite, or remove any materialized file, and comparing lengths
+/// alongside paths catches an in-place rewrite that preserved the path but
+/// changed the bytes.
+fn snapshot_materialized_files(hierarchy_root: &Path) -> ExampleResult<Vec<(String, u64)>> {
+    let mut snapshot = Vec::new();
+    let mut stack = vec![hierarchy_root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir).map_err(|error| {
+            format!("reading materialized directory '{}': {error}", dir.display())
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("reading materialized directory entry under '{}': {error}", dir.display())
+            })?;
+            let path = entry.path();
+            let metadata = entry.metadata().map_err(|error| {
+                format!("reading materialized file metadata '{}': {error}", path.display())
+            })?;
+            if metadata.is_dir() {
+                stack.push(path);
+            } else {
+                let relative = path
+                    .strip_prefix(hierarchy_root)
+                    .map_err(|error| {
+                        format!(
+                            "materialized path '{}' is outside hierarchy root '{}': {error}",
+                            path.display(),
+                            hierarchy_root.display()
+                        )
+                    })?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                snapshot.push((relative, metadata.len()));
+            }
+        }
+    }
+    snapshot.sort();
+    Ok(snapshot)
+}
+
+/// Verifies the full demo run's second sync did no work: every conductor
+/// instance came from cache, no library path was materialized or removed,
+/// no step failed or warned, and no tool was added, pruned, or removed.
+///
+/// `updated_tools` is asserted equal to the first run's value rather than
+/// zero because the no-payload `import` builtin re-registers on every sync
+/// (its empty content map hash excludes it from the skip path), so the
+/// re-run's tool churn must match the first run's churn exactly — a payload
+/// tool that started churning would raise the second run's count above the
+/// first run's and fail here.
+fn assert_second_sync_did_no_work(
+    first: &mediapm::SyncSummary,
+    second: &mediapm::SyncSummary,
+    files_before: &[(String, u64)],
+    files_after: &[(String, u64)],
+) -> ExampleResult<()> {
+    let mut problems = Vec::new();
+    if second.executed_instances != 0 {
+        problems.push(format!(
+            "executed_instances={} (expected 0: all steps must come from cache)",
+            second.executed_instances
+        ));
+    }
+    if second.cached_instances != first.executed_instances {
+        problems.push(format!(
+            "cached_instances={} (expected {}: the first run's executed steps)",
+            second.cached_instances, first.executed_instances
+        ));
+    }
+    if second.materialized_paths != 0 {
+        problems.push(format!(
+            "materialized_paths={} (expected 0: no path may be rewritten)",
+            second.materialized_paths
+        ));
+    }
+    if second.skipped_paths != first.materialized_paths {
+        problems.push(format!(
+            "skipped_paths={} (expected {}: the first run's materialized paths)",
+            second.skipped_paths, first.materialized_paths
+        ));
+    }
+    if second.removed_paths != 0 {
+        problems.push(format!("removed_paths={} (expected 0)", second.removed_paths));
+    }
+    if second.missing_paths != 0 {
+        problems.push(format!("missing_paths={} (expected 0)", second.missing_paths));
+    }
+    if second.workflow_failed_steps != 0 {
+        problems
+            .push(format!("workflow_failed_steps={} (expected 0)", second.workflow_failed_steps));
+    }
+    if !second.warnings.is_empty() {
+        problems.push(format!("warnings={:?} (expected none)", second.warnings));
+    }
+    if second.added_tools != 0 {
+        problems.push(format!("added_tools={} (expected 0)", second.added_tools));
+    }
+    if second.updated_tools != first.updated_tools {
+        problems.push(format!(
+            "updated_tools={} (expected {}: the import builtin's re-registration churn must match \
+             the first run's; a payload tool churning would exceed it)",
+            second.updated_tools, first.updated_tools
+        ));
+    }
+    if second.pruned_tools != 0 {
+        problems.push(format!("pruned_tools={} (expected 0)", second.pruned_tools));
+    }
+    if second.removed_tools != 0 {
+        problems.push(format!("removed_tools={} (expected 0)", second.removed_tools));
+    }
+    if files_before != files_after {
+        problems.push(format!(
+            "materialized file set changed across the second sync: before={files_before:?} \
+             after={files_after:?}"
+        ));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("online demo second sync was not idempotent: {}", problems.join("; ")).into())
+    }
 }
 
 fn managed_relative_path(hierarchy_root: &Path, output_path: &Path) -> ExampleResult<String> {
@@ -2935,6 +3087,48 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     .await?;
     let materialized_demo_video_hardlinked_to_cas = true;
     let materialized_demo_tagged_video_hardlinked_to_cas = true;
+
+    // Second sync: the demo's idempotency proof. A full run always re-syncs
+    // and asserts the re-run did no work, so the artifact a human inspects
+    // shows the guarantee rather than claiming it. The materialized file set
+    // is snapshotted before and after, so a re-materialization (even one that
+    // rewrote identical bytes) fails the run.
+    let materialized_before = snapshot_materialized_files(&hierarchy_root)?;
+    let second_options = mediapm::SyncLibraryOptions {
+        verify_materialization: true,
+        no_progress: true,
+        ..Default::default()
+    };
+    let second = sync_service
+        .sync_library_with_options(second_options)
+        .await
+        .map_err(|error| format!("online demo second sync failed: {error}"))?;
+    let materialized_after = snapshot_materialized_files(&hierarchy_root)?;
+    let second_run = SecondRunTally {
+        executed_instances: second.executed_instances,
+        cached_instances: second.cached_instances,
+        materialized_paths: second.materialized_paths,
+        skipped_paths: second.skipped_paths,
+        removed_paths: second.removed_paths,
+        added_tools: second.added_tools,
+        updated_tools: second.updated_tools,
+        skipped_tools: second.skipped_tools,
+        pruned_tools: second.pruned_tools,
+        warning_count: second.warnings.len(),
+    };
+    assert_second_sync_did_no_work(&summary, &second, &materialized_before, &materialized_after)?;
+    eprintln!(
+        "[demo_online] second sync idempotent: executed={executed} cached={cached} \
+         materialized={materialized} skipped={skipped} updated_tools={updated} \
+         (no-payload import builtin) warnings={warnings}",
+        executed = second_run.executed_instances,
+        cached = second_run.cached_instances,
+        materialized = second_run.materialized_paths,
+        skipped = second_run.skipped_paths,
+        updated = second_run.updated_tools,
+        warnings = second_run.warning_count,
+    );
+
     let store_size_stats = summarize_store_sizes(sync_service.conductor().cas(), &cas_root).await?;
     let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
         .iter()
@@ -2975,6 +3169,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         added_tools: summary.added_tools,
         updated_tools: summary.updated_tools,
         warning_count: summary.warnings.len(),
+        second_run: Some(second_run),
         profile_path: display_path(&sync_service.paths().runtime_root.join("profile.json")),
         store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
         store_size_with_delta_bytes: store_size_stats.with_delta_bytes,
@@ -3266,6 +3461,56 @@ mod tests {
         )
         .expect("manifest.json should be valid JSON");
         assert_eq!(manifest["run_mode"], "config-only");
+        // Reduced mode runs no sync, so it must record no second-run block:
+        // the block appears only on the full-sync path, where it carries the
+        // idempotency tallies of the demo's re-run.
+        assert!(
+            manifest.get("second_run").is_none(),
+            "config-only manifest must not record a second_run tally"
+        );
+    }
+
+    /// Pins the second-run tally block's schema: full runs serialize these
+    /// exact keys into `manifest.json` under `second_run`, and any rename or
+    /// removal must fail here before it fails a consumer reading the artifact.
+    #[test]
+    fn second_run_tally_serializes_the_documented_schema() {
+        let tally = super::SecondRunTally {
+            executed_instances: 0,
+            cached_instances: 16,
+            materialized_paths: 0,
+            skipped_paths: 16,
+            removed_paths: 0,
+            added_tools: 0,
+            updated_tools: 1,
+            skipped_tools: 6,
+            pruned_tools: 0,
+            warning_count: 0,
+        };
+        let value = serde_json::to_value(&tally).expect("tally serializes");
+        let mut keys = value
+            .as_object()
+            .expect("tally serializes as an object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        // `serde_json::Value` sorts object keys, so the schema is the key set,
+        // not an order.
+        keys.sort();
+        let mut expected = vec![
+            "executed_instances",
+            "cached_instances",
+            "materialized_paths",
+            "skipped_paths",
+            "removed_paths",
+            "added_tools",
+            "updated_tools",
+            "skipped_tools",
+            "pruned_tools",
+            "warning_count",
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "second_run manifest block must keep its documented key set");
     }
 
     /// Ensures artifact root remains stable for docs/scripts that reference it.

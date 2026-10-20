@@ -81,6 +81,28 @@ async fn run_demo() -> ExampleResult<()> {
     let second_summary = conductor.run_workflow("demo_workflow", second_options).await?;
     println!("Second run summary: {second_summary:?}");
 
+    // The demo's contract is that a second run against an unchanged workspace
+    // is fully cached. Instance keys are content-derived (the wall-clock term
+    // left impure keys in the impure-semantics revision), so every step must
+    // be a cache hit: zero executed steps and no failures. `force_rerun` is
+    // the explicit opt-in to re-execution, which this demo never sets.
+    assert_eq!(
+        second_summary.executed_steps, 0,
+        "second demo run must execute no steps; first summary: {first_summary:?}"
+    );
+    assert_eq!(
+        second_summary.cached_steps, second_summary.total_steps,
+        "second demo run must serve every step from cache; summary: {second_summary:?}"
+    );
+    assert_eq!(
+        second_summary.failed_steps, 0,
+        "second demo run must fail no steps; summary: {second_summary:?}"
+    );
+    assert!(
+        first_summary.executed_steps > 0,
+        "first demo run must execute the workflow; summary: {first_summary:?}"
+    );
+
     println!("Done.");
     Ok(())
 }

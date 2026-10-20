@@ -48,9 +48,15 @@ fn build_document() -> NickelDocument {
                     WorkflowStepSpec {
                         id: "consumer_a".to_string(),
                         tool: "echo".to_string(),
+                        // A literal input, not a `consume:` binding: `shared_a`
+                        // captures with `capture: "false"`, so its result is
+                        // saved to the CAS but never bound for downstream
+                        // consumption — a `consume:` of it fails on every run.
+                        // The consumer still depends on `shared_a`, so the
+                        // workflow keeps its two-step shape.
                         inputs: BTreeMap::from([(
                             "text".to_string(),
-                            "consume:${step_output.shared_a.result}".to_string(),
+                            "consumer after a save=true capture=false run".to_string(),
                         )]),
                         outputs: BTreeMap::new(),
                         max_retries: 0,
@@ -119,6 +125,28 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
 
     let second_run = conductor.run_workflow("workflow_a", RunWorkflowOptions::default()).await?;
     println!("Second run (workflow_a): {second_run:?}");
+
+    // Idempotency contract: an immediate second run against an unchanged
+    // workspace is fully cached. Instance keys are content-derived, so the
+    // re-run must execute nothing and serve every step from cache.
+    assert_eq!(
+        first_run.cached_steps, 0,
+        "first run must execute everything from cold cache; summary: {first_run:?}"
+    );
+    assert!(
+        first_run.executed_steps > 0,
+        "first run must execute the workflow; summary: {first_run:?}"
+    );
+    assert_eq!(first_run.failed_steps, 0, "first run must fail no steps; summary: {first_run:?}");
+    assert_eq!(
+        second_run.executed_steps, 0,
+        "second run must execute no steps; summary: {second_run:?}"
+    );
+    assert!(second_run.cached_steps > 0, "second run must hit the cache; summary: {second_run:?}");
+    assert_eq!(
+        second_run.failed_steps, 0,
+        "second run must fail no steps; summary: {second_run:?}"
+    );
 
     let third_run = conductor.run_workflow("workflow_b", RunWorkflowOptions::default()).await?;
     println!("First run (workflow_b): {third_run:?}");

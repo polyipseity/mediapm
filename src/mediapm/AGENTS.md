@@ -282,6 +282,8 @@ Post-change: demo examples:
 
 The online demo's embedded test (`main_is_exercised`) runs reduced (config-only) mode deterministically in the test harness (skips in CI), so the pre-push gate exercises only reduced mode — no network. Its full-sync path runs only on the explicit `cargo run --package mediapm --example mediapm_demo_online` above. Before either mode runs, the demo exports both conductor watchdog budgets sized from its own sync budget — `MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS` (clamped) and `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` (sync budget minus 60s) — respecting user-set values; the layering policy lives in `src/mediapm-conductor/AGENTS.md` ("Watchdog layering").
 
+Double-run policy: every demo that drives a sync runs it twice and asserts the second run did no work — zero executed workflow instances, zero materialized paths, all tools skipped, no warnings, and (online) an unchanged materialized file set. The online demo records the second run's tallies in a `second_run` manifest block so the artifact shows the guarantee instead of claiming it.
+
 Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all && cargo test-doc-all`. `cargo test-all` runs nextest plus the tempdir and janitor gates; `cargo test-doc-all` runs the workspace doctests plus the rustdoc link gate, separately because nextest cannot execute doctests. Both delegate to the `test-runner` crate (`scripts/test-runner`).
 
 ## Feature Flags
