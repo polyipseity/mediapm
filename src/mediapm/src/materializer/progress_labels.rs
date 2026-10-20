@@ -297,6 +297,28 @@ mod tests {
         assert!(out.chars().count() <= 40, "overflowed: {out:?}");
     }
 
+    /// A truncated `entry_name` always ends in the file's extension.
+    ///
+    /// Regression pin for the demo naming fix: the materialized file basename
+    /// is a long single-source title (`<title> [<media-id>].mkv`, where the
+    /// title already carries the artist), and a narrowing terminal must still
+    /// show its `.mkv` tail so the row names the format it writes. This is the
+    /// end-shown truncation the materialization screen depends on.
+    #[test]
+    fn truncated_entry_name_keeps_its_extension() {
+        let label = MaterializationBarLabel {
+            media_id: "youtube.dQw4w9WgXcQ".into(),
+            variant: "video".into(),
+            entry_name: "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) [youtube.dQw4w9WgXcQ].mkv".into(),
+            ..Default::default()
+        };
+        let out = label.truncate_prefix(44);
+        assert!(
+            std::path::Path::new(&out).extension() == Some(std::ffi::OsStr::new("mkv")),
+            "truncated entry_name lost its extension tail: {out:?}",
+        );
+    }
+
     /// A label with only a basename renders it alone, which is what the
     /// overall `materializing` bar shows: it names the screen and carries no
     /// identity of its own.

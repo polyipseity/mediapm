@@ -72,10 +72,10 @@
 //!
 //! ```text
 //! music videos/                                           [Folder]
-//! └── ${artist} - ${title} [${id}]/                       [Folder, id=youtube.dQw4w9WgXcQ.media_folder]
+//! └── ${title} [${id}]/                                   [Folder, id=youtube.dQw4w9WgXcQ.media_folder]
 //!     ├── sidecars/                                       [Folder: subtitles/, thumbnails/, links/, flat sidecars]
-//!     ├── ${artist} - ${title} [${id}].untagged${video_ext}   [Media, variant=video_untagged]
-//!     ├── ${artist} - ${title} [${id}]${video_ext}            [Media, variant=video]
+//!     ├── ${title} [${id}].untagged${video_ext}           [Media, variant=video_untagged]
+//!     ├── ${title} [${id}]${video_ext}                    [Media, variant=video]
 //!     ├── (path="")                                         [MediaFolder thumbnails → .thumbnail.$1]
 //!     ├── (path="")                                         [MediaFolder links → .link.$1]
 //!     └── (path="")                                         [MediaFolder id `.thumbnails.folder` → folder.$1]
@@ -152,16 +152,16 @@ const DEMO_METADATA_ARTIST: &str = "Rick Astley";
 
 const DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT: &str = ".mkv";
 
-const DEMO_OUTPUT_FILE_NAME_BASE: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
+const DEMO_OUTPUT_FILE_NAME_BASE: &str = "${media.metadata.title} [${media.id}]";
 
 /// yt-dlp `--sub-langs` selector for the demo download step (shared by folder + scoped variants).
 const DEMO_SAFE_SUB_LANGS: &str = "en";
 
-const DEMO_UNTAGGED_MEDIA_FILE_NAME: &str = "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
+const DEMO_UNTAGGED_MEDIA_FILE_NAME: &str =
+    "${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
 
 const DEMO_TAGGED_MEDIA_FILE_NAME: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
+    "${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
 
 const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
     MaterializationMethod::Hardlink,
@@ -176,11 +176,9 @@ fn final_demo_output_variant() -> &'static str {
 
 const DEMO_LIBRARY_ROOT: &str = "music videos";
 
-const DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
+const DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "${media.metadata.title} [${media.id}]";
 
-const DEMO_HIERARCHY_ROOT_TEMPLATE: &str =
-    "music videos/${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
+const DEMO_HIERARCHY_ROOT_TEMPLATE: &str = "music videos/${media.metadata.title} [${media.id}]";
 
 const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
     ("subtitles_sidecars", "subtitles", "sidecars/subtitles/"),
@@ -194,16 +192,8 @@ const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
     ("archive_sidecars", "archive", "sidecars/archive.txt"),
     ("description_sidecars", "description", "sidecars/description.txt"),
     ("infojson_sidecars", "infojson", "sidecars/info.json"),
-    (
-        "description_media",
-        "description",
-        "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt",
-    ),
-    (
-        "infojson_media",
-        "infojson",
-        "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json",
-    ),
+    ("description_media", "description", "${media.metadata.title} [${media.id}].description.txt"),
+    ("infojson_media", "infojson", "${media.metadata.title} [${media.id}].info.json"),
     (
         "subtitles_en_media",
         DEMO_ROOT_SELECTED_SUBTITLE_VARIANT,
@@ -213,8 +203,7 @@ const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
 
 const DEMO_ROOT_SELECTED_SUBTITLE_VARIANT: &str = "subtitles_en";
 
-const DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt";
+const DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME: &str = "${media.metadata.title} [${media.id}].en.vtt";
 
 const DEMO_SIDECAR_SELECTED_SUBTITLE_FILE_NAME: &str = "sidecars/subtitles.en.vtt";
 
@@ -470,7 +459,6 @@ fn emit_watchdog_notice(message: &str) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DemoResolvedMetadata {
-    artist: String,
     title: String,
     /// yt-dlp provider title (`info.json` `title` key).
     ///
@@ -508,25 +496,24 @@ fn require_non_empty_json_string(
 #[must_use]
 fn resolve_demo_metadata_template(template: &str, metadata: &DemoResolvedMetadata) -> String {
     template
-        .replace("${media.metadata.artist}", &metadata.artist)
         .replace("${media.metadata.title}", &metadata.title)
         .replace("${media.metadata.video_id}", &metadata.video_id)
         .replace("${media.id}", &metadata.media_id)
         .replace("${media.metadata.video_ext}", &metadata.video_ext)
 }
 
-fn parse_jellyfin_root_folder_name(folder_name: &str) -> Option<(String, String, String)> {
-    let (artist_and_title, media_id_segment) = folder_name.rsplit_once(" [")?;
+fn parse_jellyfin_root_folder_name(folder_name: &str) -> Option<(String, String)> {
+    let (title_segment, media_id_segment) = folder_name.rsplit_once(" [")?;
     let media_id = media_id_segment.strip_suffix(']')?.trim();
-    let (artist, title) = artist_and_title.split_once(" - ")?;
-
-    let artist = artist.trim();
-    let title = title.trim();
-    if artist.is_empty() || title.is_empty() || media_id.is_empty() {
+    // The basename single-sources from `${media.metadata.title}`, which itself
+    // carries the artist (the live yt-dlp provider title). The whole segment
+    // before ` [<media-id>]` is the title — never split it back apart on ` - `.
+    let title = title_segment.trim();
+    if title.is_empty() || media_id.is_empty() {
         return None;
     }
 
-    Some((artist.to_string(), title.to_string(), media_id.to_string()))
+    Some((title.to_string(), media_id.to_string()))
 }
 
 fn load_resolved_demo_metadata(interpolated_root: &Path) -> ExampleResult<DemoResolvedMetadata> {
@@ -541,18 +528,17 @@ fn load_resolved_demo_metadata(interpolated_root: &Path) -> ExampleResult<DemoRe
             )
         })?;
 
-    let (artist, folder_title, media_id) = parse_jellyfin_root_folder_name(folder_name)
-        .ok_or_else(|| {
+    let (folder_title, media_id) =
+        parse_jellyfin_root_folder_name(folder_name).ok_or_else(|| {
             format!(
-                "expected interpolated media root '{}' to match '<artist> - <title> [<media-id>]'",
+                "expected interpolated media root '{}' to match '<title> [<media-id>]'",
                 interpolated_root.display()
             )
         })?;
 
     Ok(DemoResolvedMetadata {
-        artist,
-        // The hierarchy title template now binds to `video` metadata,
-        // so treat the interpolated folder title as source-of-truth.
+        // The hierarchy filename template single-sources from `title`, so treat
+        // the interpolated folder title as source-of-truth.
         title: folder_title,
         provider_title: require_non_empty_json_string(
             &payload,
@@ -1024,7 +1010,12 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                             metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
                             transform: None,
                         }),
-                        MediaMetadataValueCandidate::Literal(DEMO_EXPECTED_TITLE.to_string()),
+                        // The basename single-sources from `title`, so the literal
+                        // fallback carries the artist to keep exactly one prefix even
+                        // when infojson is unavailable.
+                        MediaMetadataValueCandidate::Literal(format!(
+                            "{DEMO_METADATA_ARTIST} - {DEMO_EXPECTED_TITLE}"
+                        )),
                     ]),
                 ),
                 (
@@ -1174,9 +1165,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         variants: vec!["thumbnails".to_string()],
         rename_files: vec![HierarchyFolderRenameRule {
             pattern: "^.*\\.([^.]+)$".to_string(),
-            replacement:
-                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1"
-                    .to_string(),
+            replacement: "${media.metadata.title} [${media.id}].thumbnail.$1".to_string(),
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
@@ -1193,8 +1182,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         variants: vec!["links".to_string()],
         rename_files: vec![HierarchyFolderRenameRule {
             pattern: "^.*\\.([^.]+)$".to_string(),
-            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1"
-                .to_string(),
+            replacement: "${media.metadata.title} [${media.id}].link.$1".to_string(),
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
@@ -1698,10 +1686,9 @@ fn assert_flat_media_root_sidecar_families(
 ) -> ExampleResult<()> {
     // Root projections carry the media-id suffix (` [{media.id}].`) from the hierarchy
     // rename templates; the title text before it is live metadata and is NOT asserted.
-    let Some((_, _, expected_media_id)) = parse_jellyfin_root_folder_name(expected_output_base)
-    else {
+    let Some((_, expected_media_id)) = parse_jellyfin_root_folder_name(expected_output_base) else {
         return Err(format!(
-            "expected media output base '{expected_output_base}' to match '<artist> - <title> [<media-id>]'"
+            "expected media output base '{expected_output_base}' to match '<title> [<media-id>]'"
         )
         .into());
     };
@@ -2648,6 +2635,17 @@ fn assert_metadata_files_present(
     if root_folder_name != resolved_output_base {
         return Err(format!(
             "[metadata] interpolated root folder '{root_folder_name}' must match resolved base '{resolved_output_base}'"
+        )
+        .into());
+    }
+
+    // Exactly one artist prefix: the title metadata already carries the artist
+    // (the live yt-dlp provider title), so a second `Rick Astley - ` here means
+    // a template prepended it again.
+    let artist_hits = resolved_output_base.matches(DEMO_METADATA_ARTIST).count();
+    if artist_hits != 1 {
+        return Err(format!(
+            "[metadata] materialized basename '{resolved_output_base}' must contain exactly one '{DEMO_METADATA_ARTIST}' prefix, found {artist_hits}"
         )
         .into());
     }

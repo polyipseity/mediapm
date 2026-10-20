@@ -22,33 +22,31 @@ use mediapm::{
 
 const MKV_HEADER: &[u8] = &[0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00];
 
-const ONLINE_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
+const ONLINE_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "${media.metadata.title} [${media.id}]";
 
-const ONLINE_UNTAGGED_MEDIA_FILE_NAME: &str = "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
+const ONLINE_UNTAGGED_MEDIA_FILE_NAME: &str =
+    "${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
 
 const ONLINE_TAGGED_MEDIA_FILE_NAME: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
+    "${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
 
-const ONLINE_EN_VTT_FILE_NAME: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt";
+const ONLINE_EN_VTT_FILE_NAME: &str = "${media.metadata.title} [${media.id}].en.vtt";
 
-const ONLINE_DESCRIPTION_FILE_NAME: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt";
+const ONLINE_DESCRIPTION_FILE_NAME: &str = "${media.metadata.title} [${media.id}].description.txt";
 
-const ONLINE_INFOJSON_FILE_NAME: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json";
+const ONLINE_INFOJSON_FILE_NAME: &str = "${media.metadata.title} [${media.id}].info.json";
 
 const ONLINE_THUMBNAIL_RENAME_REPLACEMENT: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1";
+    "${media.metadata.title} [${media.id}].thumbnail.$1";
 
-const ONLINE_LINK_RENAME_REPLACEMENT: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1";
+const ONLINE_LINK_RENAME_REPLACEMENT: &str = "${media.metadata.title} [${media.id}].link.$1";
 
 fn demo_metadata_literals() -> BTreeMap<String, MediaMetadataValue> {
     BTreeMap::from([
-        ("artist".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_ARTIST.to_string())),
-        ("title".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_TITLE.to_string())),
+        // The title carries the artist (single-source basename stem), matching the
+        // live demo where `${media.metadata.title}` resolves to the yt-dlp provider
+        // title. No separate artist entry: no template interpolates it.
+        ("title".to_string(), MediaMetadataValue::Literal(online_demo_yt_dlp_provider_title())),
         ("video_ext".to_string(), MediaMetadataValue::Literal(".mkv".to_string())),
         ("id".to_string(), MediaMetadataValue::Literal("dQw4w9WgXcQ".to_string())),
     ])
