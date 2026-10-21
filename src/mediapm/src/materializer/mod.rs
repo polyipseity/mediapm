@@ -661,7 +661,62 @@ async fn prepare_hierarchy_entry(
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
             if let Some(hash) = hash {
-                if shared.target_already_holds(&relative_path, &hash, &target_path).await {
+                // A variant bound to a ZIP member writes one member extracted
+                // out of the pack `hash` names, so the bytes the target has to
+                // hold are not the object's. Resolving the binding before the
+                // skip check is what lets a single extraction answer both
+                // questions: whether the target already holds the member, and
+                // what to write when it does not. The cost is paid on every run
+                // of such a variant, skipped or not — the pack is read from the
+                // store and inflated before the decision — and it is the price
+                // of the decision being right: the member's own hash and length
+                // are what a skip has to compare, and neither is knowable from
+                // the pack's hash.
+                let binding = resolve_media_variant_output_binding_with_limits(
+                    source,
+                    &effective_variant,
+                    lookup.ffmpeg_slot_limits.max_input_slots,
+                    lookup.ffmpeg_slot_limits.max_output_slots,
+                )?;
+                let extracted_bytes = match binding
+                    .as_ref()
+                    .and_then(|binding| binding.zip_member.as_deref())
+                {
+                    Some(zip_member) => {
+                        let zip_bytes = shared.cas.get(hash).await.map_err(|source| {
+                            MediaPmError::Workflow(format!(
+                                "reading ZIP variant '{hash}' for media '{media_id}' \
+                                     variant '{effective_variant}' member extraction: {source}"
+                            ))
+                        })?;
+                        Some(extract_zip_member_bytes(&zip_bytes, zip_member).map_err(|error| {
+                            MediaPmError::Workflow(format!(
+                                "extracting ZIP member '{zip_member}' for media \
+                                             '{media_id}' variant '{effective_variant}': {error}"
+                            ))
+                        })?)
+                    }
+                    None => None,
+                };
+                // The hash and length the target must hold: the member's for
+                // a zip-member variant, the store object's otherwise.
+                let expected_hash = extracted_bytes.as_deref().map_or(hash, Hash::from_content);
+
+                let already_correct = match extracted_bytes.as_deref() {
+                    Some(bytes) => {
+                        shared
+                            .target_already_holds_with_len(
+                                &relative_path,
+                                &expected_hash,
+                                &target_path,
+                                bytes.len() as u64,
+                            )
+                            .await
+                    }
+                    None => shared.target_already_holds(&relative_path, &hash, &target_path).await,
+                };
+
+                if already_correct {
                     // Nothing is written on this path, so the row finishes
                     // full: it measured the target against the resolved
                     // content and had nothing to commit.
@@ -671,40 +726,19 @@ async fn prepare_hierarchy_entry(
                         outcome: EntryOutcome::AlreadyCorrect,
                         managed_files: BTreeMap::from([(
                             relative_path.clone(),
-                            record_for(media_id, &effective_variant, &hash),
+                            record_for(media_id, &effective_variant, &expected_hash),
                         )]),
                         media_variant_updates: BTreeMap::from([(
                             media_id.clone(),
-                            BTreeMap::from([(effective_variant.clone(), hash.to_string())]),
+                            BTreeMap::from([(
+                                effective_variant.clone(),
+                                expected_hash.to_string(),
+                            )]),
                         )]),
                     });
                 }
 
-                // Check if this variant has a zip_member binding (e.g., subtitles_en
-                // produces a ZIP containing `.en.vtt`). The raw CAS hash points at the
-                // ZIP archive; we must extract the specific member before writing.
-                let binding = resolve_media_variant_output_binding_with_limits(
-                    source,
-                    &effective_variant,
-                    lookup.ffmpeg_slot_limits.max_input_slots,
-                    lookup.ffmpeg_slot_limits.max_output_slots,
-                )?;
-                let materialized_hash = if let Some(zip_member) =
-                    binding.as_ref().and_then(|b| b.zip_member.as_deref())
-                {
-                    let zip_bytes = shared.cas.get(hash).await.map_err(|source| {
-                        MediaPmError::Workflow(format!(
-                            "reading ZIP variant '{hash}' for media '{media_id}' \
-                                 variant '{effective_variant}' member extraction: {source}"
-                        ))
-                    })?;
-                    let extracted_bytes = extract_zip_member_bytes(&zip_bytes, zip_member)
-                        .map_err(|error| {
-                            MediaPmError::Workflow(format!(
-                                "extracting ZIP member '{zip_member}' for media '{media_id}' \
-                                 variant '{effective_variant}': {error}"
-                            ))
-                        })?;
+                let materialized_hash = if let Some(extracted_bytes) = extracted_bytes {
                     if let Some(parent) = target_path.parent() {
                         tokio::fs::create_dir_all(parent).await.map_err(|source| {
                             MediaPmError::Io {
@@ -715,6 +749,10 @@ async fn prepare_hierarchy_entry(
                             }
                         })?;
                     }
+                    // An output this library already wrote is read-only, so the
+                    // member replaces it the way a store object does: remove
+                    // first, then write.
+                    file_ops::remove_existing_destination_path(&target_path).await?;
                     tokio::fs::write(&target_path, &extracted_bytes).await.map_err(|source| {
                         MediaPmError::Io {
                             operation: "writing extracted ZIP member".to_string(),
@@ -723,9 +761,8 @@ async fn prepare_hierarchy_entry(
                         }
                     })?;
                     crate::materializer::commit::ensure_managed_path_readonly(&target_path)?;
-                    let extracted_hash = Hash::from_content(&extracted_bytes);
-                    shared.confirm(&relative_path, &target_path, &extracted_hash).await;
-                    extracted_hash
+                    shared.confirm(&relative_path, &target_path, &expected_hash).await;
+                    expected_hash
                 } else {
                     materialize_file_entry(&target_path, &relative_path, &hash, shared).await?;
                     hash
@@ -1855,10 +1892,11 @@ impl SyncSharedState {
     /// that cannot answer for the hash all decline the skip. Declining costs a
     /// rewrite that reproduces the file the target should have held.
     ///
-    /// A variant bound to a ZIP member never matches, because the record holds
-    /// the hash of the extracted member while `hash` names the archive. That
-    /// is the safe direction to be wrong in: the arm extracts, finds the
-    /// member's hash differs, and writes.
+    /// This asks the store for the object's length, so it is the wrong question
+    /// for a variant bound to a ZIP member: the target holds the extracted
+    /// member, not the archive. Those variants go through
+    /// [`Self::target_already_holds_with_len`] with the member's own hash and
+    /// length.
     async fn target_already_holds(
         &self,
         relative_path: &str,
@@ -1871,8 +1909,25 @@ impl SyncSharedState {
             // write and reports the cause with the path it failed on.
             return false;
         };
+        self.target_already_holds_with_len(relative_path, hash, target_path, expected.len).await
+    }
+
+    /// Whether `relative_path` is recorded as, and still holds, `hash` over
+    /// `expected_len` bytes.
+    ///
+    /// The length is the caller's because not every managed file is a store
+    /// object: a variant bound to a ZIP member writes bytes derived from the
+    /// archive, so `cas.stat` cannot answer for it, and the caller that
+    /// extracted the member is the only one holding its length.
+    async fn target_already_holds_with_len(
+        &self,
+        relative_path: &str,
+        hash: &Hash,
+        target_path: &Path,
+        expected_len: u64,
+    ) -> bool {
         self.record_matches(relative_path, hash)
-            && self.output_holds(relative_path, target_path, hash, expected.len).await
+            && self.output_holds(relative_path, target_path, hash, expected_len).await
     }
 
     /// Whether `state.managed_files` records `hash` under `relative_path`.
@@ -2053,3 +2108,5 @@ mod tests_reserved_names;
 mod tests_unchanged_targets;
 #[cfg(test)]
 mod tests_yt_dlp_sandbox_paths;
+#[cfg(test)]
+mod tests_zip_members;

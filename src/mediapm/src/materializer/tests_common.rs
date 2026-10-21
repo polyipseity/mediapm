@@ -198,6 +198,87 @@ pub(super) fn resolvable_media_document(variant_hash: &str) -> MediaPmDocument {
     document
 }
 
+/// Media id the zip-member fixture binds its entry to.
+pub(super) const ZIP_MEMBER_MEDIA_ID: &str = "src1";
+
+/// Variant name the zip-member fixture selects, produced by extracting a
+/// member out of the variant's ZIP pack.
+pub(super) const ZIP_MEMBER_VARIANT: &str = "extracted";
+
+/// Member suffix the zip-member fixture extracts, which is how a subtitles
+/// variant names the track inside its pack.
+pub(super) const ZIP_MEMBER_SUFFIX: &str = ".en.vtt";
+
+/// Hierarchy path of the zip-member fixture's media entry, which is also the
+/// key `state.managed_files` records it under.
+pub(super) const ZIP_MEMBER_PATH: &str = "song";
+
+/// A one-media-entry document whose selected variant resolves from
+/// `pack_hash` and whose binding names the member [`ZIP_MEMBER_SUFFIX`] inside
+/// that pack.
+///
+/// The variant hash is the pack's, not the member's, which is the shape every
+/// variant with a `zip_member` binding has: the workflow records the archive
+/// it produced, and the materializer writes one member out of it. `input_hash`
+/// stands in for the variant the extracting step consumes, so the step has a
+/// declared input the document can resolve.
+pub(super) fn zip_member_media_document(input_hash: &str, pack_hash: &str) -> MediaPmDocument {
+    MediaPmDocument {
+        media: BTreeMap::from([(
+            ZIP_MEMBER_MEDIA_ID.to_string(),
+            MediaSourceSpec {
+                steps: vec![
+                    MediaStep {
+                        tool: MediaStepTool::Import,
+                        input_variants: vec![],
+                        output_variants: BTreeMap::from([(
+                            "default".into(),
+                            OutputVariantValue::Generic(GenericOutputVariantConfig {
+                                kind: "primary".to_string(),
+                                ..Default::default()
+                            }),
+                        )]),
+                        options: BTreeMap::new(),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::Ffmpeg,
+                        input_variants: vec!["default".to_string()],
+                        output_variants: BTreeMap::from([(
+                            ZIP_MEMBER_VARIANT.into(),
+                            OutputVariantValue::Generic(GenericOutputVariantConfig {
+                                kind: "primary".to_string(),
+                                zip_member: ZIP_MEMBER_SUFFIX.to_string(),
+                                extension: "vtt".to_string(),
+                                ..Default::default()
+                            }),
+                        )]),
+                        options: BTreeMap::new(),
+                    },
+                ],
+                variant_hashes: BTreeMap::from([
+                    ("default".to_string(), input_hash.to_string()),
+                    (ZIP_MEMBER_VARIANT.to_string(), pack_hash.to_string()),
+                ]),
+                ..MediaSourceSpec::default()
+            },
+        )]),
+        hierarchy: vec![HierarchyNode {
+            path: HierarchyPath::simple(ZIP_MEMBER_PATH),
+            kind: HierarchyNodeKind::Media,
+            id: None,
+            media_id: Some(ZIP_MEMBER_MEDIA_ID.to_string()),
+            variant: Some(ZIP_MEMBER_VARIANT.into()),
+            variants: vec![],
+            rename_files: vec![],
+            format: PlaylistFormat::M3u8,
+            ids: vec![],
+            sanitize_names: Some(SanitizeNamesConfig::Inherit),
+            children: vec![],
+        }],
+        ..MediaPmDocument::default()
+    }
+}
+
 /// A one-folder-entry document whose single variant resolves from
 /// `variant_hash`, so a `sync_hierarchy` over it reaches the folder arm.
 ///

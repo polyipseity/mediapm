@@ -242,7 +242,12 @@ pub(super) mod read_watch {
 /// This helper treats broken symlinks as existing paths and removes them too.
 /// Uses `tokio::task::spawn_blocking` to avoid blocking the async executor
 /// thread during the recursive readonly-clear and remove operations.
-async fn remove_existing_destination_path(path: &Path) -> Result<(), MediaPmError> {
+///
+/// Shared with the arm that writes bytes derived from a store object rather
+/// than the object itself: those outputs are managed files too, so the
+/// read-only file an earlier run left has to be replaced before it can be
+/// written again.
+pub(super) async fn remove_existing_destination_path(path: &Path) -> Result<(), MediaPmError> {
     if tokio::fs::symlink_metadata(path).await.is_ok() {
         let owned = path.to_path_buf();
         tokio::task::spawn_blocking(move || remove_path(&owned)).await.map_err(|e| {
