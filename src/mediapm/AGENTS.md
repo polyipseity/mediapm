@@ -140,6 +140,15 @@ Every row but `conductor_state_config` is the conductor's own default from `medi
 
 Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
+### Explicit invalidation
+
+Instance keys are content-derived, so elapsed time never re-executes a step. Two levers ask for a fresh run, and they differ in scope and lifetime:
+
+- `mediapm media invalidate <media> --step N` queues the media's generated workflow name (`mediapm.media.<id>`) in `MediaPmState.pending_force_rerun`. The next sync runs that workflow with `RunWorkflowOptions::force_rerun` and drops the entry once the run completes with `failed_steps == 0`; a failed run keeps it. Persisting the request is what lets the invalidating process be a different one from the syncing process.
+- `mediapm sync --force-rerun` (`SyncLibraryOptions.force_workflow_rerun`) forces every workflow this run executes and leaves nothing behind.
+
+Neither deletes an instance: the re-execution re-records the same content-derived key. `last_impure_sync_at` is not a lever — nothing writes it, and clearing it re-executes nothing.
+
 ## Managed Tool Provisioning
 
 6 managed tools carry a preset and a workflow module: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`. A seventh, `import`, reaches `resolve_tool_fetch` (`tools/provider/import.rs`, a launcher-only builtin source-ingest tool with no preset and no workflow module, so it is absent from `is_known_tool_id` and from `apply_preset`). See `.agents/instructions/provider-dispatch.instructions.md` (per-OS source descriptors, URL resolution, `resolve_latest_github_tag`), `.agents/instructions/preset-dispatch.instructions.md` (preset spec builders, defaults), and `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` (provisioning pipeline, paths, `FetchedToolPayload` shape) for details.

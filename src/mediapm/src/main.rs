@@ -376,12 +376,14 @@ async fn main_cli() -> anyhow::Result<()> {
                     }
                     if summary.regeneration_requested {
                         print_hint(
-                            "run 'mediapm sync --force-rerun' to re-execute this workflow; a plain \
-                             sync serves the cached step instances",
+                            "the re-run is queued in state; run 'mediapm sync' to re-execute this \
+                             workflow, or 'mediapm sync --force-rerun' to re-execute every step \
+                             this run",
                         );
                     } else {
                         print_hint(
-                            "run 'mediapm sync --force-rerun' once you want this step re-executed",
+                            "run 'mediapm sync --force-rerun' to re-execute every workflow step \
+                             this run",
                         );
                     }
                     Ok(())
@@ -1025,8 +1027,13 @@ struct SyncArgs {
     ///
     /// Instance keys are content-derived, so elapsed time never expires a
     /// step; this flag is the explicit way to re-run one whose external
-    /// circumstances changed. The scope is the whole run: the conductor's
-    /// invalidation granularity is a workflow run, not a single step.
+    /// circumstances changed. It applies to every workflow this run executes
+    /// and leaves nothing behind. A workflow queued by `mediapm media
+    /// invalidate` re-executes on a plain sync instead, and keeps its queued
+    /// entry until a run completes without a failed step.
+    ///
+    /// The scope is the whole run: the conductor's invalidation granularity is
+    /// a workflow run, not a single step.
     #[arg(long)]
     force_rerun: bool,
 }

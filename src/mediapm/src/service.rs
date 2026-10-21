@@ -123,17 +123,6 @@ pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'stati
     runtime_storage_overrides: MediaRuntimeStorage,
     /// Persistent local-source metadata cache (`<runtime>/cache/mediapm`).
     metadata_cache: MetadataCache,
-    /// Run-scoped explicit workflow invalidation forwarded to
-    /// [`mediapm_conductor::RunWorkflowOptions::force_rerun`].
-    ///
-    /// `false` (the default) serves every step whose key material is
-    /// unchanged from the conductor instance cache; `true` re-executes all
-    /// steps once. A sync that honours it clears it after its workflow phase,
-    /// so it applies to that run rather than to every later one. Never
-    /// persisted — callers arm it through
-    /// [`Self::set_force_workflow_rerun`] or
-    /// [`SyncLibraryOptions::force_workflow_rerun`](crate::SyncLibraryOptions::force_workflow_rerun).
-    force_workflow_rerun: bool,
 }
 
 /// Converts a `PathBuf` into an `Option`, treating empty buffers as `None`
@@ -157,7 +146,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             paths,
             runtime_storage_overrides: MediaRuntimeStorage::default(),
             metadata_cache,
-            force_workflow_rerun: false,
         }
     }
 
@@ -169,26 +157,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Self {
         let metadata_cache = MetadataCache::open(&paths.workspace_mediapm_cache_dir());
-        Self {
-            conductor,
-            paths,
-            runtime_storage_overrides,
-            metadata_cache,
-            force_workflow_rerun: false,
-        }
-    }
-
-    /// Sets the run-scoped explicit workflow invalidation for subsequent
-    /// syncs.
-    ///
-    /// When `true`, the next sync re-executes every workflow step even if
-    /// its instance is cached (steps are never invalidated by the passage of
-    /// time; this flag, [`SyncLibraryOptions::force_workflow_rerun`](crate::SyncLibraryOptions::force_workflow_rerun),
-    /// or changed step material re-executes them). Arming either surface is
-    /// enough. The setting is not persisted and resets to `false` on a new
-    /// service.
-    pub fn set_force_workflow_rerun(&mut self, force: bool) {
-        self.force_workflow_rerun = force;
+        Self { conductor, paths, runtime_storage_overrides, metadata_cache }
     }
 
     /// Returns a shared reference to the paths layout.
@@ -755,18 +724,20 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         Ok(())
     }
 
-    /// Invalidates a media step and arms the next sync to re-execute its
+    /// Invalidates a media step and asks the next sync to re-execute its
     /// workflow.
     ///
     /// Clears the media's recorded step progress (variant hashes and the
     /// completed-step count) and, when `invalidate_calls` is true, the impure
-    /// timestamps. `invalidate_calls` or `regenerate` arms the service's
-    /// force-rerun flag. Instance keys are derived from step content, so no
-    /// tool-call instance is deleted and none could be: the re-execution happens
-    /// because the next sync on this service runs the workflow with
-    /// [`mediapm_conductor::RunWorkflowOptions::force_rerun`]. `regenerate`
-    /// requests that re-execution without clearing the timestamps; both flags are
-    /// applied by the next sync.
+    /// timestamps. `invalidate_calls` or `regenerate` queues the media's
+    /// workflow in [`MediaPmState::pending_force_rerun`](crate::MediaPmState),
+    /// which the next sync consumes by running that workflow with
+    /// [`mediapm_conductor::RunWorkflowOptions::force_rerun`]. The marker is
+    /// persisted rather than held on the service, so the sync that honours it
+    /// may be a different process from the one that issued it. Instance keys
+    /// are derived from step content, so no tool-call instance is deleted and
+    /// none could be. `regenerate` requests the re-execution without clearing
+    /// the timestamps; both flags queue the same marker.
     ///
     /// # Errors
     ///
@@ -786,7 +757,10 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
                 "media source '{media_id}' not found in state",
             )));
         }
-        let workflow_id = format!("media/{media_id}");
+        // The generated-document workflow name, which is what the sync's
+        // workflow loop matches the marker against. Naming it anything else
+        // here would queue an entry no run could ever consume.
+        let workflow_id = crate::tools::workflows::managed_workflow_name(media_id);
 
         let mut removed_generated_timestamps = Vec::new();
         if invalidate_calls {
@@ -803,12 +777,12 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             remove_all_step_impure_timestamps(&mut state);
         }
 
-        save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
-
         let regeneration_requested = invalidate_calls || regenerate;
         if regeneration_requested {
-            self.force_workflow_rerun = true;
+            state.pending_force_rerun.insert(workflow_id.clone());
         }
+
+        save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
 
         Ok(MediaStepInvalidationSummary {
             workflow_id,
@@ -1264,13 +1238,6 @@ impl MediaPmService<FileSystemCas> {
             force_workflow_rerun,
         } = options;
 
-        // Either surface may arm explicit invalidation: the options value (the
-        // `mediapm sync --force-rerun` path) or the service field (`set_force_workflow_rerun`,
-        // which `invalidate_media_step_tool_calls` arms). They are ORed rather
-        // than one replacing the other so arming through one cannot be silently
-        // undone by the other's default.
-        let force_workflow_rerun = force_workflow_rerun || self.force_workflow_rerun;
-
         // One terminal per sync (spec S1): every phase renders through this
         // single draw target, and `--no-progress` is expressed by it being
         // inert. No phase builds a terminal of its own.
@@ -1319,6 +1286,12 @@ impl MediaPmService<FileSystemCas> {
         let mut executed_instances: usize = 0;
         let mut cached_instances: usize = 0;
         let mut workflow_failed_steps: usize = 0;
+        // Loaded before the workflow phase because the persisted invalidation
+        // marker is part of what decides how each workflow runs. Tool sync and
+        // the runtime-config refresh above never write mediapm state, so this
+        // is the same document the materialization phase reads below — one
+        // read-modify-write cycle rather than two.
+        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
         self.conductor
             .ensure_persisted_state_loaded()
             .await
@@ -1339,6 +1312,10 @@ impl MediaPmService<FileSystemCas> {
             Some(Arc::new(workflow_group));
         let workflow_overall: Option<Arc<dyn ProgressBarApi>> =
             Some(Arc::new(workflow_overall_handle));
+        // Workflows whose forced run completed. A marker entry is spent by the
+        // run that honoured it, and kept by a run that failed, so an
+        // invalidation is never silently consumed by work that did not happen.
+        let mut honoured_invalidations: Vec<String> = Vec::new();
         for workflow_name in workflow_names {
             let mut run_options = conductor_run_workflow_options(
                 &effective_paths,
@@ -1346,7 +1323,10 @@ impl MediaPmService<FileSystemCas> {
                 workflow_pg.clone(),
                 workflow_overall.clone(),
             );
-            run_options.force_rerun = force_workflow_rerun;
+            // Either the run asked for it (`mediapm sync --force-rerun`) or a
+            // previous process queued it for this workflow.
+            run_options.force_rerun =
+                force_workflow_rerun || state.pending_force_rerun.contains(&workflow_name);
             let summary = self.conductor.run_workflow(&workflow_name, run_options).await?;
             // Counted from the run summary directly: a step's instance key is
             // content-derived, so a forced re-execution of unchanged material
@@ -1361,14 +1341,21 @@ impl MediaPmService<FileSystemCas> {
                     "workflow '{workflow_name}' had {} failed step(s)",
                     summary.failed_steps
                 ));
+            } else {
+                honoured_invalidations.push(workflow_name.clone());
             }
         }
-        // The arming is run-scoped: every workflow this sync runs has now been
-        // asked to re-execute, so a later sync on the same service is
-        // cache-first again. A run that fails part-way returns above without
-        // clearing it, which leaves the invalidation armed for the retry rather
-        // than silently spending it on a run that did not complete.
-        self.force_workflow_rerun = false;
+        // Persist the spent markers before the materialization phase, so a
+        // materialization failure cannot hand the next sync a re-execution the
+        // workflows already performed. A workflow absent from this list keeps
+        // its entry: it failed, or it was never queued.
+        let mut invalidations_spent = false;
+        for workflow_name in &honoured_invalidations {
+            invalidations_spent |= state.pending_force_rerun.remove(workflow_name);
+        }
+        if invalidations_spent {
+            save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
+        }
         // Block until the conductor-owned workflow screen has flushed its
         // final frame (indicatif has no blocking join; this drains the
         // ticker and releases the draw target).
@@ -1387,7 +1374,6 @@ impl MediaPmService<FileSystemCas> {
 
         // 4. Load mediapm document and state.
         let mut document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
-        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
         let generated_doc = load_conductor_generated_document(&effective_paths)?;
         let conductor_state = self.conductor.get_state()?;
 

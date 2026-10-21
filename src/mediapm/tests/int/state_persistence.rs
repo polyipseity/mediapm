@@ -13,7 +13,7 @@
 //!
 //! Does NOT test the full tool-sync pipeline — see `tool_sync/` for that.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm::{
     ManagedFileRecord, MediaPmState, ToolRegistryEntry, load_mediapm_state_document,
@@ -49,6 +49,7 @@ fn state_round_trip() {
             resolved_vcs_hash: None,
         }],
         workflow_states: BTreeMap::new(),
+        pending_force_rerun: BTreeSet::new(),
     };
 
     let value = to_json_value(&state).expect("serialization must succeed");
@@ -206,6 +207,7 @@ fn json_save_idempotent() {
             resolved_vcs_hash: None,
         }],
         workflow_states: BTreeMap::new(),
+        pending_force_rerun: BTreeSet::new(),
     };
 
     let value1 = to_json_value(&state).expect("first serialization");
@@ -425,6 +427,7 @@ fn state_json_always_writes_to_disk() {
         managed_files: BTreeMap::new(),
         managed_tools: Vec::new(),
         workflow_states: BTreeMap::new(),
+        pending_force_rerun: BTreeSet::new(),
     };
 
     // First save: create the file.
@@ -485,6 +488,7 @@ fn state_v3_roundtrip_resolved_options() {
             resolved_vcs_hash: Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".to_string()),
         }],
         workflow_states: BTreeMap::new(),
+        pending_force_rerun: BTreeSet::new(),
     };
 
     let value = to_json_value(&state).expect("serialization must succeed");
@@ -518,6 +522,7 @@ fn state_v3_roundtrip_resolved_options() {
             resolved_vcs_hash: None,
         }],
         workflow_states: BTreeMap::new(),
+        pending_force_rerun: BTreeSet::new(),
     };
     let value_none = to_json_value(&state_none).expect("serialization must succeed");
     let entry_none = &value_none["managed_tools"][0];

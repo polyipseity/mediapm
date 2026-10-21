@@ -216,8 +216,11 @@ pub struct MediaStepInvalidationSummary {
     /// not by itself re-execute anything; the entry is reported because the
     /// caller asked for it to be cleared.
     pub removed_generated_timestamps: Vec<String>,
-    /// Whether this call armed the next sync on the same service to
-    /// re-execute the workflow.
+    /// Whether this call queued a forced re-execution of the workflow.
+    ///
+    /// The request is persisted in
+    /// [`MediaPmState::pending_force_rerun`](crate::MediaPmState), so the sync
+    /// that honours it need not be the process that issued it.
     ///
     /// There is no instance-removal counterpart: instance keys are derived
     /// from step content, so an invalidation keeps every instance and asks

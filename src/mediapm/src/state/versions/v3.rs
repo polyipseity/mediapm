@@ -18,7 +18,7 @@
 //! - Files outside `versions/` must reach versioned symbols only through
 //!   `versions/mod.rs`, never through a direct `versions::vX` path.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,6 +41,12 @@ pub(super) struct MediaPmStateV3 {
     /// Workflow step states keyed by media id.
     #[serde(default)]
     pub(super) workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
+    /// Workflows whose next run must ignore the instance cache.
+    ///
+    /// Omitted when empty, so a state document that has nothing queued reads
+    /// exactly as it did before the marker existed.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(super) pending_force_rerun: BTreeSet<String>,
 }
 
 /// Resolves a decoded [`MediaPmStateV3`] into the unversioned runtime model.
@@ -57,6 +63,7 @@ pub(super) fn resolve_v3(v3: MediaPmStateV3) -> MediaPmState {
         managed_files: v3.managed_files,
         managed_tools: deduped_tools,
         workflow_states: v3.workflow_states,
+        pending_force_rerun: v3.pending_force_rerun,
     }
 }
 
@@ -69,6 +76,7 @@ pub(super) fn to_v3_json_value(state: &MediaPmState) -> Result<Value, MediaPmErr
         managed_files: state.managed_files.clone(),
         managed_tools: deduped_tools,
         workflow_states: state.workflow_states.clone(),
+        pending_force_rerun: state.pending_force_rerun.clone(),
     };
 
     serde_json::to_value(v3)
@@ -101,6 +109,9 @@ fn advance_v2_to_v3(v2: MediaPmStateV2) -> MediaPmStateV3 {
         managed_files: v2.managed_files,
         managed_tools,
         workflow_states: v2.workflow_states,
+        // A V2 document predates the invalidation marker, so a migrated state
+        // has nothing queued by definition.
+        pending_force_rerun: BTreeSet::new(),
     }
 }
 
@@ -188,6 +199,7 @@ mod tests {
                 resolved_vcs_hash: Some("abc".to_string()),
             }],
             workflow_states: BTreeMap::new(),
+            pending_force_rerun: BTreeSet::new(),
         };
 
         let value = to_v3_json_value(&state).expect("serialize v3");
@@ -527,6 +539,7 @@ mod tests {
             managed_files: BTreeMap::new(),
             managed_tools: entries,
             workflow_states: BTreeMap::new(),
+            pending_force_rerun: BTreeSet::new(),
         };
         let value = to_v3_json_value(&state).expect("serialize");
         let decoded = from_v3_json_value(value).expect("deserialize");
@@ -556,6 +569,7 @@ mod tests {
             managed_files: BTreeMap::new(),
             managed_tools: vec![],
             workflow_states: BTreeMap::new(),
+            pending_force_rerun: BTreeSet::new(),
         };
         let value = to_v3_json_value(&state).expect("serialize");
         let decoded = from_v3_json_value(value).expect("deserialize");
@@ -591,6 +605,7 @@ mod tests {
             managed_files: BTreeMap::new(),
             managed_tools: entries,
             workflow_states: BTreeMap::new(),
+            pending_force_rerun: BTreeSet::new(),
         };
         let value = to_v3_json_value(&state).expect("serialize");
         let decoded = from_v3_json_value(value).expect("deserialize");
@@ -629,6 +644,7 @@ mod tests {
             managed_files: BTreeMap::new(),
             managed_tools: entries,
             workflow_states: BTreeMap::new(),
+            pending_force_rerun: BTreeSet::new(),
         };
         let value = to_v3_json_value(&state).expect("serialize");
         // Round-trip: serialize → JSON → deserialize → serialize → JSON

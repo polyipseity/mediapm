@@ -65,12 +65,13 @@ pub struct SyncLibraryOptions {
     ///
     /// `false` (the default) serves every step whose key material is unchanged
     /// from the conductor instance cache. Instance keys are content-derived, so
-    /// elapsed time never expires one: this flag, or changed step material, is
-    /// what re-executes a step. Scope is the whole run, because the conductor's
-    /// invalidation granularity is a workflow run rather than a single step.
-    /// A service-level [`set_force_workflow_rerun`](crate::MediaPmService::set_force_workflow_rerun)
-    /// arms the same behaviour for a caller that has no options value; either
-    /// one is enough.
+    /// elapsed time never expires one: this flag, a queued
+    /// [`MediaPmState::pending_force_rerun`](crate::MediaPmState) entry, or
+    /// changed step material is what re-executes a step. Scope is the whole
+    /// run, because the conductor's invalidation granularity is a workflow run
+    /// rather than a single step. Unlike the marker, which a previous process
+    /// may have queued for one workflow, this flag applies to every workflow
+    /// this run executes and leaves nothing behind.
     pub force_workflow_rerun: bool,
     /// Receives one report per completed phase, in execution order.
     pub observer: Option<Arc<dyn SyncPhaseObserver + Send + Sync>>,

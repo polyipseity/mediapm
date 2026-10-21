@@ -148,6 +148,8 @@ pub(super) fn to_v2_json_value(state: &MediaPmState) -> Result<Value, MediaPmErr
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::json;
 
     use super::*;
@@ -179,6 +181,7 @@ mod tests {
                 resolved_vcs_hash: Some("abc".to_string()),
             }],
             workflow_states: BTreeMap::new(),
+            pending_force_rerun: BTreeSet::new(),
         };
 
         let encoded = to_v2_json_value(&state).expect("encode as V2");

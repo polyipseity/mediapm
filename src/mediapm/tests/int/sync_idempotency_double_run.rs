@@ -52,7 +52,11 @@ const PAYLOAD: &[u8] = b"double-sync idempotency probe payload";
 
 /// Builds the single-step offline `import` source that ingests `hash`
 /// (`kind=cas_hash`, the same shape `local_source_default_steps` synthesizes).
-fn import_source_spec(hash: &str) -> MediaSourceSpec {
+///
+/// `pub(crate)` so the invalidation tests can re-point the source at a hash the
+/// store does not hold, which is how they make a forced run fail for a real
+/// reason instead of a synthetic one.
+pub(crate) fn import_source_spec(hash: &str) -> MediaSourceSpec {
     MediaSourceSpec {
         steps: vec![MediaStep {
             tool: MediaStepTool::Import,
@@ -297,16 +301,28 @@ async fn force_rerun_reexecutes_the_cached_workflow() -> Result<(), MediaPmError
         "the unforced re-run must be a cache hit before force is exercised: {second:?}"
     );
 
-    service.set_force_workflow_rerun(true);
-    let forced = sync_library_with_test_terminal(&mut service, false).await?;
+    // The explicit lever, armed per run through the options rather than held
+    // on the service: a forced run is a request about one run, and nothing
+    // about it should outlive that run.
+    let forced = service
+        .sync_library_with_progress_overrides(
+            mediapm::SyncLibraryOptions {
+                force_workflow_rerun: true,
+                ..mediapm::SyncLibraryOptions::default()
+            },
+            mediapm::SyncProgressOverrides {
+                terminal: Some(crate::common::test_progress_terminal()),
+                no_progress: false,
+            },
+        )
+        .await?;
     assert!(
         forced.executed_instances >= 1,
         "force_rerun must re-execute the cached import step: {forced:?} (unforced re-run: {second:?})"
     );
 
-    // Force is run-scoped: with the flag back off, the re-recorded instance
-    // serves the cache again.
-    service.set_force_workflow_rerun(false);
+    // Run-scoped: with the option back at its default, the re-recorded
+    // instance serves the cache again.
     let third = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
         third.executed_instances, 0,
