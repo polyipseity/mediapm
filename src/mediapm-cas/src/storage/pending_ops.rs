@@ -83,7 +83,23 @@ impl PendingOps {
                 // Another task is already working — wait for its result.
                 let existing = e.get().clone();
                 drop(e);
-                existing.done.notified().await;
+
+                // Register as a waiter *before* reading the result.
+                //
+                // `notify_waiters` wakes only the waiters registered at the
+                // moment it runs, and it leaves no permit behind. Reading the
+                // slot and awaiting afterwards therefore misses a leader that
+                // finished in between, and the follower waits forever on a
+                // notification that already happened. Enabling the future
+                // registers it now, so the check below sees either a result or
+                // a notification that is guaranteed to arrive.
+                let notified = existing.done.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if let Some(result) = existing.result.get() {
+                    return result.clone();
+                }
+                notified.await;
                 existing.result.get().unwrap_or(&Err(CasError::NotFound(hash))).clone()
             }
             Entry::Vacant(e) => {
@@ -105,5 +121,43 @@ impl PendingOps {
                 result
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A follower that reads the slot after its leader already finished returns
+    /// the recorded result instead of waiting for a notification that has
+    /// already been delivered.
+    ///
+    /// The window is real: the follower clones the slot, the leader completes
+    /// and notifies, and only then does the follower await. `notify_waiters`
+    /// wakes only the waiters registered when it runs and leaves no permit
+    /// behind, so a follower that awaits after the fact would wait forever.
+    /// Inserting the entry with its result already set and its notification
+    /// already fired reproduces exactly that window.
+    #[tokio::test]
+    async fn a_follower_that_arrives_after_the_leader_finished_does_not_wait() {
+        let ops = PendingOps::new();
+        let hash = Hash::from_content(b"late follower");
+        let slot =
+            Arc::new(PendingSlot { done: Notify::new(), result: std::sync::OnceLock::new() });
+        slot.result.set(Ok(Some(Bytes::from_static(b"leader result")))).expect("first set");
+        slot.done.notify_waiters();
+        ops.inner.insert(hash, Arc::clone(&slot));
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            ops.execute(hash, || async { panic!("a follower must not perform the work") }),
+        )
+        .await
+        .expect("a follower arriving after completion must not wait");
+
+        assert_eq!(
+            outcome.expect("the recorded result"),
+            Some(Bytes::from_static(b"leader result"))
+        );
     }
 }
