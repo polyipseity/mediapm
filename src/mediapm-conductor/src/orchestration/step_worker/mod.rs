@@ -149,7 +149,7 @@ mod tests {
     use super::*;
     use crate::instance_key::{derive_instance_key, step_output_specs_hash};
     use crate::orchestration::protocol::{ConductorState, StepOutputs};
-    use crate::state::{HashedValueRecord, ResolvedInput, ToolCallInstance};
+    use crate::state::{CapturedOutput, ResolvedInput, ToolCallInstance};
     use mediapm_cas::Hash;
     use mediapm_utils::Timestamp;
     use std::collections::{BTreeMap, BTreeSet};
@@ -232,7 +232,7 @@ mod tests {
         let mut outputs = BTreeMap::new();
         outputs.insert(
             "result".to_string(),
-            HashedValueRecord { hash: Hash::from_content(b"data"), deterministic: true },
+            CapturedOutput { hash: Hash::from_content(b"data"), capture: None },
         );
         let instance = ToolCallInstance {
             instance_key,

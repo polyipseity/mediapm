@@ -40,15 +40,7 @@ fn seed_state_with(keys: &[Hash]) -> ConductorState {
         conductor_gc_epoch: Timestamp::now(),
         instances: keys
             .iter()
-            .map(|key| {
-                (
-                    *key,
-                    InstanceAux {
-                        save_modes: BTreeMap::new(),
-                        last_referenced_at: Timestamp::from_unix_nanos(0),
-                    },
-                )
-            })
+            .map(|key| (*key, InstanceAux { last_referenced_at: Timestamp::from_unix_nanos(0) }))
             .collect(),
     };
     state.tool_call_instances = keys.iter().map(|key| (*key, sample_instance(*key))).collect();

@@ -1,7 +1,10 @@
 //! V2 wire format for orchestration state persistence.
 //!
-//! V2 is the inline JSON-based format (no CAS envelope). The entire state
-//! is serialized as a single JSON object with a `version` marker.
+//! V2 is the previous inline JSON format (no CAS envelope): the entire state
+//! was serialized as a single JSON object with a `version` marker. V3 replaces
+//! its per-instance `save_modes` map with a capture spec recorded beside each
+//! output, so this module is retained for reading V2 files and migrating them,
+//! never for writing.
 //!
 //! This module owns the V2 version marker, wire-format types, and the V1→V2
 //! migration function (migration from vX to vX+1 always belongs to the vX+1

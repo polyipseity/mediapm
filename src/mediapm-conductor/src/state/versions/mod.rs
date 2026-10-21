@@ -17,91 +17,107 @@
 //! - Do not directly re-export `versions::vX` structs or paths as public API;
 //!   expose unversioned functions and keep versioned internals encapsulated.
 //! - Never delete a read path for a version that could exist in a CAS blob or
-//!   a state JSON on disk. Both V1 and V2 remain readable.
+//!   a state JSON on disk. V1 and V2 are migration-only formats that stay
+//!   readable; V3 is the current format.
 
 use crate::error::ConductorError;
-use crate::state::{AuxData, ConductorState, HashedValueRecord, InstanceAux, ToolCallInstance};
+use crate::state::{
+    AuxData, CapturedOutput, ConductorState, HashedValueRecord, InstanceAux, ToolCallInstance,
+};
 use mediapm_cas::CasApi;
 
 mod v1;
 mod v2;
+mod v3;
 
 // ---------------------------------------------------------------------------
-// Bridge: V2 wire types ↔ runtime types
+// Bridge: V3 wire types ↔ runtime types
 // ---------------------------------------------------------------------------
 
-impl From<v2::AuxDataV2> for AuxData {
-    fn from(aux: v2::AuxDataV2) -> Self {
-        Self {
-            tool_call_instance_counter: aux.tool_call_instance_counter,
-            conductor_gc_epoch: mediapm_utils::Timestamp::from_unix_nanos(aux.conductor_gc_epoch.0),
-            instances: aux.instances.into_iter().map(|(k, v)| (k, v.into())).collect(),
-        }
-    }
-}
-
-impl From<AuxData> for v2::AuxDataV2 {
-    fn from(aux: AuxData) -> Self {
-        Self {
-            tool_call_instance_counter: aux.tool_call_instance_counter,
-            conductor_gc_epoch: v2::ImpureTimestampV2(aux.conductor_gc_epoch.as_unix_nanos()),
-            instances: aux.instances.into_iter().map(|(k, v)| (k, v.into())).collect(),
-        }
-    }
-}
-
-impl From<v2::OutputSaveModeV2> for crate::state::OutputSaveMode {
-    fn from(mode: v2::OutputSaveModeV2) -> Self {
+impl From<v3::SaveModeV3> for crate::config::SaveMode {
+    fn from(mode: v3::SaveModeV3) -> Self {
         match mode {
-            v2::OutputSaveModeV2::Unsaved => Self::Unsaved,
-            v2::OutputSaveModeV2::Saved => Self::Saved,
-            v2::OutputSaveModeV2::Full => Self::Full,
+            v3::SaveModeV3::False => Self::False,
+            v3::SaveModeV3::True => Self::True,
+            v3::SaveModeV3::Full => Self::Full,
         }
     }
 }
 
-impl From<crate::state::OutputSaveMode> for v2::OutputSaveModeV2 {
-    fn from(mode: crate::state::OutputSaveMode) -> Self {
+impl From<crate::config::SaveMode> for v3::SaveModeV3 {
+    fn from(mode: crate::config::SaveMode) -> Self {
         match mode {
-            crate::state::OutputSaveMode::Unsaved => Self::Unsaved,
-            crate::state::OutputSaveMode::Saved => Self::Saved,
-            crate::state::OutputSaveMode::Full => Self::Full,
+            crate::config::SaveMode::False => Self::False,
+            crate::config::SaveMode::True => Self::True,
+            crate::config::SaveMode::Full => Self::Full,
         }
     }
 }
 
-impl From<v2::HashedValueRecordV2> for HashedValueRecord {
-    fn from(record: v2::HashedValueRecordV2) -> Self {
+impl From<v3::OutputCaptureSpecV3> for crate::config::OutputCaptureSpec {
+    fn from(spec: v3::OutputCaptureSpecV3) -> Self {
+        Self {
+            name: spec.name,
+            capture: spec.capture,
+            save: spec.save.into(),
+            allow_empty: spec.allow_empty,
+            include_topmost_folder: spec.include_topmost_folder,
+        }
+    }
+}
+
+impl From<crate::config::OutputCaptureSpec> for v3::OutputCaptureSpecV3 {
+    fn from(spec: crate::config::OutputCaptureSpec) -> Self {
+        Self {
+            name: spec.name,
+            capture: spec.capture,
+            save: spec.save.into(),
+            allow_empty: spec.allow_empty,
+            include_topmost_folder: spec.include_topmost_folder,
+        }
+    }
+}
+
+impl From<v3::CapturedOutputV3> for CapturedOutput {
+    fn from(output: v3::CapturedOutputV3) -> Self {
+        Self { hash: output.hash, capture: output.capture.map(Into::into) }
+    }
+}
+
+impl From<CapturedOutput> for v3::CapturedOutputV3 {
+    fn from(output: CapturedOutput) -> Self {
+        Self { hash: output.hash, capture: output.capture.map(Into::into) }
+    }
+}
+
+impl From<v3::HashedValueRecordV3> for HashedValueRecord {
+    fn from(record: v3::HashedValueRecordV3) -> Self {
         Self { hash: record.hash, deterministic: record.deterministic }
     }
 }
 
-impl From<HashedValueRecord> for v2::HashedValueRecordV2 {
+impl From<HashedValueRecord> for v3::HashedValueRecordV3 {
     fn from(record: HashedValueRecord) -> Self {
         Self { hash: record.hash, deterministic: record.deterministic }
     }
 }
 
-impl From<v2::InstanceAuxV2> for InstanceAux {
-    fn from(aux: v2::InstanceAuxV2) -> Self {
+impl From<v3::InstanceAuxV3> for InstanceAux {
+    fn from(aux: v3::InstanceAuxV3) -> Self {
         Self {
-            save_modes: aux.save_modes.into_iter().map(|(k, v)| (k, v.into())).collect(),
             last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(aux.last_referenced_at.0),
         }
     }
 }
 
-impl From<InstanceAux> for v2::InstanceAuxV2 {
+impl From<InstanceAux> for v3::InstanceAuxV3 {
     fn from(aux: InstanceAux) -> Self {
-        Self {
-            save_modes: aux.save_modes.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            last_referenced_at: v2::ImpureTimestampV2(aux.last_referenced_at.as_unix_nanos()),
-        }
+        Self { last_referenced_at: v3::ImpureTimestampV3(aux.last_referenced_at.as_unix_nanos()) }
     }
 }
 
-impl From<v2::ToolCallInstanceV2> for ToolCallInstance {
-    fn from(inst: v2::ToolCallInstanceV2) -> Self {
+impl From<v3::ToolCallInstanceV3> for ToolCallInstance {
+    fn from(inst: v3::ToolCallInstanceV3) -> Self {
         Self {
             instance_key: inst.instance_key,
             tool_call_id: inst.tool_call_id,
@@ -120,13 +136,13 @@ impl From<v2::ToolCallInstanceV2> for ToolCallInstance {
     }
 }
 
-impl From<ToolCallInstance> for v2::ToolCallInstanceV2 {
+impl From<ToolCallInstance> for v3::ToolCallInstanceV3 {
     fn from(inst: ToolCallInstance) -> Self {
         Self {
             instance_key: inst.instance_key,
             tool_call_id: inst.tool_call_id,
             impure: inst.impure,
-            executed_at: v2::ImpureTimestampV2(inst.executed_at.as_unix_nanos()),
+            executed_at: v3::ImpureTimestampV3(inst.executed_at.as_unix_nanos()),
             step_ids: inst.step_ids,
             command_args: inst.command_args.into_iter().map(Into::into).collect(),
             env_vars: inst.env_vars.into_iter().map(|(k, v)| (k, v.into())).collect(),
@@ -140,8 +156,28 @@ impl From<ToolCallInstance> for v2::ToolCallInstanceV2 {
     }
 }
 
-impl From<v2::ConductorStateV2> for ConductorState {
-    fn from(state: v2::ConductorStateV2) -> Self {
+impl From<v3::AuxDataV3> for AuxData {
+    fn from(aux: v3::AuxDataV3) -> Self {
+        Self {
+            tool_call_instance_counter: aux.tool_call_instance_counter,
+            conductor_gc_epoch: mediapm_utils::Timestamp::from_unix_nanos(aux.conductor_gc_epoch.0),
+            instances: aux.instances.into_iter().map(|(k, v)| (k, v.into())).collect(),
+        }
+    }
+}
+
+impl From<AuxData> for v3::AuxDataV3 {
+    fn from(aux: AuxData) -> Self {
+        Self {
+            tool_call_instance_counter: aux.tool_call_instance_counter,
+            conductor_gc_epoch: v3::ImpureTimestampV3(aux.conductor_gc_epoch.as_unix_nanos()),
+            instances: aux.instances.into_iter().map(|(k, v)| (k, v.into())).collect(),
+        }
+    }
+}
+
+impl From<v3::ConductorStateV3> for ConductorState {
+    fn from(state: v3::ConductorStateV3) -> Self {
         Self {
             version: state.version,
             tool_call_instances: state
@@ -154,10 +190,10 @@ impl From<v2::ConductorStateV2> for ConductorState {
     }
 }
 
-impl From<ConductorState> for v2::ConductorStateV2 {
+impl From<ConductorState> for v3::ConductorStateV3 {
     fn from(state: ConductorState) -> Self {
         Self {
-            version: v2::CONDUCTOR_STATE_VERSION_V2,
+            version: v3::CONDUCTOR_STATE_VERSION_V3,
             tool_call_instances: state
                 .tool_call_instances
                 .into_iter()
@@ -188,7 +224,7 @@ pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
 }
 
 // ---------------------------------------------------------------------------
-// JSON-based helpers (v2 — current plain-JSON persistence path)
+// JSON-based helpers (v3 — current plain-JSON persistence path)
 // ---------------------------------------------------------------------------
 
 /// Decodes an orchestration state from inline JSON bytes, checking that the
@@ -201,10 +237,14 @@ pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
 pub fn decode_state_json(bytes: &[u8]) -> Result<ConductorState, ConductorError> {
     let version = peek_version_marker(bytes)?;
 
-    if v2::is_conductor_state_version_v2(version) {
+    if v3::is_conductor_state_version_v3(version) {
+        let v3_state: v3::ConductorStateV3 = serde_json::from_slice(bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        Ok(v3_state.into())
+    } else if v2::is_conductor_state_version_v2(version) {
         let v2_state: v2::ConductorStateV2 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v2_state.into())
+        Ok(v3::from_v2_into_v3(v2_state).into())
     } else if v1::is_orchestration_state_version_v1(version) {
         Err(ConductorError::Serialization(format!(
             "orchestration state version {version} requires CAS-backed migration; \
@@ -212,7 +252,9 @@ pub fn decode_state_json(bytes: &[u8]) -> Result<ConductorState, ConductorError>
         )))
     } else {
         Err(ConductorError::Serialization(format!(
-            "unsupported orchestration state version: {version} (expected {} or {})",
+            "unsupported orchestration state version: {version} \
+             (supported: {}, {}, {})",
+            v3::CONDUCTOR_STATE_VERSION_V3,
             v2::CONDUCTOR_STATE_VERSION_V2,
             v1::ORCHESTRATION_STATE_VERSION_V1
         )))
@@ -231,18 +273,24 @@ pub async fn decode_state_json_with_cas<C: CasApi>(
 ) -> Result<ConductorState, ConductorError> {
     let version = peek_version_marker(bytes)?;
 
-    if v2::is_conductor_state_version_v2(version) {
+    if v3::is_conductor_state_version_v3(version) {
+        let v3_state: v3::ConductorStateV3 = serde_json::from_slice(bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        Ok(v3_state.into())
+    } else if v2::is_conductor_state_version_v2(version) {
         let v2_state: v2::ConductorStateV2 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v2_state.into())
+        Ok(v3::from_v2_into_v3(v2_state).into())
     } else if v1::is_orchestration_state_version_v1(version) {
         let envelope: v1::OrchestrationStateEnvelopeV1 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
         let v2_state = v2::migrate_v1_to_v2(cas, envelope).await?;
-        Ok(v2_state.into())
+        Ok(v3::from_v2_into_v3(v2_state).into())
     } else {
         Err(ConductorError::Serialization(format!(
-            "unsupported orchestration state version: {version} (expected {} or {})",
+            "unsupported orchestration state version: {version} \
+             (supported: {}, {}, {})",
+            v3::CONDUCTOR_STATE_VERSION_V3,
             v2::CONDUCTOR_STATE_VERSION_V2,
             v1::ORCHESTRATION_STATE_VERSION_V1
         )))
@@ -256,9 +304,8 @@ pub async fn decode_state_json_with_cas<C: CasApi>(
 ///
 /// Returns an error if serialization to JSON fails.
 pub fn encode_state_json(state: &ConductorState) -> Result<Vec<u8>, ConductorError> {
-    // Route through V2 wire type for explicit version boundary.
-    let v2_state: v2::ConductorStateV2 = state.clone().into();
-    serde_json::to_vec_pretty(&v2_state).map_err(|e| ConductorError::Serialization(e.to_string()))
+    let v3_state: v3::ConductorStateV3 = state.clone().into();
+    serde_json::to_vec_pretty(&v3_state).map_err(|e| ConductorError::Serialization(e.to_string()))
 }
 
 #[cfg(test)]
@@ -269,7 +316,20 @@ mod tests {
     use mediapm_utils::Timestamp;
 
     use super::*;
-    use crate::state::{OutputSaveMode, STATE_VERSION};
+    use crate::config::{OutputCaptureSpec, SaveMode};
+    use crate::state::{CapturedOutput, STATE_VERSION};
+
+    /// A capture spec whose every field differs from the defaults, so a bridge
+    /// that dropped or re-defaulted one of them would change the value.
+    fn sample_spec() -> OutputCaptureSpec {
+        OutputCaptureSpec {
+            name: "stdout".to_string(),
+            capture: "stdout".to_string(),
+            save: SaveMode::False,
+            allow_empty: true,
+            include_topmost_folder: false,
+        }
+    }
 
     fn sample_state() -> ConductorState {
         let key = Hash::from_content(b"key");
@@ -293,7 +353,7 @@ mod tests {
             )]),
             outputs: BTreeMap::from([(
                 "stdout".to_string(),
-                HashedValueRecord { hash: Hash::from_content(b"out"), deterministic: true },
+                CapturedOutput { hash: Hash::from_content(b"out"), capture: Some(sample_spec()) },
             )]),
         };
         ConductorState {
@@ -304,23 +364,35 @@ mod tests {
                 conductor_gc_epoch: Timestamp::from_unix_nanos(9),
                 instances: BTreeMap::from([(
                     key,
-                    InstanceAux {
-                        save_modes: BTreeMap::from([("stdout".to_string(), OutputSaveMode::Saved)]),
-                        last_referenced_at: Timestamp::from_unix_nanos(42),
-                    },
+                    InstanceAux { last_referenced_at: Timestamp::from_unix_nanos(42) },
                 )]),
             },
         }
     }
 
-    /// `instance_key` and `aux.instances` keyed by `Hash` survive the
-    /// encode/decode round-trip, including `save_modes` + `last_referenced_at`.
+    /// `instance_key`, `aux.instances` keyed by `Hash`, and each captured
+    /// entry's capture spec survive the encode/decode bridge.
+    ///
+    /// The spec is what a reusing step compares its declaration against, so a
+    /// bridge that dropped it would make every recorded name look unknown and
+    /// every reuse a miss — a silent, permanent re-execution rather than a
+    /// visible failure.
     #[test]
-    fn state_json_round_trip_hash_keys_and_aux() {
+    fn state_json_round_trip_preserves_capture_specs_and_aux() {
         let state = sample_state();
         let encoded = encode_state_json(&state).unwrap();
         let decoded = decode_state_json(&encoded).unwrap();
         assert_eq!(decoded, state);
+    }
+
+    /// The encoded envelope declares the current schema version, so a reader
+    /// can dispatch on it without guessing from the field layout.
+    #[test]
+    fn encoded_state_declares_the_current_version() {
+        let encoded = encode_state_json(&sample_state()).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["version"], serde_json::json!(STATE_VERSION));
+        assert_eq!(json["version"], serde_json::json!(3));
     }
 
     /// Round-tripping an instance through the wire type preserves the steps
@@ -339,7 +411,7 @@ mod tests {
             outputs: BTreeMap::new(),
             step_ids: BTreeSet::from(["step-1-echo".to_string()]),
         };
-        let wire: v2::ToolCallInstanceV2 = runtime.clone().into();
+        let wire: v3::ToolCallInstanceV3 = runtime.clone().into();
         let back: ToolCallInstance = wire.into();
         assert_eq!(back.step_ids, BTreeSet::from(["step-1-echo".to_string()]));
     }
@@ -350,7 +422,6 @@ mod tests {
     fn instance_json_has_no_version_field() {
         let encoded = encode_state_json(&sample_state()).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(json["version"], serde_json::json!(2));
         let instances = json["tool_call_instances"].as_object().unwrap();
         let instance = instances.values().next().unwrap();
         assert!(

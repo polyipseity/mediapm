@@ -7,18 +7,17 @@ use mediapm_cas::CasApi;
 
 use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
-use crate::state::{HashedValueRecord, OutputSaveMode, PersistenceFlags};
+use crate::state::CapturedOutput;
 
 use super::process::ExecutionResult;
 
-/// Captured step outputs: content-addressed records plus per-output save modes.
+/// Captured step outputs: content-addressed records, each with its spec.
 #[derive(Debug, Clone)]
 pub(super) struct CapturedOutputs {
-    /// Output records keyed by output name. Captured outputs are always
-    /// deterministic content (results, never preconditions).
-    pub records: BTreeMap<String, HashedValueRecord>,
-    /// Per-output persistence modes keyed by output name.
-    pub save_modes: BTreeMap<String, OutputSaveMode>,
+    /// Captured records keyed by output name, each carrying the spec that
+    /// produced it. Captured outputs are always deterministic content
+    /// (results, never preconditions).
+    pub records: BTreeMap<String, CapturedOutput>,
 }
 
 /// Recursively walks a directory and returns all file paths found.
@@ -145,16 +144,20 @@ async fn capture_folder_regex_output(
 }
 
 /// Captures declared outputs from the execution result and persists to CAS.
+///
+/// Every record returned carries the spec that produced it, including the
+/// implicitly captured `stdout`, `stderr` and `process_code`, which are
+/// generated rather than declared. Different tools declare a `content` name
+/// for different captures, so a name-addressed record is only reusable when
+/// the spec beside it says the bytes were produced the way the reusing step
+/// would produce them.
 pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
     cas: &C,
     output_specs: &BTreeMap<String, OutputCaptureSpec>,
     execution: &ExecutionResult,
     sandbox_dir: &Path,
-    persistence: PersistenceFlags,
 ) -> Result<CapturedOutputs, ConductorError> {
     let mut records = BTreeMap::new();
-    let mut save_modes = BTreeMap::new();
-    let save_mode = if persistence.save { OutputSaveMode::Saved } else { OutputSaveMode::Unsaved };
 
     // Implicitly capture stdout, stderr, and process_code unless explicitly declared.
     let declared_names: BTreeSet<&str> = output_specs.keys().map(String::as_str).collect();
@@ -240,11 +243,10 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
 
         let hash = cas.put(bytes::Bytes::from(data)).await.map_err(ConductorError::Cas)?;
 
-        records.insert(spec.name.clone(), HashedValueRecord { hash, deterministic: true });
-        save_modes.insert(spec.name.clone(), save_mode);
+        records.insert(spec.name.clone(), CapturedOutput { hash, capture: Some((*spec).clone()) });
     }
 
-    Ok(CapturedOutputs { records, save_modes })
+    Ok(CapturedOutputs { records })
 }
 
 #[cfg(test)]
@@ -271,10 +273,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("stdout").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"hello");
@@ -297,10 +296,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("stderr").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"error output");
@@ -322,10 +318,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("process_code").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"42");
@@ -349,10 +342,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("test_file").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"file content");
@@ -376,10 +366,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("log").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"regex match");
@@ -409,10 +396,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("yt_dlp_infojson_file").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         assert_eq!(data.as_ref(), b"infojson");
@@ -437,10 +421,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("yt_dlp_subtitle_artifacts").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data.as_ref())).unwrap();
@@ -468,10 +449,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let error = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap_err();
+        let error = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap_err();
         assert!(
             error.to_string().contains("folder_regex capture matched zero sandbox files"),
             "unexpected error: {error}"
@@ -498,10 +476,7 @@ mod tests {
                 include_topmost_folder: true,
             },
         );
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("folder_out").unwrap();
         let data = cas.get(out.hash).await.unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data.as_ref())).unwrap();
@@ -521,10 +496,7 @@ mod tests {
         let execution =
             ExecutionResult { stdout: b"hello".to_vec(), stderr: b"error".to_vec(), exit_code: 1 };
         let output_specs = BTreeMap::new();
-        let persistence = PersistenceFlags { save: true, force_full: false };
-        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path(), persistence)
-            .await
-            .unwrap();
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         assert_eq!(outputs.records.len(), 3);
         let stdout_out = outputs.records.get("stdout").unwrap();
         let stderr_out = outputs.records.get("stderr").unwrap();
@@ -532,5 +504,75 @@ mod tests {
         assert_eq!(cas.get(stdout_out.hash).await.unwrap().as_ref(), b"hello");
         assert_eq!(cas.get(stderr_out.hash).await.unwrap().as_ref(), b"error");
         assert_eq!(cas.get(code_out.hash).await.unwrap().as_ref(), b"1");
+    }
+
+    /// A recorded output carries the exact spec that produced it, including
+    /// the fields a selector alone cannot express.
+    ///
+    /// Capture addressing is by name, and a name says nothing about how the
+    /// bytes were produced. A reusing step compares the spec it declares
+    /// against this record, so a record carrying only the selector would let a
+    /// tolerant capture satisfy a strict declaration and the reverse — the
+    /// entry would look present while the bytes on disk were not what the
+    /// declaration promised.
+    #[tokio::test]
+    async fn a_recorded_output_carries_the_spec_that_produced_it() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        tokio::fs::write(tmp.path().join("out.mkv"), b"video").await.unwrap();
+        let downloads = tmp.path().join("downloads");
+        tokio::fs::create_dir(&downloads).await.unwrap();
+        tokio::fs::write(downloads.join("clip.vtt"), b"WEBVTT").await.unwrap();
+
+        let file_spec = OutputCaptureSpec {
+            name: "content".to_string(),
+            capture: "file:out.mkv".to_string(),
+            save: SaveMode::False,
+            allow_empty: true,
+            include_topmost_folder: false,
+        };
+        let folder_spec = OutputCaptureSpec {
+            name: "artifacts".to_string(),
+            capture: "folder_regex:^downloads/.+[.]vtt$".to_string(),
+            save: SaveMode::True,
+            allow_empty: true,
+            include_topmost_folder: false,
+        };
+        let output_specs = BTreeMap::from([
+            ("content".to_string(), file_spec.clone()),
+            ("artifacts".to_string(), folder_spec.clone()),
+        ]);
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path())
+            .await
+            .expect("both captures match a sandbox file");
+
+        assert_eq!(outputs.records["content"].capture.as_ref(), Some(&file_spec));
+        assert_eq!(outputs.records["artifacts"].capture.as_ref(), Some(&folder_spec));
+    }
+
+    /// The always-captured process streams are generated, not declared, and
+    /// each still records the spec that produced it: a step that later binds
+    /// `stdout` is comparing against a spec it never wrote.
+    #[tokio::test]
+    async fn an_implicitly_captured_stream_records_the_spec_that_produced_it() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let execution =
+            ExecutionResult { stdout: b"hello".to_vec(), stderr: b"oops".to_vec(), exit_code: 3 };
+
+        let outputs = capture_outputs(&cas, &BTreeMap::new(), &execution, tmp.path())
+            .await
+            .expect("implicit captures never fail");
+
+        for name in ["stdout", "stderr", "process_code"] {
+            let spec = outputs.records[name]
+                .capture
+                .as_ref()
+                .unwrap_or_else(|| panic!("implicit output `{name}` must record its spec"));
+            assert_eq!(spec.name, name);
+            assert_eq!(spec.capture, name);
+        }
     }
 }

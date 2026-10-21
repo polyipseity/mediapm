@@ -660,10 +660,15 @@ fn collect_required_step_zip_members(
     required
 }
 
+/// Returns the record this instance holds under `output_name`, if any.
+///
+/// The name is the whole address: the record carries the capture spec beside
+/// the hash, but resolution here only needs the bytes the materializer will
+/// read.
 fn instance_output_ref<'a>(
     instance: &'a ToolCallInstance,
     output_name: &str,
-) -> Option<&'a mediapm_conductor::HashedValueRecord> {
+) -> Option<&'a mediapm_conductor::CapturedOutput> {
     instance.outputs.get(output_name)
 }
 
@@ -1812,8 +1817,8 @@ mod tests {
     )]
     async fn merged_resolution_prefers_specialized_yt_dlp_sidecar_instance() {
         use mediapm_conductor::{
-            HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
-            ToolSpec, WorkflowSpec, WorkflowStepSpec,
+            CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec, ToolSpec,
+            WorkflowSpec, WorkflowStepSpec,
         };
         use mediapm_utils::Timestamp;
 
@@ -1855,11 +1860,11 @@ mod tests {
                 outputs: BTreeMap::from([
                     (
                         "primary".to_string(),
-                        HashedValueRecord { hash: primary_infojson_hash, deterministic: false },
+                        CapturedOutput { hash: primary_infojson_hash, capture: None },
                     ),
                     (
                         "yt_dlp_infojson_file".to_string(),
-                        HashedValueRecord { hash: primary_infojson_hash, deterministic: false },
+                        CapturedOutput { hash: primary_infojson_hash, capture: None },
                     ),
                 ]),
             },
@@ -1877,7 +1882,7 @@ mod tests {
                 materialized_inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([(
                     "yt_dlp_infojson_file".to_string(),
-                    HashedValueRecord { hash: sidecar_infojson_hash, deterministic: false },
+                    CapturedOutput { hash: sidecar_infojson_hash, capture: None },
                 )]),
             },
         );
@@ -1930,8 +1935,8 @@ mod tests {
         use std::collections::BTreeMap;
 
         use mediapm_conductor::{
-            HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
-            ToolSpec, WorkflowSpec, WorkflowStepSpec,
+            CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec, ToolSpec,
+            WorkflowSpec, WorkflowStepSpec,
         };
         use mediapm_utils::Timestamp;
 
@@ -2008,7 +2013,7 @@ mod tests {
                 materialized_inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([(
                     "yt_dlp_infojson_file".to_string(),
-                    HashedValueRecord { hash: infojson_hash, deterministic: false },
+                    CapturedOutput { hash: infojson_hash, capture: None },
                 )]),
             },
         );
@@ -2097,8 +2102,8 @@ mod tests {
     #[tokio::test]
     async fn relaxed_resolution_finds_infojson_on_primary_yt_dlp_download_instance() {
         use mediapm_conductor::{
-            HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
-            ToolSpec, WorkflowSpec, WorkflowStepSpec,
+            CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec, ToolSpec,
+            WorkflowSpec, WorkflowStepSpec,
         };
         use mediapm_utils::Timestamp;
 
@@ -2140,15 +2145,15 @@ mod tests {
                 outputs: BTreeMap::from([
                     (
                         "primary".to_string(),
-                        HashedValueRecord { hash: primary_video_hash, deterministic: false },
+                        CapturedOutput { hash: primary_video_hash, capture: None },
                     ),
                     (
                         "yt_dlp_infojson_file".to_string(),
-                        HashedValueRecord { hash: infojson_hash, deterministic: false },
+                        CapturedOutput { hash: infojson_hash, capture: None },
                     ),
                     (
                         "yt_dlp_description_file".to_string(),
-                        HashedValueRecord { hash: infojson_hash, deterministic: false },
+                        CapturedOutput { hash: infojson_hash, capture: None },
                     ),
                 ]),
             },
@@ -2201,7 +2206,7 @@ mod tests {
     #[tokio::test]
     async fn relaxed_resolution_matches_versioned_yt_dlp_tool_call_id() {
         use mediapm_conductor::{
-            HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
+            CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
             ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
         };
         use mediapm_utils::Timestamp;
@@ -2249,7 +2254,7 @@ mod tests {
                 materialized_inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([(
                     "yt_dlp_infojson_file".to_string(),
-                    HashedValueRecord { hash: infojson_hash, deterministic: false },
+                    CapturedOutput { hash: infojson_hash, capture: None },
                 )]),
             },
         );

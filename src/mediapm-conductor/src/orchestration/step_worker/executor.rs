@@ -14,7 +14,7 @@ use crate::error::ConductorError;
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec, find_tool_entry_by_name,
 };
-use crate::state::{HashedValueRecord, PersistenceFlags, ResolvedInput, ToolCallInstance};
+use crate::state::{HashedValueRecord, ResolvedInput, ToolCallInstance};
 
 use super::cache::probe_cache;
 use super::capture::capture_outputs;
@@ -167,11 +167,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         // GC refresh still happens through the referenced-keys set at GC
         // time, not by per-hit mutation.
         cached.step_ids.insert(request.step.id.clone());
-        return Ok(StepExecutionBundle {
-            instance: cached,
-            save_modes: BTreeMap::new(),
-            cache_hit: true,
-        });
+        return Ok(StepExecutionBundle { instance: cached, cache_hit: true });
     }
 
     let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &instance_key).await?;
@@ -183,14 +179,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     // Capture outputs.
     // Merge tool-level outputs (defaults) with step-level outputs (overrides).
     let merged_outputs = merge_output_specs(&tool_spec.outputs, &request.step.outputs);
-    let persistence = {
-        use crate::config::SaveMode;
-        let any_unsaved = merged_outputs.values().any(|o| o.save == SaveMode::False);
-        let any_full = merged_outputs.values().any(|o| o.save == SaveMode::Full);
-        PersistenceFlags { save: !any_unsaved, force_full: any_full }
-    };
-    let captured =
-        capture_outputs(cas, &merged_outputs, &execution_result, &sandbox_dir, persistence).await?;
+    let captured = capture_outputs(cas, &merged_outputs, &execution_result, &sandbox_dir).await?;
 
     let instance = ToolCallInstance {
         instance_key,
@@ -204,7 +193,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         outputs: captured.records,
     };
 
-    Ok(StepExecutionBundle { instance, save_modes: captured.save_modes, cache_hit: false })
+    Ok(StepExecutionBundle { instance, cache_hit: false })
 }
 
 /// Returns whether every output this step's dependents bind still resolves in

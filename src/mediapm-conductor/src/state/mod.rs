@@ -1,7 +1,8 @@
 //! Runtime orchestration state (volatile + CAS-persisted).
 //!
-//! The orchestration state tracks every tool-call instance, its persistence
-//! status, and the auxiliary metadata needed for GC and diagnostics.
+//! The orchestration state tracks every tool-call instance, the captured
+//! outputs each instance recorded together with the capture spec that produced
+//! them, and the auxiliary metadata needed for GC and diagnostics.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,34 +29,22 @@ pub mod versions;
 /// may rewrite this document therefore has to know every field it carries,
 /// and a change an older writer would lose that way is what a bump is for.
 /// Backward compatibility is handled via the `state/versions/` module.
-pub(crate) const STATE_VERSION: u32 = 2;
+pub(crate) const STATE_VERSION: u32 = 3;
 
-/// Persistence status for one output within a tool-call instance.
+/// Persistence policy for a CAS-referenced blob declared as external data.
+///
+/// Captured outputs carry their persistence decision on the capture spec
+/// recorded beside them, so this mode speaks only for blobs the config names
+/// directly: it says how a hash that is not part of any tool content map is
+/// retained and persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputSaveMode {
-    /// Output has not been persisted to CAS.
+    /// The blob is not persisted to CAS.
     Unsaved,
-    /// Output has been persisted to CAS.
+    /// The blob is persisted to CAS.
     Saved,
-    /// Output was persisted with full-data preference.
+    /// The blob is persisted with full-data preference.
     Full,
-}
-
-/// Flags controlling output persistence behavior for one tool call instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PersistenceFlags {
-    /// Whether outputs are saved to CAS (`true`) or kept only in volatile
-    /// state (`false`).
-    pub save: bool,
-    /// Whether to force full data persistence instead of hash-only.
-    #[serde(default)]
-    pub force_full: bool,
-}
-
-/// Merges two `PersistenceFlags` into one: `save` uses AND, `force_full` uses OR.
-#[must_use]
-pub fn merge_persistence_flags(a: PersistenceFlags, b: PersistenceFlags) -> PersistenceFlags {
-    PersistenceFlags { save: a.save && b.save, force_full: a.force_full || b.force_full }
 }
 
 /// A resolved input key-value pair for a tool-call instance.
@@ -74,6 +63,25 @@ pub struct HashedValueRecord {
     pub hash: Hash,
     /// Whether the value is deterministic (participates in instance keys).
     pub deterministic: bool,
+}
+
+/// One captured output: its content hash and the spec that produced it.
+///
+/// The spec travels with the bytes because an output is addressed by name, and
+/// the name alone does not say what was captured: `content` may be a file read
+/// or a folder archive, strict or tolerant of emptiness, and a reusing step
+/// must be able to tell whether the bytes it finds were produced the way it
+/// would produce them. `None` is the migration's "recorded before specs were
+/// stored" sentinel. No declared [`crate::config::OutputCaptureSpec`] equals
+/// `None`, so an entry in that state never satisfies a capture request that
+/// names a spec; the step re-executes and re-records it once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapturedOutput {
+    /// CAS content hash of the captured bytes.
+    pub hash: Hash,
+    /// The capture spec that produced this entry, or `None` when the record
+    /// predates spec storage.
+    pub capture: Option<crate::config::OutputCaptureSpec>,
 }
 
 /// A completed tool-call instance: the runtime artifact of one tool call.
@@ -118,16 +126,19 @@ pub struct ToolCallInstance {
     pub env_vars: BTreeMap<String, HashedValueRecord>,
     /// Materialized tool-content inputs keyed by sandbox-relative path.
     pub materialized_inputs: BTreeMap<String, HashedValueRecord>,
-    /// Captured output records keyed by output name.
-    pub outputs: BTreeMap<String, HashedValueRecord>,
+    /// Captured output records keyed by output name, each carrying the spec
+    /// that produced it.
+    pub outputs: BTreeMap<String, CapturedOutput>,
 }
 
-/// Per-instance auxiliary metadata (save modes + GC lifecycle), kept off the
-/// instance record so cache probes and key derivation stay lean.
+/// Per-instance auxiliary metadata, kept off the instance record so cache
+/// probes and key derivation stay lean.
+///
+/// Persistence is not here: a save mode belongs to the capture spec recorded
+/// with the entry it describes, not to the instance, so replacing one output
+/// never speaks for another.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct InstanceAux {
-    /// Per-output persistence modes keyed by output name.
-    pub save_modes: BTreeMap<String, OutputSaveMode>,
     /// Conductor GC last-reference clock: refreshed whenever the instance is
     /// referenced during step execution or retained by GC.
     pub last_referenced_at: Timestamp,
@@ -244,53 +255,4 @@ pub fn derive_tool_call_instance_key(
         deterministic_env_vars,
         deterministic_materialized_input_hashes,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn merge_persistence_flags_save_requires_both() {
-        assert_eq!(
-            merge_persistence_flags(
-                PersistenceFlags { save: true, force_full: false },
-                PersistenceFlags { save: true, force_full: false },
-            ),
-            PersistenceFlags { save: true, force_full: false },
-        );
-        assert_eq!(
-            merge_persistence_flags(
-                PersistenceFlags { save: false, force_full: false },
-                PersistenceFlags { save: true, force_full: false },
-            ),
-            PersistenceFlags { save: false, force_full: false },
-        );
-    }
-
-    #[test]
-    fn merge_persistence_flags_force_full_uses_or() {
-        assert_eq!(
-            merge_persistence_flags(
-                PersistenceFlags { save: false, force_full: false },
-                PersistenceFlags { save: false, force_full: false },
-            ),
-            PersistenceFlags { save: false, force_full: false },
-        );
-        assert_eq!(
-            merge_persistence_flags(
-                PersistenceFlags { save: false, force_full: true },
-                PersistenceFlags { save: false, force_full: false },
-            ),
-            PersistenceFlags { save: false, force_full: true },
-        );
-    }
-
-    #[test]
-    fn merge_persistence_flags_default_merge() {
-        let flags =
-            merge_persistence_flags(PersistenceFlags::default(), PersistenceFlags::default());
-        assert!(!flags.save);
-        assert!(!flags.force_full);
-    }
 }

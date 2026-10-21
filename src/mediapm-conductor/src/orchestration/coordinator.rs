@@ -160,8 +160,8 @@ struct StepStateContribution {
     /// The tool-call instance the step settled with (fresh or cache-hit
     /// replay of a pre-existing one).
     instance: ToolCallInstance,
-    /// The aux record stored alongside the instance in the live state
-    /// (per-output save modes + the GC last-reference clock).
+    /// The aux record stored alongside the instance in the live state (the
+    /// GC last-reference clock; persistence lives on each captured entry).
     aux: InstanceAux,
 }
 
@@ -825,8 +825,7 @@ where
                         }
                         // Insert executed instance into state so subsequent
                         // steps (and future runs) can find cache hits, plus
-                        // the per-output persistence modes and GC last-reference
-                        // clock on the aux record. Refreshing the clock on both
+                        // the GC last-reference clock on the aux record. Refreshing the clock on both
                         // creation and cache-hit mirrors the pre-redesign
                         // executor behavior (`conductor_gc_last_referenced_at =
                         // now` on every bundle), keeping instances alive across
@@ -844,10 +843,7 @@ where
                         );
                         let contribution = StepStateContribution {
                             instance,
-                            aux: InstanceAux {
-                                save_modes: bundle.save_modes,
-                                last_referenced_at: Timestamp::now(),
-                            },
+                            aux: InstanceAux { last_referenced_at: Timestamp::now() },
                         };
                         state
                             .tool_call_instances
