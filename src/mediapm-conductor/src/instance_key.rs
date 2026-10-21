@@ -1,5 +1,10 @@
 //! Tool-call instance-key helpers shared by step execution and mediapm
 //! materialization matching.
+//!
+//! This module owns the instance-key scheme: its integer version, the domain
+//! separator that version renders, and the derivation itself. Instance
+//! identity is runtime data, so it does not live in `state/versions/`, whose
+//! modules own wire formats alone.
 
 use std::collections::BTreeMap;
 
@@ -8,6 +13,49 @@ use mediapm_cas::Hash;
 use crate::config::{InputBinding, OutputCaptureSpec, SaveMode, ToolSpec};
 use crate::orchestration::step_worker::template::is_deterministic_command_part;
 use crate::state::{ResolvedInput, ToolCallInstance};
+
+/// Version of the tool-call instance key scheme.
+///
+/// The scheme is versioned by an integer and only ever moves forward:
+/// `v1 -> v2 -> v3`. A change to the key material bumps this number; it never
+/// appends a revision such as `v3.1`, because the point of the bump is to be
+/// visible. Old persisted keys simply miss once and re-execute.
+pub const INSTANCE_KEY_SCHEME: u32 = 3;
+
+/// Domain separator for tool-call instance keys, carrying the scheme version.
+#[must_use]
+pub fn instance_key_domain() -> String {
+    format!("mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}")
+}
+
+/// Derives the content-addressed key of one tool-call instance.
+///
+/// The key answers whether this work has been done before, from material the
+/// caller can re-derive: the tool call identity, the step's capture set, the
+/// deterministic argument hashes, the deterministic environment hashes and the
+/// materialized tool-content hashes. Time and impurity never participate; an
+/// impure instance's recorded timestamp is provenance.
+#[must_use]
+pub fn derive_instance_key(
+    tool_call_id: &str,
+    output_specs_hash: Hash,
+    deterministic_command_args: &[Hash],
+    deterministic_env_vars: &[Hash],
+    deterministic_materialized_inputs: &[Hash],
+) -> Hash {
+    let mut parts = Vec::with_capacity(
+        3 + deterministic_command_args.len()
+            + deterministic_env_vars.len()
+            + deterministic_materialized_inputs.len(),
+    );
+    parts.push(Hash::from_content(instance_key_domain().as_bytes()));
+    parts.push(Hash::from_content(tool_call_id.as_bytes()));
+    parts.push(output_specs_hash);
+    parts.extend_from_slice(deterministic_command_args);
+    parts.extend_from_slice(deterministic_env_vars);
+    parts.extend_from_slice(deterministic_materialized_inputs);
+    Hash::composite(&parts)
+}
 
 /// Returns whether a binding source participates in instance-key material,
 /// matching step-worker `is_deterministic_command_part` semantics.
@@ -238,6 +286,96 @@ mod tests {
         }
     }
 
+    /// Stands in for a step's capture-set hash in the composition tests.
+    ///
+    /// The value only has to be stable: what these tests isolate is the
+    /// composite around the capture term, and the term's own encoding is
+    /// pinned by the capture tests below.
+    fn capture_term() -> Hash {
+        Hash::from_content(b"capture-set")
+    }
+
+    /// Deriving twice from identical material yields identical keys.
+    #[test]
+    fn derive_instance_key_is_deterministic() {
+        let captures = capture_term();
+        let a = derive_instance_key("echo@v1", captures, &[], &[], &[]);
+        let b = derive_instance_key("echo@v1", captures, &[], &[], &[]);
+        assert_eq!(a, b);
+    }
+
+    /// Time never participates in any instance key, impure or pure.
+    ///
+    /// Earlier key schemes embedded `executed_at` for impure steps, which made
+    /// every run mint a fresh instance and re-execute the step. The timestamp
+    /// parameter is gone from the signature, so time-independence is
+    /// compile-enforced at this level; the behavioral pin is
+    /// `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`.
+    #[test]
+    fn impure_keys_ignore_time() {
+        let args = [Hash::from_content(b"arg")];
+        let captures = capture_term();
+        assert_eq!(
+            derive_instance_key("tool", captures, &args, &[], &[]),
+            derive_instance_key("tool", captures, &args, &[], &[]),
+            "identical material must derive identical keys regardless of wall-clock time",
+        );
+    }
+
+    /// The versioned domain prefix participates in the key.
+    #[test]
+    fn derive_instance_key_domain_prefix() {
+        let captures = capture_term();
+        let with_domain = derive_instance_key("tool", captures, &[], &[], &[]);
+        let without_domain = Hash::composite(&[Hash::from_content(b"tool")]);
+        assert_ne!(with_domain, without_domain);
+    }
+
+    /// Argument order matters, and deterministic env and materialized-input
+    /// hashes participate.
+    #[test]
+    fn derive_instance_key_args_env_inputs_ordered() {
+        let a = Hash::from_content(b"a");
+        let b = Hash::from_content(b"b");
+        let captures = capture_term();
+        assert_ne!(
+            derive_instance_key("t", captures, &[a, b], &[], &[]),
+            derive_instance_key("t", captures, &[b, a], &[], &[]),
+            "command arg order must matter",
+        );
+        assert_ne!(
+            derive_instance_key("t", captures, &[], &[], &[]),
+            derive_instance_key("t", captures, &[], &[a], &[]),
+            "deterministic env records must participate",
+        );
+        assert_ne!(
+            derive_instance_key("t", captures, &[], &[], &[]),
+            derive_instance_key("t", captures, &[], &[], &[b]),
+            "deterministic materialized inputs must participate",
+        );
+    }
+
+    /// The key is exactly `composite(domain, id, captures, args, env, inputs)`.
+    ///
+    /// Env is excluded in practice because the executor always passes an empty
+    /// env slice. The capture term is included because an instance claims the
+    /// outputs it captured. Pinning the exact component list guards all of it:
+    /// adding a component, dropping the capture term, keying env, or
+    /// reintroducing a time term breaks this test.
+    #[test]
+    fn derive_instance_key_composite_components_exact() {
+        let arg = Hash::from_content(b"arg");
+        let captures = capture_term();
+        let key = derive_instance_key("t", captures, &[arg], &[], &[]);
+        let expected = Hash::composite(&[
+            Hash::from_content(instance_key_domain().as_bytes()),
+            Hash::from_content(b"t"),
+            captures,
+            arg,
+        ]);
+        assert_eq!(key, expected);
+    }
+
     /// Two steps that run the same tool with the same inputs but capture
     /// different files must not share an instance key.
     ///
@@ -444,5 +582,16 @@ mod tests {
         let again = instance_key_hash_from_resolved_value_bytes("message", "same", b"same")
             .expect("a literal binding is deterministic");
         assert_eq!(left, again, "and the derivation stays deterministic");
+    }
+
+    /// The scheme version is an integer and the domain states it verbatim.
+    ///
+    /// Version sequences in this repository move `v1 -> v2 -> v3`; a dotted
+    /// revision such as `v2.2` hides that the scheme changed and is banned.
+    #[test]
+    fn the_instance_key_domain_carries_an_integer_version() {
+        let domain = instance_key_domain();
+        assert_eq!(domain, format!("mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}"));
+        assert!(!domain.contains('.'), "dotted scheme revision in {domain}");
     }
 }

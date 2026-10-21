@@ -14,7 +14,6 @@ use crate::error::ConductorError;
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec, find_tool_entry_by_name,
 };
-use crate::state::versions::derive_instance_key_v2;
 use crate::state::{HashedValueRecord, PersistenceFlags, ResolvedInput, ToolCallInstance};
 
 use super::cache::probe_cache;
@@ -24,7 +23,7 @@ use super::process::{ExecutionResult, run_builtin, run_executable_process};
 use super::sandbox::{create_sandbox, materialize_content_map};
 use super::template::{TemplateContext, resolve_command_parts};
 use crate::instance_key::{
-    deterministic_input_hashes_from_resolved_inputs, step_output_specs_hash,
+    derive_instance_key, deterministic_input_hashes_from_resolved_inputs, step_output_specs_hash,
 };
 
 /// Dispatches execution: runs a builtin or resolves and runs an executable
@@ -119,7 +118,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     // never reach the sandbox and cannot make the instance stale.
     let output_specs_hash = step_output_specs_hash(&request.step.outputs);
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
-    let instance_key = derive_instance_key_v2(
+    let instance_key = derive_instance_key(
         &tool_call_id,
         output_specs_hash,
         &deterministic_input_hashes,
@@ -249,7 +248,7 @@ fn merge_output_specs(
 /// Builds the recorded environment set from configured execution env vars:
 /// only non-empty values, each content-hashed (never stored literally). Every
 /// record is nondeterministic — env is never keyed (the executor passes an
-/// empty env-hash slice to `derive_instance_key_v2`).
+/// empty env-hash slice to `derive_instance_key`).
 fn build_env_vars(
     execution_env_vars: &BTreeMap<String, String>,
 ) -> BTreeMap<String, HashedValueRecord> {
@@ -293,7 +292,7 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::{
-        build_env_vars, build_materialized_inputs, derive_instance_key_v2, execute_step,
+        build_env_vars, build_materialized_inputs, derive_instance_key, execute_step,
         merge_output_specs, step_output_specs_hash,
     };
     use crate::config::OutputCaptureSpec;
@@ -402,12 +401,12 @@ mod tests {
         );
         assert_eq!(
             bundle.instance.instance_key,
-            derive_instance_key_v2("echo@v1", step_only_term, &input_hashes, &[], &[]),
+            derive_instance_key("echo@v1", step_only_term, &input_hashes, &[], &[]),
             "the executor must hash the step's declared captures, which is what it records",
         );
         assert_ne!(
             bundle.instance.instance_key,
-            derive_instance_key_v2("echo@v1", merged_term, &input_hashes, &[], &[]),
+            derive_instance_key("echo@v1", merged_term, &input_hashes, &[], &[]),
             "a tool-level default that the capture phase never reaches must not move the key",
         );
     }

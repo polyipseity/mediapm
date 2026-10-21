@@ -147,9 +147,8 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance_key::step_output_specs_hash;
+    use crate::instance_key::{derive_instance_key, step_output_specs_hash};
     use crate::orchestration::protocol::{ConductorState, StepOutputs};
-    use crate::state::versions::derive_instance_key_v2;
     use crate::state::{HashedValueRecord, ResolvedInput, ToolCallInstance};
     use mediapm_cas::Hash;
     use mediapm_utils::Timestamp;
@@ -182,7 +181,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Verifies `derive_instance_key_v2` produces deterministic keys.
+    /// Verifies `derive_instance_key` produces deterministic keys.
     #[test]
     fn derive_instance_key_is_deterministic() {
         let inputs = [ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
@@ -190,8 +189,8 @@ mod tests {
             inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
 
         let captures = step_output_specs_hash(&BTreeMap::new());
-        let key1 = derive_instance_key_v2("test_tool", captures, &args, &[], &[]);
-        let key2 = derive_instance_key_v2("test_tool", captures, &args, &[], &[]);
+        let key1 = derive_instance_key("test_tool", captures, &args, &[], &[]);
+        let key2 = derive_instance_key("test_tool", captures, &args, &[], &[]);
         assert_eq!(key1, key2);
     }
 

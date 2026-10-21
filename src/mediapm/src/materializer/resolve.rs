@@ -1056,26 +1056,14 @@ mod tests {
         );
     }
 
-    /// Domain separator the documented instance-key spec fixes for the v2 key
-    /// scheme.
+    /// Domain separator the documented instance-key spec fixes for the current
+    /// key scheme.
     ///
-    /// Re-declared here instead of imported: the production constant is
-    /// `pub(crate)` inside `mediapm-conductor`, and this oracle exists to pin the
+    /// Re-declared here instead of rendered from `INSTANCE_KEY_SCHEME` or
+    /// imported from `instance_key_domain`: this oracle exists to pin the
     /// documented value, so a changed domain string must fail the oracle rather
     /// than move both sides together.
-    const ORACLE_INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2.2";
-
-    /// Domain separator under which a fixture recorded before the capture set
-    /// entered the key scheme is written.
-    ///
-    /// Pairing only — see [`previously_recorded_instance_key_v2_1`].
-    const PREVIOUS_INSTANCE_KEY_DOMAIN_V2_1: &str = "mediapm/conductor/tool call instances/v2.1";
-
-    /// Domain separator under which the checked-in fixture was recorded,
-    /// before wall-clock time left the instance-key scheme.
-    ///
-    /// Pairing only — see [`previously_recorded_instance_key`].
-    const LEGACY_INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2";
+    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v3";
 
     /// Returns whether a raw binding source is deterministic, per the documented
     /// spec: a source naming `${env.`, `context.os`, `:file(`, or `:folder(`
@@ -1209,8 +1197,8 @@ mod tests {
     /// environment term is empty on the mediapm path, which passes no env
     /// hashes at all.
     ///
-    /// Written out here rather than delegating to `derive_instance_key_v2` (or its
-    /// `derive_tool_call_instance_key` re-export), for the reason given on
+    /// Written out here rather than delegating to `derive_instance_key` (or its
+    /// `derive_tool_call_instance_key` façade), for the reason given on
     /// [`Self::oracle_binding_hashes`].
     fn oracle_instance_key(
         instance: &ToolCallInstance,
@@ -1218,7 +1206,7 @@ mod tests {
         binding_hashes: &[Hash],
     ) -> Hash {
         let mut parts = Vec::new();
-        parts.push(Hash::from_content(ORACLE_INSTANCE_KEY_DOMAIN_V2.as_bytes()));
+        parts.push(Hash::from_content(ORACLE_INSTANCE_KEY_DOMAIN.as_bytes()));
         parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
         parts.push(oracle_step_output_specs_hash(step_outputs));
         parts.extend_from_slice(binding_hashes);
@@ -1237,7 +1225,7 @@ mod tests {
     /// production calls are `instance_key_hash_from_resolved_value_bytes`,
     /// `deterministic_input_hashes_from_resolved_inputs`,
     /// `deterministic_input_hashes_from_resolved_value_bytes`,
-    /// `derive_instance_key_v2`, and `step_output_specs_hash`; see
+    /// `derive_instance_key`, and `step_output_specs_hash`; see
     /// [`Self::oracle_binding_hashes`] for why.
     ///
     /// Steps are walked in the workflow's declared (dependency) order, so each
@@ -1470,138 +1458,23 @@ mod tests {
         assert!(error.contains("import@v1"), "the diagnostic must name the tool: {error}");
     }
 
-    /// Argument hashes as the derivation produced them *before* the input name
-    /// became key material: the resolved value bytes alone, with
-    /// non-deterministic bindings dropped.
+    /// Pairs every recorded instance with the step that recorded it, returning
+    /// `stored_key -> (current_key, step_id)`.
     ///
-    /// Not production code. It exists so [`regenerate_demo_conductor_state_fixture_keys`]
-    /// can prove that a recorded `instance_key` belongs to a particular step's
-    /// input material by reproducing the old
-    /// `instance_key_hash_from_resolved_value_bytes(raw_source, value)` rule
-    /// (filter on the binding source, hash the value) in the same merge order
-    /// production uses.
-    fn previous_derivation_arg_hashes(
-        merged_bindings: &BTreeMap<String, String>,
-        resolved_values: &BTreeMap<String, Vec<u8>>,
-    ) -> Vec<Hash> {
-        merged_bindings
-            .iter()
-            .filter(|(_, raw_source)| {
-                mediapm_conductor::is_deterministic_binding_source(raw_source)
-            })
-            .filter_map(|(key, _)| resolved_values.get(key))
-            .map(|value_bytes| Hash::from_content(value_bytes))
-            .collect()
-    }
-
-    /// The key scheme the checked-in fixture was recorded under: the `/v2`
-    /// domain separator plus the `executed_at` time term for impure
-    /// instances, over the caller's argument hashes.
+    /// The pairing comes from the instance's own provenance: `step_ids` names
+    /// the steps that recorded the instance, so the step whose id the set holds
+    /// owns it and no key derivation is consulted to decide the pairing. That is
+    /// what lets this run survive a key-scheme change: the fixture's keys are
+    /// stale by definition here, while the provenance it carries is not.
     ///
-    /// Pairing only, never production: [`plan_demo_instance_key_rewrites`]
-    /// accepts a recorded key that matches under this historical scheme, the
-    /// capture-less one below, an older input-hash rule, or the current scheme
-    /// (a re-run against an already-regenerated fixture), and always rewrites
-    /// it to the current [`derived_instance_key`] result. Keeping the
-    /// historical compositions here is what lets an instance-key derivation
-    /// change regenerate the fixture instead of orphaning it.
-    fn previously_recorded_instance_key(instance: &ToolCallInstance, arg_hashes: &[Hash]) -> Hash {
-        let mut parts = Vec::new();
-        parts.push(Hash::from_content(LEGACY_INSTANCE_KEY_DOMAIN_V2.as_bytes()));
-        parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
-        if instance.impure {
-            parts.push(Hash::from_content(&instance.executed_at.as_unix_nanos().to_le_bytes()));
-        }
-        parts.extend_from_slice(arg_hashes);
-        parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
-        Hash::composite(&parts)
-    }
-
-    /// The key scheme a fixture recorded before the capture set entered the
-    /// derivation is written under: the `.1` domain separator over the same
-    /// content terms the current scheme uses, minus the capture-set hash.
-    ///
-    /// Pairing only, never production: [`plan_demo_instance_key_rewrites`]
-    /// accepts a recorded key that matches under this scheme, the older one
-    /// above, or the current one, and always rewrites it to the current
-    /// [`derived_instance_key`] result.
-    fn previously_recorded_instance_key_v2_1(
-        instance: &ToolCallInstance,
-        arg_hashes: &[Hash],
-    ) -> Hash {
-        let mut parts = Vec::new();
-        parts.push(Hash::from_content(PREVIOUS_INSTANCE_KEY_DOMAIN_V2_1.as_bytes()));
-        parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
-        parts.extend_from_slice(arg_hashes);
-        parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
-        Hash::composite(&parts)
-    }
-
-    /// Derives the instance key `instance` is recorded under for a given
-    /// capture-set hash and list of deterministic input hashes.
-    ///
-    /// Mirrors the executor's `derive_instance_key_v2` call exactly: every key
-    /// derives from content alone (no time term, impure or pure), the capture
-    /// term is the caller's, and the deterministic materialized-input hashes
-    /// come from the instance's own content map. The caller supplies the
-    /// capture term and the input-hash list, which are the two terms a change
-    /// to the instance-key material moves.
-    fn derived_instance_key(
-        instance: &mediapm_conductor::ToolCallInstance,
-        capture_term: Hash,
-        arg_hashes: &[Hash],
-    ) -> Hash {
-        mediapm_conductor::derive_tool_call_instance_key(
-            &instance.tool_call_id,
-            capture_term,
-            arg_hashes,
-            &[],
-            &mediapm_conductor::deterministic_materialized_input_hashes(instance),
-        )
-    }
-
-    /// The key `instance` derives under today, beside every historical key a
-    /// recorded instance may still carry.
-    ///
-    /// Each historical entry is labelled with the scheme that produced it, so
-    /// the caller's log line names how the pairing was established. The current
-    /// key is returned separately because a fixture that already holds it must
-    /// be a no-op rather than a rewrite.
-    fn instance_key_candidates(
-        instance: &ToolCallInstance,
-        capture_term: Hash,
-        previous_hashes: &[Hash],
-        current_hashes: &[Hash],
-    ) -> (Hash, Vec<(&'static str, Hash)>) {
-        let current = derived_instance_key(instance, capture_term, current_hashes);
-        let historical = vec![
-            (
-                " (paired under the recorded scheme)",
-                previously_recorded_instance_key(instance, current_hashes),
-            ),
-            (
-                " (paired under the pre-capture scheme)",
-                previously_recorded_instance_key_v2_1(instance, current_hashes),
-            ),
-            (" (paired)", derived_instance_key(instance, capture_term, previous_hashes)),
-        ];
-        (current, historical)
-    }
-
-    /// Pairs every recorded instance with the step whose input material derives
-    /// its key, returning `stored_key -> (current_key, step_id)`.
-    ///
-    /// The pairing is established by a derivation the fixture itself predates —
-    /// the recorded scheme ([`previously_recorded_instance_key`]), the
-    /// capture-less one ([`previously_recorded_instance_key_v2_1`]), or the
-    /// previous input-hash rule ([`previous_derivation_arg_hashes`]) — so it
-    /// rests on the fixture's own record rather than on this helper's
-    /// assumptions. Steps are walked in
-    /// dependency order and a paired instance's outputs become that step's
-    /// outputs, which is how the production resolver reconstructs them; the
-    /// recorded run's step outputs are then available to the hash-reference
-    /// bindings of later steps. A step that pairs with no instance, or with more
-    /// than one, aborts the run: the fixture is then ambiguous, not merely stale.
+    /// Steps are walked in dependency order and a paired instance's outputs
+    /// become that step's outputs, which is how the production resolver
+    /// reconstructs them; the recorded run's step outputs are then available to
+    /// the hash-reference bindings of later steps. A step that owns no recorded
+    /// instance, or several, aborts the run: the fixture is then ambiguous, not
+    /// merely stale. A recorded instance that no step claims is simply absent
+    /// from the returned map, which the regeneration test treats as a refusal to
+    /// rewrite it.
     async fn plan_demo_instance_key_rewrites(
         cas: &FileSystemCas,
         generated: &NickelDocument,
@@ -1611,9 +1484,6 @@ mod tests {
         let mut step_outputs: BTreeMap<String, BTreeMap<String, Hash>> = BTreeMap::new();
         let mut rewrites: BTreeMap<Hash, (Hash, String)> = BTreeMap::new();
         for step in &workflow.steps {
-            let (conductor_tool_key, _) = find_active_tool_spec(generated, &step.tool)
-                .map(|(key, spec)| (key.clone(), spec))
-                .expect("active tool spec");
             let capture_term = mediapm_conductor::step_output_specs_hash(&step.outputs);
             let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
                 .expect("merge step inputs");
@@ -1631,72 +1501,84 @@ mod tests {
                 build_instance_key_resolved_value_bytes(cas, &merged, &expected_inputs)
                     .await
                     .expect("build resolved value bytes");
-            let previous_hashes = previous_derivation_arg_hashes(&merged, &resolved_values);
             let current_hashes =
                 mediapm_conductor::deterministic_input_hashes_from_resolved_value_bytes(
                     &merged,
                     &resolved_values,
                 );
 
-            let mut paired: Option<(&Hash, &ToolCallInstance)> = None;
-            for (stored_key, instance) in &state.tool_call_instances {
-                if instance.tool_call_id != conductor_tool_key {
-                    continue;
-                }
-                let (current_key, historical) = instance_key_candidates(
-                    instance,
-                    capture_term,
-                    &previous_hashes,
-                    &current_hashes,
-                );
-                // The current key is checked first because a re-run against an
-                // already-regenerated fixture must be a no-op.
-                let paired_under = if current_key == *stored_key {
-                    " (already current)"
-                } else {
-                    let Some((label, _)) = historical.iter().find(|(_, key)| *key == *stored_key)
-                    else {
-                        continue;
-                    };
-                    label
-                };
-                assert!(
-                    paired.is_none(),
-                    "step '{}' pairs with more than one recorded instance",
+            let paired = state
+                .tool_call_instances
+                .iter()
+                .filter(|(_, instance)| instance.step_ids.contains(&step.id))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                paired.len(),
+                1,
+                "step '{}' must own exactly one recorded instance, found {}",
+                step.id,
+                paired.len(),
+            );
+            let (stored_key, instance) = paired[0];
+            let current_key = mediapm_conductor::derive_tool_call_instance_key(
+                &instance.tool_call_id,
+                capture_term,
+                &current_hashes,
+                &[],
+                &mediapm_conductor::deterministic_materialized_input_hashes(instance),
+            );
+            if let Some((known_key, known_step)) = rewrites.get(stored_key) {
+                assert_eq!(
+                    *known_key,
+                    current_key,
+                    "steps '{known_step}' and '{}' disagree about instance {}'s key",
                     step.id,
+                    stored_key.to_hex(),
                 );
-                paired = Some((stored_key, instance));
-                if let Some((known_key, known_step)) = rewrites.get(stored_key) {
-                    assert_eq!(
-                        *known_key,
-                        current_key,
-                        "steps '{known_step}' and '{}' disagree about instance {}'s key",
-                        step.id,
-                        stored_key.to_hex(),
-                    );
-                } else {
-                    println!(
-                        "step {}\n  instance {}\n  previous {}{}\n  current  {}",
-                        step.id,
-                        instance.tool_call_id,
-                        stored_key.to_hex(),
-                        paired_under,
-                        current_key.to_hex(),
-                    );
-                    rewrites.insert(*stored_key, (current_key, step.id.clone()));
-                }
+            } else {
+                println!(
+                    "step {}\n  instance {}\n  previous {}\n  current  {}",
+                    step.id,
+                    instance.tool_call_id,
+                    stored_key.to_hex(),
+                    current_key.to_hex(),
+                );
+                rewrites.insert(*stored_key, (current_key, step.id.clone()));
             }
-
-            let Some((_, instance)) = paired else {
-                panic!(
-                    "no recorded instance pairs with step '{}' under either derivation",
-                    step.id,
-                );
-            };
             step_outputs
                 .insert(step.id.clone(), output_hashes_from_instance(instance, &step.outputs));
         }
         rewrites
+    }
+
+    /// Regeneration pairs instance → step through the instance's recorded
+    /// provenance, so no historical key scheme is consulted.
+    ///
+    /// The pairing is only as trustworthy as the fixture's `step_ids` record:
+    /// every rewrite the planner reports must name a step that the paired
+    /// instance itself says recorded it. A planner that re-derived a
+    /// historical key scheme instead would pair an instance with a step whose
+    /// id that instance never recorded, which is what this pins.
+    #[tokio::test]
+    async fn fixture_regeneration_pairs_instances_by_recorded_step_id() {
+        let generated = load_generated_doc();
+        let state = load_conductor_state();
+        let workflow = generated
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
+            .expect("demo workflow");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow).await;
+        for (stored_key, (_, step_id)) in &rewrites {
+            let instance = &state.tool_call_instances[stored_key];
+            assert!(
+                instance.step_ids.contains(step_id),
+                "step {step_id} claims instance {} it did not record",
+                stored_key.to_hex(),
+            );
+        }
     }
 
     /// Rewrites the recorded `instance_key`s in `tests/fixtures/demo_conductor_state.json`
@@ -1706,11 +1588,11 @@ mod tests {
     /// `tool_call_instances` key was derived from that run's input material, so
     /// any change to the instance-key derivation makes every recorded key
     /// unreachable and the demo materialization tests stop matching instances.
-    /// Run this, from `src/mediapm`, whenever the instance-key material changes:
+    /// Run this whenever the instance-key material changes:
     ///
     /// ```text
-    /// cargo bin cargo-nextest run -p mediapm --run-ignored ignored-only \
-    ///   -E 'test(regenerate_demo_conductor_state_fixture_keys)' --no-capture
+    /// RUSTC_WRAPPER= cargo test -p mediapm --lib \
+    ///   regenerate_demo_conductor_state_fixture_keys -- --ignored --nocapture
     /// ```
     ///
     /// The rewrite touches two things in the fixture's JSON text, each by
@@ -1720,32 +1602,35 @@ mod tests {
     /// key), and the `step_ids` provenance inserted after each instance's
     /// `instance_key` field. Both stay valid JSON.
     ///
-    /// **Provenance.** Each instance records the step that produced it.
-    /// That pairing is written while the fixture's keys still match the current
-    /// derivation, so a later key-scheme change can pair instance → step through
-    /// `step_ids` instead of re-deriving a historical scheme. The insertion is
-    /// keyed by the stored key, which the key rewrite below then moves to the
-    /// new one; a fixture that already carries the pairing is left alone.
+    /// **Provenance.** Each instance records the steps that produced it in
+    /// `step_ids`, and that set is the pairing key: a step owns the instance whose
+    /// set names it. The set is written before any key moves, so the pairing
+    /// survives a key-scheme change — which is the state this test runs in, since
+    /// every stored key is stale by definition. The insertion is keyed by the
+    /// stored key, which the rewrite below then moves to the new one, and an
+    /// instance that already records its step is left alone.
     ///
-    /// **Pairing proof.** An instance is rewritten only when its stored key
-    /// equals what [`previous_derivation_arg_hashes`] derives from the inputs its
-    /// step resolves to, so the fixture's own record establishes which instance
-    /// belongs to which step rather than this test assuming it. A key that
-    /// matches neither the previous nor the current derivation aborts the run
-    /// with the instance named, and nothing is written. Because the proof is
-    /// anchored to the immediately previous rule, a second derivation change
-    /// requires repointing [`previous_derivation_arg_hashes`] at the then-current
-    /// rule before this test can run again.
+    /// **Pairing.** The planner pairs through `step_ids` alone; no key derivation
+    /// decides it. Nothing is written unless every recorded instance is claimed by
+    /// a step, so a fixture whose provenance does not cover its instances aborts
+    /// the run with the instance named.
+    ///
+    /// **Validation.** The regenerated text is decoded in memory before it can
+    /// replace the checked-in record: it must hold exactly the keys the current
+    /// derivation produces, and every instance must carry a non-empty `step_ids`
+    /// set. The second check is what makes the anchored insertion above
+    /// trustworthy — an insertion that silently missed cannot overwrite the
+    /// record.
     ///
     /// **Resolution path.** The new keys are derived from the materializer's live
     /// resolution (`merge_step_inputs_with_tool_defaults`,
     /// `resolve_expected_input_hashes`, `build_instance_key_resolved_value_bytes`)
     /// rather than the conductor's `resolve_step_inputs`, because that function is
     /// `pub(super)` inside `mediapm-conductor`'s `step_worker` module and is
-    /// therefore unreachable from this crate. The two paths agree on the resolved
-    /// value bytes — the fixture's previous keys matched them byte for byte under
-    /// the old rule — so the derivation input is the same; the pairing proof above
-    /// is what keeps the fixture independent of this test's own path.
+    /// therefore unreachable from this crate. The pairing does not rest on this
+    /// path — it comes from the fixture's own `step_ids` — so a resolution helper
+    /// that drifted would produce new keys, not a mismatched pairing.
+    ///
     /// **Write.** The regenerated text goes to a sibling temporary file in the
     /// fixture's own directory (`demo_conductor_state.json.regenerated`) and is
     /// then renamed over the fixture, so a partial write can never be observed in
@@ -1765,10 +1650,10 @@ mod tests {
             .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
             .expect("demo workflow");
 
-        // The fixture is stale by definition when this runs, so the production
-        // step-output resolver — which matches instances by the *current*
-        // derivation — finds nothing at all, and the pairing below reconstructs
-        // the recorded run's step outputs instead.
+        // The fixture's keys are stale by definition when this runs, so the
+        // production step-output resolver — which matches instances by key —
+        // finds nothing at all; the plan below pairs through recorded provenance
+        // and reconstructs the recorded run's step outputs from that instead.
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow).await;
@@ -1777,7 +1662,7 @@ mod tests {
         for (stored_key, instance) in &state.tool_call_instances {
             assert!(
                 rewrites.contains_key(stored_key),
-                "instance {} ({}) pairs with no step's input material under either derivation; \
+                "instance {} ({}) is claimed by no step's recorded provenance; \
                  refusing to rewrite a key this fixture cannot prove the instance owns",
                 stored_key.to_hex(),
                 instance.tool_call_id,
@@ -1786,10 +1671,10 @@ mod tests {
 
         let mut text = std::fs::read_to_string(&path).expect("read demo conductor state fixture");
 
-        // Provenance first: the fixture's keys still match the current
-        // derivation at this point, so every instance pairs with the step that
-        // recorded it. Later key changes pair through this set instead of
-        // re-deriving a historical scheme.
+        // Provenance first, while the stored keys still address the entries: a
+        // fixture that predates the field gains the recording step here, and one
+        // that already records it is left alone. This set is what a later run
+        // pairs through, so it is never derived from a key scheme.
         let mut provenance_inserted = false;
         for (stored_key, (_, step_id)) in &rewrites {
             let anchor = format!("      \"instance_key\": \"{stored_key}\",\n");
@@ -1802,6 +1687,10 @@ mod tests {
             if text.contains(inserted.as_str()) {
                 continue;
             }
+            assert!(
+                !text.contains(&format!("{anchor}      \"step_ids\"")),
+                "instance {stored_key} already records a different step; refusing to add a second",
+            );
             text = text.replace(&anchor, &inserted);
             provenance_inserted = true;
         }
@@ -1824,20 +1713,11 @@ mod tests {
             println!("fixture is already current; nothing written");
             return;
         }
-        // Same-directory temporary file plus rename: the fixture is a checked-in
-        // record, so a partial write must never be observable, and a sibling path
-        // keeps the rename on one filesystem (hence atomic).
-        let temporary_path = path.with_extension("json.regenerated");
-        std::fs::write(&temporary_path, &text).expect("write regenerated demo conductor state");
-        std::fs::rename(&temporary_path, &path)
-            .expect("move regenerated demo conductor state over the fixture");
-        if provenance_inserted {
-            println!("recorded the recording step on every instance");
-        }
-        println!("rewrote {} instance key(s)", changed.len());
 
-        // The rewritten file must decode, carry no stale key, and hold exactly the
-        // keys the current derivation produces.
+        // Validate the regenerated text before it can replace a checked-in
+        // record: no stale key may survive, and every instance must carry the
+        // provenance the pairing above relies on. The second check is what makes
+        // the anchored insertion trustworthy, so it runs before the rename.
         for (stored_key, current_key) in &changed {
             assert!(
                 !text.contains(stored_key.to_string().as_str()),
@@ -1846,8 +1726,16 @@ mod tests {
             );
             assert!(text.contains(current_key.to_string().as_str()));
         }
-        let rewritten = load_conductor_state();
+        let rewritten =
+            decode_state_json(text.as_bytes()).expect("regenerated demo conductor state decodes");
         assert_eq!(rewritten.tool_call_instances.len(), state.tool_call_instances.len());
+        for (key, instance) in &rewritten.tool_call_instances {
+            assert!(
+                !instance.step_ids.is_empty(),
+                "instance {} records no step; the provenance insertion missed it",
+                key.to_hex(),
+            );
+        }
         for (current_key, step_id) in rewrites.values() {
             assert!(
                 rewritten.tool_call_instances.contains_key(current_key),
@@ -1859,6 +1747,18 @@ mod tests {
                 "rewritten fixture must name step '{step_id}' as the instance's recording step",
             );
         }
+
+        // Same-directory temporary file plus rename: the fixture is a checked-in
+        // record, so a partial write must never be observable, and a sibling path
+        // keeps the rename on one filesystem (hence atomic).
+        let temporary_path = path.with_extension("json.regenerated");
+        std::fs::write(&temporary_path, &text).expect("write regenerated demo conductor state");
+        std::fs::rename(&temporary_path, &path)
+            .expect("move regenerated demo conductor state over the fixture");
+        if provenance_inserted {
+            println!("recorded the recording step on every instance");
+        }
+        println!("rewrote {} instance key(s)", changed.len());
     }
 
     #[tokio::test]

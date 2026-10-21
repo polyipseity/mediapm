@@ -70,7 +70,8 @@ pub struct HashedValueRecord {
 /// literally); only deterministic records participate in the instance key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallInstance {
-    /// Content-addressed instance key (see `state::versions::derive_instance_key_v2`).
+    /// Content-addressed instance key (see
+    /// [`crate::instance_key::derive_instance_key`]).
     pub instance_key: Hash,
     /// Tool call identifier: the unified tools-catalog map key (e.g.
     /// `"ffmpeg@v1"`).
@@ -220,7 +221,7 @@ pub fn derive_tool_call_instance_key(
     deterministic_env_vars: &[Hash],
     deterministic_materialized_input_hashes: &[Hash],
 ) -> Hash {
-    versions::derive_instance_key_v2(
+    crate::instance_key::derive_instance_key(
         tool_call_id,
         output_specs_hash,
         deterministic_input_hashes,

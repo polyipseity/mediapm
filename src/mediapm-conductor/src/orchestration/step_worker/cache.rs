@@ -34,8 +34,8 @@ pub(super) fn probe_cache(
 #[cfg(test)]
 mod proptests {
     use super::*;
+    use crate::instance_key::derive_instance_key;
     use crate::state::ResolvedInput;
-    use crate::state::versions::derive_instance_key_v2;
     use proptest::prelude::*;
     use proptest::strategy::BoxedStrategy;
     use std::collections::BTreeMap;
@@ -102,8 +102,8 @@ mod proptests {
             prop_assume!(inputs1 != inputs2);
             let args1 = arg_hashes(&inputs1);
             let args2 = arg_hashes(&inputs2);
-            let key1 = derive_instance_key_v2("test", no_captures(), &args1, &[], &[]);
-            let key2 = derive_instance_key_v2("test", no_captures(), &args2, &[], &[]);
+            let key1 = derive_instance_key("test", no_captures(), &args1, &[], &[]);
+            let key2 = derive_instance_key("test", no_captures(), &args2, &[], &[]);
             prop_assert_ne!(key1, key2);
         }
 
@@ -112,8 +112,8 @@ mod proptests {
             inputs in proptest::collection::vec(any::<ResolvedInput>(), 0..10),
         ) {
             let args = arg_hashes(&inputs);
-            let key1 = derive_instance_key_v2("test", no_captures(), &args, &[], &[]);
-            let key2 = derive_instance_key_v2("test", no_captures(), &args, &[], &[]);
+            let key1 = derive_instance_key("test", no_captures(), &args, &[], &[]);
+            let key2 = derive_instance_key("test", no_captures(), &args, &[], &[]);
             prop_assert_eq!(key1, key2);
         }
     }
@@ -128,8 +128,8 @@ mod proptests {
             key: "url".to_string(),
             value: "https://example.com".to_string(),
         }]);
-        let key1 = derive_instance_key_v2("test", no_captures(), &args, &[], &[]);
-        let key2 = derive_instance_key_v2("test", no_captures(), &args, &[], &[]);
+        let key1 = derive_instance_key("test", no_captures(), &args, &[], &[]);
+        let key2 = derive_instance_key("test", no_captures(), &args, &[], &[]);
         assert_eq!(key1, key2);
     }
 }

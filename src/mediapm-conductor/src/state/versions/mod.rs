@@ -26,8 +26,6 @@ use mediapm_cas::CasApi;
 mod v1;
 mod v2;
 
-pub(crate) use v2::derive_instance_key_v2;
-
 // ---------------------------------------------------------------------------
 // Bridge: V2 wire types ↔ runtime types
 // ---------------------------------------------------------------------------
