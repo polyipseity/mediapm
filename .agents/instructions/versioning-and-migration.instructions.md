@@ -1,5 +1,5 @@
 ---
-description: "Use when adding versioned structs, wire formats, DeltaState bridges, or version migrations anywhere in src/."
+description: "Use when adding versioned structs, wire formats, DeltaState bridges, or version migrations anywhere in src/, or when choosing version sequences (integer version steps forward, no dotted revision)."
 name: "Struct versioning and migration protocol"
 applyTo: "src/**/*.rs"
 ---
