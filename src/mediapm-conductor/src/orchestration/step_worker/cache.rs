@@ -14,30 +14,19 @@ use crate::config::OutputCaptureSpec;
 use crate::orchestration::protocol::ConductorState;
 use crate::state::ToolCallInstance;
 
-/// Returns whether a recorded capture identifies the same bytes a required
-/// capture names.
+/// Returns whether a recorded capture names the same bytes a required capture
+/// names.
 ///
-/// Capture identity is the selector (`capture`) plus the two settings that
-/// decide which bytes it reads: `allow_empty`, which turns "matched nothing" into
-/// an empty record instead of an absent one, and `include_topmost_folder`, which
-/// changes the archive layout a folder capture produces. Two specs that agree on
-/// those three produce the same artifact for the same execution, so a record
-/// under either can serve a step asking for the other.
-///
-/// `save` is deliberately not compared. It is the one field the merge ruling
-/// leaves to the step, and it is a persistence instruction rather than a
-/// property of the bytes: the entry's hash is the artifact either way. Comparing
-/// it would let two steps that share an instance and disagree only about keeping
-/// the artifact invalidate each other forever, each re-executing to replace the
-/// record the other then rejects. `save` is still recorded beside the entry, as
-/// provenance for what the executing step chose.
-///
-/// `name` is not compared for the same kind of reason: it is the map key on both
-/// sides, so it carries no information the lookup has not already used.
+/// The comparison itself is [`OutputCaptureSpec::same_capture_identity`], so the
+/// probe, the settlement union and the same-run conflict check cannot disagree
+/// about what "the same capture" means: the selector plus the two settings that
+/// decide which bytes are read (`allow_empty`, `include_topmost_folder`). `save`
+/// is a persistence instruction rather than a property of the bytes, so two
+/// steps that share an instance and disagree only about keeping the artifact do
+/// not invalidate each other; `name` is the map key on both sides, so the
+/// lookup has already used it.
 fn capture_identity_matches(recorded: &OutputCaptureSpec, required: &OutputCaptureSpec) -> bool {
-    recorded.capture == required.capture
-        && recorded.allow_empty == required.allow_empty
-        && recorded.include_topmost_folder == required.include_topmost_folder
+    recorded.same_capture_identity(required)
 }
 
 /// Returns the cached instance for `instance_key` when it can serve this step.

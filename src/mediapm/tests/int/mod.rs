@@ -21,6 +21,9 @@ mod tool_sync;
 /// All-platform document structure integration: verifies that managed
 /// tools have per-OS content-map entries and non-empty command selectors.
 mod all_platform;
+/// One instance, several capture names: two steps over identical work union
+/// their outputs and both variants materialize.
+mod capture_union;
 /// Dual-write strategy: state.json always-writes, NCL files skip when unchanged.
 mod dual_write;
 /// Explicit invalidation: invalidating a media step must re-execute its

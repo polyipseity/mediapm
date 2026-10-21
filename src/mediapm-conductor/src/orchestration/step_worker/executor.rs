@@ -19,7 +19,7 @@ use crate::orchestration::protocol::{
 use crate::state::{HashedValueRecord, ResolvedInput, ToolCallInstance};
 
 use super::cache::probe_cache;
-use super::capture::capture_outputs;
+use super::capture::{capture_outputs, implicit_stream_specs};
 use super::inputs::resolve_step_inputs;
 use super::process::{ExecutionResult, run_builtin, run_executable_process};
 use super::sandbox::{create_sandbox, materialize_content_map};
@@ -110,10 +110,14 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let deterministic_materialized_hashes: Vec<Hash> =
         materialized_inputs.values().map(|record| record.hash).collect();
 
-    // Tool-level capture defaults merged under the step's own declarations,
-    // with the step winning by name. This is the set the capture phase records
-    // below, so it is also the set a probe hit has to satisfy: the names this
-    // step and its dependents bind are exactly the merged map's entries.
+    // Tool-level capture defaults merged with the step's own declarations. The
+    // tool owns the capture identity of every name it declares (its selector,
+    // `allow_empty` and `include_topmost_folder`); a step declaring the same
+    // name contributes only `save`, and a step-only name is kept whole. That is
+    // the set the capture phase records below, and the set a probe hit has to
+    // satisfy, because one instance is shared by every step running this work:
+    // a step able to re-select a tool-declared name would make two steps
+    // disagree about bytes one execution produced.
     let merged_outputs = merge_output_specs(&tool_spec.outputs, &request.step.outputs);
 
     // Captures are not key material. An instance recorded by the same work
@@ -146,16 +150,17 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     // later, mid-materialization, with no route back to the step that produced
     // it.
     //
-    // A required name the merged set cannot produce is not a probe condition:
-    // no instance this step's work records can hold it, so the dependent's
+    // A required name the work cannot produce is not a probe condition: no
+    // instance this step's work records can hold it, so the dependent's
     // reference fails at resolution instead. That filter is what the blob check
-    // is handed, rather than the raw requirement, because a name absent from
-    // the merged map can never resolve and checking it would force a
+    // is handed, rather than the raw requirement, because a name absent from the
+    // producible set can never resolve and checking it would force a
     // re-execution on every run of a workflow that is going to fail anyway.
+    let producible_outputs = producible_output_specs(&merged_outputs);
     let required_output_specs: BTreeMap<String, OutputCaptureSpec> = request
         .required_output_names
         .iter()
-        .filter_map(|name| merged_outputs.get(name).map(|spec| (name.clone(), spec.clone())))
+        .filter_map(|name| producible_outputs.get(name).map(|spec| (name.clone(), spec.clone())))
         .collect();
     let cached_instance = if request.force_rerun {
         None
@@ -181,7 +186,14 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         // GC refresh still happens through the referenced-keys set at GC
         // time, not by per-hit mutation.
         cached.step_ids.insert(request.step.id.clone());
-        return Ok(StepExecutionBundle { instance: cached, cache_hit: true });
+        // A hit declares nothing: it produced no artifact this run, so the
+        // settlement may add the reusing step to `step_ids` and must leave the
+        // recorded outputs exactly as the store holds them.
+        return Ok(StepExecutionBundle {
+            instance: cached,
+            cache_hit: true,
+            producible_outputs: BTreeMap::new(),
+        });
     }
 
     let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &instance_key).await?;
@@ -206,7 +218,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         outputs: captured.records,
     };
 
-    Ok(StepExecutionBundle { instance, cache_hit: false })
+    Ok(StepExecutionBundle { instance, cache_hit: false, producible_outputs })
 }
 
 /// Returns whether every required output still resolves in the store.
@@ -241,6 +253,31 @@ async fn required_output_blobs_exist<C: CasApi>(
         }
     }
     true
+}
+
+/// Returns every output name this step's work can produce, with the spec that
+/// produces it.
+///
+/// The merged declarations are not the whole set: `stdout`, `stderr` and
+/// `process_code` are recorded by every execution (see [`implicit_stream_specs`]),
+/// so a dependent referencing one of them is asking for a name the instance
+/// holds even though neither the tool nor the step declared it. Filtering the
+/// probe requirement against the merged map alone dropped exactly those names,
+/// leaving the one case where a reference bypassed the CAS presence check — and
+/// the streams are the names every execution writes, so the check was skipped
+/// where it was cheapest to honor.
+///
+/// A declared entry wins over the implicit one for its name, matching the
+/// capture phase, which records a declared `stdout` under the declared spec and
+/// skips the implicit spec.
+fn producible_output_specs(
+    merged_outputs: &BTreeMap<String, OutputCaptureSpec>,
+) -> BTreeMap<String, OutputCaptureSpec> {
+    let mut producible = merged_outputs.clone();
+    for (name, spec) in implicit_stream_specs() {
+        producible.entry(name).or_insert(spec);
+    }
+    producible
 }
 
 /// Merges tool-level output specs (defaults) with step-level output specs.
@@ -345,7 +382,10 @@ mod tests {
 
     use mediapm_cas::Hash;
 
-    use super::{build_env_vars, build_materialized_inputs, execute_step, merge_output_specs};
+    use super::{
+        build_env_vars, build_materialized_inputs, execute_step, merge_output_specs,
+        producible_output_specs,
+    };
     use crate::config::{OutputCaptureSpec, SaveMode, WorkflowStepSpec};
     use crate::orchestration::protocol::{
         StepExecutionBundle, StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
@@ -468,7 +508,11 @@ mod tests {
     }
 
     /// The capture phase records the tool's default captures beside the step's
-    /// own declarations, with the step winning by name.
+    /// own declarations.
+    ///
+    /// The tool owns the capture identity of a name it declares and the step
+    /// contributes only `save` for that name; a step-only name is kept whole
+    /// (see [`merge_output_specs`]).
     ///
     /// This is what makes one instance hold the names every step with that work
     /// can bind, which is what replaces the capture term the key used to carry.
@@ -516,6 +560,105 @@ mod tests {
             1,
             "the merged set the capture phase records is the tool's defaults plus the step's",
         );
+    }
+
+    /// A miss hands settlement the names it declared to produce, and a hit hands
+    /// it nothing.
+    ///
+    /// The declared map is what lets settlement drop a stored entry this
+    /// execution produced nothing under (`file:` captures record nothing on a
+    /// zero match). A hit produced nothing at all — it returns the stored
+    /// instance — so an empty map is the statement that it claims nothing and
+    /// has nothing to drop, not a field left unfilled.
+    #[tokio::test]
+    async fn a_miss_declares_its_producible_names_and_a_hit_declares_none() {
+        let cas = mediapm_cas::new_in_memory_cas();
+        let tool_defaults =
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]);
+        let first = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-a-echo",
+            tool_defaults.clone(),
+            BTreeMap::new(),
+            BTreeSet::from(["result".to_string()]),
+        )
+        .await;
+        assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
+        assert_eq!(
+            first.producible_outputs.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "process_code".to_string(),
+                "result".to_string(),
+                "stderr".to_string(),
+                "stdout".to_string(),
+            ],
+            "a miss must declare the tool defaults, its own names and the stream captures",
+        );
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+        let second = execute_echo_step(
+            &cas,
+            state,
+            "step-b-echo",
+            tool_defaults,
+            BTreeMap::new(),
+            BTreeSet::from(["result".to_string()]),
+        )
+        .await;
+
+        assert!(second.cache_hit, "identical work under a recorded instance must be reused");
+        assert!(
+            second.producible_outputs.is_empty(),
+            "a hit produced nothing, so it may neither claim nor drop a name: {:?}",
+            second.producible_outputs.keys().collect::<Vec<_>>(),
+        );
+    }
+
+    /// The probe's producible set is the merged declarations plus the stream
+    /// captures every execution records.
+    ///
+    /// A dependent may bind `${step_output.<step>.stdout}`, a name neither the
+    /// tool nor the step declares. The capture phase records it regardless, so
+    /// the probe has to treat it as producible; filtering against the merged map
+    /// alone dropped it, which skipped the CAS presence check for exactly the
+    /// names every execution writes. A declared entry keeps its own spec, as the
+    /// capture phase does.
+    #[test]
+    fn producible_outputs_include_the_implicit_streams() {
+        let declared_stdout = OutputCaptureSpec {
+            capture: "file:out.txt".to_string(),
+            ..stream_spec("stdout", "stdout")
+        };
+        let merged = BTreeMap::from([
+            ("result".to_string(), stream_spec("result", "stdout")),
+            ("stdout".to_string(), declared_stdout.clone()),
+        ]);
+
+        let producible = producible_output_specs(&merged);
+
+        assert_eq!(
+            producible.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "process_code".to_string(),
+                "result".to_string(),
+                "stderr".to_string(),
+                "stdout".to_string(),
+            ],
+            "the implicit streams must join the merged declarations",
+        );
+        assert_eq!(
+            producible["stdout"], declared_stdout,
+            "a declared name must keep its declared spec, as the capture phase records it",
+        );
+        for name in ["stderr", "process_code"] {
+            assert_eq!(
+                producible[name],
+                stream_spec(name, name),
+                "an undeclared stream must be producible under the implicit spec",
+            );
+        }
     }
 
     /// A probe hit requires each required name to be recorded with the spec the

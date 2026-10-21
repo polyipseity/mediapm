@@ -214,6 +214,44 @@ impl Default for OutputCaptureSpec {
     }
 }
 
+impl OutputCaptureSpec {
+    /// Returns whether `self` and `other` would capture the same bytes from the
+    /// same execution.
+    ///
+    /// Capture identity is the selector plus the two settings that change which
+    /// bytes it reads: `allow_empty`, which turns "matched nothing" into an
+    /// empty record instead of an absent one, and `include_topmost_folder`,
+    /// which changes the archive layout a folder capture produces. Two specs
+    /// that agree on those three name the same artifact for the same run, so
+    /// the bytes recorded under either can serve a step asking for the other.
+    ///
+    /// `save` is deliberately excluded: it is a persistence instruction rather
+    /// than a property of the bytes, and it is the one field the tool/step
+    /// merge leaves to the step. `name` is excluded for the same kind of
+    /// reason: it is the map key on both sides, so it carries no information a
+    /// name lookup has not already used.
+    #[must_use]
+    pub fn same_capture_identity(&self, other: &Self) -> bool {
+        self.capture == other.capture
+            && self.allow_empty == other.allow_empty
+            && self.include_topmost_folder == other.include_topmost_folder
+    }
+
+    /// Renders the fields [`Self::same_capture_identity`] compares, for error
+    /// messages that have to name both sides of a disagreement.
+    ///
+    /// Crate-internal: its only caller is the settlement conflict message, and
+    /// the rendering exists to make that diagnostic readable rather than to be
+    /// a value any outside consumer formats.
+    #[must_use]
+    pub(crate) fn capture_identity(&self) -> String {
+        format!(
+            "capture '{}' with allow_empty={} and include_topmost_folder={}",
+            self.capture, self.allow_empty, self.include_topmost_folder,
+        )
+    }
+}
+
 /// Runtime configuration for a tool (replaces the old separate `tool_configs`
 /// map in the V1 schema).
 ///

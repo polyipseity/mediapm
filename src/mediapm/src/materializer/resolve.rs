@@ -466,7 +466,7 @@ async fn resolve_single_step_output_hashes_strict(
         return Ok(None);
     };
 
-    Ok(Some(output_hashes_from_instance(instance, &step.outputs)))
+    Ok(Some(output_hashes_from_instance(instance)))
 }
 
 fn step_declared_outputs_resolved(
@@ -523,33 +523,28 @@ async fn resolve_single_step_output_hashes_relaxed(
             }
         }
         if all_materialized {
-            return Ok(Some(output_hashes_from_instance(instance, &step.outputs)));
+            return Ok(Some(output_hashes_from_instance(instance)));
         }
     }
 
     Ok(None)
 }
 
-fn output_hashes_from_instance(
-    instance: &ToolCallInstance,
-    step_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
-) -> BTreeMap<String, Hash> {
-    let mut output_hashes = instance
-        .outputs
-        .iter()
-        .map(|(name, output)| (name.clone(), output.hash))
-        .collect::<BTreeMap<_, _>>();
-    if let Some(stdout) = instance.outputs.get("stdout") {
-        for (output_name, spec) in step_outputs {
-            if output_hashes.contains_key(output_name) {
-                continue;
-            }
-            if matches!(spec.capture.as_str(), "stdout" | "stderr" | "process_code") {
-                output_hashes.insert(output_name.clone(), stdout.hash);
-            }
-        }
-    }
-    output_hashes
+/// Returns the hashes an instance recorded, keyed by the names it recorded them
+/// under — exactly that, with no name inferred from another.
+///
+/// A declared stream capture (`stdout`, `stderr`, `process_code`) used to be
+/// aliased to the recorded `stdout` hash when the instance had not recorded the
+/// declared name. That predates name-addressed captures: it guessed that a
+/// declaration naming a stream had to hold the stream's bytes, which is only
+/// true of the implicit captures and not of a name that reads `stderr`. Under
+/// the current record every name a step binds is recorded under its own name
+/// and spec, and both resolution paths above require the bound names to be
+/// present before selecting an instance, so the alias had no live case. An
+/// inferred hash is worse than an absent one here: it materializes bytes the
+/// step never asked for under a name that claims they are something else.
+fn output_hashes_from_instance(instance: &ToolCallInstance) -> BTreeMap<String, Hash> {
+    instance.outputs.iter().map(|(name, output)| (name.clone(), output.hash)).collect()
 }
 
 /// Unions step-declared inputs with the active tool spec contract, matching
@@ -1023,6 +1018,64 @@ mod tests {
         );
     }
 
+    /// A declared stream capture is never aliased to another name's bytes.
+    ///
+    /// `output_hashes_from_instance` used to map a declared `stderr`,
+    /// `stdout` or `process_code` name the instance had not recorded to the
+    /// recorded `stdout` hash. That was defensible while the only stream names
+    /// were the implicit ones; with name-addressed captures it can serve bytes
+    /// captured under a different name. Every name the step binds is recorded
+    /// under its own name and spec by the merged capture set, and an instance
+    /// missing a bound name is refused by the matcher rather than aliased, so
+    /// the function must return exactly the recorded names.
+    #[test]
+    fn a_declared_stream_name_is_not_aliased_to_another_name() {
+        let tool_call_id = "echo@v1";
+        let stdout_hash = Hash::from_content(b"stdout-bytes");
+        let instance = ToolCallInstance {
+            instance_key: mediapm_conductor::derive_tool_call_instance_key(tool_call_id, &[], &[]),
+            tool_call_id: tool_call_id.to_string(),
+            impure: false,
+            executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
+            step_ids: BTreeSet::new(),
+            command_args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs: BTreeMap::from([(
+                "stdout".to_string(),
+                mediapm_conductor::CapturedOutput {
+                    hash: stdout_hash,
+                    capture: Some(mediapm_conductor::OutputCaptureSpec {
+                        name: "stdout".to_string(),
+                        capture: "stdout".to_string(),
+                        ..mediapm_conductor::OutputCaptureSpec::default()
+                    }),
+                },
+            )]),
+        };
+        let declared_outputs = BTreeMap::from([(
+            "transcript".to_string(),
+            mediapm_conductor::OutputCaptureSpec {
+                name: "transcript".to_string(),
+                capture: "stderr".to_string(),
+                ..mediapm_conductor::OutputCaptureSpec::default()
+            },
+        )]);
+        assert_eq!(
+            declared_outputs["transcript"].capture, "stderr",
+            "the fixture only means something if the unrecorded name is a stream capture, \
+             which is the shape the alias served",
+        );
+
+        let output_hashes = output_hashes_from_instance(&instance);
+
+        assert_eq!(
+            output_hashes,
+            BTreeMap::from([("stdout".to_string(), stdout_hash)]),
+            "a name the instance did not record must not be given another name's bytes",
+        );
+    }
+
     /// Domain separator the documented instance-key spec fixes for the current
     /// key scheme.
     ///
@@ -1248,8 +1301,7 @@ mod tests {
             }
             claimed.insert(*stored_key);
             paired.push((step.id.clone(), tool_call_id, *stored_key));
-            step_outputs
-                .insert(step.id.clone(), output_hashes_from_instance(instance, &step.outputs));
+            step_outputs.insert(step.id.clone(), output_hashes_from_instance(instance));
         }
 
         if claimed.len() != state.tool_call_instances.len() {
@@ -1493,8 +1545,7 @@ mod tests {
                 );
                 rewrites.insert(*stored_key, (current_key, step.id.clone()));
             }
-            step_outputs
-                .insert(step.id.clone(), output_hashes_from_instance(instance, &step.outputs));
+            step_outputs.insert(step.id.clone(), output_hashes_from_instance(instance));
         }
         rewrites
     }

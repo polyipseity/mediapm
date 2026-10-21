@@ -156,8 +156,10 @@ impl NickelDocument {
                         env_vars
                     },
                     // Bridged: a tool's capture defaults are live. The step
-                    // worker merges them under the step's own declarations (the
-                    // step wins by name) before capturing, so one instance
+                    // worker merges them with the step's own declarations
+                    // before capturing — the tool owns the capture identity of
+                    // a name it declares and the step contributes only `save`,
+                    // while a step-only name is kept whole — so one instance
                     // holds every name a step with this work can bind. They are
                     // not key material: the v4 instance key derives from inputs
                     // alone, and a step reads the names it binds out of the

@@ -11,6 +11,32 @@ use crate::state::CapturedOutput;
 
 use super::process::ExecutionResult;
 
+/// Returns the stream captures every execution records without a declaration.
+///
+/// `stdout`, `stderr` and `process_code` are always recorded, under a fixed spec
+/// each, so a name-addressed capture set is never the whole set of names an
+/// instance holds. This function is the single definition of that implicit set:
+/// the capture phase records exactly these, and the executor's probe treats them
+/// as producible for a step that binds one by name — otherwise a dependent
+/// referencing `${step_output.<step>.stdout}` would be filtered out of the
+/// probe's CAS presence check even though every instance of that work records
+/// the name.
+pub(super) fn implicit_stream_specs() -> BTreeMap<String, OutputCaptureSpec> {
+    ["stdout", "stderr", "process_code"]
+        .into_iter()
+        .map(|name| {
+            let spec = OutputCaptureSpec {
+                name: name.to_string(),
+                capture: name.to_string(),
+                save: crate::config::SaveMode::True,
+                allow_empty: false,
+                include_topmost_folder: true,
+            };
+            (spec.name.clone(), spec)
+        })
+        .collect()
+}
+
 /// Captured step outputs: content-addressed records, each with its spec.
 #[derive(Debug, Clone)]
 pub(super) struct CapturedOutputs {
@@ -161,17 +187,9 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
 
     // Implicitly capture stdout, stderr, and process_code unless explicitly declared.
     let declared_names: BTreeSet<&str> = output_specs.keys().map(String::as_str).collect();
-    let implicit_specs = ["stdout", "stderr", "process_code"]
+    let implicit_specs = implicit_stream_specs()
         .into_iter()
-        .filter(|name| !declared_names.contains(name))
-        .map(|name| OutputCaptureSpec {
-            name: name.to_string(),
-            capture: name.to_string(),
-            save: crate::config::SaveMode::True,
-            allow_empty: false,
-            include_topmost_folder: true,
-        })
-        .map(|spec| (spec.name.clone(), spec))
+        .filter(|(name, _)| !declared_names.contains(name.as_str()))
         .collect::<BTreeMap<String, OutputCaptureSpec>>();
 
     let combined_specs: BTreeMap<&str, &OutputCaptureSpec> = output_specs

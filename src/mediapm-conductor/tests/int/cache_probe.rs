@@ -1,15 +1,18 @@
 //! # A cache hit must not name a blob the store no longer holds
 //!
 //! `probe_cache` answers a question about recorded state: an instance exists,
-//! and it names the outputs its dependents bind. The bytes themselves live in
-//! the CAS, which state cannot speak for. A blob removed behind the
-//! conductor's back — GC damage, a wiped store, an operator's cleanup — used
-//! to leave the probe reporting a hit: the step was skipped, and the missing
-//! object surfaced later, mid-materialization, as a failure with no route
-//! back to the step that produced it.
+//! and it names the outputs this step binds — both the names its own
+//! declarations make it record and the names its dependents reference. The
+//! bytes themselves live in the CAS, which state cannot speak for. A blob
+//! removed behind the conductor's back — GC damage, a wiped store, an
+//! operator's cleanup — used to leave the probe reporting a hit: the step was
+//! skipped, and the missing object surfaced later, mid-materialization, as a
+//! failure with no route back to the step that produced it.
 //!
-//! The executor now asks the store whether the outputs it is about to reuse
-//! still resolve, and downgrades the hit to a miss when one does not. The
+//! The probe's two halves are deliberately separate: the state half is
+//! `probe_cache` and the byte half is `required_output_blobs_exist`. The
+//! executor asks the store whether the outputs it is about to reuse still
+//! resolve, and downgrades the hit to a miss when one does not. The
 //! test walks the whole sequence — run, delete the producer's blob, run
 //! again — because either half alone proves nothing: without the deleted blob
 //! the re-run is an ordinary cache hit, and without the first run there is no

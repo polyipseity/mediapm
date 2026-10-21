@@ -171,9 +171,26 @@ pub(crate) struct StepExecutionRequest {
 pub(crate) struct StepExecutionBundle {
     /// Final tool call instance snapshot to merge into orchestration state,
     /// including the capture spec recorded beside every fresh output.
+    ///
+    /// On a cache hit this is the stored instance the probe returned, which
+    /// produced nothing during this run: the settlement may record the reusing
+    /// step, but it must not present the recorded outputs as its own.
     pub instance: ToolCallInstance,
     /// Whether this result came from a cache hit (vs. fresh execution).
     pub cache_hit: bool,
+    /// The names this execution declared it could produce, each under the spec
+    /// this run gives it.
+    ///
+    /// The merged tool-plus-step declarations plus the implicit stream
+    /// captures — the same set the probe filters its requirement through. It is
+    /// what lets settlement tell "produced nothing" (`file:` captures record
+    /// nothing on a zero match) apart from "recorded by another step" (a name
+    /// this execution never declared), so a stored entry that outlived its
+    /// artifact is dropped instead of being served to a dependent.
+    ///
+    /// Empty on a cache hit, and that emptiness is load-bearing: a hit produced
+    /// nothing, so it declares nothing to drop and nothing to claim.
+    pub producible_outputs: BTreeMap<String, OutputCaptureSpec>,
 }
 
 #[cfg(test)]

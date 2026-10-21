@@ -146,8 +146,11 @@ pub(crate) struct ToolCallInstanceV3 {
     pub executed_at: ImpureTimestampV3,
     /// Steps that have served this instance, by step id.
     ///
-    /// Provenance only and `#[serde(default)]`, so a V2 document that predates
-    /// the field migrates with an empty set.
+    /// Provenance only and `#[serde(default)]`. A V2 document that predates
+    /// the field is read by [`super::v2::ToolCallInstanceV2`], whose own
+    /// `#[serde(default)]` on the same field supplies the empty set the
+    /// migration then carries across; the default on this struct is what keeps
+    /// a V3 record written before the field readable.
     #[serde(default)]
     pub step_ids: BTreeSet<String>,
     /// Effective command argv recorded at execution time, in order.

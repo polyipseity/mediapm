@@ -22,9 +22,9 @@ use mediapm_utils::progress::{BarStyle, ProgressBarApi};
 #[cfg(feature = "progress")]
 use super::progress_labels::WorkerBarLabel;
 
-use crate::config::WorkflowStepSpec;
+use crate::config::{OutputCaptureSpec, WorkflowStepSpec};
 use crate::error::ConductorError;
-use crate::state::{ConductorState, InstanceAux, ToolCallInstance};
+use crate::state::{ConductorState, InstanceAux, ToolCallInstance, merge_captured_outputs};
 
 use ractor::rpc::CallResult;
 
@@ -284,11 +284,15 @@ fn scoped_state_snapshot(
 /// contributed, which depends neither on what one snapshot could see nor on
 /// the order the settlements land in.
 ///
-/// Every other field comes from `incoming`: the run that produced it did the
-/// work (or re-probed it) under the current config, so its content is the
-/// fresh truth, while the stored ids are the one fact a sibling's snapshot
-/// cannot show it. `instance_key` is unchanged by construction — callers pass
-/// the record stored under `incoming.instance_key`.
+/// Every other field comes from `incoming`, because the run that produced it
+/// did the work (or re-probed it) under the current config. Captured outputs
+/// are the exception and the one field a caller must have unioned first:
+/// `incoming.outputs` arrives already merged with the stored record's entries
+/// via [`merge_captured_outputs`], so this function must not be handed a
+/// bundle's raw capture set or a sibling's names would be evicted. The stored
+/// ids remain the one fact a sibling's snapshot cannot show it.
+/// `instance_key` is unchanged by construction — callers pass the record stored
+/// under `incoming.instance_key`.
 fn with_accumulated_step_ids(
     stored: Option<&ToolCallInstance>,
     mut incoming: ToolCallInstance,
@@ -297,6 +301,54 @@ fn with_accumulated_step_ids(
         incoming.step_ids.extend(stored.step_ids.iter().cloned());
     }
     incoming
+}
+
+/// Records one settling step's capture claims, rejecting a same-run
+/// disagreement.
+///
+/// The claim is `(instance key, output name)` → the capture identity this step's
+/// work produced for that name, together with the step that produced it. Two
+/// steps that run the same work under one key and name one output differently
+/// cannot both be right: the instance would have to hold two byte streams for
+/// one name, and whichever settlement landed last would decide what every
+/// dependent reads. That is a configuration error, not a race to resolve, so it
+/// is reported as soon as the second claim is seen — before the run persists any
+/// document or state.
+///
+/// Only entries that carry a spec are claimed. An entry recorded without one is
+/// a migration artifact and says nothing about how the bytes were captured. A
+/// name a step binds but whose bytes came from a different capture never reaches
+/// here as a conflict: `probe_cache` already turns that into a miss, so there is
+/// no second mechanism to disagree with it.
+fn record_capture_claims(
+    claims: &mut BTreeMap<(Hash, String), (OutputCaptureSpec, String)>,
+    instance: &ToolCallInstance,
+    step_id: &str,
+) -> Result<(), ConductorError> {
+    for (name, output) in &instance.outputs {
+        let Some(capture) = output.capture.as_ref() else {
+            continue;
+        };
+        match claims.get(&(instance.instance_key, name.clone())) {
+            Some((claimed, claimed_by)) if !capture.same_capture_identity(claimed) => {
+                return Err(ConductorError::Workflow(format!(
+                    "steps '{claimed_by}' and '{step_id}' both capture output '{name}' for the \
+                     same work with different capture specs ({} vs {}); one output name must \
+                     name one artifact",
+                    claimed.capture_identity(),
+                    capture.capture_identity(),
+                )));
+            }
+            Some(_) => {}
+            None => {
+                claims.insert(
+                    (instance.instance_key, name.clone()),
+                    (capture.clone(), step_id.to_string()),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +649,13 @@ where
             // for the settling step's descendants only.
             let mut step_state_contributions: BTreeMap<String, StepStateContribution> =
                 BTreeMap::new();
+            // Run-wide capture claims: `(instance key, output name)` → the
+            // capture identity and step that first claimed it in this run. A
+            // second claim naming a different identity is a configuration
+            // error reported at settlement, not resolved by settlement order
+            // (see `record_capture_claims`).
+            let mut run_capture_claims: BTreeMap<(Hash, String), (OutputCaptureSpec, String)> =
+                BTreeMap::new();
 
             // Ready-queue dispatch: a step becomes eligible the moment its
             // own `depends_on` edges have settled, and pulls any free worker
@@ -825,7 +884,24 @@ where
                         if attempt > 1 {
                             retried_steps += 1;
                         }
-                        for (name, record) in &bundle.instance.outputs {
+                        let StepExecutionBundle { instance, cache_hit, producible_outputs } =
+                            bundle;
+                        let instance_key = instance.instance_key;
+                        // The two conflict rules are enforced as steps settle:
+                        // a claim that contradicts an earlier one in this run
+                        // fails the run before it writes anything, and long
+                        // before a dependent could read bytes nobody agreed on.
+                        //
+                        // Only an execution claims. A cache hit returns the
+                        // stored instance — which by then may name artifacts
+                        // other steps recorded under other specs — so claiming
+                        // it would make the hit speak for work it did not do and
+                        // turn a changed declaration elsewhere into a phantom
+                        // conflict that repeats on every sync.
+                        if !cache_hit {
+                            record_capture_claims(&mut run_capture_claims, &instance, &step_id)?;
+                        }
+                        for (name, record) in &instance.outputs {
                             step_outputs
                                 .entry(step_id.clone())
                                 .or_default()
@@ -840,15 +916,37 @@ where
                         // GC sweeps. The contribution is retained so later
                         // spawns scope their state snapshot to their own
                         // ancestors (see `scoped_state_snapshot`).
-                        let instance_key = bundle.instance.instance_key;
-                        // The stored record may name steps this settlement's
-                        // probe view never showed — two sibling roots sharing
-                        // a key each see only the run-entry state — so the
-                        // persisted provenance is merged, not overwritten.
-                        let instance = with_accumulated_step_ids(
-                            state.tool_call_instances.get(&instance_key),
-                            bundle.instance,
-                        );
+                        //
+                        // Two things are merged, not overwritten. The stored
+                        // record may name steps this settlement's probe view
+                        // never showed (two sibling roots sharing a key each
+                        // see only the run-entry state), so provenance is
+                        // unioned; and an execution's captured outputs are
+                        // unioned against the stored entries, because each
+                        // settlement speaks only for the names its own
+                        // execution produced. A replacement would drop a
+                        // sibling's step-only name and put the pair on a
+                        // forever-re-executing loop.
+                        let stored = state.tool_call_instances.get(&instance_key);
+                        let mut incoming = instance;
+                        if let Some(stored) = stored {
+                            // A hit produced no artifact, so it contributes only
+                            // `step_ids` and leaves the recorded outputs as the
+                            // store holds them. Unioning the hit's snapshot here
+                            // would let a stale entry overwrite a sibling's
+                            // in-flight replacement, and the step that made the
+                            // replacement would miss again on every sync.
+                            incoming.outputs = if cache_hit {
+                                stored.outputs.clone()
+                            } else {
+                                merge_captured_outputs(
+                                    &stored.outputs,
+                                    &producible_outputs,
+                                    incoming.outputs,
+                                )?
+                            };
+                        }
+                        let instance = with_accumulated_step_ids(stored, incoming);
                         let contribution = StepStateContribution {
                             instance,
                             aux: InstanceAux { last_referenced_at: Timestamp::now() },
