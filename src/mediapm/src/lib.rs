@@ -219,7 +219,7 @@ pub struct MediaStepInvalidationSummary {
     /// Whether this call queued a forced re-execution of the workflow.
     ///
     /// The request is persisted in
-    /// [`MediaPmState::pending_force_rerun`](crate::MediaPmState), so the sync
+    /// `MediaPmState::pending_force_rerun`, so the sync
     /// that honours it need not be the process that issued it.
     ///
     /// There is no instance-removal counterpart: instance keys are derived

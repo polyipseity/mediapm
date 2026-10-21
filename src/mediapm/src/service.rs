@@ -625,6 +625,17 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         let _ = remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, media_id);
 
         save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
+
+        // Drop any queued invalidation for the workflow that just disappeared:
+        // no run will ever match it again, so keeping it would leave an entry
+        // no sync could spend.
+        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
+        if state
+            .pending_force_rerun
+            .remove(&crate::tools::workflows::managed_workflow_name(media_id))
+        {
+            save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
+        }
         Ok(())
     }
 
@@ -730,7 +741,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// Clears the media's recorded step progress (variant hashes and the
     /// completed-step count) and, when `invalidate_calls` is true, the impure
     /// timestamps. `invalidate_calls` or `regenerate` queues the media's
-    /// workflow in [`MediaPmState::pending_force_rerun`](crate::MediaPmState),
+    /// workflow in `MediaPmState::pending_force_rerun`,
     /// which the next sync consumes by running that workflow with
     /// [`mediapm_conductor::RunWorkflowOptions::force_rerun`]. The marker is
     /// persisted rather than held on the service, so the sync that honours it
@@ -1287,10 +1298,12 @@ impl MediaPmService<FileSystemCas> {
         let mut cached_instances: usize = 0;
         let mut workflow_failed_steps: usize = 0;
         // Loaded before the workflow phase because the persisted invalidation
-        // marker is part of what decides how each workflow runs. Tool sync and
-        // the runtime-config refresh above never write mediapm state, so this
-        // is the same document the materialization phase reads below — one
-        // read-modify-write cycle rather than two.
+        // marker is part of what decides how each workflow runs, and loaded
+        // *after* tool sync because that phase rewrites the managed-tool
+        // registry and saves it. Loading earlier would leave this handle with
+        // a `managed_tools` list that predates the run, and the save below
+        // would then drop the tools this sync just provisioned — one
+        // read-modify-write cycle has to start from the newest document.
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
         self.conductor
             .ensure_persisted_state_loaded()
@@ -1312,10 +1325,8 @@ impl MediaPmService<FileSystemCas> {
             Some(Arc::new(workflow_group));
         let workflow_overall: Option<Arc<dyn ProgressBarApi>> =
             Some(Arc::new(workflow_overall_handle));
-        // Workflows whose forced run completed. A marker entry is spent by the
-        // run that honoured it, and kept by a run that failed, so an
-        // invalidation is never silently consumed by work that did not happen.
-        let mut honoured_invalidations: Vec<String> = Vec::new();
+        // Workflows whose forced run completed are recorded above, one save at
+        // a time, so nothing is left to spend here.
         for workflow_name in workflow_names {
             let mut run_options = conductor_run_workflow_options(
                 &effective_paths,
@@ -1341,20 +1352,13 @@ impl MediaPmService<FileSystemCas> {
                     "workflow '{workflow_name}' had {} failed step(s)",
                     summary.failed_steps
                 ));
-            } else {
-                honoured_invalidations.push(workflow_name.clone());
+            } else if state.pending_force_rerun.remove(&workflow_name) {
+                // A queued invalidation is spent by the run that honoured it,
+                // and saved immediately: a later workflow's failure returns
+                // from here without reaching any later save, and the next sync
+                // must not be handed work this run has already done.
+                save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
             }
-        }
-        // Persist the spent markers before the materialization phase, so a
-        // materialization failure cannot hand the next sync a re-execution the
-        // workflows already performed. A workflow absent from this list keeps
-        // its entry: it failed, or it was never queued.
-        let mut invalidations_spent = false;
-        for workflow_name in &honoured_invalidations {
-            invalidations_spent |= state.pending_force_rerun.remove(workflow_name);
-        }
-        if invalidations_spent {
-            save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
         }
         // Block until the conductor-owned workflow screen has flushed its
         // final frame (indicatif has no blocking join; this drains the

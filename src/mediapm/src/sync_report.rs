@@ -66,7 +66,7 @@ pub struct SyncLibraryOptions {
     /// `false` (the default) serves every step whose key material is unchanged
     /// from the conductor instance cache. Instance keys are content-derived, so
     /// elapsed time never expires one: this flag, a queued
-    /// [`MediaPmState::pending_force_rerun`](crate::MediaPmState) entry, or
+    /// `MediaPmState::pending_force_rerun` entry, or
     /// changed step material is what re-executes a step. Scope is the whole
     /// run, because the conductor's invalidation granularity is a workflow run
     /// rather than a single step. Unlike the marker, which a previous process

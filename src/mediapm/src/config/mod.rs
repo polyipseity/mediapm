@@ -542,8 +542,5 @@ impl MediaPmState {
                 || entry.resolved_version.is_some()
                 || entry.resolved_vcs_hash.is_some()
         });
-        // A blank workflow id names nothing a run could match, so it could never
-        // be consumed; keeping it would leave an entry that no sync can spend.
-        self.pending_force_rerun.retain(|workflow_id| !workflow_id.trim().is_empty());
     }
 }
