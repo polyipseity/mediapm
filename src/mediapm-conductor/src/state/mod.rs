@@ -13,7 +13,10 @@ pub mod versions;
 
 /// Current orchestration-state schema version.
 ///
-/// Must be bumped when the persisted JSON layout changes. Backward
+/// Bumped when the persisted JSON layout changes in a way older or newer
+/// readers cannot absorb. An additive, serde-defaulted provenance field is
+/// not such a change: an older file decodes with an empty value and a newer
+/// file still decodes in an older reader, so the version stays put. Backward
 /// compatibility is handled via the `state/versions/` module.
 pub(crate) const STATE_VERSION: u32 = 2;
 

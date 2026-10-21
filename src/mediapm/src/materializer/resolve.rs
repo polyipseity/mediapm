@@ -1059,6 +1059,10 @@ mod tests {
     /// Domain separator the documented instance-key spec fixes for the current
     /// key scheme.
     ///
+    /// The version is an integer and only moves forward, so a dotted revision
+    /// (`v3.1`) must never appear here: a change to key material is a new
+    /// integer, not a patch of this one.
+    ///
     /// Re-declared here instead of rendered from `INSTANCE_KEY_SCHEME` or
     /// imported from `instance_key_domain`: this oracle exists to pin the
     /// documented value, so a changed domain string must fail the oracle rather

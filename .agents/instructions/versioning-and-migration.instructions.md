@@ -56,6 +56,13 @@ Every versioned config/state surface follows the same shape, regardless of trans
 - Keep lineage references valid (`from_variant_hash`/`to_variant_hash` exist in `variants`).
 - Keep schema version explicit (`schema_version`) and migrations sequential; record provenance per applied hop.
 
+## Version sequences are integers
+
+- A version is an integer and only moves forward: `v1 -> v2 -> v3 -> v4`. Never append a dotted or in-place revision (`v2.1`, `v3.2`), and never describe a scheme change as a patch of the previous version.
+- A changed scheme is a new integer. Persisted identities, domain separators, wire formats and migration ladders all follow the rule, whether or not the surrounding schema version moves.
+- Because a bump is visible and cheap, compatibility branches for revisions that never shipped in a release are deleted, not carried: the old keys miss once and re-execute.
+- When a scheme version and a schema version move independently, keep them separate: a runtime scheme constant belongs to the module that derives the value, never to a `versions/` wire module.
+
 ## Unicode normalization boundary
 
 - Do not apply Unicode NFD normalization in versioned structs or envelope fields; NFD is reserved for mediapm internal filepath handling.

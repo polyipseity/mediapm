@@ -35,6 +35,17 @@ pub fn instance_key_domain() -> String {
 /// deterministic argument hashes, the deterministic environment hashes and the
 /// materialized tool-content hashes. Time and impurity never participate; an
 /// impure instance's recorded timestamp is provenance.
+///
+/// The composite is exactly those six terms, in this order: the scheme domain
+/// separator ([`instance_key_domain`]), the tool call id, the capture-set hash
+/// ([`step_output_specs_hash`]), the command-arg hashes in argv order, the
+/// environment hashes sorted by name, and the materialized-input hashes in
+/// tool-content-map path order. Nothing here sorts, so the order is key
+/// material and the caller owes it: [`deterministic_materialized_input_hashes`]
+/// reads a `BTreeMap` and is path-ordered already, while env hashes must be
+/// collected in name order. The executor passes no env hashes at all — every
+/// env record is recorded as nondeterministic — so that term is empty on the
+/// production paths.
 #[must_use]
 pub fn derive_instance_key(
     tool_call_id: &str,
