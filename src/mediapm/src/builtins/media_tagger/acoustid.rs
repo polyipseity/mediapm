@@ -312,14 +312,20 @@ mod tests {
     use super::*;
     use crate::builtins::media_tagger::cover_art::{CacheExpiryPolicy, MediaTaggerHttpCache};
 
-    /// One cache plus a wiremock server, the pair every lookup test needs.
+    /// One cache, its owning temp root, and a wiremock server.
+    ///
+    /// The temp root is returned first so the caller keeps it alive: the guard
+    /// removes the directory when it drops, and a cache write afterwards would
+    /// recreate it after that cleanup had already run. Binding it as the first
+    /// element of the pattern makes it drop last, after the cache that owns the
+    /// store beneath it.
     async fn lookup_harness(
         expiry: CacheExpiryPolicy,
-    ) -> (MediaTaggerHttpCache, wiremock::MockServer) {
+    ) -> (tempfile::TempDir, MediaTaggerHttpCache, wiremock::MockServer) {
         let server = wiremock::MockServer::start().await;
         let root = mediapm_utils::temp::cache_dir().expect("cache directory");
         let cache = MediaTaggerHttpCache::new(Some(root.path().to_path_buf()), expiry);
-        (cache, server)
+        (root, cache, server)
     }
 
     /// A canned AcoustID answer naming one recording and release.
@@ -334,7 +340,7 @@ mod tests {
     /// A repeat lookup is served from the cache, not the network.
     #[tokio::test]
     async fn a_repeat_lookup_is_served_from_the_cache() {
-        let (cache, server) = lookup_harness(CacheExpiryPolicy::from_seconds(60)).await;
+        let (_root, cache, server) = lookup_harness(CacheExpiryPolicy::from_seconds(60)).await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
@@ -358,7 +364,7 @@ mod tests {
     /// A different endpoint URL is a different service: it misses and queries.
     #[tokio::test]
     async fn a_different_endpoint_misses_the_cached_answer() {
-        let (cache, server) = lookup_harness(CacheExpiryPolicy::from_seconds(60)).await;
+        let (_root, cache, server) = lookup_harness(CacheExpiryPolicy::from_seconds(60)).await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
@@ -386,7 +392,7 @@ mod tests {
     /// A zero-match answer is a real answer, so it gets cached too.
     #[tokio::test]
     async fn a_zero_match_answer_is_cached() {
-        let (cache, server) = lookup_harness(CacheExpiryPolicy::from_seconds(60)).await;
+        let (_root, cache, server) = lookup_harness(CacheExpiryPolicy::from_seconds(60)).await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
@@ -411,7 +417,7 @@ mod tests {
     /// A failed lookup is an error and caches nothing, so a retry queries again.
     #[tokio::test]
     async fn a_failed_lookup_caches_nothing() {
-        let (cache, server) = lookup_harness(CacheExpiryPolicy::from_seconds(60)).await;
+        let (_root, cache, server) = lookup_harness(CacheExpiryPolicy::from_seconds(60)).await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(wiremock::ResponseTemplate::new(500))
             .up_to_n_times(1)
