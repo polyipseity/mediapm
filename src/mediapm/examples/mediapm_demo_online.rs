@@ -119,9 +119,9 @@ use mediapm::{
     HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
     MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmService,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
-    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement,
-    TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig, example_isolation,
-    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry,
+    ToolRequirement, TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
+    example_isolation, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -301,13 +301,33 @@ struct SecondRunTally {
     warning_count: usize,
 }
 
+/// Per-tool provenance as recorded in the state lockfile: the canonical version
+/// that drives skip-if-up-to-date logic, plus the upstream identifiers the
+/// provider resolved (`None` where the provider has no value — the why-empty
+/// rules live in `provider-dispatch.instructions.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ManagedToolProvenance {
+    canonical_version: String,
+    resolved_tag: Option<String>,
+    resolved_version: Option<String>,
+    resolved_vcs_hash: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct DemoManifest {
+    /// Which mode produced this manifest. The full-sync path records
+    /// `"full"`; the reduced config-only path writes its own manifest with
+    /// `"config_only"`.
+    run_mode: String,
     generated_unix_epoch_seconds: u64,
     artifact_root: String,
     workspace_root: String,
     tool_ids: Vec<String>,
     tool_binaries: BTreeMap<String, String>,
+    /// Canonical version and upstream provenance per logical managed tool id,
+    /// read from the state lockfile after the sync. See
+    /// [`summarize_managed_tool_provenance`].
+    managed_tools: BTreeMap<String, ManagedToolProvenance>,
     yt_dlp_max_concurrent_calls: i32,
     yt_dlp_max_retries: i32,
     mediapm_ncl_path: String,
@@ -320,6 +340,11 @@ struct DemoManifest {
     materialized_demo_video_hardlinked_to_cas: bool,
     materialized_demo_tagged_video_hardlinked_to_cas: bool,
     materialized_demo_sidecar_paths: BTreeMap<String, String>,
+    /// CAS hash recorded for every managed library file, keyed by the
+    /// hierarchy-relative path. Read verbatim from the state lockfile, so a
+    /// reader can verify a materialized file against the store without
+    /// recomputing anything.
+    materialized_file_hashes: BTreeMap<String, String>,
     executed_instances: usize,
     cached_instances: usize,
     materialized_paths: usize,
@@ -331,30 +356,14 @@ struct DemoManifest {
     /// reduced (config-only) runs record `None`.
     second_run: Option<SecondRunTally>,
     profile_path: String,
-    store_size_without_delta_bytes: u64,
-    store_size_with_delta_bytes: u64,
-    store_size_ratio_with_delta_over_without: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StoreSizeStats {
-    without_delta_bytes: u64,
-    with_delta_bytes: u64,
-}
-
-impl StoreSizeStats {
-    #[must_use]
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "manifest ratio output is intentionally approximate for human-facing diagnostics"
-    )]
-    fn ratio_with_delta_over_without(self) -> f64 {
-        if self.without_delta_bytes == 0 {
-            1.0
-        } else {
-            self.with_delta_bytes as f64 / self.without_delta_bytes as f64
-        }
-    }
+    /// Total logical size of every CAS blob object (sum of `info.len` for
+    /// each hash found under `blobs/v1/`). A single field rather than a
+    /// delta-vs-without pair because no delta chunks (`.diff`) exist in the
+    /// demo store — the previous three-field split (`without_delta`,
+    /// `with_delta`, `ratio`) was always zero because the walk looked at
+    /// `v1/` instead of `blobs/v1/`, and even after fixing the path both
+    /// delta and without-delta would be identical for this store.
+    store_size_bytes: u64,
 }
 
 /// Runtime storage for demo runs; the user-level tool cache resolves to a
@@ -680,7 +689,7 @@ fn collect_store_object_hashes_recursive(
 
 fn collect_store_object_hashes(cas_root: &Path) -> ExampleResult<BTreeSet<Hash>> {
     let mut hashes = BTreeSet::new();
-    let objects_root = cas_root.join("v1");
+    let objects_root = cas_root.join("blobs").join("v1");
     if !objects_root.exists() {
         return Ok(hashes);
     }
@@ -690,24 +699,59 @@ fn collect_store_object_hashes(cas_root: &Path) -> ExampleResult<BTreeSet<Hash>>
     Ok(hashes)
 }
 
-async fn summarize_store_sizes(
-    cas: &FileSystemCas,
-    cas_root: &Path,
-) -> ExampleResult<StoreSizeStats> {
+/// Returns the total logical size (sum of `info.len`) of every CAS blob
+/// object under `cas_root/blobs/v1/`. Used for the demo manifest's
+/// `store_size_bytes` field.
+async fn summarize_store_size(cas: &FileSystemCas, cas_root: &Path) -> ExampleResult<u64> {
     // `cas` must be the shared handle from the service: `FileSystemCas::open`
     // on the same root would re-acquire the directory lock and hit
     // `LockContention` because the service already holds it. Cloning the
     // `Arc<FileSystemCas>` shares the same `DirectoryLockGuard`.
-    let mut without_delta = 0u64;
-    let mut with_delta = 0u64;
+    let mut total = 0u64;
 
     for hash in collect_store_object_hashes(cas_root)? {
         let info = cas.stat(hash).await?;
-        without_delta = without_delta.saturating_add(info.len);
-        with_delta = with_delta.saturating_add(info.len);
+        total = total.saturating_add(info.len);
     }
 
-    Ok(StoreSizeStats { without_delta_bytes: without_delta, with_delta_bytes: with_delta })
+    Ok(total)
+}
+
+/// Summarises the state lockfile's `managed_tools` entries as one provenance
+/// record per logical tool id.
+///
+/// Every fetch-and-deploy cycle appends an entry, so one tool id can appear
+/// several times; the record kept is the entry with the greatest
+/// `deployed_at`, which is the deployment the run just resolved against.
+/// Entries are keyed by the logical `tool_id` rather than the content-addressed
+/// conductor id because that is the name a reader of the manifest recognises.
+fn summarize_managed_tool_provenance(
+    entries: &[ToolRegistryEntry],
+) -> BTreeMap<String, ManagedToolProvenance> {
+    let mut latest: BTreeMap<&str, &ToolRegistryEntry> = BTreeMap::new();
+    for entry in entries {
+        let superseded = latest
+            .get(entry.tool_id.as_str())
+            .is_some_and(|current| current.deployed_at >= entry.deployed_at);
+        if !superseded {
+            latest.insert(entry.tool_id.as_str(), entry);
+        }
+    }
+
+    latest
+        .into_iter()
+        .map(|(tool_id, entry)| {
+            (
+                tool_id.to_string(),
+                ManagedToolProvenance {
+                    canonical_version: entry.canonical_version.clone(),
+                    resolved_tag: entry.resolved_tag.clone(),
+                    resolved_version: entry.resolved_version.clone(),
+                    resolved_vcs_hash: entry.resolved_vcs_hash.clone(),
+                },
+            )
+        })
+        .collect()
 }
 
 /// Snapshots every file under the hierarchy root as `(relative path, length)`
@@ -3129,7 +3173,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         warnings = second_run.warning_count,
     );
 
-    let store_size_stats = summarize_store_sizes(sync_service.conductor().cas(), &cas_root).await?;
+    let store_size_bytes = summarize_store_size(sync_service.conductor().cas(), &cas_root).await?;
     let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
         .iter()
         .map(|method| format!("{method:?}"))
@@ -3139,6 +3183,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         tool_binaries.get(&yt_dlp_tool_id).ok_or("yt-dlp command selector missing")?;
 
     let manifest = DemoManifest {
+        run_mode: "full".to_string(),
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
         artifact_root: display_path(&root),
         workspace_root: display_path(&workspace_root),
@@ -3147,6 +3192,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             .iter()
             .map(|(tool_id, command)| (tool_id.clone(), command.clone()))
             .collect(),
+        managed_tools: summarize_managed_tool_provenance(&lock.managed_tools),
         yt_dlp_max_concurrent_calls,
         yt_dlp_max_retries,
         mediapm_ncl_path: display_path(&sync_service.paths().mediapm_ncl),
@@ -3162,6 +3208,11 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             .iter()
             .map(|(variant, path)| (variant.clone(), display_path(path)))
             .collect(),
+        materialized_file_hashes: lock
+            .managed_files
+            .iter()
+            .map(|(path, record)| (path.clone(), record.hash.clone()))
+            .collect(),
         executed_instances: summary.executed_instances,
         cached_instances: summary.cached_instances,
         materialized_paths: summary.materialized_paths,
@@ -3171,9 +3222,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         warning_count: summary.warnings.len(),
         second_run: Some(second_run),
         profile_path: display_path(&sync_service.paths().runtime_root.join("profile.json")),
-        store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
-        store_size_with_delta_bytes: store_size_stats.with_delta_bytes,
-        store_size_ratio_with_delta_over_without: store_size_stats.ratio_with_delta_over_without(),
+        store_size_bytes,
     };
 
     let manifest_path = root.join("manifest.json");
@@ -3665,13 +3714,6 @@ mod tests {
         assert!(!super::ffprobe_payload_has_required_replaygain_tags(&payload_missing_track_peak));
     }
 
-    /// Ensures ratio rendering stays neutral for empty/objectless stores.
-    #[test]
-    fn store_size_ratio_uses_neutral_value_for_zero_denominator() {
-        let stats = super::StoreSizeStats { without_delta_bytes: 0, with_delta_bytes: 0 };
-        assert_eq!(stats.ratio_with_delta_over_without(), 1.0);
-    }
-
     /// Ensures single-track mode rejects album-family ReplayGain tags.
     #[test]
     fn ffprobe_payload_single_track_detection_reports_unexpected_album_tags() {
@@ -3857,5 +3899,45 @@ mod tests {
 
         super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect("media-id-aligned non-subtitle sidecars should be accepted");
+    }
+
+    /// Ensures the manifest's per-tool provenance follows the deployment the
+    /// run resolved against: when one tool id has several recorded deploys,
+    /// the newest supplies the canonical version and the provenance fields.
+    #[test]
+    fn managed_tool_provenance_keeps_the_latest_deployed_entry() {
+        let older = mediapm::ToolRegistryEntry {
+            tool_id: "yt-dlp".to_string(),
+            version: "2026.01.01".to_string(),
+            canonical_version: "older-commit".to_string(),
+            content_map_hash: "older-hash".to_string(),
+            deployed_at: mediapm_utils::Timestamp::from_unix_nanos(1),
+            resolved_tag: Some("2026.01.01".to_string()),
+            resolved_version: Some("2026.01.01".to_string()),
+            resolved_vcs_hash: Some("older-vcs".to_string()),
+        };
+        let newer = mediapm::ToolRegistryEntry {
+            tool_id: "yt-dlp".to_string(),
+            version: "2026.02.02".to_string(),
+            canonical_version: "newer-commit".to_string(),
+            content_map_hash: "newer-hash".to_string(),
+            deployed_at: mediapm_utils::Timestamp::from_unix_nanos(2),
+            resolved_tag: Some("2026.02.02".to_string()),
+            resolved_version: Some("2026.02.02".to_string()),
+            resolved_vcs_hash: Some("newer-vcs".to_string()),
+        };
+
+        // Both orders must land on the newer deployment: the summarizer
+        // selects by `deployed_at`, not by position in the lockfile.
+        for entries in [vec![older.clone(), newer.clone()], vec![newer, older]] {
+            let summary = super::summarize_managed_tool_provenance(&entries);
+
+            assert_eq!(summary.len(), 1, "one record per logical tool id");
+            let provenance = summary.get("yt-dlp").expect("yt-dlp provenance recorded");
+            assert_eq!(provenance.canonical_version, "newer-commit");
+            assert_eq!(provenance.resolved_tag.as_deref(), Some("2026.02.02"));
+            assert_eq!(provenance.resolved_version.as_deref(), Some("2026.02.02"));
+            assert_eq!(provenance.resolved_vcs_hash.as_deref(), Some("newer-vcs"));
+        }
     }
 }
