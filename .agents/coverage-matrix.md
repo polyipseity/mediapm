@@ -1108,3 +1108,12 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | The manifest records the run mode, one provenance record per managed tool id (canonical version plus resolved tag, version, and VCS hash of the newest deployment), and a hierarchy-relative path to CAS hash map for every managed file; all read from the state lockfile. | `managed_tool_provenance_keeps_the_latest_deployed_entry` (examples/mediapm_demo_online.rs) | [covered] — summarizer; full manifest shape needs a Level-3 run |
 | `store_size_bytes` is the summed length of every CAS blob under `<runtime>/store/blobs/v1/`, replacing the three-field delta split that was always zero because the walk used the pre-versioned `v1/` path. | none — the walk is exercised only by a Level-3 run | [partial] — Level-3 only |
 | No per-media sidecar exists or is created: media state is `workflow_states` plus `ManagedFileRecord`s, and sidecars are yt-dlp outputs only. | doc-level invariant, enforced by absence of any writer | [covered] — architecture instructions corrected with the phantom `.mediapm/media/<id>/media.json` claim removed |
+
+## Cache-probe validity and persisted invalidation (2026-10-21)
+
+| Item | Tests | Status |
+| --- | --- | --- |
+| A cache hit whose required output blob no longer resolves in the CAS is downgraded to a miss, so the step re-executes instead of failing later during materialization. Scope is the `required_output_names` set; presence is checked, not integrity. | `a_missing_blob_turns_a_cache_hit_into_a_rerun` (mediapm-conductor `tests/int/cache_probe.rs`) | [covered] |
+| `media invalidate` queues the workflow in `MediaPmState.pending_force_rerun`, and the next sync honours it even from a different service instance; the entry is spent by the run that completes without a failed step. | `invalidation_survives_a_new_service_instance` (mediapm `tests/int/media_step_invalidation.rs`) | [covered] |
+| A forced run that fails keeps its marker, so the next sync tries again rather than going back to the instance the operator asked to replace. | `a_failed_forced_run_keeps_the_marker` (mediapm `tests/int/media_step_invalidation.rs`) | [covered] |
+| The run-scoped `SyncLibraryOptions::force_workflow_rerun` lever forces every workflow of one run and leaves no state behind. | `force_rerun_reexecutes_the_cached_workflow` (mediapm `tests/int/sync_idempotency_double_run.rs`) | [covered] |
