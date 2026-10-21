@@ -19,8 +19,15 @@ pub mod versions;
 /// file still decodes in an older reader, so the version stays put. That
 /// forward readability holds only because no state wire type denies unknown
 /// fields; a wire type that gained `#[serde(deny_unknown_fields)]` would end
-/// the carve-out. Backward compatibility is handled via the `state/versions/`
-/// module.
+/// the carve-out.
+///
+/// Readability is all the carve-out buys, so it is not round-trip safety: a
+/// reader that predates `step_ids` decodes it as an unknown field, drops it
+/// when it next writes the document, and leaves a state file whose schema
+/// version still says this value while its provenance is gone. A build that
+/// may rewrite this document therefore has to know every field it carries,
+/// and a change an older writer would lose that way is what a bump is for.
+/// Backward compatibility is handled via the `state/versions/` module.
 pub(crate) const STATE_VERSION: u32 = 2;
 
 /// Persistence status for one output within a tool-call instance.
@@ -92,12 +99,15 @@ pub struct ToolCallInstance {
     /// Execution timestamp recorded at run time. Provenance only; it is never
     /// part of any instance key, impure or pure.
     pub executed_at: Timestamp,
-    /// Steps that recorded this instance, by step id.
+    /// Steps that have served this instance, by step id.
     ///
-    /// Provenance only. It records which step produced the captured outputs,
-    /// which is what lets the demo fixture be re-keyed without re-deriving a
-    /// historical key scheme. It is never key material, and a probe hit does
-    /// not rewrite it.
+    /// Provenance only, never key material. It names the step that recorded
+    /// the instance and every later step that reused it, which is what lets
+    /// the demo fixture be re-keyed without re-deriving a historical key
+    /// scheme: regeneration pairs an instance with the step that claims it.
+    /// A cache hit records the reusing step here, and an id the set already
+    /// holds is left as it is, so a steady-state sync persists the same
+    /// record.
     #[serde(default)]
     pub step_ids: BTreeSet<String>,
     /// Effective command argv recorded at execution time, in order. Values

@@ -156,9 +156,17 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         }
     };
 
-    if let Some(cached) = cached_instance {
-        // Return the cached instance unchanged; GC refresh happens through
-        // the referenced-keys set at GC time, not by per-hit mutation.
+    if let Some(mut cached) = cached_instance {
+        // A hit records the reusing step before returning: `step_ids` is the
+        // provenance the demo fixture pairs through, and a shared instance
+        // must name every step it served, not only the one that executed it.
+        // The insert is idempotent — an id the set already holds leaves it as
+        // it was, so a steady-state sync returns a record identical to the
+        // stored one. Returning the bundle is what persists the addition: the
+        // coordinator merges the bundle's instance into the run state, while
+        // GC refresh still happens through the referenced-keys set at GC
+        // time, not by per-hit mutation.
+        cached.step_ids.insert(request.step.id.clone());
         return Ok(StepExecutionBundle {
             instance: cached,
             save_modes: BTreeMap::new(),
@@ -302,7 +310,8 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    /// Runs one builtin step under `step_id` and returns what it recorded.
+    /// Runs one builtin step under `step_id` against `cas` and `state` and
+    /// returns what it recorded.
     ///
     /// The bundle is returned beside the two candidate capture terms and the
     /// input term the executor derived, so a caller can tell which capture term
@@ -312,8 +321,14 @@ mod tests {
     /// tool's `outputs` empty, which is what makes the step's map the whole
     /// capture set. Filling it here is what lets the test tell the two terms
     /// apart.
-    async fn execute_builtin_step(step_id: &str) -> (StepExecutionBundle, Hash, Hash, Vec<Hash>) {
-        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+    ///
+    /// `cas` and `state` are caller-owned so a test can chain steps: the probe
+    /// reads `state`, and the output blobs a hit validates live in `cas`.
+    async fn execute_builtin_step(
+        cas: &mediapm_cas::InMemoryCas,
+        state: crate::state::ConductorState,
+        step_id: &str,
+    ) -> (StepExecutionBundle, Hash, Hash, Vec<Hash>) {
         let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let tool_id = "echo@v1";
         let tool_outputs = BTreeMap::from([(
@@ -357,14 +372,14 @@ mod tests {
                 depends_on: Vec::new(),
             },
             impure_timestamp: None,
-            state_snapshot: Arc::new(crate::state::ConductorState::new_empty()),
+            state_snapshot: Arc::new(state),
             outermost_config_dir: tmp.path().to_path_buf(),
             conductor_tmp_dir: tmp.path().join("runtime"),
             step_outputs: Arc::new(BTreeMap::new()),
             required_output_names: BTreeSet::from(["result".to_string()]),
             force_rerun: false,
         };
-        let bundle = execute_step(&cas, request).await.expect("the echo builtin runs");
+        let bundle = execute_step(cas, request).await.expect("the echo builtin runs");
         let merged_term = step_output_specs_hash(&merge_output_specs(&tool_outputs, &step_outputs));
         let step_only_term = step_output_specs_hash(&step_outputs);
         // The one deterministic binding this step resolves, so the expected
@@ -393,8 +408,10 @@ mod tests {
     /// term fails here, where the coupling is cheapest to notice.
     #[tokio::test]
     async fn a_tool_level_capture_default_is_not_key_material() {
+        let cas = mediapm_cas::new_in_memory_cas();
         let (bundle, merged_term, step_only_term, input_hashes) =
-            execute_builtin_step("step-0-echo").await;
+            execute_builtin_step(&cas, crate::state::ConductorState::new_empty(), "step-0-echo")
+                .await;
         assert_ne!(
             merged_term, step_only_term,
             "the fixture must distinguish the two terms, or the assertion below cannot fail",
@@ -415,8 +432,50 @@ mod tests {
     /// regeneration can pair instance → step without key history.
     #[tokio::test]
     async fn a_recorded_instance_names_the_step_that_recorded_it() {
-        let (bundle, ..) = execute_builtin_step("step-7-echo").await;
+        let cas = mediapm_cas::new_in_memory_cas();
+        let (bundle, ..) =
+            execute_builtin_step(&cas, crate::state::ConductorState::new_empty(), "step-7-echo")
+                .await;
         assert_eq!(bundle.instance.step_ids, BTreeSet::from(["step-7-echo".to_string()]));
+    }
+
+    /// A cache hit records the reusing step, and a hit whose id the instance
+    /// already names leaves the record untouched.
+    ///
+    /// `step_ids` is the only pairing record the fixture carries, so an
+    /// instance shared by several steps must name all of them: a second step
+    /// that reuses an existing instance without being recorded leaves
+    /// regeneration unable to pair it, and the run aborts. The third step's
+    /// full-value equality is the change guard — an id already present must
+    /// return the stored record unchanged, or every steady-state sync would
+    /// rewrite the state document for provenance that is already correct.
+    #[tokio::test]
+    async fn a_cache_hit_records_the_reusing_step_and_leaves_a_known_step_alone() {
+        let cas = mediapm_cas::new_in_memory_cas();
+        let (first, ..) =
+            execute_builtin_step(&cas, crate::state::ConductorState::new_empty(), "step-a-echo")
+                .await;
+        assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
+        assert_eq!(first.instance.step_ids, BTreeSet::from(["step-a-echo".to_string()]));
+
+        let mut state = crate::state::ConductorState::new_empty();
+        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+
+        let (second, ..) = execute_builtin_step(&cas, state.clone(), "step-b-echo").await;
+        assert!(second.cache_hit, "identical work must hit the instance the first step recorded");
+        assert_eq!(
+            second.instance.step_ids,
+            BTreeSet::from(["step-a-echo".to_string(), "step-b-echo".to_string()]),
+            "the reusing step must be recorded beside the step that executed the work",
+        );
+
+        state.tool_call_instances.insert(second.instance.instance_key, second.instance.clone());
+        let (third, ..) = execute_builtin_step(&cas, state, "step-b-echo").await;
+        assert!(third.cache_hit, "a recorded instance must keep serving the same work");
+        assert_eq!(
+            third.instance, second.instance,
+            "a hit whose step id is already recorded must leave the record byte-identical",
+        );
     }
 
     // -----------------------------------------------------------------------

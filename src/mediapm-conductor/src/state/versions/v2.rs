@@ -96,7 +96,8 @@ pub(crate) struct ToolCallInstanceV2 {
     /// Execution timestamp recorded at run time. Provenance only; never part
     /// of any instance key.
     pub executed_at: ImpureTimestampV2,
-    /// Steps that recorded this instance, by step id.
+    /// Steps that have served this instance, by step id: the one that
+    /// recorded it and every later step that reused it.
     ///
     /// Provenance only: it is never hashed into the instance key, and
     /// `#[serde(default)]` keeps state written before the field existed

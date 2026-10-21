@@ -1462,14 +1462,15 @@ mod tests {
         assert!(error.contains("import@v1"), "the diagnostic must name the tool: {error}");
     }
 
-    /// Pairs every recorded instance with the step that recorded it, returning
+    /// Pairs every recorded instance with the step that owns it, returning
     /// `stored_key -> (current_key, step_id)`.
     ///
     /// The pairing comes from the instance's own provenance: `step_ids` names
-    /// the steps that recorded the instance, so the step whose id the set holds
-    /// owns it and no key derivation is consulted to decide the pairing. That is
-    /// what lets this run survive a key-scheme change: the fixture's keys are
-    /// stale by definition here, while the provenance it carries is not.
+    /// the steps the instance has served — the one that recorded it and every
+    /// later one that reused it — so the step whose id the set holds owns it
+    /// and no key derivation is consulted to decide the pairing. That is what
+    /// lets this run survive a key-scheme change: the fixture's keys are stale
+    /// by definition here, while the provenance it carries is not.
     ///
     /// Steps are walked in dependency order and a paired instance's outputs
     /// become that step's outputs, which is how the production resolver
@@ -1479,6 +1480,12 @@ mod tests {
     /// merely stale. A recorded instance that no step claims is simply absent
     /// from the returned map, which the regeneration test treats as a refusal to
     /// rewrite it.
+    ///
+    /// Provenance decides *which* instance a step pairs with, and the step's
+    /// active tool identity then has to agree: an instance whose recorded
+    /// `tool_call_id` is some other tool's key is a stale record, so the run
+    /// aborts before any key is rewritten under a step that never ran that
+    /// work.
     async fn plan_demo_instance_key_rewrites(
         cas: &FileSystemCas,
         generated: &NickelDocument,
@@ -1489,6 +1496,14 @@ mod tests {
         let mut rewrites: BTreeMap<Hash, (Hash, String)> = BTreeMap::new();
         for step in &workflow.steps {
             let capture_term = mediapm_conductor::step_output_specs_hash(&step.outputs);
+            let Some(active_tool_key) =
+                find_active_tool_spec(generated, &step.tool).map(|(key, _)| key.clone())
+            else {
+                panic!(
+                    "step '{}' references unknown tool '{}' in the generated document",
+                    step.id, step.tool,
+                );
+            };
             let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
                 .expect("merge step inputs");
             let Some(expected_inputs) =
@@ -1524,6 +1539,16 @@ mod tests {
                 paired.len(),
             );
             let (stored_key, instance) = paired[0];
+            assert_eq!(
+                instance.tool_call_id,
+                active_tool_key,
+                "step '{}' pairs with instance {} recorded for tool '{}', but the step's active \
+                 tool is '{}'",
+                step.id,
+                stored_key.to_hex(),
+                instance.tool_call_id,
+                active_tool_key,
+            );
             let current_key = mediapm_conductor::derive_tool_call_instance_key(
                 &instance.tool_call_id,
                 capture_term,
@@ -1563,6 +1588,12 @@ mod tests {
     /// instance itself says recorded it. A planner that re-derived a
     /// historical key scheme instead would pair an instance with a step whose
     /// id that instance never recorded, which is what this pins.
+    ///
+    /// The second assertion is what keeps the first from being tautological:
+    /// the fixture is current, so each rewrite must be keyed by the key the
+    /// fixture records. A planner that derived the wrong key, or paired the
+    /// wrong instance, moves `current_key` off the recorded key and fails here
+    /// rather than rewriting the fixture with it.
     #[tokio::test]
     async fn fixture_regeneration_pairs_instances_by_recorded_step_id() {
         let generated = load_generated_doc();
@@ -1575,7 +1606,15 @@ mod tests {
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow).await;
-        for (stored_key, (_, step_id)) in &rewrites {
+        for (stored_key, (current_key, step_id)) in &rewrites {
+            assert_eq!(
+                current_key,
+                stored_key,
+                "step {step_id} derives {} for the instance the fixture records under {}, so \
+                 either the derived key or the pairing is wrong",
+                current_key.to_hex(),
+                stored_key.to_hex(),
+            );
             let instance = &state.tool_call_instances[stored_key];
             assert!(
                 instance.step_ids.contains(step_id),
@@ -1606,13 +1645,14 @@ mod tests {
     /// key), and the `step_ids` provenance inserted after each instance's
     /// `instance_key` field. Both stay valid JSON.
     ///
-    /// **Provenance.** Each instance records the steps that produced it in
-    /// `step_ids`, and that set is the pairing key: a step owns the instance whose
-    /// set names it. The set is written before any key moves, so the pairing
-    /// survives a key-scheme change — which is the state this test runs in, since
-    /// every stored key is stale by definition. The insertion is keyed by the
-    /// stored key, which the rewrite below then moves to the new one, and an
-    /// instance that already records its step is left alone.
+    /// **Provenance.** Each instance records the steps that have served it in
+    /// `step_ids` — the one that executed the work and every later one that
+    /// reused it — and that set is the pairing key: a step owns the instance
+    /// whose set names it. The set is written before any key moves, so the
+    /// pairing survives a key-scheme change — which is the state this test runs
+    /// in, since every stored key is stale by definition. The insertion is
+    /// keyed by the stored key, which the rewrite below then moves to the new
+    /// one, and an instance that already records its step is left alone.
     ///
     /// **Pairing.** The planner pairs through `step_ids` alone; no key derivation
     /// decides it. Nothing is written unless every recorded instance is claimed by
