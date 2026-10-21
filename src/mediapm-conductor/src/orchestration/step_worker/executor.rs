@@ -23,7 +23,9 @@ use super::inputs::resolve_step_inputs;
 use super::process::{ExecutionResult, run_builtin, run_executable_process};
 use super::sandbox::{create_sandbox, materialize_content_map};
 use super::template::{TemplateContext, resolve_command_parts};
-use crate::instance_key::deterministic_input_hashes_from_resolved_inputs;
+use crate::instance_key::{
+    deterministic_input_hashes_from_resolved_inputs, step_output_specs_hash,
+};
 
 /// Dispatches execution: runs a builtin or resolves and runs an executable
 /// process. Returns the execution result plus the resolved command-argument
@@ -109,9 +111,17 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let deterministic_materialized_hashes: Vec<Hash> =
         materialized_inputs.values().map(|record| record.hash).collect();
 
+    // The captures this step will record are key material: an instance claims
+    // the outputs it captured, so two steps running the same command but
+    // recording different files must not share a key. The hashed set is the
+    // step's own map, which is exactly what the capture phase below records:
+    // the unified document does not bridge a tool's default captures, so those
+    // never reach the sandbox and cannot make the instance stale.
+    let output_specs_hash = step_output_specs_hash(&request.step.outputs);
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
     let instance_key = derive_instance_key_v2(
         &tool_call_id,
+        output_specs_hash,
         &deterministic_input_hashes,
         &[], // env is nondeterministic by default; never keyed
         &deterministic_materialized_hashes,
@@ -217,9 +227,13 @@ async fn required_output_blobs_exist<C: CasApi>(
     true
 }
 
-/// Merge tool-level output specs (defaults) with step-level output specs
+/// Merges tool-level output specs (defaults) with step-level output specs
 /// (overrides). Step-level outputs override tool-level outputs by name,
 /// and step-level outputs not present in the tool-level set are appended.
+///
+/// Only the capture phase reads the result. Tool-level defaults are not key
+/// material because the unified document never carries them: see
+/// [`crate::step_output_specs_hash`].
 fn merge_output_specs(
     tool_outputs: &BTreeMap<String, OutputCaptureSpec>,
     step_outputs: &BTreeMap<String, OutputCaptureSpec>,
@@ -277,65 +291,123 @@ mod tests {
 
     use mediapm_cas::Hash;
 
-    use super::{build_env_vars, build_materialized_inputs};
-    use crate::config::{OutputCaptureSpec, SaveMode};
+    use super::{
+        build_env_vars, build_materialized_inputs, derive_instance_key_v2, execute_step,
+        merge_output_specs, step_output_specs_hash,
+    };
+    use crate::config::OutputCaptureSpec;
+    use crate::orchestration::protocol::{
+        StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
+    };
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
 
-    use super::merge_output_specs;
-
-    fn spec(name: &str, capture: &str) -> (String, OutputCaptureSpec) {
-        (
-            name.to_string(),
+    /// Runs one builtin step whose tool spec carries a capture default the
+    /// step does not declare.
+    ///
+    /// Returns the recorded instance key beside the two candidate capture terms,
+    /// so a caller can tell which one the executor actually hashed. The tool
+    /// spec is filled directly because the real path cannot produce this shape:
+    /// [`crate::config::documents::NickelDocument::to_unified`] leaves a tool's
+    /// `outputs` empty, which is what makes the step's map the whole capture
+    /// set. Filling it here is what lets the test tell the two terms apart.
+    async fn execute_builtin_with_tool_level_captures() -> (Hash, Hash, Hash, Vec<Hash>) {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let tool_id = "echo@v1";
+        let tool_outputs = BTreeMap::from([(
+            "result".to_string(),
             OutputCaptureSpec {
-                name: name.to_string(),
-                capture: capture.to_string(),
-                save: SaveMode::True,
-                allow_empty: false,
-                include_topmost_folder: false,
+                name: "result".to_string(),
+                capture: "stdout".to_string(),
+                ..OutputCaptureSpec::default()
             },
-        )
+        )]);
+        let tool = UnifiedToolSpec {
+            name: "echo".to_string(),
+            version: None,
+            is_impure: false,
+            max_concurrent_calls: 0,
+            max_retries: 0,
+            inputs: BTreeMap::new(),
+            default_inputs: BTreeMap::new(),
+            command_parts: Vec::new(),
+            success_codes: Vec::new(),
+            execution_env_vars: BTreeMap::new(),
+            outputs: tool_outputs.clone(),
+            tool_content_map: BTreeMap::new(),
+            builtin_id: Some(tool_id.to_string()),
+        };
+        let step_outputs = BTreeMap::new();
+        let request = StepExecutionRequest {
+            unified: Arc::new(UnifiedNickelDocument {
+                tools: BTreeMap::from([(tool_id.to_string(), tool)]),
+                workflows: BTreeMap::new(),
+                tool_content_hashes: BTreeSet::new(),
+                external_data_policies: BTreeMap::new(),
+                runtime: crate::config::ConductorRuntimeConfig::default(),
+            }),
+            step: crate::config::WorkflowStepSpec {
+                id: "step-0-echo".to_string(),
+                tool: "echo".to_string(),
+                inputs: BTreeMap::from([("text".to_string(), "hi".to_string())]),
+                outputs: step_outputs.clone(),
+                max_retries: 0,
+                depends_on: Vec::new(),
+            },
+            impure_timestamp: None,
+            state_snapshot: Arc::new(crate::state::ConductorState::new_empty()),
+            outermost_config_dir: tmp.path().to_path_buf(),
+            conductor_tmp_dir: tmp.path().join("runtime"),
+            step_outputs: Arc::new(BTreeMap::new()),
+            required_output_names: BTreeSet::from(["result".to_string()]),
+            force_rerun: false,
+        };
+        let bundle = execute_step(&cas, request).await.expect("the echo builtin runs");
+        let merged_term = step_output_specs_hash(&merge_output_specs(&tool_outputs, &step_outputs));
+        let step_only_term = step_output_specs_hash(&step_outputs);
+        // The one deterministic binding this step resolves, so the expected
+        // keys below carry the same input term the executor derived. The input
+        // term is not what this test varies.
+        let input_hashes = vec![
+            crate::instance_key::instance_key_hash_from_resolved_value_bytes("text", "hi", b"hi")
+                .expect("a literal binding is deterministic"),
+        ];
+        (bundle.instance.instance_key, merged_term, step_only_term, input_hashes)
     }
 
-    #[test]
-    fn merge_output_specs_step_overrides_tool() {
-        let merged = merge_output_specs(
-            &BTreeMap::from([spec("r", "stdout")]),
-            &BTreeMap::from([spec("r", "stderr")]),
+    /// The executor keys a step by the captures it declares, and a tool-level
+    /// capture default is not key material.
+    ///
+    /// A tool's default captures never reach the capture phase on the conductor
+    /// path — [`crate::config::documents::NickelDocument::to_unified`] leaves
+    /// the unified tool's `outputs` empty — so they are not part of what an
+    /// instance claims, and a key that covered them would be keyed by something
+    /// the run never records. The fixture here fills the tool map precisely so
+    /// the two candidate terms differ; the assertion then says which one the
+    /// executor used.
+    ///
+    /// This is also the tripwire for bridging those defaults later: a change
+    /// that makes tool-level captures live without adding them to the capture
+    /// term fails here, where the coupling is cheapest to notice.
+    #[tokio::test]
+    async fn a_tool_level_capture_default_is_not_key_material() {
+        let (recorded_key, merged_term, step_only_term, input_hashes) =
+            execute_builtin_with_tool_level_captures().await;
+        assert_ne!(
+            merged_term, step_only_term,
+            "the fixture must distinguish the two terms, or the assertion below cannot fail",
         );
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged["r"].capture, "stderr");
-    }
-
-    #[test]
-    fn merge_output_specs_appends_new() {
-        let merged = merge_output_specs(
-            &BTreeMap::from([spec("a", "stdout")]),
-            &BTreeMap::from([spec("b", "stderr")]),
+        assert_eq!(
+            recorded_key,
+            derive_instance_key_v2("echo@v1", step_only_term, &input_hashes, &[], &[]),
+            "the executor must hash the step's declared captures, which is what it records",
         );
-        assert_eq!(merged.len(), 2);
-    }
-
-    #[test]
-    fn merge_output_specs_empty_tool_uses_step() {
-        let merged = merge_output_specs(&BTreeMap::new(), &BTreeMap::from([spec("x", "stdout")]));
-        assert_eq!(merged.len(), 1);
-    }
-
-    #[test]
-    fn merge_output_specs_empty_step_uses_tool() {
-        let merged =
-            merge_output_specs(&BTreeMap::from([spec("y", "process_code")]), &BTreeMap::new());
-        assert_eq!(merged.len(), 1);
-    }
-
-    #[test]
-    fn merge_output_specs_partial_override() {
-        let merged = merge_output_specs(
-            &BTreeMap::from([spec("a", "stdout"), spec("b", "stderr")]),
-            &BTreeMap::from([spec("a", "file:out.txt")]),
+        assert_ne!(
+            recorded_key,
+            derive_instance_key_v2("echo@v1", merged_term, &input_hashes, &[], &[]),
+            "a tool-level default that the capture phase never reaches must not move the key",
         );
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged["a"].capture, "file:out.txt");
-        assert_eq!(merged["b"].capture, "stderr");
     }
 
     // -----------------------------------------------------------------------

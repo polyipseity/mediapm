@@ -147,6 +147,7 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::instance_key::step_output_specs_hash;
     use crate::orchestration::protocol::{ConductorState, StepOutputs};
     use crate::state::versions::derive_instance_key_v2;
     use crate::state::{HashedValueRecord, ResolvedInput, ToolCallInstance};
@@ -188,8 +189,9 @@ mod tests {
         let args: Vec<Hash> =
             inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
 
-        let key1 = derive_instance_key_v2("test_tool", &args, &[], &[]);
-        let key2 = derive_instance_key_v2("test_tool", &args, &[], &[]);
+        let captures = step_output_specs_hash(&BTreeMap::new());
+        let key1 = derive_instance_key_v2("test_tool", captures, &args, &[], &[]);
+        let key2 = derive_instance_key_v2("test_tool", captures, &args, &[], &[]);
         assert_eq!(key1, key2);
     }
 

@@ -36,15 +36,18 @@ pub(crate) const fn is_conductor_state_version_v2(marker: u32) -> bool {
     marker == CONDUCTOR_STATE_VERSION_V2
 }
 
-/// Domain separator for tool-call-instance keys (v2 scheme, first revision).
+/// Domain separator for tool-call-instance keys (v2 scheme, third revision).
 ///
 /// Bumping this string invalidates every previously derived instance key.
-/// The `.1` revision removed wall-clock time from impure keys in place: the
-/// key scheme advanced while the state schema stayed at v2 (the wire
-/// fields persist as provenance), so the string carries the key-scheme
+/// The revisions advance in place while the state schema stays at v2 (the
+/// wire fields persist as provenance), so the string carries the key-scheme
 /// revision rather than the schema version. Old persisted keys miss once
 /// and re-execute one time after the bump.
-const INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2.1";
+///
+/// - `.1` removed wall-clock time from impure keys.
+/// - `.2` added the step's capture set, so two steps that run the same
+///   command but record different files no longer share a key.
+const INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2.2";
 
 // ---------------------------------------------------------------------------
 // V2 wire format types
@@ -168,9 +171,10 @@ pub(crate) struct ConductorStateV2 {
 /// The key is the composite hash of, in order:
 /// 1. the versioned domain separator,
 /// 2. the tool call identifier (unified tools-catalog map key),
-/// 3. deterministic command args in order,
-/// 4. deterministic environment records sorted by name,
-/// 5. deterministic materialized inputs sorted by path.
+/// 3. the step's capture set (see [`crate::step_output_specs_hash`]),
+/// 4. deterministic command args in order,
+/// 5. deterministic environment records sorted by name,
+/// 6. deterministic materialized inputs sorted by path.
 ///
 /// Every step derives its key from content alone — time never participates,
 /// pure and impure alike (`impure_keys_ignore_time`; the sync-level pin is
@@ -179,23 +183,26 @@ pub(crate) struct ConductorStateV2 {
 /// impure step re-executes only when its key material changes or the run
 /// sets the explicit `force_rerun` invalidation.
 ///
-/// Outputs are never part of the key. Non-deterministic records are stored
-/// on the instance but excluded here so an env-dependent run still
-/// re-executes instead of colliding on stale content.
+/// Non-deterministic records are stored on the instance but excluded here so
+/// an env-dependent run still re-executes instead of colliding on stale
+/// content. Two steps that differ in neither command nor captures still
+/// deduplicate onto one key.
 #[must_use]
 pub(crate) fn derive_instance_key_v2(
     tool_call_id: &str,
+    output_specs_hash: Hash,
     deterministic_command_args: &[Hash],
     deterministic_env_vars: &[Hash],
     deterministic_materialized_inputs: &[Hash],
 ) -> Hash {
     let mut parts = Vec::with_capacity(
-        2 + deterministic_command_args.len()
+        3 + deterministic_command_args.len()
             + deterministic_env_vars.len()
             + deterministic_materialized_inputs.len(),
     );
     parts.push(Hash::from_content(INSTANCE_KEY_DOMAIN_V2.as_bytes()));
     parts.push(Hash::from_content(tool_call_id.as_bytes()));
+    parts.push(output_specs_hash);
     parts.extend_from_slice(deterministic_command_args);
     parts.extend_from_slice(deterministic_env_vars);
     parts.extend_from_slice(deterministic_materialized_inputs);
@@ -336,11 +343,21 @@ mod tests {
     use super::*;
     use mediapm_utils::Timestamp;
 
+    /// Stands in for a capture-set hash in the derivation tests.
+    ///
+    /// The value only has to be stable: what these tests isolate is the
+    /// composite around the capture term, and the term's own encoding is
+    /// pinned by `instance_key::tests` where the encoder lives.
+    fn captures() -> Hash {
+        Hash::from_content(b"capture-set")
+    }
+
     /// Deriving twice with identical inputs yields identical keys.
     #[test]
     fn derive_instance_key_v2_is_deterministic() {
-        let a = derive_instance_key_v2("echo@v1", &[], &[], &[]);
-        let b = derive_instance_key_v2("echo@v1", &[], &[], &[]);
+        let captures = captures();
+        let a = derive_instance_key_v2("echo@v1", captures, &[], &[], &[]);
+        let b = derive_instance_key_v2("echo@v1", captures, &[], &[], &[]);
         assert_eq!(a, b);
     }
 
@@ -356,8 +373,9 @@ mod tests {
     #[test]
     fn impure_keys_ignore_time() {
         let args = [Hash::from_content(b"arg")];
-        let first = crate::state::derive_tool_call_instance_key("tool", &args, &[], &[]);
-        let second = crate::state::derive_tool_call_instance_key("tool", &args, &[], &[]);
+        let captures = captures();
+        let first = crate::state::derive_tool_call_instance_key("tool", captures, &args, &[], &[]);
+        let second = crate::state::derive_tool_call_instance_key("tool", captures, &args, &[], &[]);
         assert_eq!(
             first, second,
             "identical material must derive identical keys regardless of wall-clock time",
@@ -367,7 +385,8 @@ mod tests {
     /// The versioned domain prefix participates in the key.
     #[test]
     fn derive_instance_key_v2_domain_prefix() {
-        let with_domain = derive_instance_key_v2("tool", &[], &[], &[]);
+        let captures = captures();
+        let with_domain = derive_instance_key_v2("tool", captures, &[], &[], &[]);
         let without_domain = Hash::composite(&[Hash::from_content(b"tool")]);
         assert_ne!(with_domain, without_domain);
     }
@@ -377,38 +396,41 @@ mod tests {
     fn derive_instance_key_v2_args_env_inputs_ordered() {
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
+        let captures = captures();
         assert_ne!(
-            derive_instance_key_v2("t", &[a, b], &[], &[]),
-            derive_instance_key_v2("t", &[b, a], &[], &[]),
+            derive_instance_key_v2("t", captures, &[a, b], &[], &[]),
+            derive_instance_key_v2("t", captures, &[b, a], &[], &[]),
             "command arg order must matter",
         );
         assert_ne!(
-            derive_instance_key_v2("t", &[], &[], &[]),
-            derive_instance_key_v2("t", &[], &[a], &[]),
+            derive_instance_key_v2("t", captures, &[], &[], &[]),
+            derive_instance_key_v2("t", captures, &[], &[a], &[]),
             "deterministic env records must participate",
         );
         assert_ne!(
-            derive_instance_key_v2("t", &[], &[], &[]),
-            derive_instance_key_v2("t", &[], &[], &[b]),
+            derive_instance_key_v2("t", captures, &[], &[], &[]),
+            derive_instance_key_v2("t", captures, &[], &[], &[b]),
             "deterministic materialized inputs must participate",
         );
     }
 
-    /// Env-excluded / outputs-excluded: the key is exactly
-    /// `composite(domain, id, args, env, inputs)`. Outputs are structurally
-    /// excluded — the API accepts no outputs — and env is excluded in
-    /// practice because the executor always passes an empty env slice. No
-    /// time component exists either (the pre-revision scheme embedded
-    /// `executed_at` for impure steps). Pinning the exact component list
-    /// guards all of it: adding an output, a keyed env, or a time term to
-    /// the composite breaks this test.
+    /// The key is exactly `composite(domain, id, captures, args, env, inputs)`.
+    ///
+    /// Env is excluded in practice because the executor always passes an empty
+    /// env slice, and no time component exists at all (the pre-revision scheme
+    /// embedded `executed_at` for impure steps). The capture term is included
+    /// because an instance claims the outputs it captured. Pinning the exact
+    /// component list guards all of it: adding a component, dropping the
+    /// capture term, keying env, or reintroducing a time term breaks this test.
     #[test]
     fn derive_instance_key_v2_composite_components_exact() {
         let a = Hash::from_content(b"arg");
-        let key = derive_instance_key_v2("t", &[a], &[], &[]);
+        let captures = captures();
+        let key = derive_instance_key_v2("t", captures, &[a], &[], &[]);
         let expected = Hash::composite(&[
             Hash::from_content(INSTANCE_KEY_DOMAIN_V2.as_bytes()),
             Hash::from_content(b"t"),
+            captures,
             a,
         ]);
         assert_eq!(key, expected);

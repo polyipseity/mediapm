@@ -432,15 +432,18 @@ Instance TTL uses `Option<u64>` with `#[serde(deserialize_with = "deserialize_op
 Instance keys in Conductor are derived deterministically:
 
 ```text
-instance_key = blake3(domain || tool_id || sorted_inputs_hash || materialized_inputs_hash)
+instance_key = blake3(domain || tool_id || captures_hash || arg_hashes… || env_hashes… || materialized_inputs…)
 ```
 
 Where:
 
-- `domain` = the versioned separator (`mediapm/conductor/tool call instances/v2.1`); bumping it invalidates every previously derived key once.
+- `domain` = the versioned separator (`mediapm/conductor/tool call instances/v2.2`); bumping it invalidates every previously derived key once. The `.1` revision removed wall-clock time from impure keys; the `.2` revision added the step's capture set.
 - `tool_id` = the tool name+version from config (content-map details excluded from identity).
-- `sorted_inputs_hash` = blake3 over the sorted `(name, hash)` pairs of `ResolvedInputKey` entries.
-- Time never participates: an impure step's recorded `executed_at` is provenance, not key material, so an immediate second sync hits the step cache (`executed_instances == 0`) for unchanged inputs, pure and impure alike. Re-execution follows changed key material or the run-scoped `RunWorkflowOptions::force_rerun` explicit invalidation (API), `--force-rerun` (CLI), or a persisted mediapm invalidation marker. Pins: `impure_keys_ignore_time`, `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`, `force_rerun_reexecutes_the_cached_workflow`.
+- `captures_hash` = `step_output_specs_hash` over the step's own `outputs` — exactly the set the capture phase records, because the unified document does not bridge a tool's default captures (`to_unified` builds every tool with an empty `outputs` map), so a tool-level `outputs` block in the document never reaches the sandbox and is not key material. Encoding: for each output in `BTreeMap` **key** order, the map key, `name`, `capture` selector, `save` tag (`false`/`true`/`full`), `allow_empty` and `include_topmost_folder`; every string field is preceded by its length as an 8-byte little-endian `u64` (fixed width, so the bytes cannot depend on the host's pointer width) and each flag is a single byte. An empty set encodes as zero bytes. An instance claims the outputs it captured, so the capture set is key material: two steps running the same tool with the same inputs but recording different files must not share a key, or the second step reuses the first step's captures and never records its own artifact (the online demo's `links`/`thumbnails` pair collided exactly that way). Hashing a merged tool-plus-step map instead would derive a key the executor never records, so every step under a tool that declares captures would stop matching its own instance and fall through to the relaxed name-only match. Steps that agree on tool, args and captures still deduplicate.
+- `arg_hashes` = one hash per deterministic command argument, in argv order.
+- `env_hashes` = one hash per deterministic environment record, sorted by name. Always empty on the mediapm path, which passes no env hashes at all; a non-deterministic env record stays off the key in every case.
+- `materialized_inputs` = one hash per materialized tool-content entry, in content-map path order.
+- Time never participates: an impure step's recorded `executed_at` is provenance, not key material, so an immediate second sync hits the step cache (`executed_instances == 0`) for unchanged inputs, pure and impure alike. Re-execution follows changed key material or the run-scoped `RunWorkflowOptions::force_rerun` explicit invalidation (API), `--force-rerun` (CLI), or a persisted mediapm invalidation marker. Pins: `impure_keys_ignore_time`, `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`, `force_rerun_reexecutes_the_cached_workflow`, `two_steps_that_differ_only_in_their_output_captures_get_distinct_keys`, `a_tool_level_capture_default_is_not_key_material`.
 
 ### Cache-Hit Validity
 

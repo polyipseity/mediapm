@@ -408,8 +408,8 @@ async fn resolve_single_step_output_hashes_strict(
         return Ok(None);
     };
 
-    let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
-        .map(|(key, _)| key.clone())
+    let (conductor_tool_key, _) = find_active_tool_spec(generated_doc, &step.tool)
+        .map(|(key, spec)| (key.clone(), spec))
         .ok_or_else(|| {
             MediaPmError::Workflow(format!(
                 "workflow step '{}' references unknown tool '{}' in generated config",
@@ -431,6 +431,7 @@ async fn resolve_single_step_output_hashes_strict(
             (instance.tool_call_id == conductor_tool_key
                 && instance_matches_expected_inputs(
                     instance,
+                    &step.outputs,
                     &expected_inputs,
                     &merged_step_inputs,
                     &instance_key_resolved_values,
@@ -794,9 +795,20 @@ async fn resolve_input_binding_hash(
     Ok(InputBindingHashResolution::Resolved(Hash::from_content(value.as_bytes())))
 }
 
-/// Returns true when one runtime instance contains all expected input hashes.
+/// Returns true when one runtime instance was recorded under the step's capture
+/// set and contains all expected input hashes.
+///
+/// The capture term is the step's own `outputs` map — [`mediapm_conductor::step_output_specs_hash`]
+/// of it — because that is the set the step worker hashed when it derived the
+/// key. The tool's default captures are deliberately absent: the conductor
+/// never bridges them into execution — its unified document leaves every tool's
+/// `outputs` empty — so they are never recorded and cannot make an instance
+/// stale. A matcher that merged them would hash a superset the executor never
+/// produced, and every step under a tool that declares captures would fall
+/// through to the relaxed name-only match.
 pub(super) fn instance_matches_expected_inputs(
     instance: &ToolCallInstance,
+    step_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
     expected_inputs: &ExpectedStepInputs,
     merged_step_inputs: &BTreeMap<String, String>,
     instance_key_resolved_values: &BTreeMap<String, Vec<u8>>,
@@ -810,7 +822,12 @@ pub(super) fn instance_matches_expected_inputs(
         instance_key_resolved_values,
     );
     let materialized_hashes = mediapm_conductor::deterministic_materialized_input_hashes(instance);
-    mediapm_conductor::instance_matches_stored_key(instance, &input_hashes, &materialized_hashes)
+    mediapm_conductor::instance_matches_stored_key(
+        instance,
+        mediapm_conductor::step_output_specs_hash(step_outputs),
+        &input_hashes,
+        &materialized_hashes,
+    )
 }
 
 fn instance_matches_expected_output_names(
@@ -928,9 +945,8 @@ mod tests {
                 .expect("resolve ffmpeg expected inputs")
                 .expect("ffmpeg expected inputs");
 
-        let conductor_tool_key = find_active_tool_spec(&generated, &ffmpeg_step.tool)
-            .map(|(key, _)| key.clone())
-            .expect("active ffmpeg tool");
+        let (conductor_tool_key, _) =
+            find_active_tool_spec(&generated, &ffmpeg_step.tool).expect("active ffmpeg tool");
         let instance_key_resolved_values =
             build_instance_key_resolved_value_bytes(&cas, &merged_ffmpeg_inputs, &expected_inputs)
                 .await
@@ -939,9 +955,10 @@ mod tests {
             .tool_call_instances
             .values()
             .find(|instance| {
-                instance.tool_call_id == conductor_tool_key
+                instance.tool_call_id == *conductor_tool_key
                     && instance_matches_expected_inputs(
                         instance,
+                        &ffmpeg_step.outputs,
                         &expected_inputs,
                         &merged_ffmpeg_inputs,
                         &instance_key_resolved_values,
@@ -951,6 +968,93 @@ mod tests {
         assert!(ffmpeg_instance.outputs.contains_key("primary"));
     }
 
+    /// A step under a tool that declares capture defaults still matches the
+    /// instance recorded under the step's own captures.
+    ///
+    /// This is the shape every mediapm document has: the tool spec carries
+    /// capture defaults (the generated `ffmpeg` tool declares `content`, the
+    /// `yt-dlp` tool declares `content` and `primary`) and each step declares
+    /// the captures it actually wants. Those tool-level defaults are never
+    /// captured, because the conductor does not bridge them into the unified
+    /// document, so the recorded instance is keyed by the step's map alone. A
+    /// matcher that merged the tool's defaults would hash a superset no
+    /// instance was ever keyed by, fall through to the relaxed name-only match,
+    /// and hand the step some other instance of the same tool: the online demo
+    /// resolved its `video_untagged` variant to the tagged artifact exactly
+    /// that way, which is what this test guards.
+    #[test]
+    fn a_step_under_a_tool_with_default_captures_matches_its_own_instance() {
+        let tool_outputs = BTreeMap::from([(
+            "content".to_string(),
+            mediapm_conductor::OutputCaptureSpec {
+                name: "content".to_string(),
+                capture: "file_regex:^output-0(?:[.][^/\\\\]+)?$".to_string(),
+                ..mediapm_conductor::OutputCaptureSpec::default()
+            },
+        )]);
+        let step_outputs = BTreeMap::from([(
+            "primary".to_string(),
+            mediapm_conductor::OutputCaptureSpec {
+                name: "primary".to_string(),
+                capture: "file_regex:^output-0(?:[.][^/\\\\]+)?$".to_string(),
+                ..mediapm_conductor::OutputCaptureSpec::default()
+            },
+        )]);
+        let step_only_term = mediapm_conductor::step_output_specs_hash(&step_outputs);
+        let superset_term = {
+            let mut merged = tool_outputs.clone();
+            merged.extend(step_outputs.clone());
+            mediapm_conductor::step_output_specs_hash(&merged)
+        };
+        assert_ne!(
+            step_only_term, superset_term,
+            "the fixture must distinguish the two terms, or the assertions below cannot fail",
+        );
+
+        let tool_call_id = "ffmpeg@blake3:fixture";
+        let keyed = |term: Hash| ToolCallInstance {
+            instance_key: mediapm_conductor::derive_tool_call_instance_key(
+                tool_call_id,
+                term,
+                &[],
+                &[],
+                &[],
+            ),
+            tool_call_id: tool_call_id.to_string(),
+            impure: false,
+            executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
+            command_args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        };
+        let expected_inputs = ExpectedStepInputs::default();
+        let no_bindings = BTreeMap::new();
+        let no_values = BTreeMap::new();
+
+        assert!(
+            instance_matches_expected_inputs(
+                &keyed(step_only_term),
+                &step_outputs,
+                &expected_inputs,
+                &no_bindings,
+                &no_values,
+            ),
+            "the instance the step worker recorded is keyed by the step's own captures",
+        );
+        assert!(
+            !instance_matches_expected_inputs(
+                &keyed(superset_term),
+                &step_outputs,
+                &expected_inputs,
+                &no_bindings,
+                &no_values,
+            ),
+            "a capture term that folded in the tool's defaults is not a key any step worker \
+             records, so accepting it would mean the matcher hashes a superset",
+        );
+    }
+
     /// Domain separator the documented instance-key spec fixes for the v2 key
     /// scheme.
     ///
@@ -958,7 +1062,13 @@ mod tests {
     /// `pub(crate)` inside `mediapm-conductor`, and this oracle exists to pin the
     /// documented value, so a changed domain string must fail the oracle rather
     /// than move both sides together.
-    const ORACLE_INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2.1";
+    const ORACLE_INSTANCE_KEY_DOMAIN_V2: &str = "mediapm/conductor/tool call instances/v2.2";
+
+    /// Domain separator under which a fixture recorded before the capture set
+    /// entered the key scheme is written.
+    ///
+    /// Pairing only — see [`previously_recorded_instance_key_v2_1`].
+    const PREVIOUS_INSTANCE_KEY_DOMAIN_V2_1: &str = "mediapm/conductor/tool call instances/v2.1";
 
     /// Domain separator under which the checked-in fixture was recorded,
     /// before wall-clock time left the instance-key scheme.
@@ -1048,23 +1158,68 @@ mod tests {
         hashes
     }
 
+    /// Hashes one step's declared captures the way the documented spec says:
+    /// for each output in `BTreeMap` order, the map key, `name`, `capture` and
+    /// the `save` tag as length-prefixed fields (an 8-byte little-endian
+    /// length each), then `allow_empty` and `include_topmost_folder` as single
+    /// bytes.
+    ///
+    /// Restated here rather than calling `step_output_specs_hash` for the
+    /// reason given on [`Self::oracle_binding_hashes`]: a capture set that
+    /// production hashed differently would otherwise move both sides together.
+    fn oracle_step_output_specs_hash(
+        outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
+    ) -> Hash {
+        /// Appends one field behind its 8-byte little-endian length. Fixed at
+        /// 8 bytes so the encoding cannot depend on the host's pointer width.
+        fn push(bytes: &mut Vec<u8>, field: &[u8]) {
+            bytes.extend_from_slice(&(field.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(field);
+        }
+        let mut bytes = Vec::new();
+        for (key, spec) in outputs {
+            push(&mut bytes, key.as_bytes());
+            push(&mut bytes, spec.name.as_bytes());
+            push(&mut bytes, spec.capture.as_bytes());
+            let save_tag = match spec.save {
+                mediapm_conductor::SaveMode::False => "false",
+                mediapm_conductor::SaveMode::True => "true",
+                mediapm_conductor::SaveMode::Full => "full",
+            };
+            push(&mut bytes, save_tag.as_bytes());
+            bytes.push(u8::from(spec.allow_empty));
+            bytes.push(u8::from(spec.include_topmost_folder));
+        }
+        Hash::from_content(&bytes)
+    }
+
     /// Recomputes one recorded instance's key from the spec.
     ///
     /// Components, in order: the versioned domain separator, the unified
-    /// tools-catalog key, the deterministic binding hashes, and the
-    /// instance's materialized-input hashes in `BTreeMap` order. No time
-    /// component exists: the recorded `executed_at` is provenance, never key
-    /// material, so a stored impure instance keeps matching across runs. The
-    /// deterministic environment term is empty on the mediapm path, which
-    /// passes no env hashes at all.
+    /// tools-catalog key, the step's capture-set hash, the deterministic
+    /// binding hashes, and the instance's materialized-input hashes in
+    /// `BTreeMap` order. The capture set participates because an instance
+    /// claims the outputs it captured, so two steps running the same command
+    /// but recording different files must not share a key; it is the step's own
+    /// map because that is what the capture phase records — a tool-level
+    /// default never reaches it. No time component exists: the
+    /// recorded `executed_at` is provenance, never key material, so a stored
+    /// impure instance keeps matching across runs. The deterministic
+    /// environment term is empty on the mediapm path, which passes no env
+    /// hashes at all.
     ///
     /// Written out here rather than delegating to `derive_instance_key_v2` (or its
     /// `derive_tool_call_instance_key` re-export), for the reason given on
     /// [`Self::oracle_binding_hashes`].
-    fn oracle_instance_key(instance: &ToolCallInstance, binding_hashes: &[Hash]) -> Hash {
+    fn oracle_instance_key(
+        instance: &ToolCallInstance,
+        step_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
+        binding_hashes: &[Hash],
+    ) -> Hash {
         let mut parts = Vec::new();
         parts.push(Hash::from_content(ORACLE_INSTANCE_KEY_DOMAIN_V2.as_bytes()));
         parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
+        parts.push(oracle_step_output_specs_hash(step_outputs));
         parts.extend_from_slice(binding_hashes);
         parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
         Hash::composite(&parts)
@@ -1080,8 +1235,9 @@ mod tests {
     /// this oracle's own implementation of the documented spec. The forbidden
     /// production calls are `instance_key_hash_from_resolved_value_bytes`,
     /// `deterministic_input_hashes_from_resolved_inputs`,
-    /// `deterministic_input_hashes_from_resolved_value_bytes`, and
-    /// `derive_instance_key_v2`; see [`Self::oracle_binding_hashes`] for why.
+    /// `deterministic_input_hashes_from_resolved_value_bytes`,
+    /// `derive_instance_key_v2`, and `step_output_specs_hash`; see
+    /// [`Self::oracle_binding_hashes`] for why.
     ///
     /// Steps are walked in the workflow's declared (dependency) order, so each
     /// step's hash-reference bindings see the outputs recorded for the steps
@@ -1107,8 +1263,8 @@ mod tests {
         let mut paired = Vec::new();
 
         for step in &workflow.steps {
-            let tool_call_id = find_active_tool_spec(generated, &step.tool)
-                .map(|(key, _)| key.clone())
+            let (tool_call_id, _) = find_active_tool_spec(generated, &step.tool)
+                .map(|(key, spec)| (key.clone(), spec))
                 .ok_or_else(|| {
                     format!(
                         "step '{}' references unknown tool '{}' in the generated document",
@@ -1151,7 +1307,7 @@ mod tests {
                 if instance.tool_call_id != tool_call_id || claimed.contains(stored_key) {
                     continue;
                 }
-                let derived = oracle_instance_key(instance, &binding_hashes);
+                let derived = oracle_instance_key(instance, &step.outputs, &binding_hashes);
                 diagnostics.push(format!("{} -> {}", stored_key.to_hex(), derived.to_hex()));
                 if derived == *stored_key {
                     candidates.push((stored_key, instance));
@@ -1342,11 +1498,11 @@ mod tests {
     /// instances, over the caller's argument hashes.
     ///
     /// Pairing only, never production: [`plan_demo_instance_key_rewrites`]
-    /// accepts a recorded key that matches under this historical scheme, or
-    /// under an older input-hash rule, or under the current scheme (a
-    /// re-run against an already-regenerated fixture), and always rewrites
+    /// accepts a recorded key that matches under this historical scheme, the
+    /// capture-less one below, an older input-hash rule, or the current scheme
+    /// (a re-run against an already-regenerated fixture), and always rewrites
     /// it to the current [`derived_instance_key`] result. Keeping the
-    /// historical composition here is what lets an instance-key derivation
+    /// historical compositions here is what lets an instance-key derivation
     /// change regenerate the fixture instead of orphaning it.
     fn previously_recorded_instance_key(instance: &ToolCallInstance, arg_hashes: &[Hash]) -> Hash {
         let mut parts = Vec::new();
@@ -1360,32 +1516,86 @@ mod tests {
         Hash::composite(&parts)
     }
 
-    /// Derives the instance key `instance` is recorded under for a given list of
-    /// deterministic input hashes.
+    /// The key scheme a fixture recorded before the capture set entered the
+    /// derivation is written under: the `.1` domain separator over the same
+    /// content terms the current scheme uses, minus the capture-set hash.
     ///
-    /// Mirrors the executor's `derive_instance_key_v2` call exactly: every
-    /// key derives from content alone (no time term, impure or pure), and the
-    /// deterministic materialized-input hashes come from the instance's own
-    /// content map. The caller supplies only the input-hash list, which is the
-    /// sole term a change to the instance-key material moves.
+    /// Pairing only, never production: [`plan_demo_instance_key_rewrites`]
+    /// accepts a recorded key that matches under this scheme, the older one
+    /// above, or the current one, and always rewrites it to the current
+    /// [`derived_instance_key`] result.
+    fn previously_recorded_instance_key_v2_1(
+        instance: &ToolCallInstance,
+        arg_hashes: &[Hash],
+    ) -> Hash {
+        let mut parts = Vec::new();
+        parts.push(Hash::from_content(PREVIOUS_INSTANCE_KEY_DOMAIN_V2_1.as_bytes()));
+        parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
+        parts.extend_from_slice(arg_hashes);
+        parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
+        Hash::composite(&parts)
+    }
+
+    /// Derives the instance key `instance` is recorded under for a given
+    /// capture-set hash and list of deterministic input hashes.
+    ///
+    /// Mirrors the executor's `derive_instance_key_v2` call exactly: every key
+    /// derives from content alone (no time term, impure or pure), the capture
+    /// term is the caller's, and the deterministic materialized-input hashes
+    /// come from the instance's own content map. The caller supplies the
+    /// capture term and the input-hash list, which are the two terms a change
+    /// to the instance-key material moves.
     fn derived_instance_key(
         instance: &mediapm_conductor::ToolCallInstance,
+        capture_term: Hash,
         arg_hashes: &[Hash],
     ) -> Hash {
         mediapm_conductor::derive_tool_call_instance_key(
             &instance.tool_call_id,
+            capture_term,
             arg_hashes,
             &[],
             &mediapm_conductor::deterministic_materialized_input_hashes(instance),
         )
     }
 
+    /// The key `instance` derives under today, beside every historical key a
+    /// recorded instance may still carry.
+    ///
+    /// Each historical entry is labelled with the scheme that produced it, so
+    /// the caller's log line names how the pairing was established. The current
+    /// key is returned separately because a fixture that already holds it must
+    /// be a no-op rather than a rewrite.
+    fn instance_key_candidates(
+        instance: &ToolCallInstance,
+        capture_term: Hash,
+        previous_hashes: &[Hash],
+        current_hashes: &[Hash],
+    ) -> (Hash, Vec<(&'static str, Hash)>) {
+        let current = derived_instance_key(instance, capture_term, current_hashes);
+        let historical = vec![
+            (
+                " (paired under the recorded scheme)",
+                previously_recorded_instance_key(instance, current_hashes),
+            ),
+            (
+                " (paired under the pre-capture scheme)",
+                previously_recorded_instance_key_v2_1(instance, current_hashes),
+            ),
+            (" (paired)", derived_instance_key(instance, capture_term, previous_hashes)),
+        ];
+        (current, historical)
+    }
+
     /// Pairs every recorded instance with the step whose input material derives
     /// its key, returning `stored_key -> (current_key, step_id)`.
     ///
-    /// The pairing is established by the *previous* derivation (see
-    /// [`previous_derivation_arg_hashes`]), so it rests on the fixture's own
-    /// record rather than on this helper's assumptions. Steps are walked in
+    /// The pairing is established by a derivation the fixture itself predates —
+    /// the recorded scheme ([`previously_recorded_instance_key`]), the
+    /// capture-less one ([`previously_recorded_instance_key_v2_1`]), or the
+    /// previous input-hash rule ([`previous_derivation_arg_hashes`]) — so it
+    /// rests on the fixture's own record rather than on this helper's
+    /// assumptions. Steps are walked in
     /// dependency order and a paired instance's outputs become that step's
     /// outputs, which is how the production resolver reconstructs them; the
     /// recorded run's step outputs are then available to the hash-reference
@@ -1400,9 +1610,10 @@ mod tests {
         let mut step_outputs: BTreeMap<String, BTreeMap<String, Hash>> = BTreeMap::new();
         let mut rewrites: BTreeMap<Hash, (Hash, String)> = BTreeMap::new();
         for step in &workflow.steps {
-            let conductor_tool_key = find_active_tool_spec(generated, &step.tool)
-                .map(|(key, _)| key.clone())
+            let (conductor_tool_key, _) = find_active_tool_spec(generated, &step.tool)
+                .map(|(key, spec)| (key.clone(), spec))
                 .expect("active tool spec");
+            let capture_term = mediapm_conductor::step_output_specs_hash(&step.outputs);
             let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
                 .expect("merge step inputs");
             let Some(expected_inputs) =
@@ -1431,17 +1642,23 @@ mod tests {
                 if instance.tool_call_id != conductor_tool_key {
                     continue;
                 }
-                let recorded_key = previously_recorded_instance_key(instance, &current_hashes);
-                let previous_key = derived_instance_key(instance, &previous_hashes);
-                let current_key = derived_instance_key(instance, &current_hashes);
-                // `current_key == stored_key` also covers a re-run against an
-                // already-regenerated fixture, which must be a no-op.
-                if recorded_key != *stored_key
-                    && previous_key != *stored_key
-                    && current_key != *stored_key
-                {
-                    continue;
-                }
+                let (current_key, historical) = instance_key_candidates(
+                    instance,
+                    capture_term,
+                    &previous_hashes,
+                    &current_hashes,
+                );
+                // The current key is checked first because a re-run against an
+                // already-regenerated fixture must be a no-op.
+                let paired_under = if current_key == *stored_key {
+                    " (already current)"
+                } else {
+                    let Some((label, _)) = historical.iter().find(|(_, key)| *key == *stored_key)
+                    else {
+                        continue;
+                    };
+                    label
+                };
                 assert!(
                     paired.is_none(),
                     "step '{}' pairs with more than one recorded instance",
@@ -1457,13 +1674,6 @@ mod tests {
                         stored_key.to_hex(),
                     );
                 } else {
-                    let paired_under = if recorded_key == *stored_key {
-                        " (paired under the recorded scheme)"
-                    } else if previous_key == *stored_key {
-                        " (paired)"
-                    } else {
-                        " (already current)"
-                    };
                     println!(
                         "step {}\n  instance {}\n  previous {}{}\n  current  {}",
                         step.id,

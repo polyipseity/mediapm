@@ -155,6 +155,12 @@ impl NickelDocument {
                         }
                         env_vars
                     },
+                    // Not bridged: a tool's default captures never reach the
+                    // capture phase, which is why the instance key hashes the
+                    // step's own `outputs` (see `step_output_specs_hash`).
+                    // Making them live here means adding them to that capture
+                    // term in the same change, or a changed default would serve
+                    // the previous captures out of the cache.
                     outputs: BTreeMap::new(),
                     tool_content_map: spec.runtime.content_map.clone(),
                 };

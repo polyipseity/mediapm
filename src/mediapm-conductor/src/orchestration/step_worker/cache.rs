@@ -38,6 +38,7 @@ mod proptests {
     use crate::state::versions::derive_instance_key_v2;
     use proptest::prelude::*;
     use proptest::strategy::BoxedStrategy;
+    use std::collections::BTreeMap;
 
     impl proptest::arbitrary::Arbitrary for ResolvedInput {
         type Parameters = ();
@@ -71,6 +72,14 @@ mod proptests {
     /// flipped determinism filter in production would collapse every key; the
     /// generator above keeps every generated binding deterministic, so the
     /// production filter is exercised without rejecting any case.
+    /// The capture-set hash these properties hold fixed.
+    ///
+    /// They vary input material only; the capture term is orthogonal to it and
+    /// has its own properties in the key-derivation module.
+    fn no_captures() -> Hash {
+        crate::step_output_specs_hash(&BTreeMap::new())
+    }
+
     fn arg_hashes(inputs: &[ResolvedInput]) -> Vec<Hash> {
         inputs
             .iter()
@@ -93,8 +102,8 @@ mod proptests {
             prop_assume!(inputs1 != inputs2);
             let args1 = arg_hashes(&inputs1);
             let args2 = arg_hashes(&inputs2);
-            let key1 = derive_instance_key_v2("test", &args1, &[], &[]);
-            let key2 = derive_instance_key_v2("test", &args2, &[], &[]);
+            let key1 = derive_instance_key_v2("test", no_captures(), &args1, &[], &[]);
+            let key2 = derive_instance_key_v2("test", no_captures(), &args2, &[], &[]);
             prop_assert_ne!(key1, key2);
         }
 
@@ -103,8 +112,8 @@ mod proptests {
             inputs in proptest::collection::vec(any::<ResolvedInput>(), 0..10),
         ) {
             let args = arg_hashes(&inputs);
-            let key1 = derive_instance_key_v2("test", &args, &[], &[]);
-            let key2 = derive_instance_key_v2("test", &args, &[], &[]);
+            let key1 = derive_instance_key_v2("test", no_captures(), &args, &[], &[]);
+            let key2 = derive_instance_key_v2("test", no_captures(), &args, &[], &[]);
             prop_assert_eq!(key1, key2);
         }
     }
@@ -119,8 +128,8 @@ mod proptests {
             key: "url".to_string(),
             value: "https://example.com".to_string(),
         }]);
-        let key1 = derive_instance_key_v2("test", &args, &[], &[]);
-        let key2 = derive_instance_key_v2("test", &args, &[], &[]);
+        let key1 = derive_instance_key_v2("test", no_captures(), &args, &[], &[]);
+        let key2 = derive_instance_key_v2("test", no_captures(), &args, &[], &[]);
         assert_eq!(key1, key2);
     }
 }

@@ -198,15 +198,23 @@ impl Default for ConductorState {
 /// recorded `executed_at` timestamp never participates, so an impure step's
 /// stored instance keeps matching across runs until its key material changes
 /// (or an explicit `force_rerun` bypasses the cache for one run).
+///
+/// `output_specs_hash` is [`crate::step_output_specs_hash`] of the step's
+/// declared captures — the set the capture phase records, because the unified
+/// document does not bridge a tool's default captures. The caller re-derives it
+/// from the workflow document it is matching against, which is what makes a
+/// step's captures — not just its command — part of what it can reuse.
 #[must_use]
 pub fn derive_tool_call_instance_key(
     tool_call_id: &str,
+    output_specs_hash: Hash,
     deterministic_input_hashes: &[Hash],
     deterministic_env_vars: &[Hash],
     deterministic_materialized_input_hashes: &[Hash],
 ) -> Hash {
     versions::derive_instance_key_v2(
         tool_call_id,
+        output_specs_hash,
         deterministic_input_hashes,
         deterministic_env_vars,
         deterministic_materialized_input_hashes,
