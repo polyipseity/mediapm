@@ -1,5 +1,5 @@
 ---
-description: "Use when adding versioned structs, wire formats, DeltaState bridges, or version migrations anywhere in src/, or when choosing version sequences (integer version steps forward, no dotted revision)."
+description: "Use when adding versioned structs, wire formats, DeltaState bridges, or version migrations anywhere in src/, or when choosing version sequences (schema, wire-format, domain-separator and key-scheme versions step forward as integers, no dotted revision)."
 name: "Struct versioning and migration protocol"
 applyTo: "src/**/*.rs"
 ---
@@ -58,7 +58,7 @@ Every versioned config/state surface follows the same shape, regardless of trans
 
 ## Version sequences are integers
 
-- A version is an integer and only moves forward: `v1 -> v2 -> v3 -> v4`. Never append a dotted or in-place revision (`v2.1`, `v3.2`), and never describe a scheme change as a patch of the previous version.
+- A version sequence is an integer counter and only moves forward: `v1 -> v2 -> v3 -> v4`. That covers persisted schema versions, wire formats, domain separators, key-scheme versions and migration ladders. Never append a dotted or in-place revision (`v2.1`, `v3.2`), and never describe a scheme change as a patch of the previous version. SemVer package versions (`0.1.0`) and upstream tool tags (`v2.2.12`) are dotted by design and out of scope.
 - A changed scheme is a new integer. Persisted identities, domain separators, wire formats and migration ladders all follow the rule, whether or not the surrounding schema version moves.
 - Because a bump is visible and cheap, compatibility branches for revisions that never shipped in a release are deleted, not carried: the old keys miss once and re-execute.
 - When a scheme version and a schema version move independently, keep them separate: a runtime scheme constant belongs to the module that derives the value, never to a `versions/` wire module.

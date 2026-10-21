@@ -158,9 +158,13 @@ impl NickelDocument {
                     // Not bridged: a tool's default captures never reach the
                     // capture phase, which is why the instance key hashes the
                     // step's own `outputs` (see `step_output_specs_hash`).
-                    // Making them live here means adding them to that capture
-                    // term in the same change, or a changed default would serve
-                    // the previous captures out of the cache.
+                    // Making them live is the Series 2 change, and it removes
+                    // that capture term from the key in the same bump: the v4
+                    // key is input-only, so a step locates an instance by the
+                    // work it does and reads the names it binds out of what the
+                    // instance recorded. Re-adding the defaults to the capture
+                    // term instead would leave the key output-derived and
+                    // reintroduce the executor/materializer divergence.
                     outputs: BTreeMap::new(),
                     tool_content_map: spec.runtime.content_map.clone(),
                 };

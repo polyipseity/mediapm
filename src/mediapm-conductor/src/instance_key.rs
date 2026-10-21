@@ -144,8 +144,13 @@ const fn save_mode_tag(save: SaveMode) -> &'static str {
 /// capture phase records: the conductor never bridges a tool's default
 /// captures into execution, so a tool-level `outputs` block in the document is
 /// inert here. The `to_unified` construction in `config::documents` carries
-/// the reason; if tool-level defaults ever become live captures, the capture
-/// term has to grow with them in the same change.
+/// the reason. Making those defaults live is the Series 2 change, and it
+/// removes this term from the key in the same bump: the v4 key is input-only,
+/// so a step locates an instance by the work it does and reads the names it
+/// binds out of what the instance recorded. Growing this term with the
+/// defaults instead — the other way to keep the current key shape — would keep
+/// the key output-derived and reintroduce the executor/materializer
+/// divergence the term exists to end.
 ///
 /// The encoding is canonical and infallible: the byte string is built
 /// directly, so there is no serialization path that can fail or reorder. For
@@ -334,12 +339,29 @@ mod tests {
     }
 
     /// The versioned domain prefix participates in the key.
+    ///
+    /// The expected key is composed by hand, domain literal included, and the
+    /// same composite without that term must differ. The comparison is against
+    /// the full composition rather than a keyless-looking stand-in, so the test
+    /// fails if the domain term is dropped or its bytes change; a stand-in that
+    /// omitted the capture and argument terms would pass either way.
     #[test]
     fn derive_instance_key_domain_prefix() {
         let captures = capture_term();
-        let with_domain = derive_instance_key("tool", captures, &[], &[], &[]);
-        let without_domain = Hash::composite(&[Hash::from_content(b"tool")]);
-        assert_ne!(with_domain, without_domain);
+        let args = [Hash::from_content(b"arg")];
+        let with_domain = derive_instance_key("tool", captures, &args, &[], &[]);
+        let expected = Hash::composite(&[
+            Hash::from_content(instance_key_domain().as_bytes()),
+            Hash::from_content(b"tool"),
+            captures,
+            args[0],
+        ]);
+        let without_domain = Hash::composite(&[Hash::from_content(b"tool"), captures, args[0]]);
+        assert_eq!(
+            with_domain, expected,
+            "the key must be the composition that includes the domain"
+        );
+        assert_ne!(with_domain, without_domain, "dropping the domain term must move the key");
     }
 
     /// Argument order matters, and deterministic env and materialized-input
