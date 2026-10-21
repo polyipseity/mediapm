@@ -331,7 +331,7 @@ See `rust-conventions.instructions.md` ("Docstring depth requirement") for the f
 
 ## Change Discipline
 
-See `rust-conventions.instructions.md` ("Behavior change expectations") for the atomic test update, demo update, content map, yt-dlp output-variant, regex capture, sidecar synchronization, and state document coverage requirements.
+See `rust-conventions.instructions.md` ("Behavior change expectations") for the atomic test update, demo update, content map, yt-dlp output-variant, regex capture, record model synchronization, and state document coverage requirements.
 
 ## Specification source
 

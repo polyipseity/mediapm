@@ -66,8 +66,8 @@ See `.agents/instructions/rust-conventions.instructions.md` for Rustdoc/docstrin
 
 - Keep planner behavior pure and deterministic.
 - Keep side effects concentrated in executor/infrastructure.
-- Preserve sidecar invariants and migration-provenance semantics.
-- Keep object-store writes and sidecar writes atomic.
+- Preserve managed-file record and migration-provenance semantics.
+- Keep object-store writes and state-document writes atomic.
 
 ## CLI/API parity contract
 

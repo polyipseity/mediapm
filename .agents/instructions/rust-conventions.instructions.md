@@ -8,7 +8,7 @@ applyTo: "src/**/*.rs, tests/**/*.rs"
 
 ## Testing scope and expectations
 
-Treat tests as executable specifications that assert concrete invariants about behavior under specific conditions, not just that code runs without crashing. The suite is organized around four invariant categories that must hold across the workspace: planner determinism (same inputs → identical plans), sync idempotency (re-running sync → same results), sidecar/object integrity (metadata and CAS objects stay consistent after operations), and GC safety (GC removes only unreachable data).
+Treat tests as executable specifications that assert concrete invariants about behavior under specific conditions, not just that code runs without crashing. The suite is organized around four invariant categories that must hold across the workspace: planner determinism (same inputs → identical plans), sync idempotency (re-running sync → same results), record/object integrity (managed-file records and CAS objects stay consistent after operations), and GC safety (GC removes only unreachable data).
 
 ### Invariant categories
 
@@ -16,7 +16,7 @@ Treat tests as executable specifications that assert concrete invariants about b
 
 **Sync idempotency**: running sync multiple times with the same state must produce the same materialized output and tool state. Test this by running sync, capturing the output state, running sync again, and asserting no unexpected changes occurred on the second pass.
 
-**Sidecar/object integrity**: sidecar metadata files and CAS objects must remain consistent after all operations including materialization, verification, and garbage collection. Test this by comparing sidecar contents against expected values and verifying content-addressed object hashes.
+**Record/object integrity**: managed-file records and CAS objects must remain consistent after all operations including materialization, verification, and garbage collection. Test this by comparing `ManagedFileRecord`s against expected values and verifying content-addressed object hashes.
 
 **GC safety**: garbage collection must remove only data that is unreachable from the current configuration and state. Test this by setting up a known data layout, running GC, and asserting that reachable data is preserved and orphaned data is removed.
 
@@ -161,9 +161,9 @@ For yt-dlp output-variant behavior changes, cover the object semantics of `kind`
 
 For conductor regex capture behavior changes, assert `file_regex` exact-one matching (the pattern must match exactly one file) and `folder_regex` zero-to-many behavior (the pattern may match zero, one, or many folders, and zero-match is a valid success path).
 
-### Sidecar synchronization
+### Record model synchronization
 
-Keep `verify` and `gc` in sync with sidecar model updates. When the sidecar data model changes, update both verification and GC logic in the same commit. The sidecar model is the authoritative description of reachable data: verification confirms reachable data matches it, and GC removes data it does not reference. The two must agree on reachability.
+Keep `verify` and `gc` in sync with managed-file record model updates. When the record model changes, update both verification and GC logic in the same commit. The record model is the authoritative description of reachable data: verification confirms reachable data matches it, and GC removes data it does not reference. The two must agree on reachability.
 
 ### State document and migration coverage
 
