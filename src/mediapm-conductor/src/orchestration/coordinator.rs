@@ -265,6 +265,32 @@ fn scoped_state_snapshot(
     scoped
 }
 
+/// Merges a settled instance into the record already stored under its key,
+/// accumulating `step_ids` instead of replacing them.
+///
+/// `step_ids` names every step an instance has served, and two steps can
+/// settle from probe views that predate each other: a request's snapshot is
+/// scoped to its own ancestors (see [`scoped_state_snapshot`]), so two sibling
+/// roots sharing an instance key each build a bundle naming only itself.
+/// Unioning in the stored ids makes the persisted set what every settlement
+/// contributed, which depends neither on what one snapshot could see nor on
+/// the order the settlements land in.
+///
+/// Every other field comes from `incoming`: the run that produced it did the
+/// work (or re-probed it) under the current config, so its content is the
+/// fresh truth, while the stored ids are the one fact a sibling's snapshot
+/// cannot show it. `instance_key` is unchanged by construction — callers pass
+/// the record stored under `incoming.instance_key`.
+fn with_accumulated_step_ids(
+    stored: Option<&ToolCallInstance>,
+    mut incoming: ToolCallInstance,
+) -> ToolCallInstance {
+    if let Some(stored) = stored {
+        incoming.step_ids.extend(stored.step_ids.iter().cloned());
+    }
+    incoming
+}
+
 // ---------------------------------------------------------------------------
 // WorkflowCoordinator
 // ---------------------------------------------------------------------------
@@ -808,8 +834,16 @@ where
                         // spawns scope their state snapshot to their own
                         // ancestors (see `scoped_state_snapshot`).
                         let instance_key = bundle.instance.instance_key;
+                        // The stored record may name steps this settlement's
+                        // probe view never showed — two sibling roots sharing
+                        // a key each see only the run-entry state — so the
+                        // persisted provenance is merged, not overwritten.
+                        let instance = with_accumulated_step_ids(
+                            state.tool_call_instances.get(&instance_key),
+                            bundle.instance,
+                        );
                         let contribution = StepStateContribution {
-                            instance: bundle.instance,
+                            instance,
                             aux: InstanceAux {
                                 save_modes: bundle.save_modes,
                                 last_referenced_at: Timestamp::now(),
@@ -1405,6 +1439,48 @@ mod tests {
         assert!(
             !scoped.aux.instances.contains_key(&unrelated_key),
             "the unrelated step's aux record must not leak either"
+        );
+    }
+
+    /// Verifies settlement accumulates `step_ids` and takes every other field
+    /// from the incoming record.
+    ///
+    /// The union is what makes provenance independent of settlement order: two
+    /// sibling steps that share an instance key each settle from a snapshot
+    /// predating the other, so an overwrite would keep only the later one's id.
+    /// A missing stored record is the first settlement of a key, and the
+    /// incoming record must pass through untouched.
+    #[test]
+    fn with_accumulated_step_ids_unions_provenance_and_prefers_incoming_fields() {
+        let key = Hash::from_content(b"shared-instance");
+        let mut stored = test_instance(key);
+        stored.step_ids = BTreeSet::from(["step-a".to_string()]);
+        stored.tool_call_id = "stale@v1".to_string();
+        stored.impure = false;
+        let mut incoming = test_instance(key);
+        incoming.step_ids = BTreeSet::from(["step-b".to_string()]);
+        incoming.tool_call_id = "fresh@v2".to_string();
+        incoming.impure = true;
+
+        let merged = with_accumulated_step_ids(Some(&stored), incoming);
+
+        assert_eq!(
+            merged.step_ids,
+            BTreeSet::from(["step-a".to_string(), "step-b".to_string()]),
+            "a stored id survives alongside the incoming one"
+        );
+        assert_eq!(
+            merged.tool_call_id, "fresh@v2",
+            "fields other than step_ids come from the incoming record"
+        );
+        assert!(merged.impure, "a re-execution's classification is the incoming one");
+        assert_eq!(merged.instance_key, key, "the merged record stays under its own key");
+
+        let first = test_instance(key);
+        assert_eq!(
+            with_accumulated_step_ids(None, first.clone()),
+            first,
+            "no stored record leaves the incoming record unchanged"
         );
     }
 }

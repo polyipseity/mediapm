@@ -144,10 +144,10 @@ const fn save_mode_tag(save: SaveMode) -> &'static str {
 /// capture phase records: the conductor never bridges a tool's default
 /// captures into execution, so a tool-level `outputs` block in the document is
 /// inert here. The `to_unified` construction in `config::documents` carries
-/// the reason. Making those defaults live is the Series 2 change, and it
-/// removes this term from the key in the same bump: the v4 key is input-only,
-/// so a step locates an instance by the work it does and reads the names it
-/// binds out of what the instance recorded. Growing this term with the
+/// the reason. Bridging those defaults into execution removes this term from
+/// the key: the v4 key is input-only, so a step locates an instance by the
+/// work it does and reads the names it binds out of what the instance
+/// recorded. Growing this term with the
 /// defaults instead — the other way to keep the current key shape — would keep
 /// the key output-derived and reintroduce the executor/materializer
 /// divergence the term exists to end.
@@ -340,8 +340,8 @@ mod tests {
 
     /// The versioned domain prefix participates in the key.
     ///
-    /// The expected key is composed by hand, domain literal included, and the
-    /// same composite without that term must differ. The comparison is against
+    /// The expected key is composed by hand, `instance_key_domain()`'s bytes
+    /// included, and the same composite without that term must differ. The comparison is against
     /// the full composition rather than a keyless-looking stand-in, so the test
     /// fails if the domain term is dropped or its bytes change; a stand-in that
     /// omitted the capture and argument terms would pass either way.
