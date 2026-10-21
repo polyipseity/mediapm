@@ -754,14 +754,16 @@ fn summarize_managed_tool_provenance(
         .collect()
 }
 
-/// Snapshots every file under the hierarchy root as `(relative path, length)`
-/// pairs, sorted for order-independent comparison.
+/// Snapshots every file under the hierarchy root as `(relative path, length,
+/// modification time)` tuples, sorted for order-independent comparison.
 ///
 /// Used by the full demo run's idempotency proof: the second sync must not
-/// create, rewrite, or remove any materialized file, and comparing lengths
-/// alongside paths catches an in-place rewrite that preserved the path but
-/// changed the bytes.
-fn snapshot_materialized_files(hierarchy_root: &Path) -> ExampleResult<Vec<(String, u64)>> {
+/// create, rewrite, or remove any materialized file. The length catches a
+/// rewrite that changed the size, and the modification time catches an
+/// in-place rewrite that kept the path and the size.
+fn snapshot_materialized_files(
+    hierarchy_root: &Path,
+) -> ExampleResult<Vec<(String, u64, std::time::SystemTime)>> {
     let mut snapshot = Vec::new();
     let mut stack = vec![hierarchy_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -790,7 +792,13 @@ fn snapshot_materialized_files(hierarchy_root: &Path) -> ExampleResult<Vec<(Stri
                     })?
                     .to_string_lossy()
                     .replace('\\', "/");
-                snapshot.push((relative, metadata.len()));
+                let modified = metadata.modified().map_err(|error| {
+                    format!(
+                        "reading materialized file modification time '{}': {error}",
+                        path.display()
+                    )
+                })?;
+                snapshot.push((relative, metadata.len(), modified));
             }
         }
     }
@@ -811,8 +819,8 @@ fn snapshot_materialized_files(hierarchy_root: &Path) -> ExampleResult<Vec<(Stri
 fn assert_second_sync_did_no_work(
     first: &mediapm::SyncSummary,
     second: &mediapm::SyncSummary,
-    files_before: &[(String, u64)],
-    files_after: &[(String, u64)],
+    files_before: &[(String, u64, std::time::SystemTime)],
+    files_after: &[(String, u64, std::time::SystemTime)],
 ) -> ExampleResult<()> {
     let mut problems = Vec::new();
     if second.executed_instances != 0 {

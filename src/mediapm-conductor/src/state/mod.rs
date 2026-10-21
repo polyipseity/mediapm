@@ -75,10 +75,12 @@ pub struct ToolCallInstance {
     /// Tool call identifier: the unified tools-catalog map key (e.g.
     /// `"ffmpeg@v1"`).
     pub tool_call_id: String,
-    /// Whether the tool is impure (impure instances embed `executed_at` in
-    /// the key, so every run creates a fresh entry).
+    /// Whether the tool is impure. The flag drives `retry_impure` and the
+    /// `last_impure_sync_at` provenance record; it never alters the instance
+    /// key, because an instance key derives from content alone.
     pub impure: bool,
-    /// Execution timestamp recorded at run time. Never part of pure keys.
+    /// Execution timestamp recorded at run time. Provenance only; it is never
+    /// part of any instance key, impure or pure.
     pub executed_at: Timestamp,
     /// Effective command argv recorded at execution time, in order. Values
     /// are content-addressed; deterministic records participate in the key.

@@ -1098,7 +1098,7 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | Item | Tests | Status |
 | --- | --- | --- |
 | An immediate second demo sync executes no workflow instances, materializes nothing, and removes/misses no path: the offline demo runs `sync_library()` twice in-process and asserts the second summary. | `an_immediate_second_demo_sync_is_fully_cached` (examples/mediapm_demo.rs embedded tests) | [covered] |
-| The online demo's full run re-syncs, asserts the second sync did no work (tallies plus an unchanged materialized file set, catching even an identical-byte rewrite), records a `second_run` manifest block, and leaves the block absent in reduced mode. | `main_is_exercised` (reduced-mode manifest shape); `assert_second_sync_did_no_work` + `snapshot_materialized_files` run inside `run_online_demo` at Level 3 | [partial] — Level-3 full-sync assertions need a manual run |
+| The online demo's full run re-syncs, asserts the second sync did no work (tallies plus an unchanged materialized file snapshot of path, length, and modification time, which catches an in-place rewrite of identical size), records a `second_run` manifest block, and leaves the block absent in reduced mode. | `main_is_exercised` (reduced-mode manifest shape); `assert_second_sync_did_no_work` + `snapshot_materialized_files` run inside `run_online_demo` at Level 3 | [partial] — Level-3 full-sync assertions need a manual run |
 | Conductor examples run workflows twice and assert the second-run summary serves unchanged material from cache. | `main_is_exercised` (conductor_demo), `main_is_exercised` (conductor_cache_and_rematerialization) | [covered] |
 
 ## Demo artifact provenance (2026-10-21)

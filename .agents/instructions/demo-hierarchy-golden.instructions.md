@@ -15,7 +15,7 @@ The online demo (`mediapm_demo_online`) materializes a large hierarchy under `<a
 | `sidecars/links/` | yt-dlp output template (`%(title)s [%(id)s].{ext}` after materializer strip) | Raw video id `dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url` |
 | Media folder root | mediapm hierarchy `rename_files` on links `MediaFolder` | Media id `youtube.dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url` |
 
-Sidecar links are yt-dlp-native (`tools/workflows/yt_dlp.rs`). Root projections are mediapm-config-owned (`${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1`). The materializer strips `downloads/` and `__mediapm__` from folder-variant ZIP members but does **not** rewrite yt-dlp basenames into root projection shape.
+Sidecar links are yt-dlp-native (`tools/workflows/yt_dlp.rs`). Root projections are mediapm-config-owned (`${media.metadata.title} [${media.id}].link.$1`). The provider title already carries the artist name, so the root projection template must not prepend `${media.metadata.artist}` — doing so doubled the prefix on every materialized basename. The materializer strips `downloads/` and `__mediapm__` from folder-variant ZIP members but does **not** rewrite yt-dlp basenames into root projection shape.
 
 ## Assertions (exact filenames)
 

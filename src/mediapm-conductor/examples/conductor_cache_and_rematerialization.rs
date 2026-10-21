@@ -1,9 +1,14 @@
 //! Cache-hit and re-materialization example for the conductor crate.
 //!
 //! This example demonstrates:
-//! - two workflows resolving to the same deterministic instance key,
+//! - one workflow whose second run is served entirely from cache,
 //! - one caller using capture=false, the other using capture=full,
-//! - cache-hit behavior on second run.
+//! - re-materialization: a caller that needs an output the cached instance did
+//!   not keep re-executes the step instead of replaying the cached entry.
+//!
+//! Consumers take literal inputs on purpose. A `${step_output...}` reference
+//! can only resolve an output the producer's capture spec recorded, so a
+//! consumer of a capture=false producer would fail on every run.
 
 mod support;
 
@@ -92,7 +97,7 @@ fn build_document() -> NickelDocument {
                         tool: "echo".to_string(),
                         inputs: BTreeMap::from([(
                             "text".to_string(),
-                            "consume:${step_output.shared_b.result}".to_string(),
+                            "consumer after a save=full capture=full run".to_string(),
                         )]),
                         outputs: BTreeMap::new(),
                         max_retries: 0,
@@ -150,6 +155,18 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
 
     let third_run = conductor.run_workflow("workflow_b", RunWorkflowOptions::default()).await?;
     println!("First run (workflow_b): {third_run:?}");
+
+    // workflow_b's `shared_b` carries the same material as `shared_a` but a
+    // different capture spec, and its caller needs the `result` output the
+    // capture=false run never kept, so the step re-executes instead of
+    // replaying the cached entry — the re-materialization this example is
+    // named for. Its consumer uses a literal input, so it must succeed.
+    assert_eq!(third_run.failed_steps, 0, "workflow_b must fail no steps; summary: {third_run:?}");
+    assert!(
+        third_run.executed_steps > 0,
+        "workflow_b's shared step must re-execute to rematerialize the output its caller needs; \
+         summary: {third_run:?}"
+    );
 
     Ok(())
 }

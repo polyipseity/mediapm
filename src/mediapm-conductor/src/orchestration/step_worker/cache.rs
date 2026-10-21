@@ -105,9 +105,8 @@ mod proptests {
 
     /// The same inputs derive the same key across wall-clock time, impure or
     /// not: the pre-revision scheme embedded `executed_at` for impure steps
-    /// (covered by `derive_instance_key_v2_impure_keys_ignore_time` in the
-    /// key-derivation module); this pins the executor-level callers see the
-    /// same contract.
+    /// (covered by `impure_keys_ignore_time` in the key-derivation module);
+    /// this pins the executor-level callers see the same contract.
     #[test]
     fn impure_timestamps_do_not_change_the_key() {
         let args = arg_hashes(&[ResolvedInput {
