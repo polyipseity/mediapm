@@ -1269,6 +1269,7 @@ mod tests {
             tool_call_id: "echo@v1".to_string(),
             impure: false,
             executed_at: Timestamp::default(),
+            step_ids: BTreeSet::new(),
             command_args: Vec::new(),
             env_vars: BTreeMap::new(),
             materialized_inputs: BTreeMap::new(),

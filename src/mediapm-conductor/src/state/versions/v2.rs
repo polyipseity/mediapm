@@ -19,7 +19,7 @@
 //! - Files outside `versions/` must reach versioned symbols only through
 //!   `versions/mod.rs`, never through a direct `versions::vX` path.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{CasApi, Hash};
 use serde::{Deserialize, Serialize};
@@ -109,6 +109,14 @@ pub(crate) struct ToolCallInstanceV2 {
     /// Execution timestamp recorded at run time. Provenance only; never part
     /// of any instance key.
     pub executed_at: ImpureTimestampV2,
+    /// Steps that recorded this instance, by step id.
+    ///
+    /// Provenance only: it is never hashed into the instance key, and
+    /// `#[serde(default)]` keeps state written before the field existed
+    /// readable. The demo fixture's key regeneration pairs through this set
+    /// instead of re-deriving historical key schemes.
+    #[serde(default)]
+    pub step_ids: BTreeSet<String>,
     /// Effective command argv recorded at execution time, in order.
     pub command_args: Vec<HashedValueRecordV2>,
     /// Execution environment variables (minimal set: non-empty config values
@@ -250,8 +258,9 @@ struct LegacyOutputRefV2 {
 /// `worker_index`, `executed`, and `rematerialized` are parsed so a legacy
 /// CAS blob still deserializes, and then dropped. The V2 redesign replaced
 /// them with values a legacy blob cannot supply: `materialized_inputs` and
-/// `env_vars` (empty), `executed_at` (zero), and output materialized flags
-/// (rebuilt from the legacy per-output save modes).
+/// `env_vars` (empty), `executed_at` (zero), output materialized flags
+/// (rebuilt from the legacy per-output save modes), and `step_ids` (empty — a
+/// legacy blob records no step provenance).
 /// [`legacy_instance_into_v2`] is where that substitution happens, and it is
 /// the documented one-way guarantee of this migration — nothing the new schema
 /// can use is lost, and nothing is read back out of these fields.
@@ -295,6 +304,7 @@ fn legacy_instance_into_v2(
         tool_call_id: legacy.tool_id,
         impure: false,
         executed_at: ImpureTimestampV2(0),
+        step_ids: BTreeSet::new(),
         command_args: Vec::new(),
         env_vars: BTreeMap::new(),
         materialized_inputs: BTreeMap::new(),
@@ -434,6 +444,25 @@ mod tests {
             a,
         ]);
         assert_eq!(key, expected);
+    }
+
+    /// A state file written before `step_ids` existed still loads, and the
+    /// field is provenance rather than required data.
+    #[test]
+    fn recorded_instance_without_step_ids_decodes_with_an_empty_set() {
+        let json = r#"{
+            "instance_key": "blake3:0000000000000000000000000000000000000000000000000000000000000001",
+            "tool_call_id": "echo",
+            "impure": false,
+            "executed_at": 0,
+            "command_args": [],
+            "env_vars": {},
+            "materialized_inputs": {},
+            "outputs": {}
+        }"#;
+        let instance: ToolCallInstanceV2 =
+            serde_json::from_str(json).expect("legacy instance decodes");
+        assert!(instance.step_ids.is_empty());
     }
 
     /// R7: a v1 envelope migrates into the redesigned v2 state, including

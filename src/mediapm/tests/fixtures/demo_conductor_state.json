@@ -3,6 +3,7 @@
   "tool_call_instances": {
     "blake3:59f5ec2cfc8ad22d32d279a35ad5bac2dbb3a0c9ba9572719deddc840b62bf39": {
       "instance_key": "blake3:59f5ec2cfc8ad22d32d279a35ad5bac2dbb3a0c9ba9572719deddc840b62bf39",
+      "step_ids": ["step-0-0-import-video_untagged-to-video_untagged"],
       "tool_call_id": "import@v1",
       "impure": true,
       "executed_at": 1785987849238789000,
@@ -30,6 +31,7 @@
     },
     "blake3:878298ff238fe9a0514d943c22aea4c4ccb35ad9f4629ca9a5037b332bc5313a": {
       "instance_key": "blake3:878298ff238fe9a0514d943c22aea4c4ccb35ad9f4629ca9a5037b332bc5313a",
+      "step_ids": ["step-3-0-media-tagger-audio-to-audio-metadata"],
       "tool_call_id": "media-tagger@blake3:7d51827f1043df72adea899d45dbcca6cb1ef16eb1bfd0021662e80715e53b90",
       "impure": true,
       "executed_at": 1785987882536740000,
@@ -175,6 +177,7 @@
     },
     "blake3:392194db6d2bae5ee5ca90c596d249fc5e4f81bb5283317aacdcdef54dd87010": {
       "instance_key": "blake3:392194db6d2bae5ee5ca90c596d249fc5e4f81bb5283317aacdcdef54dd87010",
+      "step_ids": ["step-2-0-rsgain-audio-to-audio"],
       "tool_call_id": "rsgain@blake3:754a0e4d9cf5df2cc61b5336d9d543b2765a85cbbbab890cca34a0eee4c2db98",
       "impure": false,
       "executed_at": 1785987881255817000,
@@ -276,6 +279,7 @@
     },
     "blake3:12b14a7a203459d26034d982f75f72a369e6a68acbfbe2ffabdc565396a77205": {
       "instance_key": "blake3:12b14a7a203459d26034d982f75f72a369e6a68acbfbe2ffabdc565396a77205",
+      "step_ids": ["step-1-ffmpeg"],
       "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
       "impure": false,
       "executed_at": 1785987849261570000,
@@ -381,6 +385,7 @@
     },
     "blake3:34cc6443e0f80d1f0e4146e2d6dbbe662be29eb386bd25a56bbffc3a6f42a585": {
       "instance_key": "blake3:34cc6443e0f80d1f0e4146e2d6dbbe662be29eb386bd25a56bbffc3a6f42a585",
+      "step_ids": ["step-3-0-media-tagger-audio-to-audio-apply"],
       "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
       "impure": false,
       "executed_at": 1785987892263567000,

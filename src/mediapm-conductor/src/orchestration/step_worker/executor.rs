@@ -190,6 +190,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         tool_call_id,
         impure: tool_spec.is_impure,
         executed_at,
+        step_ids: BTreeSet::from([request.step.id.clone()]),
         command_args,
         env_vars,
         materialized_inputs,
@@ -297,21 +298,22 @@ mod tests {
     };
     use crate::config::OutputCaptureSpec;
     use crate::orchestration::protocol::{
-        StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
+        StepExecutionBundle, StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
     };
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    /// Runs one builtin step whose tool spec carries a capture default the
-    /// step does not declare.
+    /// Runs one builtin step under `step_id` and returns what it recorded.
     ///
-    /// Returns the recorded instance key beside the two candidate capture terms,
-    /// so a caller can tell which one the executor actually hashed. The tool
-    /// spec is filled directly because the real path cannot produce this shape:
-    /// [`crate::config::documents::NickelDocument::to_unified`] leaves a tool's
-    /// `outputs` empty, which is what makes the step's map the whole capture
-    /// set. Filling it here is what lets the test tell the two terms apart.
-    async fn execute_builtin_with_tool_level_captures() -> (Hash, Hash, Hash, Vec<Hash>) {
+    /// The bundle is returned beside the two candidate capture terms and the
+    /// input term the executor derived, so a caller can tell which capture term
+    /// became key material as well as observe the instance's provenance. The
+    /// tool spec is filled directly because the real path cannot produce this
+    /// shape: [`crate::config::documents::NickelDocument::to_unified`] leaves a
+    /// tool's `outputs` empty, which is what makes the step's map the whole
+    /// capture set. Filling it here is what lets the test tell the two terms
+    /// apart.
+    async fn execute_builtin_step(step_id: &str) -> (StepExecutionBundle, Hash, Hash, Vec<Hash>) {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
         let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let tool_id = "echo@v1";
@@ -348,7 +350,7 @@ mod tests {
                 runtime: crate::config::ConductorRuntimeConfig::default(),
             }),
             step: crate::config::WorkflowStepSpec {
-                id: "step-0-echo".to_string(),
+                id: step_id.to_string(),
                 tool: "echo".to_string(),
                 inputs: BTreeMap::from([("text".to_string(), "hi".to_string())]),
                 outputs: step_outputs.clone(),
@@ -373,7 +375,7 @@ mod tests {
             crate::instance_key::instance_key_hash_from_resolved_value_bytes("text", "hi", b"hi")
                 .expect("a literal binding is deterministic"),
         ];
-        (bundle.instance.instance_key, merged_term, step_only_term, input_hashes)
+        (bundle, merged_term, step_only_term, input_hashes)
     }
 
     /// The executor keys a step by the captures it declares, and a tool-level
@@ -392,22 +394,30 @@ mod tests {
     /// term fails here, where the coupling is cheapest to notice.
     #[tokio::test]
     async fn a_tool_level_capture_default_is_not_key_material() {
-        let (recorded_key, merged_term, step_only_term, input_hashes) =
-            execute_builtin_with_tool_level_captures().await;
+        let (bundle, merged_term, step_only_term, input_hashes) =
+            execute_builtin_step("step-0-echo").await;
         assert_ne!(
             merged_term, step_only_term,
             "the fixture must distinguish the two terms, or the assertion below cannot fail",
         );
         assert_eq!(
-            recorded_key,
+            bundle.instance.instance_key,
             derive_instance_key_v2("echo@v1", step_only_term, &input_hashes, &[], &[]),
             "the executor must hash the step's declared captures, which is what it records",
         );
         assert_ne!(
-            recorded_key,
+            bundle.instance.instance_key,
             derive_instance_key_v2("echo@v1", merged_term, &input_hashes, &[], &[]),
             "a tool-level default that the capture phase never reaches must not move the key",
         );
+    }
+
+    /// The instance a step records names that step, so the fixture's
+    /// regeneration can pair instance → step without key history.
+    #[tokio::test]
+    async fn a_recorded_instance_names_the_step_that_recorded_it() {
+        let (bundle, ..) = execute_builtin_step("step-7-echo").await;
+        assert_eq!(bundle.instance.step_ids, BTreeSet::from(["step-7-echo".to_string()]));
     }
 
     // -----------------------------------------------------------------------

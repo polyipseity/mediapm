@@ -85,6 +85,14 @@ pub struct ToolCallInstance {
     /// Execution timestamp recorded at run time. Provenance only; it is never
     /// part of any instance key, impure or pure.
     pub executed_at: Timestamp,
+    /// Steps that recorded this instance, by step id.
+    ///
+    /// Provenance only. It records which step produced the captured outputs,
+    /// which is what lets the demo fixture be re-keyed without re-deriving a
+    /// historical key scheme. It is never key material, and a probe hit does
+    /// not rewrite it.
+    #[serde(default)]
+    pub step_ids: BTreeSet<String>,
     /// Effective command argv recorded at execution time, in order. Values
     /// are content-addressed; deterministic records participate in the key.
     pub command_args: Vec<HashedValueRecord>,

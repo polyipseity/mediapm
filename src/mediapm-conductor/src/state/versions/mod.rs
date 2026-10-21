@@ -109,6 +109,7 @@ impl From<v2::ToolCallInstanceV2> for ToolCallInstance {
             tool_call_id: inst.tool_call_id,
             impure: inst.impure,
             executed_at: mediapm_utils::Timestamp::from_unix_nanos(inst.executed_at.0),
+            step_ids: inst.step_ids,
             command_args: inst.command_args.into_iter().map(Into::into).collect(),
             env_vars: inst.env_vars.into_iter().map(|(k, v)| (k, v.into())).collect(),
             materialized_inputs: inst
@@ -128,6 +129,7 @@ impl From<ToolCallInstance> for v2::ToolCallInstanceV2 {
             tool_call_id: inst.tool_call_id,
             impure: inst.impure,
             executed_at: v2::ImpureTimestampV2(inst.executed_at.as_unix_nanos()),
+            step_ids: inst.step_ids,
             command_args: inst.command_args.into_iter().map(Into::into).collect(),
             env_vars: inst.env_vars.into_iter().map(|(k, v)| (k, v.into())).collect(),
             materialized_inputs: inst
@@ -263,7 +265,7 @@ pub fn encode_state_json(state: &ConductorState) -> Result<Vec<u8>, ConductorErr
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use mediapm_cas::Hash;
     use mediapm_utils::Timestamp;
@@ -278,6 +280,7 @@ mod tests {
             tool_call_id: "echo@v1".to_string(),
             impure: false,
             executed_at: Timestamp::from_unix_nanos(5),
+            step_ids: BTreeSet::from(["step-0-echo".to_string()]),
             command_args: vec![HashedValueRecord {
                 hash: Hash::from_content(b"arg"),
                 deterministic: true,
@@ -320,6 +323,27 @@ mod tests {
         let encoded = encode_state_json(&state).unwrap();
         let decoded = decode_state_json(&encoded).unwrap();
         assert_eq!(decoded, state);
+    }
+
+    /// Round-tripping an instance through the wire type preserves the steps
+    /// that recorded it; the record-without-provenance case is pinned in
+    /// `v2`'s tests.
+    #[test]
+    fn instance_step_ids_survive_the_wire_bridge() {
+        let runtime = ToolCallInstance {
+            instance_key: Hash::from_content(b"key"),
+            tool_call_id: "echo".to_string(),
+            impure: false,
+            executed_at: Timestamp::from_unix_nanos(0),
+            command_args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            step_ids: BTreeSet::from(["step-1-echo".to_string()]),
+        };
+        let wire: v2::ToolCallInstanceV2 = runtime.clone().into();
+        let back: ToolCallInstance = wire.into();
+        assert_eq!(back.step_ids, BTreeSet::from(["step-1-echo".to_string()]));
     }
 
     /// The instance wire record carries no `version` field (fact 26) — only

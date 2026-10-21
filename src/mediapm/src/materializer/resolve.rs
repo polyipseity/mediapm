@@ -1023,6 +1023,7 @@ mod tests {
             tool_call_id: tool_call_id.to_string(),
             impure: false,
             executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
+            step_ids: BTreeSet::new(),
             command_args: Vec::new(),
             env_vars: BTreeMap::new(),
             materialized_inputs: BTreeMap::new(),
@@ -1712,11 +1713,19 @@ mod tests {
     ///   -E 'test(regenerate_demo_conductor_state_fixture_keys)' --no-capture
     /// ```
     ///
-    /// The rewrite is keys-only. The fixture's JSON text has every occurrence of
-    /// an old key string replaced by the new one — the `tool_call_instances` map
+    /// The rewrite touches two things in the fixture's JSON text, each by
+    /// anchored insertion or replacement so every other byte of the file is
+    /// preserved: the recorded `instance_key` (the `tool_call_instances` map
     /// key, that entry's `instance_key` field, and the matching `aux.instances`
-    /// key — so every other byte of the file is preserved and the JSON stays
-    /// valid (both are `blake3:<64 hex>`).
+    /// key), and the `step_ids` provenance inserted after each instance's
+    /// `instance_key` field. Both stay valid JSON.
+    ///
+    /// **Provenance.** Each instance records the step that produced it.
+    /// That pairing is written while the fixture's keys still match the current
+    /// derivation, so a later key-scheme change can pair instance → step through
+    /// `step_ids` instead of re-deriving a historical scheme. The insertion is
+    /// keyed by the stored key, which the key rewrite below then moves to the
+    /// new one; a fixture that already carries the pairing is left alone.
     ///
     /// **Pairing proof.** An instance is rewritten only when its stored key
     /// equals what [`previous_derivation_arg_hashes`] derives from the inputs its
@@ -1776,6 +1785,27 @@ mod tests {
         }
 
         let mut text = std::fs::read_to_string(&path).expect("read demo conductor state fixture");
+
+        // Provenance first: the fixture's keys still match the current
+        // derivation at this point, so every instance pairs with the step that
+        // recorded it. Later key changes pair through this set instead of
+        // re-deriving a historical scheme.
+        let mut provenance_inserted = false;
+        for (stored_key, (_, step_id)) in &rewrites {
+            let anchor = format!("      \"instance_key\": \"{stored_key}\",\n");
+            assert_eq!(
+                text.matches(anchor.as_str()).count(),
+                1,
+                "instance {stored_key} must appear exactly once in the fixture",
+            );
+            let inserted = format!("{anchor}      \"step_ids\": [\"{step_id}\"],\n");
+            if text.contains(inserted.as_str()) {
+                continue;
+            }
+            text = text.replace(&anchor, &inserted);
+            provenance_inserted = true;
+        }
+
         let mut changed = Vec::new();
         for (stored_key, (current_key, step_id)) in &rewrites {
             if current_key == stored_key {
@@ -1790,7 +1820,7 @@ mod tests {
             changed.push((*stored_key, *current_key));
         }
 
-        if changed.is_empty() {
+        if changed.is_empty() && !provenance_inserted {
             println!("fixture is already current; nothing written");
             return;
         }
@@ -1801,6 +1831,9 @@ mod tests {
         std::fs::write(&temporary_path, &text).expect("write regenerated demo conductor state");
         std::fs::rename(&temporary_path, &path)
             .expect("move regenerated demo conductor state over the fixture");
+        if provenance_inserted {
+            println!("recorded the recording step on every instance");
+        }
         println!("rewrote {} instance key(s)", changed.len());
 
         // The rewritten file must decode, carry no stale key, and hold exactly the
@@ -1820,10 +1853,19 @@ mod tests {
                 rewritten.tool_call_instances.contains_key(current_key),
                 "rewritten fixture is missing the key step '{step_id}' derives",
             );
+            let instance = &rewritten.tool_call_instances[current_key];
+            assert!(
+                instance.step_ids.contains(step_id),
+                "rewritten fixture must name step '{step_id}' as the instance's recording step",
+            );
         }
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the two seeded instances and the step resolving between them read as one scenario"
+    )]
     async fn merged_resolution_prefers_specialized_yt_dlp_sidecar_instance() {
         use mediapm_conductor::{
             HashedValueRecord, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
@@ -1862,6 +1904,7 @@ mod tests {
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
                 executed_at: Timestamp::from_unix_nanos(2),
+                step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
@@ -1884,6 +1927,7 @@ mod tests {
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
                 executed_at: Timestamp::from_unix_nanos(1),
+                step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
@@ -2014,6 +2058,7 @@ mod tests {
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
                 executed_at: Timestamp::from_unix_nanos(1),
+                step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
@@ -2144,6 +2189,7 @@ mod tests {
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
                 executed_at: Timestamp::from_unix_nanos(2),
+                step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
@@ -2253,6 +2299,7 @@ mod tests {
                 tool_call_id: versioned_tool_id.clone(),
                 impure: true,
                 executed_at: Timestamp::from_unix_nanos(1),
+                step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
