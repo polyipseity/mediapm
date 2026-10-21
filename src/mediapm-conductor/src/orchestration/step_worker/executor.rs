@@ -3,7 +3,7 @@
 //! [`execute_step`] runs a step through all phases: input resolution, cache
 //! probe, materialization, execution, output capture, and persistence merge.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use mediapm_cas::{CasApi, Hash};
@@ -125,24 +125,35 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     // skips the probe so every step executes fresh, no matter how recently
     // its instance was recorded. Time never invalidates an instance;
     // changed key material or this flag does.
-    let (cache_hit, _cached_instance) = if request.force_rerun {
-        (false, None)
+    //
+    // A probe hit is a claim about recorded state — an instance exists and
+    // names the outputs its dependents bind. Whether the store still holds the
+    // bytes those names point at is a separate fact state cannot answer, so the
+    // CAS is asked directly. A missing blob turns the hit into a miss instead
+    // of failing later, mid-materialization, with no route back to the step
+    // that produced it: a pure step recomputes the same bytes, an impure step
+    // fetches them again.
+    let cached_instance = if request.force_rerun {
+        None
     } else {
-        probe_cache(&instance_key, &request.state_snapshot, &request.required_output_names)
+        let (_, probed) =
+            probe_cache(&instance_key, &request.state_snapshot, &request.required_output_names);
+        match probed {
+            Some(instance)
+                if required_output_blobs_exist(cas, &instance, &request.required_output_names)
+                    .await =>
+            {
+                Some(instance)
+            }
+            _ => None,
+        }
     };
 
-    if cache_hit {
+    if let Some(cached) = cached_instance {
         // Return the cached instance unchanged; GC refresh happens through
         // the referenced-keys set at GC time, not by per-hit mutation.
-        let cached =
-            request.state_snapshot.tool_call_instances.get(&instance_key).ok_or_else(|| {
-                ConductorError::Internal(format!(
-                    "cache probe reported hit but tool call instance '{}' not found in state",
-                    instance_key.to_hex(),
-                ))
-            })?;
         return Ok(StepExecutionBundle {
-            instance: cached.clone(),
+            instance: cached,
             save_modes: BTreeMap::new(),
             cache_hit: true,
         });
@@ -178,6 +189,34 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     };
 
     Ok(StepExecutionBundle { instance, save_modes: captured.save_modes, cache_hit: false })
+}
+
+/// Returns whether every output this step's dependents bind still resolves in
+/// the store.
+///
+/// Only the required names are checked. An output nothing downstream reads
+/// cannot break this run, and stat-ing every recorded output would turn a
+/// cheap probe into a sweep of the step's whole output set; an empty required
+/// set therefore checks nothing, by design rather than by omission.
+///
+/// This answers presence, not integrity: a corrupt blob that still exists is a
+/// verification concern for the read path, not a cache-probe one. Any `stat`
+/// failure counts as absent — a store that cannot answer has not proven the
+/// bytes are there, and re-executing is the safe response either way.
+async fn required_output_blobs_exist<C: CasApi>(
+    cas: &C,
+    instance: &ToolCallInstance,
+    required_output_names: &BTreeSet<String>,
+) -> bool {
+    for name in required_output_names {
+        let Some(record) = instance.outputs.get(name) else {
+            return false;
+        };
+        if cas.stat(record.hash).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Merge tool-level output specs (defaults) with step-level output specs

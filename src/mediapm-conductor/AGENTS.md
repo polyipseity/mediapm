@@ -440,7 +440,16 @@ Where:
 - `domain` = the versioned separator (`mediapm/conductor/tool call instances/v2.1`); bumping it invalidates every previously derived key once.
 - `tool_id` = the tool name+version from config (content-map details excluded from identity).
 - `sorted_inputs_hash` = blake3 over the sorted `(name, hash)` pairs of `ResolvedInputKey` entries.
-- Time never participates: an impure step's recorded `executed_at` is provenance, not key material, so an immediate second sync hits the step cache (`executed_instances == 0`) for unchanged inputs, pure and impure alike. Re-execution follows changed key material or the run-scoped `RunWorkflowOptions::force_rerun` explicit invalidation (API), `--force-rerun` (CLI). Pins: `impure_keys_ignore_time`, `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`, `force_rerun_reexecutes_the_cached_workflow`.
+- Time never participates: an impure step's recorded `executed_at` is provenance, not key material, so an immediate second sync hits the step cache (`executed_instances == 0`) for unchanged inputs, pure and impure alike. Re-execution follows changed key material or the run-scoped `RunWorkflowOptions::force_rerun` explicit invalidation (API), `--force-rerun` (CLI), or a persisted mediapm invalidation marker. Pins: `impure_keys_ignore_time`, `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`, `force_rerun_reexecutes_the_cached_workflow`.
+
+### Cache-Hit Validity
+
+A probe hit is a claim about recorded state; the store is a separate witness. `probe_cache` (`orchestration/step_worker/cache.rs`) stays a pure state question — does an instance exist, and does it name every output its dependents bind (`required_output_names`). The executor then asks the CAS whether those outputs still resolve (`CasApi::stat`) and downgrades the hit to a miss when one does not.
+
+- Scope is the required set only. An output nothing downstream reads cannot break the run, so an empty required set checks nothing — by design, not by omission.
+- It answers presence, not integrity: a corrupt blob that still exists is the read path's verification concern.
+- The conversion is the point. Without it a blob removed behind the conductor's back (GC damage, a wiped store) surfaced as a failure mid-materialization, with no route back to the step that produced it; with it the step re-executes — a pure step recomputes the same bytes, an impure step fetches them again.
+- Pin: `a_missing_blob_turns_a_cache_hit_into_a_rerun`.
 
 ### Failure Recovery Safety
 

@@ -14,6 +14,10 @@ mod step_rpc_layering;
 /// Instance GC with configurable TTL.
 mod gc;
 
+/// Cache-probe validity: a hit whose required output blob is gone from the
+/// store re-executes instead of reusing the instance that names it.
+mod cache_probe;
+
 /// Decode + migration pipeline (regression: record field shorthand).
 mod decode_migration;
 
