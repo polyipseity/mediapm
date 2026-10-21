@@ -796,6 +796,49 @@ mod tests {
         assert!(outputs.contains_key("process_code"), "missing process_code output");
     }
 
+    /// Changing `max_output_slots` changes the capture names a step records,
+    /// and leaves the instance key alone.
+    ///
+    /// This is the evidence that retired the capture term: one slot limit feeds
+    /// [`build_ffmpeg_outputs`], so the same transcode under two configurations
+    /// records different name sets — and it is the same work. Hashing the
+    /// declarations put those two runs under different keys, so raising a slot
+    /// limit re-ran every ffmpeg step; deriving from inputs alone keeps one key
+    /// and lets the recorded instance hold whichever names the configuration
+    /// asked for.
+    #[test]
+    fn output_slots_change_capture_names_and_not_the_instance_key() {
+        let two_slots = build_ffmpeg_outputs(2);
+        let three_slots = build_ffmpeg_outputs(3);
+        assert!(
+            !two_slots.contains_key("primary_2") && three_slots.contains_key("primary_2"),
+            "a third output slot must add its capture names: {:?} vs {:?}",
+            two_slots.keys().collect::<Vec<_>>(),
+            three_slots.keys().collect::<Vec<_>>(),
+        );
+        assert!(
+            three_slots.len() > two_slots.len(),
+            "the wider slot set must record more names, or this test proves nothing",
+        );
+
+        let argument_hashes = [mediapm_cas::Hash::from_content(b"input-0")];
+        let materialized_hashes = [mediapm_cas::Hash::from_content(b"ffmpeg-payload")];
+        let key_for_two_slots = mediapm_conductor::derive_tool_call_instance_key(
+            "ffmpeg@blake3:payload",
+            &argument_hashes,
+            &materialized_hashes,
+        );
+        let key_for_three_slots = mediapm_conductor::derive_tool_call_instance_key(
+            "ffmpeg@blake3:payload",
+            &argument_hashes,
+            &materialized_hashes,
+        );
+        assert_eq!(
+            key_for_two_slots, key_for_three_slots,
+            "the slot configuration reaches the recorded names, never the key",
+        );
+    }
+
     #[test]
     fn build_ffmpeg_defaults_include_static_and_dynamic_entries() {
         let defaults = build_ffmpeg_default_input_defaults(2, 2);

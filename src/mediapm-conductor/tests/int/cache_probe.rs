@@ -23,8 +23,8 @@ use mediapm_conductor::api::RunWorkflowOptions;
 use mediapm_conductor::{Conductor, OutputCaptureSpec, WorkflowStepSpec};
 
 /// Producer step: the echo builtin's stdout becomes the declared `result`
-/// output, which is what the consumer binds and therefore what the producer's
-/// cache probe requires.
+/// output. Declaring it is what makes it required — a consumer binding it adds
+/// the same name, so the step stands alone as a workflow too.
 fn producer_step(text: &str) -> WorkflowStepSpec {
     WorkflowStepSpec {
         id: "producer".to_string(),
@@ -128,5 +128,56 @@ async fn a_missing_blob_turns_a_cache_hit_into_a_rerun() {
         recorded_result_hash(tc.conductor()),
         produced,
         "a deterministic re-execution must restore the same content under the same hash"
+    );
+}
+
+/// A workflow's last step has no downstream reader inside the run, and its
+/// declared output is still inside the blob check.
+///
+/// A declaration is a required name exactly as a dependent's reference is, so a
+/// blob missing behind the store's back re-executes the terminal step. That is
+/// the self-healing outcome: the alternative is failing during materialization,
+/// with no route back to the step that produced the bytes, and the run summary
+/// would hand the caller a hash for content the store no longer holds.
+#[tokio::test]
+async fn a_terminal_step_whose_blob_is_missing_reexecutes() {
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("echo@v1".to_string(), echo_tool("echo@v1"))]),
+        vec![workflow_with_steps("default", vec![producer_step("payload")])],
+    ));
+
+    let first = tc
+        .conductor()
+        .run_workflow("default", RunWorkflowOptions::default())
+        .await
+        .expect("the first run must complete");
+    assert_eq!(
+        (first.executed_steps, first.cached_steps, first.failed_steps),
+        (1, 0, 0),
+        "the only step of the workflow must execute and cache nothing: {first:?}"
+    );
+
+    let produced = recorded_result_hash(tc.conductor());
+    tc.conductor().cas().delete(produced).await.expect("the recorded blob must be deletable");
+    assert!(
+        tc.conductor().cas().stat(produced).await.is_err(),
+        "the blob must be gone before the re-run is read, or nothing is being tested"
+    );
+
+    let second = tc
+        .conductor()
+        .run_workflow("default", RunWorkflowOptions::default())
+        .await
+        .expect("a run whose blob vanished must still complete");
+    assert_eq!(
+        (second.executed_steps, second.cached_steps, second.failed_steps),
+        (1, 0, 0),
+        "a terminal step declaring the vanished output must re-execute it: {second:?}"
+    );
+    assert_eq!(
+        recorded_result_hash(tc.conductor()),
+        produced,
+        "the re-executed step must restore the same content under the same hash"
     );
 }

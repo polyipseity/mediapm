@@ -148,11 +148,13 @@ pub(crate) struct StepExecutionRequest {
     /// deterministically fails for unrelated steps regardless of what
     /// settled earlier in the run.
     pub step_outputs: Arc<StepOutputs>,
-    /// Declared output names from this step that are actually referenced by
-    /// downstream `$step_output` input bindings.
+    /// Output names a probe hit must find recorded: the names this step's
+    /// dependents reference plus the names the step declares for itself.
     ///
-    /// This set drives rematerialization checks: missing unreferenced outputs
-    /// do not force rerun of otherwise cache-hit instances.
+    /// Each name is required under the capture spec the merged tool-plus-step
+    /// set gives it. A name recorded another way, or recorded without a spec by
+    /// the v2 migration, is a miss. Outputs nothing binds and the step does not
+    /// declare never force a rerun.
     pub required_output_names: BTreeSet<String>,
     /// Run-scoped explicit invalidation: skip the per-step instance-cache
     /// probe so every step executes fresh.

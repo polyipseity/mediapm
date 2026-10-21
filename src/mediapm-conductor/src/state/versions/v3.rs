@@ -173,10 +173,13 @@ impl Default for InstanceAuxV3 {
     }
 }
 
-/// V3 auxiliary metadata.
+/// V3 auxiliary metadata: the GC clock and the instance-key counter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AuxDataV3 {
+    /// Monotonic counter the instance keys are derived against; carried over
+    /// unchanged from V2 so a migration does not shift any key.
     pub tool_call_instance_counter: u64,
+    /// Conductor GC epoch: the clock reference ages are measured from.
     pub conductor_gc_epoch: ImpureTimestampV3,
     /// Per-instance aux metadata keyed by instance key.
     pub instances: BTreeMap<Hash, InstanceAuxV3>,
@@ -195,8 +198,12 @@ impl Default for AuxDataV3 {
 /// V3 inline orchestration state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ConductorStateV3 {
+    /// Schema version marker; always [`CONDUCTOR_STATE_VERSION_V3`] when this
+    /// build writes, and the dispatch key a reader selects on.
     pub version: u32,
+    /// Recorded tool-call instances keyed by instance key.
     pub tool_call_instances: BTreeMap<Hash, ToolCallInstanceV3>,
+    /// Auxiliary metadata: the GC clock and the per-instance reference clock.
     pub aux: AuxDataV3,
 }
 
@@ -472,6 +479,151 @@ mod tests {
 
         let instance = decoded.tool_call_instances.values().next().expect("one instance");
         assert_eq!(instance.outputs["content"].capture.as_ref(), Some(&spec));
+    }
+
+    /// A V2 document that recorded no outputs migrates to an empty V3 output
+    /// map.
+    ///
+    /// The migration maps entries one at a time, so the empty case is the one
+    /// no per-entry assertion reaches: a reader that assumed it could take
+    /// "the first entry" would pass every other migration test and still drop
+    /// an instance's identity here.
+    #[test]
+    fn a_v2_document_with_no_outputs_migrates_to_an_empty_map() {
+        let json = format!(
+            r#"{{
+                "version": 2,
+                "tool_call_instances": {{
+                    "{INSTANCE_KEY}": {{
+                        "instance_key": "{INSTANCE_KEY}",
+                        "tool_call_id": "echo@v1",
+                        "impure": false,
+                        "executed_at": 0,
+                        "command_args": [],
+                        "env_vars": {{}},
+                        "materialized_inputs": {{}},
+                        "outputs": {{}}
+                    }}
+                }},
+                "aux": {{
+                    "tool_call_instance_counter": 0,
+                    "conductor_gc_epoch": 0,
+                    "instances": {{}}
+                }}
+            }}"#
+        );
+
+        let state = super::super::decode_state_json(json.as_bytes()).expect("the v2 file migrates");
+        let instance = state.tool_call_instances.values().next().expect("one instance");
+        assert!(
+            instance.outputs.is_empty(),
+            "an instance that recorded no outputs must migrate with none: {:?}",
+            instance.outputs,
+        );
+    }
+
+    /// A V3 document that omits `step_ids` decodes with an empty set rather than
+    /// failing.
+    ///
+    /// V3's own wire type keeps the field `#[serde(default)]`: `step_ids` is
+    /// provenance, so a document written without it — an older writer's record, or
+    /// a hand-edited state — still describes a usable instance. Dropping the
+    /// attribute would make V3 decoding refuse a document it can otherwise read,
+    /// and no other V3 test would notice because they all write the field.
+    #[test]
+    fn a_v3_document_without_step_ids_decodes_to_an_empty_set() {
+        let json = format!(
+            r#"{{
+                "version": 3,
+                "tool_call_instances": {{
+                    "{INSTANCE_KEY}": {{
+                        "instance_key": "{INSTANCE_KEY}",
+                        "tool_call_id": "echo@v1",
+                        "impure": false,
+                        "executed_at": 0,
+                        "command_args": [],
+                        "env_vars": {{}},
+                        "materialized_inputs": {{}},
+                        "outputs": {{
+                            "content": {{ "hash": "{OUTPUT_HASH}", "capture": null }}
+                        }}
+                    }}
+                }},
+                "aux": {{
+                    "tool_call_instance_counter": 0,
+                    "conductor_gc_epoch": 0,
+                    "instances": {{}}
+                }}
+            }}"#
+        );
+
+        let state = super::super::decode_state_json(json.as_bytes())
+            .expect("a v3 document predating step_ids still decodes");
+        let instance = state.tool_call_instances.values().next().expect("one instance");
+        assert!(
+            instance.step_ids.is_empty(),
+            "an instance recorded before reuse was tracked names no step: {:?}",
+            instance.step_ids,
+        );
+    }
+
+    /// A capture spec whose `save` is the default `True` omits the field on the
+    /// wire and decodes back to `True`.
+    ///
+    /// `save` is the only field of a spec that a step may set on a
+    /// tool-declared name, so its omission has to mean "persist" rather than
+    /// "not recorded": a decoder that read the absent field as `False` would
+    /// silently stop persisting every default-saved capture.
+    #[test]
+    fn a_spec_with_the_default_save_mode_round_trips_without_writing_it() {
+        let spec = OutputCaptureSpecV3 {
+            name: "content".to_string(),
+            capture: "file:out.mkv".to_string(),
+            save: SaveModeV3::True,
+            allow_empty: true,
+            include_topmost_folder: true,
+        };
+        let state = ConductorStateV3 {
+            version: CONDUCTOR_STATE_VERSION_V3,
+            tool_call_instances: BTreeMap::from([(
+                Hash::from_content(b"instance"),
+                ToolCallInstanceV3 {
+                    instance_key: Hash::from_content(b"instance"),
+                    tool_call_id: "ffmpeg@v1".to_string(),
+                    impure: false,
+                    executed_at: ImpureTimestampV3(5),
+                    step_ids: BTreeSet::from(["step-0".to_string()]),
+                    command_args: Vec::new(),
+                    env_vars: BTreeMap::new(),
+                    materialized_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::from([(
+                        "content".to_string(),
+                        CapturedOutputV3 {
+                            hash: Hash::from_content(b"bytes"),
+                            capture: Some(spec),
+                        },
+                    )]),
+                },
+            )]),
+            aux: AuxDataV3::default(),
+        };
+
+        let encoded = serde_json::to_value(&state).expect("encode v3 as a JSON value");
+        let encoded_spec = encoded["tool_call_instances"]
+            .as_object()
+            .and_then(|instances| instances.values().next())
+            .map(|instance| &instance["outputs"]["content"]["capture"])
+            .expect("one encoded capture spec");
+        assert!(
+            encoded_spec.get("save").is_none(),
+            "the default save mode must be omitted rather than written: {encoded_spec:?}",
+        );
+
+        let decoded: ConductorStateV3 = serde_json::from_value(encoded).expect("decode v3");
+        let instance = decoded.tool_call_instances.values().next().expect("one instance");
+        let capture =
+            instance.outputs["content"].capture.as_ref().expect("the spec survives the round trip");
+        assert_eq!(capture.save, SaveModeV3::True, "an omitted save means persist");
     }
 
     /// Save modes live on each captured entry now, so the per-instance aux

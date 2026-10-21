@@ -155,17 +155,14 @@ impl NickelDocument {
                         }
                         env_vars
                     },
-                    // Not bridged: a tool's default captures never reach the
-                    // capture phase, which is why the instance key hashes the
-                    // step's own `outputs` (see `step_output_specs_hash`).
-                    // Bridging them into execution removes that capture term
-                    // from the key: the v4 key is input-only, so a step locates
-                    // an instance by the work it does and reads the names it
-                    // binds out of what the instance recorded. Re-adding the
-                    // defaults to the capture term instead would leave the key
-                    // output-derived and reintroduce the executor/materializer
-                    // divergence.
-                    outputs: BTreeMap::new(),
+                    // Bridged: a tool's capture defaults are live. The step
+                    // worker merges them under the step's own declarations (the
+                    // step wins by name) before capturing, so one instance
+                    // holds every name a step with this work can bind. They are
+                    // not key material: the v4 instance key derives from inputs
+                    // alone, and a step reads the names it binds out of the
+                    // instance it found.
+                    outputs: spec.outputs.clone(),
                     tool_content_map: spec.runtime.content_map.clone(),
                 };
                 (id, unified)
@@ -532,6 +529,42 @@ mod tests {
         let hashes = collect_config_content_hashes(&BTreeMap::new(), &external_data);
         assert_eq!(hashes.len(), 1);
         assert!(hashes.contains(&hash_a));
+    }
+
+    /// A tool's declared output captures reach the unified spec.
+    ///
+    /// They are the defaults the step worker merges under a step's own
+    /// declarations before capturing, so a bridge that dropped them would
+    /// leave every tool-level capture inert and a step that reuses another
+    /// step's work unable to find the names it binds.
+    #[test]
+    fn to_unified_carries_a_tools_declared_output_captures() {
+        let content = super::super::OutputCaptureSpec {
+            name: "content".to_string(),
+            capture: "file:out.mkv".to_string(),
+            ..super::super::OutputCaptureSpec::default()
+        };
+        let document = NickelDocument {
+            tools: BTreeMap::from([(
+                "ffmpeg".to_string(),
+                ToolSpec {
+                    version: None,
+                    kind: ToolKindSpec::Builtin { builtin_id: "ffmpeg@v1".to_string() },
+                    name: "ffmpeg".to_string(),
+                    outputs: BTreeMap::from([("content".to_string(), content.clone())]),
+                    ..ToolSpec::default()
+                },
+            )]),
+            ..NickelDocument::default()
+        };
+
+        let unified = document.to_unified();
+
+        assert_eq!(
+            unified.tools["ffmpeg"].outputs.get("content"),
+            Some(&content),
+            "a tool's declared capture defaults must reach the unified spec",
+        );
     }
 
     /// A version declared in the persisted document reaches the unified spec

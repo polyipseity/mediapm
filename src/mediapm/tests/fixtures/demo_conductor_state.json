@@ -1,40 +1,44 @@
 {
-  "version": 2,
+  "version": 3,
   "tool_call_instances": {
-    "blake3:cfbb50106fa60f5597d276c3be5d802953ce08f28aaa4ccc86ab5277c770c2b7": {
-      "instance_key": "blake3:cfbb50106fa60f5597d276c3be5d802953ce08f28aaa4ccc86ab5277c770c2b7",
-      "step_ids": ["step-0-0-import-video_untagged-to-video_untagged"],
+    "blake3:12d08bc1c0155ec10a7e636ad47ce90b4f37793393466af078d18096e8edfa4e": {
+      "instance_key": "blake3:12d08bc1c0155ec10a7e636ad47ce90b4f37793393466af078d18096e8edfa4e",
       "tool_call_id": "import@v1",
       "impure": true,
       "executed_at": 1785987849238789000,
+      "step_ids": [
+        "step-0-0-import-video_untagged-to-video_untagged"
+      ],
       "command_args": [],
       "env_vars": {},
       "materialized_inputs": {},
       "outputs": {
         "process_code": {
           "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "deterministic": true
+          "capture": null
         },
         "stderr": {
           "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "deterministic": true
+          "capture": null
         },
         "stdout": {
           "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
-          "deterministic": true
+          "capture": null
         },
         "video_untagged": {
           "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
-          "deterministic": true
+          "capture": null
         }
       }
     },
-    "blake3:c2bc0957f4d22ad3cf9ac20c563a69a018dcdbef558cc0d1c941976597faf948": {
-      "instance_key": "blake3:c2bc0957f4d22ad3cf9ac20c563a69a018dcdbef558cc0d1c941976597faf948",
-      "step_ids": ["step-3-0-media-tagger-audio-to-audio-metadata"],
+    "blake3:3612a3dc72929e6063a3ef62b4db4027325d915b0654b9e48cc302f0d01cf939": {
+      "instance_key": "blake3:3612a3dc72929e6063a3ef62b4db4027325d915b0654b9e48cc302f0d01cf939",
       "tool_call_id": "media-tagger@blake3:7d51827f1043df72adea899d45dbcca6cb1ef16eb1bfd0021662e80715e53b90",
       "impure": true,
       "executed_at": 1785987882536740000,
+      "step_ids": [
+        "step-3-0-media-tagger-audio-to-audio-metadata"
+      ],
       "command_args": [
         {
           "hash": "blake3:3aa5f29ea5c666f404385764caa420480d4b49fa947665c7bb10d6dacf351a4c",
@@ -159,28 +163,30 @@
       "outputs": {
         "content": {
           "hash": "blake3:41360405d890b596a6592865fa731ff469ea0f8091397c667a22d002cfdb70d6",
-          "deterministic": true
+          "capture": null
         },
         "process_code": {
           "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "deterministic": true
+          "capture": null
         },
         "stderr": {
           "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "deterministic": true
+          "capture": null
         },
         "stdout": {
           "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "deterministic": true
+          "capture": null
         }
       }
     },
-    "blake3:abd4ae5a854474ba2e90f754f20f151c50ff1b994fe867096c6c8667177c8b26": {
-      "instance_key": "blake3:abd4ae5a854474ba2e90f754f20f151c50ff1b994fe867096c6c8667177c8b26",
-      "step_ids": ["step-2-0-rsgain-audio-to-audio"],
+    "blake3:44ee2b21cb26de60a988711fa110a641fe5563a10717c40f35a80a70f6caa7d9": {
+      "instance_key": "blake3:44ee2b21cb26de60a988711fa110a641fe5563a10717c40f35a80a70f6caa7d9",
       "tool_call_id": "rsgain@blake3:754a0e4d9cf5df2cc61b5336d9d543b2765a85cbbbab890cca34a0eee4c2db98",
       "impure": false,
       "executed_at": 1785987881255817000,
+      "step_ids": [
+        "step-2-0-rsgain-audio-to-audio"
+      ],
       "command_args": [
         {
           "hash": "blake3:ca03060dd2798bea170dc597f7ae1d805339e8fd9224554cfc215d7f3120debb",
@@ -261,28 +267,134 @@
       "outputs": {
         "output_content": {
           "hash": "blake3:2bc0940b8b8a877a3ab09a1f3c0d562fec4bcf8a228a90342811e725c71a6ea6",
-          "deterministic": true
+          "capture": null
         },
         "process_code": {
           "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "deterministic": true
+          "capture": null
         },
         "stderr": {
           "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "deterministic": true
+          "capture": null
         },
         "stdout": {
           "hash": "blake3:7e6f877ddedee767b41692553c10a1702465764b4000660d8d43210b2ea17c19",
-          "deterministic": true
+          "capture": null
         }
       }
     },
-    "blake3:96b287ac4ee232ef1a805f46718e0f9dbc5f4d67e7c5162f0d76a82ea508eeb1": {
-      "instance_key": "blake3:96b287ac4ee232ef1a805f46718e0f9dbc5f4d67e7c5162f0d76a82ea508eeb1",
-      "step_ids": ["step-1-ffmpeg"],
+    "blake3:6bdcc8fefc21b98b7eebcbb74ff68d92657343ba8f14dcf7adbe1a65652d6494": {
+      "instance_key": "blake3:6bdcc8fefc21b98b7eebcbb74ff68d92657343ba8f14dcf7adbe1a65652d6494",
+      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
+      "impure": false,
+      "executed_at": 1785987892263567000,
+      "step_ids": [
+        "step-3-0-media-tagger-audio-to-audio-apply"
+      ],
+      "command_args": [
+        {
+          "hash": "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
+          "deterministic": false
+        },
+        {
+          "hash": "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:2d2f6a73b2dbf5689fcb4fa8a0aa525c0c6a86f1eb154f2dc087249f8d533531",
+          "deterministic": false
+        },
+        {
+          "hash": "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:418ff7b43499e11805be95edc47658bbbdca0bb40b1b3819b6c23ab055f36a4b",
+          "deterministic": false
+        },
+        {
+          "hash": "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:d63bd9a826af91c1fea371965a64e11ee20f13e46b5f52c59901136605b3a487",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
+          "deterministic": true
+        },
+        {
+          "hash": "blake3:baf570d380d94531b570c45030228cfc20913e898e69e828de642dcff53d241d",
+          "deterministic": true
+        }
+      ],
+      "env_vars": {},
+      "materialized_inputs": {
+        "linux/": {
+          "hash": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
+          "deterministic": true
+        },
+        "macos/": {
+          "hash": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
+          "deterministic": true
+        },
+        "windows/": {
+          "hash": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df",
+          "deterministic": true
+        }
+      },
+      "outputs": {
+        "primary": {
+          "hash": "blake3:e182b428226d3ea8e226a169a82bed226bd6e656836025b92ee92f6c650e4472",
+          "capture": null
+        },
+        "process_code": {
+          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+          "capture": null
+        },
+        "stderr": {
+          "hash": "blake3:930e26ffa35f043aca4849b7b2d46d27671bb404afff12fdb982ce6a22505743",
+          "capture": null
+        },
+        "stdout": {
+          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "capture": null
+        }
+      }
+    },
+    "blake3:f40b2e87f4ca40a3dae4a609e32d9ccaa9a28eb175eaab036d4538f97c08b63a": {
+      "instance_key": "blake3:f40b2e87f4ca40a3dae4a609e32d9ccaa9a28eb175eaab036d4538f97c08b63a",
       "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
       "impure": false,
       "executed_at": 1785987849261570000,
+      "step_ids": [
+        "step-1-ffmpeg"
+      ],
       "command_args": [
         {
           "hash": "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
@@ -367,121 +479,19 @@
       "outputs": {
         "primary": {
           "hash": "blake3:13c005b65697c8679f7d8319bf869a51ac937ab425cc70257fb214756d9bb665",
-          "deterministic": true
+          "capture": null
         },
         "process_code": {
           "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "deterministic": true
+          "capture": null
         },
         "stderr": {
           "hash": "blake3:c953d2f43b5cd3669fa318cab3171d48622a1067d271aaeca71cfedb17d0d763",
-          "deterministic": true
+          "capture": null
         },
         "stdout": {
           "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "deterministic": true
-        }
-      }
-    },
-    "blake3:d1b02bd859f417023bccb31e3f2a4dae4c6fd0f525c25d6edbae91a54c3e201c": {
-      "instance_key": "blake3:d1b02bd859f417023bccb31e3f2a4dae4c6fd0f525c25d6edbae91a54c3e201c",
-      "step_ids": ["step-3-0-media-tagger-audio-to-audio-apply"],
-      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
-      "impure": false,
-      "executed_at": 1785987892263567000,
-      "command_args": [
-        {
-          "hash": "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
-          "deterministic": false
-        },
-        {
-          "hash": "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:2d2f6a73b2dbf5689fcb4fa8a0aa525c0c6a86f1eb154f2dc087249f8d533531",
-          "deterministic": false
-        },
-        {
-          "hash": "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:418ff7b43499e11805be95edc47658bbbdca0bb40b1b3819b6c23ab055f36a4b",
-          "deterministic": false
-        },
-        {
-          "hash": "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:d63bd9a826af91c1fea371965a64e11ee20f13e46b5f52c59901136605b3a487",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
-          "deterministic": true
-        },
-        {
-          "hash": "blake3:baf570d380d94531b570c45030228cfc20913e898e69e828de642dcff53d241d",
-          "deterministic": true
-        }
-      ],
-      "env_vars": {},
-      "materialized_inputs": {
-        "linux/": {
-          "hash": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
-          "deterministic": true
-        },
-        "macos/": {
-          "hash": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
-          "deterministic": true
-        },
-        "windows/": {
-          "hash": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df",
-          "deterministic": true
-        }
-      },
-      "outputs": {
-        "primary": {
-          "hash": "blake3:e182b428226d3ea8e226a169a82bed226bd6e656836025b92ee92f6c650e4472",
-          "deterministic": true
-        },
-        "process_code": {
-          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "deterministic": true
-        },
-        "stderr": {
-          "hash": "blake3:930e26ffa35f043aca4849b7b2d46d27671bb404afff12fdb982ce6a22505743",
-          "deterministic": true
-        },
-        "stdout": {
-          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "deterministic": true
+          "capture": null
         }
       }
     }
@@ -490,50 +500,20 @@
     "tool_call_instance_counter": 0,
     "conductor_gc_epoch": 0,
     "instances": {
-      "blake3:cfbb50106fa60f5597d276c3be5d802953ce08f28aaa4ccc86ab5277c770c2b7": {
-        "save_modes": {
-          "process_code": "Saved",
-          "stderr": "Saved",
-          "stdout": "Saved",
-          "video_untagged": "Saved"
-        },
+      "blake3:12d08bc1c0155ec10a7e636ad47ce90b4f37793393466af078d18096e8edfa4e": {
         "last_referenced_at": 1785987849261165000
       },
-      "blake3:c2bc0957f4d22ad3cf9ac20c563a69a018dcdbef558cc0d1c941976597faf948": {
-        "save_modes": {
-          "content": "Saved",
-          "process_code": "Saved",
-          "stderr": "Saved",
-          "stdout": "Saved"
-        },
+      "blake3:3612a3dc72929e6063a3ef62b4db4027325d915b0654b9e48cc302f0d01cf939": {
         "last_referenced_at": 1785987892262614000
       },
-      "blake3:abd4ae5a854474ba2e90f754f20f151c50ff1b994fe867096c6c8667177c8b26": {
-        "save_modes": {
-          "output_content": "Saved",
-          "process_code": "Saved",
-          "stderr": "Saved",
-          "stdout": "Saved"
-        },
+      "blake3:44ee2b21cb26de60a988711fa110a641fe5563a10717c40f35a80a70f6caa7d9": {
         "last_referenced_at": 1785987882536660000
       },
-      "blake3:96b287ac4ee232ef1a805f46718e0f9dbc5f4d67e7c5162f0d76a82ea508eeb1": {
-        "save_modes": {
-          "primary": "Saved",
-          "process_code": "Saved",
-          "stderr": "Saved",
-          "stdout": "Saved"
-        },
-        "last_referenced_at": 1785987881255441000
-      },
-      "blake3:d1b02bd859f417023bccb31e3f2a4dae4c6fd0f525c25d6edbae91a54c3e201c": {
-        "save_modes": {
-          "primary": "Saved",
-          "process_code": "Saved",
-          "stderr": "Saved",
-          "stdout": "Saved"
-        },
+      "blake3:6bdcc8fefc21b98b7eebcbb74ff68d92657343ba8f14dcf7adbe1a65652d6494": {
         "last_referenced_at": 1785987904018955000
+      },
+      "blake3:f40b2e87f4ca40a3dae4a609e32d9ccaa9a28eb175eaab036d4538f97c08b63a": {
+        "last_referenced_at": 1785987881255441000
       }
     }
   }

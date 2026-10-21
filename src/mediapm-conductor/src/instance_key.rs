@@ -10,17 +10,17 @@ use std::collections::BTreeMap;
 
 use mediapm_cas::Hash;
 
-use crate::config::{InputBinding, OutputCaptureSpec, SaveMode, ToolSpec};
+use crate::config::{InputBinding, ToolSpec};
 use crate::orchestration::step_worker::template::is_deterministic_command_part;
 use crate::state::{ResolvedInput, ToolCallInstance};
 
 /// Version of the tool-call instance key scheme.
 ///
 /// The scheme is versioned by an integer and only ever moves forward:
-/// `v1 -> v2 -> v3`. A change to the key material bumps this number; it never
-/// appends a revision such as `v3.1`, because the point of the bump is to be
-/// visible. Old persisted keys simply miss once and re-execute.
-pub const INSTANCE_KEY_SCHEME: u32 = 3;
+/// `v1 -> v2 -> v3 -> v4`. A change to the key material bumps this number; it
+/// never appends a revision such as `v4.1`, because the point of the bump is to
+/// be visible. Old persisted keys simply miss once and re-execute.
+pub const INSTANCE_KEY_SCHEME: u32 = 4;
 
 /// Domain separator for tool-call instance keys, carrying the scheme version.
 #[must_use]
@@ -30,40 +30,40 @@ pub fn instance_key_domain() -> String {
 
 /// Derives the content-addressed key of one tool-call instance.
 ///
-/// The key answers whether this work has been done before, from material the
-/// caller can re-derive: the tool call identity, the step's capture set, the
-/// deterministic argument hashes, the deterministic environment hashes and the
-/// materialized tool-content hashes. Time and impurity never participate; an
-/// impure instance's recorded timestamp is provenance.
+/// The key answers whether this work has been done before, from material any
+/// party can re-derive: the tool call identity, the deterministic argument
+/// hashes and the materialized tool-content hashes. Captures are **not** key
+/// material. They are records addressed by name, so two steps that run the same
+/// work share one key however differently they name what they record, and each
+/// step reads the names it binds out of the instance it found. An entry records
+/// the spec that produced it, which is what lets a step tell whether the bytes
+/// it finds were produced the way it would produce them; the key cannot answer
+/// that question and does not try.
 ///
-/// The composite is exactly those six terms, in this order: the scheme domain
-/// separator ([`instance_key_domain`]), the tool call id, the capture-set hash
-/// ([`step_output_specs_hash`]), the command-arg hashes in argv order, the
-/// environment hashes sorted by name, and the materialized-input hashes in
+/// The composite is exactly those four terms, in this order: the scheme domain
+/// separator ([`instance_key_domain`]), the tool call id, the command-arg
+/// hashes in argv order, and the materialized-input hashes in
 /// tool-content-map path order. Nothing here sorts, so the order is key
-/// material and the caller owes it: [`deterministic_materialized_input_hashes`]
-/// reads a `BTreeMap` and is path-ordered already, while env hashes must be
-/// collected in name order. The executor passes no env hashes at all — every
-/// env record is recorded as nondeterministic — so that term is empty on the
-/// production paths.
+/// material and the caller owes it:
+/// [`deterministic_materialized_input_hashes`] reads a `BTreeMap` and is
+/// path-ordered already.
+///
+/// The environment term earlier schemes carried is gone. The executor records
+/// every env value as nondeterministic and therefore passes no env hashes, so
+/// that term was empty by construction on every path and keyed nothing; it
+/// existed only to keep two derivations looking symmetric.
 #[must_use]
 pub fn derive_instance_key(
     tool_call_id: &str,
-    output_specs_hash: Hash,
     deterministic_command_args: &[Hash],
-    deterministic_env_vars: &[Hash],
     deterministic_materialized_inputs: &[Hash],
 ) -> Hash {
     let mut parts = Vec::with_capacity(
-        3 + deterministic_command_args.len()
-            + deterministic_env_vars.len()
-            + deterministic_materialized_inputs.len(),
+        2 + deterministic_command_args.len() + deterministic_materialized_inputs.len(),
     );
     parts.push(Hash::from_content(instance_key_domain().as_bytes()));
     parts.push(Hash::from_content(tool_call_id.as_bytes()));
-    parts.push(output_specs_hash);
     parts.extend_from_slice(deterministic_command_args);
-    parts.extend_from_slice(deterministic_env_vars);
     parts.extend_from_slice(deterministic_materialized_inputs);
     Hash::composite(&parts)
 }
@@ -104,72 +104,6 @@ pub fn merge_step_input_bindings(
         merged.insert(key.clone(), value.clone());
     }
     merged
-}
-
-/// Appends one field to the capture-set byte string, prefixed by its length.
-///
-/// The prefix is a fixed 8-byte little-endian `u64` on every target. A
-/// `usize::to_le_bytes` prefix would be 4 bytes on a 32-bit host, so the same
-/// capture set would derive a different key on a different architecture and a
-/// library synced on one machine would re-execute everything on another. The
-/// length is a widening cast: `usize` is at most 64 bits on every supported
-/// target.
-fn push_capture_field(bytes: &mut Vec<u8>, field: &[u8]) {
-    bytes.extend_from_slice(&(field.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(field);
-}
-
-/// Returns the stable tag a [`SaveMode`] contributes to capture hashing.
-///
-/// Spelled out rather than derived from `Debug` or the serde rename: the tags
-/// are key material, so they must not move when a diagnostic format or a
-/// serialization attribute does.
-const fn save_mode_tag(save: SaveMode) -> &'static str {
-    match save {
-        SaveMode::False => "false",
-        SaveMode::True => "true",
-        SaveMode::Full => "full",
-    }
-}
-
-/// Hashes a step's declared capture set so the instance key covers the files
-/// the step records, not only the command that produced them.
-///
-/// An instance claims the outputs it captured, so the capture set is key
-/// material: two steps that run the same tool with the same inputs but record
-/// different files must not share a key, or the second step reuses the first
-/// step's captures and never records its own artifact.
-///
-/// The caller passes the step's own `outputs` map, which is exactly what the
-/// capture phase records: the conductor never bridges a tool's default
-/// captures into execution, so a tool-level `outputs` block in the document is
-/// inert here. The `to_unified` construction in `config::documents` carries
-/// the reason. Bridging those defaults into execution removes this term from
-/// the key: the v4 key is input-only, so a step locates an instance by the
-/// work it does and reads the names it binds out of what the instance
-/// recorded. Growing this term with the
-/// defaults instead — the other way to keep the current key shape — would keep
-/// the key output-derived and reintroduce the executor/materializer
-/// divergence the term exists to end.
-///
-/// The encoding is canonical and infallible: the byte string is built
-/// directly, so there is no serialization path that can fail or reorder. For
-/// each entry in `BTreeMap` order it pushes the map key, `name`, `capture` and
-/// the `save` tag as length-prefixed fields, then `allow_empty` and
-/// `include_topmost_folder` as single bytes. An empty map is encoded as zero
-/// bytes, giving every step that declares no captures one fixed hash.
-#[must_use]
-pub fn step_output_specs_hash(outputs: &BTreeMap<String, OutputCaptureSpec>) -> Hash {
-    let mut bytes = Vec::new();
-    for (key, spec) in outputs {
-        push_capture_field(&mut bytes, key.as_bytes());
-        push_capture_field(&mut bytes, spec.name.as_bytes());
-        push_capture_field(&mut bytes, spec.capture.as_bytes());
-        push_capture_field(&mut bytes, save_mode_tag(spec.save).as_bytes());
-        bytes.push(u8::from(spec.allow_empty));
-        bytes.push(u8::from(spec.include_topmost_folder));
-    }
-    Hash::from_content(&bytes)
 }
 
 /// Resolved value bytes for a hash-backed binding (`step_output` / `external_data`
@@ -260,28 +194,19 @@ pub fn deterministic_materialized_input_hashes(instance: &ToolCallInstance) -> V
 
 /// Returns true when `instance.instance_key` matches re-derived key material.
 ///
-/// The derivation is content-only (tool id, the step's capture set,
-/// deterministic input hashes, materialized-input hashes), so an impure
-/// instance's stored key keeps matching no matter how much wall-clock time
-/// separates the recording from the check.
-///
-/// `output_specs_hash` is caller-supplied — [`step_output_specs_hash`] of the
-/// step's declared captures, which is the set the capture phase records —
-/// because the instance carries the captures it recorded, not the spec that
-/// selected them: the caller re-derives the spec from the workflow document it
-/// is matching against.
+/// The derivation is content-only (tool id, deterministic input hashes,
+/// materialized-input hashes), so an impure instance's stored key keeps
+/// matching no matter how much wall-clock time separates the recording from the
+/// check, and a step's capture declarations cannot move it.
 #[must_use]
 pub fn instance_matches_stored_key(
     instance: &ToolCallInstance,
-    output_specs_hash: Hash,
     deterministic_input_hashes: &[Hash],
     deterministic_materialized_input_hashes: &[Hash],
 ) -> bool {
     let derived = crate::state::derive_tool_call_instance_key(
         &instance.tool_call_id,
-        output_specs_hash,
         deterministic_input_hashes,
-        &[],
         deterministic_materialized_input_hashes,
     );
     derived == instance.instance_key
@@ -291,32 +216,11 @@ pub fn instance_matches_stored_key(
 mod tests {
     use super::*;
 
-    /// Returns a capture spec that captures `capture` under `name`, with every
-    /// optional field left at its documented default so a test moves one field
-    /// at a time.
-    fn capture_spec(name: &str, capture: &str) -> OutputCaptureSpec {
-        OutputCaptureSpec {
-            name: name.to_string(),
-            capture: capture.to_string(),
-            ..OutputCaptureSpec::default()
-        }
-    }
-
-    /// Stands in for a step's capture-set hash in the composition tests.
-    ///
-    /// The value only has to be stable: what these tests isolate is the
-    /// composite around the capture term, and the term's own encoding is
-    /// pinned by the capture tests below.
-    fn capture_term() -> Hash {
-        Hash::from_content(b"capture-set")
-    }
-
     /// Deriving twice from identical material yields identical keys.
     #[test]
     fn derive_instance_key_is_deterministic() {
-        let captures = capture_term();
-        let a = derive_instance_key("echo@v1", captures, &[], &[], &[]);
-        let b = derive_instance_key("echo@v1", captures, &[], &[], &[]);
+        let a = derive_instance_key("echo@v1", &[], &[]);
+        let b = derive_instance_key("echo@v1", &[], &[]);
         assert_eq!(a, b);
     }
 
@@ -330,10 +234,9 @@ mod tests {
     #[test]
     fn impure_keys_ignore_time() {
         let args = [Hash::from_content(b"arg")];
-        let captures = capture_term();
         assert_eq!(
-            derive_instance_key("tool", captures, &args, &[], &[]),
-            derive_instance_key("tool", captures, &args, &[], &[]),
+            derive_instance_key("tool", &args, &[]),
+            derive_instance_key("tool", &args, &[]),
             "identical material must derive identical keys regardless of wall-clock time",
         );
     }
@@ -341,22 +244,18 @@ mod tests {
     /// The versioned domain prefix participates in the key.
     ///
     /// The expected key is composed by hand, `instance_key_domain()`'s bytes
-    /// included, and the same composite without that term must differ. The comparison is against
-    /// the full composition rather than a keyless-looking stand-in, so the test
-    /// fails if the domain term is dropped or its bytes change; a stand-in that
-    /// omitted the capture and argument terms would pass either way.
+    /// included, and the same composite without that term must differ, so the
+    /// test fails if the domain term is dropped or its bytes change.
     #[test]
     fn derive_instance_key_domain_prefix() {
-        let captures = capture_term();
         let args = [Hash::from_content(b"arg")];
-        let with_domain = derive_instance_key("tool", captures, &args, &[], &[]);
+        let with_domain = derive_instance_key("tool", &args, &[]);
         let expected = Hash::composite(&[
             Hash::from_content(instance_key_domain().as_bytes()),
             Hash::from_content(b"tool"),
-            captures,
             args[0],
         ]);
-        let without_domain = Hash::composite(&[Hash::from_content(b"tool"), captures, args[0]]);
+        let without_domain = Hash::composite(&[Hash::from_content(b"tool"), args[0]]);
         assert_eq!(
             with_domain, expected,
             "the key must be the composition that includes the domain"
@@ -364,189 +263,40 @@ mod tests {
         assert_ne!(with_domain, without_domain, "dropping the domain term must move the key");
     }
 
-    /// Argument order matters, and deterministic env and materialized-input
-    /// hashes participate.
+    /// Argument order matters, and materialized-input hashes participate.
     #[test]
-    fn derive_instance_key_args_env_inputs_ordered() {
+    fn derive_instance_key_args_and_inputs_ordered() {
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
-        let captures = capture_term();
         assert_ne!(
-            derive_instance_key("t", captures, &[a, b], &[], &[]),
-            derive_instance_key("t", captures, &[b, a], &[], &[]),
+            derive_instance_key("t", &[a, b], &[]),
+            derive_instance_key("t", &[b, a], &[]),
             "command arg order must matter",
         );
         assert_ne!(
-            derive_instance_key("t", captures, &[], &[], &[]),
-            derive_instance_key("t", captures, &[], &[a], &[]),
-            "deterministic env records must participate",
-        );
-        assert_ne!(
-            derive_instance_key("t", captures, &[], &[], &[]),
-            derive_instance_key("t", captures, &[], &[], &[b]),
+            derive_instance_key("t", &[], &[]),
+            derive_instance_key("t", &[], &[b]),
             "deterministic materialized inputs must participate",
         );
     }
 
-    /// The key is exactly `composite(domain, id, captures, args, env, inputs)`.
+    /// The key is exactly `composite(domain, id, args, inputs)`.
     ///
-    /// Env is excluded in practice because the executor always passes an empty
-    /// env slice. The capture term is included because an instance claims the
-    /// outputs it captured. Pinning the exact component list guards all of it:
-    /// adding a component, dropping the capture term, keying env, or
-    /// reintroducing a time term breaks this test.
+    /// Pinning the exact component list guards all of it: adding a component,
+    /// reintroducing a capture or env term, or reintroducing a time term breaks
+    /// this test. Captures in particular must never come back — a key that
+    /// covers them makes identical work derive different keys, which is the
+    /// split the shared-instance model exists to remove.
     #[test]
     fn derive_instance_key_composite_components_exact() {
         let arg = Hash::from_content(b"arg");
-        let captures = capture_term();
-        let key = derive_instance_key("t", captures, &[arg], &[], &[]);
+        let key = derive_instance_key("t", &[arg], &[]);
         let expected = Hash::composite(&[
             Hash::from_content(instance_key_domain().as_bytes()),
             Hash::from_content(b"t"),
-            captures,
             arg,
         ]);
         assert_eq!(key, expected);
-    }
-
-    /// Two steps that run the same tool with the same inputs but capture
-    /// different files must not share an instance key.
-    ///
-    /// An instance claims the outputs it captured, so a shared key serves one
-    /// step's captures to the other and the loser's artifact is never
-    /// recorded. The online demo's `links` and `thumbnails` steps are exactly
-    /// this pair: identical merged yt-dlp inputs, different captures.
-    #[test]
-    fn two_steps_that_differ_only_in_their_output_captures_get_distinct_keys() {
-        let args = [Hash::from_content(b"arg")];
-        let links = BTreeMap::from([(
-            "yt_dlp_link_artifacts".to_string(),
-            capture_spec("yt_dlp_link_artifacts", "folder_regex:^downloads/.+[.](?:url|webloc)$"),
-        )]);
-        let thumbnails = BTreeMap::from([(
-            "yt_dlp_thumbnail_artifacts".to_string(),
-            capture_spec(
-                "yt_dlp_thumbnail_artifacts",
-                "folder_regex:^downloads/.+[.](?:jpg|webp)$",
-            ),
-        )]);
-
-        assert_ne!(
-            crate::state::derive_tool_call_instance_key(
-                "yt-dlp@blake3:aa",
-                step_output_specs_hash(&links),
-                &args,
-                &[],
-                &[],
-            ),
-            crate::state::derive_tool_call_instance_key(
-                "yt-dlp@blake3:aa",
-                step_output_specs_hash(&thumbnails),
-                &args,
-                &[],
-                &[],
-            ),
-            "steps that capture different files must not share an instance key",
-        );
-    }
-
-    /// Identical captures keep deduplicating: two steps with the same tool,
-    /// inputs and captures derive the same key, so one execution serves both.
-    #[test]
-    fn identical_output_captures_still_deduplicate() {
-        let args = [Hash::from_content(b"arg")];
-        let captures = BTreeMap::from([("result".to_string(), capture_spec("result", "stdout"))]);
-        let specs_hash = step_output_specs_hash(&captures);
-
-        assert_eq!(
-            crate::state::derive_tool_call_instance_key("echo@v1", specs_hash, &args, &[], &[]),
-            crate::state::derive_tool_call_instance_key("echo@v1", specs_hash, &args, &[], &[]),
-        );
-    }
-
-    /// Every capture field participates: a changed folder-naming rule or save
-    /// mode changes what the instance claims, so it must change the key.
-    #[test]
-    fn step_output_specs_hash_changes_with_every_capture_field() {
-        let base = capture_spec("out", "file:downloads/a.mkv");
-        let base_hash =
-            step_output_specs_hash(&BTreeMap::from([("out".to_string(), base.clone())]));
-        let moved = [
-            ("name", OutputCaptureSpec { name: "other".to_string(), ..base.clone() }),
-            (
-                "capture",
-                OutputCaptureSpec { capture: "file:downloads/b.mkv".to_string(), ..base.clone() },
-            ),
-            ("save", OutputCaptureSpec { save: SaveMode::Full, ..base.clone() }),
-            ("allow_empty", OutputCaptureSpec { allow_empty: !base.allow_empty, ..base.clone() }),
-            (
-                "include_topmost_folder",
-                OutputCaptureSpec {
-                    include_topmost_folder: !base.include_topmost_folder,
-                    ..base.clone()
-                },
-            ),
-        ];
-        for (field, spec) in moved {
-            assert_ne!(
-                step_output_specs_hash(&BTreeMap::from([("out".to_string(), spec)])),
-                base_hash,
-                "changing `{field}` must change the capture hash",
-            );
-        }
-        assert_ne!(
-            step_output_specs_hash(&BTreeMap::from([("renamed".to_string(), base)])),
-            base_hash,
-            "changing the output key must change the capture hash",
-        );
-    }
-
-    /// A step that declares no captures hashes stably and distinctly from one
-    /// that captures something.
-    #[test]
-    fn empty_output_capture_map_hashes_stably() {
-        let empty = BTreeMap::new();
-        assert_eq!(
-            step_output_specs_hash(&empty),
-            step_output_specs_hash(&empty),
-            "the empty capture set must hash to one fixed value",
-        );
-        assert_ne!(
-            step_output_specs_hash(&empty),
-            step_output_specs_hash(&BTreeMap::from([(
-                "out".to_string(),
-                capture_spec("out", "stdout")
-            )])),
-        );
-    }
-
-    /// Pins the capture byte string field by field: an 8-byte little-endian
-    /// length, the field, and the two flag bytes at the end.
-    ///
-    /// The prefix is deliberately a `u64`. `usize::to_le_bytes` writes 4 bytes
-    /// on a 32-bit host, which would derive a different key there and make a
-    /// library synced on one architecture re-execute everything on the other.
-    /// The pinned bytes below catch a changed field order, a varint or a
-    /// missing flag; the width itself is only observable off a 64-bit host,
-    /// where the two spellings coincide, so that half rests on the code
-    /// carrying an explicit `u64` rather than on this assertion.
-    #[test]
-    fn capture_encoding_prefixes_every_field_with_a_fixed_eight_byte_length() {
-        let captures = BTreeMap::from([("k".to_string(), capture_spec("n", "stdout"))]);
-        let mut expected = Vec::new();
-        for field in ["k", "n", "stdout", "true"] {
-            expected.extend_from_slice(&(field.len() as u64).to_le_bytes());
-            expected.extend_from_slice(field.as_bytes());
-        }
-        // The two flag bytes, at the spec's documented defaults: `allow_empty`
-        // false and `include_topmost_folder` true.
-        expected.push(0);
-        expected.push(1);
-        assert_eq!(
-            step_output_specs_hash(&captures),
-            Hash::from_content(&expected),
-            "each capture field must carry an 8-byte little-endian length",
-        );
     }
 
     /// Pins that a hash-backed binding resolves to the referenced hash's
@@ -619,11 +369,15 @@ mod tests {
 
     /// The scheme version is an integer and the domain states it verbatim.
     ///
-    /// Version sequences in this repository move `v1 -> v2 -> v3`; a dotted
-    /// revision such as `v2.2` hides that the scheme changed and is banned.
+    /// Version sequences in this repository move `v1 -> v2 -> v3 -> v4`; a
+    /// dotted revision such as `v4.1` hides that the scheme changed and is
+    /// banned. The rendered value is pinned literally, so changing the key
+    /// material without bumping the scheme fails here — the oracle in
+    /// `mediapm::materializer::resolve` pins the same literal independently.
     #[test]
     fn the_instance_key_domain_carries_an_integer_version() {
         let domain = instance_key_domain();
+        assert_eq!(domain, "mediapm/conductor/tool call instances/v4");
         assert_eq!(domain, format!("mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}"));
         assert!(!domain.contains('.'), "dotted scheme revision in {domain}");
     }

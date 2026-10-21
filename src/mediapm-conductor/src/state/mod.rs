@@ -74,7 +74,9 @@ pub struct HashedValueRecord {
 /// would produce them. `None` is the migration's "recorded before specs were
 /// stored" sentinel. No declared [`crate::config::OutputCaptureSpec`] equals
 /// `None`, so an entry in that state never satisfies a capture request that
-/// names a spec; the step re-executes and re-records it once.
+/// names a spec — the step-worker probe compares each required name's recorded
+/// spec and treats `None` as a miss — and the step re-executes and re-records
+/// it once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapturedOutput {
     /// CAS content hash of the captured bytes.
@@ -235,24 +237,20 @@ impl Default for ConductorState {
 /// stored instance keeps matching across runs until its key material changes
 /// (or an explicit `force_rerun` bypasses the cache for one run).
 ///
-/// `output_specs_hash` is [`crate::step_output_specs_hash`] of the step's
-/// declared captures — the set the capture phase records, because the unified
-/// document does not bridge a tool's default captures. The caller re-derives it
-/// from the workflow document it is matching against, which is what makes a
-/// step's captures — not just its command — part of what it can reuse.
+/// Captures are not parameters: an instance's captured outputs are records
+/// addressed by name, and a step reads the names it binds out of the instance
+/// it found. Two steps running the same work therefore share this key however
+/// differently they declare what they record, which is what lets one execution
+/// serve both.
 #[must_use]
 pub fn derive_tool_call_instance_key(
     tool_call_id: &str,
-    output_specs_hash: Hash,
     deterministic_input_hashes: &[Hash],
-    deterministic_env_vars: &[Hash],
     deterministic_materialized_input_hashes: &[Hash],
 ) -> Hash {
     crate::instance_key::derive_instance_key(
         tool_call_id,
-        output_specs_hash,
         deterministic_input_hashes,
-        deterministic_env_vars,
         deterministic_materialized_input_hashes,
     )
 }

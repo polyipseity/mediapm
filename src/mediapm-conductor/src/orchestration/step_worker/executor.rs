@@ -1,7 +1,9 @@
 //! Core step execution orchestration.
 //!
 //! [`execute_step`] runs a step through all phases: input resolution, cache
-//! probe, materialization, execution, output capture, and persistence merge.
+//! probe, sandbox materialization, execution, and output capture. Persistence
+//! is not a phase here: each captured entry records the capture spec that
+//! produced it, and that spec carries the persistence decision.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -22,9 +24,7 @@ use super::inputs::resolve_step_inputs;
 use super::process::{ExecutionResult, run_builtin, run_executable_process};
 use super::sandbox::{create_sandbox, materialize_content_map};
 use super::template::{TemplateContext, resolve_command_parts};
-use crate::instance_key::{
-    derive_instance_key, deterministic_input_hashes_from_resolved_inputs, step_output_specs_hash,
-};
+use crate::instance_key::{derive_instance_key, deterministic_input_hashes_from_resolved_inputs};
 
 /// Dispatches execution: runs a builtin or resolves and runs an executable
 /// process. Returns the execution result plus the resolved command-argument
@@ -110,19 +110,20 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let deterministic_materialized_hashes: Vec<Hash> =
         materialized_inputs.values().map(|record| record.hash).collect();
 
-    // The captures this step will record are key material: an instance claims
-    // the outputs it captured, so two steps running the same command but
-    // recording different files must not share a key. The hashed set is the
-    // step's own map, which is exactly what the capture phase below records:
-    // the unified document does not bridge a tool's default captures, so those
-    // never reach the sandbox and cannot make the instance stale.
-    let output_specs_hash = step_output_specs_hash(&request.step.outputs);
+    // Tool-level capture defaults merged under the step's own declarations,
+    // with the step winning by name. This is the set the capture phase records
+    // below, so it is also the set a probe hit has to satisfy: the names this
+    // step and its dependents bind are exactly the merged map's entries.
+    let merged_outputs = merge_output_specs(&tool_spec.outputs, &request.step.outputs);
+
+    // Captures are not key material. An instance recorded by the same work
+    // holds the names a reusing step binds, addressed by name and carrying the
+    // spec that produced each one; the key answers only whether the work itself
+    // has been done, which inputs alone can answer.
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
     let instance_key = derive_instance_key(
         &tool_call_id,
-        output_specs_hash,
         &deterministic_input_hashes,
-        &[], // env is nondeterministic by default; never keyed
         &deterministic_materialized_hashes,
     );
 
@@ -135,20 +136,33 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     // its instance was recorded. Time never invalidates an instance;
     // changed key material or this flag does.
     //
-    // A probe hit is a claim about recorded state — an instance exists and
-    // names the outputs its dependents bind. Whether the store still holds the
-    // bytes those names point at is a separate fact state cannot answer, so the
-    // CAS is asked directly. A missing blob turns the hit into a miss instead
-    // of failing later, mid-materialization, with no route back to the step
-    // that produced it: a pure step recomputes the same bytes, an impure step
-    // fetches them again.
+    // A hit requires every name this step binds — the dependents' references
+    // unioned with the step's own declarations — to be recorded under the
+    // capture identity the merged set gives it. A name recorded another way, or
+    // recorded as `None` by the v2 migration, is a miss: reusing it would hand
+    // the step bytes it would not have produced. Whether the store still holds
+    // the bytes is a separate fact state cannot answer, so the CAS is asked
+    // directly; a missing blob turns the hit into a miss instead of failing
+    // later, mid-materialization, with no route back to the step that produced
+    // it.
+    //
+    // A required name the merged set cannot produce is not a probe condition:
+    // no instance this step's work records can hold it, so the dependent's
+    // reference fails at resolution instead. That filter is what the blob check
+    // is handed, rather than the raw requirement, because a name absent from
+    // the merged map can never resolve and checking it would force a
+    // re-execution on every run of a workflow that is going to fail anyway.
+    let required_output_specs: BTreeMap<String, OutputCaptureSpec> = request
+        .required_output_names
+        .iter()
+        .filter_map(|name| merged_outputs.get(name).map(|spec| (name.clone(), spec.clone())))
+        .collect();
     let cached_instance = if request.force_rerun {
         None
     } else {
-        match probe_cache(&instance_key, &request.state_snapshot, &request.required_output_names) {
+        match probe_cache(&instance_key, &request.state_snapshot, &required_output_specs) {
             Some(instance)
-                if required_output_blobs_exist(cas, &instance, &request.required_output_names)
-                    .await =>
+                if required_output_blobs_exist(cas, &instance, &required_output_specs).await =>
             {
                 Some(instance)
             }
@@ -176,9 +190,8 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let (execution_result, command_args) =
         dispatch_tool_execution(cas, tool_spec, &request, &resolved_inputs, &sandbox_dir).await?;
 
-    // Capture outputs.
-    // Merge tool-level outputs (defaults) with step-level outputs (overrides).
-    let merged_outputs = merge_output_specs(&tool_spec.outputs, &request.step.outputs);
+    // Capture outputs: the merged set computed before the probe, so the probe
+    // and the capture phase cannot disagree about which names exist.
     let captured = capture_outputs(cas, &merged_outputs, &execution_result, &sandbox_dir).await?;
 
     let instance = ToolCallInstance {
@@ -196,8 +209,14 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     Ok(StepExecutionBundle { instance, cache_hit: false })
 }
 
-/// Returns whether every output this step's dependents bind still resolves in
-/// the store.
+/// Returns whether every required output still resolves in the store.
+///
+/// `required` is the probe's own filtered map — the names this step binds that
+/// the merged capture set can actually produce — so every name iterated here has
+/// a recorded entry by the time the probe has answered. A raw requirement may
+/// name an output no instance of this work can hold, and a presence check over
+/// that set could never pass: it would force a re-execution on every run of a
+/// workflow whose resolution is going to fail regardless.
 ///
 /// Only the required names are checked. An output nothing downstream reads
 /// cannot break this run, and stat-ing every recorded output would turn a
@@ -211,9 +230,9 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
 async fn required_output_blobs_exist<C: CasApi>(
     cas: &C,
     instance: &ToolCallInstance,
-    required_output_names: &BTreeSet<String>,
+    required: &BTreeMap<String, OutputCaptureSpec>,
 ) -> bool {
-    for name in required_output_names {
+    for name in required.keys() {
         let Some(record) = instance.outputs.get(name) else {
             return false;
         };
@@ -224,28 +243,65 @@ async fn required_output_blobs_exist<C: CasApi>(
     true
 }
 
-/// Merges tool-level output specs (defaults) with step-level output specs
-/// (overrides). Step-level outputs override tool-level outputs by name,
-/// and step-level outputs not present in the tool-level set are appended.
+/// Merges tool-level output specs (defaults) with step-level output specs.
 ///
-/// Only the capture phase reads the result. Tool-level defaults are not key
-/// material because the unified document never carries them: see
-/// [`crate::step_output_specs_hash`].
+/// The tool owns the meaning of every artifact name it declares: its `capture`,
+/// `allow_empty` and `include_topmost_folder` are kept, and a step declaring
+/// the same name contributes only its `save`. A step's full declaration is
+/// authoritative only for a name the tool does not declare, and a name only
+/// the tool declares is kept unchanged.
+///
+/// The reason is that one instance is shared by every step running the same
+/// work, and a name-addressed record is reusable only when the capture beside it
+/// is the one the reusing step would have produced. The artifact layout is a
+/// property of the tool — the sandbox path a capture reads, and whether a
+/// family may legitimately be empty, follow from how the tool writes it — so a
+/// step that could re-select a tool-declared name would let two steps disagree
+/// about bytes one execution produced, and each would re-execute to replace the
+/// other's record forever.
+///
+/// Persistence is the one thing a step owns: whether its own materialization
+/// keeps a family is local to that step and changes no bytes. That is also why
+/// the probe compares capture identity rather than the whole spec
+/// ([`super::cache::probe_cache`]): `save` is recorded beside the entry for
+/// provenance, but a reused entry is byte-for-byte the same artifact whether the
+/// reusing step persists it or not, so letting it decide a miss would put two
+/// steps with different persistence on a forever-re-executing loop.
+///
+/// Every entry's `name` is set to the map key it is stored under. Capture records
+/// `spec.name`, while the probe, the dependents' references and the materializer
+/// address the key; a declaration whose name disagrees with its key would record
+/// a name nothing can bind, and the step would re-execute on every sync. The key
+/// is the identity, so the key wins.
+///
+/// The result is what the capture phase records and what a probe hit must
+/// satisfy, so one instance holds every name a step with this work can bind.
+/// None of it is key material: the instance key derives from inputs alone.
 fn merge_output_specs(
     tool_outputs: &BTreeMap<String, OutputCaptureSpec>,
     step_outputs: &BTreeMap<String, OutputCaptureSpec>,
 ) -> BTreeMap<String, OutputCaptureSpec> {
     let mut merged = tool_outputs.clone();
-    for (name, spec) in step_outputs {
-        merged.insert(name.clone(), spec.clone());
+    for (name, step_spec) in step_outputs {
+        match merged.get_mut(name) {
+            Some(tool_spec) => tool_spec.save = step_spec.save,
+            None => {
+                merged.insert(name.clone(), step_spec.clone());
+            }
+        }
+    }
+    for (name, spec) in &mut merged {
+        if spec.name != *name {
+            spec.name.clone_from(name);
+        }
     }
     merged
 }
 
 /// Builds the recorded environment set from configured execution env vars:
 /// only non-empty values, each content-hashed (never stored literally). Every
-/// record is nondeterministic — env is never keyed (the executor passes an
-/// empty env-hash slice to `derive_instance_key`).
+/// record is nondeterministic, and the instance-key derivation takes no env
+/// term at all, so a changed variable invalidates nothing implicitly.
 fn build_env_vars(
     execution_env_vars: &BTreeMap<String, String>,
 ) -> BTreeMap<String, HashedValueRecord> {
@@ -284,50 +340,45 @@ fn build_materialized_inputs(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
     use mediapm_cas::Hash;
 
-    use super::{
-        build_env_vars, build_materialized_inputs, derive_instance_key, execute_step,
-        merge_output_specs, step_output_specs_hash,
-    };
-    use crate::config::OutputCaptureSpec;
+    use super::{build_env_vars, build_materialized_inputs, execute_step, merge_output_specs};
+    use crate::config::{OutputCaptureSpec, SaveMode, WorkflowStepSpec};
     use crate::orchestration::protocol::{
         StepExecutionBundle, StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
     };
-    use std::collections::BTreeSet;
-    use std::sync::Arc;
+    use crate::state::ConductorState;
 
-    /// Runs one builtin step under `step_id` against `cas` and `state` and
-    /// returns what it recorded.
+    /// Builds a capture spec for `name` reading the implicit stream `stream`,
+    /// with every optional field at its documented default.
+    fn stream_spec(name: &str, stream: &str) -> OutputCaptureSpec {
+        OutputCaptureSpec {
+            name: name.to_string(),
+            capture: stream.to_string(),
+            ..OutputCaptureSpec::default()
+        }
+    }
+
+    /// Runs one builtin `echo` step whose tool declares `tool_defaults` as its
+    /// capture defaults and whose step declaration is `step_outputs`.
     ///
-    /// The bundle is returned beside the two candidate capture terms and the
-    /// input term the executor derived, so a caller can tell which capture term
-    /// became key material as well as observe the instance's provenance. The
-    /// tool spec is filled directly because the real path cannot produce this
-    /// shape: [`crate::config::documents::NickelDocument::to_unified`] leaves a
-    /// tool's `outputs` empty, which is what makes the step's map the whole
-    /// capture set. Filling it here is what lets the test tell the two terms
-    /// apart.
-    ///
-    /// `cas` and `state` are caller-owned so a test can chain steps: the probe
-    /// reads `state`, and the output blobs a hit validates live in `cas`.
-    async fn execute_builtin_step(
+    /// `required` is the set of output names a probe hit must satisfy. The
+    /// tool spec is filled directly because the step worker's own merge is what
+    /// this module tests; the document bridge that fills it in production is
+    /// covered by `config::documents` tests.
+    async fn execute_echo_step(
         cas: &mediapm_cas::InMemoryCas,
-        state: crate::state::ConductorState,
+        state: ConductorState,
         step_id: &str,
-    ) -> (StepExecutionBundle, Hash, Hash, Vec<Hash>) {
+        tool_defaults: BTreeMap<String, OutputCaptureSpec>,
+        step_outputs: BTreeMap<String, OutputCaptureSpec>,
+        required: BTreeSet<String>,
+    ) -> StepExecutionBundle {
         let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let tool_id = "echo@v1";
-        let tool_outputs = BTreeMap::from([(
-            "result".to_string(),
-            OutputCaptureSpec {
-                name: "result".to_string(),
-                capture: "stdout".to_string(),
-                ..OutputCaptureSpec::default()
-            },
-        )]);
         let tool = UnifiedToolSpec {
             name: "echo".to_string(),
             version: None,
@@ -339,11 +390,10 @@ mod tests {
             command_parts: Vec::new(),
             success_codes: Vec::new(),
             execution_env_vars: BTreeMap::new(),
-            outputs: tool_outputs.clone(),
+            outputs: tool_defaults,
             tool_content_map: BTreeMap::new(),
             builtin_id: Some(tool_id.to_string()),
         };
-        let step_outputs = BTreeMap::new();
         let request = StepExecutionRequest {
             unified: Arc::new(UnifiedNickelDocument {
                 tools: BTreeMap::from([(tool_id.to_string(), tool)]),
@@ -352,11 +402,11 @@ mod tests {
                 external_data_policies: BTreeMap::new(),
                 runtime: crate::config::ConductorRuntimeConfig::default(),
             }),
-            step: crate::config::WorkflowStepSpec {
+            step: WorkflowStepSpec {
                 id: step_id.to_string(),
                 tool: "echo".to_string(),
                 inputs: BTreeMap::from([("text".to_string(), "hi".to_string())]),
-                outputs: step_outputs.clone(),
+                outputs: step_outputs,
                 max_retries: 0,
                 depends_on: Vec::new(),
             },
@@ -365,66 +415,404 @@ mod tests {
             outermost_config_dir: tmp.path().to_path_buf(),
             conductor_tmp_dir: tmp.path().join("runtime"),
             step_outputs: Arc::new(BTreeMap::new()),
-            required_output_names: BTreeSet::from(["result".to_string()]),
+            required_output_names: required,
             force_rerun: false,
         };
-        let bundle = execute_step(cas, request).await.expect("the echo builtin runs");
-        let merged_term = step_output_specs_hash(&merge_output_specs(&tool_outputs, &step_outputs));
-        let step_only_term = step_output_specs_hash(&step_outputs);
-        // The one deterministic binding this step resolves, so the expected
-        // keys below carry the same input term the executor derived. The input
-        // term is not what this test varies.
-        let input_hashes = vec![
-            crate::instance_key::instance_key_hash_from_resolved_value_bytes("text", "hi", b"hi")
-                .expect("a literal binding is deterministic"),
-        ];
-        (bundle, merged_term, step_only_term, input_hashes)
+        execute_step(cas, request).await.expect("the echo builtin runs")
     }
 
-    /// The executor keys a step by the captures it declares, and a tool-level
-    /// capture default is not key material.
+    /// The captures a step declares are not key material.
     ///
-    /// A tool's default captures never reach the capture phase on the conductor
-    /// path — [`crate::config::documents::NickelDocument::to_unified`] leaves
-    /// the unified tool's `outputs` empty — so they are not part of what an
-    /// instance claims, and a key that covered them would be keyed by something
-    /// the run never records. The fixture here fills the tool map precisely so
-    /// the two candidate terms differ; the assertion then says which one the
-    /// executor used.
-    ///
-    /// This is also the tripwire for bridging those defaults later: a change
-    /// that makes tool-level captures live without adding them to the capture
-    /// term fails here, where the coupling is cheapest to notice.
+    /// Two steps running the same tool with the same inputs have done the same
+    /// work, so one execution serves both however differently they name what
+    /// they record. Hashing the declarations instead put the second step under
+    /// its own key, so it re-ran the command and the fixture's shared instances
+    /// could not exist.
     #[tokio::test]
-    async fn a_tool_level_capture_default_is_not_key_material() {
+    async fn declared_captures_are_not_key_material() {
         let cas = mediapm_cas::new_in_memory_cas();
-        let (bundle, merged_term, step_only_term, input_hashes) =
-            execute_builtin_step(&cas, crate::state::ConductorState::new_empty(), "step-0-echo")
-                .await;
-        assert_ne!(
-            merged_term, step_only_term,
-            "the fixture must distinguish the two terms, or the assertion below cannot fail",
+        let tool_defaults =
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]);
+        let first = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-a-echo",
+            tool_defaults.clone(),
+            BTreeMap::new(),
+            BTreeSet::from(["result".to_string()]),
+        )
+        .await;
+        assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+
+        let second = execute_echo_step(
+            &cas,
+            state,
+            "step-b-echo",
+            tool_defaults,
+            BTreeMap::from([("scratch".to_string(), stream_spec("scratch", "stderr"))]),
+            BTreeSet::from(["result".to_string()]),
+        )
+        .await;
+
+        assert!(
+            second.cache_hit,
+            "identical work must be reused however each step names what it captures",
         );
         assert_eq!(
-            bundle.instance.instance_key,
-            derive_instance_key("echo@v1", step_only_term, &input_hashes, &[], &[]),
-            "the executor must hash the step's declared captures, which is what it records",
-        );
-        assert_ne!(
-            bundle.instance.instance_key,
-            derive_instance_key("echo@v1", merged_term, &input_hashes, &[], &[]),
-            "a tool-level default that the capture phase never reaches must not move the key",
+            second.instance.instance_key, first.instance.instance_key,
+            "a step's declared captures must not move the instance key",
         );
     }
 
-    /// The instance a step records names that step, so the fixture's
-    /// regeneration can pair instance → step without key history.
+    /// The capture phase records the tool's default captures beside the step's
+    /// own declarations, with the step winning by name.
+    ///
+    /// This is what makes one instance hold the names every step with that work
+    /// can bind, which is what replaces the capture term the key used to carry.
+    #[tokio::test]
+    async fn a_tool_default_capture_is_recorded_beside_the_step_capture() {
+        let cas = mediapm_cas::new_in_memory_cas();
+        let bundle = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-0-echo",
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]),
+            BTreeMap::from([("override".to_string(), stream_spec("override", "stderr"))]),
+            BTreeSet::new(),
+        )
+        .await;
+
+        let names = bundle.instance.outputs.keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "override".to_string(),
+                "process_code".to_string(),
+                "result".to_string(),
+                "stderr".to_string(),
+                "stdout".to_string(),
+            ],
+            "the merged declarations are recorded beside the implicit stream captures",
+        );
+        assert_eq!(
+            bundle.instance.outputs["result"].capture,
+            Some(stream_spec("result", "stdout")),
+            "the tool's default must be recorded under the spec that produced it",
+        );
+        assert_eq!(
+            bundle.instance.outputs["override"].capture,
+            Some(stream_spec("override", "stderr")),
+            "the step's declaration must be the spec the name is recorded under",
+        );
+        assert_eq!(
+            merge_output_specs(
+                &BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]),
+                &BTreeMap::new(),
+            )
+            .len(),
+            1,
+            "the merged set the capture phase records is the tool's defaults plus the step's",
+        );
+    }
+
+    /// A probe hit requires each required name to be recorded with the spec the
+    /// step's declaration asks for, when the tool does not declare that name.
+    ///
+    /// The same name captured another way is a miss: reusing those bytes would
+    /// hand the step content it would not have produced, which is exactly what
+    /// the recorded spec exists to prevent. The name here is step-only, because
+    /// a tool-declared name is the tool's to define and a step changes only its
+    /// persistence.
+    #[tokio::test]
+    async fn a_recorded_spec_that_differs_from_the_declared_one_is_a_miss() {
+        let cas = mediapm_cas::new_in_memory_cas();
+        let first = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-a-echo",
+            BTreeMap::new(),
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]),
+            BTreeSet::from(["result".to_string()]),
+        )
+        .await;
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+
+        let second = execute_echo_step(
+            &cas,
+            state,
+            "step-b-echo",
+            BTreeMap::new(),
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stderr"))]),
+            BTreeSet::from(["result".to_string()]),
+        )
+        .await;
+
+        assert!(
+            !second.cache_hit,
+            "an instance recorded under a different spec for the name must not serve this step",
+        );
+        assert_eq!(
+            second.instance.outputs["result"].capture,
+            Some(stream_spec("result", "stderr")),
+            "the re-execution records the spec the step declares",
+        );
+    }
+
+    /// Two steps that declare different subsets of a tool's artifacts reuse one
+    /// instance, because the tool defines every name it declares.
+    ///
+    /// This is the regression the merge rule exists for. The first step records
+    /// `links` and `thumbnails` under the tool's specs while declaring only
+    /// `links`; the second step declares only `thumbnails`. If the step's
+    /// declaration could re-select a tool-declared name, the recorded
+    /// `thumbnails` spec would be the tool's and the second step's requirement
+    /// the step's, so the second step would re-execute and replace the entry the
+    /// first step needs — and the two would alternate forever on every sync.
+    #[tokio::test]
+    async fn two_steps_declaring_different_tool_artifacts_reuse_one_instance() {
+        let cas = mediapm_cas::new_in_memory_cas();
+        let tool_defaults = BTreeMap::from([
+            (
+                "links".to_string(),
+                OutputCaptureSpec {
+                    name: "links".to_string(),
+                    capture: "file:downloads/links.list".to_string(),
+                    allow_empty: true,
+                    ..OutputCaptureSpec::default()
+                },
+            ),
+            (
+                "thumbnails".to_string(),
+                OutputCaptureSpec {
+                    name: "thumbnails".to_string(),
+                    capture: "file:downloads/thumbs.list".to_string(),
+                    allow_empty: true,
+                    ..OutputCaptureSpec::default()
+                },
+            ),
+        ]);
+
+        let first = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-a-echo",
+            tool_defaults.clone(),
+            BTreeMap::from([(
+                "links".to_string(),
+                OutputCaptureSpec {
+                    name: "links".to_string(),
+                    capture: "file:downloads/links.list".to_string(),
+                    allow_empty: false,
+                    ..OutputCaptureSpec::default()
+                },
+            )]),
+            BTreeSet::from(["links".to_string()]),
+        )
+        .await;
+        assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+
+        let second = execute_echo_step(
+            &cas,
+            state,
+            "step-b-echo",
+            tool_defaults,
+            BTreeMap::from([(
+                "thumbnails".to_string(),
+                OutputCaptureSpec {
+                    name: "thumbnails".to_string(),
+                    capture: "file:downloads/thumbs.list".to_string(),
+                    allow_empty: false,
+                    ..OutputCaptureSpec::default()
+                },
+            )]),
+            BTreeSet::from(["thumbnails".to_string()]),
+        )
+        .await;
+
+        assert!(
+            second.cache_hit,
+            "a name the tool declares must be reusable by a step whose declaration differs only in tolerance",
+        );
+    }
+
+    /// A required name the merged capture set cannot produce does not force a
+    /// re-execution.
+    ///
+    /// The requirement is a union: a dependent may reference a name no instance
+    /// of this work can hold — a misconfigured `${step_output.…}` reference, for
+    /// instance. Such a name is filtered out before the probe and the CAS check,
+    /// because no recorded entry can ever satisfy it, so asking the store about it
+    /// would turn every run of a workflow that is going to fail at resolution into
+    /// a full re-execution for no added information. The producible name beside it
+    /// is still required, which is what keeps the filter from becoming a bypass.
+    #[tokio::test]
+    async fn a_required_name_the_merged_set_cannot_produce_does_not_force_a_rerun() {
+        let cas = mediapm_cas::new_in_memory_cas();
+        let tool_defaults =
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]);
+        let first = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-a-echo",
+            tool_defaults.clone(),
+            BTreeMap::new(),
+            BTreeSet::from(["result".to_string()]),
+        )
+        .await;
+        assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+
+        let second = execute_echo_step(
+            &cas,
+            state,
+            "step-b-echo",
+            tool_defaults,
+            BTreeMap::new(),
+            BTreeSet::from(["result".to_string(), "phantom".to_string()]),
+        )
+        .await;
+
+        assert!(
+            second.cache_hit,
+            "a requirement the merged set cannot produce must not be read as a missing blob",
+        );
+    }
+
+    /// A step declaring a name the tool also declares keeps the tool's selector
+    /// and tolerance, and contributes only its persistence decision.
+    ///
+    /// The tool owns what a name means because the sandbox layout and the
+    /// tolerance for an empty family are properties of how the tool writes the
+    /// artifact, while whether a step persists it is local to that step.
+    #[test]
+    fn a_tool_declared_name_keeps_the_tool_specification() {
+        let tool_spec = OutputCaptureSpec {
+            name: "links".to_string(),
+            capture: "folder_regex:^downloads/links/.+$".to_string(),
+            save: SaveMode::True,
+            allow_empty: true,
+            include_topmost_folder: false,
+        };
+        let step_spec = OutputCaptureSpec {
+            name: "links".to_string(),
+            capture: "folder:downloads/links".to_string(),
+            save: SaveMode::False,
+            allow_empty: false,
+            include_topmost_folder: true,
+        };
+
+        let merged = merge_output_specs(
+            &BTreeMap::from([("links".to_string(), tool_spec.clone())]),
+            &BTreeMap::from([("links".to_string(), step_spec)]),
+        );
+
+        assert_eq!(
+            merged["links"],
+            OutputCaptureSpec { save: SaveMode::False, ..tool_spec },
+            "the tool's selector and tolerance survive the step's declaration; only save is the step's",
+        );
+    }
+
+    /// A name only the step declares keeps the step's whole specification.
+    ///
+    /// Nothing else defines that name, so the step's selector, tolerance and
+    /// folder shape are the only meaning it has.
+    #[test]
+    fn a_step_only_name_keeps_the_step_specification() {
+        let tool_spec = stream_spec("content", "file:out.mkv");
+        let step_spec = OutputCaptureSpec {
+            name: "scratch".to_string(),
+            capture: "stderr".to_string(),
+            save: SaveMode::False,
+            allow_empty: true,
+            include_topmost_folder: false,
+        };
+
+        let merged = merge_output_specs(
+            &BTreeMap::from([("content".to_string(), tool_spec.clone())]),
+            &BTreeMap::from([("scratch".to_string(), step_spec.clone())]),
+        );
+
+        assert_eq!(merged["scratch"], step_spec, "a step-only name has no tool definition to keep");
+        assert_eq!(merged["content"], tool_spec, "the step declares nothing about this name");
+    }
+
+    /// A name only the tool declares is recorded exactly as the tool declares
+    /// it, whatever else the step names.
+    #[test]
+    fn a_tool_only_name_is_unchanged() {
+        let content = stream_spec("content", "file:out.mkv");
+        let links = OutputCaptureSpec {
+            allow_empty: true,
+            include_topmost_folder: false,
+            ..stream_spec("links", "folder_regex:^downloads/links/.+$")
+        };
+
+        let merged = merge_output_specs(
+            &BTreeMap::from([
+                ("content".to_string(), content.clone()),
+                ("links".to_string(), links.clone()),
+            ]),
+            &BTreeMap::from([("scratch".to_string(), stream_spec("scratch", "stderr"))]),
+        );
+
+        assert_eq!(merged["content"], content);
+        assert_eq!(merged["links"], links);
+        assert_eq!(merged["scratch"], stream_spec("scratch", "stderr"));
+    }
+
+    /// A merged spec's `name` is the map key it is stored under, whatever the
+    /// declaration called itself.
+    ///
+    /// Capture records `spec.name`, while the probe, a dependent's
+    /// `${step_output.…}` reference and the materializer all address the map key.
+    /// A declaration whose name disagrees with its key would therefore record a
+    /// name nothing can bind: the step would miss on every sync and re-execute
+    /// forever, and the name it did record would be unreachable. The key is the
+    /// identity, so both sides are normalized to it.
+    #[test]
+    fn a_specification_name_is_normalized_to_its_map_key() {
+        let tool_spec = stream_spec("thumbnails", "file:downloads/thumbs.list");
+        let step_spec = stream_spec("wrong", "stdout");
+
+        let merged = merge_output_specs(
+            &BTreeMap::from([("links".to_string(), tool_spec)]),
+            &BTreeMap::from([("result".to_string(), step_spec)]),
+        );
+
+        assert_eq!(merged["links"].name, "links", "a tool-declared name takes its map key");
+        assert_eq!(merged["result"].name, "result", "a step-only name takes its map key");
+        assert_eq!(
+            merged["links"].capture, "file:downloads/thumbs.list",
+            "normalizing the name must not disturb the selector it was declared with",
+        );
+    }
+
+    /// A recorded instance names the step that recorded it, so the fixture's
+    /// regeneration can pair instance -> step without key history.
     #[tokio::test]
     async fn a_recorded_instance_names_the_step_that_recorded_it() {
         let cas = mediapm_cas::new_in_memory_cas();
-        let (bundle, ..) =
-            execute_builtin_step(&cas, crate::state::ConductorState::new_empty(), "step-7-echo")
-                .await;
+        let bundle = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-7-echo",
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]),
+            BTreeMap::new(),
+            BTreeSet::from(["result".to_string()]),
+        )
+        .await;
+
         assert_eq!(bundle.instance.step_ids, BTreeSet::from(["step-7-echo".to_string()]));
     }
 
@@ -441,16 +829,33 @@ mod tests {
     #[tokio::test]
     async fn a_cache_hit_records_the_reusing_step_and_leaves_a_known_step_alone() {
         let cas = mediapm_cas::new_in_memory_cas();
-        let (first, ..) =
-            execute_builtin_step(&cas, crate::state::ConductorState::new_empty(), "step-a-echo")
-                .await;
+        let tool_defaults =
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]);
+        let required = BTreeSet::from(["result".to_string()]);
+        let first = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-a-echo",
+            tool_defaults.clone(),
+            BTreeMap::new(),
+            required.clone(),
+        )
+        .await;
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
         assert_eq!(first.instance.step_ids, BTreeSet::from(["step-a-echo".to_string()]));
 
-        let mut state = crate::state::ConductorState::new_empty();
+        let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
 
-        let (second, ..) = execute_builtin_step(&cas, state.clone(), "step-b-echo").await;
+        let second = execute_echo_step(
+            &cas,
+            state.clone(),
+            "step-b-echo",
+            tool_defaults.clone(),
+            BTreeMap::new(),
+            required.clone(),
+        )
+        .await;
         assert!(second.cache_hit, "identical work must hit the instance the first step recorded");
         assert_eq!(
             second.instance.step_ids,
@@ -459,7 +864,9 @@ mod tests {
         );
 
         state.tool_call_instances.insert(second.instance.instance_key, second.instance.clone());
-        let (third, ..) = execute_builtin_step(&cas, state, "step-b-echo").await;
+        let third =
+            execute_echo_step(&cas, state, "step-b-echo", tool_defaults, BTreeMap::new(), required)
+                .await;
         assert!(third.cache_hit, "a recorded instance must keep serving the same work");
         assert_eq!(
             third.instance, second.instance,

@@ -147,12 +147,11 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance_key::{derive_instance_key, step_output_specs_hash};
-    use crate::orchestration::protocol::{ConductorState, StepOutputs};
-    use crate::state::{CapturedOutput, ResolvedInput, ToolCallInstance};
+    use crate::instance_key::derive_instance_key;
+    use crate::orchestration::protocol::StepOutputs;
+    use crate::state::ResolvedInput;
     use mediapm_cas::Hash;
-    use mediapm_utils::Timestamp;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     /// Verifies `resolve_step_output_refs` resolves valid references.
     #[test]
@@ -188,76 +187,9 @@ mod tests {
         let args: Vec<Hash> =
             inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
 
-        let captures = step_output_specs_hash(&BTreeMap::new());
-        let key1 = derive_instance_key("test_tool", captures, &args, &[], &[]);
-        let key2 = derive_instance_key("test_tool", captures, &args, &[], &[]);
+        let key1 = derive_instance_key("test_tool", &args, &[]);
+        let key2 = derive_instance_key("test_tool", &args, &[]);
         assert_eq!(key1, key2);
-    }
-
-    /// Verifies `probe_cache` finds cached instances.
-    #[test]
-    fn probe_cache_finds_existing_instance() {
-        let instance_key = Hash::from_content(b"test-key");
-        let instance = ToolCallInstance {
-            instance_key,
-            tool_call_id: "echo@v1".to_string(),
-            impure: false,
-            executed_at: Timestamp::default(),
-            step_ids: BTreeSet::new(),
-            command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
-            materialized_inputs: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-        };
-
-        let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(instance_key, instance);
-
-        let hit = cache::probe_cache(&instance_key, &state, &BTreeSet::new());
-        assert!(hit.is_some());
-    }
-
-    /// Verifies `probe_cache` misses on unknown key.
-    #[test]
-    fn probe_cache_misses_on_unknown_key() {
-        let state = ConductorState::new_empty();
-        let hit = cache::probe_cache(&Hash::from_content(b"unknown-key"), &state, &BTreeSet::new());
-        assert!(hit.is_none());
-    }
-
-    /// Verifies `probe_cache` checks required outputs.
-    #[test]
-    fn probe_cache_checks_required_outputs() {
-        let instance_key = Hash::from_content(b"test-key");
-        let mut outputs = BTreeMap::new();
-        outputs.insert(
-            "result".to_string(),
-            CapturedOutput { hash: Hash::from_content(b"data"), capture: None },
-        );
-        let instance = ToolCallInstance {
-            instance_key,
-            tool_call_id: "echo@v1".to_string(),
-            impure: false,
-            executed_at: Timestamp::default(),
-            step_ids: BTreeSet::new(),
-            command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
-            materialized_inputs: BTreeMap::new(),
-            outputs,
-        };
-
-        let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(instance_key, instance);
-
-        // Required output exists.
-        let required: BTreeSet<String> = ["result".to_string()].into();
-        let hit = cache::probe_cache(&instance_key, &state, &required);
-        assert!(hit.is_some());
-
-        // Required output missing.
-        let missing: BTreeSet<String> = ["nonexistent".to_string()].into();
-        let hit = cache::probe_cache(&instance_key, &state, &missing);
-        assert!(hit.is_none());
     }
 
     /// Verifies `sanitize_for_path` replaces special characters.

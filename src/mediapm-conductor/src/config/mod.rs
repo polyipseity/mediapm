@@ -519,7 +519,11 @@ pub struct WorkflowStepSpec {
     /// Input values keyed by logical tool-input name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, String>,
-    /// Per-output persistence policy overrides keyed by output name.
+    /// Capture specs keyed by output name.
+    ///
+    /// A name the tool declares takes the tool's selector and tolerance with
+    /// this step's `save`; a name only this step declares takes this whole
+    /// spec. See `merge_output_specs` in the step executor.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, OutputCaptureSpec>,
     /// Override the tool's `max_retries` for this specific step.

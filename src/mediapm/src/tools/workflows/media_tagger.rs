@@ -459,6 +459,11 @@ fn build_media_tagger_inputs() -> BTreeMap<String, ToolInputSpec> {
     inputs
 }
 
+/// Builds media-tagger output capture spec map.
+///
+/// These are live defaults, so the cover-art folder tolerates an empty match:
+/// whether a release has artwork is the provider's answer, not the run's, and a
+/// track without it must not fail the step.
 #[must_use]
 fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
     BTreeMap::from([
@@ -478,7 +483,7 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
                 capture: "folder:coverart".to_string(),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
                 include_topmost_folder: true,
             },
         ),
@@ -583,6 +588,20 @@ mod tests {
         assert!(outputs.contains_key("stdout"), "missing stdout output");
         assert!(outputs.contains_key("stderr"), "missing stderr output");
         assert!(outputs.contains_key("process_code"), "missing process_code output");
+    }
+
+    /// The cover-art default tolerates an empty extraction.
+    ///
+    /// Whether a cover image exists is a property of the release, not of the
+    /// run: a track with no artwork on the provider legitimately produces an
+    /// empty cover-art directory, and a folder capture treats that as a failure.
+    #[test]
+    fn the_cover_art_default_tolerates_an_empty_match() {
+        let outputs = build_media_tagger_outputs();
+        assert!(
+            outputs[OUTPUT_SANDBOX_ARTIFACTS].allow_empty,
+            "cover art is optional for a release, so an empty extraction must not fail the step",
+        );
     }
 
     #[test]

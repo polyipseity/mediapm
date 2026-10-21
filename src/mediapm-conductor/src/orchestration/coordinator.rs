@@ -165,11 +165,19 @@ struct StepStateContribution {
     aux: InstanceAux,
 }
 
-/// Resolves `$step_output.<step_id>.<name>` references in input values.
+/// Collects each step's required output names: the names its dependents
+/// reference plus the names it declares for itself.
+///
+/// A reference is the name a later step binds; a declaration is the name this
+/// step will bind from its own capture. The reference scan alone leaves a step
+/// with no dependents requiring nothing, and a probe hit under its key would
+/// then be accepted from any instance recorded by the same work — including one
+/// that never captured what the step now declares.
 fn compute_required_outputs(steps: &[WorkflowStepSpec]) -> BTreeMap<String, BTreeSet<String>> {
     let mut required: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for step in steps {
-        required.entry(step.id.clone()).or_default();
+        let names = required.entry(step.id.clone()).or_default();
+        names.extend(step.outputs.keys().cloned());
     }
 
     let re =
@@ -1273,6 +1281,39 @@ mod tests {
         let required = compute_required_outputs(&steps);
         assert!(required.contains_key("step-1"));
         assert!(required["step-1"].contains("result"));
+    }
+
+    /// A step with no dependents still requires the names it declares itself.
+    ///
+    /// The reference scan alone leaves such a step with an empty set, and an
+    /// empty set lets any instance under the step's key satisfy the probe —
+    /// including one recorded by different work. The step's own declarations
+    /// are the names it will bind from its own capture, so they are part of
+    /// what a hit must prove.
+    #[test]
+    fn compute_required_outputs_includes_the_steps_own_declared_names() {
+        let steps = vec![WorkflowStepSpec {
+            id: "step-1".to_string(),
+            tool: "echo".to_string(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::from([(
+                "result".to_string(),
+                crate::config::OutputCaptureSpec {
+                    name: "result".to_string(),
+                    capture: "stdout".to_string(),
+                    ..crate::config::OutputCaptureSpec::default()
+                },
+            )]),
+            max_retries: 0,
+            depends_on: Vec::new(),
+        }];
+
+        let required = compute_required_outputs(&steps);
+
+        assert!(
+            required["step-1"].contains("result"),
+            "a step's own declared output names belong in its required set",
+        );
     }
 
     /// Verifies `compute_required_outputs` handles steps with no references.

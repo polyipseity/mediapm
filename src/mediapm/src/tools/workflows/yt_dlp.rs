@@ -434,6 +434,12 @@ fn build_yt_dlp_inputs() -> BTreeMap<String, ToolInputSpec> {
 }
 
 /// Builds yt-dlp output capture spec map.
+///
+/// These are live defaults: every yt-dlp step captures the whole set, under its
+/// own declarations for the names it binds. Which sidecar families an
+/// invocation writes depends on the URL and the options, so the folder-typed
+/// families tolerate an empty match — a step that downloads only links writes
+/// no subtitles, and that is a normal outcome rather than a failed step.
 #[must_use]
 fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
     let mut outputs = BTreeMap::from([
@@ -511,7 +517,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: output_name.to_string(),
                 capture: format!("folder_regex:{path_regex}"),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
                 include_topmost_folder: true,
             },
         );
@@ -621,6 +627,28 @@ mod tests {
         assert!(outputs.contains_key(OUTPUT_YT_DLP_DESCRIPTION_FILE), "missing description output");
         assert!(outputs.contains_key(OUTPUT_YT_DLP_INFOJSON_FILE), "missing infojson output");
         assert!(outputs.contains_key(OUTPUT_YT_DLP_ARCHIVE_FILE), "missing archive output");
+    }
+
+    /// Each sidecar family default tolerates an empty match.
+    ///
+    /// These defaults are live: every yt-dlp step captures the whole set, and a
+    /// step that downloads only one family (links, say) writes nothing for the
+    /// others. A folder capture treats zero files as a failure, so without
+    /// tolerance one such step fails every other family's capture.
+    #[test]
+    fn sidecar_family_defaults_tolerate_an_empty_match() {
+        let outputs = build_yt_dlp_outputs();
+        for name in [
+            OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
+            OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS,
+            OUTPUT_YT_DLP_LINK_ARTIFACTS,
+            OUTPUT_YT_DLP_CHAPTER_ARTIFACTS,
+        ] {
+            assert!(
+                outputs[name].allow_empty,
+                "sidecar family default '{name}' must tolerate an invocation that writes none",
+            );
+        }
     }
 
     #[test]

@@ -431,7 +431,6 @@ async fn resolve_single_step_output_hashes_strict(
             (instance.tool_call_id == conductor_tool_key
                 && instance_matches_expected_inputs(
                     instance,
-                    &step.outputs,
                     &expected_inputs,
                     &merged_step_inputs,
                     &instance_key_resolved_values,
@@ -800,20 +799,18 @@ async fn resolve_input_binding_hash(
     Ok(InputBindingHashResolution::Resolved(Hash::from_content(value.as_bytes())))
 }
 
-/// Returns true when one runtime instance was recorded under the step's capture
-/// set and contains all expected input hashes.
+/// Returns true when one runtime instance was recorded from the step's inputs
+/// and materialized tool content.
 ///
-/// The capture term is the step's own `outputs` map — [`mediapm_conductor::step_output_specs_hash`]
-/// of it — because that is the set the step worker hashed when it derived the
-/// key. The tool's default captures are deliberately absent: the conductor
-/// never bridges them into execution — its unified document leaves every tool's
-/// `outputs` empty — so they are never recorded and cannot make an instance
-/// stale. A matcher that merged them would hash a superset the executor never
-/// produced, and every step under a tool that declares captures would fall
-/// through to the relaxed name-only match.
+/// Instance identity is input-derived only: the matcher recomposes the same
+/// four terms the step worker composed — domain, unified tools-catalog key,
+/// deterministic binding hashes and materialized-input hashes. A step's capture
+/// declarations are not part of it, because two steps running the same work
+/// share one instance however differently they name what they record. Finding
+/// the names a step binds inside that instance is a separate question, answered
+/// by name in [`instance_matches_expected_output_names`].
 pub(super) fn instance_matches_expected_inputs(
     instance: &ToolCallInstance,
-    step_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
     expected_inputs: &ExpectedStepInputs,
     merged_step_inputs: &BTreeMap<String, String>,
     instance_key_resolved_values: &BTreeMap<String, Vec<u8>>,
@@ -827,12 +824,7 @@ pub(super) fn instance_matches_expected_inputs(
         instance_key_resolved_values,
     );
     let materialized_hashes = mediapm_conductor::deterministic_materialized_input_hashes(instance);
-    mediapm_conductor::instance_matches_stored_key(
-        instance,
-        mediapm_conductor::step_output_specs_hash(step_outputs),
-        &input_hashes,
-        &materialized_hashes,
-    )
+    mediapm_conductor::instance_matches_stored_key(instance, &input_hashes, &materialized_hashes)
 }
 
 fn instance_matches_expected_output_names(
@@ -849,7 +841,7 @@ mod tests {
 
     use mediapm_cas::FileSystemCas;
     use mediapm_cas::Hash;
-    use mediapm_conductor::{decode_document, decode_state_json};
+    use mediapm_conductor::{decode_document, decode_state_json, encode_state_json};
 
     use super::*;
 
@@ -963,7 +955,6 @@ mod tests {
                 instance.tool_call_id == *conductor_tool_key
                     && instance_matches_expected_inputs(
                         instance,
-                        &ffmpeg_step.outputs,
                         &expected_inputs,
                         &merged_ffmpeg_inputs,
                         &instance_key_resolved_values,
@@ -973,30 +964,20 @@ mod tests {
         assert!(ffmpeg_instance.outputs.contains_key("primary"));
     }
 
-    /// A step under a tool that declares capture defaults still matches the
-    /// instance recorded under the step's own captures.
+    /// A step under a tool that declares capture defaults matches the instance
+    /// the same work recorded, whatever either side declares.
     ///
-    /// This is the shape every mediapm document has: the tool spec carries
-    /// capture defaults (the generated `ffmpeg` tool declares `content`, the
-    /// `yt-dlp` tool declares `content` and `primary`) and each step declares
-    /// the captures it actually wants. Those tool-level defaults are never
-    /// captured, because the conductor does not bridge them into the unified
-    /// document, so the recorded instance is keyed by the step's map alone. A
-    /// matcher that merged the tool's defaults would hash a superset no
-    /// instance was ever keyed by, fall through to the relaxed name-only match,
-    /// and hand the step some other instance of the same tool: the online demo
-    /// resolved its `video_untagged` variant to the tagged artifact exactly
-    /// that way, which is what this test guards.
+    /// Tool-level capture defaults are live: the step worker merges them under
+    /// the step's own declarations before capturing, so a recorded instance
+    /// carries every name a step with that work can bind. The matcher asks two
+    /// questions, and this test pins the second one: the instance must carry the
+    /// names the step binds, and must not be claimed by a sibling that binds a
+    /// name it never recorded. Identity is the first question, and the instance
+    /// here is keyed from the same inputs the expectations name, so it is input
+    /// equality that decides it — no capture set on either side can make the
+    /// instance unreachable.
     #[test]
     fn a_step_under_a_tool_with_default_captures_matches_its_own_instance() {
-        let tool_outputs = BTreeMap::from([(
-            "content".to_string(),
-            mediapm_conductor::OutputCaptureSpec {
-                name: "content".to_string(),
-                capture: "file_regex:^output-0(?:[.][^/\\\\]+)?$".to_string(),
-                ..mediapm_conductor::OutputCaptureSpec::default()
-            },
-        )]);
         let step_outputs = BTreeMap::from([(
             "primary".to_string(),
             mediapm_conductor::OutputCaptureSpec {
@@ -1005,26 +986,17 @@ mod tests {
                 ..mediapm_conductor::OutputCaptureSpec::default()
             },
         )]);
-        let step_only_term = mediapm_conductor::step_output_specs_hash(&step_outputs);
-        let superset_term = {
-            let mut merged = tool_outputs.clone();
-            merged.extend(step_outputs.clone());
-            mediapm_conductor::step_output_specs_hash(&merged)
-        };
-        assert_ne!(
-            step_only_term, superset_term,
-            "the fixture must distinguish the two terms, or the assertions below cannot fail",
-        );
-
+        let sibling_outputs = BTreeMap::from([(
+            "content".to_string(),
+            mediapm_conductor::OutputCaptureSpec {
+                name: "content".to_string(),
+                capture: "folder:outputs".to_string(),
+                ..mediapm_conductor::OutputCaptureSpec::default()
+            },
+        )]);
         let tool_call_id = "ffmpeg@blake3:fixture";
-        let keyed = |term: Hash| ToolCallInstance {
-            instance_key: mediapm_conductor::derive_tool_call_instance_key(
-                tool_call_id,
-                term,
-                &[],
-                &[],
-                &[],
-            ),
+        let instance = ToolCallInstance {
+            instance_key: mediapm_conductor::derive_tool_call_instance_key(tool_call_id, &[], &[]),
             tool_call_id: tool_call_id.to_string(),
             impure: false,
             executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
@@ -1032,32 +1004,22 @@ mod tests {
             command_args: Vec::new(),
             env_vars: BTreeMap::new(),
             materialized_inputs: BTreeMap::new(),
-            outputs: BTreeMap::new(),
+            outputs: BTreeMap::from([(
+                "primary".to_string(),
+                mediapm_conductor::CapturedOutput {
+                    hash: Hash::from_content(b"primary-bytes"),
+                    capture: Some(step_outputs["primary"].clone()),
+                },
+            )]),
         };
-        let expected_inputs = ExpectedStepInputs::default();
-        let no_bindings = BTreeMap::new();
-        let no_values = BTreeMap::new();
-
         assert!(
-            instance_matches_expected_inputs(
-                &keyed(step_only_term),
-                &step_outputs,
-                &expected_inputs,
-                &no_bindings,
-                &no_values,
-            ),
-            "the instance the step worker recorded is keyed by the step's own captures",
+            instance_matches_expected_output_names(&instance, &step_outputs),
+            "the instance must carry the name this step binds",
         );
         assert!(
-            !instance_matches_expected_inputs(
-                &keyed(superset_term),
-                &step_outputs,
-                &expected_inputs,
-                &no_bindings,
-                &no_values,
-            ),
-            "a capture term that folded in the tool's defaults is not a key any step worker \
-             records, so accepting it would mean the matcher hashes a superset",
+            !instance_matches_expected_output_names(&instance, &sibling_outputs),
+            "a sibling step binding a name this instance never recorded is a separate question \
+             from identity, and the name check answers it",
         );
     }
 
@@ -1065,14 +1027,14 @@ mod tests {
     /// key scheme.
     ///
     /// The version is an integer and only moves forward, so a dotted revision
-    /// (`v3.1`) must never appear here: a change to key material is a new
+    /// (`v4.1`) must never appear here: a change to key material is a new
     /// integer, not a patch of this one.
     ///
     /// Re-declared here instead of rendered from `INSTANCE_KEY_SCHEME` or
     /// imported from `instance_key_domain`: this oracle exists to pin the
     /// documented value, so a changed domain string must fail the oracle rather
     /// than move both sides together.
-    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v3";
+    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v4";
 
     /// Returns whether a raw binding source is deterministic, per the documented
     /// spec: a source naming `${env.`, `context.os`, `:file(`, or `:folder(`
@@ -1156,68 +1118,24 @@ mod tests {
         hashes
     }
 
-    /// Hashes one step's declared captures the way the documented spec says:
-    /// for each output in `BTreeMap` order, the map key, `name`, `capture` and
-    /// the `save` tag as length-prefixed fields (an 8-byte little-endian
-    /// length each), then `allow_empty` and `include_topmost_folder` as single
-    /// bytes.
-    ///
-    /// Restated here rather than calling `step_output_specs_hash` for the
-    /// reason given on [`Self::oracle_binding_hashes`]: a capture set that
-    /// production hashed differently would otherwise move both sides together.
-    fn oracle_step_output_specs_hash(
-        outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
-    ) -> Hash {
-        /// Appends one field behind its 8-byte little-endian length. Fixed at
-        /// 8 bytes so the encoding cannot depend on the host's pointer width.
-        fn push(bytes: &mut Vec<u8>, field: &[u8]) {
-            bytes.extend_from_slice(&(field.len() as u64).to_le_bytes());
-            bytes.extend_from_slice(field);
-        }
-        let mut bytes = Vec::new();
-        for (key, spec) in outputs {
-            push(&mut bytes, key.as_bytes());
-            push(&mut bytes, spec.name.as_bytes());
-            push(&mut bytes, spec.capture.as_bytes());
-            let save_tag = match spec.save {
-                mediapm_conductor::SaveMode::False => "false",
-                mediapm_conductor::SaveMode::True => "true",
-                mediapm_conductor::SaveMode::Full => "full",
-            };
-            push(&mut bytes, save_tag.as_bytes());
-            bytes.push(u8::from(spec.allow_empty));
-            bytes.push(u8::from(spec.include_topmost_folder));
-        }
-        Hash::from_content(&bytes)
-    }
-
     /// Recomputes one recorded instance's key from the spec.
     ///
     /// Components, in order: the versioned domain separator, the unified
-    /// tools-catalog key, the step's capture-set hash, the deterministic
-    /// binding hashes, and the instance's materialized-input hashes in
-    /// `BTreeMap` order. The capture set participates because an instance
-    /// claims the outputs it captured, so two steps running the same command
-    /// but recording different files must not share a key; it is the step's own
-    /// map because that is what the capture phase records — a tool-level
-    /// default never reaches it. No time component exists: the
-    /// recorded `executed_at` is provenance, never key material, so a stored
-    /// impure instance keeps matching across runs. The deterministic
-    /// environment term is empty on the mediapm path, which passes no env
-    /// hashes at all.
+    /// tools-catalog key, the deterministic binding hashes, and the instance's
+    /// materialized-input hashes in `BTreeMap` order. Captures do not
+    /// participate: they are records addressed by name, and two steps running
+    /// the same work share one instance however differently they declare what
+    /// they record. No time component exists either: the recorded `executed_at`
+    /// is provenance, never key material, so a stored impure instance keeps
+    /// matching across runs.
     ///
     /// Written out here rather than delegating to `derive_instance_key` (or its
     /// `derive_tool_call_instance_key` façade), for the reason given on
     /// [`Self::oracle_binding_hashes`].
-    fn oracle_instance_key(
-        instance: &ToolCallInstance,
-        step_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,
-        binding_hashes: &[Hash],
-    ) -> Hash {
+    fn oracle_instance_key(instance: &ToolCallInstance, binding_hashes: &[Hash]) -> Hash {
         let mut parts = Vec::new();
         parts.push(Hash::from_content(ORACLE_INSTANCE_KEY_DOMAIN.as_bytes()));
         parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
-        parts.push(oracle_step_output_specs_hash(step_outputs));
         parts.extend_from_slice(binding_hashes);
         parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
         Hash::composite(&parts)
@@ -1233,9 +1151,8 @@ mod tests {
     /// this oracle's own implementation of the documented spec. The forbidden
     /// production calls are `instance_key_hash_from_resolved_value_bytes`,
     /// `deterministic_input_hashes_from_resolved_inputs`,
-    /// `deterministic_input_hashes_from_resolved_value_bytes`,
-    /// `derive_instance_key`, and `step_output_specs_hash`; see
-    /// [`Self::oracle_binding_hashes`] for why.
+    /// `deterministic_input_hashes_from_resolved_value_bytes` and
+    /// `derive_instance_key`; see [`Self::oracle_binding_hashes`] for why.
     ///
     /// Steps are walked in the workflow's declared (dependency) order, so each
     /// step's hash-reference bindings see the outputs recorded for the steps
@@ -1305,7 +1222,7 @@ mod tests {
                 if instance.tool_call_id != tool_call_id || claimed.contains(stored_key) {
                     continue;
                 }
-                let derived = oracle_instance_key(instance, &step.outputs, &binding_hashes);
+                let derived = oracle_instance_key(instance, &binding_hashes);
                 diagnostics.push(format!("{} -> {}", stored_key.to_hex(), derived.to_hex()));
                 if derived == *stored_key {
                     candidates.push((stored_key, instance));
@@ -1500,7 +1417,6 @@ mod tests {
         let mut step_outputs: BTreeMap<String, BTreeMap<String, Hash>> = BTreeMap::new();
         let mut rewrites: BTreeMap<Hash, (Hash, String)> = BTreeMap::new();
         for step in &workflow.steps {
-            let capture_term = mediapm_conductor::step_output_specs_hash(&step.outputs);
             let Some(active_tool_key) =
                 find_active_tool_spec(generated, &step.tool).map(|(key, _)| key.clone())
             else {
@@ -1556,9 +1472,7 @@ mod tests {
             );
             let current_key = mediapm_conductor::derive_tool_call_instance_key(
                 &instance.tool_call_id,
-                capture_term,
                 &current_hashes,
-                &[],
                 &mediapm_conductor::deterministic_materialized_input_hashes(instance),
             );
             if let Some((known_key, known_step)) = rewrites.get(stored_key) {
@@ -1629,6 +1543,45 @@ mod tests {
         }
     }
 
+    /// Inserts each instance's recording step into the fixture text, before any
+    /// key moves.
+    ///
+    /// The insertion is anchored on the instance's stored `instance_key` field,
+    /// so it is unambiguous while the old keys still address the entries and it
+    /// survives the rewrite that follows. An instance that already records its
+    /// step is left untouched; one that records a different step aborts the run
+    /// rather than gaining a second, because the provenance set is the pairing
+    /// record and a conflicting one is a corrupted fixture rather than a stale
+    /// key.
+    ///
+    /// Returns the possibly-updated text and whether anything was inserted.
+    fn insert_recorded_step_ids(
+        text: &str,
+        rewrites: &BTreeMap<Hash, (Hash, String)>,
+    ) -> (String, bool) {
+        let mut text = text.to_string();
+        let mut inserted_any = false;
+        for (stored_key, (_, step_id)) in rewrites {
+            let anchor = format!("      \"instance_key\": \"{stored_key}\",\n");
+            assert_eq!(
+                text.matches(anchor.as_str()).count(),
+                1,
+                "instance {stored_key} must appear exactly once in the fixture",
+            );
+            let inserted = format!("{anchor}      \"step_ids\": [\"{step_id}\"],\n");
+            if text.contains(inserted.as_str()) {
+                continue;
+            }
+            assert!(
+                !text.contains(&format!("{anchor}      \"step_ids\"")),
+                "instance {stored_key} already records a different step; refusing to add a second",
+            );
+            text = text.replace(&anchor, &inserted);
+            inserted_any = true;
+        }
+        (text, inserted_any)
+    }
+
     /// Rewrites the recorded `instance_key`s in `tests/fixtures/demo_conductor_state.json`
     /// so the fixture stays a valid record of the conductor run it captured.
     ///
@@ -1680,13 +1633,17 @@ mod tests {
     /// path — it comes from the fixture's own `step_ids` — so a resolution helper
     /// that drifted would produce new keys, not a mismatched pairing.
     ///
-    /// **Write.** The regenerated text goes to a sibling temporary file in the
-    /// fixture's own directory (`demo_conductor_state.json.regenerated`) and is
-    /// then renamed over the fixture, so a partial write can never be observed in
-    /// a checked-in record; the sibling path keeps the rename on one filesystem,
-    /// hence atomic. A failed rename leaves that temporary file behind — this is a
-    /// manual maintenance tool, so the leftover is reported to the operator rather
-    /// than hidden: re-running the test truncates and reuses it.
+    /// **Write.** The decoded state is re-encoded through `encode_state_json`
+    /// before it is written, so the checked-in record always lands in the
+    /// current wire shape: a fixture that arrives in an older shape is migrated
+    /// once and never again, and the encoder stops being dead weight in the
+    /// suite. The bytes go to a sibling temporary file in the fixture's own
+    /// directory (`demo_conductor_state.json.regenerated`) and are then renamed
+    /// over the fixture, so a partial write can never be observed in a
+    /// checked-in record; the sibling path keeps the rename on one filesystem,
+    /// hence atomic. A failed rename leaves that temporary file behind — this is
+    /// a manual maintenance tool, so the leftover is reported to the operator
+    /// rather than hidden: re-running the test truncates and reuses it.
     #[tokio::test]
     #[ignore = "fixture maintenance: rewrites demo_conductor_state.json; run manually after an instance-key derivation change"]
     async fn regenerate_demo_conductor_state_fixture_keys() {
@@ -1718,31 +1675,15 @@ mod tests {
             );
         }
 
-        let mut text = std::fs::read_to_string(&path).expect("read demo conductor state fixture");
+        let original_bytes = std::fs::read(&path).expect("read demo conductor state fixture");
+        let original_text = String::from_utf8(original_bytes.clone())
+            .expect("demo conductor state fixture is utf-8");
 
         // Provenance first, while the stored keys still address the entries: a
         // fixture that predates the field gains the recording step here, and one
         // that already records it is left alone. This set is what a later run
         // pairs through, so it is never derived from a key scheme.
-        let mut provenance_inserted = false;
-        for (stored_key, (_, step_id)) in &rewrites {
-            let anchor = format!("      \"instance_key\": \"{stored_key}\",\n");
-            assert_eq!(
-                text.matches(anchor.as_str()).count(),
-                1,
-                "instance {stored_key} must appear exactly once in the fixture",
-            );
-            let inserted = format!("{anchor}      \"step_ids\": [\"{step_id}\"],\n");
-            if text.contains(inserted.as_str()) {
-                continue;
-            }
-            assert!(
-                !text.contains(&format!("{anchor}      \"step_ids\"")),
-                "instance {stored_key} already records a different step; refusing to add a second",
-            );
-            text = text.replace(&anchor, &inserted);
-            provenance_inserted = true;
-        }
+        let (mut text, provenance_inserted) = insert_recorded_step_ids(&original_text, &rewrites);
 
         let mut changed = Vec::new();
         for (stored_key, (current_key, step_id)) in &rewrites {
@@ -1756,11 +1697,6 @@ mod tests {
             println!("step {step_id}: {needle} -> {current_key} ({occurrences} occurrences)");
             text = text.replace(needle.as_str(), &current_key.to_string());
             changed.push((*stored_key, *current_key));
-        }
-
-        if changed.is_empty() && !provenance_inserted {
-            println!("fixture is already current; nothing written");
-            return;
         }
 
         // Validate the regenerated text before it can replace a checked-in
@@ -1797,17 +1733,55 @@ mod tests {
             );
         }
 
+        // Re-encode from the value, not from the edited text: the fixture is a
+        // checked-in record of the current wire shape, and a file that arrives
+        // one migration behind would otherwise be migrated on every read and
+        // never exercise the encoder.
+        let mut encoded = encode_state_json(&rewritten).expect("encode regenerated demo state");
+        encoded.push(b'\n');
+        if encoded == original_bytes {
+            println!("fixture is already current; nothing written");
+            return;
+        }
+
         // Same-directory temporary file plus rename: the fixture is a checked-in
         // record, so a partial write must never be observable, and a sibling path
         // keeps the rename on one filesystem (hence atomic).
         let temporary_path = path.with_extension("json.regenerated");
-        std::fs::write(&temporary_path, &text).expect("write regenerated demo conductor state");
+        std::fs::write(&temporary_path, &encoded).expect("write regenerated demo conductor state");
         std::fs::rename(&temporary_path, &path)
             .expect("move regenerated demo conductor state over the fixture");
         if provenance_inserted {
             println!("recorded the recording step on every instance");
         }
-        println!("rewrote {} instance key(s)", changed.len());
+        if changed.is_empty() {
+            println!("normalized the fixture to the current wire shape");
+        } else {
+            println!("rewrote {} instance key(s)", changed.len());
+        }
+    }
+
+    /// The checked-in fixture is already in the current state wire shape.
+    ///
+    /// A fixture one migration behind is migrated on every read, so the write
+    /// path the runtime uses — `encode_state_json` — is never exercised by any
+    /// fixture-backed test and a shape change could land unnoticed. Re-encoding
+    /// the stored bytes and comparing them holds that invariant directly: the
+    /// file is either canonical or this test names the drift, and
+    /// `regenerate_demo_conductor_state_fixture_keys` is the tool that fixes it.
+    #[test]
+    fn the_demo_fixture_is_in_the_current_wire_shape() {
+        let path = fixture_path("demo_conductor_state.json");
+        let bytes = std::fs::read(&path).expect("read demo conductor state fixture");
+        let state = decode_state_json(&bytes).expect("decode demo conductor state fixture");
+        let mut encoded = encode_state_json(&state).expect("encode demo conductor state");
+        encoded.push(b'\n');
+
+        assert_eq!(
+            String::from_utf8(encoded).expect("encoded state is utf-8"),
+            String::from_utf8(bytes).expect("fixture is utf-8"),
+            "the checked-in demo state fixture must already be in the current wire shape; run              `regenerate_demo_conductor_state_fixture_keys` to rewrite it",
+        );
     }
 
     #[tokio::test]

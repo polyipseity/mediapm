@@ -575,4 +575,49 @@ mod tests {
             assert_eq!(spec.capture, name);
         }
     }
+
+    /// A declared name overrides the implicit stream of the same name.
+    ///
+    /// `stdout` is captured implicitly only when nothing declares it, which is
+    /// what lets a tool redirect a name onto a file: the declared spec decides
+    /// both the bytes and the record, so a step binding `stdout` sees the
+    /// declared capture rather than the process stream the name would default
+    /// to. A merge that let the implicit spec win would record bytes under a
+    /// spec neither side declared.
+    #[tokio::test]
+    async fn a_declared_stdout_overrides_the_implicit_stream() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        tokio::fs::write(tmp.path().join("out.txt"), b"from-file").await.unwrap();
+        let execution =
+            ExecutionResult { stdout: b"from-stream".to_vec(), stderr: Vec::new(), exit_code: 0 };
+        let declared = OutputCaptureSpec {
+            name: "stdout".to_string(),
+            capture: "file:out.txt".to_string(),
+            save: SaveMode::True,
+            allow_empty: false,
+            include_topmost_folder: true,
+        };
+
+        let outputs = capture_outputs(
+            &cas,
+            &BTreeMap::from([("stdout".to_string(), declared.clone())]),
+            &execution,
+            tmp.path(),
+        )
+        .await
+        .expect("the declared capture reads the sandbox file");
+
+        let record = &outputs.records["stdout"];
+        assert_eq!(
+            record.capture.as_ref(),
+            Some(&declared),
+            "the declared spec must be the spec recorded for the name",
+        );
+        assert_eq!(
+            cas.get(record.hash).await.unwrap().as_ref(),
+            b"from-file",
+            "the declared capture, not the process stream, decides the bytes",
+        );
+    }
 }
