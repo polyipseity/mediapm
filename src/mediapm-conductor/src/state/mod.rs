@@ -116,7 +116,8 @@ pub struct ToolCallInstance {
     /// Provenance only, never key material. It names the step that recorded
     /// the instance and every later step that reused it, which is what lets
     /// the demo fixture be re-keyed without re-deriving a historical key
-    /// scheme: regeneration pairs an instance with the step that claims it.
+    /// scheme: regeneration pairs an instance with every step that claims it —
+    /// the one that executed the work and each later one that reused it.
     /// A cache hit records the reusing step here, and an id the set already
     /// holds is left as it is, so a steady-state sync persists the same
     /// record.

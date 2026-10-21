@@ -142,8 +142,8 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     //
     // A hit requires every name this step binds — the dependents' references
     // unioned with the step's own declarations — to be recorded under the
-    // capture identity the merged set gives it. A name recorded another way, or
-    // recorded as `None` by the v2 migration, is a miss: reusing it would hand
+    // capture identity the producible set gives it. A name recorded another way,
+    // or recorded as `None` by the v2 migration, is a miss: reusing it would hand
     // the step bytes it would not have produced. Whether the store still holds
     // the bytes is a separate fact state cannot answer, so the CAS is asked
     // directly; a missing blob turns the hit into a miss instead of failing
@@ -261,11 +261,10 @@ async fn required_output_blobs_exist<C: CasApi>(
 /// The merged declarations are not the whole set: `stdout`, `stderr` and
 /// `process_code` are recorded by every execution (see [`implicit_stream_specs`]),
 /// so a dependent referencing one of them is asking for a name the instance
-/// holds even though neither the tool nor the step declared it. Filtering the
-/// probe requirement against the merged map alone dropped exactly those names,
-/// leaving the one case where a reference bypassed the CAS presence check — and
-/// the streams are the names every execution writes, so the check was skipped
-/// where it was cheapest to honor.
+/// holds even though neither the tool nor the step declared it. A merged-set-only
+/// filter would therefore skip the CAS check for exactly the names every
+/// execution writes, so the check would be missing where the recorded entry is
+/// guaranteed to exist.
 ///
 /// A declared entry wins over the implicit one for its name, matching the
 /// capture phase, which records a declared `stdout` under the declared spec and

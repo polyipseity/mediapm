@@ -151,10 +151,13 @@ pub(crate) struct StepExecutionRequest {
     /// Output names a probe hit must find recorded: the names this step's
     /// dependents reference plus the names the step declares for itself.
     ///
-    /// Each name is required under the capture spec the merged tool-plus-step
-    /// set gives it. A name recorded another way, or recorded without a spec by
-    /// the v2 migration, is a miss. Outputs nothing binds and the step does not
-    /// declare never force a rerun.
+    /// Each name is required under the spec the step's *producible* set gives it
+    /// — the merged tool-plus-step declarations plus the implicit streams every
+    /// execution records. A name recorded another way, or recorded without a spec
+    /// by the v2 migration, is a miss. A name outside the producible set is
+    /// dropped before the probe rather than required, since no instance of this
+    /// work holds it. Outputs nothing binds and the step does not declare never
+    /// force a rerun.
     pub required_output_names: BTreeSet<String>,
     /// Run-scoped explicit invalidation: skip the per-step instance-cache
     /// probe so every step executes fresh.
@@ -188,8 +191,11 @@ pub(crate) struct StepExecutionBundle {
     /// this execution never declared), so a stored entry that outlived its
     /// artifact is dropped instead of being served to a dependent.
     ///
-    /// Empty on a cache hit, and that emptiness is load-bearing: a hit produced
-    /// nothing, so it declares nothing to drop and nothing to claim.
+    /// Empty on a cache hit, which is a faithful report rather than a guard: a
+    /// hit produced nothing, so it declares nothing to drop and nothing to
+    /// claim. What enforces that is the settlement's `cache_hit` branch, which
+    /// keeps the stored outputs whole and never calls the union, so a hit cannot
+    /// present a sibling's record as its own even if this map were non-empty.
     pub producible_outputs: BTreeMap<String, OutputCaptureSpec>,
 }
 

@@ -856,6 +856,79 @@ mod tests {
         decode_state_json(&bytes).expect("decode demo conductor state")
     }
 
+    /// The demo workflow's import step, which the shared-instance tests
+    /// duplicate.
+    const IMPORT_STEP_ID: &str = "step-0-0-import-video_untagged-to-video_untagged";
+
+    /// Id of the step the shared-instance tests add beside [`IMPORT_STEP_ID`]:
+    /// one step more than the fixture's instances, which is what a second step
+    /// sharing the import instance's work leaves behind.
+    const DUPLICATED_IMPORT_STEP_ID: &str = "step-0-0-import-copy";
+
+    /// Loads the demo workflow owned, so a test can add a step to it.
+    fn load_demo_workflow(generated: &NickelDocument) -> mediapm_conductor::WorkflowSpec {
+        generated
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
+            .expect("demo workflow")
+            .clone()
+    }
+
+    /// Returns the demo workflow plus a duplicate of its import step, appended
+    /// after every recorded step.
+    ///
+    /// The copy is appended rather than inserted because step outputs resolve in
+    /// declared order: the dependents the fixture records bind the original's
+    /// output, and a copy placed before it would resolve nothing and change the
+    /// inputs every later step derives its key from. `input_hash` replaces the
+    /// copy's `hash` binding, which is the only difference between the two steps;
+    /// `None` makes the copy run exactly the original's work, so both derive one
+    /// instance key.
+    fn demo_workflow_with_duplicated_import_step(
+        workflow: &mediapm_conductor::WorkflowSpec,
+        input_hash: Option<&str>,
+    ) -> mediapm_conductor::WorkflowSpec {
+        let mut duplicated = workflow.clone();
+        let mut copy = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == IMPORT_STEP_ID)
+            .expect("demo workflow carries the import step")
+            .clone();
+        copy.id = DUPLICATED_IMPORT_STEP_ID.to_string();
+        if let Some(input_hash) = input_hash {
+            copy.inputs.insert("hash".to_string(), input_hash.to_string());
+        }
+        duplicated.steps.push(copy);
+        duplicated
+    }
+
+    /// Returns the recorded key of the fixture's import instance.
+    fn import_instance_key(state: &ConductorState) -> Hash {
+        *state
+            .tool_call_instances
+            .iter()
+            .find(|(_, instance)| instance.tool_call_id == "import@v1")
+            .map(|(key, _)| key)
+            .expect("recorded import instance")
+    }
+
+    /// Returns the fixture state with the import instance's provenance naming a
+    /// second step, which is the record a step reusing that instance leaves
+    /// behind.
+    fn state_with_import_instance_claimed_by_duplicate(state: &ConductorState) -> ConductorState {
+        let mut claimed = state.clone();
+        let key = import_instance_key(&claimed);
+        claimed
+            .tool_call_instances
+            .get_mut(&key)
+            .expect("recorded import instance")
+            .step_ids
+            .insert(DUPLICATED_IMPORT_STEP_ID.to_string());
+        claimed
+    }
+
     #[tokio::test]
     async fn demo_workflow_step_outputs_include_ffmpeg_and_apply() {
         let generated = load_generated_doc();
@@ -1212,14 +1285,17 @@ mod tests {
     /// before it. Returns `(step_id, tool_call_id, key)` per step, or a diagnostic
     /// naming the step, its tool, and every recorded candidate key.
     ///
-    /// Two checks do the enforcing, and only two. A step that derives no recorded
-    /// key — what a stale fixture key produces — returns that diagnostic instead of
-    /// re-deriving a key the fixture does not hold, and the closing count check
-    /// rejects a run in which a recorded instance pairs with no step. The candidate
-    /// slice is additionally required to hold exactly one entry, but that branch is
-    /// defensive rather than reachable against this fixture: candidacy requires
-    /// `derived == *stored_key` against the unique keys of a `BTreeMap`, so at most
-    /// one entry can ever match and only the zero case can fire.
+    /// **Accounting.** One instance may be claimed by several steps: the key is
+    /// derived from inputs alone, so two steps that run the same work derive one
+    /// key and the recorded provenance names both. The result therefore holds one
+    /// entry per *step*, never one per instance, and the closing check asks the
+    /// reverse question — does every recorded instance have at least one claiming
+    /// step — rather than requiring the two counts to match. A step that derives
+    /// no recorded key — what a stale fixture key produces — returns that
+    /// diagnostic instead of re-deriving a key the fixture does not hold. The
+    /// candidate slice is required to hold exactly one entry; candidacy requires
+    /// `derived == *stored_key` against the unique keys of a `BTreeMap`, so at
+    /// most one entry can ever match and only the zero case can fire.
     async fn oracle_derive_demo_instance_keys(
         cas: &FileSystemCas,
         generated: &NickelDocument,
@@ -1272,7 +1348,7 @@ mod tests {
             let mut candidates = Vec::new();
             let mut diagnostics = Vec::new();
             for (stored_key, instance) in &state.tool_call_instances {
-                if instance.tool_call_id != tool_call_id || claimed.contains(stored_key) {
+                if instance.tool_call_id != tool_call_id {
                     continue;
                 }
                 let derived = oracle_instance_key(instance, &binding_hashes);
@@ -1312,7 +1388,7 @@ mod tests {
                 .map(Hash::to_hex)
                 .collect::<Vec<_>>();
             return Err(format!(
-                "{} recorded instance(s) pair with no workflow step: {unpaired:?}",
+                "{} recorded instance(s) are claimed by no workflow step: {unpaired:?}",
                 unpaired.len(),
             ));
         }
@@ -1352,26 +1428,31 @@ mod tests {
     /// the commands, inputs, outputs, and timestamps a real sync captured. Task 1
     /// changed only the key each input derives, never the inputs themselves, which
     /// is why an oracle over the recorded inputs is enough to validate the keys.
+    ///
+    /// The closing accounting is written for instances that several steps may
+    /// claim: `paired` holds one entry per step, while every *recorded instance*
+    /// has to be claimed at least once. The fixture's five steps happen to claim
+    /// five distinct instances, so the two counts agree here, but the rule is the
+    /// one [`demo_fixture_instance_key_oracle_accepts_a_shared_instance`]
+    /// exercises with six steps over five instances — a one-instance-per-step
+    /// count would reject that record.
     #[tokio::test]
     async fn demo_fixture_instance_keys_match_independent_spec_oracle() {
         let generated = load_generated_doc();
         let state = load_conductor_state();
-        let workflow = generated
-            .workflows
-            .iter()
-            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
-            .expect("demo workflow");
+        let workflow = load_demo_workflow(&generated);
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
-        let paired = oracle_derive_demo_instance_keys(&cas, &generated, &state, workflow)
+        let paired = oracle_derive_demo_instance_keys(&cas, &generated, &state, &workflow)
             .await
             .expect("every recorded key must be the key the spec derives");
 
+        let claimed = paired.iter().map(|(_, _, key)| *key).collect::<BTreeSet<_>>();
         assert_eq!(
-            paired.len(),
-            workflow.steps.len(),
-            "every demo workflow step must pair with a recorded instance: {paired:?}",
+            claimed.len(),
+            state.tool_call_instances.len(),
+            "every recorded instance must be claimed by at least one step: {paired:?}",
         );
         assert!(
             paired.iter().any(|(_, tool_call_id, _)| tool_call_id == "import@v1"),
@@ -1393,6 +1474,46 @@ mod tests {
                 instance.tool_call_id,
             );
         }
+    }
+
+    /// The oracle accepts one instance claimed by two steps: each step pairs
+    /// with the same recorded instance, the instance is counted once, and both
+    /// steps are counted.
+    ///
+    /// This is the accounting a one-instance-per-step rule cannot express, and
+    /// the input is the record a second step leaving the same work behind
+    /// produces: the duplicate runs the import step's exact inputs, so both
+    /// derive the import instance's key. The closing `assert_ne!` is what makes
+    /// this a test of sharing: a record whose steps claim distinct instances
+    /// satisfies every assertion above while proving nothing about shared
+    /// ownership, and the test refuses such a record.
+    #[tokio::test]
+    async fn demo_fixture_instance_key_oracle_accepts_a_shared_instance() {
+        let generated = load_generated_doc();
+        let state = state_with_import_instance_claimed_by_duplicate(&load_conductor_state());
+        let workflow =
+            demo_workflow_with_duplicated_import_step(&load_demo_workflow(&generated), None);
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let paired = oracle_derive_demo_instance_keys(&cas, &generated, &state, &workflow)
+            .await
+            .expect("a shared instance must pass the oracle");
+
+        let claimed = paired.iter().map(|(_, _, key)| *key).collect::<BTreeSet<_>>();
+        assert_eq!(
+            claimed.len(),
+            state.tool_call_instances.len(),
+            "a shared instance is claimed once and counted once",
+        );
+        assert_ne!(
+            paired.len(),
+            state.tool_call_instances.len(),
+            "this record must be shared, or the assertions above prove nothing new",
+        );
+        let shared_key = import_instance_key(&state);
+        let claims = paired.iter().filter(|(_, _, key)| *key == shared_key).count();
+        assert_eq!(claims, 2, "both import steps must pair with the shared instance: {paired:?}");
     }
 
     /// Proves the oracle is sensitive to a stale key rather than merely restating
@@ -1436,8 +1557,106 @@ mod tests {
         assert!(error.contains("import@v1"), "the diagnostic must name the tool: {error}");
     }
 
-    /// Pairs every recorded instance with the step that owns it, returning
-    /// `stored_key -> (current_key, step_id)`.
+    /// The oracle refuses a record holding an instance no workflow step claims.
+    ///
+    /// `claimed` covers every instance the walk paired, and an instance left
+    /// over — the stale record a workflow that lost a step leaves behind — is
+    /// checked from the instance side, because no step's key derivation can name
+    /// it. The diagnostic carries the keys that matched no step, which is the
+    /// record the operator has to remove or explain.
+    #[tokio::test]
+    async fn oracle_rejects_an_instance_no_workflow_step_claims() {
+        let generated = load_generated_doc();
+        let mut state = load_conductor_state();
+        let workflow = load_demo_workflow(&generated);
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let import_key = import_instance_key(&state);
+        let mut stray = state.tool_call_instances[&import_key].clone();
+        let stray_key = Hash::from_content(b"task-4-oracle-unclaimed-instance");
+        assert_ne!(stray_key, import_key, "the stray record needs a key of its own");
+        stray.instance_key = stray_key;
+        state.tool_call_instances.insert(stray_key, stray);
+
+        let error = oracle_derive_demo_instance_keys(&cas, &generated, &state, &workflow)
+            .await
+            .expect_err("an instance no workflow step claims must fail the oracle");
+        assert!(
+            error.contains("1 recorded instance(s) are claimed by no workflow step"),
+            "the diagnostic must report the unclaimed count: {error}",
+        );
+        assert!(
+            error.contains(&stray_key.to_hex()),
+            "the diagnostic must name the unclaimed instance: {error}",
+        );
+    }
+
+    /// One recorded instance's rewrite: the key each claiming step now derives,
+    /// and the steps whose recorded provenance claims the instance.
+    ///
+    /// The claiming set is a set, not a single id, because one instance is shared
+    /// by every step running the same work and the fixture's provenance names all
+    /// of them; the disagreement diagnostic needs both names to say which two
+    /// claims cannot both hold.
+    #[derive(Debug)]
+    struct DemoInstanceKeyRewrite {
+        /// Key the claiming steps' inputs derive today.
+        current_key: Hash,
+        /// Steps whose recorded `step_ids` names this instance, in id order.
+        claiming_steps: BTreeSet<String>,
+    }
+
+    /// Derives the deterministic binding hashes one workflow step's inputs
+    /// produce today.
+    ///
+    /// Resolution is the materializer's own — merge the active tool's contract
+    /// under the step's declarations, resolve every hash-backed binding against
+    /// the recorded predecessors' outputs, then hash the resolved values —
+    /// because the planner's subject is which step claims which instance, not how
+    /// a binding resolves. The result is the key material for
+    /// `plan_demo_instance_key_rewrites`, which composes it with the instance's
+    /// own recorded tool identity and materialized inputs.
+    ///
+    /// A step whose recorded predecessors are missing cannot be planned: the
+    /// fixture is then incomplete rather than stale, so the error names the step.
+    async fn demo_step_input_hashes(
+        cas: &FileSystemCas,
+        generated: &NickelDocument,
+        step: &mediapm_conductor::WorkflowStepSpec,
+        step_outputs: &StepOutputHashes,
+    ) -> Result<Vec<Hash>, String> {
+        let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
+            .map_err(|error| format!("step '{}': merging step inputs failed: {error}", step.id))?;
+        let Some(expected_inputs) =
+            resolve_expected_input_hashes(cas, generated, &merged, step_outputs).await.map_err(
+                |error| {
+                    format!("step '{}': resolving expected input hashes failed: {error}", step.id)
+                },
+            )?
+        else {
+            return Err(format!(
+                "step '{}' resolves no inputs; its recorded predecessors are missing",
+                step.id,
+            ));
+        };
+        let resolved_values = build_instance_key_resolved_value_bytes(
+            cas,
+            &merged,
+            &expected_inputs,
+        )
+        .await
+        .map_err(|error| {
+            format!("step '{}': resolving instance-key value bytes failed: {error}", step.id)
+        })?;
+        Ok(mediapm_conductor::deterministic_input_hashes_from_resolved_value_bytes(
+            &merged,
+            &resolved_values,
+        ))
+    }
+
+    /// Pairs every recorded instance with the steps that claim it, returning one
+    /// [`DemoInstanceKeyRewrite`] per stored key.
     ///
     /// The pairing comes from the instance's own provenance: `step_ids` names
     /// the steps the instance has served — the one that recorded it and every
@@ -1450,91 +1669,87 @@ mod tests {
     /// become that step's outputs, which is how the production resolver
     /// reconstructs them; the recorded run's step outputs are then available to
     /// the hash-reference bindings of later steps. A step that owns no recorded
-    /// instance, or several, aborts the run: the fixture is then ambiguous, not
+    /// instance, or several, is an error: the fixture is then ambiguous, not
     /// merely stale. A recorded instance that no step claims is simply absent
     /// from the returned map, which the regeneration test treats as a refusal to
     /// rewrite it.
     ///
+    /// Several steps may claim one instance, because the key is derived from
+    /// inputs alone: two steps running identical work share it however
+    /// differently they declare what they record. One rewrite per instance is
+    /// the whole point of the fixture, so the claims are grouped by stored key
+    /// and every claim of one instance has to derive the same key. Claims that
+    /// disagree mean the fixture records provenance its recorded inputs cannot
+    /// explain — the instance would have to move to two keys at once — so the
+    /// run names the instance and both disagreeing steps instead of choosing
+    /// one.
+    ///
     /// Provenance decides *which* instance a step pairs with, and the step's
     /// active tool identity then has to agree: an instance whose recorded
     /// `tool_call_id` is some other tool's key is a stale record, so the run
-    /// aborts before any key is rewritten under a step that never ran that
+    /// stops before any key is rewritten under a step that never ran that
     /// work.
     async fn plan_demo_instance_key_rewrites(
         cas: &FileSystemCas,
         generated: &NickelDocument,
         state: &ConductorState,
         workflow: &mediapm_conductor::WorkflowSpec,
-    ) -> BTreeMap<Hash, (Hash, String)> {
+    ) -> Result<BTreeMap<Hash, DemoInstanceKeyRewrite>, String> {
         let mut step_outputs: BTreeMap<String, BTreeMap<String, Hash>> = BTreeMap::new();
-        let mut rewrites: BTreeMap<Hash, (Hash, String)> = BTreeMap::new();
+        let mut rewrites: BTreeMap<Hash, DemoInstanceKeyRewrite> = BTreeMap::new();
         for step in &workflow.steps {
             let Some(active_tool_key) =
                 find_active_tool_spec(generated, &step.tool).map(|(key, _)| key.clone())
             else {
-                panic!(
+                return Err(format!(
                     "step '{}' references unknown tool '{}' in the generated document",
                     step.id, step.tool,
-                );
+                ));
             };
-            let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
-                .expect("merge step inputs");
-            let Some(expected_inputs) =
-                resolve_expected_input_hashes(cas, generated, &merged, &step_outputs)
-                    .await
-                    .expect("resolve expected inputs")
-            else {
-                panic!(
-                    "step '{}' resolves no inputs; its recorded predecessors are missing",
-                    step.id,
-                );
-            };
-            let resolved_values =
-                build_instance_key_resolved_value_bytes(cas, &merged, &expected_inputs)
-                    .await
-                    .expect("build resolved value bytes");
             let current_hashes =
-                mediapm_conductor::deterministic_input_hashes_from_resolved_value_bytes(
-                    &merged,
-                    &resolved_values,
-                );
+                demo_step_input_hashes(cas, generated, step, &step_outputs).await?;
 
             let paired = state
                 .tool_call_instances
                 .iter()
                 .filter(|(_, instance)| instance.step_ids.contains(&step.id))
                 .collect::<Vec<_>>();
-            assert_eq!(
-                paired.len(),
-                1,
-                "step '{}' must own exactly one recorded instance, found {}",
-                step.id,
-                paired.len(),
-            );
+            if paired.len() != 1 {
+                return Err(format!(
+                    "step '{}' must own exactly one recorded instance, found {}",
+                    step.id,
+                    paired.len(),
+                ));
+            }
             let (stored_key, instance) = paired[0];
-            assert_eq!(
-                instance.tool_call_id,
-                active_tool_key,
-                "step '{}' pairs with instance {} recorded for tool '{}', but the step's active \
-                 tool is '{}'",
-                step.id,
-                stored_key.to_hex(),
-                instance.tool_call_id,
-                active_tool_key,
-            );
+            if instance.tool_call_id != active_tool_key {
+                return Err(format!(
+                    "step '{}' pairs with instance {} recorded for tool '{}', but the step's \
+                     active tool is '{}'",
+                    step.id,
+                    stored_key.to_hex(),
+                    instance.tool_call_id,
+                    active_tool_key,
+                ));
+            }
             let current_key = mediapm_conductor::derive_tool_call_instance_key(
                 &instance.tool_call_id,
                 &current_hashes,
                 &mediapm_conductor::deterministic_materialized_input_hashes(instance),
             );
-            if let Some((known_key, known_step)) = rewrites.get(stored_key) {
-                assert_eq!(
-                    *known_key,
-                    current_key,
-                    "steps '{known_step}' and '{}' disagree about instance {}'s key",
-                    step.id,
-                    stored_key.to_hex(),
-                );
+            if let Some(rewrite) = rewrites.get_mut(stored_key) {
+                if rewrite.current_key != current_key {
+                    let known_step = rewrite.claiming_steps.first().map_or("", String::as_str);
+                    return Err(format!(
+                        "steps '{known_step}' and '{}' disagree about instance {}'s key: {} and \
+                         {}",
+                        step.id,
+                        stored_key.to_hex(),
+                        rewrite.current_key.to_hex(),
+                        current_key.to_hex(),
+                    ));
+                }
+                rewrite.claiming_steps.insert(step.id.clone());
             } else {
                 println!(
                     "step {}\n  instance {}\n  previous {}\n  current  {}",
@@ -1543,27 +1758,35 @@ mod tests {
                     stored_key.to_hex(),
                     current_key.to_hex(),
                 );
-                rewrites.insert(*stored_key, (current_key, step.id.clone()));
+                rewrites.insert(
+                    *stored_key,
+                    DemoInstanceKeyRewrite {
+                        current_key,
+                        claiming_steps: BTreeSet::from([step.id.clone()]),
+                    },
+                );
             }
             step_outputs.insert(step.id.clone(), output_hashes_from_instance(instance));
         }
-        rewrites
+        Ok(rewrites)
     }
 
     /// Regeneration pairs instance → step through the instance's recorded
     /// provenance, so no historical key scheme is consulted.
     ///
     /// The pairing is only as trustworthy as the fixture's `step_ids` record:
-    /// every rewrite the planner reports must name a step that the paired
-    /// instance itself says recorded it. A planner that re-derived a
-    /// historical key scheme instead would pair an instance with a step whose
-    /// id that instance never recorded, which is what this pins.
+    /// every claiming step the planner reports must be one the paired instance
+    /// itself names. A planner that re-derived a historical key scheme instead
+    /// would pair an instance with a step whose id that instance never
+    /// recorded, which is what this pins.
     ///
-    /// The second assertion is what keeps the first from being tautological:
-    /// the fixture is current, so each rewrite must be keyed by the key the
-    /// fixture records. A planner that derived the wrong key, or paired the
-    /// wrong instance, moves `current_key` off the recorded key and fails here
-    /// rather than rewriting the fixture with it.
+    /// The key assertion is the load-bearing one: the fixture is current, so
+    /// each rewrite must be keyed by the key the fixture records. A planner that
+    /// derived the wrong key, or paired the wrong instance, moves `current_key`
+    /// off the recorded key and fails here rather than rewriting the fixture with
+    /// it. The provenance loop below is the weaker half — it restates what the
+    /// planner's own filter guarantees — and is kept as the statement of the
+    /// invariant a future pairing change must preserve.
     #[tokio::test]
     async fn fixture_regeneration_pairs_instances_by_recorded_step_id() {
         let generated = load_generated_doc();
@@ -1575,62 +1798,185 @@ mod tests {
             .expect("demo workflow");
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
-        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow).await;
-        for (stored_key, (current_key, step_id)) in &rewrites {
+        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow)
+            .await
+            .expect("plan demo instance key rewrites");
+        assert_eq!(
+            rewrites.len(),
+            state.tool_call_instances.len(),
+            "every recorded instance must be planned for a rewrite",
+        );
+        for (stored_key, rewrite) in &rewrites {
             assert_eq!(
-                current_key,
-                stored_key,
-                "step {step_id} derives {} for the instance the fixture records under {}, so \
-                 either the derived key or the pairing is wrong",
-                current_key.to_hex(),
+                rewrite.current_key,
+                *stored_key,
+                "steps {:?} derive {} for the instance the fixture records under {}, so either \
+                 the derived key or the pairing is wrong",
+                rewrite.claiming_steps,
+                rewrite.current_key.to_hex(),
                 stored_key.to_hex(),
             );
             let instance = &state.tool_call_instances[stored_key];
-            assert!(
-                instance.step_ids.contains(step_id),
-                "step {step_id} claims instance {} it did not record",
-                stored_key.to_hex(),
-            );
+            for step_id in &rewrite.claiming_steps {
+                assert!(
+                    instance.step_ids.contains(step_id),
+                    "step {step_id} claims instance {} it did not record",
+                    stored_key.to_hex(),
+                );
+            }
         }
     }
 
-    /// Inserts each instance's recording step into the fixture text, before any
-    /// key moves.
+    /// Two claims of one instance that derive different keys are refused,
+    /// naming the instance and both steps.
     ///
-    /// The insertion is anchored on the instance's stored `instance_key` field,
-    /// so it is unambiguous while the old keys still address the entries and it
-    /// survives the rewrite that follows. An instance that already records its
-    /// step is left untouched; one that records a different step aborts the run
-    /// rather than gaining a second, because the provenance set is the pairing
-    /// record and a conflicting one is a corrupted fixture rather than a stale
-    /// key.
+    /// The fixture records one key per instance, so a claim whose inputs derive
+    /// another key means the provenance names a step whose work this record
+    /// cannot explain. Moving the record to either key would break a real claim,
+    /// so the run reports which instance and which two steps disagree instead of
+    /// picking one.
+    #[tokio::test]
+    async fn shared_instance_claims_that_derive_different_keys_are_refused() {
+        let generated = load_generated_doc();
+        let state = state_with_import_instance_claimed_by_duplicate(&load_conductor_state());
+        let workflow = demo_workflow_with_duplicated_import_step(
+            &load_demo_workflow(&generated),
+            Some("blake3:9d3cf1c1a5eb8f1a0ce42fbd6a1a8f13a52a2f9f1a3fbf0a2e6b7c8d9e0f1a2b"),
+        );
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let error = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
+            .await
+            .expect_err("one instance cannot move to two keys");
+        assert!(error.contains(IMPORT_STEP_ID), "the diagnostic must name the first step: {error}");
+        assert!(
+            error.contains(DUPLICATED_IMPORT_STEP_ID),
+            "the diagnostic must name the second step: {error}",
+        );
+        assert!(
+            error.contains(&import_instance_key(&state).to_hex()),
+            "the diagnostic must name the instance: {error}",
+        );
+    }
+
+    /// One instance claimed by two steps regenerates to one rewrite naming both
+    /// steps.
     ///
-    /// Returns the possibly-updated text and whether anything was inserted.
-    fn insert_recorded_step_ids(
-        text: &str,
-        rewrites: &BTreeMap<Hash, (Hash, String)>,
-    ) -> (String, bool) {
-        let mut text = text.to_string();
-        let mut inserted_any = false;
-        for (stored_key, (_, step_id)) in rewrites {
-            let anchor = format!("      \"instance_key\": \"{stored_key}\",\n");
-            assert_eq!(
-                text.matches(anchor.as_str()).count(),
-                1,
-                "instance {stored_key} must appear exactly once in the fixture",
-            );
-            let inserted = format!("{anchor}      \"step_ids\": [\"{step_id}\"],\n");
-            if text.contains(inserted.as_str()) {
-                continue;
-            }
-            assert!(
-                !text.contains(&format!("{anchor}      \"step_ids\"")),
-                "instance {stored_key} already records a different step; refusing to add a second",
-            );
-            text = text.replace(&anchor, &inserted);
-            inserted_any = true;
-        }
-        (text, inserted_any)
+    /// A rewrite moves one recorded key, and the fixture records one key per
+    /// instance, so two claims that agree on the key are one rewrite rather than
+    /// two — the second claim adds a name to the same record instead of
+    /// demanding a key of its own.
+    #[tokio::test]
+    async fn shared_instance_regeneration_emits_one_rewrite_for_every_claim() {
+        let generated = load_generated_doc();
+        let state = state_with_import_instance_claimed_by_duplicate(&load_conductor_state());
+        let workflow =
+            demo_workflow_with_duplicated_import_step(&load_demo_workflow(&generated), None);
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
+            .await
+            .expect("one instance claimed by two steps is one rewrite");
+
+        assert_eq!(
+            rewrites.len(),
+            state.tool_call_instances.len(),
+            "the plan holds one rewrite per instance, not one per claiming step",
+        );
+        let (stored_key, rewrite) = rewrites
+            .iter()
+            .find(|(_, rewrite)| rewrite.claiming_steps.len() == 2)
+            .expect("the shared instance is planned like every other instance");
+        assert_eq!(
+            *stored_key,
+            import_instance_key(&state),
+            "the shared instance is the fixture's import record",
+        );
+        assert_eq!(
+            rewrite.claiming_steps,
+            BTreeSet::from([IMPORT_STEP_ID.to_string(), DUPLICATED_IMPORT_STEP_ID.to_string()]),
+            "the rewrite names both steps that claim the instance",
+        );
+        assert_eq!(
+            rewrite.current_key, *stored_key,
+            "a current fixture keeps its key when the claims agree",
+        );
+    }
+
+    /// The planner refuses a step whose instance records none of its id.
+    ///
+    /// Pairing is provenance-only, so a step whose id no recorded instance names
+    /// has nothing to pair with and the run stops before any key is derived. This
+    /// is the loud outcome a wholesale provenance-less fixture produces: the
+    /// planner names the step that cannot be paired instead of guessing which
+    /// instance it meant.
+    #[tokio::test]
+    async fn planner_refuses_a_step_whose_instance_records_no_provenance() {
+        let generated = load_generated_doc();
+        let mut state = load_conductor_state();
+        let workflow = load_demo_workflow(&generated);
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let import_key = import_instance_key(&state);
+        state
+            .tool_call_instances
+            .get_mut(&import_key)
+            .expect("recorded import instance")
+            .step_ids
+            .clear();
+
+        let error = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
+            .await
+            .expect_err("a step with no recorded provenance cannot be paired");
+        assert!(
+            error.contains(&format!(
+                "step '{IMPORT_STEP_ID}' must own exactly one recorded instance, found 0"
+            )),
+            "the diagnostic must name the step that owns nothing: {error}",
+        );
+    }
+
+    /// The planner refuses an instance whose recorded tool is not the step's.
+    ///
+    /// Provenance alone says which instance a step claims; the recorded tool
+    /// identity says whether that claim can be true, because a key derived under
+    /// one tool's arguments cannot describe another tool's run. A record that
+    /// disagrees stops the run before the rewrite, naming the step, the instance,
+    /// the recorded tool and the active one.
+    #[tokio::test]
+    async fn planner_rejects_an_instance_recorded_for_another_tool() {
+        let generated = load_generated_doc();
+        let mut state = load_conductor_state();
+        let workflow = load_demo_workflow(&generated);
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let import_key = import_instance_key(&state);
+        state
+            .tool_call_instances
+            .get_mut(&import_key)
+            .expect("recorded import instance")
+            .tool_call_id = "some-other-tool@v1".to_string();
+
+        let error = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
+            .await
+            .expect_err("an instance recorded for another tool must be refused");
+        assert!(error.contains(IMPORT_STEP_ID), "the diagnostic must name the step: {error}");
+        assert!(
+            error.contains(&import_key.to_hex()),
+            "the diagnostic must name the instance: {error}",
+        );
+        assert!(
+            error.contains("recorded for tool 'some-other-tool@v1'"),
+            "the diagnostic must name the recorded tool: {error}",
+        );
+        assert!(
+            error.contains("active tool is 'import@v1'"),
+            "the diagnostic must name the step's active tool: {error}",
+        );
     }
 
     /// Rewrites the recorded `instance_key`s in `tests/fixtures/demo_conductor_state.json`
@@ -1647,33 +1993,37 @@ mod tests {
     ///   regenerate_demo_conductor_state_fixture_keys -- --ignored --nocapture
     /// ```
     ///
-    /// The rewrite touches two things in the fixture's JSON text, each by
-    /// anchored insertion or replacement so every other byte of the file is
-    /// preserved: the recorded `instance_key` (the `tool_call_instances` map
-    /// key, that entry's `instance_key` field, and the matching `aux.instances`
-    /// key), and the `step_ids` provenance inserted after each instance's
-    /// `instance_key` field. Both stay valid JSON.
+    /// The rewrite replaces the recorded `instance_key` in the fixture's JSON
+    /// text — the `tool_call_instances` map key, that entry's `instance_key`
+    /// field, and the matching `aux.instances` key — so every other byte of the
+    /// file is preserved. Provenance is read, never written: `step_ids` is the
+    /// pairing record, the planner can pair an instance only through it, and a
+    /// record the planner paired already carries the ids it paired by, so there
+    /// is nothing to synthesize. A fixture that does not supply the provenance
+    /// is refused before a byte is written, and which check refuses it says what
+    /// is missing; see **Pairing** below.
     ///
     /// **Provenance.** Each instance records the steps that have served it in
     /// `step_ids` — the one that executed the work and every later one that
     /// reused it — and that set is the pairing key: a step owns the instance
-    /// whose set names it. The set is written before any key moves, so the
-    /// pairing survives a key-scheme change — which is the state this test runs
-    /// in, since every stored key is stale by definition. The insertion is
-    /// keyed by the stored key, which the rewrite below then moves to the new
-    /// one, and an instance that already records its step is left alone.
+    /// whose set names it. A shared instance names every claiming step, and the
+    /// planner collapses them into one rewrite, so the set survives a
+    /// key-scheme change — which is the state this test runs in, since every
+    /// stored key is stale by definition.
     ///
     /// **Pairing.** The planner pairs through `step_ids` alone; no key derivation
-    /// decides it. Nothing is written unless every recorded instance is claimed by
-    /// a step, so a fixture whose provenance does not cover its instances aborts
-    /// the run with the instance named.
+    /// decides it. A record that does not supply the provenance is refused before
+    /// anything is written, and the refusing check names what is missing: a step
+    /// whose instance records none of its id stops the planner with `step '<id>'
+    /// must own exactly one recorded instance, found 0`, since that step then has
+    /// no instance to pair with at all, while an instance whose `step_ids` name no
+    /// step of this workflow passes the planner and then fails the coverage check
+    /// below, which names the key and the tool.
     ///
     /// **Validation.** The regenerated text is decoded in memory before it can
     /// replace the checked-in record: it must hold exactly the keys the current
     /// derivation produces, and every instance must carry a non-empty `step_ids`
-    /// set. The second check is what makes the anchored insertion above
-    /// trustworthy — an insertion that silently missed cannot overwrite the
-    /// record.
+    /// set naming the steps that claim it.
     ///
     /// **Resolution path.** The new keys are derived from the materializer's live
     /// resolution (`merge_step_inputs_with_tool_defaults`,
@@ -1713,7 +2063,9 @@ mod tests {
         // and reconstructs the recorded run's step outputs from that instead.
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
-        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow).await;
+        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow)
+            .await
+            .expect("plan demo instance key rewrites");
 
         // Prove every instance pairs before touching the file.
         for (stored_key, instance) in &state.tool_call_instances {
@@ -1727,33 +2079,33 @@ mod tests {
         }
 
         let original_bytes = std::fs::read(&path).expect("read demo conductor state fixture");
-        let original_text = String::from_utf8(original_bytes.clone())
+        let mut text = String::from_utf8(original_bytes.clone())
             .expect("demo conductor state fixture is utf-8");
 
-        // Provenance first, while the stored keys still address the entries: a
-        // fixture that predates the field gains the recording step here, and one
-        // that already records it is left alone. This set is what a later run
-        // pairs through, so it is never derived from a key scheme.
-        let (mut text, provenance_inserted) = insert_recorded_step_ids(&original_text, &rewrites);
-
         let mut changed = Vec::new();
-        for (stored_key, (current_key, step_id)) in &rewrites {
-            if current_key == stored_key {
-                println!("step {step_id}: {} already current", stored_key.to_hex());
+        for (stored_key, rewrite) in &rewrites {
+            if rewrite.current_key == *stored_key {
+                println!(
+                    "steps {:?}: {} already current",
+                    rewrite.claiming_steps,
+                    stored_key.to_hex(),
+                );
                 continue;
             }
             let needle = stored_key.to_string();
             let occurrences = text.matches(needle.as_str()).count();
             assert!(occurrences > 0, "instance key {needle} does not appear in the fixture text");
-            println!("step {step_id}: {needle} -> {current_key} ({occurrences} occurrences)");
-            text = text.replace(needle.as_str(), &current_key.to_string());
-            changed.push((*stored_key, *current_key));
+            println!(
+                "steps {:?}: {needle} -> {} ({occurrences} occurrences)",
+                rewrite.claiming_steps, rewrite.current_key,
+            );
+            text = text.replace(needle.as_str(), &rewrite.current_key.to_string());
+            changed.push((*stored_key, rewrite.current_key));
         }
 
         // Validate the regenerated text before it can replace a checked-in
         // record: no stale key may survive, and every instance must carry the
-        // provenance the pairing above relies on. The second check is what makes
-        // the anchored insertion trustworthy, so it runs before the rename.
+        // provenance the pairing above relies on.
         for (stored_key, current_key) in &changed {
             assert!(
                 !text.contains(stored_key.to_string().as_str()),
@@ -1772,16 +2124,20 @@ mod tests {
                 key.to_hex(),
             );
         }
-        for (current_key, step_id) in rewrites.values() {
+        for rewrite in rewrites.values() {
+            let current_key = rewrite.current_key;
             assert!(
-                rewritten.tool_call_instances.contains_key(current_key),
-                "rewritten fixture is missing the key step '{step_id}' derives",
+                rewritten.tool_call_instances.contains_key(&current_key),
+                "rewritten fixture is missing the key steps {:?} derive",
+                rewrite.claiming_steps,
             );
-            let instance = &rewritten.tool_call_instances[current_key];
-            assert!(
-                instance.step_ids.contains(step_id),
-                "rewritten fixture must name step '{step_id}' as the instance's recording step",
-            );
+            let instance = &rewritten.tool_call_instances[&current_key];
+            for step_id in &rewrite.claiming_steps {
+                assert!(
+                    instance.step_ids.contains(step_id),
+                    "rewritten fixture must name step '{step_id}' as a step the instance served",
+                );
+            }
         }
 
         // Re-encode from the value, not from the edited text: the fixture is a
@@ -1802,9 +2158,6 @@ mod tests {
         std::fs::write(&temporary_path, &encoded).expect("write regenerated demo conductor state");
         std::fs::rename(&temporary_path, &path)
             .expect("move regenerated demo conductor state over the fixture");
-        if provenance_inserted {
-            println!("recorded the recording step on every instance");
-        }
         if changed.is_empty() {
             println!("normalized the fixture to the current wire shape");
         } else {

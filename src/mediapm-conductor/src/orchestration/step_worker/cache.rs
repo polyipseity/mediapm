@@ -34,9 +34,11 @@ fn capture_identity_matches(recorded: &OutputCaptureSpec, required: &OutputCaptu
 /// "Can serve" means the instance exists and records every required name under
 /// the required capture identity. `required` is the names this step binds — its
 /// dependents' references unioned with its own declarations — mapped to the spec
-/// the merged tool-plus-step capture set gives each one; a name the merged set
-/// cannot produce never appears here, because no instance of this work can hold
-/// it.
+/// the probed step's *producible* set gives each one: the merged tool-plus-step
+/// declarations plus the implicit streams every execution records (`stdout`,
+/// `stderr`, `process_code`). A name outside even that set never appears here,
+/// because no instance of this work can hold it; the executor filters the
+/// requirement through the producible set before probing.
 ///
 /// Equality is on capture identity, not on the whole spec and not on the name
 /// alone: `content` read from a file and `content` read from a folder are
