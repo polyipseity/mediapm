@@ -7,7 +7,7 @@
 | Crate | Role |
 | --- | --- |
 | `src/mediapm-cas/` (`mediapm-cas`) | Content-addressed storage — identity types, hash codec, async API |
-| `src/mediapm-conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model, persistence merge |
+| `src/mediapm-conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model and persistence |
 | `src/mediapm-conductor-builtins/{echo,fs,import,export,archive}/` | Builtin tools (echo, filesystem staging, source ingest, materialization, ZIP transform) |
 | `src/mediapm/` (`mediapm`) | Media API + CLI — composes CAS and Conductor |
 | `scripts/cargo-bin/` | Repository tooling helper binary |

@@ -50,16 +50,16 @@ All progress bar rendering, templates, glyphs, colors, prefix/suffix shapes, tru
 
 ## Configuration Document Model
 
-Conductor uses two config documents plus one runtime state document:
+Conductor uses two config documents plus one runtime state file:
 
 - User-edited config: `conductor.ncl`
 - Program-edited config: `conductor.generated.ncl`
-- Volatile runtime state: resolved from grouped runtime path config (`RunWorkflowOptions.runtime_storage_paths`), default `.conductor/state.ncl`
+- Runtime state file: pretty JSON of the current `ConductorState`, at `RuntimeStoragePaths.state_file_path` (from `RunWorkflowOptions.runtime_storage_paths`), default `.conductor/state.json`
 
 Grouped runtime path defaults:
 
 - runtime root (`conductor_dir`): `.conductor`
-- volatile state path (`conductor_state_config`): `<conductor_dir>/state.ncl`
+- state file path (`state_file_path`, mediapm passes it through `conductor_state_config`): `<conductor_dir>/state.json`
 - filesystem CAS store (`cas_store_dir`): `<conductor_dir>/store`
 - schema export directory: `<conductor_dir>/config/conductor`
 - tool-content cache directory (`conductor_tools_dir`): `<conductor_dir>/tools`
@@ -74,10 +74,9 @@ Document contract:
 - `conductor.generated.ncl` stores machine-managed setup/config declarations.
 - `conductor.ncl` and `conductor.generated.ncl` may define grouped runtime storage fields under one `runtime` record: `runtime.conductor_dir`, `runtime.conductor_state_config`, `runtime.cas_store_dir`, and optional platform-keyed inherited host env-name map `runtime.inherited_env_vars`. The `cas_store_dir` field accepts any CAS locator string (filesystem path or URL). `runtime.inherited_env_vars` (v2: `runtime.platform_inherited_env_vars`) is a closed record restricted to `windows`/`linux`/`macos` keys; unknown platform keys are rejected.
 - Runtime inherited env-name defaults are host-specific (`SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP` on Windows; empty list elsewhere) and merge user, machine, and invocation-option values with case-insensitive de-duplication.
-- resolved state path (default `.conductor/state.ncl`) stores volatile runtime state only and may define only `version`, `impure_timestamps`, and `state_pointer`.
-- All three files must define explicit top-level numeric `version` markers.
-- `conductor.ncl` and `conductor.generated.ncl` share the full schema surface; resolved runtime state path (default `.conductor/state.ncl`) is a strict volatile subset.
-- Effective configuration is resolved by merging all three documents.
+- the state file holds the JSON orchestration state only, with its own integer `version` marker (`STATE_VERSION`, currently 3); it is not a Nickel document. The legacy `impure_timestamps` and `state_pointer` fields survive in the v1 config schema and are dropped by the v1→v2 migration; neither is a field of the state file.
+- `conductor.ncl` and `conductor.generated.ncl` share the full schema surface, and both carry an explicit top-level numeric `version` marker.
+- Effective configuration is resolved by merging the two config documents; the state file is loaded and saved separately.
 - Conflicts must fail fast with explicit workflow errors.
 - End-user automation for setup operations (for example add-tool/import-tool and add-external-data/import-data flows) must mutate only `conductor.generated.ncl`.
 - Once setup is recorded through machine-document automation, do not require duplicate tool declarations in `conductor.ncl` just to make workflows runnable.
@@ -153,10 +152,10 @@ When editing tool/config schema behavior, preserve these invariants:
 18. Keep step-output references minimal so independent steps stay in parallelizable topological levels.
 19. Builtin `import`/`export` `kind=file|folder` path semantics: `path_mode` defaults to `relative` (resolves `path` against the outermost config directory, must not escape that root); `path_mode=absolute` requires an explicit absolute `path`.
 20. Orchestration-state snapshots must include explicit top-level `version`.
-21. `ToolCallInstance.metadata` is persistence-normalized: executable metadata stays `ToolSpec`-shape, builtin metadata persists only `kind`/`name`/`version`; `impure_timestamp` belongs at instance top-level, not inside metadata. Decode must reject extra builtin metadata fields.
-22. `ToolCallInstance.inputs` persist CAS hash references (no inline `plain_content` payload, no separate `source_hash` provenance field).
+21. `ToolCallInstance` has no `metadata` record: provenance lives at the top level (`tool_call_id`, `impure`, `executed_at`, `step_ids`).
+22. `ToolCallInstance` persists content-addressed records only: `command_args`, `env_vars` and `materialized_inputs` hold `HashedValueRecord`s (hash + determinism), and captured outputs hold `CapturedOutput`s (hash + the spec that produced it). No field stores inline payload bytes.
 23. A name-addressed output record carries the capture spec that produced it, and reuse requires the recorded spec to identify the same capture: `capture`, `allow_empty` and `include_topmost_folder`. `save` is recorded beside the entry but never compared, because persistence changes no bytes — two steps that share an instance and disagree only about keeping the artifact must not invalidate each other. A recorded `None` (the v2 migration's "spec unknown") never matches. There is no merged-persistence record: persistence is the `save` of the spec the entry carries, it is the executing step's decision, and no reader consults it. That guard is load-bearing: `save=false` entries are retained and reused all the same, so a future collector that treated an unkept entry as collectable would delete artifacts that today's tolerance still serves — the reused bytes are the same artifact whether or not the recorded step persisted a copy.
-24. Any human-facing orchestration-state JSON output (CLI `state`, demo artifacts) must render the persisted wire-envelope shape so builtin metadata stays strict (`kind`/`name`/`version`) and does not leak runtime-only optional fields.
+24. `conductor state export` serializes the runtime `ConductorState` and `conductor state import` decodes the persisted wire schema through `decode_state_json`; keep the two shapes aligned, and never add a runtime-only field that serializes, or an exported file stops importing.
 25. If a cached `${step_output...}` payload fails CAS integrity, conductor auto-recovers only for pure workflows (warn, drop affected instances, delete the corrupt hash, retry once). Impure workflows fail without auto-retry unless `retry_impure` is enabled, which applies the same cache-invalidation and retry logic to both. Configure via `RunWorkflowOptions.retry_impure` (API), `runtime.retry_impure` (conductor.ncl), or `--retry-impure` (CLI).
 26. `tools.<tool>.runtime.max_retries` controls the per-tool outer retry budget after the initial failed call. Valid values: `-1` (use runtime default) or non-negative integers; unified execution normalizes `-1` to the current default retry policy.
 27. A captured entry records the merged spec that produced it, never a default seeded from one side: the tool's spec for a name it declares (with the step's `save`), the step's whole spec for a name only the step declares.
@@ -314,6 +313,8 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **Sandbox materialization**: step workers hard-link (with copy fallback) files from `<entry>/payload/` into the per-step sandbox cwd via the free function `link_to_sandbox(payload_dir, sandbox_dir)` in `provision::helpers` (re-exported from `provision`).
 
+- **Sync-time stale-content pruning**: when `reconcile_desired_tools` replaces an active tool with a newer version, the old tool's `content_map` is cleared from `machine.tools[*].runtime.content_map`, so conductor step-tool preservation cannot match stale content references against the old tool id. The old registry entry stays as a historical record but without content references it is never materialized.
+
 ## Versioned Schema Editing Policy
 
 See `nickel.instructions.md` (schema strictness S1-S13) and `versioning-and-migration.instructions.md` (cross-transport versioned-struct protocol). Every persisted schema must have a parity test (`schema_sync.rs` pattern) asserting Nickel contract and Rust serde shape agree.
@@ -372,14 +373,14 @@ Overwrites `.env.generated` with the canonical header and tool binary path entri
 
 Cross-crate data flow, shared invariants, and the full module-layer index are documented in `mediapm-architecture.instructions.md`. Conductor-specific integration boundaries (CAS ↔ Conductor, Conductor ↔ Builtins, MediaPM ↔ Conductor) remain below.
 
-## C. Integration Boundaries (Conductor-Centric)## C. Integration Boundaries (Conductor-Centric)
+## C. Integration Boundaries (Conductor-Centric)
 
 ### CAS ↔ Conductor
 
-- **State persistence**: Conductor serializes `OrchestrationState` to CAS as a content-addressed blob; `state_pointer` (hash) is stored in the volatile state document.
-- **Input resolution**: Step inputs are resolved to CAS hashes (Pass 1) and loaded on demand (Pass 2). `ToolCallInstance.inputs` stores only `ResolvedInputKey` (hash), not full content.
-- **Output capture**: Step outputs are persisted to CAS; `outputs` in `ToolCallInstance` reference CAS hashes.
-- **GC coordination**: Conductor provides root set (external data, state pointer, instance outputs, instance blob hashes) for CAS GC sweep.
+- **State persistence**: conductor writes its orchestration state to `storage_paths.state_file_path` as pretty JSON (schema v3). It is a file, not a CAS blob, and no state pointer exists.
+- **Input resolution**: step inputs resolve to CAS hashes; `ToolCallInstance` persists input, argument and env hashes (`materialized_inputs`, `command_args`, `env_vars`), never inline content.
+- **Output capture**: step outputs are CAS blobs; each entry in `ToolCallInstance::outputs` records the hash and the capture spec that produced it.
+- **GC coordination**: the root set is surviving instance output hashes plus the unified document's external-data policy keys and tool content hashes (see Section G).
 - **Existence checks**: `CasExistenceBitmap` for batch cache probing across step outputs.
 - **Content map materialization**: `tools.<tool>.runtime.content_map` entries are resolved from CAS into step sandbox directories.
 
@@ -397,36 +398,29 @@ Cross-crate data flow, shared invariants, and the full module-layer index are do
 - **Progress events**: Conductor emits `WorkflowStepEvent` through an optional channel; MediaPM renders progress bars from these events.
 - **Runtime storage paths**: MediaPM passes grouped runtime paths (`conductor_dir`, `conductor_state_config`, `cas_store_dir`, `conductor_tools_dir`) via `RunWorkflowOptions.runtime_storage_paths`.
 - **Tool provisioning**: MediaPM provisions managed tools and populates `machine.tools` with runtime fields; Conductor materializes content maps into step sandboxes.
-- **State persistence**: MediaPM persists machine state (`state.ncl`) and conductor state blob independently; consistency is verified on startup.
+- **State persistence**: MediaPM persists its own machine state (`.mediapm/state.json`) and Conductor persists its state file (`.mediapm/state.conductor.json` through `runtime.conductor_state_config`) independently; each is loaded by its owner with no cross-document consistency check.
 
 ## D. Orchestration State Decode Migration
 
-The `decode_state()` function at `src/mediapm-conductor/src/state/mod.rs` handles V1→V2 migration of persisted `OrchestrationState` blobs:
+Version dispatch lives in `src/mediapm-conductor/src/state/versions/mod.rs`. `decode_state_json` peeks the state's numeric `version` field and routes to the matching wire module; `decode_state_json_with_cas` is the async form, needed because a v1 document references its instance blobs through the CAS. V1 and V2 are migration-only, V3 is current, and `encode_state_json` always writes V3.
 
-### V2 Schema Changes
+### V2 → V3
 
-- `OrchestrationStateAuxV2` replaces the flat `aux` map with structured per-instance `AuxData`.
-- `AuxData` gains `last_unreachable: ImpureTimestamp` (non-optional in runtime, bridged from `Option<ImpureTimestampV2>` on wire).
-- `ToolCallInstanceV2.metadata` gains `persistence_overrides: Option<...>` for per-output persistence policy.
+- A v3 output is a `CapturedOutput`: the hash plus the `capture: Option<OutputCaptureSpec>` that produced it. The migration maps every v2 output to `capture: None`, the "spec unknown" sentinel that matches no declared spec, so an affected step re-executes once and re-records.
+- V2's per-instance `save_modes` map is dropped without being read; a save mode now belongs to the capture spec recorded with the entry it describes.
+- `InstanceAux` carries the GC clock (`last_referenced_at`) only.
 
-### Runtime-Only State Field
+### V1 → V2 → V3
 
-- `OrchestrationState` gains `instance_blob_hashes: BTreeSet<Hash>`: a runtime-only field (skip-serialize, skip-deserialize) that caches the CAS hashes of per-instance encoded `OrchestrationStateEnvelopeV2` blobs. Populated during V2 decode from `OrchestrationStateEnvelopeV2.instances[*].hash`. The root set computation in CAS GC sweep includes these hashes so per-instance blobs are not orphaned.
+A v1 document is migrated in two hops: `migrate_v1_to_v2` reads the instance blobs through the CAS and rebuilds the structured per-instance aux data, then the v2→v3 step runs unchanged. Loading a v1 file therefore rewrites it in the current schema, so the next read is a plain v3 decode.
 
-### Migration Bridge (`versions/v2.rs`)
+### Reading a state file
 
-- V1→V2 migration uses manual serde conversion for type-safe field mapping.
-- `aux` entries lacking `last_unreachable` receive `ImpureTimestamp::now()` during migration.
-- The V2 ISO bridge maps `Option<ImpureTimestampV2>` (wire) to non-optional `ImpureTimestamp` (runtime), converting `None` to `now()`.
-- Post-processing inserts `AuxData { last_unreachable: now }` for any instance key that still lacks an entry (no `aux` record at all).
-
-### Deserialization Guarantee
-
-After `decode_state()` runs, every instance key has a corresponding `aux` entry with a populated `last_unreachable`. This eliminates all `None`-checking from GC and other runtime code paths. Type-enforcement replaces defensive validation.
+`load_state_file_async` (`conductor_impl.rs`) reads `storage_paths.state_file_path`, peeks the version marker, decodes, and calls `save_state_file` when the document was v1. A missing file decodes as an empty `ConductorState`.
 
 ### Cutoff Computation
 
-Instance TTL uses `Option<u64>` with `#[serde(deserialize_with = "deserialize_option_integral_u64")]` to accept both `N::PosInt` and `N::Float` (Nickel exports all numbers as f64). The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS` (604800, 7 days) via `set_instance_ttl` before passing to the state-store actor. Cutoff = `SystemTime::now() - Duration::from_secs(ttl)`.
+`gc::run_conductor_gc` takes `ttl_seconds` as a parameter and calls `ConductorState::run_conductor_gc`, which compares each unreferenced instance's `aux.instances[key].last_referenced_at` against `conductor_gc_epoch` plus the TTL (a missing aux entry counts as epoch 0, so the instance is evicted). MediaPM passes `lifecycle.instance_ttl_seconds`, defaulting to `DEFAULT_INSTANCE_TTL_SECONDS` (604800, 7 days) in `mediapm/src/config/defaults.rs`.
 
 ## E. Instance Key Lifecycle and Failure Recovery
 
@@ -441,7 +435,7 @@ instance_key = blake3(domain || tool_id || arg_hashes… || materialized_inputs�
 Where:
 
 - `domain` = the scheme separator, `mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}` with `INSTANCE_KEY_SCHEME: u32 = 4` (`instance_key.rs`). The scheme is versioned by an integer and only moves forward; a change to key material bumps it and leaves every older key unreachable once. There is no dotted revision and no compatibility branch: a bump re-executes the affected steps one time. The scheme version is not the state schema version, which is why the constant lives beside the derivation rather than in `state/versions/`.
-- `tool_id` = the tool name+version from config (content-map details excluded from identity).
+- `tool_call_id` = the key of the conductor document's `tools` map entry the step references (the versioned id such as `echo@v1`), not the bare `spec.name`. In mediapm the managed-tool key is `{name}@{content_map_hash}`, so a changed payload is a different tool identity; a step that references the tool by its bare name still resolves to the same entry and derives the same key.
 - `arg_hashes` = one hash per deterministic command argument, in argv order.
 - `materialized_inputs` = one hash per materialized tool-content entry, in content-map path order.
 - Captures are not key material. The key answers whether the work has been done, which inputs alone decide. What a step binds is a record addressed by name: each instance entry carries the capture spec that produced it, and the probe requires the recorded spec to identify the same capture as the one the step's producible set gives that name (a recorded `None`, the v2 migration's "spec unknown", never matches). Coverage is what keeps a shared instance useful — the tool's declared captures are live, so an instance records every name a step with that work can bind, whichever names the step that executed it declared. Two steps running the same tool with the same inputs but recording different files therefore share one instance, where hashing the declarations would have split them and re-run the command.
@@ -460,88 +454,58 @@ A probe hit is a claim about recorded state; the store is a separate witness. `p
 
 ### Failure Recovery Safety
 
-The design ensures prior successful instances remain reachable after a step failure:
+The design ensures prior successful instances remain recorded after a step failure:
 
-1. **`state.clone()` on error** (coordinator error checkpoint): When a step fails, the coordinator calls `commit_run(next_state: state.clone(), pending_unsaved_hashes: BTreeSet::new())`. `state.clone()` preserves ALL current instances — no entries are discarded. Pending unsaved hashes are cleared (the failed step contributed no new CAS objects), but the prior state is untouched.
-
-2. **Append-only `OrchestrationState`**: The `instances` map only grows via insertions — old entries are never removed. Old CAS blobs remain reachable as long as any caller holds their hash.
-
-3. **State pointer advances on both success and failure**: The `state_pointer` always points to the latest checkpoint. On error, `pending_unsaved_hashes` is empty, meaning unsaved-output GC protection is weaker.
-
-4. **Instance GC (post-implementation)**: The `OrchestrationState` instance map is pruned by configurable TTL-based GC (`gc_instances(cutoff)` called from `commit_run()` and `persist_and_publish_state()`). This removes stale `ToolCallInstance` entries from the in-memory snapshot before serialization. Old CAS blobs (pre-GC) remain reachable until `state_pointer` advances past them.
+1. **The run-entry state is the base.** The state loaded when a run starts is kept throughout; each successful settlement inserts or unions its instance into the working state and records a `StepStateContribution`.
+2. **A failure contributes nothing.** A step that fails, or exhausts its retries, adds no instance and no aux entry, so the instances from earlier runs and from this run's successful steps remain exactly as they were.
+3. **Nothing is discarded at persistence.** The run persists the working state — run-entry instances plus this run's successful settlements — to the state file. Instances leave the state only through the settlement drop rule (a name the execution declared and produced nothing under) or TTL GC.
 
 ### Worked Example
 
-- Step 1 succeeds → instance key K1 stored in `instances` → CAS blob B1 created.
-- Step 2 fails → coordinator calls `commit_run(state.clone(), ...)` → CAS blob B2 created (contains K1 from Step 1, no entry for failed Step 2).
-- `state_pointer` references B2 (containing K1) → K1 remains reachable.
-- Step 2 retried → same instance key K2 (keys derive from content alone; impure steps embed no time) → on success, K2 lands under the same key rather than accumulating a fresh one per run.
-- Outcome: Step 1's I/O is always available via K1.
+- Step 1 succeeds → instance key K1 is written to `tool_call_instances`.
+- Step 2 fails → no instance is written for it, and the failure does not touch K1.
+- Step 2 is retried → the same instance key K2 derives from the same content, so a later success adds one instance rather than a fresh one per attempt.
+- Outcome: step 1's outputs stay recorded and materializable however step 2 ends.
 
 ### Instance GC Lifecycle
 
-Instance GC uses a two-phase reachability-first approach:
+Instance GC runs inside `gc::run_conductor_gc`, in two steps over `ConductorState`:
 
-1. **Phase 1: reachability scan**: From the current `OrchestrationState`, collect all instance keys referenced by workflow steps whose inputs are still satisfiable (all referenced external data and step outputs exist). These are "reachable" instances.
+1. **Reachability refresh**: every key in `referenced_keys` is kept and its `aux.instances[key].last_referenced_at` is set to the GC epoch.
+2. **TTL sweep**: an unreferenced instance is evicted once `last_referenced_at + ttl < conductor_gc_epoch`, and its aux entry is dropped with it. A key with no aux entry counts as epoch 0, so it is evicted on the first sweep.
 
-2. **Phase 2: TTL sweep**: For unreachable instances, compute `now - last_unreachable` and compare against `instance_ttl_seconds`. Instances whose elapsed time exceeds TTL are removed from the state blob before persistence.
+`aux.instances[*].last_referenced_at` is the only TTL clock: it is refreshed on every reference and on every retained sweep, so an instance that stops being referenced survives the full TTL window. `AuxData::conductor_gc_epoch` advances to `Timestamp::now()` at the end of each sweep, so the sweep measures the TTL against the previous sweep's clock.
 
-The `last_unreachable` timestamp is set to `ImpureTimestamp::now()` on first detection of unreachability (not on every scan). This prevents rapid TTL expiry from brief unreachability windows.
-
-**GC trigger points**: `commit_run()` and `persist_and_publish_state()` in `StateStoreService` compute the cutoff and call `gc_instances()` before persisting the state blob to CAS. `SetInstanceTtl` cast message loads the TTL from runtime config into the state-store actor at startup.
+**Trigger points**: `Conductor::run_gc` (the CLI `gc` command) calls the actor's `run_gc`, which passes an empty `referenced_keys` set — so every instance is TTL-eligible and only the grace period retains anything. The background maintenance task (`start_background_gc`, default 86400s) runs `run_cas_gc_sweep` only, not instance GC.
 
 ## G. CAS GC Sweep
 
-The CAS `CasMaintenanceApi` exposes GC sweep capabilities used by Conductor.
-The unified entry point `run_cas_gc_sweep()` in `gc.rs` runs the full maintenance sequence in order:
+`gc.rs` exposes two entry points:
 
-1. **`optimize_once()`**: Rewrites unconstrained objects under the optimizer policy (background priority by default).
-2. **`prune_constraints()`**: Removes stale constraint entries from the index.
-3. **`gc_sweep(&self, roots: &BTreeSet<Hash>)`**: Deletes all objects NOT in the root set. Computes `all_hashes - roots` and deletes orphans via `delete_many()`.
-4. **`compact_index()`**: Compacts the durable index (redb) to reclaim space.
+- `run_cas_gc_sweep()` runs CAS maintenance only: `run_maintenance_cycle()` (optimize under the maintenance policy), then `prune_constraints()` (drop stale constraint entries). It deletes no payload data.
+- `run_conductor_gc()` is the full cycle: instance TTL sweep, then root-set orphan deletion through `CasApi::delete`, then `run_cas_gc_sweep()`.
 
-This function is called by all three GC paths:
+Callers: `start_background_gc` runs `run_cas_gc_sweep` on its interval; `Conductor::run_gc` (CLI `conductor gc`) runs the full cycle through the actor. MediaPM does not trigger conductor GC.
 
-- **Background loop** (node actor `pre_start`)
-- **Actor `RunGc` handler** (CLI-triggered via `conductor gc`)
-- **CLI `run_gc` subcommand** (standalone, bypassing the actor)
+### Orphan Deletion
 
-All paths converge on `run_cas_gc_sweep()` — the CLI previously had inline duplicate logic that has been removed.
-
-### Concurrent Sweep Guard
-
-`gc_sweep` in `FileSystemCas` is protected by a `gc_in_progress: AtomicBool` guard (same pattern as `optimize_in_progress`), preventing concurrent sweeps from racing on the index and recently-written set. `compare_exchange` rejects concurrent calls with `CasError::invalid_input("gc_sweep is already running")`.
+After `list_hashes`, every hash outside the root set is removed with a plain `CasApi::delete`; the sweep inspects no constraints and treats no object as special. Constraint entries are pruned separately by `run_cas_gc_sweep` (`prune_constraints`).
 
 ### Root Set Composition
 
-A shared `compute_gc_roots()` in `gc.rs` computes the root set from:
+`gc::run_conductor_gc` builds the root set from:
 
-- `user.external_data` + `machine.external_data` values
-- `state_pointer` (the current orchestration-state hash)
-- Instance output/input pointers from the `OrchestrationState` pointed to by `state_pointer`
-- Instance blob CAS hashes (the per-instance encoded blobs referenced by `OrchestrationStateEnvelopeV2` that are tracked in the runtime-only `instance_blob_hashes` field)
+- every output hash of every surviving `ToolCallInstance`
+- the unified document's `external_data` policy keys
+- the unified document's `tool_content_hashes`
 
-`external_data` is also stored as a runtime-only (non-serialized) field on `OrchestrationState` itself. The decoupled `run_cas_gc_sweep()` reads `state.external_data` directly instead of receiving a separate parameter — keeping root computation unified with the state it governs.
-
-`content_map` entries are not iterated directly: the decode-time invariant (`vet_latest_envelope`) enforces `content_map ⊆ external_data`, so all content-map hashes are covered by external_data roots.
-
-### Sweep Contract
-
-Deleting a non-root object that is a delta base of a root object is safe: the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
+Every other CAS hash is deleted as an orphan, then `run_cas_gc_sweep` runs CAS maintenance and constraint pruning. There is no state pointer and no per-instance blob: the state file lives on disk in its own right, and `content_map` hashes are covered because `content_map ⊆ external_data` is enforced at document decode.
 
 ## H. Background GC Loop
 
-The conductor node actor spawns a background task in `pre_start` that:
+`start_background_gc(interval_secs)` (`orchestration/coordinator.rs`, called from `node.rs` with `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS`, 86400) spawns a cancel-guarded task held by a `BackgroundMaintenanceGuard`. The task runs `gc::run_cas_gc_sweep` (CAS maintenance plus constraint pruning), checks for cancellation, then sleeps `interval_secs`; the timer starts only after a run finishes. It does not run instance GC — `Conductor::run_gc` is the path that does.
 
-1. **Waits** for the `gc_initialized` flag to be set (via `Acquire` load with 1-second polling), which happens after the first successful `LoadResolvedState`, `ReplaceResolvedState`, or `RunGc` call populates the state's `external_data`. This prevents premature GC from sweeping all unprotected objects before state is loaded.
-
-2. **Shared state**: The actor state holds `shared_state_store: Arc<OnceLock<StateStoreClient>>`. The OnceLock is populated by `SubmitWorkflow` (after `ensure_runtime_support()`), `LoadResolvedState`, and `ReplaceResolvedState` (via `coordinator.state_store()` after success). Previously the OnceLock was only populated by `SubmitWorkflow`, leaving a window where phase-1 succeeded but the background loop hung on a missing state store. The `external_data` lives directly on `OrchestrationState` (no separate synchronization is needed).
-
-3. **Enters a periodic loop**: loads the current state from the coordinator via `state_store.current_state()` and calls `run_cas_gc_sweep()` with it (bypassing the actor mailbox entirely), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats. The `RunGc` handler is preserved for CLI use.
-
-The `gc_initialized` flag is an `Arc<AtomicBool>` on `ConductorActorState`, shared with the background task. It is also set as a backstop after any successful `RunGc` handler execution.
-
-> **Agent policy — do NOT disable the background GC loop**: The `None` TTL passed to `RunGc` means "use configured/default" — this is correct. Agents must NEVER alter `GC_INTERVAL_SECONDS` to an absurdly large value or make the loop a no-op to avoid implementing GC properly. If the GC loop causes issues, fix the GC implementation — do not disable it.
+> **Agent policy — do NOT disable the background GC loop**: Agents must never make the loop a no-op or raise its interval to dodge a GC problem. If the loop causes issues, fix the GC implementation; removal needs an explicit decision, not a quiet change.
 
 ## I. Channel-Based Workflow Progress Events
 
@@ -568,49 +532,6 @@ Conductor no longer renders progress bars internally. Instead, it emits workflow
 - Per-worker step counts are tracked in a `Vec<usize>` and incremented on each event using `event.worker_index`.
 - The receiver task updates the overall bar's position and message on each event. The overall bar's per-event message uses the aggregate format `"completed {completed_steps}/{total_steps} steps"`. Worker lines show the current step and per-worker count: `"worker {wi}: {workflow}: {step}  ({count})"`.
 - When the channel closes (sender dropped), the overall bar shows `"all workflows complete"` and each worker line shows `"worker {wi}: done  ({count})"`. A 75 ms settle delay flushes the render thread.
-
-## J. Tool Content Cache
-
-The `ToolContentCache<C>` struct at `src/mediapm-conductor/src/tool_cache/mod.rs` is the sole authority over the `tools_dir/` directory tree. No external code creates, reads, writes, or deletes anything inside cache directories — all TTL checking, metadata management, locking, extraction, and pruning is internal to this module.
-
-### Public API
-
-- `PAYLOAD_DIR_NAME` — literal `"payload"`, the subdirectory name inside each tool cache entry where extracted content lives.
-- `sanitize_tool_id(name) -> String`: replaces reserved filesystem characters with `_`. Used by all callers to derive cache directory names.
-- `ToolContentCache<C: CasApi + Send + Sync>`:
-  - `new(tools_dir, cas)`: construct with a shared CAS backend.
-  - `materialize(tool_id, content_map, ...) -> ToolCacheEntry`: core API: returns a RAII-guarded path to the cached tool payload.
-  - `link_to_sandbox(entry, sandbox_dir)`: associated fn that hard-links the cache entry's payload into a per-step sandbox.
-  - `prune()`: remove expired TTL entries.
-  - `retain_only(active_ids)`: remove cache directories not in the provided set. Used by mediapm lifecycle for sync-time cleanup.
-
-### Lock Protocol
-
-Per-entry `flock` advisory locking via `fs4::FileExt`:
-
-- **Fast path (cache hit)**: non-blocking `try_lock_shared()` on `tools/<sanitized_id>/.lock`. Returns `ToolCacheEntry` on success.
-- **Slow path (cache miss)**: DashMap + `OnceCell` prevents redundant extraction: the first caller acquires the entry, subsequent callers wait. Extraction acquires an exclusive `flock` via blocking `lock()` inside `spawn_blocking`. After extraction the `.lock` file is recreated and a shared-lock fd replaces the exclusive fd (downgrade, no unlock gap). A semaphore limits concurrent extractions across different tool IDs.
-- **Prune**: non-blocking `try_lock()` exclusive. Skip entries that return `WouldBlock`.
-
-### Guard Lifecycle
-
-`ToolCacheEntry` (the return type of `materialize()`) holds a shared-lock fd in an RAII guard. For direct-execution paths, the entry is held across the entire process spawn so the cache entry cannot be evicted mid-use. For one-shot callers (`resolve_managed_tool_executable`, `run_managed_tool`), the entry is dropped immediately after use.
-
-**Safety**: Locks are per-open-file-description (standard `flock` semantics). Automatically released when the fd is closed (no manual unlock needed, even if the holding task panics.
-
-**Platform guard**: Locking is gated behind `cfg(unix)`. On non-Unix platforms, `ToolCacheEntry` holds no fd and locking is a no-op.
-
-### Cache Ownership Boundary
-
-`ToolContentCache` owns `tools_dir/*` exclusively. External callers:
-
-- Only receive `ToolCacheEntry` (path + RAII guard) from `materialize()`.
-- Use `retain_only()` for bulk cleanup — never call `remove_dir_all` on cache directories.
-- Never read/write `metadata.json` or check TTL externally.
-
-### Sync-Time Stale-Content Pruning
-
-During `reconcile_desired_tools` in `sync/mod.rs`, when an existing active tool is replaced by a newer version, the old tool's `content_map` is cleared from `machine.tools[*].runtime.content_map`. This prevents conductor step-tool preservation from matching stale content references against the old tool ID. The old tool ID's registry entry remains in `tool_registry` as a historical record, but without content references it will not be materialized.
 
 ## K. Performance (Conductor-Relevant)
 
@@ -658,12 +579,12 @@ All progress messages must fit within the terminal width; detected via `terminal
 | --- | --- |
 | **Public Trait** | `ConductorApi` |
 | **Implementation** | `Conductor` |
-| **Schemas** | 3-document (user `conductor.ncl`, machine `conductor.generated.ncl`, state `state.ncl`) |
+| **Schemas** | 3-document (user `conductor.ncl`, machine `conductor.generated.ncl`, state `state.json`) |
 | **Execution** | Actor-based (ractor), step-stream batch dispatch, adaptive scheduling, `CasExistenceBitmap` cache probe |
 | **State model** | `src/mediapm-conductor/src/config/mod.rs`, `src/mediapm-conductor/src/state/mod.rs` |
 | **Versioned config schema** | `src/mediapm-conductor/src/config/versions/` |
 | **Orchestration** | `src/mediapm-conductor/src/orchestration/coordinator.rs`, `src/mediapm-conductor/src/orchestration/actors/`, `src/mediapm-conductor/src/orchestration/protocol.rs` |
-| **Tool content cache** | `src/mediapm-conductor/src/tool_cache/mod.rs` |
+| **Tool content cache** | `src/mediapm-conductor/src/provision/` |
 | **Template expansion** | `src/mediapm-conductor/src/orchestration/actors/step_worker/template.rs` |
 | **CLI** | `src/mediapm-conductor/src/main.rs`, `src/mediapm-conductor/src/cli.rs` (API-backed) |
 | **Builtin dispatch** | `src/mediapm-conductor-builtins/*` (echo, fs, archive, import, export) |
@@ -715,11 +636,11 @@ All progress messages must fit within the terminal width; detected via `terminal
 
 **Issue**: Actor-based orchestration uses `ractor` for supervision. An actor panic or message loss during workflow execution could leave the system in an inconsistent state.
 
-**Current behavior**: `ractor` supervisors restart crashed actors. In-flight messages may be lost on crash. The state-store actor holds the authoritative `OrchestrationState` in memory; on restart, it reloads from the last CAS state blob. Running steps that complete during the restart window may have their outputs lost (no record of completion). State is flushed to CAS on every `commit_run()` call; a crash between commits may lose the most recent in-memory changes.
+**Current behavior**: `ractor` supervisors restart crashed actors. In-flight messages may be lost on a crash. The conductor reloads the state file on startup (`load_state_file_async`), so the last persisted state survives; `run_workflow` then returns the updated state and `conductor_impl` writes it with `save_state_file`. A crash mid-run therefore loses that run's unsettled settlements, and the next run re-executes whatever the persisted record does not cover.
 
 ### N.6 Version Marker Absence (§2.6)
 
-**Issue**: All three config documents must carry explicit `version` markers. A document without a version marker produces a decode error.
+**Issue**: Both config documents, and the state file, must carry explicit `version` markers. A document without a version marker produces a decode error.
 
 **Current behavior**: Documents without `version` fail deserialization. There is no default version assumption. Migration bridges only handle N → N+1 transitions; a document with version 0 or missing version produces an explicit error: `"Config document <path> missing required 'version' field"`.
 
@@ -733,15 +654,15 @@ All progress messages must fit within the terminal width; detected via `terminal
 
 Six scenarios where instance GC interacts with other subsystems:
 
-1. **GC during active workflow execution**: `gc_instances()` is called before state persistence in `commit_run()`. Running steps that complete after GC but before the next commit may have their outputs stored against a stale instance key. The next commit includes the newly-completed instances (added back by the append-only semantics).
+1. **GC during active workflow execution**: the actor serializes state mutations, so a sweep never interleaves with a settlement mid-update; the sweep decides from the instance map and key set it was handed.
 
-2. **Instance TTL change between runs**: If the TTL is reduced between runs, instances that were previously reachable may become unreachable on the next commit. The `last_unreachable` timestamp is set to `now()` on first detection, so they survive at least one full TTL window before deletion.
+2. **Instance TTL change between runs**: the TTL is passed to each sweep, not stored with the instances, so reducing it shortens the grace period immediately; instances already past the new TTL are evicted on the next sweep.
 
-3. **GC with zero instances (empty state)**: `gc_instances()` on an empty instances map is a no-op.
+3. **GC with zero instances (empty state)**: `run_conductor_gc` on an empty instance map removes nothing.
 
 4. **Instance TTL = 0 (immediate expiry)**: Instances are GC'd on the next commit after they become unreachable. This is valid for testing but not recommended for production (it prevents any cross-run caching.
 
-5. **Clock skew between GC evaluations**: If the system clock jumps backward, instances that would have been expired may survive longer. If the clock jumps forward, instances may be prematurely expired. The `last_unreachable` timestamp uses `SystemTime::now()`, which is susceptible to clock jumps.
+5. **Clock skew between GC evaluations**: `last_referenced_at` and `conductor_gc_epoch` are wall-clock timestamps (`Timestamp::now()`), so a backward clock jump can extend an instance's grace period and a forward jump can expire it early.
 
 6. **GC and concurrent write race**: The state-store actor serializes all mutations, so GC and instance writes are naturally serialized. No race condition exists.
 
@@ -829,13 +750,13 @@ Three race scenarios in the tool content cache:
 
 ### N.17 Cross-Crate: State Persistence Consistency (§6.5)
 
-**Issue**: Conductor persists state to CAS; MediaPM persists lock to state.ncl. No atomic consistency across both.
+**Issue**: MediaPM and Conductor write separate state documents (`state.json` and `state.conductor.json`); there is no transaction across the two.
 
 **Contract**:
 
-- State.ncl lock records must reference the CAS state blob hash.
-- On startup: lock references are verified against the actual CAS state blob hash. If mismatch, fail with explicit error.
-- Recovery requires manual state rollback or rebuild from CAS.
+- Each document is written atomically on its own (temp file + rename) and loaded by its owner.
+- No cross-document verification runs on startup: a crash between the two writes can leave the library ahead of, or behind, the recorded workflow state.
+- Recovery is convergence, not repair: both documents are derived from config plus CAS content, so the next sync re-derives whatever is missing and is a no-op once both agree.
 
 ### N.18 Cross-Crate: NCL↔Rust Schema Sync (§6.8)
 
@@ -846,7 +767,7 @@ Three race scenarios in the tool content cache:
 1. **Typed envelope pattern**: Parent struct wraps child via `#[serde(flatten)]` with `deny_unknown_fields` on parent.
 2. **Versioned schemas**: Each schema version has a corresponding Rust struct in `versions/vN.rs`.
 3. **Migration bridges**: N→N+1 migrations use manual serde conversion.
-4. **Field-level type mapping**: Nickel number deserialization uses custom `deserialize_option_integral_u64` for `Option<u64>` fields to accept both `N::PosInt` and `N::Float`. All `Option<u64>` fields in config structs must use this deserializer. The Nickel `Enum` maps to Rust `String` + validation, not Rust enum.
+4. **Field-level type mapping**: a Nickel `Enum` maps to Rust `String` + validation, not a Rust enum; a numeric field that must be integral carries an `std.number.is_integer` guard in the Nickel contract.
 5. **Test coverage**: Each schema version has round-trip tests (serialize → deserialize), migration tests (vN → vN+1), and rejection tests (invalid data).
 6. **CI guard**: Schema files include `DO NOT REMOVE` comments that CI enforces.
 
@@ -903,7 +824,7 @@ Nickel provides parameterization, conditionals, and reusable templates that stat
 
 #### Why Three-Document Pattern?
 
-Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`), runtime state (lock file). Each document has independent versioning and ownership. Clear ownership prevents merge conflicts.
+Separation of concerns: user intent (`mediapm.ncl`), machine setup (`conductor.generated.ncl`), runtime state (`state.json`). Each document is versioned and owned independently, and machine rewrites never touch user intent.
 
 ### O.2 Performance: EWMA Scheduler Details (§8.2)
 
@@ -957,7 +878,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`)
 | 6.4 | Tool ID collision (builtin vs managed) | Builtin IDs are reserved; managed tools cannot use them. Check on config load via `registered_builtin_ids()`. |
 | 6.6 | Cache invalidation across tool versions | `retain_only()` removes old cache entries; `content_map` cleared on version change so stale references are not preserved. |
 | 6.7 | Instance key immutability | Instance key = `hash(tool_id + sorted_inputs + impure_timestamp)`. Immutable after first derivation. Changing tool_id or inputs produces a new key (no in-place mutation). |
-| 6.8 | NCL↔Rust schema sync | Typed envelope pattern with `#[serde(flatten)]` + `deny_unknown_fields`. Versioned schemas in `versions/vN.rs`. Migration bridges via manual serde conversion. All `Option<u64>` fields use `deserialize_option_integral_u64`. |
+| 6.8 | NCL↔Rust schema sync | Typed envelope pattern with `#[serde(flatten)]` + `deny_unknown_fields`. Versioned schemas in `versions/vN.rs`. Migration bridges via manual serde conversion. |
 
 ### O.8 Ambiguities Resolved
 
@@ -972,7 +893,7 @@ Version bump required for: removing a field, renaming a field, changing a field 
 ### O.9 Architecture Diagrams
 
 ```mermaid
-graph TD subgraph "Conductor Crate" API[Public API<br/>ConductorApi, Conductor] CLI[cli module] CONFIG[model::config<br/>Three-document schema] STATE[model::state<br/>OrchestrationState] ORCH[orchestration module<br/>Actor-based execution] TOOLS[tools module<br/>Builtin registry] ERROR[error module] TCC[tool-cache module<br/>ToolContentCache] end
+graph TD subgraph "Conductor Crate" API[Public API<br/>ConductorApi, Conductor] CLI[cli module] CONFIG[crate::config<br/>two config documents] STATE[crate::state<br/>ConductorState] ORCH[orchestration module<br/>Actor-based execution] TOOLS[tools module<br/>Builtin registry] ERROR[error module] TCC[provision module<br/>ProvisionCache] end
 
     API --> CLI API --> CONFIG API --> STATE API --> ORCH ORCH --> TOOLS ORCH --> STATE ORCH --> TCC
 
