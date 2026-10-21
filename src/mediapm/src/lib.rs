@@ -210,12 +210,19 @@ pub struct MediaStepInvalidationSummary {
     pub workflow_id: String,
     /// Step ids targeted by the invalidation.
     pub targeted_step_ids: Vec<String>,
-    /// Removed generated timestamps (builtins with deterministic output).
+    /// Media ids whose cleared impure timestamp is what this call removed.
+    ///
+    /// The timestamp is provenance, never key material, so clearing it does
+    /// not by itself re-execute anything; the entry is reported because the
+    /// caller asked for it to be cleared.
     pub removed_generated_timestamps: Vec<String>,
-    /// Tool call instances removed from impure builtins.
-    pub removed_instances: Vec<String>,
-    /// Whether regeneration was performed after invalidation.
-    pub regenerated_step: bool,
+    /// Whether this call armed the next sync on the same service to
+    /// re-execute the workflow.
+    ///
+    /// There is no instance-removal counterpart: instance keys are derived
+    /// from step content, so an invalidation keeps every instance and asks
+    /// the next run to bypass it through the conductor's `force_rerun`.
+    pub regeneration_requested: bool,
     /// Warnings during invalidation.
     pub warnings: Vec<String>,
 }

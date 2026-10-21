@@ -36,7 +36,10 @@ use mediapm::{
 use url::Url;
 
 /// URI of the single offline source; its id is the media id both runs resolve.
-const SOURCE_URI: &str = "local:double-sync-probe";
+///
+/// `pub(crate)` so the invalidation tests seed the same workspace instead of
+/// growing a second, divergent fixture.
+pub(crate) const SOURCE_URI: &str = "local:double-sync-probe";
 
 /// Hierarchy path the single materialized file lands at.
 const HIERARCHY_PATH: &str = "imported_fixture";
@@ -122,7 +125,9 @@ fn io_error(operation: &str, path: &Path, source: std::io::Error) -> MediaPmErro
 /// hierarchy binding that materializes its output variant at
 /// [`HIERARCHY_PATH`]. Both double-run tests share this so their setup is
 /// one definition, not two copies.
-async fn seed_probe_workspace(
+/// Seeding is shared with the media-step invalidation tests, which need the
+/// same one-source, one-hierarchy workspace before they can invalidate it.
+pub(crate) async fn seed_probe_workspace(
     service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
     uri: &Url,
 ) -> Result<(), MediaPmError> {

@@ -146,16 +146,7 @@ async fn main_cli() -> anyhow::Result<()> {
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
             let mut service =
                 MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-            let recheck_policy = args.recheck_policy.resolve();
-            let verify_materialization = args.verify_materialization.resolve(true);
-            let check_tag_updates = matches!(recheck_policy, RecheckPolicy::ForceReResolve);
-            let no_progress = args.no_progress;
-            let options = mediapm::SyncLibraryOptions {
-                verify_materialization,
-                check_tag_updates,
-                no_progress,
-                observer: Some(std::sync::Arc::new(mediapm::output::observer::CliSyncObserver)),
-            };
+            let options = sync_library_options(args);
             let summary = service.sync_library_with_options(options).await?;
             mediapm::output::print_sync_summary(&summary);
             match sync_exit_status(&summary) {
@@ -372,10 +363,9 @@ async fn main_cli() -> anyhow::Result<()> {
                             ("id", &args.media_id as &dyn std::fmt::Display),
                             ("step", &args.step_index),
                             ("workflow", &summary.workflow_id as &dyn std::fmt::Display),
-                            ("removed", &summary.removed_instances.len()),
                             (
-                                "regenerated",
-                                &(if summary.regenerated_step { "yes" } else { "no" })
+                                "regenerate",
+                                &(if summary.regeneration_requested { "requested" } else { "no" })
                                     as &dyn std::fmt::Display,
                             ),
                         ],
@@ -384,9 +374,16 @@ async fn main_cli() -> anyhow::Result<()> {
                     for warning in &summary.warnings {
                         print_warning(warning);
                     }
-                    print_hint(
-                        "run 'mediapm sync' to apply invalidation effects to materialized outputs",
-                    );
+                    if summary.regeneration_requested {
+                        print_hint(
+                            "run 'mediapm sync --force-rerun' to re-execute this workflow; a plain \
+                             sync serves the cached step instances",
+                        );
+                    } else {
+                        print_hint(
+                            "run 'mediapm sync --force-rerun' once you want this step re-executed",
+                        );
+                    }
                     Ok(())
                 }
             }
@@ -757,11 +754,11 @@ impl From<AddInsertPositionArg> for AddInsertPosition {
     reason = "CLI args struct mirrors the command surface; booleans map 1:1 to flags"
 )]
 struct MediaInvalidateArgs {
-    /// Media source id whose step cache should be invalidated.
+    /// Media source id whose recorded step progress should be cleared.
     media_id: String,
     /// Zero-based step index to invalidate.
     step_index: usize,
-    /// Invalidate tool calls (default: yes).
+    /// Arm the next sync to re-execute the workflow (default: yes).
     #[arg(
         long,
         default_value_t = true,
@@ -769,10 +766,10 @@ struct MediaInvalidateArgs {
         conflicts_with = "no_invalidate_calls"
     )]
     invalidate_calls: bool,
-    /// Skip invalidation of tool calls.
+    /// Clear only the recorded progress, leaving the next sync cache-first.
     #[arg(long, conflicts_with = "invalidate_calls")]
     no_invalidate_calls: bool,
-    /// Regenerate after invalidation (default: no).
+    /// Request re-execution without clearing impure timestamps (default: no).
     #[arg(
         long,
         default_value_t = false,
@@ -780,7 +777,7 @@ struct MediaInvalidateArgs {
         conflicts_with = "no_regenerate"
     )]
     regenerate: bool,
-    /// Skip regeneration after invalidation.
+    /// Do not request re-execution.
     #[arg(long, conflicts_with = "regenerate")]
     no_regenerate: bool,
 }
@@ -1023,6 +1020,31 @@ struct SyncArgs {
     /// Suppress all progress bar output (for headless/scripted use).
     #[arg(long, env = "MEDIAPM_NO_PROGRESS")]
     no_progress: bool,
+    /// Re-execute every workflow step this run, even when its instance is
+    /// cached.
+    ///
+    /// Instance keys are content-derived, so elapsed time never expires a
+    /// step; this flag is the explicit way to re-run one whose external
+    /// circumstances changed. The scope is the whole run: the conductor's
+    /// invalidation granularity is a workflow run, not a single step.
+    #[arg(long)]
+    force_rerun: bool,
+}
+
+/// Builds the library-sync options `mediapm sync` runs with.
+///
+/// Extracted from the command arm so the flag-to-option mapping is exercised
+/// by a test instead of only by a live sync: a flag that parses but never
+/// reaches the options would look identical from the command line.
+fn sync_library_options(args: SyncArgs) -> mediapm::SyncLibraryOptions {
+    let check_tag_updates = matches!(args.recheck_policy.resolve(), RecheckPolicy::ForceReResolve);
+    mediapm::SyncLibraryOptions {
+        verify_materialization: args.verify_materialization.resolve(true),
+        check_tag_updates,
+        no_progress: args.no_progress,
+        observer: Some(std::sync::Arc::new(mediapm::output::observer::CliSyncObserver)),
+        force_workflow_rerun: args.force_rerun,
+    }
 }
 
 /// Builds default yt-dlp processing steps with optional MBID overrides.
@@ -1430,6 +1452,33 @@ mod tests {
     fn tool_prune_route_is_parsed() {
         let parsed = Cli::try_parse_from(["mediapm", "tool", "prune", "tool-id"]);
         assert!(parsed.is_ok(), "tool prune route must parse");
+    }
+
+    /// Protects the explicit-invalidation surface: `--force-rerun` reaches the
+    /// library-sync options, and a plain sync stays cache-first.
+    ///
+    /// A flag that parses but never reaches the options looks identical from
+    /// the command line, so the mapping — not just the parse — is asserted.
+    #[test]
+    fn sync_force_rerun_flag_reaches_the_sync_options() {
+        let parsed = Cli::try_parse_from(["mediapm", "sync", "--force-rerun"])
+            .expect("sync --force-rerun must parse");
+        let super::Command::Sync(args) = parsed.command else {
+            panic!("--force-rerun must parse onto the sync command");
+        };
+        assert!(
+            super::sync_library_options(args).force_workflow_rerun,
+            "the flag must reach SyncLibraryOptions::force_workflow_rerun"
+        );
+
+        let default = Cli::try_parse_from(["mediapm", "sync"]).expect("plain sync must parse");
+        let super::Command::Sync(default_args) = default.command else {
+            panic!("a plain sync must parse onto the sync command");
+        };
+        assert!(
+            !super::sync_library_options(default_args).force_workflow_rerun,
+            "a plain sync must not force re-execution"
+        );
     }
 
     /// Extracts the parsed media-tagger arguments from a `builtin

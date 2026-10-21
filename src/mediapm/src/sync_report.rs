@@ -46,6 +46,11 @@ pub enum SyncPhaseReport {
 /// Uses `Default` to reproduce the behavior of the legacy
 /// `sync_library(verify)` signature with no observer.
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent caller decision with a distinct effect; grouping any of \
+              them into an enum would invent a shared meaning the sync does not have"
+)]
 pub struct SyncLibraryOptions {
     /// Verify materialized content by re-hashing committed files.
     pub verify_materialization: bool,
@@ -55,6 +60,18 @@ pub struct SyncLibraryOptions {
     /// lines — result lines are governed by the observer (see
     /// [`SyncPhaseObserver`]).
     pub no_progress: bool,
+    /// Re-execute every workflow step this run even when its instance is
+    /// cached.
+    ///
+    /// `false` (the default) serves every step whose key material is unchanged
+    /// from the conductor instance cache. Instance keys are content-derived, so
+    /// elapsed time never expires one: this flag, or changed step material, is
+    /// what re-executes a step. Scope is the whole run, because the conductor's
+    /// invalidation granularity is a workflow run rather than a single step.
+    /// A service-level [`set_force_workflow_rerun`](crate::MediaPmService::set_force_workflow_rerun)
+    /// arms the same behaviour for a caller that has no options value; either
+    /// one is enough.
+    pub force_workflow_rerun: bool,
     /// Receives one report per completed phase, in execution order.
     pub observer: Option<Arc<dyn SyncPhaseObserver + Send + Sync>>,
 }

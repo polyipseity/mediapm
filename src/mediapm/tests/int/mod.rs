@@ -23,6 +23,9 @@ mod tool_sync;
 mod all_platform;
 /// Dual-write strategy: state.json always-writes, NCL files skip when unchanged.
 mod dual_write;
+/// Explicit invalidation: invalidating a media step must re-execute its
+/// workflow on the next sync even though the step's material is unchanged.
+mod media_step_invalidation;
 /// Re-sync over an unchanged library: the second run must skip no path.
 mod resync;
 /// Runtime root `.gitignore` creation on service construction.
