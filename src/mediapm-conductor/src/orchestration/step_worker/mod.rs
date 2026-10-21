@@ -211,17 +211,16 @@ mod tests {
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(instance_key, instance);
 
-        let (hit, _) = cache::probe_cache(&instance_key, &state, &BTreeSet::new());
-        assert!(hit);
+        let hit = cache::probe_cache(&instance_key, &state, &BTreeSet::new());
+        assert!(hit.is_some());
     }
 
     /// Verifies `probe_cache` misses on unknown key.
     #[test]
     fn probe_cache_misses_on_unknown_key() {
         let state = ConductorState::new_empty();
-        let (hit, _) =
-            cache::probe_cache(&Hash::from_content(b"unknown-key"), &state, &BTreeSet::new());
-        assert!(!hit);
+        let hit = cache::probe_cache(&Hash::from_content(b"unknown-key"), &state, &BTreeSet::new());
+        assert!(hit.is_none());
     }
 
     /// Verifies `probe_cache` checks required outputs.
@@ -249,13 +248,13 @@ mod tests {
 
         // Required output exists.
         let required: BTreeSet<String> = ["result".to_string()].into();
-        let (hit, _) = cache::probe_cache(&instance_key, &state, &required);
-        assert!(hit);
+        let hit = cache::probe_cache(&instance_key, &state, &required);
+        assert!(hit.is_some());
 
         // Required output missing.
         let missing: BTreeSet<String> = ["nonexistent".to_string()].into();
-        let (hit, _) = cache::probe_cache(&instance_key, &state, &missing);
-        assert!(!hit);
+        let hit = cache::probe_cache(&instance_key, &state, &missing);
+        assert!(hit.is_none());
     }
 
     /// Verifies `sanitize_for_path` replaces special characters.

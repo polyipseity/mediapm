@@ -232,8 +232,12 @@ pub struct ToolRuntime {
     pub content_map: ToolContentMap,
     /// Whether this tool performs impure (side-effecting) operations.
     ///
-    /// Impure tools receive timestamp injection at planning time which makes
-    /// each call unique and prevents cache hits across runs.
+    /// Impurity gates retries: an impure step retries only when the run sets
+    /// `retry_impure`, because repeating a side effect is not free the way
+    /// recomputing pure output is. It never affects caching — instance keys are
+    /// content-derived, so an impure step with unchanged material is served
+    /// from the instance cache like any other, and re-executing it takes
+    /// changed material or an explicit forced re-run.
     #[serde(default)]
     pub impure: bool,
     /// Environment variable names to inherit from the host process.

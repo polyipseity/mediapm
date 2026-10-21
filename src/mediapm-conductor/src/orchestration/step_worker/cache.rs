@@ -7,21 +7,27 @@ use mediapm_cas::Hash;
 use crate::orchestration::protocol::ConductorState;
 use crate::state::ToolCallInstance;
 
-/// Checks whether a cached tool call instance exists with all required outputs.
+/// Returns the cached instance for `instance_key` when it can serve this step.
+///
+/// "Can serve" means the instance exists and records every output the step's
+/// dependents bind: an instance recorded against a wider or narrower output
+/// set is a miss, because reusing it would either starve a dependent or force
+/// it to re-derive what the step already knows how to produce. The check is
+/// pure and synchronous; whether the store still holds the bytes those names
+/// point at is a separate fact the executor asks the CAS about.
 pub(super) fn probe_cache(
     instance_key: &Hash,
     state: &ConductorState,
     required_outputs: &BTreeSet<String>,
-) -> (bool, Option<ToolCallInstance>) {
-    if let Some(instance) = state.tool_call_instances.get(instance_key) {
-        // Check that all required outputs exist.
-        if required_outputs.is_empty()
-            || required_outputs.iter().all(|name| instance.outputs.contains_key(name))
-        {
-            return (true, Some(instance.clone()));
-        }
+) -> Option<ToolCallInstance> {
+    let instance = state.tool_call_instances.get(instance_key)?;
+    if required_outputs.is_empty()
+        || required_outputs.iter().all(|name| instance.outputs.contains_key(name))
+    {
+        Some(instance.clone())
+    } else {
+        None
     }
-    (false, None)
 }
 
 #[cfg(feature = "proptest")]

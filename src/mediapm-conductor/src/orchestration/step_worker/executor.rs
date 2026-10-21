@@ -136,9 +136,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let cached_instance = if request.force_rerun {
         None
     } else {
-        let (_, probed) =
-            probe_cache(&instance_key, &request.state_snapshot, &request.required_output_names);
-        match probed {
+        match probe_cache(&instance_key, &request.state_snapshot, &request.required_output_names) {
             Some(instance)
                 if required_output_blobs_exist(cas, &instance, &request.required_output_names)
                     .await =>

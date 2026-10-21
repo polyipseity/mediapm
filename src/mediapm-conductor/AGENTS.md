@@ -446,7 +446,8 @@ Where:
 
 A probe hit is a claim about recorded state; the store is a separate witness. `probe_cache` (`orchestration/step_worker/cache.rs`) stays a pure state question — does an instance exist, and does it name every output its dependents bind (`required_output_names`). The executor then asks the CAS whether those outputs still resolve (`CasApi::stat`) and downgrades the hit to a miss when one does not.
 
-- Scope is the required set only. An output nothing downstream reads cannot break the run, so an empty required set checks nothing — by design, not by omission.
+- Scope is the required set only — outputs a downstream step binds via `${step_output}`. An empty required set checks nothing, which is correct for a step no one consumes: reusing its instance cannot break the run.
+- **A workflow's terminal outputs are outside the check.** Their consumer is the caller, which reads hashes from the run summary after the workflow returns, so nothing inside the run requires them. In mediapm that is every workflow's last step: a blob missing behind the store's back still fails during materialization there, and the repair is an explicit re-run. The check protects the in-workflow edges, not the boundary.
 - It answers presence, not integrity: a corrupt blob that still exists is the read path's verification concern.
 - The conversion is the point. Without it a blob removed behind the conductor's back (GC damage, a wiped store) surfaced as a failure mid-materialization, with no route back to the step that produced it; with it the step re-executes — a pure step recomputes the same bytes, an impure step fetches them again.
 - Pin: `a_missing_blob_turns_a_cache_hit_into_a_rerun`.

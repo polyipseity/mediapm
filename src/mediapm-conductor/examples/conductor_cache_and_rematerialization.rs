@@ -1,14 +1,16 @@
 //! Cache-hit and re-materialization example for the conductor crate.
 //!
 //! This example demonstrates:
-//! - one workflow whose second run is served entirely from cache,
-//! - one caller using capture=false, the other using capture=full,
-//! - re-materialization: a caller that needs an output the cached instance did
-//!   not keep re-executes the step instead of replaying the cached entry.
+//! - a workflow whose second run is served entirely from the instance cache,
+//! - re-materialization: a later caller that requires an output the cached
+//!   instance never recorded forces the step to execute again.
 //!
-//! Consumers take literal inputs on purpose. A `${step_output...}` reference
-//! can only resolve an output the producer's capture spec recorded, so a
-//! consumer of a capture=false producer would fail on every run.
+//! The two workflows share a step whose material is identical — same tool, same
+//! input, no content map — so both derive the same instance key. The declared
+//! output set is deliberately *not* key material: `workflow_a`'s step declares
+//! no outputs, `workflow_b`'s declares `result`. Reusing `workflow_a`'s
+//! instance for `workflow_b` is therefore impossible even though the key
+//! matches, because that instance recorded no `result` for a dependent to bind.
 
 mod support;
 
@@ -30,38 +32,28 @@ fn build_document() -> NickelDocument {
             WorkflowSpec {
                 name: "workflow_a".to_string(),
                 display_name: None,
-                description: Some("save=false demo".to_string()),
+                description: Some("no declared outputs".to_string()),
                 impure: false,
                 steps: vec![
                     WorkflowStepSpec {
                         id: "shared_a".to_string(),
                         tool: "echo".to_string(),
                         inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
-                        outputs: BTreeMap::from([(
-                            "result".to_string(),
-                            mediapm_conductor::OutputCaptureSpec {
-                                name: "result".to_string(),
-                                capture: "false".to_string(),
-                                save: mediapm_conductor::SaveMode::True,
-                                allow_empty: false,
-                                include_topmost_folder: true,
-                            },
-                        )]),
+                        // Declares nothing, so its instance records no output
+                        // and cannot serve a caller that requires one.
+                        outputs: BTreeMap::new(),
                         max_retries: 0,
                         depends_on: Vec::new(),
                     },
                     WorkflowStepSpec {
                         id: "consumer_a".to_string(),
                         tool: "echo".to_string(),
-                        // A literal input, not a `consume:` binding: `shared_a`
-                        // captures with `capture: "false"`, so its result is
-                        // saved to the CAS but never bound for downstream
-                        // consumption — a `consume:` of it fails on every run.
-                        // The consumer still depends on `shared_a`, so the
-                        // workflow keeps its two-step shape.
+                        // A literal input: there is no recorded output to bind,
+                        // and a `${step_output.shared_a...}` reference would
+                        // fail to resolve on every run.
                         inputs: BTreeMap::from([(
                             "text".to_string(),
-                            "consumer after a save=true capture=false run".to_string(),
+                            "consumer after a run that declared no outputs".to_string(),
                         )]),
                         outputs: BTreeMap::new(),
                         max_retries: 0,
@@ -72,7 +64,7 @@ fn build_document() -> NickelDocument {
             WorkflowSpec {
                 name: "workflow_b".to_string(),
                 display_name: None,
-                description: Some("save=full demo".to_string()),
+                description: Some("declares the output its consumer binds".to_string()),
                 impure: false,
                 steps: vec![
                     WorkflowStepSpec {
@@ -83,7 +75,7 @@ fn build_document() -> NickelDocument {
                             "result".to_string(),
                             mediapm_conductor::OutputCaptureSpec {
                                 name: "result".to_string(),
-                                capture: "full".to_string(),
+                                capture: "stdout".to_string(),
                                 save: mediapm_conductor::SaveMode::True,
                                 allow_empty: false,
                                 include_topmost_folder: true,
@@ -97,7 +89,7 @@ fn build_document() -> NickelDocument {
                         tool: "echo".to_string(),
                         inputs: BTreeMap::from([(
                             "text".to_string(),
-                            "consumer after a save=full capture=full run".to_string(),
+                            "${step_output.shared_b.result}".to_string(),
                         )]),
                         outputs: BTreeMap::new(),
                         max_retries: 0,
@@ -156,16 +148,29 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
     let third_run = conductor.run_workflow("workflow_b", RunWorkflowOptions::default()).await?;
     println!("First run (workflow_b): {third_run:?}");
 
-    // workflow_b's `shared_b` carries the same material as `shared_a` but a
-    // different capture spec, and its caller needs the `result` output the
-    // capture=false run never kept, so the step re-executes instead of
-    // replaying the cached entry — the re-materialization this example is
-    // named for. Its consumer uses a literal input, so it must succeed.
-    assert_eq!(third_run.failed_steps, 0, "workflow_b must fail no steps; summary: {third_run:?}");
+    // `shared_b` derives the same instance key as `shared_a`, yet it cannot
+    // reuse that instance: the caller binds `result`, and the cached instance
+    // recorded no such output. The probe rejects it, the step re-executes, and
+    // the fresh instance records the output its dependent needs — the
+    // re-materialization this example is named for. Both steps execute because
+    // `consumer_b` also takes material `consumer_a` never used.
     assert!(
-        third_run.executed_steps > 0,
-        "workflow_b's shared step must re-execute to rematerialize the output its caller needs; \
+        third_run.failed_steps == 0 && third_run.executed_steps == 2 && third_run.cached_steps == 0,
+        "workflow_b must re-execute both steps rather than reuse instances that cannot serve it; \
          summary: {third_run:?}"
+    );
+
+    // Re-materialization converged: the instance now records `result`, so the
+    // same workflow is fully cached on its next run. Without this half, an
+    // example that re-executed forever would look identical.
+    let fourth_run = conductor.run_workflow("workflow_b", RunWorkflowOptions::default()).await?;
+    println!("Second run (workflow_b): {fourth_run:?}");
+    assert!(
+        fourth_run.failed_steps == 0
+            && fourth_run.executed_steps == 0
+            && fourth_run.cached_steps == 2,
+        "once the required output is recorded, the workflow must be served from cache; summary: \
+         {fourth_run:?}"
     );
 
     Ok(())

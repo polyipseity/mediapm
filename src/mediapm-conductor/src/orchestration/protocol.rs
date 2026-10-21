@@ -68,7 +68,9 @@ pub(crate) struct UnifiedToolSpec {
     ///
     /// Progress rows read this field and render nothing when it is `None`.
     pub version: Option<String>,
-    /// Whether the tool is treated as impure for tool call instance-key invalidation.
+    /// Whether the tool is impure, which gates retries: an impure step retries
+    /// only when the run sets `retry_impure`. It does not make the call unique
+    /// and does not prevent cache hits — instance keys derive from content.
     pub is_impure: bool,
     /// Maximum concurrent calls allowed for this tool.
     ///
