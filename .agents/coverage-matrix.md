@@ -1100,3 +1100,11 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | An immediate second demo sync executes no workflow instances, materializes nothing, and removes/misses no path: the offline demo runs `sync_library()` twice in-process and asserts the second summary. | `an_immediate_second_demo_sync_is_fully_cached` (examples/mediapm_demo.rs embedded tests) | [covered] |
 | The online demo's full run re-syncs, asserts the second sync did no work (tallies plus an unchanged materialized file set, catching even an identical-byte rewrite), records a `second_run` manifest block, and leaves the block absent in reduced mode. | `main_is_exercised` (reduced-mode manifest shape); `assert_second_sync_did_no_work` + `snapshot_materialized_files` run inside `run_online_demo` at Level 3 | [partial] — Level-3 full-sync assertions need a manual run |
 | Conductor examples run workflows twice and assert the second-run summary serves unchanged material from cache. | `main_is_exercised` (conductor_demo), `main_is_exercised` (conductor_cache_and_rematerialization) | [covered] |
+
+## Demo artifact provenance (2026-10-21)
+
+| Item | Tests | Status |
+| --- | --- | --- |
+| The manifest records the run mode, one provenance record per managed tool id (canonical version plus resolved tag, version, and VCS hash of the newest deployment), and a hierarchy-relative path to CAS hash map for every managed file; all read from the state lockfile. | `managed_tool_provenance_keeps_the_latest_deployed_entry` (examples/mediapm_demo_online.rs) | [covered] — summarizer; full manifest shape needs a Level-3 run |
+| `store_size_bytes` is the summed length of every CAS blob under `<runtime>/store/blobs/v1/`, replacing the three-field delta split that was always zero because the walk used the pre-versioned `v1/` path. | none — the walk is exercised only by a Level-3 run | [partial] — Level-3 only |
+| No per-media sidecar exists or is created: media state is `workflow_states` plus `ManagedFileRecord`s, and sidecars are yt-dlp outputs only. | doc-level invariant, enforced by absence of any writer | [covered] — architecture instructions corrected with the phantom `.mediapm/media/<id>/media.json` claim removed |

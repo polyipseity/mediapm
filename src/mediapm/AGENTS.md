@@ -284,6 +284,8 @@ The online demo's embedded test (`main_is_exercised`) runs reduced (config-only)
 
 Double-run policy: every demo that drives a sync runs it twice and asserts the second run did no work — zero executed workflow instances, zero materialized paths, all tools skipped, no warnings, and (online) an unchanged materialized file set. The online demo records the second run's tallies in a `second_run` manifest block so the artifact shows the guarantee instead of claiming it.
 
+Manifest provenance: the online demo's `manifest.json` records `run_mode`, one `managed_tools` record per tool id (canonical version and the resolved tag, version, and VCS hash of the newest deployment), `materialized_file_hashes` (hierarchy-relative path to CAS hash), and `store_size_bytes` (total length of the CAS blobs under `<runtime>/store/blobs/v1/`). Every value is read from the state lockfile the run already loaded, so the manifest adds no files to the library tree and no per-media sidecar exists — the only sidecars a library holds are the ones a tool wrote, yt-dlp's included.
+
 Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all && cargo test-doc-all`. `cargo test-all` runs nextest plus the tempdir and janitor gates; `cargo test-doc-all` runs the workspace doctests plus the rustdoc link gate, separately because nextest cannot execute doctests. Both delegate to the `test-runner` crate (`scripts/test-runner`).
 
 ## Feature Flags
