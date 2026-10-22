@@ -58,8 +58,8 @@ pub(crate) enum ConductorMessage {
         /// Reply channel.
         reply: RpcReplyPort<Result<ConductorState, ConductorError>>,
     },
-    /// Deterministically stops all actor-owned resources (step workers and
-    /// the background GC task) before the actor is stopped.
+    /// Deterministically stops the actor's own resources (the step-worker
+    /// pool) before the actor is stopped.
     Shutdown {
         /// Reply channel.
         reply: RpcReplyPort<Result<(), ConductorError>>,
@@ -97,7 +97,6 @@ where
         mut args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         args.set_supervisor(myself.get_cell());
-        args.start_background_gc(crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS);
         Ok(args)
     }
 

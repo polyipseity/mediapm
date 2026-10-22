@@ -7,11 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use futures_util::StreamExt;
-use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi, Hash};
+use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use mediapm_utils::Timestamp;
@@ -372,8 +370,6 @@ where
     conductor_tmp_dir: PathBuf,
     /// Pool of step-worker actors for concurrent step execution.
     workers: Vec<ractor::ActorRef<StepWorkerMessage>>,
-    /// RAII guard for the background CAS maintenance task, if started.
-    background_gc_guard: Option<BackgroundMaintenanceGuard>,
     /// Supervisor cell (the conductor actor itself) that linked step workers
     /// are torn down with. Set in `pre_start`.
     supervisor: Option<ractor::ActorCell>,
@@ -501,13 +497,7 @@ where
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]
     pub(crate) fn new(cas: Arc<C>, conductor_tmp_dir: PathBuf) -> Self {
-        Self {
-            cas,
-            conductor_tmp_dir,
-            workers: Vec::new(),
-            background_gc_guard: None,
-            supervisor: None,
-        }
+        Self { cas, conductor_tmp_dir, workers: Vec::new(), supervisor: None }
     }
 
     /// Attaches the supervisor cell (the conductor actor itself) so step
@@ -1227,49 +1217,15 @@ where
         Ok(report)
     }
 
-    /// Spawns a background task that periodically runs CAS-level GC
-    /// (maintenance cycle and constraint pruning).
-    ///
-    /// The task runs every `interval_secs` seconds and logs warnings on
-    /// failure without propagating errors.  Dropping the coordinator cancels
-    /// the task automatically.
-    pub(crate) fn start_background_gc(&mut self, interval_secs: u64) {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancelled_clone = cancelled.clone();
-        let cas = self.cas.clone();
-        let handle = tokio::spawn(async move {
-            loop {
-                if cancelled_clone.load(Ordering::Relaxed) {
-                    break;
-                }
-                if let Err(e) = crate::gc::run_cas_gc_sweep(&*cas).await {
-                    tracing::warn!("background CAS GC failed: {e}");
-                }
-                if cancelled_clone.load(Ordering::Relaxed) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_secs(interval_secs)).await;
-            }
-        });
-        self.background_gc_guard = Some(BackgroundMaintenanceGuard::new(cancelled, handle));
-    }
-
-    /// Deterministically tears down actor-owned resources: the background GC
-    /// maintenance task (cancelled and awaited so its CAS clone is released)
-    /// and every step worker (stopped with a bounded wait so their states —
-    /// including their CAS clones — drop).
+    /// Deterministically tears down actor-owned resources: every step worker,
+    /// stopped with a bounded wait so their states — including their CAS clones
+    /// — drop.
     ///
     /// After this returns, the only CAS clone still held by the actor is
-    /// `self.cas`, which is released when the coordinator state drops on
-    /// actor stop.
+    /// `self.cas`, which is released when the coordinator state drops on actor
+    /// stop. Background maintenance is not among the resources here: it belongs
+    /// to the facade, which owns the state a pass has to write back.
     pub(crate) async fn shutdown(&mut self) -> Result<(), ConductorError> {
-        if let Some(guard) = self.background_gc_guard.take() {
-            // `shutdown` sets the cooperative flag, aborts the task, and
-            // awaits the handle, so the task future is dropped (releasing its
-            // CAS clone) and the `JoinHandle` resolves with
-            // `JoinError::Cancelled`.
-            guard.shutdown().await;
-        }
         for worker in std::mem::take(&mut self.workers) {
             let _ = worker.stop_and_wait(None, Some(std::time::Duration::from_secs(5))).await;
         }
@@ -1321,23 +1277,6 @@ mod tests {
             Some(&vec!["b".to_string(), "c".to_string()]),
             "settling a releases both b and c"
         );
-    }
-
-    /// Verifies the background CAS GC loop starts, runs a cycle without
-    /// error, and RAII cleanup cancels the guard on coordinator drop.
-    #[tokio::test]
-    async fn background_cas_gc_spawned_task_runs_maintenance() {
-        let cas = Arc::new(mediapm_cas::InMemoryCas::default());
-        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let mut coordinator = WorkflowCoordinator::new(cas, tmp.path().join("conductor-tmp"));
-        coordinator.start_background_gc(1);
-        // Wait for at least one GC cycle to run (interval is 1s).
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        // Dropping the coordinator must not panic and cancels the guard.
-        drop(coordinator);
-        // Verify guard cancelled after drop.
-        // (We can't call background_gc_is_cancelled after drop, but
-        // we verify the sleep-and-drop cycle completes without panic.)
     }
 
     /// Verifies the dependency graph detects cycles.

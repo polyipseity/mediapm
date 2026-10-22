@@ -3,6 +3,21 @@
 //! Conductor GC covers state-instance pruning, CAS orphan reclamation, and CAS
 //! metadata maintenance. It is distinct from CAS-internal GC.
 //!
+//! # Two entry points, on purpose
+//!
+//! [`run_conductor_gc`] is the full cycle, and only the explicit `conductor gc`
+//! command runs it. It deletes blobs, so it assumes what an operator invoking it
+//! assumes: nothing is in flight, and every byte the store holds is either
+//! recorded in the state or described by the merged document.
+//!
+//! [`run_record_maintenance`] is what the background loop runs. It evicts
+//! instance records and maintains the CAS metadata, and it deletes no payload.
+//! A timer cannot assume the full cycle's premise: an application sharing the
+//! store can hold bytes it has staged but not yet recorded anywhere, and no root
+//! set computed from the conductor's own state and document can name them. The
+//! cost is that unattended maintenance never frees payload bytes; the explicit
+//! command does.
+//!
 //! # What may be evicted
 //!
 //! Retention is decided by reachability, not by the clock alone. A run records
@@ -119,17 +134,126 @@ fn prune_seeds_for_removed_workflows(state: &mut ConductorState, unified: &Unifi
     state.aux.live_instances.retain(|workflow, _| workflows.contains_key(workflow));
 }
 
-/// Runs full conductor garbage collection: instance pruning, CAS orphan
-/// deletion, and CAS maintenance.
+/// Earliest phase of the cycle: evict the instance records the reachability walk
+/// did not keep, and return what it decided.
+///
+/// This is the whole of what a background pass may do to the state, and it
+/// touches no bytes: evicting a record leaves its blobs alone, which is why a
+/// pass that runs while the application is working cannot destroy the
+/// application's work.
 ///
 /// # Phases
 ///
-/// 1. Instance GC — prune the seeds of workflows this pass cannot protect any
-///    more, compute the reachability closure of the remaining seeds, then hand
-///    it to [`ConductorState::run_conductor_gc`], which refreshes the reached
-///    instances and evicts unreached ones past the TTL grace period. A document
-///    that declares nothing, or declares a workflow with no seed, makes this
-///    phase abstain and prunes nothing (see the module docs).
+/// 1. Seed pruning — an entry whose workflow the merged document no longer
+///    declares is dropped, so a deleted workflow's instances become
+///    unreachable.
+/// 2. Closure — the seed keys, plus every instance that recorded, as an output,
+///    a hash some reached instance names in `materialized_inputs`.
+/// 3. Reachability refresh — every key in the closure keeps its record and its
+///    clock is refreshed to the GC epoch.
+/// 4. TTL sweep — an instance outside the closure is evicted once its clock is
+///    past the TTL.
+///
+/// Two abstentions stop the walk from deciding more than it knows. A merged
+/// document that declares no workflow is treated as unreadable rather than as
+/// permission to sweep, and a declared workflow with no recorded seed makes the
+/// pass refresh and evict nothing. Pruning waits until the pass is otherwise
+/// proceeding, because a generated document can be legitimately incomplete for
+/// one run.
+pub(crate) fn run_instance_gc(
+    state: &mut ConductorState,
+    unified: &UnifiedNickelDocument,
+    ttl_seconds: u64,
+) -> InstanceGcCounts {
+    let unseeded: Vec<String> = unified
+        .workflows
+        .keys()
+        .filter(|workflow| !state.aux.live_instances.contains_key(*workflow))
+        .cloned()
+        .collect();
+
+    let document_declares_nothing =
+        unified.workflows.is_empty() && !state.tool_call_instances.is_empty();
+    let unseeded_reason = if document_declares_nothing {
+        Some("the merged document declares no workflow".to_string())
+    } else if unseeded.is_empty() {
+        None
+    } else {
+        Some(format!("workflow(s) without a recorded instance seed: {}", unseeded.join(", ")))
+    };
+
+    let Some(reason) = unseeded_reason else {
+        // Pruning is skipped while abstaining: a seed for a workflow the
+        // document does not declare is only evidence of deletion when the
+        // document is otherwise describing the same world.
+        prune_seeds_for_removed_workflows(state, unified);
+        let reachable = reachability_closure(state);
+        let reachable_instances = reachable.len();
+        let superseded_instances =
+            state.tool_call_instances.len().saturating_sub(reachable_instances);
+        tracing::info!(
+            "conductor GC phase 1/3: instance pruning (ttl={ttl_seconds}s, \
+             reachable={reachable_instances}, superseded={superseded_instances})"
+        );
+        let instance_count_before = state.tool_call_instances.len();
+        state.run_conductor_gc(&reachable, ttl_seconds);
+        return InstanceGcCounts {
+            instances_removed: instance_count_before
+                .saturating_sub(state.tool_call_instances.len()),
+            reachable_instances,
+            superseded_instances,
+        };
+    };
+
+    tracing::info!("conductor GC phase 1/3: {reason}, so this pass refreshes and evicts nothing");
+    InstanceGcCounts::default()
+}
+
+/// Runs the background maintenance cycle: instance eviction, then CAS metadata
+/// maintenance, and never a payload deletion.
+///
+/// [`run_conductor_gc`] without its orphan phase. The metadata half —
+/// [`run_cas_gc_sweep`] — rewrites how existing objects are encoded and drops
+/// constraint entries whose targets or bases no longer exist; neither can remove
+/// an object's bytes, which is what makes it safe on a timer.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Cas`] on any CAS operation failure.
+pub(crate) async fn run_record_maintenance<C>(
+    cas: &C,
+    state: &mut ConductorState,
+    unified: &UnifiedNickelDocument,
+    ttl_seconds: u64,
+) -> Result<ConductorGcReport, ConductorError>
+where
+    C: CasApi + CasMaintenanceApi,
+{
+    let counts = run_instance_gc(state, unified, ttl_seconds);
+    tracing::info!("conductor maintenance: CAS metadata maintenance (no orphan deletion)");
+    let prune_report = run_cas_gc_sweep(cas).await?;
+    Ok(ConductorGcReport {
+        instances_removed: counts.instances_removed,
+        reachable_instances: counts.reachable_instances,
+        superseded_instances: counts.superseded_instances,
+        orphans_removed: 0,
+        prune_report,
+    })
+}
+
+/// Runs full conductor garbage collection: instance pruning, CAS orphan
+/// deletion, and CAS maintenance.
+///
+/// This is the operator path (`conductor gc`, and the `Conductor::run_gc`
+/// facade method). Deleting orphans assumes the caller chose the moment:
+/// nothing is in flight, and every live byte is either recorded in the state or
+/// described by the merged document. A background timer may not make that
+/// assumption — see [`run_record_maintenance`], which is the cycle the timer
+/// runs.
+///
+/// # Phases
+///
+/// 1. [`run_instance_gc`] — evict the records the walk did not keep.
 /// 2. Root-set / orphan reclamation — collect referenced CAS hashes from
 ///    surviving instances and the unified config, then delete orphans.
 /// 3. CAS maintenance — delegate to [`run_cas_gc_sweep`] for constraint
@@ -142,7 +266,8 @@ fn prune_seeds_for_removed_workflows(state: &mut ConductorState, unified: &Unifi
 /// cache hit replays the recorded outputs and never opens the inputs it lists:
 /// the consumer's own bytes are roots, and its inputs are provenance. The claim
 /// this phase can make is therefore about what re-execution needs, not about
-/// what a record mentions.
+/// what a record mentions. It says nothing at all about bytes no record mentions
+/// yet — staged inputs, for instance — which is why the phase is not on a timer.
 ///
 /// # Errors
 ///
@@ -156,55 +281,7 @@ pub(crate) async fn run_conductor_gc<C>(
 where
     C: CasApi + CasMaintenanceApi,
 {
-    let unseeded: Vec<String> = unified
-        .workflows
-        .keys()
-        .filter(|workflow| !state.aux.live_instances.contains_key(*workflow))
-        .cloned()
-        .collect();
-
-    // A document that declares no workflow at all is indistinguishable from a
-    // document that failed to load: config discovery skips missing files on
-    // purpose and an empty merge is legal. Its empty seed set would sweep every
-    // instance, so the pass abstains while the state still holds something to
-    // sweep. This is narrower than "an empty closure abstains", which would
-    // stop collecting for the everyday case of a workflow that legitimately
-    // recorded no instance.
-    let document_declares_nothing =
-        unified.workflows.is_empty() && !state.tool_call_instances.is_empty();
-    let unseeded_reason = if document_declares_nothing {
-        Some("the merged document declares no workflow".to_string())
-    } else if unseeded.is_empty() {
-        None
-    } else {
-        Some(format!("workflow(s) without a recorded instance seed: {}", unseeded.join(", ")))
-    };
-
-    // ---- Phase 1: Instance-level GC (reachability + TTL grace) ----
-    let mut reachable_instances = 0usize;
-    let mut superseded_instances = 0usize;
-    let mut instances_removed = 0usize;
-    if let Some(reason) = unseeded_reason {
-        tracing::info!(
-            "conductor GC phase 1/3: {reason}, so this pass refreshes and evicts nothing"
-        );
-    } else {
-        // Pruning is skipped while abstaining: a seed for a workflow the
-        // document does not declare is only evidence of deletion when the
-        // document is otherwise describing the same world, and a generated
-        // document can be legitimately incomplete for one run.
-        prune_seeds_for_removed_workflows(state, unified);
-        let reachable = reachability_closure(state);
-        reachable_instances = reachable.len();
-        superseded_instances = state.tool_call_instances.len().saturating_sub(reachable_instances);
-        tracing::info!(
-            "conductor GC phase 1/3: instance pruning (ttl={ttl_seconds}s, \
-             reachable={reachable_instances}, superseded={superseded_instances})"
-        );
-        let instance_count_before = state.tool_call_instances.len();
-        state.run_conductor_gc(&reachable, ttl_seconds);
-        instances_removed = instance_count_before.saturating_sub(state.tool_call_instances.len());
-    }
+    let counts = run_instance_gc(state, unified, ttl_seconds);
 
     // ---- Phase 2: Root-set collection + CAS orphan deletion ----
     tracing::info!("conductor GC phase 2/3: root-set collection and orphan reclamation");
@@ -243,12 +320,24 @@ where
     let prune_report = run_cas_gc_sweep(cas).await?;
 
     Ok(ConductorGcReport {
-        instances_removed,
-        reachable_instances,
-        superseded_instances,
+        instances_removed: counts.instances_removed,
+        reachable_instances: counts.reachable_instances,
+        superseded_instances: counts.superseded_instances,
         orphans_removed,
         prune_report,
     })
+}
+
+/// What one instance-only pass decided.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InstanceGcCounts {
+    /// Records evicted because their grace period had expired.
+    pub instances_removed: usize,
+    /// Records the walk kept, whose clocks this pass refreshed.
+    pub reachable_instances: usize,
+    /// Records the walk did not reach, whether or not they were old enough to
+    /// evict.
+    pub superseded_instances: usize,
 }
 
 /// Runs full CAS maintenance: optimize, prune constraints.

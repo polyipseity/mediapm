@@ -3,10 +3,13 @@
 //! [`Conductor`] is the concrete implementation of the conductor API.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
+use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi, Hash};
 use tokio::sync::OnceCell;
 
 use crate::api::{
@@ -34,8 +37,26 @@ where
     actor_client: OnceCell<ConductorActorClient>,
     /// Resolved runtime paths.
     storage_paths: RuntimeStoragePaths,
-    /// Persisted orchestration state, shared across workflow runs.
-    state: std::sync::Mutex<ConductorState>,
+    /// Persisted orchestration state, shared across workflow runs and with the
+    /// background maintenance task, which keeps its own handle on it.
+    state: Arc<std::sync::Mutex<ConductorState>>,
+    /// Serializes the operations that read, modify, and write back the whole
+    /// state: a workflow run, a GC pass, and the background loop.
+    ///
+    /// Each of them holds the state out of the mutex for the length of an RPC,
+    /// so two of them at once can each start from the same snapshot and the
+    /// later write erases the earlier one's records. Holding this for the whole
+    /// operation makes the last write the current one.
+    state_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Cancellation guard for the background maintenance task, if it was
+    /// started. Dropping the facade drops the guard, which aborts the task.
+    background_maintenance: std::sync::Mutex<Option<BackgroundMaintenanceGuard>>,
+    /// Seconds the background maintenance loop waits after each pass.
+    ///
+    /// Production leaves this at
+    /// [`DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS`](crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS);
+    /// tests shorten it because a day is not a test duration.
+    background_gc_interval_secs: u64,
 }
 
 impl<C> Conductor<C>
@@ -49,13 +70,21 @@ where
             cas: Arc::new(cas),
             actor_client: OnceCell::new(),
             storage_paths,
-            state: std::sync::Mutex::new(ConductorState::default()),
+            state: Arc::new(std::sync::Mutex::new(ConductorState::default())),
+            state_gate: Arc::new(tokio::sync::Mutex::new(())),
+            background_maintenance: std::sync::Mutex::new(None),
+            background_gc_interval_secs: crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS,
         }
     }
 
     /// Returns or initialises the conductor actor client.
+    ///
+    /// Spawning the actor is also what starts background maintenance: a facade
+    /// that never runs a workflow holds nothing worth collecting, and one that
+    /// does gets its collection for as long as it lives.
     async fn ensure_actor_client(&self) -> Result<&ConductorActorClient, ConductorError> {
-        self.actor_client
+        let client = self
+            .actor_client
             .get_or_try_init(|| async {
                 crate::orchestration::node::spawn_conductor_actor(
                     self.cas.clone(),
@@ -63,7 +92,53 @@ where
                 )
                 .await
             })
-            .await
+            .await?;
+        self.start_background_maintenance();
+        Ok(client)
+    }
+
+    /// Starts the background maintenance loop unless it is already running.
+    ///
+    /// The loop evicts instance records and maintains the CAS metadata, and it
+    /// deletes no payload: a timer cannot tell an orphan from a byte the
+    /// application has staged and not yet recorded, so byte reclamation stays
+    /// with the explicit `conductor gc` command. Failures are logged and the
+    /// next pass tries again — maintenance is not the reason a workflow fails.
+    ///
+    /// A pass is started as soon as the loop is, not after the first interval,
+    /// so a long-lived process collects on the run that creates it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guard slot is poisoned, which means a previous holder
+    /// panicked while starting or stopping the task.
+    fn start_background_maintenance(&self) {
+        let mut slot = self.background_maintenance.lock().expect("background maintenance lock");
+        if slot.is_some() {
+            return;
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_flag = cancelled.clone();
+        let state = self.state.clone();
+        let gate = self.state_gate.clone();
+        let cas = self.cas.clone();
+        let paths = self.storage_paths.clone();
+        let interval = self.background_gc_interval_secs;
+        let handle = tokio::spawn(async move {
+            loop {
+                if cancelled_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                if let Err(error) = maintenance_pass(&*cas, &paths, &state, &gate).await {
+                    tracing::warn!("conductor background maintenance failed: {error}");
+                }
+                if cancelled_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(interval)).await;
+            }
+        });
+        *slot = Some(BackgroundMaintenanceGuard::new(cancelled, handle));
     }
 
     /// Returns a reference to the underlying CAS store.
@@ -97,6 +172,10 @@ where
         options: RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
         let client = self.ensure_actor_client().await?;
+        // One state-mutating operation at a time: the run replaces the recorded
+        // instances wholesale, so a pass that snapshot the state underneath it
+        // would write its snapshot back over the run's records.
+        let _gate = self.state_gate.lock().await;
         let (unified, fresh_state) =
             load_unified_config_and_state_async(&*self.cas, self.storage_paths()).await?;
         // Apply conductor runtime config defaults to options
@@ -264,27 +343,57 @@ where
         step_ids: &BTreeSet<String>,
         invalidated: bool,
     ) -> Result<InstanceMarkerCounts, ConductorError> {
+        self.update_state(|state| {
+            let mut counts = InstanceMarkerCounts::default();
+            for instance in state.tool_call_instances.values_mut() {
+                if instance.step_ids.is_disjoint(step_ids) {
+                    continue;
+                }
+                let already_set = instance.invalidated_at.is_some() == invalidated;
+                if already_set {
+                    counts.unchanged += 1;
+                    continue;
+                }
+                instance.invalidated_at =
+                    if invalidated { Some(mediapm_utils::Timestamp::now()) } else { None };
+                counts.changed += 1;
+            }
+            Ok(counts)
+        })
+        .await
+    }
+
+    /// Reads the persisted state, applies `edit`, and publishes the result.
+    ///
+    /// The one path for an edit that is not a workflow run: load from disk first
+    /// (the caller may be the first thing the process does), hand the loaded
+    /// snapshot to `edit`, save it, then replace the in-memory snapshot. The
+    /// order is durable-first, so a failed write never leaves the process holding
+    /// an edit the file does not have.
+    ///
+    /// Runs under [`Self::state_gate`], because an edit that only writes when it
+    /// changed something is exactly what a concurrent pass can undo: the pass
+    /// would write back the snapshot it read before the edit landed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be loaded, `edit` fails, or the
+    /// result cannot be written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
+    pub(crate) async fn update_state<T, F>(&self, edit: F) -> Result<T, ConductorError>
+    where
+        F: FnOnce(&mut ConductorState) -> Result<T, ConductorError>,
+    {
+        let _gate = self.state_gate.lock().await;
         self.ensure_persisted_state_loaded().await?;
         let mut state = self.get_state()?;
-        let mut counts = InstanceMarkerCounts::default();
-        for instance in state.tool_call_instances.values_mut() {
-            if instance.step_ids.is_disjoint(step_ids) {
-                continue;
-            }
-            let already_set = instance.invalidated_at.is_some() == invalidated;
-            if already_set {
-                counts.unchanged += 1;
-                continue;
-            }
-            instance.invalidated_at =
-                if invalidated { Some(mediapm_utils::Timestamp::now()) } else { None };
-            counts.changed += 1;
-        }
-        if counts.changed > 0 {
-            save_state_file(self.storage_paths(), &state)?;
-            self.replace_resolved_state(state)?;
-        }
-        Ok(counts)
+        let outcome = edit(&mut state)?;
+        self.save_state(&state)?;
+        self.replace_resolved_state(state)?;
+        Ok(outcome)
     }
 
     /// Adds a tool configuration to the first available config document.
@@ -483,9 +592,20 @@ where
     /// caller cannot supply a key set: the only caller that ever did passed an
     /// empty one, which would have made every sweep a full wipe.
     ///
+    /// The pass deletes the blobs of every instance it evicts, so its result is
+    /// written to the state file before this returns: the eviction is the only
+    /// record that those bytes are gone, and a later process reads the file.
+    ///
     /// # Errors
     ///
-    /// Delegates to the conductor actor.
+    /// Delegates to the conductor actor, and to the state-file write.
+    ///
+    /// This is the full cycle, which includes deleting every CAS blob no record
+    /// names. It assumes the caller chose the moment: an operator running
+    /// `conductor gc` asserts that nothing is in flight, which is why this path
+    /// is not the one the background loop runs — a timer cannot assert that, and
+    /// a store shared with an application holds bytes that are staged and not
+    /// yet recorded.
     ///
     /// # Panics
     ///
@@ -493,10 +613,25 @@ where
     pub async fn run_gc(&self) -> Result<(), ConductorError> {
         let client = self.ensure_actor_client().await?;
         let unified = load_unified_config(self.storage_paths())?;
+        let _gate = self.state_gate.lock().await;
         let state = self.state.lock().expect("state lock").clone();
         let new_state = client.run_gc(state, unified).await?;
+        self.save_state(&new_state)?;
         *self.state.lock().expect("state lock") = new_state;
         Ok(())
+    }
+
+    /// Writes one state snapshot to the configured state file.
+    ///
+    /// The single saver: the workflow run, the GC pass, the background loop, the
+    /// marker commands, and `state import` all publish state through it, so the
+    /// on-disk shape and the way it is replaced cannot diverge between them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be encoded or written.
+    pub(crate) fn save_state(&self, state: &ConductorState) -> Result<(), ConductorError> {
+        save_state_file(self.storage_paths(), state)
     }
 
     /// Returns the merged unified configuration (compiled view).
@@ -510,20 +645,28 @@ where
         load_unified_config(self.storage_paths())
     }
 
-    /// Deterministically stops the conductor actor and releases every
-    /// actor-owned resource: the step-worker pool, the background GC task,
-    /// and the CAS clone held by the coordinator state.
+    /// Deterministically stops the conductor actor and the background
+    /// maintenance task, releasing every resource they hold: the step-worker
+    /// pool, the coordinator's CAS clone, and the maintenance loop's own.
     ///
-    /// Awaited, this guarantees the underlying CAS handle is no longer
-    /// referenced by the conductor actor, so a filesystem-backed CAS can be
-    /// reopened by a later instance. It is a no-op when the actor was never
-    /// spawned (for example, config-only usage).
+    /// Awaited, this guarantees no background pass is running and the
+    /// underlying CAS handle is no longer referenced by the actor, so a
+    /// filesystem-backed CAS can be reopened by a later instance. It is safe to
+    /// call when neither was started (for example, config-only usage).
     ///
     /// # Errors
     ///
     /// Returns an error when the shutdown RPC or the bounded actor stop wait
     /// fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guard slot is poisoned.
     pub async fn shutdown(&self) -> Result<(), ConductorError> {
+        let guard = self.background_maintenance.lock().expect("background maintenance lock").take();
+        if let Some(guard) = guard {
+            guard.shutdown().await;
+        }
         if let Some(client) = self.actor_client.get() {
             client.shutdown().await?;
         }
@@ -556,6 +699,59 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for 
 // ---------------------------------------------------------------------------
 // Loading / saving helpers
 // ---------------------------------------------------------------------------
+
+/// Runs one background maintenance pass and publishes its result.
+///
+/// The pass is [`crate::gc::run_record_maintenance`]: instance eviction decided
+/// by the recorded seeds, then CAS metadata maintenance. It deletes no payload,
+/// because a timer cannot know which bytes an application has staged but not yet
+/// recorded — the store is shared, and only the explicit `conductor gc` command
+/// may assume nothing is in flight. The result is saved before the in-memory
+/// snapshot is replaced: the evictions it made are what the next process must
+/// read, and the file is where it reads them.
+///
+/// The config is loaded before the gate is taken: reading a document cannot
+/// touch state, and holding the gate across it would delay a workflow run for
+/// nothing. The gate covers the rest, so a run that is recording instances and a
+/// pass that is evicting them never start from the same snapshot.
+///
+/// An empty in-memory snapshot is filled from the file first. A facade whose
+/// actor was spawned for something other than a workflow run has never loaded
+/// the state, and passing its empty snapshot would write it over the records on
+/// disk.
+///
+/// # Errors
+///
+/// Returns a config, state-load, GC, or write error. The caller logs it and
+/// waits for the next interval; maintenance never fails a workflow.
+async fn maintenance_pass<C>(
+    cas: &C,
+    paths: &RuntimeStoragePaths,
+    state: &std::sync::Mutex<ConductorState>,
+    gate: &tokio::sync::Mutex<()>,
+) -> Result<(), ConductorError>
+where
+    C: CasApi + CasMaintenanceApi,
+{
+    let unified = load_unified_config(paths)?;
+    let _gate = gate.lock().await;
+    let mut snapshot = state.lock().expect("state lock").clone();
+    if snapshot.tool_call_instances.is_empty()
+        && let Some(persisted) = load_state_file_async(cas, paths).await?
+    {
+        snapshot = persisted;
+    }
+    crate::gc::run_record_maintenance(
+        cas,
+        &mut snapshot,
+        &unified,
+        crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS,
+    )
+    .await?;
+    save_state_file(paths, &snapshot)?;
+    *state.lock().expect("state lock") = snapshot;
+    Ok(())
+}
 
 /// Loads the merged unified configuration (no state file read).
 fn load_unified_config(
@@ -611,19 +807,72 @@ fn load_state_file(
 }
 
 /// Persists the conductor state to the state file as pretty JSON.
+///
+/// The document is published atomically, so a reader in another process — or the
+/// next load after a crash — sees either the previous state or the new one, never
+/// a prefix of either.
 fn save_state_file(
     storage_paths: &RuntimeStoragePaths,
     state: &ConductorState,
 ) -> Result<(), ConductorError> {
-    let path = &storage_paths.state_file_path;
+    let bytes = crate::state::versions::encode_state_json(state)?;
+    write_bytes_atomically(&storage_paths.state_file_path, &bytes)
+}
+
+/// Publishes `bytes` at `path` by writing a sibling file and renaming it over
+/// the target.
+///
+/// A rename within one directory is the only replacement the filesystem makes
+/// atomic, so the temporary file has to live beside the target rather than in
+/// the system temp directory, which may be another filesystem. The temporary
+/// name carries the process id so two conductors that share a state file cannot
+/// write the same temporary file; a crash leaves it behind, and the next save in
+/// that process reuses the name, while a save that fails removes it.
+///
+/// After the rename the parent directory is synced, which is what makes the new
+/// name durable rather than only the bytes it points at. That sync is
+/// best-effort because opening a directory as a file is not portable — Windows
+/// refuses it — and losing it costs durability of the rename across a power cut,
+/// not atomicity.
+fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), ConductorError> {
+    write_atomically(path, |file| file.write_all(bytes))
+}
+
+/// Runs `write` against a temporary sibling of `path` and renames it into place.
+///
+/// Split from [`write_bytes_atomically`] so a test can fail the write halfway
+/// and observe what the target holds afterwards; that is the state a crash
+/// leaves behind, and it is the whole reason the temporary file exists.
+fn write_atomically(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<(), ConductorError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| {
             ConductorError::io("creating state file directory", parent, source)
         })?;
     }
-    let bytes = crate::state::versions::encode_state_json(state)?;
-    std::fs::write(path, bytes)
-        .map_err(|source| ConductorError::io("writing state file", path, source))
+    let mut temporary_name =
+        path.file_name().map_or_else(std::ffi::OsString::new, std::ffi::OsStr::to_os_string);
+    temporary_name.push(format!(".tmp-{}", std::process::id()));
+    let temporary = path.with_file_name(temporary_name);
+
+    let publish = |temporary: &Path| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(temporary)?;
+        write(&mut file)?;
+        file.sync_all()?;
+        std::fs::rename(temporary, path)?;
+        if let Some(parent) = path.parent()
+            && let Ok(directory) = std::fs::File::open(parent)
+        {
+            drop(directory.sync_all());
+        }
+        Ok(())
+    };
+    publish(&temporary).map_err(|source| {
+        drop(std::fs::remove_file(&temporary));
+        ConductorError::io("writing state file", path, source)
+    })
 }
 
 /// Discovers all user config files.
@@ -914,6 +1163,293 @@ mod tests {
 
         assert_eq!(counts, InstanceMarkerCounts { changed: 0, unchanged: 1 });
         assert_eq!(std::fs::read(&path).expect("read state file"), before);
+    }
+
+    /// Writes a config document declaring one workflow, at the location
+    /// standalone discovery reads.
+    fn write_single_workflow_config(dir: &Path, workflow: &str) {
+        let doc = NickelDocument {
+            tools: BTreeMap::new(),
+            workflows: vec![crate::config::WorkflowSpec {
+                name: workflow.to_string(),
+                ..crate::config::WorkflowSpec::default()
+            }],
+            ..NickelDocument::default()
+        };
+        std::fs::write(
+            dir.join("conductor.ncl"),
+            versions::encode_document(doc).expect("encode config"),
+        )
+        .expect("write config");
+    }
+
+    /// Builds a recorded instance with no inputs and no outputs, so it is
+    /// reachable only if a seed names it.
+    fn bare_instance(key: Hash) -> crate::state::ToolCallInstance {
+        crate::state::ToolCallInstance {
+            instance_key: key,
+            tool_call_id: "echo@v1".to_string(),
+            impure: false,
+            invalidated_at: None,
+            executed_at: mediapm_utils::Timestamp::default(),
+            step_ids: BTreeSet::new(),
+            command_args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        }
+    }
+
+    /// A GC pass leaves its evictions in the state file.
+    ///
+    /// The pass deletes the blobs of everything it evicts, so a pass whose
+    /// result stays in memory deletes the bytes and keeps the records that
+    /// promised they were there. The file is the only record a later process
+    /// reads, which makes the on-disk assertion the one that matters.
+    #[tokio::test]
+    async fn run_gc_leaves_its_evictions_in_the_state_file() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        write_single_workflow_config(dir.path(), "default");
+        let paths = RuntimeStoragePaths::new(dir.path());
+
+        let live = Hash::from_content(b"live");
+        let superseded = Hash::from_content(b"superseded");
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(live, bare_instance(live));
+        state.tool_call_instances.insert(superseded, bare_instance(superseded));
+        state.aux = crate::state::AuxData {
+            tool_call_instance_counter: 2,
+            // A pass measures the grace period against the epoch it finds, so a
+            // current epoch is what puts the unseeded record past its deadline.
+            conductor_gc_epoch: mediapm_utils::Timestamp::now(),
+            instances: BTreeMap::from([
+                (
+                    live,
+                    crate::state::InstanceAux {
+                        last_referenced_at: mediapm_utils::Timestamp::now(),
+                    },
+                ),
+                (
+                    superseded,
+                    crate::state::InstanceAux {
+                        last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(0),
+                    },
+                ),
+            ]),
+            live_instances: BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]),
+        };
+        save_state_file(&paths, &state).expect("seed state file");
+
+        let conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        conductor.replace_resolved_state(state).expect("replace state");
+        conductor.run_gc().await.expect("gc");
+        conductor.shutdown().await.expect("shutdown");
+
+        let on_disk = load_state_file(conductor.storage_paths())
+            .expect("load state file")
+            .expect("state file must exist");
+        assert!(
+            !on_disk.tool_call_instances.contains_key(&superseded),
+            "the eviction must reach the file: {on_disk:?}",
+        );
+        assert!(
+            on_disk.tool_call_instances.contains_key(&live),
+            "a seeded instance survives the pass and the write",
+        );
+    }
+
+    /// A save publishes the whole document and leaves no temporary file.
+    ///
+    /// The temporary is an implementation detail of the replacement, not an
+    /// artifact of it: one left behind would accumulate per crash and, worse,
+    /// would be the file a later reader might pick up.
+    #[test]
+    fn a_saved_state_file_is_whole_and_leaves_no_temporary_file() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let (state, key) = state_with_step_instance("step-0-echo");
+
+        save_state_file(&paths, &state).expect("save state file");
+
+        let loaded = load_state_file(&paths).expect("load state file").expect("state file exists");
+        assert_eq!(loaded, state, "the file must hold the whole document");
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![paths.state_file_path.file_name().expect("name").to_string_lossy().into_owned()],
+            "a save must leave exactly the state file, and the record it holds is {key}",
+        );
+    }
+
+    /// An interrupted save leaves the previous document in place.
+    ///
+    /// The bytes never reach the target except by rename, so a write that dies
+    /// halfway is invisible: the file still holds the state the last good save
+    /// published, and a reader — the next process — is none the wiser. Written
+    /// as it was, an interrupted `File::create` would have truncated the file
+    /// and the next load would have failed on a document that never existed.
+    #[test]
+    fn an_interrupted_save_keeps_the_previous_file_and_cleans_up() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let (state, _key) = state_with_step_instance("step-0-echo");
+        save_state_file(&paths, &state).expect("save the good state");
+        let published = std::fs::read(&paths.state_file_path).expect("read published state");
+
+        let failed = write_atomically(&paths.state_file_path, |file| {
+            file.write_all(b"{\"version\": 4, \"tool_call_inst")?;
+            Err(std::io::Error::other("the disk went away"))
+        });
+        assert!(failed.is_err(), "the writer's failure must be reported");
+
+        assert_eq!(
+            std::fs::read(&paths.state_file_path).expect("read published state"),
+            published,
+            "the previous document must survive a save that never finished",
+        );
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "the abandoned temporary must be removed: {names:?}");
+    }
+
+    /// The background loop runs a pass on its interval and stops on shutdown.
+    ///
+    /// The pass is observable through the GC epoch, which only a completed pass
+    /// advances, and through the file it writes: a loop that ran the cycle and
+    /// dropped the result would show the first and not the second.
+    #[tokio::test]
+    async fn the_background_loop_runs_a_pass_and_stops_on_shutdown() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        write_single_workflow_config(dir.path(), "default");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let live = Hash::from_content(b"live");
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(live, bare_instance(live));
+        state.aux.live_instances =
+            BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]);
+        save_state_file(&paths, &state).expect("seed state file");
+
+        let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        conductor.background_gc_interval_secs = 1;
+        conductor.replace_resolved_state(state).expect("replace state");
+        conductor.start_background_maintenance();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        conductor.shutdown().await.expect("shutdown");
+        let after = conductor.get_state().expect("state");
+        assert!(
+            after.aux.conductor_gc_epoch > mediapm_utils::Timestamp::from_unix_nanos(0),
+            "at least one pass must have completed: {:?}",
+            after.aux.conductor_gc_epoch,
+        );
+        let on_disk = load_state_file(conductor.storage_paths())
+            .expect("load state file")
+            .expect("state file must exist");
+        assert_eq!(
+            on_disk.aux.conductor_gc_epoch, after.aux.conductor_gc_epoch,
+            "the pass must publish the state it computed",
+        );
+    }
+
+    /// The background pass collects records; only the explicit command collects
+    /// bytes.
+    ///
+    /// Both halves are the point. The first pins that a timer never deletes a
+    /// blob no record names, because that blob may be a payload the application
+    /// staged and has not recorded yet — the store is shared, and the knowledge
+    /// of what is in flight lives in the application, not in the conductor's
+    /// state. The second pins that this is a limit of the timer and not a broken
+    /// sweep: the same store, swept by the command an operator runs when nothing
+    /// is in flight, gives the bytes up.
+    #[tokio::test]
+    async fn a_background_pass_keeps_bytes_only_the_explicit_command_reclaims() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        write_single_workflow_config(dir.path(), "default");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let live = Hash::from_content(b"live");
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(live, bare_instance(live));
+        state.aux.live_instances =
+            BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]);
+        save_state_file(&paths, &state).expect("seed state file");
+
+        let cas = mediapm_cas::new_in_memory_cas();
+        let staged = cas
+            .put(bytes::Bytes::from_static(b"a payload staged and not yet recorded"))
+            .await
+            .expect("put staged payload");
+
+        let mut conductor = Conductor::new(paths, cas);
+        conductor.background_gc_interval_secs = 1;
+        conductor.replace_resolved_state(state).expect("replace state");
+        conductor.start_background_maintenance();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        conductor.shutdown().await.expect("shutdown");
+        let swept = conductor.get_state().expect("state");
+        assert!(
+            swept.aux.conductor_gc_epoch > mediapm_utils::Timestamp::from_unix_nanos(0),
+            "the background pass must have run, or the first half proves nothing: {:?}",
+            swept.aux.conductor_gc_epoch,
+        );
+        assert!(
+            conductor.cas().get(staged).await.is_ok(),
+            "a background pass must not delete a blob no record names",
+        );
+
+        conductor.run_gc().await.expect("gc");
+        assert!(
+            conductor.cas().get(staged).await.is_err(),
+            "the explicit command reclaims what no record names",
+        );
+    }
+
+    /// Dropping the facade cancels the loop, and no later pass reaches the file.
+    ///
+    /// The guard's `Drop` aborts the task, so a facade that goes away takes its
+    /// maintenance with it. What is observable from outside is the write: a pass
+    /// that kept running would keep advancing the epoch in the state file, and a
+    /// pass that was aborted mid-flight after the facade was gone cannot have
+    /// written, because the writer is the same code the guard stopped.
+    #[tokio::test]
+    async fn dropping_the_facade_cancels_the_pass() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        write_single_workflow_config(dir.path(), "default");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let live = Hash::from_content(b"live");
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(live, bare_instance(live));
+        state.aux.live_instances =
+            BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]);
+        save_state_file(&paths, &state).expect("seed state file");
+
+        let state_path = paths.state_file_path.clone();
+        let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        conductor.background_gc_interval_secs = 1;
+        conductor.replace_resolved_state(state).expect("replace state");
+        conductor.start_background_maintenance();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(conductor);
+
+        let settled = load_state_file(&RuntimeStoragePaths::new(dir.path()))
+            .expect("load state file")
+            .expect("state file must exist");
+        tokio::time::sleep(Duration::from_millis(2_200)).await;
+        let later = load_state_file(&RuntimeStoragePaths::new(dir.path()))
+            .expect("load state file")
+            .expect("state file must exist");
+        assert_eq!(
+            later.aux.conductor_gc_epoch,
+            settled.aux.conductor_gc_epoch,
+            "a dropped facade must not keep passing over {}",
+            state_path.display(),
+        );
     }
 
     /// `with_config_paths` relocates the state file to the custom path.

@@ -480,7 +480,7 @@ A workflow declared in the document with no seed makes the whole pass refresh an
 
 `aux.instances[*].last_referenced_at` is the only TTL clock: it is refreshed on every reference and on every retained sweep, so an instance that stops being referenced survives the full TTL window. `AuxData::conductor_gc_epoch` advances to `Timestamp::now()` at the end of each sweep, so the sweep measures the TTL against the previous sweep's clock.
 
-**Trigger points**: `Conductor::run_gc` (the CLI `gc` command) calls the actor's `run_gc`, which computes the reachable set inside the pass — the requester supplies state and config only. The background maintenance task (`start_background_gc`, default 86400s) runs `run_cas_gc_sweep` only, not instance GC.
+**Trigger points**: `Conductor::run_gc` (the CLI `conductor gc` command) calls the actor's `run_gc`, which computes the reachable set inside the pass — the requester supplies state and config only — and then writes the result to the state file before returning, because the pass has already deleted the evicted instances' blobs. The background maintenance loop (`Conductor::start_background_maintenance`, tick `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS` = 86400s, started on the first `ensure_actor_client`) runs the record half only — `gc::run_record_maintenance`, instance eviction plus CAS metadata maintenance — and persists it the same way. It deletes no payload; see §H for why.
 
 ## G. CAS GC Sweep
 
@@ -489,7 +489,7 @@ A workflow declared in the document with no seed makes the whole pass refresh an
 - `run_cas_gc_sweep()` runs CAS maintenance only: `run_maintenance_cycle()` (optimize under the maintenance policy), then `prune_constraints()` (drop stale constraint entries). It deletes no payload data.
 - `run_conductor_gc()` is the full cycle: seeded reachability sweep, then root-set orphan deletion through `CasApi::delete`, then `run_cas_gc_sweep()`.
 
-Callers: `start_background_gc` runs `run_cas_gc_sweep` on its interval; `Conductor::run_gc` (CLI `conductor gc`) runs the full cycle through the actor. MediaPM does not trigger conductor GC.
+Callers: only these. `Conductor::run_gc` (CLI `conductor gc`) runs the full cycle, through `gc::run_conductor_gc`. The background loop runs `gc::run_record_maintenance`, which is instance eviction plus `run_cas_gc_sweep` and no orphan phase. MediaPM's own background tasks do not trigger conductor GC; a sync process gets the maintenance loop because it runs a workflow, which starts the loop.
 
 ### Orphan Deletion
 
@@ -507,7 +507,15 @@ Every other CAS hash is deleted as an orphan, then `run_cas_gc_sweep` runs CAS m
 
 ## H. Background GC Loop
 
-`start_background_gc(interval_secs)` (`orchestration/coordinator.rs`, called from `node.rs` with `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS`, 86400) spawns a cancel-guarded task held by a `BackgroundMaintenanceGuard`. The task runs `gc::run_cas_gc_sweep` (CAS maintenance plus constraint pruning), checks for cancellation, then sleeps `interval_secs`; the timer starts only after a run finishes. It does not run instance GC — `Conductor::run_gc` is the path that does.
+`Conductor::start_background_maintenance` (`src/conductor_impl.rs`) owns the loop, because maintenance needs the state the facade holds: a coordinator-only sweep could act on the store but could not write back the instance decisions that justify the action. It is started by the first successful `ensure_actor_client`, spawns a cancel-guarded task held by a `BackgroundMaintenanceGuard`, and runs a pass immediately: `load_unified_config`, then one `gc::run_record_maintenance` with `DEFAULT_CONDUCTOR_GC_TTL_SECONDS` and a `save_state_file`, then sleep `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS` (86400). The timer starts only after a pass finishes, and a pass that fails is logged with `tracing::warn!` and retried on the next interval — maintenance never fails a workflow.
+
+**A pass deletes no payload, and the record/blob split is the point.** The store is shared: mediapm imports source payloads into it and stages them there before any record names them, and no root set computed from the conductor's state and document can include them. So the timer collects records (evictions, refreshed clocks) and leaves bytes alone, while `conductor gc` collects bytes. The two halves differ because the knowledge differs: a timer cannot know what the application has in flight, and an operator invoking `conductor gc` asserts nothing is. The cost is real and has to be read as a cost: an installation that only ever syncs reclaims no payload bytes and grows until someone runs `conductor gc`.
+
+Making unattended reclamation safe is a follow-up, not an omission: it needs either the application to declare staged hashes as protected before it imports them, or a reclaim point the application chooses when nothing is in flight. `run_cas_gc_sweep` stays in the tick because it cannot remove content — `run_maintenance_cycle` rewrites how existing objects are encoded and `prune_constraints` drops entries for targets and bases that are already absent.
+
+The pass runs under the facade's `state_gate`, which every read-modify-write of the whole state also takes (`run_workflow`, `run_gc`). Without it a pass and a run can each start from the same snapshot and the later write erases the earlier one's records. An empty in-memory snapshot is filled from the state file first, so a facade whose actor was spawned for a non-workflow call cannot publish its empty snapshot over the records on disk.
+
+`Conductor::shutdown` awaits the guard, so after it returns no pass is running and the loop's CAS handle is released.
 
 > **Agent policy — do NOT disable the background GC loop**: Agents must never make the loop a no-op or raise its interval to dodge a GC problem. If the loop causes issues, fix the GC implementation; removal needs an explicit decision, not a quiet change.
 

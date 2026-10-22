@@ -17,7 +17,7 @@ use crate::conductor_impl::Conductor;
 use crate::defaults;
 use crate::error::ConductorError;
 use crate::state::ConductorState;
-use crate::state::versions::{decode_state_json, encode_state_json};
+use crate::state::versions::decode_state_json;
 
 // ---------------------------------------------------------------------------
 // CLI structure
@@ -373,7 +373,7 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
         }
         Some(StateCommand::Import { path }) => {
             let conductor = ensure_conductor().await?;
-            import_state_file(conductor, &path)?;
+            import_state_file(conductor, &path).await?;
             println!("State imported from '{}'", path.display());
         }
         Some(StateCommand::InvalidateToolCall { key }) => {
@@ -461,33 +461,23 @@ async fn change_instance_invalidation<C>(
 where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
-    conductor.ensure_persisted_state_loaded().await?;
-    let mut state = conductor.get_state()?;
     let key: Hash = key_text
         .parse()
         .map_err(|e| ConductorError::Workflow(format!("invalid instance key: {e}")))?;
-    let change = set_instance_invalidation(&mut state, &key, invalidated)?;
-    if change == MarkerChange::Changed {
-        // Durable first, memory second, so the two never disagree when the
-        // write fails.
-        persist_state(conductor, &state)?;
-        conductor.replace_resolved_state(state)?;
-    }
-    Ok(change)
+    conductor.update_state(|state| set_instance_invalidation(state, &key, invalidated)).await
 }
 
 /// Replaces the persisted orchestration state with the document at `path`.
 ///
 /// The write is the point: a façade keeps its snapshot in memory, so an import
 /// that only swapped memory would be discarded when the process exited, which
-/// is what the command used to do. Durable first, memory second, so a failed
-/// write never leaves the process holding an edit the file does not have.
+/// is what the command used to do.
 ///
 /// # Errors
 ///
 /// Returns an error when the file cannot be read or decoded, or when the
 /// resulting state cannot be written.
-fn import_state_file<C>(
+async fn import_state_file<C>(
     conductor: &Conductor<C>,
     path: &std::path::Path,
 ) -> Result<(), ConductorError>
@@ -496,36 +486,14 @@ where
 {
     let json = std::fs::read_to_string(path)
         .map_err(|e| ConductorError::io("reading state import", path, e))?;
-    let state: ConductorState = decode_state_json(json.as_bytes())
+    let imported: ConductorState = decode_state_json(json.as_bytes())
         .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-    persist_state(conductor, &state)?;
-    conductor.replace_resolved_state(state)
-}
-
-/// Writes an orchestration state snapshot to the configured state file.
-///
-/// Mirrors what the facade does after a workflow run: pretty JSON in the
-/// current wire schema, written whole. The write is not staged through a
-/// temporary file here, because the facade's own saver is not either and two
-/// writers with different atomicity is worse than one shared convention.
-///
-/// # Errors
-///
-/// Returns an error when the state cannot be encoded or the file cannot be
-/// written.
-fn persist_state<C>(conductor: &Conductor<C>, state: &ConductorState) -> Result<(), ConductorError>
-where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
-{
-    let path = &conductor.storage_paths().state_file_path;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| {
-            ConductorError::io("creating state file directory", parent, source)
-        })?;
-    }
-    let bytes = encode_state_json(state)?;
-    std::fs::write(path, bytes)
-        .map_err(|source| ConductorError::io("writing state file", path, source))
+    conductor
+        .update_state(|state| {
+            *state = imported;
+            Ok(())
+        })
+        .await
 }
 
 /// Prints the outcome of a marker request.
@@ -959,8 +927,8 @@ mod tests {
     /// The façade's state is an in-memory snapshot, so an import that only
     /// replaced it would vanish at exit — which is what this command did before
     /// it grew a durable write.
-    #[test]
-    fn importing_persists_the_imported_state() {
+    #[tokio::test]
+    async fn importing_persists_the_imported_state() {
         let key = Hash::from_content(b"imported");
         let imported = state_with_one_instance(key);
         // The directory owner has to outlive the write: dropping the handle
@@ -972,7 +940,7 @@ mod tests {
 
         let (_dir, conductor) =
             conductor_in_scratch_dir(&state_with_one_instance(Hash::from_content(b"other")));
-        import_state_file(&conductor, &source_path).expect("import");
+        import_state_file(&conductor, &source_path).await.expect("import");
 
         let recorded = state_on_disk(&conductor);
         assert!(
