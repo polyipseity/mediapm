@@ -21,7 +21,7 @@ use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ConductorRuntimeConfig, ToolKindSpec, ToolSpec, WorkflowSpec,
+    ConductorRuntimeConfig, InputBinding, ToolKindSpec, ToolSpec, WorkflowSpec,
     default_runtime_inherited_env_vars,
 };
 use crate::error::ConductorError;
@@ -57,6 +57,32 @@ pub struct NickelDocument {
 /// Prefix reserved for managed external-data descriptions that root tool
 /// content-map CAS hashes against pruning.
 const MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX: &str = "managed tool content CAS root for";
+
+/// Returns the pattern one `${external_data.<hash>}` template reference is
+/// written with.
+///
+/// The capture is the reference payload, which the engine parses as a `Hash`
+/// in either display form (`blake3:<hex>` or bare hex). A match whose payload
+/// does not parse is a reference the engine rejects at resolve time, with a
+/// message about the reference itself; that is not this pass's verdict to make,
+/// so such matches are skipped rather than reported here.
+fn external_data_reference_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(r"\$\{external_data\.([^}]+)\}")
+            .expect("external-data reference pattern is a valid regex")
+    })
+}
+
+/// Extracts every CAS hash one template string names through
+/// `${external_data.<hash>}`.
+#[must_use]
+fn external_data_references(value: &str) -> Vec<Hash> {
+    external_data_reference_pattern()
+        .captures_iter(value)
+        .filter_map(|captures| captures[1].trim().parse::<Hash>().ok())
+        .collect()
+}
 
 /// Collects all CAS hashes referenced by tool content maps AND external data
 /// entries in one document.
@@ -186,16 +212,31 @@ impl NickelDocument {
         }
     }
 
-    /// Validates that every CAS hash referenced in any tool's `content_map` has
-    /// a corresponding entry in `external_data`.
+    /// Validates that every CAS hash the document names has a matching entry in
+    /// `external_data`.
     ///
-    /// This enforces the `content_map ⊆ external_data` invariant that
-    /// prevents CAS GC from pruning hashes that tools actively depend on.
+    /// Three shapes name a hash, and all three name bytes the CAS GC must keep:
+    ///
+    /// - a tool's `runtime.content_map` value, which is the payload the tool
+    ///   runs on;
+    /// - a `${external_data.<hash>}` reference in a step input or in a tool's
+    ///   default input, which the template engine resolves by reading those
+    ///   bytes out of CAS; and
+    /// - an input value that *is* a hash, which a builtin such as `import`
+    ///   consumes as one.
+    ///
+    /// The declaration is what makes the bytes reachable, and it has to be here
+    /// rather than inferred: the GC's root set is built from `external_data`
+    /// keys and from recorded instance outputs, so a hash named only inside an
+    /// input is an orphan to the next sweep. A step that needs bytes kept alive
+    /// declares them; the document that forgets fails here, at load, instead of
+    /// losing the bytes at the next reclamation.
     ///
     /// # Errors
     ///
-    /// Returns `ConductorError::Workflow` with a message listing all
-    /// content-map hashes that are missing from `external_data`.
+    /// Returns `ConductorError::Workflow` listing every hash that is named
+    /// without being declared, with the tool, workflow, step, and input key that
+    /// named it.
     pub(crate) fn validate_external_data_invariant(&self) -> Result<(), ConductorError> {
         let mut missing: Vec<String> = Vec::new();
 
@@ -206,8 +247,41 @@ impl NickelDocument {
                 {
                     missing.push(format!(
                         "tool '{tool_name}' content_map entry '{path}' references hash \
-                             {hash} which is not declared in external_data"
+                         {hash}, which is not in external_data"
                     ));
+                }
+            }
+        }
+
+        for workflow in &self.workflows {
+            for step in &workflow.steps {
+                for (key, value) in &step.inputs {
+                    self.collect_input_hash_gaps(
+                        &format!("workflow '{}' step '{}' input '{key}'", workflow.name, step.id),
+                        value,
+                        &mut missing,
+                    );
+                }
+            }
+        }
+
+        for (tool_name, spec) in &self.tools {
+            for (key, binding) in &spec.default_inputs {
+                match binding {
+                    InputBinding::String(value) => self.collect_input_hash_gaps(
+                        &format!("tool '{tool_name}' default input '{key}'"),
+                        value,
+                        &mut missing,
+                    ),
+                    InputBinding::Vec(values) => {
+                        for (index, value) in values.iter().enumerate() {
+                            self.collect_input_hash_gaps(
+                                &format!("tool '{tool_name}' default input '{key}[{index}]'"),
+                                value,
+                                &mut missing,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -216,9 +290,33 @@ impl NickelDocument {
             Ok(())
         } else {
             Err(ConductorError::Workflow(format!(
-                "content_map references hashes not in external_data: {}",
+                "document references hashes not in external_data: {}",
                 missing.join("; ")
             )))
+        }
+    }
+
+    /// Records every hash one input value names that `external_data` omits.
+    ///
+    /// `location` names the place in the document that carries the value, so a
+    /// rejection points at the input to fix rather than at the document as a
+    /// whole.
+    fn collect_input_hash_gaps(&self, location: &str, value: &str, missing: &mut Vec<String>) {
+        for hash in external_data_references(value) {
+            if !self.external_data.contains_key(&hash) {
+                missing.push(format!(
+                    "{location} references hash {hash} through ${{external_data.…}}, which is \
+                     not in external_data"
+                ));
+            }
+        }
+
+        let trimmed = value.trim();
+        if let Ok(hash) = trimmed.parse::<Hash>()
+            && !self.external_data.contains_key(&hash)
+        {
+            missing
+                .push(format!("{location} is the CAS hash {hash}, which is not in external_data"));
         }
     }
 }
@@ -236,7 +334,51 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::*;
-    use crate::config::ToolRuntime;
+    use crate::config::{ToolRuntime, WorkflowStepSpec};
+
+    /// One workflow with a single step whose inputs are the given pairs.
+    ///
+    /// The step is the only place a document can name a hash outside a tool's
+    /// `content_map`, which is what the input-side invariant rules are about.
+    fn workflow_with_inputs(inputs: &[(&str, &str)]) -> WorkflowSpec {
+        WorkflowSpec {
+            name: "default".to_string(),
+            steps: vec![WorkflowStepSpec {
+                id: "s1".to_string(),
+                tool: "echo".to_string(),
+                inputs: inputs
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                    .collect(),
+                outputs: BTreeMap::new(),
+                max_retries: 0,
+                depends_on: Vec::new(),
+            }],
+            ..WorkflowSpec::default()
+        }
+    }
+
+    /// One document carrying a single workflow step with the given inputs and
+    /// the given `external_data` declarations.
+    fn document_with_step_inputs(inputs: &[(&str, &str)], declared: &[Hash]) -> NickelDocument {
+        NickelDocument {
+            tools: BTreeMap::new(),
+            workflows: vec![workflow_with_inputs(inputs)],
+            runtime: ConductorRuntimeConfig::default(),
+            external_data: declared
+                .iter()
+                .map(|hash| {
+                    (
+                        *hash,
+                        super::super::ExternalDataEntry {
+                            description: None,
+                            save_mode: crate::state::OutputSaveMode::Saved,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
 
     /// Verifies `collect_config_content_hashes` collects hashes from tool
     /// content maps and external data entries.
@@ -457,6 +599,96 @@ mod tests {
         };
 
         assert!(doc.validate_external_data_invariant().is_ok());
+    }
+
+    /// Verifies `validate_external_data_invariant` fails when a step input
+    /// names a hash through `${external_data.<hash>}` without declaring it.
+    #[test]
+    fn validate_external_data_invariant_rejects_undeclared_template_reference() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let reference = format!("${{external_data.{hash_a}}}");
+        let doc = document_with_step_inputs(&[("text", reference.as_str())], &[]);
+
+        let err = doc.validate_external_data_invariant().unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("not in external_data"), "error should state the invariant: {msg}");
+        assert!(msg.contains(hash_a.to_string().as_str()), "error should name the hash: {msg}");
+        assert!(
+            msg.contains("workflow 'default' step 's1' input 'text'"),
+            "error should name the input that carried the reference: {msg}"
+        );
+    }
+
+    /// Verifies `validate_external_data_invariant` fails when a step input *is*
+    /// a CAS hash the document does not declare.
+    ///
+    /// This is the import builtin's shape: it reads its payload by hash from an
+    /// input value, so the value is a CAS reference even though it carries no
+    /// template syntax.
+    #[test]
+    fn validate_external_data_invariant_rejects_undeclared_bare_hash_input() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let doc = document_with_step_inputs(&[("hash", hash_a.to_string().as_str())], &[]);
+
+        let err = doc.validate_external_data_invariant().unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("not in external_data"), "error should state the invariant: {msg}");
+        assert!(msg.contains(hash_a.to_string().as_str()), "error should name the hash: {msg}");
+        assert!(
+            msg.contains("workflow 'default' step 's1' input 'hash'"),
+            "error should name the input that carried the hash: {msg}"
+        );
+    }
+
+    /// Verifies both input-side shapes pass once the hash is declared.
+    #[test]
+    fn validate_external_data_invariant_passes_when_input_hashes_are_declared() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let reference = format!("${{external_data.{hash_a}}}");
+        let doc = document_with_step_inputs(
+            &[("text", reference.as_str()), ("hash", hash_a.to_string().as_str())],
+            &[hash_a],
+        );
+
+        assert!(doc.validate_external_data_invariant().is_ok());
+    }
+
+    /// Verifies a tool's default input is held to the same rule as a step's own.
+    ///
+    /// A step that omits the key inherits the default, so the default names the
+    /// hash just as directly as the step would have.
+    #[test]
+    fn validate_external_data_invariant_rejects_undeclared_default_input() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let reference = format!("${{external_data.{hash_a}}}");
+        let doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "echo".to_string(),
+                ToolSpec {
+                    version: None,
+                    kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+                    name: "echo".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::from([(
+                        "text".to_string(),
+                        InputBinding::String(reference),
+                    )]),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime::default(),
+                },
+            )]),
+            workflows: vec![],
+            runtime: ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::new(),
+        };
+
+        let err = doc.validate_external_data_invariant().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("tool 'echo' default input 'text'"),
+            "error should name the default input that carried the reference: {msg}"
+        );
+        assert!(msg.contains(hash_a.to_string().as_str()), "error should name the hash: {msg}");
     }
 
     /// Verifies `collect_config_content_hashes` returns an empty set for empty inputs.

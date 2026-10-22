@@ -84,14 +84,24 @@ Document contract:
 
 ## Document invariants
 
-### `content_map ⊆ external_data`
+### Hashes named by a document must be declared
 
-Every CAS hash referenced in any tool's `runtime.content_map` must have a
-corresponding entry in the document's `external_data` map. This prevents CAS
-garbage collection from pruning hashes that tools depend on. The invariant is
-enforced at both encoding (via `encode_document()` calling
-`validate_external_data_invariant()`) and decoding (via `decode_document()`).
-Failures produce a `ConductorError::Workflow` listing all missing hashes.
+Every CAS hash a document names must have a corresponding entry in the document's
+`external_data` map. Three shapes name one: a tool's `runtime.content_map` value,
+a `${external_data.<hash>}` reference in a step input or in a tool's
+`default_inputs`, and an input value that is itself a CAS hash (the `import`
+builtin's `hash` input is the live case). A declaration is what makes the bytes
+reachable — the CAS GC root set is built from `external_data` keys and recorded
+instance outputs — so a hash named only inside an input is an orphan to the next
+sweep, including the sweep the background maintenance loop runs.
+
+The invariant is enforced at encoding (via `encode_document()`), decoding (via
+`decode_document()`), and merging, all through
+`validate_external_data_invariant()`. Failures produce a
+`ConductorError::Workflow` listing every named-but-undeclared hash with the tool,
+workflow, step, and input key that named it. A reference whose payload does not
+parse as a hash is left to the template engine, which rejects it at resolve time
+with a message about the reference itself.
 
 ## Cache Architecture (Three-Tier)
 
@@ -480,7 +490,7 @@ Two abstentions keep the sweep from deleting more than it understands. A documen
 
 `aux.instances[*].last_referenced_at` is the only TTL clock: it is refreshed on every reference and on every retained sweep, so an instance that stops being referenced survives the full TTL window. `AuxData::conductor_gc_epoch` advances to `Timestamp::now()` at the end of each sweep, so the sweep measures the TTL against the previous sweep's clock.
 
-**Trigger points**: `Conductor::run_gc` (the CLI `conductor gc` command) calls the actor's `run_gc`, which computes the reachable set inside the pass — the requester supplies state and config only — and then writes the result to the state file before returning, because the pass has already deleted the evicted instances' blobs. The background maintenance loop (`Conductor::start_background_maintenance`, tick `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS` = 86400s, started on the first `ensure_actor_client`) runs the record half only — `gc::run_record_maintenance`, instance eviction plus CAS metadata maintenance — and persists it the same way. It deletes no payload; see §H for why.
+**Trigger points**: `Conductor::run_gc` (the CLI `conductor gc` command) calls the actor's `run_gc`, which computes the reachable set inside the pass — the requester supplies state and config only — and then writes the result to the state file before returning, because the pass has already deleted the evicted instances' blobs. The background maintenance loop (`Conductor::start_background_maintenance`, tick `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS` = 86400s, started on the first `ensure_actor_client`) runs the same full cycle — `gc::run_conductor_gc`, instance eviction plus orphan reclamation plus CAS metadata maintenance — and persists it the same way. See §H for what makes byte reclamation safe on a timer.
 
 ## G. CAS GC Sweep
 
@@ -489,7 +499,7 @@ Two abstentions keep the sweep from deleting more than it understands. A documen
 - `run_cas_gc_sweep()` runs CAS maintenance only: `run_maintenance_cycle()` (optimize under the maintenance policy), then `prune_constraints()` (drop stale constraint entries). It deletes no payload data.
 - `run_conductor_gc()` is the full cycle: seeded reachability sweep, then root-set orphan deletion through `CasApi::delete`, then `run_cas_gc_sweep()`.
 
-Callers: only these. `Conductor::run_gc` (CLI `conductor gc`) runs the full cycle, through `gc::run_conductor_gc`. The background loop runs `gc::run_record_maintenance`, which is instance eviction plus `run_cas_gc_sweep` and no orphan phase. MediaPM's own background tasks do not trigger conductor GC; a sync process gets the maintenance loop because it runs a workflow, which starts the loop.
+Callers: only these. `Conductor::run_gc` (CLI `conductor gc`) runs the full cycle, through `gc::run_conductor_gc`, and so does the background loop — one cycle, two triggers. MediaPM's own background tasks do not trigger conductor GC; a sync process gets the maintenance loop because it runs a workflow, which starts the loop.
 
 ### Orphan Deletion
 
@@ -503,17 +513,15 @@ After `list_hashes`, every hash outside the root set is removed with a plain `Ca
 - the unified document's `external_data` policy keys
 - the unified document's `tool_content_hashes`
 
-Every other CAS hash is deleted as an orphan, then `run_cas_gc_sweep` runs CAS maintenance and constraint pruning. There is no state pointer and no per-instance blob: the state file lives on disk in its own right, and `content_map` hashes are covered because `content_map ⊆ external_data` is enforced at document decode.
+Every other CAS hash is deleted as an orphan, then `run_cas_gc_sweep` runs CAS maintenance and constraint pruning. There is no state pointer and no per-instance blob: the state file lives on disk in its own right. The document side of the root set is complete because the external-data invariant is enforced at decode: `content_map` values, `${external_data.<hash>}` references in step inputs and tool default inputs, and input values that are themselves CAS hashes must all have an `external_data` entry, or the document is rejected at load.
 
 ## H. Background GC Loop
 
-`Conductor::start_background_maintenance` (`src/conductor_impl.rs`) owns the loop, because maintenance needs the state the facade holds: a coordinator-only sweep could act on the store but could not write back the instance decisions that justify the action. It is started by the first successful `ensure_actor_client`, spawns a cancel-guarded task held by a `BackgroundMaintenanceGuard`, and runs a pass immediately: `load_unified_config`, then one `gc::run_record_maintenance` with `DEFAULT_CONDUCTOR_GC_TTL_SECONDS` and a `save_state_file`, then sleep `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS` (86400). The timer starts only after a pass finishes, and a pass that fails is logged with `tracing::warn!` and retried on the next interval — maintenance never fails a workflow.
+`Conductor::start_background_maintenance` (`src/conductor_impl.rs`) owns the loop, because maintenance needs the state the facade holds: a coordinator-only sweep could act on the store but could not write back the instance decisions that justify the action. It is started by the first successful `ensure_actor_client`, spawns a cancel-guarded task held by a `BackgroundMaintenanceGuard`, and runs a pass immediately: it takes the state gate, loads the merged config, runs one `gc::run_conductor_gc` with `DEFAULT_CONDUCTOR_GC_TTL_SECONDS`, writes the state file, then sleeps `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS` (86400). The timer starts only after a pass finishes, and a pass that fails is logged with `tracing::warn!` and retried on the next interval — maintenance never fails a workflow.
 
-**A pass deletes no payload, and the record/blob split is the point.** The store is shared: mediapm imports source payloads into it and stages them there before any record names them, and no root set computed from the conductor's state and document can include them. So the timer collects records (evictions, refreshed clocks) and leaves bytes alone, while `conductor gc` collects bytes. The two halves differ because the knowledge differs: a timer cannot know what the application has in flight, and an operator invoking `conductor gc` asserts nothing is. The cost is real and has to be read as a cost: an installation that only ever syncs reclaims no payload bytes and grows until someone runs `conductor gc`.
+**The pass runs the full cycle, and the external-data invariant is what makes that safe.** A blob is deletable only when the root set names every live byte, and the root set is built from two sources: the surviving instances' outputs, and the merged document's `external_data` keys plus its `content_map` hashes. The first covers what a run produced. The second covers what the application supplied, and it is complete because `NickelDocument::validate_external_data_invariant` rejects a document that names a hash without declaring it — whether it names it in a tool `content_map`, in a `${external_data.<hash>}` reference from a step input or a tool default input, or by putting the hash itself in an input, which is the shape the `import` builtin consumes. So a step that needs bytes kept alive declares them, and a document that forgets fails when it is read, before a pass can act on it. The invariant is enforced at decode, encode, and merge, so no path writes a document the sweep would misread.
 
-Making unattended reclamation safe is a follow-up, not an omission: it needs either the application to declare staged hashes as protected before it imports them, or a reclaim point the application chooses when nothing is in flight. `run_cas_gc_sweep` stays in the tick because it cannot remove content — `run_maintenance_cycle` rewrites how existing objects are encoded and `prune_constraints` drops entries for targets and bases that are already absent.
-
-The pass runs under the facade's `state_gate`, which every read-modify-write of the whole state also takes (`run_workflow`, `run_gc`). Without it a pass and a run can each start from the same snapshot and the later write erases the earlier one's records. An empty in-memory snapshot is filled from the state file first, so a facade whose actor was spawned for a non-workflow call cannot publish its empty snapshot over the records on disk.
+The gate is what keeps a pass from racing a run: it runs under the facade's `state_gate`, which every read-modify-write of the whole state also takes (`run_workflow`, `run_gc`). Without it a pass and a run can each start from the same snapshot and the later write erases the earlier one's records. The merged config is read *inside* the gate as well, immediately before the cycle: the root set comes from that document, so a document read before the gate could be one a concurrent reconcile has already replaced, and the pass would then delete bytes a newer declaration names. A reconcile is not itself gated, so the two can still interleave between the read and the reclamation; an application that declares a hash and stages its bytes under that declaration is unaffected. An empty in-memory snapshot is filled from the state file first, so a facade whose actor was spawned for a non-workflow call cannot publish its empty snapshot over the records on disk.
 
 `Conductor::shutdown` awaits the guard, so after it returns no pass is running and the loop's CAS handle is released.
 

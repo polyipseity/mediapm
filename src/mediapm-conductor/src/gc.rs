@@ -3,20 +3,22 @@
 //! Conductor GC covers state-instance pruning, CAS orphan reclamation, and CAS
 //! metadata maintenance. It is distinct from CAS-internal GC.
 //!
-//! # Two entry points, on purpose
+//! # One cycle, two triggers
 //!
-//! `run_conductor_gc` is the full cycle, and only the explicit `conductor gc`
-//! command runs it. It deletes blobs, so it assumes what an operator invoking it
-//! assumes: nothing is in flight, and every byte the store holds is either
-//! recorded in the state or described by the merged document.
+//! `run_conductor_gc` is the whole cycle, and both triggers run it: the explicit
+//! `conductor gc` command and the background maintenance loop.
 //!
-//! `run_record_maintenance` is what the background loop runs. It evicts
-//! instance records and maintains the CAS metadata, and it deletes no payload.
-//! A timer cannot assume the full cycle's premise: an application sharing the
-//! store can hold bytes it has staged but not yet recorded anywhere, and no root
-//! set computed from the conductor's own state and document can name them. The
-//! cost is that unattended maintenance never frees payload bytes; the explicit
-//! command does.
+//! Deleting a blob assumes every live byte is accounted for, and the two
+//! triggers establish that differently. An operator invoking `conductor gc`
+//! asserts nothing is in flight. A timer has to read the account off the
+//! document instead, which is what the root set is built from: every hash a
+//! document names is declared in `external_data`
+//! (`NickelDocument::validate_external_data_invariant` rejects a document that
+//! names one without declaring it), and every byte a run produced
+//! is a recorded instance output. The invariant is what makes the cycle safe
+//! unattended, and it is enforced at load rather than discovered here: a
+//! document that forgot a declaration fails when it is read, before a pass can
+//! act on it.
 //!
 //! # What may be evicted
 //!
@@ -209,47 +211,17 @@ pub(crate) fn run_instance_gc(
     InstanceGcCounts::default()
 }
 
-/// Runs the background maintenance cycle: instance eviction, then CAS metadata
-/// maintenance, and never a payload deletion.
-///
-/// [`run_conductor_gc`] without its orphan phase. The metadata half —
-/// [`run_cas_gc_sweep`] — rewrites how existing objects are encoded and drops
-/// constraint entries whose targets or bases no longer exist; neither can remove
-/// an object's bytes, which is what makes it safe on a timer.
-///
-/// # Errors
-///
-/// Returns [`ConductorError::Cas`] on any CAS operation failure.
-pub(crate) async fn run_record_maintenance<C>(
-    cas: &C,
-    state: &mut ConductorState,
-    unified: &UnifiedNickelDocument,
-    ttl_seconds: u64,
-) -> Result<ConductorGcReport, ConductorError>
-where
-    C: CasApi + CasMaintenanceApi,
-{
-    let counts = run_instance_gc(state, unified, ttl_seconds);
-    tracing::info!("conductor maintenance: CAS metadata maintenance (no orphan deletion)");
-    let prune_report = run_cas_gc_sweep(cas).await?;
-    Ok(ConductorGcReport {
-        instances_removed: counts.instances_removed,
-        reachable_instances: counts.reachable_instances,
-        superseded_instances: counts.superseded_instances,
-        orphans_removed: 0,
-        prune_report,
-    })
-}
-
 /// Runs full conductor garbage collection: instance pruning, CAS orphan
 /// deletion, and CAS maintenance.
 ///
-/// This is the operator path (`conductor gc`, and the `Conductor::run_gc`
-/// facade method). Deleting orphans assumes the caller chose the moment:
-/// nothing is in flight, and every live byte is either recorded in the state or
-/// described by the merged document. A background timer may not make that
-/// assumption — see [`run_record_maintenance`], which is the cycle the timer
-/// runs.
+/// Both triggers run this: the operator path (`conductor gc`, and the
+/// `Conductor::run_gc` facade method) and the background maintenance loop.
+/// Deleting orphans assumes every live byte is named by the root set, which is
+/// built from the surviving instances' outputs, the merged document's
+/// `external_data` keys, and its tool content hashes. An operator invoking
+/// `conductor gc` adds the stronger assertion that nothing is in flight; the
+/// timer relies on the document being complete, which
+/// `NickelDocument::validate_external_data_invariant` enforces at load.
 ///
 /// # Phases
 ///
@@ -266,8 +238,10 @@ where
 /// cache hit replays the recorded outputs and never opens the inputs it lists:
 /// the consumer's own bytes are roots, and its inputs are provenance. The claim
 /// this phase can make is therefore about what re-execution needs, not about
-/// what a record mentions. It says nothing at all about bytes no record mentions
-/// yet — staged inputs, for instance — which is why the phase is not on a timer.
+/// what a record mentions. What it says about bytes no record mentions is what
+/// the document declares: a byte an application supplies through a step input
+/// has an `external_data` entry, which is a root, and a byte nothing declares is
+/// an orphan by definition.
 ///
 /// # Errors
 ///

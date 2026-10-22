@@ -99,11 +99,15 @@ where
 
     /// Starts the background maintenance loop unless it is already running.
     ///
-    /// The loop evicts instance records and maintains the CAS metadata, and it
-    /// deletes no payload: a timer cannot tell an orphan from a byte the
-    /// application has staged and not yet recorded, so byte reclamation stays
-    /// with the explicit `conductor gc` command. Failures are logged and the
-    /// next pass tries again — maintenance is not the reason a workflow fails.
+    /// The loop runs the full GC cycle — instance eviction, orphan reclamation,
+    /// CAS metadata maintenance — and persists what it decided. Deleting a blob
+    /// assumes every live byte is accounted for, and the loop's account comes
+    /// from the document: every hash a document names is declared in
+    /// `external_data` (see `NickelDocument::validate_external_data_invariant`),
+    /// and every byte a run produced is a recorded instance output, so the root
+    /// set the pass computes names the application's bytes as well as the
+    /// conductor's own. Failures are logged and the next pass tries again —
+    /// maintenance is not the reason a workflow fails.
     ///
     /// A pass is started as soon as the loop is, not after the first interval,
     /// so a long-lived process collects on the run that creates it.
@@ -702,18 +706,29 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for 
 
 /// Runs one background maintenance pass and publishes its result.
 ///
-/// The pass is [`crate::gc::run_record_maintenance`]: instance eviction decided
-/// by the recorded seeds, then CAS metadata maintenance. It deletes no payload,
-/// because a timer cannot know which bytes an application has staged but not yet
-/// recorded — the store is shared, and only the explicit `conductor gc` command
-/// may assume nothing is in flight. The result is saved before the in-memory
-/// snapshot is replaced: the evictions it made are what the next process must
-/// read, and the file is where it reads them.
+/// The pass is the full cycle, [`crate::gc::run_conductor_gc`]: instance
+/// eviction decided by the recorded seeds, orphan reclamation, then CAS metadata
+/// maintenance. It may delete payload bytes, and what makes that safe on a timer
+/// is the document: every hash a document names is declared in `external_data`
+/// (enforced at load by
+/// `NickelDocument::validate_external_data_invariant`) and every
+/// byte a run produced is a recorded instance output, so the root set names what
+/// the store holds for both the conductor and the application sharing it. The
+/// result is saved before the in-memory snapshot is replaced: the evictions and
+/// deletions it made are what the next process must read, and the file is where
+/// it reads them.
 ///
-/// The config is loaded before the gate is taken: reading a document cannot
-/// touch state, and holding the gate across it would delay a workflow run for
-/// nothing. The gate covers the rest, so a run that is recording instances and a
-/// pass that is evicting them never start from the same snapshot.
+/// The config is loaded after the gate is taken, immediately before the cycle
+/// that acts on it. The root set comes from that document, so a document read
+/// before the gate could be one a concurrent reconcile has already replaced:
+/// the pass would then delete bytes a newer declaration names. Holding the gate
+/// across the read is what keeps the pass acting on the document it decided
+/// from. A reconcile is not itself gated, so the two can still interleave
+/// between the read and the reclamation; an application that declares a hash and
+/// stages its bytes under that declaration is not affected by the gap.
+///
+/// The gate covers the state work too, so a run that is recording instances and
+/// a pass that is evicting them never start from the same snapshot.
 ///
 /// An empty in-memory snapshot is filled from the file first. A facade whose
 /// actor was spawned for something other than a workflow run has never loaded
@@ -733,15 +748,15 @@ async fn maintenance_pass<C>(
 where
     C: CasApi + CasMaintenanceApi,
 {
-    let unified = load_unified_config(paths)?;
     let _gate = gate.lock().await;
+    let unified = load_unified_config(paths)?;
     let mut snapshot = state.lock().expect("state lock").clone();
     if snapshot.tool_call_instances.is_empty()
         && let Some(persisted) = load_state_file_async(cas, paths).await?
     {
         snapshot = persisted;
     }
-    crate::gc::run_record_maintenance(
+    crate::gc::run_conductor_gc(
         cas,
         &mut snapshot,
         &unified,
@@ -1183,6 +1198,39 @@ mod tests {
         .expect("write config");
     }
 
+    /// Writes a single-workflow config that also declares `declared` in
+    /// `external_data`.
+    ///
+    /// A declaration is what roots a hash the conductor did not produce itself,
+    /// which is the case the background pass has to get right.
+    fn write_single_workflow_config_declaring(dir: &Path, workflow: &str, declared: &[Hash]) {
+        let doc = NickelDocument {
+            tools: BTreeMap::new(),
+            workflows: vec![crate::config::WorkflowSpec {
+                name: workflow.to_string(),
+                ..crate::config::WorkflowSpec::default()
+            }],
+            external_data: declared
+                .iter()
+                .map(|hash| {
+                    (
+                        *hash,
+                        crate::config::ExternalDataEntry {
+                            description: None,
+                            save_mode: crate::state::OutputSaveMode::Saved,
+                        },
+                    )
+                })
+                .collect(),
+            ..NickelDocument::default()
+        };
+        std::fs::write(
+            dir.join("conductor.ncl"),
+            versions::encode_document(doc).expect("encode config"),
+        )
+        .expect("write config");
+    }
+
     /// Builds a recorded instance with no inputs and no outputs, so it is
     /// reachable only if a seed names it.
     fn bare_instance(key: Hash) -> crate::state::ToolCallInstance {
@@ -1357,20 +1405,18 @@ mod tests {
         );
     }
 
-    /// The background pass collects records; only the explicit command collects
-    /// bytes.
+    /// The background pass runs the full cycle: it keeps what the document
+    /// declares and reclaims what nothing names.
     ///
-    /// Both halves are the point. The first pins that a timer never deletes a
-    /// blob no record names, because that blob may be a payload the application
-    /// staged and has not recorded yet — the store is shared, and the knowledge
-    /// of what is in flight lives in the application, not in the conductor's
-    /// state. The second pins that this is a limit of the timer and not a broken
-    /// sweep: the same store, swept by the command an operator runs when nothing
-    /// is in flight, gives the bytes up.
+    /// Both halves are the point, and they are one pass apart. A declared hash is
+    /// a root, so bytes the application supplied through a document survive the
+    /// timer — which is what makes the cycle safe unattended. The same pass must
+    /// still collect a blob neither a record nor a declaration names, or
+    /// unattended maintenance would never free anything and the cycle would be
+    /// maintenance in name only.
     #[tokio::test]
-    async fn a_background_pass_keeps_bytes_only_the_explicit_command_reclaims() {
+    async fn a_background_pass_keeps_declared_bytes_and_reclaims_orphans() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        write_single_workflow_config(dir.path(), "default");
         let paths = RuntimeStoragePaths::new(dir.path());
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
@@ -1380,10 +1426,15 @@ mod tests {
         save_state_file(&paths, &state).expect("seed state file");
 
         let cas = mediapm_cas::new_in_memory_cas();
-        let staged = cas
-            .put(bytes::Bytes::from_static(b"a payload staged and not yet recorded"))
+        let declared = cas
+            .put(bytes::Bytes::from_static(b"a payload the document declares"))
             .await
-            .expect("put staged payload");
+            .expect("put declared payload");
+        let orphan = cas
+            .put(bytes::Bytes::from_static(b"a payload nothing names"))
+            .await
+            .expect("put orphan payload");
+        write_single_workflow_config_declaring(dir.path(), "default", &[declared]);
 
         let mut conductor = Conductor::new(paths, cas);
         conductor.background_gc_interval_secs = 1;
@@ -1395,18 +1446,16 @@ mod tests {
         let swept = conductor.get_state().expect("state");
         assert!(
             swept.aux.conductor_gc_epoch > mediapm_utils::Timestamp::from_unix_nanos(0),
-            "the background pass must have run, or the first half proves nothing: {:?}",
+            "the background pass must have run, or neither half proves anything: {:?}",
             swept.aux.conductor_gc_epoch,
         );
         assert!(
-            conductor.cas().get(staged).await.is_ok(),
-            "a background pass must not delete a blob no record names",
+            conductor.cas().get(declared).await.is_ok(),
+            "a declared hash is a root, so the pass must keep its bytes",
         );
-
-        conductor.run_gc().await.expect("gc");
         assert!(
-            conductor.cas().get(staged).await.is_err(),
-            "the explicit command reclaims what no record names",
+            conductor.cas().get(orphan).await.is_err(),
+            "a blob no record and no declaration names is an orphan the pass reclaims",
         );
     }
 
