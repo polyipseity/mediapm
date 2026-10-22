@@ -9,7 +9,7 @@ use mediapm_utils::progress::ProgressScreenApi;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use mediapm_cas::{ConfiguredCas, FileSystemCas, Hash};
+use mediapm_cas::{CasApi, CasMaintenanceApi, ConfiguredCas, FileSystemCas, Hash};
 use tokio::sync::OnceCell;
 
 use crate::api::{PathOverrides, RunWorkflowOptions, RuntimeStoragePaths};
@@ -17,7 +17,7 @@ use crate::conductor_impl::Conductor;
 use crate::defaults;
 use crate::error::ConductorError;
 use crate::state::ConductorState;
-use crate::state::versions::decode_state_json;
+use crate::state::versions::{decode_state_json, encode_state_json};
 
 // ---------------------------------------------------------------------------
 // CLI structure
@@ -112,9 +112,27 @@ enum StateCommand {
     /// Show runtime diagnostics.
     Show,
 
-    /// Invalidate a tool call instance by its instance key.
+    /// Mark a tool call instance as not to be reused.
+    ///
+    /// The cache probe answers "miss" for a marked instance, so the work behind
+    /// it runs again on the next sync. Nothing is deleted: the record, its
+    /// outputs, and the blobs they name stay until garbage collection finds them
+    /// unreachable, and re-running the work clears the marker by recording a
+    /// fresh instance. Undo with `state revalidate-tool-call`.
     InvalidateToolCall {
         /// Instance key to invalidate.
+        key: String,
+    },
+    /// Clear a tool call instance's invalidation marker.
+    ///
+    /// Undoes [`StateCommand::InvalidateToolCall`]: the recorded instance
+    /// becomes reusable again. A re-execution that landed on the same key has
+    /// already cleared the marker by rewriting the record, so this reports that
+    /// there was nothing to clear; one that landed on a new key leaves the old
+    /// record marked, and clearing it is still meaningful because that record
+    /// can still be projected by the materializer.
+    RevalidateToolCall {
+        /// Instance key to revalidate.
         key: String,
     },
 }
@@ -354,30 +372,189 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
             println!("State exported to '{}'", path.display());
         }
         Some(StateCommand::Import { path }) => {
-            let json = std::fs::read_to_string(&path)
-                .map_err(|e| ConductorError::io("reading state import", &path, e))?;
-            let state: ConductorState = decode_state_json(json.as_bytes())
-                .map_err(|e| ConductorError::Serialization(e.to_string()))?;
             let conductor = ensure_conductor().await?;
-            conductor.replace_resolved_state(state)?;
+            import_state_file(conductor, &path)?;
             println!("State imported from '{}'", path.display());
         }
         Some(StateCommand::InvalidateToolCall { key }) => {
             let conductor = ensure_conductor().await?;
-            conductor.ensure_persisted_state_loaded().await?;
-            let mut state = conductor.get_state()?;
-            let key: Hash = key
-                .parse()
-                .map_err(|e| ConductorError::Workflow(format!("invalid instance key: {e}")))?;
-            if state.tool_call_instances.remove(&key).is_some() {
-                conductor.replace_resolved_state(state)?;
-                println!("Invalidated tool call instance '{key}'");
-            } else {
-                eprintln!("Tool call instance '{key}' not found");
-            }
+            let change = change_instance_invalidation(conductor, &key, true).await?;
+            report_marker_change(&key, true, change);
+        }
+        Some(StateCommand::RevalidateToolCall { key }) => {
+            let conductor = ensure_conductor().await?;
+            let change = change_instance_invalidation(conductor, &key, false).await?;
+            report_marker_change(&key, false, change);
         }
     }
     Ok(())
+}
+
+/// What an invalidation or revalidation request did to the recorded state.
+///
+/// The two outcomes are reported differently on purpose: a change is news, and
+/// a request that was already satisfied is not an error — asking twice for the
+/// same state is how a script recovers from a run it is unsure about, so it has
+/// to succeed without pretending anything happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkerChange {
+    /// The marker was set or cleared by this request.
+    Changed,
+    /// The record was already in the requested state.
+    AlreadyInRequestedState,
+}
+
+/// Sets or clears one instance's invalidation marker.
+///
+/// Setting a marker that is already set leaves the recorded timestamp alone:
+/// the timestamp answers "since when has this work been marked", and moving it
+/// forward on a repeated request would erase when the operator first asked. An
+/// unknown key is an error rather than a quiet no-op, because the only other
+/// explanation for it is a mistyped hash, and a mistyped hash that reports
+/// success is a script that believes it invalidated something.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Workflow`] when `state` holds no instance under
+/// `key`.
+fn set_instance_invalidation(
+    state: &mut ConductorState,
+    key: &Hash,
+    invalidated: bool,
+) -> Result<MarkerChange, ConductorError> {
+    let Some(instance) = state.tool_call_instances.get_mut(key) else {
+        return Err(ConductorError::Workflow(format!("tool call instance '{key}' not found")));
+    };
+    if invalidated {
+        if instance.invalidated_at.is_some() {
+            return Ok(MarkerChange::AlreadyInRequestedState);
+        }
+        instance.invalidated_at = Some(mediapm_utils::Timestamp::now());
+    } else {
+        if instance.invalidated_at.is_none() {
+            return Ok(MarkerChange::AlreadyInRequestedState);
+        }
+        instance.invalidated_at = None;
+    }
+    Ok(MarkerChange::Changed)
+}
+
+/// Applies an invalidation or revalidation to the persisted conductor state.
+///
+/// This is the whole body of both state-editing commands, split out so the
+/// behaviour can be tested against a temporary state file instead of a process.
+/// The order matters: load from disk first (the command may be the first thing
+/// the process does), mutate the loaded snapshot, hand it back to the facade,
+/// and write it out. The facade persists state after a workflow run only, so a
+/// command that edits state has to commit it itself or the edit dies with the
+/// process.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Workflow`] when `key_text` is not a hash or names
+/// no recorded instance, and any error from loading or writing the state file.
+async fn change_instance_invalidation<C>(
+    conductor: &Conductor<C>,
+    key_text: &str,
+    invalidated: bool,
+) -> Result<MarkerChange, ConductorError>
+where
+    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+{
+    conductor.ensure_persisted_state_loaded().await?;
+    let mut state = conductor.get_state()?;
+    let key: Hash = key_text
+        .parse()
+        .map_err(|e| ConductorError::Workflow(format!("invalid instance key: {e}")))?;
+    let change = set_instance_invalidation(&mut state, &key, invalidated)?;
+    if change == MarkerChange::Changed {
+        // Durable first, memory second, so the two never disagree when the
+        // write fails.
+        persist_state(conductor, &state)?;
+        conductor.replace_resolved_state(state)?;
+    }
+    Ok(change)
+}
+
+/// Replaces the persisted orchestration state with the document at `path`.
+///
+/// The write is the point: a façade keeps its snapshot in memory, so an import
+/// that only swapped memory would be discarded when the process exited, which
+/// is what the command used to do. Durable first, memory second, so a failed
+/// write never leaves the process holding an edit the file does not have.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or decoded, or when the
+/// resulting state cannot be written.
+fn import_state_file<C>(
+    conductor: &Conductor<C>,
+    path: &std::path::Path,
+) -> Result<(), ConductorError>
+where
+    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+{
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| ConductorError::io("reading state import", path, e))?;
+    let state: ConductorState = decode_state_json(json.as_bytes())
+        .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+    persist_state(conductor, &state)?;
+    conductor.replace_resolved_state(state)
+}
+
+/// Writes an orchestration state snapshot to the configured state file.
+///
+/// Mirrors what the facade does after a workflow run: pretty JSON in the
+/// current wire schema, written whole. The write is not staged through a
+/// temporary file here, because the facade's own saver is not either and two
+/// writers with different atomicity is worse than one shared convention.
+///
+/// # Errors
+///
+/// Returns an error when the state cannot be encoded or the file cannot be
+/// written.
+fn persist_state<C>(conductor: &Conductor<C>, state: &ConductorState) -> Result<(), ConductorError>
+where
+    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+{
+    let path = &conductor.storage_paths().state_file_path;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| {
+            ConductorError::io("creating state file directory", parent, source)
+        })?;
+    }
+    let bytes = encode_state_json(state)?;
+    std::fs::write(path, bytes)
+        .map_err(|source| ConductorError::io("writing state file", path, source))
+}
+
+/// Prints the outcome of a marker request.
+///
+/// A change names the instance the operator asked about; an unchanged request
+/// says which state it found, so a script's log records that nothing was needed
+/// rather than leaving a silent success. The polarity is part of the message
+/// because "already invalidated" and "not marked" describe opposite states, and
+/// a shared wording would let a log be read backwards.
+fn marker_change_message(key: &str, invalidated: bool, change: MarkerChange) -> String {
+    match (invalidated, change) {
+        (true, MarkerChange::Changed) => format!("Invalidated tool call instance '{key}'"),
+        (true, MarkerChange::AlreadyInRequestedState) => {
+            format!("Tool call instance '{key}' is already invalidated")
+        }
+        (false, MarkerChange::Changed) => format!("Revalidated tool call instance '{key}'"),
+        (false, MarkerChange::AlreadyInRequestedState) => {
+            format!("Tool call instance '{key}' is not marked invalid")
+        }
+    }
+}
+
+/// Prints the outcome of a marker request.
+///
+/// Split from [`marker_change_message`] so the wording of both polarities can be
+/// asserted without capturing stdout, which is the only way a swapped literal
+/// gets caught.
+fn report_marker_change(key: &str, invalidated: bool, change: MarkerChange) {
+    println!("{}", marker_change_message(key, invalidated, change));
 }
 
 async fn cmd_import(args: ImportArgs) -> Result<(), ConductorError> {
@@ -478,4 +655,334 @@ async fn cmd_gc() -> Result<(), ConductorError> {
 fn cmd_completions(shell: Shell) {
     let mut cmd = Cli::command();
     clap_complete::generate(shell, &mut cmd, "conductor", &mut std::io::stdout());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use mediapm_cas::{Hash, InMemoryCas};
+    use mediapm_utils::Timestamp;
+
+    use super::{
+        MarkerChange, change_instance_invalidation, import_state_file, marker_change_message,
+        set_instance_invalidation,
+    };
+    use crate::api::RuntimeStoragePaths;
+    use crate::conductor_impl::Conductor;
+    use crate::state::versions::encode_state_json;
+    use crate::state::{CapturedOutput, ConductorState, ToolCallInstance};
+
+    /// Builds the state one command test starts from: a single recorded
+    /// instance with an output, so a test can prove the record survives a
+    /// marker change rather than only that a marker moved.
+    fn state_with_one_instance(key: Hash) -> ConductorState {
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            key,
+            ToolCallInstance {
+                instance_key: key,
+                tool_call_id: "echo@v1".to_string(),
+                impure: false,
+                invalidated_at: None,
+                executed_at: Timestamp::default(),
+                step_ids: BTreeSet::from(["step-0-echo".to_string()]),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "content".to_string(),
+                    CapturedOutput { hash: Hash::from_content(b"bytes"), capture: None },
+                )]),
+            },
+        );
+        state
+    }
+
+    /// Opens a conductor over a scratch directory and returns it with the
+    /// directory that must outlive it.
+    fn conductor_in_scratch_dir(
+        state: &ConductorState,
+    ) -> (tempfile::TempDir, Conductor<InMemoryCas>) {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        std::fs::create_dir_all(paths.state_file_path.parent().expect("state file parent"))
+            .expect("create state dir");
+        let bytes = crate::state::versions::encode_state_json(state).expect("encode state");
+        std::fs::write(&paths.state_file_path, bytes).expect("write state file");
+        (dir, Conductor::new(paths, mediapm_cas::new_in_memory_cas()))
+    }
+
+    /// Reloads the state file, which is the only place a command's effect
+    /// outlives its process.
+    fn state_on_disk(conductor: &Conductor<InMemoryCas>) -> ConductorState {
+        let bytes =
+            std::fs::read(&conductor.storage_paths().state_file_path).expect("read state file");
+        crate::state::versions::decode_state_json(&bytes).expect("decode state file")
+    }
+
+    /// Parses a `conductor state <subcommand> <key>` command line.
+    ///
+    /// The handler's `match` proves the variants are wired; only a parse proves
+    /// the names an operator types, because a renamed subcommand still compiles.
+    fn parse_state_command(args: [&str; 4]) -> super::StateCommand {
+        use clap::Parser;
+
+        let cli = super::Cli::try_parse_from(args).expect("parse state command");
+        let super::CliCommand::State(super::StateArgs { command: Some(command) }) = cli.command
+        else {
+            panic!("expected a state command for {args:?}");
+        };
+        command
+    }
+
+    #[test]
+    fn both_marker_commands_parse_from_the_command_line() {
+        assert!(matches!(
+            parse_state_command(["conductor", "state", "invalidate-tool-call", "abc"]),
+            super::StateCommand::InvalidateToolCall { key } if key == "abc"
+        ));
+        assert!(matches!(
+            parse_state_command(["conductor", "state", "revalidate-tool-call", "abc"]),
+            super::StateCommand::RevalidateToolCall { key } if key == "abc"
+        ));
+    }
+
+    /// A key that names no record fails the command.
+    ///
+    /// The only other explanation for an unknown key is a mistyped hash, and a
+    /// mistyped hash that reports success is a script that believes it
+    /// invalidated something.
+    #[test]
+    fn an_unknown_instance_key_is_an_error() {
+        let mut state = ConductorState::new_empty();
+        let key = Hash::from_content(b"absent");
+
+        let error = set_instance_invalidation(&mut state, &key, true)
+            .expect_err("a key with no record must not report success");
+
+        assert!(
+            error.to_string().contains("not found"),
+            "the diagnostic must name the problem: {error}",
+        );
+    }
+
+    /// Marking records when it happened and clearing removes only the marker.
+    ///
+    /// The recorded outputs are asserted unchanged because invalidation is a
+    /// request for the next execution, not a deletion of this one.
+    #[test]
+    fn marking_records_a_timestamp_and_clearing_removes_it() {
+        let key = Hash::from_content(b"instance");
+        let mut state = state_with_one_instance(key);
+
+        assert_eq!(
+            set_instance_invalidation(&mut state, &key, true).expect("mark"),
+            MarkerChange::Changed,
+        );
+        let marked_at = state.tool_call_instances[&key].invalidated_at;
+        assert!(marked_at.is_some(), "marking must record when it happened");
+        let outputs = state.tool_call_instances[&key].outputs.clone();
+
+        assert_eq!(
+            set_instance_invalidation(&mut state, &key, false).expect("unmark"),
+            MarkerChange::Changed,
+        );
+        assert_eq!(
+            state.tool_call_instances[&key].invalidated_at, None,
+            "revalidating must remove the marker",
+        );
+        assert_eq!(
+            state.tool_call_instances[&key].outputs, outputs,
+            "a marker change must never touch what the instance recorded",
+        );
+    }
+
+    /// A repeated request is satisfied without moving the timestamp.
+    ///
+    /// The timestamp says since when the work has been marked, so re-marking
+    /// must not restart that clock; and the request itself is not an error,
+    /// because a script that retries must be able to succeed.
+    #[test]
+    fn a_repeated_request_reports_the_state_it_found() {
+        let key = Hash::from_content(b"instance");
+        let mut state = state_with_one_instance(key);
+        // Seeded rather than read after a first mark: two `now()` calls a
+        // microsecond apart can be equal on a coarse system clock, which would
+        // let a restarting implementation pass. A fixed timestamp makes the
+        // comparison exact wherever the suite runs.
+        state.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at =
+            Some(Timestamp::from_unix_nanos(7));
+
+        assert_eq!(
+            set_instance_invalidation(&mut state, &key, true).expect("mark again"),
+            MarkerChange::AlreadyInRequestedState,
+        );
+        assert_eq!(
+            state.tool_call_instances[&key].invalidated_at,
+            Some(Timestamp::from_unix_nanos(7)),
+            "a repeated mark must not restart the invalidated-since clock",
+        );
+
+        set_instance_invalidation(&mut state, &key, false).expect("unmark");
+        assert_eq!(
+            set_instance_invalidation(&mut state, &key, false).expect("unmark again"),
+            MarkerChange::AlreadyInRequestedState,
+        );
+    }
+
+    /// The marker has to reach the file, because the probe reads what the
+    /// state file said when it was loaded.
+    ///
+    /// The GC epoch is asserted untouched so this command cannot quietly become
+    /// a second writer of the auxiliary data.
+    #[tokio::test]
+    async fn invalidating_persists_a_marker_the_probe_can_see() {
+        let key = Hash::from_content(b"instance");
+        let mut seeded = state_with_one_instance(key);
+        seeded.aux.conductor_gc_epoch = Timestamp::from_unix_nanos(42);
+        let (_dir, conductor) = conductor_in_scratch_dir(&seeded);
+
+        let change = change_instance_invalidation(&conductor, &key.to_string(), true)
+            .await
+            .expect("invalidate");
+
+        assert_eq!(change, MarkerChange::Changed);
+        let recorded = state_on_disk(&conductor);
+        let instance = recorded.tool_call_instances.get(&key).expect("record kept");
+        assert!(
+            instance.invalidated_at.is_some(),
+            "the marker must survive the process, or the next sync would reuse the record",
+        );
+        assert_eq!(
+            recorded.aux.conductor_gc_epoch,
+            Timestamp::from_unix_nanos(42),
+            "a marker change must not disturb the GC clock",
+        );
+        assert_eq!(
+            instance.outputs, seeded.tool_call_instances[&key].outputs,
+            "invalidation must keep the recorded outputs, not delete them",
+        );
+    }
+
+    /// Undo is durable too: the cleared marker must not come back on the next
+    /// load.
+    #[tokio::test]
+    async fn revalidating_persists_the_cleared_marker() {
+        let key = Hash::from_content(b"instance");
+        let mut seeded = state_with_one_instance(key);
+        seeded.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at =
+            Some(Timestamp::from_unix_nanos(7));
+        let (_dir, conductor) = conductor_in_scratch_dir(&seeded);
+
+        let change = change_instance_invalidation(&conductor, &key.to_string(), false)
+            .await
+            .expect("revalidate");
+
+        assert_eq!(change, MarkerChange::Changed);
+        let recorded = state_on_disk(&conductor);
+        assert_eq!(
+            recorded.tool_call_instances[&key].invalidated_at, None,
+            "revalidating must clear the marker on disk",
+        );
+    }
+
+    /// A refused request writes nothing.
+    ///
+    /// A command that failed must not leave a rewritten state file behind, or
+    /// the next sync would read a state no command admitted to producing.
+    #[tokio::test]
+    async fn an_unknown_key_leaves_the_state_file_untouched() {
+        let key = Hash::from_content(b"instance");
+        let (_dir, conductor) = conductor_in_scratch_dir(&state_with_one_instance(key));
+        let before = std::fs::read(&conductor.storage_paths().state_file_path).expect("read");
+
+        let error = change_instance_invalidation(
+            &conductor,
+            &Hash::from_content(b"absent").to_string(),
+            true,
+        )
+        .await
+        .expect_err("an unknown key must fail the command");
+
+        assert!(error.to_string().contains("not found"), "unexpected diagnostic: {error}");
+        let after = std::fs::read(&conductor.storage_paths().state_file_path).expect("read");
+        assert_eq!(before, after, "a failed request must not rewrite the state file");
+    }
+
+    /// A key that is not a hash is refused with its own diagnostic, so a
+    /// quoting mistake reads differently from a key that is simply unknown.
+    #[tokio::test]
+    async fn a_malformed_key_is_rejected_before_any_write() {
+        let key = Hash::from_content(b"instance");
+        let (_dir, conductor) = conductor_in_scratch_dir(&state_with_one_instance(key));
+        let before = std::fs::read(&conductor.storage_paths().state_file_path).expect("read");
+
+        let error = change_instance_invalidation(&conductor, "not-a-hash", true)
+            .await
+            .expect_err("a malformed key must fail the command");
+
+        assert!(
+            error.to_string().contains("invalid instance key"),
+            "unexpected diagnostic: {error}",
+        );
+        let after = std::fs::read(&conductor.storage_paths().state_file_path).expect("read");
+        assert_eq!(before, after, "a malformed key must not rewrite the state file");
+    }
+
+    /// Both message polarities say what happened.
+    ///
+    /// The two call sites pass a literal, so swapping one would print "is not
+    /// marked invalid" after a successful invalidation and no output-based test
+    /// would notice.
+    #[test]
+    fn the_reported_message_agrees_with_the_request() {
+        assert_eq!(
+            marker_change_message("k", true, MarkerChange::Changed),
+            "Invalidated tool call instance 'k'",
+        );
+        assert_eq!(
+            marker_change_message("k", true, MarkerChange::AlreadyInRequestedState),
+            "Tool call instance 'k' is already invalidated",
+        );
+        assert_eq!(
+            marker_change_message("k", false, MarkerChange::Changed),
+            "Revalidated tool call instance 'k'",
+        );
+        assert_eq!(
+            marker_change_message("k", false, MarkerChange::AlreadyInRequestedState),
+            "Tool call instance 'k' is not marked invalid",
+        );
+    }
+    /// An import reaches the file, not only the process.
+    ///
+    /// The façade's state is an in-memory snapshot, so an import that only
+    /// replaced it would vanish at exit — which is what this command did before
+    /// it grew a durable write.
+    #[test]
+    fn importing_persists_the_imported_state() {
+        let key = Hash::from_content(b"imported");
+        let imported = state_with_one_instance(key);
+        // The directory owner has to outlive the write: dropping the handle
+        // deletes the tree before the file exists.
+        let source_dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let source_path = source_dir.path().join("import.json");
+        std::fs::write(&source_path, encode_state_json(&imported).expect("encode"))
+            .expect("write import source");
+
+        let (_dir, conductor) =
+            conductor_in_scratch_dir(&state_with_one_instance(Hash::from_content(b"other")));
+        import_state_file(&conductor, &source_path).expect("import");
+
+        let recorded = state_on_disk(&conductor);
+        assert!(
+            recorded.tool_call_instances.contains_key(&key),
+            "the imported instance must survive the process, or the command did nothing",
+        );
+        assert_eq!(
+            recorded.tool_call_instances.len(),
+            1,
+            "an import replaces the document rather than merging into it",
+        );
+    }
 }
