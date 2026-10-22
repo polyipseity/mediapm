@@ -471,12 +471,12 @@ The design ensures prior successful instances remain recorded after a step failu
 
 The reachable set is computed by the pass from the run seeds, never supplied by a caller. `aux.live_instances` maps a workflow name to the instance keys its last successful run executed or reused, and `gc::run_conductor_gc` works in four steps over `ConductorState`:
 
-1. **Seed pruning**: an entry whose workflow the merged document no longer declares is dropped, so a deleted workflow's instances become unreachable.
+1. **Seed pruning**: an entry whose workflow the merged document no longer declares is dropped, so a deleted workflow's instances become unreachable. Pruning runs only when the pass otherwise proceeds: a generated document can be legitimately incomplete for one run, so a missing workflow is evidence of deletion only when the document is otherwise describing the same world.
 2. **Closure**: the seed keys, plus every instance that recorded, as an output, a hash some reached instance names in `materialized_inputs`. Sharing widens the set; `invalidated_at` does not narrow it, so a marked instance a live consumer still reads keeps its bytes.
 3. **Reachability refresh**: every key in the closure is kept and its `aux.instances[key].last_referenced_at` is set to the GC epoch.
-4. **TTL sweep**: an instance outside the closure is evicted once `last_referenced_at + ttl < conductor_gc_epoch`, and its aux entry is dropped with it. A key with no aux entry counts as epoch 0, so it is evicted on the first seeded sweep.
+4. **TTL sweep**: an instance outside the closure is evicted once `last_referenced_at + ttl < conductor_gc_epoch`, and its aux entry is dropped with it. A key inside the closure that has no aux entry gets one at the current epoch rather than being skipped, so a record protected this pass is not evicted on sight the moment it becomes unreachable; a key outside the closure with no aux entry counts as epoch 0 and is evicted on the first pass that classifies.
 
-A workflow declared in the document with no seed makes the whole pass refresh and evict nothing, logging once: a closure computed from an absent seed is empty, and an empty closure past the grace period would empty the store.
+Two abstentions keep the sweep from deleting more than it understands. A document that declares no workflow at all — config discovery skips missing files and an empty merge is legal — makes the pass refresh, evict and prune nothing while the state still holds instances, because its empty seed set would have swept everything. A document that declares a workflow with no seed does the same, logging once: a closure computed from an absent seed is empty, and an empty closure past the grace period would empty the store.
 
 `aux.instances[*].last_referenced_at` is the only TTL clock: it is refreshed on every reference and on every retained sweep, so an instance that stops being referenced survives the full TTL window. `AuxData::conductor_gc_epoch` advances to `Timestamp::now()` at the end of each sweep, so the sweep measures the TTL against the previous sweep's clock.
 

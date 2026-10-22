@@ -5,12 +5,12 @@
 //!
 //! # Two entry points, on purpose
 //!
-//! [`run_conductor_gc`] is the full cycle, and only the explicit `conductor gc`
+//! `run_conductor_gc` is the full cycle, and only the explicit `conductor gc`
 //! command runs it. It deletes blobs, so it assumes what an operator invoking it
 //! assumes: nothing is in flight, and every byte the store holds is either
 //! recorded in the state or described by the merged document.
 //!
-//! [`run_record_maintenance`] is what the background loop runs. It evicts
+//! `run_record_maintenance` is what the background loop runs. It evicts
 //! instance records and maintains the CAS metadata, and it deletes no payload.
 //! A timer cannot assume the full cycle's premise: an application sharing the
 //! store can hold bytes it has staged but not yet recorded anywhere, and no root

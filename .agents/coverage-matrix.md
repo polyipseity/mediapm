@@ -1149,3 +1149,20 @@ The key no longer covers captures. One instance is now shared by every step that
 | An unknown media id or a step index the workflow does not have fails instead of reporting success for work nobody will do. | `unknown_media_and_absent_step_indexes_are_errors` (mediapm `tests/int/media_step_invalidation.rs`) | [covered] |
 | Mediapm state V3 loads and is written forward as V4 with the removed queue field dropped and every other value preserved; V1 and V2 still load. | `from_v3_into_v4_drops_the_queue_and_keeps_everything_else` (mediapm `src/state/versions/v4.rs`), `dispatch_round_trips_every_supported_version_through_v4` (mediapm `src/state/versions/mod.rs`) | [covered] |
 | The run-scoped `SyncLibraryOptions::force_workflow_rerun` lever forces every workflow of one run and leaves no state behind. | `force_rerun_reexecutes_the_cached_workflow` (mediapm `tests/int/sync_idempotency_double_run.rs`) | [covered] |
+
+## Instance retention and background maintenance (2026-10-22)
+
+| Item | Tests | Status |
+| --- | --- | --- |
+| A successful run records the instance keys it produced or reused as its workflow's seed, and a run with a failed step leaves the previous seed in place. | `a_successful_run_records_the_instances_it_executed_and_reused`, `a_failed_run_leaves_the_previous_seed_in_place` (mediapm-conductor `tests/int/gc.rs`) | [covered] |
+| Reachability follows the hashes a reached instance consumed, so a producer survives while a live consumer still names its blob and becomes unreachable when the consumer moves on. | `a_producer_stays_reachable_while_a_live_consumer_lists_its_blob`, `a_producer_becomes_unreachable_once_the_consumer_moves_on` (mediapm-conductor `src/gc.rs`) | [covered] |
+| A document that declares no workflow, and a workflow declared with no seed, each make the pass refresh, evict and prune nothing. | `a_document_that_declares_no_workflow_evicts_nothing`, `an_abstaining_pass_keeps_seeds_it_cannot_vouch_for`, `a_workflow_without_a_seed_evicts_nothing` (mediapm-conductor `src/gc.rs`) | [covered] |
+| A marked instance that a live consumer still reaches is not evicted, so an invalidation cannot become a deletion before the re-run. | `a_reachable_marked_instance_is_not_evicted` (mediapm-conductor `src/gc.rs`) | [covered] |
+| A reachable instance with no TTL clock gets one at the epoch the pass used, instead of being read as never referenced. | `a_reachable_instance_without_an_aux_entry_gets_a_clock` (mediapm-conductor `src/state/mod.rs`) | [covered] |
+| A hash cycle among instances terminates rather than spinning. | `a_hash_cycle_terminates` (mediapm-conductor `src/gc.rs`) | [covered] |
+| A seed lives on disk: a conductor reopened on the same paths reads it, and the pass that uses it evicts an unreachable record instead of abstaining. | `the_seed_reaches_the_file_and_a_pass_classifies_with_it` (mediapm-conductor `tests/int/gc.rs`) | [covered] |
+| Conductor state V3 loads and is written forward as V4 with `invalidated_at` and `live_instances` added; V1 and V2 still load. | `dispatch_round_trips_every_supported_version_through_v4`, `state/versions/v4.rs` tests (mediapm-conductor) | [covered] |
+| The background loop runs a pass on its own, persists it, and stops on shutdown or drop without a later pass reaching the file. | `the_background_loop_runs_a_pass_and_stops_on_shutdown`, `dropping_the_facade_cancels_the_pass` (mediapm-conductor `src/conductor_impl.rs`) | [covered] |
+| A background pass deletes no payload, while the explicit `conductor gc` path reclaims the same blob. | `a_background_pass_keeps_bytes_only_the_explicit_command_reclaims` (mediapm-conductor `src/conductor_impl.rs`) | [covered] |
+| `run_gc` leaves its evictions in the state file instead of discarding them after the blobs are gone. | `run_gc_leaves_its_evictions_in_the_state_file` (mediapm-conductor `src/conductor_impl.rs`) | [covered] |
+| A state write publishes whole bytes through a sibling temporary and leaves no temporary behind. | `a_saved_state_file_is_whole_and_leaves_no_temporary_file` (mediapm-conductor `src/conductor_impl.rs`) | [covered] |

@@ -26,7 +26,7 @@ use super::v2::{MediaPmStateV2, ToolRegistryEntryV2};
 use crate::config::{ManagedFileRecord, ManagedWorkflowStepState, ToolRegistryEntry};
 use crate::error::MediaPmError;
 
-/// V3 wire representation of [`MediaPmState`].
+/// V3 wire representation of [`crate::config::MediaPmState`].
 ///
 /// Read-only: V4 is the only format written, and this shape exists so a
 /// document written before the bump still loads. `pending_force_rerun` is part
