@@ -35,6 +35,8 @@ mod media_step_invalidation;
 mod resync;
 /// Runtime root `.gitignore` creation on service construction.
 mod runtime_gitignore;
+/// A generated document this build cannot decode is regenerated, not fatal.
+mod stale_generated_document;
 /// State JSON persistence and migration tests.
 mod state_persistence;
 /// Double-run idempotency: an immediate second sync must execute no workflow

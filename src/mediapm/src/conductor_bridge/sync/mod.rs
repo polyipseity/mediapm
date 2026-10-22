@@ -1669,6 +1669,13 @@ pub(crate) async fn reconcile_desired_tools(
     write_generated_dotenv(&paths.runtime_root, &paths.tools_dir, &tool_runtimes)?;
 
     // 5. Save generated document.
+    //
+    // The media workflows are reconciled after this returns and save again, so a
+    // concurrent reader can observe this intermediate document: it declares what
+    // the tools phase knows, and not yet what the media plan adds. The
+    // external-data invariant can reject a merge of it against a user document
+    // that names a hash only the media plan declares; the reader's next attempt
+    // succeeds once the second save lands.
     save_conductor_generated_document(paths, &generated_doc)?;
 
     // 6. Prune filesystem tool directories not in the active set. The

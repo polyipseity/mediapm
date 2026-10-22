@@ -43,10 +43,11 @@ async fn a_synced_import_source_declares_its_payload_hash() {
 }
 
 /// Asserts the document a sync left on disk declares every CAS hash its steps
-/// name.
+/// name as an input value.
 ///
-/// Both reference shapes count: an input value that is a bare hash and an
-/// `${external_data.<hash>}` expression in an input or capture.
+/// The reference shape counts: an input value that is a bare hash, which the
+/// `import` builtin reads as its payload. The counter exists so the assertion
+/// cannot pass over a document with no such input.
 fn assert_every_hash_reference_is_declared(service: &mediapm::MediaPmService<FileSystemCas>) {
     let document = read_generated_doc(service);
 

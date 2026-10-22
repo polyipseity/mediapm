@@ -11,51 +11,68 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::Hash;
-use mediapm_conductor::NickelDocument;
 use mediapm_conductor::config::ExternalDataEntry;
+use mediapm_conductor::config::documents::external_data_reference_hashes;
 use mediapm_conductor::state::OutputSaveMode;
+use mediapm_conductor::{InputBinding, NickelDocument, ToolKindSpec};
 
-/// Collects every CAS hash the workflows of `document` reference.
+/// Collects every CAS hash the documents of `document` name.
 ///
-/// Two reference shapes name a CAS object: an input value that is a bare hash
-/// (the import builtin's payload, which the step reads under `kind=cas_hash`)
-/// and an `${external_data.<hash>}` expression in an input or an output capture.
-/// Both must appear in `external_data`, or the conductor refuses to encode the
-/// document and the GC reclaims the bytes the step reads.
+/// Every surface the template engine interpolates is scanned, because each one
+/// can name bytes the conductor has to keep alive:
 ///
-/// A value that does not parse as a hash names no object and is skipped: the
-/// builtin rejects an unusable payload at run time, and a path or URL that
-/// happens to sit in the same input cannot be a CAS reference.
+/// - a step input that is a bare hash, which the `import` builtin reads under
+///   `kind=cas_hash`;
+/// - a `${external_data.<hash>}` reference in a step input, in a tool command
+///   part, or in a tool default input, which the engine resolves out of CAS.
+///   The reference is found by the conductor's scanner, which is the resolver's
+///   own parse, so a reference that carries post-processing selectors and one
+///   inside a conditional branch both count;
+/// - the same references in a step output capture, which the engine never
+///   interpolates. Declaring a hash nothing reads costs retention; leaving one
+///   undeclared costs the payload, so the scan stays liberal here.
+///
+/// A value that names no hash is skipped: a path, a URL, or a reference the
+/// engine would reject anyway is not this pass's verdict to make.
 #[must_use]
 pub(crate) fn referenced_hashes(document: &NickelDocument) -> BTreeSet<Hash> {
     let mut hashes = BTreeSet::new();
     for workflow in &document.workflows {
         for step in &workflow.steps {
             for value in step.inputs.values() {
-                if let Ok(hash) = value.parse::<Hash>() {
-                    hashes.insert(hash);
-                }
-                collect_external_data_references(value, &mut hashes);
+                collect_input_hash(value, &mut hashes);
             }
             for capture in step.outputs.values() {
-                collect_external_data_references(&capture.capture, &mut hashes);
+                hashes.extend(external_data_reference_hashes(&capture.capture));
+            }
+        }
+    }
+    for spec in document.tools.values() {
+        if let ToolKindSpec::Executable { command, .. } = &spec.kind {
+            for part in command {
+                hashes.extend(external_data_reference_hashes(part));
+            }
+        }
+        for binding in spec.default_inputs.values() {
+            match binding {
+                InputBinding::String(value) => collect_input_hash(value, &mut hashes),
+                InputBinding::Vec(values) => {
+                    for value in values {
+                        collect_input_hash(value, &mut hashes);
+                    }
+                }
             }
         }
     }
     hashes
 }
 
-/// Extracts every `${external_data.<hash>}` reference from one string value.
-fn collect_external_data_references(value: &str, hashes: &mut BTreeSet<Hash>) {
-    const PREFIX: &str = "${external_data.";
-    let mut rest = value;
-    while let Some(start) = rest.find(PREFIX) {
-        let remainder = &rest[start + PREFIX.len()..];
-        let Some(end) = remainder.find('}') else { break };
-        if let Ok(hash) = remainder[..end].parse::<Hash>() {
-            hashes.insert(hash);
-        }
-        rest = remainder;
+/// Collects the hash one input value names, in either shape an input can name
+/// one.
+fn collect_input_hash(value: &str, hashes: &mut BTreeSet<Hash>) {
+    hashes.extend(external_data_reference_hashes(value));
+    if let Ok(hash) = value.trim().parse::<Hash>() {
+        hashes.insert(hash);
     }
 }
 
@@ -190,6 +207,58 @@ mod tests {
             BTreeSet::from([input_hash, capture_hash]),
             "a reference in either position counts once, however it is embedded",
         );
+    }
+
+    /// A reference that carries a post-processing selector names the hash the
+    /// engine reads out of CAS, not the selector text that follows it.
+    #[test]
+    fn a_selector_carrying_reference_is_referenced() {
+        let hash = Hash::from([10u8; 32]);
+        let document = document_with_step(
+            BTreeMap::from([(
+                "input".to_string(),
+                format!("${{external_data.{hash}:file(payload.bin)}}"),
+            )]),
+            "stdout",
+        );
+
+        assert_eq!(referenced_hashes(&document), BTreeSet::from([hash]));
+    }
+
+    /// A reference in a tool command part names bytes the engine interpolates
+    /// into the command line, so the command's tool is a consumer too.
+    #[test]
+    fn a_command_part_reference_is_referenced() {
+        let hash = Hash::from([11u8; 32]);
+        let mut document = NickelDocument::default();
+        document.tools.insert(
+            "probe".to_string(),
+            mediapm_conductor::ToolSpec {
+                name: "probe".to_string(),
+                version: Some("1".to_string()),
+                kind: ToolKindSpec::Executable {
+                    command: vec![format!("${{external_data.{hash}}}")],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..mediapm_conductor::ToolSpec::default()
+            },
+        );
+
+        assert_eq!(referenced_hashes(&document), BTreeSet::from([hash]));
+    }
+
+    /// A padded hash input names the same object as an unpadded one, so the two
+    /// sides of the invariant agree on it.
+    #[test]
+    fn a_padded_hash_input_is_referenced() {
+        let hash = Hash::from([12u8; 32]);
+        let document = document_with_step(
+            BTreeMap::from([("hash".to_string(), format!("  {hash}\n"))]),
+            "stdout",
+        );
+
+        assert_eq!(referenced_hashes(&document), BTreeSet::from([hash]));
     }
 
     /// A value that is not a hash is not a reference.

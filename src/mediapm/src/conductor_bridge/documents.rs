@@ -123,11 +123,36 @@ fn save_conductor_document(
 
 /// Loads the conductor generated document (`.ncl`) from disk.
 ///
-/// Returns an empty [`NickelDocument`] when the file does not exist.
+/// Returns an empty [`NickelDocument`] when the file does not exist, and also
+/// when it exists but cannot be decoded. The generated document is machine-owned
+/// and rewritten in full from the user document on every sync, so one this build
+/// cannot read — a shape an earlier build wrote, or a hand edit — is regenerated
+/// rather than allowed to block the sync that would replace it. The warning is
+/// loud on purpose: a shape this build still writes would mean an encoder bug,
+/// and the only other symptom of that is a document that silently stops being
+/// read.
+///
+/// A read failure that is not a document-shape failure still fails here, because
+/// regenerating would overwrite a file that is merely unreadable right now.
+///
+/// # Errors
+///
+/// Returns the I/O error when the file exists and cannot be read.
 pub(crate) fn load_conductor_generated_document(
     paths: &MediaPmPaths,
 ) -> Result<NickelDocument, MediaPmError> {
-    load_conductor_document(&paths.conductor_generated_ncl, "conductor generated NCL")
+    let path = &paths.conductor_generated_ncl;
+    match load_conductor_document(path, "conductor generated NCL") {
+        Err(error @ MediaPmError::ConductorDocument { .. }) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "discarding an unreadable generated conductor document and regenerating it",
+            );
+            Ok(NickelDocument::default())
+        }
+        other => other,
+    }
 }
 
 /// Saves the conductor generated document (`.ncl`) to disk (only if changed).
