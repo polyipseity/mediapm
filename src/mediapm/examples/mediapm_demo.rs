@@ -792,6 +792,11 @@ fn clear_machine_workflows(machine_path: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
+/// Generates the demo workspace and, when `run_sync` is set, its materialized tree.
+///
+/// Shuts the service down before returning: the conductor starts a background
+/// maintenance pass, and a pass still in flight when the artifact directory goes
+/// away would write the state file back into the removed directory.
 #[expect(
     clippy::too_many_lines,
     reason = "this demo keeps end-to-end orchestration and manifest wiring in one place for maintainability"
@@ -951,6 +956,8 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 
     let manifest_path = root.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
+
+    service.conductor().shutdown().await?;
 
     Ok(DemoRunPaths {
         artifact_root: root,

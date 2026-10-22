@@ -3139,6 +3139,11 @@ fn resolve_demo_output_paths(
     Ok((video_path, tagged_video_path, sidecar_paths))
 }
 
+/// Runs the online demo end to end and returns the paths it wrote.
+///
+/// Shuts the service down before returning: the conductor starts a background
+/// maintenance pass, and a pass still in flight when the artifact directory goes
+/// away would write the state file back into the removed directory.
 #[expect(
     clippy::too_many_lines,
     reason = "this example keeps end-to-end demo orchestration and artifact assertions in one function for traceability"
@@ -3322,6 +3327,8 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
 
     let manifest_path = root.join("manifest.json");
     write_json_file(&manifest_path, &manifest)?;
+
+    sync_service.conductor().shutdown().await?;
 
     Ok(DemoRunPaths { artifact_root: root, workspace_root, manifest_path })
 }

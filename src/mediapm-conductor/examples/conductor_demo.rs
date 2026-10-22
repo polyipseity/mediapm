@@ -53,6 +53,11 @@ fn build_document() -> NickelDocument {
     }
 }
 
+/// Runs the demo workflow twice to show instance reuse.
+///
+/// Shuts the conductor down before returning: the facade starts a background
+/// maintenance pass, and a pass still in flight when the artifact directory goes
+/// away would write the state file back into the removed directory.
 async fn run_demo() -> ExampleResult<()> {
     let run_dir = mediapm_utils::temp::artifact_dir()
         .map_err(|source| -> Box<dyn std::error::Error> { Box::new(source) })?;
@@ -102,6 +107,8 @@ async fn run_demo() -> ExampleResult<()> {
         first_summary.executed_steps > 0,
         "first demo run must execute the workflow; summary: {first_summary:?}"
     );
+
+    conductor.shutdown().await?;
 
     println!("Done.");
     Ok(())

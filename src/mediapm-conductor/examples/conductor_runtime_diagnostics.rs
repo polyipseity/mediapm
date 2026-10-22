@@ -78,6 +78,11 @@ fn build_document() -> NickelDocument {
     }
 }
 
+/// Runs the demo's workflow and prints its diagnostics.
+///
+/// Shuts the conductor down before returning: the facade starts a background
+/// maintenance pass, and a pass still in flight when `run_dir` goes away would
+/// write the state file back into the removed directory.
 async fn run_diagnostics_demo() -> ExampleResult<()> {
     let run_dir = mediapm_utils::temp::artifact_dir()
         .map_err(|source| -> Box<dyn std::error::Error> { Box::new(source) })?;
@@ -98,6 +103,8 @@ async fn run_diagnostics_demo() -> ExampleResult<()> {
 
     let diagnostics = conductor.get_runtime_diagnostics().await?;
     println!("Runtime diagnostics: {diagnostics:?}");
+
+    conductor.shutdown().await?;
 
     Ok(())
 }

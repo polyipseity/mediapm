@@ -102,6 +102,11 @@ fn build_document() -> NickelDocument {
     }
 }
 
+/// Runs two workflows to show instance reuse and re-materialization.
+///
+/// Shuts the conductor down before returning: the facade starts a background
+/// maintenance pass, and a pass still in flight when the artifact directory goes
+/// away would write the state file back into the removed directory.
 async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
     let run_dir = mediapm_utils::temp::artifact_dir()
         .map_err(|source| -> Box<dyn std::error::Error> { Box::new(source) })?;
@@ -172,6 +177,8 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
         "once the required output is recorded, the workflow must be served from cache; summary: \
          {fourth_run:?}"
     );
+
+    conductor.shutdown().await?;
 
     Ok(())
 }

@@ -66,6 +66,11 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     Ok(local_source_path)
 }
 
+/// Builds the media-source manifest this example documents.
+///
+/// Shuts the service down before returning: the conductor starts a background
+/// maintenance pass, and a pass still in flight when the artifact directory goes
+/// away would write the state file back into the removed directory.
 async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
@@ -103,6 +108,9 @@ async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
     };
 
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+
+    service.conductor().shutdown().await?;
+
     Ok(manifest)
 }
 

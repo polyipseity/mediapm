@@ -96,6 +96,11 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     Ok(path)
 }
 
+/// Builds the hierarchy manifest this example documents.
+///
+/// Shuts the service down before returning: the conductor starts a background
+/// maintenance pass, and a pass still in flight when the artifact directory goes
+/// away would write the state file back into the removed directory.
 async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
@@ -137,6 +142,9 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     };
 
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+
+    service.conductor().shutdown().await?;
+
     Ok(manifest)
 }
 
