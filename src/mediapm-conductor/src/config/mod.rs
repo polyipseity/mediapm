@@ -186,7 +186,20 @@ pub struct OutputCaptureSpec {
     /// Capture source selector (`stdout`, `stderr`, `process_code`, `file:<path>`,
     /// `file_regex:<pattern>`, etc.).
     pub capture: String,
-    /// Whether to persist this output to CAS. One of `"false"`, `"true"`, `"full"`.
+    /// The persistence intent this record carries, one of `"false"`, `"true"`,
+    /// `"full"`.
+    ///
+    /// It is recorded, not obeyed: every capture is written to the CAS whatever
+    /// this says, and no reader consults it to decide what a step may reuse or
+    /// materialize. Its one live effect is which side of a settlement keeps it.
+    ///
+    /// This is the one field a step may set on a name its tool already
+    /// declares: the tool owns the capture itself (selector, `allow_empty`,
+    /// `include_topmost_folder`) and the step owns only whether the bytes are
+    /// kept. Persistence is a decision about the store, not about what the work
+    /// produces, so it never decides whether a recorded instance can be reused —
+    /// [`OutputCaptureSpec::same_capture_identity`] excludes it, and two steps
+    /// that persist differently still share one instance.
     #[serde(default = "default_save_mode", skip_serializing_if = "is_save_mode_true")]
     pub save: SaveMode,
     /// Whether an empty capture result (e.g. missing file) is acceptable.

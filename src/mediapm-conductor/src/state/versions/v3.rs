@@ -11,6 +11,12 @@
 //! V2→V3 migration. It must not import unversioned runtime state from
 //! `super::super`; the bridge to runtime types lives in [`super`].
 //!
+//! Every V3 wire type denies unknown fields. A document this build wrote is the
+//! only V3 document it reads, and a field it cannot name is either a newer
+//! build's or a hand edit: decoding it away would let the next save delete it.
+//! [`super::v2`] deliberately keeps its lenient shape, because it is read-only
+//! history whose writers have already shipped.
+//!
 //! ## DO NOT REMOVE: versions policy guard
 //!
 //! - This file must never import unversioned structs from outside `versions/`
@@ -79,6 +85,7 @@ const fn is_save_mode_true_v3(mode: &SaveModeV3) -> bool {
 /// that recorded it. `save` is omitted when it is the default, matching the
 /// config document's own serialization so a spec has one spelling everywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct OutputCaptureSpecV3 {
     /// Logical output name.
     pub name: String,
@@ -112,6 +119,7 @@ pub(crate) struct ImpureTimestampV3(
 
 /// V3 content-addressed value record for argv, env and materialized inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct HashedValueRecordV3 {
     /// CAS content hash of the recorded value.
     pub hash: Hash,
@@ -125,6 +133,7 @@ pub(crate) struct HashedValueRecordV3 {
 /// carried over from V2 recorded no spec, and no declared spec equals `None`,
 /// so such an entry never satisfies a capture request that names a spec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CapturedOutputV3 {
     /// CAS content hash of the captured bytes.
     pub hash: Hash,
@@ -135,6 +144,7 @@ pub(crate) struct CapturedOutputV3 {
 
 /// V3 tool-call instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolCallInstanceV3 {
     /// Content-addressed instance key.
     pub instance_key: Hash,
@@ -165,6 +175,7 @@ pub(crate) struct ToolCallInstanceV3 {
 
 /// V3 per-instance auxiliary metadata: the GC reference clock only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct InstanceAuxV3 {
     /// Conductor GC last-reference clock.
     pub last_referenced_at: ImpureTimestampV3,
@@ -178,6 +189,7 @@ impl Default for InstanceAuxV3 {
 
 /// V3 auxiliary metadata: the GC clock and the instance-key counter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct AuxDataV3 {
     /// Monotonic counter the instance keys are derived against; carried over
     /// unchanged from V2 so a migration does not shift any key.
@@ -200,6 +212,7 @@ impl Default for AuxDataV3 {
 
 /// V3 inline orchestration state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ConductorStateV3 {
     /// Schema version marker; always [`CONDUCTOR_STATE_VERSION_V3`] when this
     /// build writes, and the dispatch key a reader selects on.
@@ -482,6 +495,36 @@ mod tests {
 
         let instance = decoded.tool_call_instances.values().next().expect("one instance");
         assert_eq!(instance.outputs["content"].capture.as_ref(), Some(&spec));
+    }
+
+    /// An unknown field in a V3 document is rejected, naming the field.
+    ///
+    /// The state file is machine-managed and rewritten wholesale, so a field
+    /// this build does not know is either a newer build's or a hand edit.
+    /// Ignoring it would decode a document whose content the reader cannot
+    /// carry forward, and the next save would delete what it never understood.
+    #[test]
+    fn a_v3_document_with_an_unknown_field_is_rejected() {
+        // A literal, not a `format!` template: the document carries no
+        // interpolated identity, and the field under test is the extra key.
+        let json = r#"{
+            "version": 3,
+            "also_unknown": 1,
+            "tool_call_instances": {},
+            "aux": {
+                "tool_call_instance_counter": 0,
+                "conductor_gc_epoch": 0,
+                "instances": {}
+            }
+        }"#;
+
+        let error = serde_json::from_str::<ConductorStateV3>(json)
+            .expect_err("an unknown top-level field must not decode away");
+        let message = error.to_string();
+        assert!(
+            message.contains("also_unknown"),
+            "the error must name the field it rejected: {message}",
+        );
     }
 
     /// A V2 document that recorded no outputs migrates to an empty V3 output

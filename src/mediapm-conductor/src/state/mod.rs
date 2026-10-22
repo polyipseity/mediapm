@@ -17,19 +17,17 @@ pub mod versions;
 /// Current orchestration-state schema version.
 ///
 /// Bumped when the persisted JSON layout changes in a way older or newer
-/// readers cannot absorb. An additive, serde-defaulted provenance field is
-/// not such a change: an older file decodes with an empty value and a newer
-/// file still decodes in an older reader, so the version stays put. That
-/// forward readability holds only because no state wire type denies unknown
-/// fields; a wire type that gained `#[serde(deny_unknown_fields)]` would end
-/// the carve-out.
+/// readers cannot absorb. Every V3 wire type denies unknown fields
+/// (`#[serde(deny_unknown_fields)]`), so an older reader handed a newer
+/// document fails on the field it cannot name instead of decoding it away and
+/// then writing the document back without it. That makes the unsupported
+/// direction a loud error rather than a silent loss, while the direction that
+/// matters still holds: every field a V3 document may omit is
+/// `#[serde(default)]`, so a document this version wrote always decodes here,
+/// and so does one an earlier V3 build wrote, whose fields are a subset. A
+/// field a V3 document must carry stays required: `capture` is the example,
+/// because no V3 build has ever written a record without one.
 ///
-/// Readability is all the carve-out buys, so it is not round-trip safety: a
-/// reader that predates `step_ids` decodes it as an unknown field, drops it
-/// when it next writes the document, and leaves a state file whose schema
-/// version still says this value while its provenance is gone. A build that
-/// may rewrite this document therefore has to know every field it carries,
-/// and a change an older writer would lose that way is what a bump is for.
 /// Backward compatibility is handled via the `state/versions/` module.
 pub(crate) const STATE_VERSION: u32 = 3;
 
@@ -103,10 +101,13 @@ pub struct ToolCallInstance {
     pub tool_call_id: String,
     /// Whether the tool is impure.
     ///
-    /// Stored as provenance: it says how the tool was classified when the
-    /// instance was recorded. Nothing reads it to decide behaviour — the retry
-    /// gate consults the tool spec's `is_impure`, not this field — and it never
-    /// alters the instance key, because a key derives from content alone.
+    /// Two readers consult it, in two different places: the retry gate reads
+    /// the tool spec's `is_impure` for the execution in hand, and settlement
+    /// reads this recorded flag to decide whether a differing artifact under
+    /// one capture identity is the expected output of unreproducible work or
+    /// divergence. It is never part of any instance key, impure or pure, so a
+    /// reclassification changes what a settlement accepts without invalidating
+    /// the entries already recorded.
     pub impure: bool,
     /// Execution timestamp recorded at run time. Provenance only; it is never
     /// part of any instance key, impure or pure.
@@ -258,6 +259,50 @@ pub fn derive_tool_call_instance_key(
     )
 }
 
+/// The step and work a settlement is merging for.
+///
+/// Carried as one value because both fields are diagnostics-or-policy for the
+/// same decision: whether a differing artifact is divergence (the step is
+/// named in the error) or the expected output of unreproducible work (the
+/// `impure` flag decides). Passing them together keeps the call site from
+/// having to remember which is which.
+#[derive(Clone, Copy)]
+pub(crate) struct SettlingStep<'a> {
+    /// Id of the step whose settlement is merging, named in divergence
+    /// diagnostics so a reader knows which step to look at.
+    pub(crate) step_id: &'a str,
+    /// Whether the work is impure.
+    ///
+    /// A settlement sees two records that each claim a classification: the
+    /// stored instance's flag and the executing tool's. The work counts as
+    /// impure when either says so, because the byte-identity error only means
+    /// anything when both records agree the work is reproducible.
+    pub(crate) impure: bool,
+}
+
+/// What one fresh capture does to the entry the instance already holds.
+///
+/// Named rather than inlined into the loop so the order of the rules is visible
+/// in one place: identity first (a changed spec replaces), then bytes (equal is
+/// a no-op), then the diagnostic-stream exemption, then the impurity boundary,
+/// and only what is left is divergence.
+enum MergeDecision {
+    /// The instance holds no entry under this name, so the fresh one is added.
+    Insert,
+    /// The recorded entry cannot describe these bytes or this work, so the
+    /// fresh one takes its place.
+    Replace,
+    /// The recorded entry already says what the fresh one would say.
+    Keep,
+    /// A pure tool produced different artifacts for one input set.
+    Diverge {
+        /// Hash the instance recorded.
+        stored: Hash,
+        /// Hash the re-execution produced.
+        produced: Hash,
+    },
+}
+
 /// Merges one execution's captured outputs into the entries an instance
 /// already holds.
 ///
@@ -289,22 +334,46 @@ pub fn derive_tool_call_instance_key(
 ///   Equal bytes are a no-op that keeps the stored entry, spec and `save`
 ///   included, so a `save`-only difference between two steps never rewrites the
 ///   record.
-/// - Different bytes under one identity are a hard error naming the output and
-///   both hashes, with one boundary: a capture that reads `stdout` or `stderr`
-///   keeps the stored entry instead. Byte identity is a promise about the
-///   artifacts the work produces, and a capture reading a process stream cannot
-///   promise byte reproducibility: those streams are progress lines, timings and
-///   cache-hit notices, they vary per execution by construction, and any
-///   execution of that work is an equivalent source for its stdout. The
+/// - Different bytes under one identity are a hard error naming the step, the
+///   output and both hashes, with two boundaries.
+///
+///   The first is the diagnostic streams: a capture that reads `stdout` or
+///   `stderr` keeps the stored entry instead. Byte identity is a promise about
+///   the artifacts the work produces, and a capture reading a process stream
+///   cannot promise byte reproducibility: those streams are progress lines,
+///   timings and cache-hit notices, they vary per execution by construction,
+///   and any execution of that work is an equivalent source for its stdout. The
 ///   exemption is keyed on the *selector*, not on the name, so a capture named
 ///   `content` that reads `stdout` is exempt while a capture named `stdout` that
 ///   reads `file:stdout` is not — what is read decides, and the shipped presets
 ///   rely on exactly that (`content` is captured from `stdout` in echo, import,
-///   fs, export and sd). `process_code` and every file or folder capture stay
-///   strictly identical-or-error, because a different exit code or a different
-///   file for identical work is real divergence rather than presentation.
+///   fs, export and sd). For a pure instance, `process_code` and every file or
+///   folder capture stay strictly identical-or-error, because a different exit
+///   code or a different file for identical work is real divergence rather
+///   than presentation.
 ///   Silently keeping the later bytes there is how a non-deterministic tool — or
 ///   two distinct executions collapsed under one key — would hide.
+///
+///   The second is impurity: an instance the state records as impure replaces
+///   the entry instead. Impure work cannot promise the same bytes twice — it
+///   fetches, renders, or reads a service — so a difference is the expected
+///   outcome rather than a claim about identical work, and the newest execution
+///   is the record. Erroring here also had no in-band repair: every supported
+///   way of forcing a re-execution (`force_rerun`, a blob deleted behind the
+///   store's back, a sibling declaring a name the instance lacks, a changed
+///   declaration elsewhere on the same instance) lands in this settlement, and
+///   rejecting it left the run failing identically on every retry. The strict
+///   rule stays for pure work, where a differing artifact for one input set is
+///   either non-determinism or a key collision, which is what the error exists
+///   to surface.
+///
+///   Impurity is not the only way two different executions can share a key, and
+///   it is the only one this rule forgives: a command part the key derivation
+///   cannot carry (see `is_deterministic_command_part`) leaves two executions
+///   that differ only there under one key, so for an impure instance they
+///   replace each other with nothing recorded about the substitution. That gap
+///   predates this rule, and stating it keeps it from being read as something
+///   impurity covered.
 /// - A name recorded under a *different* capture identity is replaced by the
 ///   incoming entry. That is the "a changed capture spec under the same name
 ///   re-executes and replaces only that entry" case. Identity outranks the
@@ -312,21 +381,35 @@ pub fn derive_tool_call_instance_key(
 ///   probe comparing against a spec the step no longer declares, so it would
 ///   miss on every later sync and re-execute forever.
 ///
+/// Capture identity is one comparison for every capture kind:
+/// [`crate::config::OutputCaptureSpec::same_capture_identity`] compares the
+/// selector and the two settings that change which bytes it reads. That means
+/// `include_topmost_folder` is compared even for a `file:` capture, which
+/// cannot honour it. The alternative — a per-kind field list — would have to be
+/// kept in step with the capture phase's own reading of each selector, and a
+/// mismatch there is a miss on every sync. A needless field in the comparison
+/// only costs a re-execution of the rare declaration that sets it on a
+/// non-folder capture.
+///
 /// `declared` is the name-to-spec map the executing step declared it could
 /// produce this run — the tool defaults merged under its declarations, plus the
 /// implicit stream captures — and `fresh` is what the capture phase actually
 /// recorded from that execution. Neither is the whole instance: a settlement
-/// speaks only for the names its execution was responsible for.
+/// speaks only for the names its execution was responsible for. `settling` says
+/// whose settlement this is: the step the diagnostics name, and whether the
+/// work is impure, in which case a differing artifact replaces instead of
+/// failing.
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError::Workflow`] when one name is recorded under equal
-/// capture identities with different content hashes, unless the capture reads
-/// `stdout` or `stderr` (see the boundary above).
+/// Returns [`ConductorError::Workflow`] when a *pure* instance records one name
+/// under equal capture identities with different content hashes, unless the
+/// capture reads `stdout` or `stderr` (see the boundaries above).
 pub(crate) fn merge_captured_outputs(
     stored: &BTreeMap<String, CapturedOutput>,
     declared: &BTreeMap<String, crate::config::OutputCaptureSpec>,
     fresh: BTreeMap<String, CapturedOutput>,
+    settling: SettlingStep<'_>,
 ) -> Result<BTreeMap<String, CapturedOutput>, ConductorError> {
     let mut merged = stored.clone();
     for (name, spec) in declared {
@@ -341,36 +424,48 @@ pub(crate) fn merge_captured_outputs(
         }
     }
     for (name, incoming) in fresh {
-        let Some(existing) = merged.get(&name) else {
-            merged.insert(name, incoming);
-            continue;
+        // The decision is taken from an immutable view and acted on afterwards,
+        // because replacing an entry needs `&mut` and the question is about the
+        // entry it replaces.
+        let decision = match merged.get(&name) {
+            None => MergeDecision::Insert,
+            Some(existing) => {
+                if !same_recorded_capture_identity(
+                    existing.capture.as_ref(),
+                    incoming.capture.as_ref(),
+                ) {
+                    MergeDecision::Replace
+                } else if existing.hash == incoming.hash
+                    || is_diagnostic_stream(
+                        existing.capture.as_ref().map(|spec| spec.capture.as_str()),
+                    )
+                {
+                    // Same bytes: the stored entry already says everything,
+                    // `save` included — persistence is the executing step's
+                    // decision and changes no bytes. Differing diagnostic
+                    // chatter keeps the stored entry too: those streams are the
+                    // work's presentation, not one of its artifacts, and the
+                    // stored bytes are as good as the fresh ones.
+                    MergeDecision::Keep
+                } else if settling.impure {
+                    MergeDecision::Replace
+                } else {
+                    MergeDecision::Diverge { stored: existing.hash, produced: incoming.hash }
+                }
+            }
         };
-        if !same_recorded_capture_identity(existing.capture.as_ref(), incoming.capture.as_ref()) {
-            merged.insert(name, incoming);
-            continue;
-        }
-        // The two questions are asked together so the exemption cannot come
-        // before the byte check: identical bytes are always a no-op, differing
-        // diagnostic chatter keeps the stored entry, and anything else that
-        // differs is divergence.
-        match (
-            existing.hash != incoming.hash,
-            is_diagnostic_stream(existing.capture.as_ref().map(|spec| spec.capture.as_str())),
-        ) {
-            // Same bytes: the stored entry already says everything, `save`
-            // included — persistence is the executing step's decision and
-            // changes no bytes. Differing diagnostic chatter keeps the stored
-            // entry too: those streams are the work's presentation, not one of
-            // its artifacts, and the stored bytes are as good as the fresh
-            // ones.
-            (false, _) | (true, true) => {}
-            (true, false) => {
+        match decision {
+            MergeDecision::Insert | MergeDecision::Replace => {
+                merged.insert(name, incoming);
+            }
+            MergeDecision::Keep => {}
+            MergeDecision::Diverge { stored, produced } => {
                 return Err(ConductorError::Workflow(format!(
-                    "captured output '{name}' was recorded as {} and a re-execution of the same \
-                     work produced {}; identical work must produce identical artifacts, so a \
-                     differing record means the tool is non-deterministic or two different \
-                     executions were recorded under one instance key",
-                    existing.hash, incoming.hash,
+                    "step '{}' captured output '{name}' as {stored} and a re-execution of the \
+                     same work produced {produced}; identical work must produce identical \
+                     artifacts, so a differing record means the tool is non-deterministic or two \
+                     different executions were recorded under one instance key",
+                    settling.step_id,
                 )));
             }
         }
@@ -414,10 +509,20 @@ fn same_recorded_capture_identity(
 
 #[cfg(test)]
 mod tests {
-    use super::{CapturedOutput, merge_captured_outputs};
+    use super::{CapturedOutput, SettlingStep, merge_captured_outputs};
     use crate::config::{OutputCaptureSpec, SaveMode};
     use mediapm_cas::Hash;
     use std::collections::BTreeMap;
+
+    /// The settlement context these tests run under unless a test varies it: a
+    /// pure step named `s1`.
+    ///
+    /// Byte identity is the default question — whether identical work produced
+    /// identical artifacts — so a test that cares about impurity says so
+    /// explicitly instead of every other test inheriting it.
+    fn pure_settlement() -> SettlingStep<'static> {
+        SettlingStep { step_id: "s1", impure: false }
+    }
 
     /// Builds a capture spec for `name` reading `selector`, with `save` the
     /// only field a caller varies.
@@ -471,8 +576,9 @@ mod tests {
             ("thumbnail".to_string(), captured("thumbnail", "stderr", b"B")),
         ]);
 
-        let merged = merge_captured_outputs(&stored, &declared_of(&fresh), fresh)
-            .expect("identical bytes are not a conflict");
+        let merged =
+            merge_captured_outputs(&stored, &declared_of(&fresh), fresh, pure_settlement())
+                .expect("identical bytes are not a conflict");
 
         assert_eq!(
             merged.keys().cloned().collect::<Vec<_>>(),
@@ -499,8 +605,9 @@ mod tests {
             ("sibling_only".to_string(), captured("sibling_only", "stdout", b"S")),
         ]);
         let fresh = BTreeMap::from([("content".to_string(), captured("content", "stdout", b"A"))]);
-        let merged = merge_captured_outputs(&stored, &declared_of(&fresh), fresh)
-            .expect("an identical record cannot conflict");
+        let merged =
+            merge_captured_outputs(&stored, &declared_of(&fresh), fresh, pure_settlement())
+                .expect("an identical record cannot conflict");
 
         assert_eq!(
             merged, stored,
@@ -525,6 +632,7 @@ mod tests {
             &stored,
             &declared_of(&BTreeMap::from([("content".to_string(), stored_entry.clone())])),
             BTreeMap::from([("content".to_string(), stored_entry)]),
+            pure_settlement(),
         )
         .expect("a save-mode difference is not a conflict");
 
@@ -555,8 +663,9 @@ mod tests {
             ("stderr".to_string(), captured("stderr", "stderr", b"second run warnings")),
         ]);
 
-        let merged = merge_captured_outputs(&stored, &declared_of(&fresh), fresh)
-            .expect("diagnostic chatter cannot contradict the work");
+        let merged =
+            merge_captured_outputs(&stored, &declared_of(&fresh), fresh, pure_settlement())
+                .expect("diagnostic chatter cannot contradict the work");
 
         assert_eq!(merged, stored, "the first recorded diagnostics must be the ones kept");
     }
@@ -577,7 +686,7 @@ mod tests {
             captured("process_code", "process_code", b"1"),
         )]);
 
-        let error = merge_captured_outputs(&stored, &declared_of(&fresh), fresh)
+        let error = merge_captured_outputs(&stored, &declared_of(&fresh), fresh, pure_settlement())
             .expect_err("an exit code is an outcome, so a change is divergence");
 
         assert!(
@@ -602,8 +711,9 @@ mod tests {
         )]);
         let fresh = BTreeMap::from([("content".to_string(), captured("content", "stdout", b"A"))]);
 
-        let merged = merge_captured_outputs(&stored, &declared_of(&fresh), fresh.clone())
-            .expect("an unknown recorded spec cannot be a byte conflict");
+        let merged =
+            merge_captured_outputs(&stored, &declared_of(&fresh), fresh.clone(), pure_settlement())
+                .expect("an unknown recorded spec cannot be a byte conflict");
 
         assert_eq!(
             merged, fresh,
@@ -624,8 +734,13 @@ mod tests {
             CapturedOutput { hash: Hash::from_content(b"A"), capture: None },
         )]);
 
-        let merged = merge_captured_outputs(&stored, &declared_of(&stored), stored.clone())
-            .expect("two unknown specs cannot contradict each other");
+        let merged = merge_captured_outputs(
+            &stored,
+            &declared_of(&stored),
+            stored.clone(),
+            pure_settlement(),
+        )
+        .expect("two unknown specs cannot contradict each other");
 
         assert_eq!(merged, stored);
     }
@@ -645,8 +760,9 @@ mod tests {
         ]);
         let fresh = BTreeMap::from([("content".to_string(), captured("content", "stderr", b"C"))]);
 
-        let merged = merge_captured_outputs(&stored, &declared_of(&fresh), fresh)
-            .expect("an identity change is allowed");
+        let merged =
+            merge_captured_outputs(&stored, &declared_of(&fresh), fresh, pure_settlement())
+                .expect("an identity change is allowed");
 
         assert_eq!(
             merged["content"].capture.as_ref().map(|spec| spec.capture.as_str()),
@@ -675,7 +791,7 @@ mod tests {
         let fresh =
             BTreeMap::from([("content".to_string(), captured("content", "file:a.bin", b"C"))]);
 
-        let error = merge_captured_outputs(&stored, &declared_of(&fresh), fresh)
+        let error = merge_captured_outputs(&stored, &declared_of(&fresh), fresh, pure_settlement())
             .expect_err("identical work that produced different bytes must be rejected");
         let message = error.to_string();
 
@@ -696,8 +812,9 @@ mod tests {
     fn an_empty_fresh_map_leaves_the_stored_map_untouched() {
         let stored = BTreeMap::from([("content".to_string(), captured("content", "stdout", b"A"))]);
 
-        let merged = merge_captured_outputs(&stored, &BTreeMap::new(), BTreeMap::new())
-            .expect("an empty capture set cannot conflict");
+        let merged =
+            merge_captured_outputs(&stored, &BTreeMap::new(), BTreeMap::new(), pure_settlement())
+                .expect("an empty capture set cannot conflict");
 
         assert_eq!(merged, stored);
     }
@@ -715,8 +832,9 @@ mod tests {
         let stored = BTreeMap::from([("content".to_string(), captured("content", "stdout", b"A"))]);
         let fresh = BTreeMap::from([("content".to_string(), captured("content", "stderr", b"A"))]);
 
-        let merged = merge_captured_outputs(&stored, &declared_of(&fresh), fresh.clone())
-            .expect("a changed capture identity is always allowed");
+        let merged =
+            merge_captured_outputs(&stored, &declared_of(&fresh), fresh.clone(), pure_settlement())
+                .expect("a changed capture identity is always allowed");
 
         assert_eq!(
             merged, fresh,
@@ -743,7 +861,7 @@ mod tests {
         let declared =
             BTreeMap::from([("gamma".to_string(), spec("gamma", "file:g.txt", SaveMode::True))]);
 
-        let merged = merge_captured_outputs(&stored, &declared, BTreeMap::new())
+        let merged = merge_captured_outputs(&stored, &declared, BTreeMap::new(), pure_settlement())
             .expect("a capture that matched nothing is not a conflict");
 
         assert!(merged.is_empty(), "the entry must not outlive the artifact: {merged:?}");
@@ -761,7 +879,7 @@ mod tests {
         let declared =
             BTreeMap::from([("beta".to_string(), spec("beta", "stderr", SaveMode::True))]);
 
-        let merged = merge_captured_outputs(&stored, &declared, BTreeMap::new())
+        let merged = merge_captured_outputs(&stored, &declared, BTreeMap::new(), pure_settlement())
             .expect("a name nothing produced is not a conflict");
 
         assert_eq!(merged, stored, "another identity's record is not this execution's to drop");
@@ -782,12 +900,95 @@ mod tests {
             BTreeMap::from([("alpha".to_string(), spec("alpha", "stdout", SaveMode::True))]);
         let fresh = BTreeMap::from([("alpha".to_string(), captured("alpha", "stdout", b"A"))]);
 
-        let merged = merge_captured_outputs(&stored, &declared, fresh)
+        let merged = merge_captured_outputs(&stored, &declared, fresh, pure_settlement())
             .expect("an undeclared name cannot be a conflict");
 
         assert_eq!(
             merged, stored,
             "an undeclared name is the sibling's to keep, whatever this execution produced",
+        );
+    }
+
+    /// An impure re-execution replaces a differing artifact instead of failing
+    /// the settlement.
+    ///
+    /// An impure tool's bytes are unreproducible by construction — a fetch, a
+    /// render, a network lookup — so two executions of the same work are
+    /// expected to differ, and the record has to move to the newest one. Every
+    /// supported way of forcing a re-execution (`force_rerun`, a blob deleted
+    /// behind the store's back, a changed sibling declaration) lands here.
+    /// Erroring instead blamed the tool for the impurity the state already
+    /// declares and left no in-band repair: `force_rerun` bypasses the probe,
+    /// so the next attempt failed the same way.
+    #[test]
+    fn an_impure_re_execution_replaces_a_differing_artifact() {
+        let stored =
+            BTreeMap::from([("content".to_string(), captured("content", "file:out.bin", b"A"))]);
+        let fresh =
+            BTreeMap::from([("content".to_string(), captured("content", "file:out.bin", b"C"))]);
+
+        let merged = merge_captured_outputs(
+            &stored,
+            &declared_of(&fresh),
+            fresh.clone(),
+            SettlingStep { step_id: "render", impure: true },
+        )
+        .expect("an impure tool's re-execution cannot contradict its own bytes");
+
+        assert_eq!(
+            merged, fresh,
+            "the newest execution must be the record for unreproducible work",
+        );
+    }
+
+    /// An impure re-execution that produced the same bytes is still a no-op.
+    ///
+    /// Impurity permits a difference; it does not require one. Keeping the
+    /// stored entry here preserves the first settlement's provenance — `save`
+    /// and any sibling name — instead of rewriting the record for nothing.
+    #[test]
+    fn an_impure_re_execution_of_identical_bytes_is_a_no_op() {
+        let stored = BTreeMap::from([
+            ("content".to_string(), captured("content", "file:out.bin", b"A")),
+            ("sibling_only".to_string(), captured("sibling_only", "stdout", b"S")),
+        ]);
+        let fresh =
+            BTreeMap::from([("content".to_string(), captured("content", "file:out.bin", b"A"))]);
+
+        let merged = merge_captured_outputs(
+            &stored,
+            &declared_of(&fresh),
+            fresh,
+            SettlingStep { step_id: "render", impure: true },
+        )
+        .expect("identical bytes cannot conflict, impure or not");
+
+        assert_eq!(merged, stored, "an unchanging artifact must leave the record untouched");
+    }
+
+    /// The divergence error names the step whose settlement found it.
+    ///
+    /// A shared instance can be settled by several steps, so a message naming
+    /// only the output leaves the reader to work out which declaration to look
+    /// at. The sibling-conflict error beside it already names both steps.
+    #[test]
+    fn the_divergence_error_names_the_settling_step() {
+        let stored =
+            BTreeMap::from([("content".to_string(), captured("content", "file:a.bin", b"A"))]);
+        let fresh =
+            BTreeMap::from([("content".to_string(), captured("content", "file:a.bin", b"C"))]);
+
+        let error = merge_captured_outputs(
+            &stored,
+            &declared_of(&fresh),
+            fresh,
+            SettlingStep { step_id: "transcode", impure: false },
+        )
+        .expect_err("a pure tool cannot produce two different artifacts for one input set");
+
+        assert!(
+            error.to_string().contains("'transcode'"),
+            "the message must name the step: {error}",
         );
     }
 }

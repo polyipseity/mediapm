@@ -24,7 +24,9 @@ use super::progress_labels::WorkerBarLabel;
 
 use crate::config::{OutputCaptureSpec, WorkflowStepSpec};
 use crate::error::ConductorError;
-use crate::state::{ConductorState, InstanceAux, ToolCallInstance, merge_captured_outputs};
+use crate::state::{
+    ConductorState, InstanceAux, SettlingStep, ToolCallInstance, merge_captured_outputs,
+};
 
 use ractor::rpc::CallResult;
 
@@ -939,10 +941,16 @@ where
                             incoming.outputs = if cache_hit {
                                 stored.outputs.clone()
                             } else {
+                                // Either record calling the work impure is
+                                // enough: the byte-identity error is only
+                                // meaningful when both agree it is
+                                // reproducible.
+                                let impure = stored.impure || incoming.impure;
                                 merge_captured_outputs(
                                     &stored.outputs,
                                     &producible_outputs,
                                     incoming.outputs,
+                                    SettlingStep { step_id: &step_id, impure },
                                 )?
                             };
                         }

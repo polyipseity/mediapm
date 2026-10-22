@@ -7,7 +7,7 @@
 | Crate | Role |
 | --- | --- |
 | `src/mediapm-cas/` (`mediapm-cas`) | Content-addressed storage — identity types, hash codec, async API |
-| `src/mediapm-conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model and persistence |
+| `src/mediapm-conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model, config merge, persistence |
 | `src/mediapm-conductor-builtins/{echo,fs,import,export,archive}/` | Builtin tools (echo, filesystem staging, source ingest, materialization, ZIP transform) |
 | `src/mediapm/` (`mediapm`) | Media API + CLI — composes CAS and Conductor |
 | `scripts/cargo-bin/` | Repository tooling helper binary |
@@ -44,6 +44,8 @@ Tag-update policy: `mediapm sync` does **not** check remote updates for tag-only
 - `mediapm.ncl` — desired state: media sources, hierarchy, tool requirements.
 - `.mediapm/state.ncl` — machine-managed realized state.
 - `mediapm.conductor.ncl` / `mediapm.conductor.generated.ncl` — conductor runtime docs.
+
+Conductor config documents merge rather than last-one-wins: user documents are combined with the generated document, `external_data` entries union by hash with the most permissive explicit `save` policy winning, and optional runtime fields (`retry_impure`) take the explicit value, two conflicting explicit values failing the merge.
 
 See `src/mediapm/examples/` for annotated bootstrapping and tool-addition examples.
 

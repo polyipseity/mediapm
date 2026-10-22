@@ -52,6 +52,16 @@ pub fn instance_key_domain() -> String {
 /// every env value as nondeterministic and therefore passes no env hashes, so
 /// that term was empty by construction on every path and keyed nothing; it
 /// existed only to keep two derivations looking symmetric.
+///
+/// What this key omits is answered by the records it addresses, not by the key.
+/// A binding whose source is excluded as nondeterministic — anything reading
+/// `${env.…}`, `${context.…}`, `:file(…)` or `:folder(…)` — can resolve to
+/// different bytes for the same key, so two executions of one instance may
+/// disagree. That is deliberate and errs toward reuse: the stored entry carries
+/// its capture spec, and the settlement decides whether a differing record is
+/// divergence or the expected output of impure work. Adding such a binding to
+/// the key instead would make every value it can take a new instance, so a
+/// single tool would re-execute once per environment it is run under.
 #[must_use]
 pub fn derive_instance_key(
     tool_call_id: &str,

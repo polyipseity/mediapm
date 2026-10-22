@@ -279,6 +279,36 @@ fn producible_output_specs(
     producible
 }
 
+/// Names the fields of `step` that `tool` overrides for one output.
+///
+/// A step may restate a tool-declared name for any reason, so silence here would
+/// leave a declaration that has no effect looking as though it had one: the tool
+/// keeps `capture`, `allow_empty` and `include_topmost_folder`, and only `save`
+/// survives. Comparing values rather than presence is deliberate — a step that
+/// repeats the tool's own selector is declaring what already holds and deserves
+/// no warning, while one that names a different selector is stating an intent
+/// that is being discarded.
+///
+/// The order is fixed so the diagnostic reads the same way every run.
+///
+/// `name` is not in the list. The merge rewrites it to the map key, but that is
+/// normalization rather than a discarded intent: a key identifies its entry and
+/// a spec's own `name` restates it, so a step whose `name` disagrees with its
+/// key has a malformed spec, not an unfulfilled declaration.
+fn discarded_step_fields(tool: &OutputCaptureSpec, step: &OutputCaptureSpec) -> Vec<&'static str> {
+    let mut discarded = Vec::new();
+    if step.capture != tool.capture {
+        discarded.push("capture");
+    }
+    if step.allow_empty != tool.allow_empty {
+        discarded.push("allow_empty");
+    }
+    if step.include_topmost_folder != tool.include_topmost_folder {
+        discarded.push("include_topmost_folder");
+    }
+    discarded
+}
+
 /// Merges tool-level output specs (defaults) with step-level output specs.
 ///
 /// The tool owns the meaning of every artifact name it declares: its `capture`,
@@ -320,7 +350,19 @@ fn merge_output_specs(
     let mut merged = tool_outputs.clone();
     for (name, step_spec) in step_outputs {
         match merged.get_mut(name) {
-            Some(tool_spec) => tool_spec.save = step_spec.save,
+            Some(tool_spec) => {
+                let discarded = discarded_step_fields(tool_spec, step_spec);
+                if !discarded.is_empty() {
+                    tracing::warn!(
+                        "output '{name}' is declared by the tool, so the step's {} {} ignored; \
+                         the tool's capture, allow_empty and include_topmost_folder apply, and \
+                         only `save` is taken from the step",
+                        discarded.join(", "),
+                        if discarded.len() == 1 { "is" } else { "are" },
+                    );
+                }
+                tool_spec.save = step_spec.save;
+            }
             None => {
                 merged.insert(name.clone(), step_spec.clone());
             }
@@ -382,8 +424,8 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::{
-        build_env_vars, build_materialized_inputs, execute_step, merge_output_specs,
-        producible_output_specs,
+        build_env_vars, build_materialized_inputs, discarded_step_fields, execute_step,
+        merge_output_specs, producible_output_specs,
     };
     use crate::config::{OutputCaptureSpec, SaveMode, WorkflowStepSpec};
     use crate::orchestration::protocol::{
@@ -399,6 +441,53 @@ mod tests {
             capture: stream.to_string(),
             ..OutputCaptureSpec::default()
         }
+    }
+
+    /// A step that restates the tool's own declaration discards nothing.
+    ///
+    /// The comparison is by value, not by presence: a step repeating the
+    /// selector the tool already declares is declaring what already holds, and
+    /// warning about it would train readers to ignore the diagnostic.
+    #[test]
+    fn a_step_repeating_the_tool_declaration_discards_nothing() {
+        let tool = stream_spec("content", "stdout");
+        let step = stream_spec("content", "stdout");
+
+        assert!(discarded_step_fields(&tool, &step).is_empty());
+    }
+
+    /// Each field the tool overrides is named, in a fixed order.
+    ///
+    /// A step's selector, `allow_empty` and `include_topmost_folder` are all
+    /// dropped for a tool-declared name, and a declaration that silently lost
+    /// one of them would look as though it still applied.
+    #[test]
+    fn every_overridden_step_field_is_named_in_order() {
+        let tool = stream_spec("content", "stdout");
+        let step = OutputCaptureSpec {
+            name: "content".to_string(),
+            capture: "file:out.bin".to_string(),
+            save: SaveMode::False,
+            allow_empty: true,
+            include_topmost_folder: false,
+        };
+
+        assert_eq!(
+            discarded_step_fields(&tool, &step),
+            vec!["capture", "allow_empty", "include_topmost_folder"],
+        );
+    }
+
+    /// A `save`-only step declaration discards nothing.
+    ///
+    /// Persistence is exactly what a step owns for a tool-declared name, so the
+    /// merge must accept it without a diagnostic.
+    #[test]
+    fn a_save_only_step_declaration_discards_nothing() {
+        let tool = stream_spec("content", "stdout");
+        let step = OutputCaptureSpec { save: SaveMode::Full, ..tool.clone() };
+
+        assert!(discarded_step_fields(&tool, &step).is_empty());
     }
 
     /// Runs one builtin `echo` step whose tool declares `tool_defaults` as its

@@ -822,6 +822,25 @@ pub(super) fn instance_matches_expected_inputs(
     mediapm_conductor::instance_matches_stored_key(instance, &input_hashes, &materialized_hashes)
 }
 
+/// Returns whether `instance` records every name `expected_outputs` binds.
+///
+/// The grant is by name only, and deliberately so. The materializer is
+/// resolving library paths for a chain that already ran, not deciding whether
+/// bytes may be reused: that decision is the cache probe's, and it compares the
+/// recorded capture identity ([`mediapm_conductor::OutputCaptureSpec`]).
+/// Comparing identity here as well would refuse to materialize anything the
+/// probe cannot prove was produced the same way — including every entry the V3
+/// migration carried over with `capture: None`, which no declared spec can ever
+/// match. Those media would silently stop appearing in the library, which is a
+/// worse failure than binding a name whose bytes the workflow's own step
+/// recorded.
+///
+/// The gap that leaves is worth stating: a declaration change no execution has
+/// re-recorded yet is not noticed here, so a name this path binds may have been
+/// produced under a capture the step no longer declares. It is a materialization
+/// input rather than a reuse decision, so the run that follows still re-executes
+/// the step and replaces the entry; what this path can deliver in the meantime is
+/// the recorded bytes, which is what the library held before the change.
 fn instance_matches_expected_output_names(
     instance: &ToolCallInstance,
     expected_outputs: &BTreeMap<String, mediapm_conductor::OutputCaptureSpec>,

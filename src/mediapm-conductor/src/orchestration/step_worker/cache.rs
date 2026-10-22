@@ -198,6 +198,64 @@ mod tests {
         );
     }
 
+    /// A recorded `allow_empty` that disagrees with the required one is a miss.
+    ///
+    /// The flag decides whether a capture that matched nothing is recorded as
+    /// an empty artifact or as no artifact at all, so the two settings describe
+    /// different bytes for the same selector. An entry recorded under the other
+    /// setting cannot answer this step's request.
+    #[test]
+    fn a_required_name_recorded_with_a_different_allow_empty_is_a_miss() {
+        let key = Hash::from_content(b"instance");
+        let recorded =
+            OutputCaptureSpec { allow_empty: true, ..spec("content", "folder_regex:.*") };
+        let required =
+            OutputCaptureSpec { allow_empty: false, ..spec("content", "folder_regex:.*") };
+        let state = state_with(
+            key,
+            BTreeMap::from([(
+                "content".to_string(),
+                CapturedOutput { hash: Hash::from_content(b"bytes"), capture: Some(recorded) },
+            )]),
+        );
+
+        assert!(
+            probe_cache(&key, &state, &BTreeMap::from([("content".to_string(), required)]))
+                .is_none(),
+            "a name recorded under a different `allow_empty` must be a miss",
+        );
+    }
+
+    /// A recorded `include_topmost_folder` that disagrees with the required one
+    /// is a miss.
+    ///
+    /// The flag rewrites the paths a folder capture lists, so the same folder
+    /// read with it on and off produces different listings — and therefore
+    /// different bytes under the same name.
+    #[test]
+    fn a_required_name_recorded_with_a_different_include_topmost_folder_is_a_miss() {
+        let key = Hash::from_content(b"instance");
+        let recorded = OutputCaptureSpec {
+            include_topmost_folder: false,
+            ..spec("content", "folder:outputs")
+        };
+        let required =
+            OutputCaptureSpec { include_topmost_folder: true, ..spec("content", "folder:outputs") };
+        let state = state_with(
+            key,
+            BTreeMap::from([(
+                "content".to_string(),
+                CapturedOutput { hash: Hash::from_content(b"bytes"), capture: Some(recorded) },
+            )]),
+        );
+
+        assert!(
+            probe_cache(&key, &state, &BTreeMap::from([("content".to_string(), required)]))
+                .is_none(),
+            "a name recorded under a different `include_topmost_folder` must be a miss",
+        );
+    }
+
     /// A recorded entry whose only difference is `save` still serves the step.
     ///
     /// Persistence is the field the merge ruling leaves to the step, so two steps
