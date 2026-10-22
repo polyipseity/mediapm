@@ -211,17 +211,25 @@ impl NickelDocument {
     ///
     /// - a tool's `runtime.content_map` value, which is the payload the tool
     ///   runs on;
-    /// - a `${external_data.<hash>}` reference in a step input, in a tool's
-    ///   default input, or in a tool's command part, which the template engine
-    ///   resolves by reading those bytes out of CAS. The reference is found by
-    ///   parsing the template with the engine's own scanner, so a reference that
-    ///   carries post-processing selectors
-    ///   (`${external_data.<hash>:file(name)}`) and one inside either branch of a
-    ///   conditional are both found; a `${…}` after a `\${` escape or inside a
-    ///   selector argument is not, because the resolver never interpolates those;
-    ///   and
+    /// - a `${external_data.<hash>}` reference in a tool's command part, which is
+    ///   the one surface the template engine resolves with a CAS handle, so the
+    ///   step reads those bytes out of CAS; and
     /// - an input value that *is* a hash, which a builtin such as `import`
     ///   consumes as one.
+    ///
+    /// A `${external_data.<hash>}` reference in a step input or in a tool's
+    /// `default_inputs` is checked as well, and there the engine cannot resolve
+    /// it: step inputs are resolved without a CAS handle, so such a reference
+    /// fails its step at run time instead of reading anything. The rule stays on
+    /// that surface because it errs toward keeping bytes — a declaration costs
+    /// nothing while nothing can read them, and it is already in place for the
+    /// run that can.
+    ///
+    /// A reference is found by parsing the template with the engine's own
+    /// scanner, so a reference that carries post-processing selectors
+    /// (`${external_data.<hash>:file(name)}`) and one inside either branch of a
+    /// conditional are both found; a `${…}` after a `\${` escape or inside a
+    /// selector argument is not, because the resolver never interpolates those.
     ///
     /// Step output captures are deliberately not checked: a capture selector is
     /// matched literally against the sandbox, never interpolated, so a
@@ -362,8 +370,10 @@ mod tests {
 
     /// One workflow with a single step whose inputs are the given pairs.
     ///
-    /// The step is the only place a document can name a hash outside a tool's
-    /// `content_map`, which is what the input-side invariant rules are about.
+    /// Steps are the surface the input-side rules are about: a bare hash input
+    /// and a `${external_data.<hash>}` reference both reach the document through
+    /// one. Tests that need a hash named outside a step build the tool or the
+    /// command part they want instead.
     fn workflow_with_inputs(inputs: &[(&str, &str)]) -> WorkflowSpec {
         WorkflowSpec {
             name: "default".to_string(),

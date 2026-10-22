@@ -96,6 +96,13 @@ declaration is what makes the bytes reachable — the CAS GC root set is built f
 an input is an orphan to the next sweep, including the sweep the background
 maintenance loop runs.
 
+A tool's command part is the only one of those surfaces the template engine
+resolves with a CAS handle: step inputs are resolved without one, so a
+`${external_data.<hash>}` reference there — and in a tool's `default_inputs` —
+fails its step at run time instead of reading anything. The invariant keeps the
+rule on both surfaces because it errs toward keeping bytes, not because those
+references can read CAS.
+
 A reference is found by parsing the template with the engine's own scanner, so the
 check covers every shape the resolver reads: `${external_data.<hash>}` with or
 without post-processing selectors, and a reference inside either branch of a

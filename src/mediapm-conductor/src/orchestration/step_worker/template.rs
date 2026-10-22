@@ -740,12 +740,7 @@ fn collect_external_data_hashes(template: &str, hashes: &mut Vec<Hash>) {
 fn collect_conditional_branch_hashes(branch: &str, hashes: &mut Vec<Hash>) {
     let trimmed = branch.trim();
 
-    if trimmed.starts_with("inputs.")
-        || trimmed.starts_with("*inputs.")
-        || trimmed.starts_with("step_output.")
-        || trimmed.starts_with("external_data.")
-        || trimmed.starts_with("env.")
-    {
+    if is_bare_reference_expression(trimmed) {
         collect_external_data_hashes(&format!("${{{trimmed}}}"), hashes);
     } else {
         collect_external_data_hashes(trimmed, hashes);
@@ -1077,6 +1072,21 @@ fn resolve_unpack_input<C: mediapm_cas::CasApi + Send + Sync>(
 // Conditional evaluation
 // ---------------------------------------------------------------------------
 
+/// Returns whether `expr` is a bare reference expression that has to be wrapped
+/// in `${…}` before the resolver reads it.
+///
+/// The conditional resolver and the invariant's scan both ask this question, and
+/// they have to answer it the same way: a branch the resolver wraps is a branch
+/// the scan walks, so a prefix the resolver learns to wrap is one the scan learns
+/// too, without a second list to keep in step.
+fn is_bare_reference_expression(expr: &str) -> bool {
+    expr.starts_with("inputs.")
+        || expr.starts_with("*inputs.")
+        || expr.starts_with("step_output.")
+        || expr.starts_with("external_data.")
+        || expr.starts_with("env.")
+}
+
 /// Normalizes exists-ternary branch literals; `''` means empty in tool templates.
 fn normalize_conditional_branch_literal(branch: &str) -> Option<&str> {
     let trimmed = branch.trim();
@@ -1098,12 +1108,7 @@ async fn resolve_conditional_branch<C: mediapm_cas::CasApi + Send + Sync>(
         return Ok(String::new());
     }
 
-    if trimmed.starts_with("inputs.")
-        || trimmed.starts_with("*inputs.")
-        || trimmed.starts_with("step_output.")
-        || trimmed.starts_with("external_data.")
-        || trimmed.starts_with("env.")
-    {
+    if is_bare_reference_expression(trimmed) {
         return Box::pin(resolve_template(&format!("${{{trimmed}}}"), ctx)).await;
     }
 
@@ -2254,13 +2259,19 @@ mod tests {
     }
 
     /// A selector argument is a literal path, so a reference written inside one
-    /// names nothing.
+    /// names nothing: the resolver never interpolates the argument, and a scan
+    /// that descended into it would demand a declaration for bytes nothing reads.
     #[test]
     fn external_data_hashes_ignores_a_selector_argument() {
         let hash = Hash::from([26u8; 32]);
 
         assert!(
-            external_data_hashes(&format!("${{inputs.payload:file(${{env.{hash}}})}}")).is_empty()
+            external_data_hashes(&format!("${{inputs.payload:file(${{external_data.{hash}}})}}"))
+                .is_empty()
+        );
+        assert!(
+            external_data_hashes(&format!("${{inputs.payload:zip(${{external_data.{hash}}})}}"))
+                .is_empty()
         );
     }
 
