@@ -98,9 +98,9 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
 
 /// Builds the hierarchy manifest this example documents.
 ///
-/// Shuts the service down before returning: the conductor starts a background
-/// maintenance pass, and a pass still in flight when the artifact directory goes
-/// away would write the state file back into the removed directory.
+/// Shuts the conductor the service owns down before returning:
+/// `Conductor::shutdown` awaits the background pass that would otherwise write
+/// into the caller's removed directory.
 async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;

@@ -7,9 +7,8 @@
 use std::path::Path;
 
 use mediapm::demo_hierarchy_spec::{
-    DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID, assert_tree_under,
-    demo_media_folder_name, load_demo_hierarchy_golden_document,
-    offline_demo_media_folder_relative, online_demo_media_folder_relative,
+    assert_tree_under, load_demo_hierarchy_golden_document, offline_demo_media_folder_relative,
+    online_demo_media_folder_name, online_demo_media_folder_relative,
     online_demo_root_link_relative_path, online_demo_sidecar_link_relative_path,
 };
 
@@ -76,10 +75,7 @@ fn assert_tree_under_accepts_synthetic_online_layout() {
     }
 
     std::fs::write(
-        media_folder.join(format!(
-            "{}.thumbnail.jpg",
-            demo_media_folder_name(DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID)
-        )),
+        media_folder.join(format!("{}.thumbnail.jpg", online_demo_media_folder_name())),
         b"jpg",
     )
     .expect("write thumbnail glob match");

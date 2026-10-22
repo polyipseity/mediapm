@@ -58,15 +58,23 @@ pub fn offline_demo_media_folder_relative() -> String {
     )
 }
 
-/// Returns online demo media folder relative path under hierarchy root.
+/// Returns online demo media folder name under the library root.
 ///
 /// The online demo's naming family single-sources from `${media.metadata.title}`, which resolves to
 /// the canonical `MusicBrainz` recording title once tagging has run — no artist prefix. A run that
 /// never reached the tagging steps resolves the upstream provider title instead, which embeds the
 /// artist; that run is a failed run, so this canonical form is the one the golden records.
 #[must_use]
+pub fn online_demo_media_folder_name() -> String {
+    format!("{DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}]")
+}
+
+/// Returns online demo media folder relative path under hierarchy root.
+///
+/// The folder name is [`online_demo_media_folder_name`]; this is that name under [`DEMO_LIBRARY_ROOT`].
+#[must_use]
 pub fn online_demo_media_folder_relative() -> String {
-    format!("{DEMO_LIBRARY_ROOT}/{DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}]")
+    format!("{DEMO_LIBRARY_ROOT}/{}", online_demo_media_folder_name())
 }
 
 /// Raw yt-dlp video id for the online demo Rick Astley URL.

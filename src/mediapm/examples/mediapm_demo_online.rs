@@ -2639,6 +2639,11 @@ fn assert_audio_stream_properties(payload: &serde_json::Value) -> ExampleResult<
 /// absent: this artifact is produced before media-tagger runs, so any of them appearing here means
 /// a tagging step wrote into the wrong variant. Upstream's `DATE` and `GENRE` are deliberately not
 /// pinned — they are upstream's to change, and pinning them recreates the drift this split removes.
+///
+/// The `ARTIST` literal and the absence list describe what yt-dlp's own metadata mapping writes,
+/// which only the Level-3 online run exercises; the hermetic tests cover the assertion's logic
+/// against hand-written payloads. If the live run disagrees, make those fields tolerant rather
+/// than pinning upstream's mapping here.
 fn assert_untagged_format_tags(
     payload: &serde_json::Value,
     provider_title: &str,
@@ -2773,6 +2778,10 @@ fn assert_tagged_media_metadata(path: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
+/// Asserts the pre-tagging artifact's container, streams, and duration.
+///
+/// `provider_title` is the live yt-dlp title read from `sidecars/info.json`, passed through to
+/// [`assert_untagged_format_tags`] so the tag check follows upstream's text.
 fn assert_untagged_media_metadata(path: &Path, provider_title: &str) -> ExampleResult<()> {
     let payload = ffprobe_json_payload(
         path,
@@ -2923,8 +2932,9 @@ fn assert_metadata_files_present(
 
     // The canonical basename is the MusicBrainz recording title, which carries no
     // artist; upstream's title embeds one. So an exact match against the canonical
-    // base is the assertion that tagging ran, and the artist check names the one way
-    // the name can drift towards the pre-tagging variant without changing its shape.
+    // base is the assertion that tagging ran, and the artist check below guards
+    // `expected_demo_media_root_name` itself — it would fail if that helper ever
+    // grew an artist prefix, before the equality above could hide it.
     // A run that never reached the tagging steps is a failed run, not a run whose
     // names are allowed to differ.
     let canonical_base = expected_demo_media_root_name();
@@ -3141,9 +3151,9 @@ fn resolve_demo_output_paths(
 
 /// Runs the online demo end to end and returns the paths it wrote.
 ///
-/// Shuts the service down before returning: the conductor starts a background
-/// maintenance pass, and a pass still in flight when the artifact directory goes
-/// away would write the state file back into the removed directory.
+/// Shuts the conductor the service owns down before returning:
+/// `Conductor::shutdown` awaits the background pass that would otherwise write
+/// into the caller's removed directory.
 #[expect(
     clippy::too_many_lines,
     reason = "this example keeps end-to-end demo orchestration and artifact assertions in one function for traceability"

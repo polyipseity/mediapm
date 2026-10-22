@@ -272,7 +272,7 @@ mod tests {
 
     /// A basename wider than the whole budget still names itself by its tail.
     ///
-    /// The name is the online demo's 59-column folder basename, ordinary for
+    /// The name is the online demo's 45-column folder basename, ordinary for
     /// a YouTube-style title. A name kept whole is a name the fitter drops
     /// once nothing else can shrink, and the row would render as bare ids
     /// with no file on it. The tail it keeps can begin inside the name's own
@@ -301,7 +301,8 @@ mod tests {
     ///
     /// Regression pin for the demo naming fix: the materialized file basename
     /// is a long single-source title (`<title> [<media-id>].mkv`, where the
-    /// title already carries the artist), and a narrowing terminal must still
+    /// title is the canonical recording title and carries no artist), and a
+    /// narrowing terminal must still
     /// show its `.mkv` tail so the row names the format it writes. This is the
     /// end-shown truncation the materialization screen depends on.
     #[test]

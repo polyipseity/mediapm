@@ -794,9 +794,9 @@ fn clear_machine_workflows(machine_path: &Path) -> ExampleResult<()> {
 
 /// Generates the demo workspace and, when `run_sync` is set, its materialized tree.
 ///
-/// Shuts the service down before returning: the conductor starts a background
-/// maintenance pass, and a pass still in flight when the artifact directory goes
-/// away would write the state file back into the removed directory.
+/// Shuts the conductor the service owns down before returning:
+/// `Conductor::shutdown` awaits the background pass that would otherwise write
+/// into the caller's removed directory.
 #[expect(
     clippy::too_many_lines,
     reason = "this demo keeps end-to-end orchestration and manifest wiring in one place for maintainability"
@@ -1275,6 +1275,11 @@ mod tests {
             state_after["managed_tools"].as_array().map(Vec::len),
             "second sync must add no managed_tools entry"
         );
+
+        // Quiesce before the isolated root goes away: this service started a
+        // background maintenance pass, and a pass still in flight would write
+        // the conductor state file back into the removed directory.
+        second_service.conductor().shutdown().await.expect("shutdown second service");
     }
 
     /// Pins the demo's own hardlink verification against the single

@@ -1,7 +1,7 @@
 ---
-description: "Use when editing demo hierarchy golden fixtures, demo_hierarchy_spec helpers, mediapm_demo_online post-sync content assertions, or online hierarchy e2e seeds. Documents the two online link filename formats (yt-dlp sidecar vs mediapm root projection) and the content verification strategy (exact bytes in e2e, resilient structural checks in live demo)."
+description: "Use when editing demo hierarchy golden fixtures, demo_hierarchy_spec helpers, mediapm_demo_online post-sync content assertions, or online hierarchy e2e seeds. Documents the two online link filename formats (yt-dlp sidecar vs mediapm root projection), the canonical-title naming family and its title provenance, the per-artifact tag split, and the content verification strategy (exact bytes in e2e, resilient structural checks in live demo)."
 name: "Demo Hierarchy Golden and Content Verification Contract"
-applyTo: "src/mediapm/src/demo_hierarchy_spec.rs,src/mediapm/tests/fixtures/demo_hierarchy_golden.json,src/mediapm/tests/int/demo_hierarchy_golden.rs,src/mediapm/tests/e2e/demo_online_hierarchy_materialization.rs,src/mediapm/examples/mediapm_demo_online.rs"
+applyTo: "src/mediapm/src/demo_hierarchy_spec.rs,src/mediapm/tests/fixtures/demo_hierarchy_golden.json,src/mediapm/tests/int/demo_hierarchy_golden.rs,src/mediapm/tests/int/online_sync_post_sync_dump.rs,src/mediapm/tests/e2e/demo_online_hierarchy_materialization.rs,src/mediapm/examples/mediapm_demo_online.rs,src/mediapm/examples/support/materialization.rs"
 ---
 
 # Demo hierarchy golden contract
@@ -15,7 +15,7 @@ The online demo (`mediapm_demo_online`) materializes a large hierarchy under `<a
 | `sidecars/links/` | yt-dlp output template (`%(title)s [%(id)s].{ext}` after materializer strip) | LIVE upstream provider title, which embeds the artist | Raw video id `dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url` |
 | Media folder root | mediapm hierarchy `rename_files` on links `MediaFolder` | Canonical metadata title: the MusicBrainz recording title, no artist | Media id `youtube.dQw4w9WgXcQ` | `Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url` |
 
-Sidecar links are yt-dlp-native (`tools/workflows/yt_dlp.rs`). Root projections are mediapm-config-owned (`${media.metadata.title} [${media.id}].link.$1`). The provider title already carries the artist name, so the root projection template must not prepend `${media.metadata.artist}` — doing so doubled the prefix on every materialized basename. The materializer strips `downloads/` and `__mediapm__` from folder-variant ZIP members but does **not** rewrite yt-dlp basenames into root projection shape.
+Sidecar links are yt-dlp-native (`tools/workflows/yt_dlp.rs`). Root projections are mediapm-config-owned (`${media.metadata.title} [${media.id}].link.$1`). Every name mediapm renders single-sources its stem from `${media.metadata.title}`, so the root projection template must not prepend `${media.metadata.artist}`: the canonical recording title carries no artist, and adding one breaks that single source and re-introduces the artist the upstream title already embedded. The materializer strips `downloads/` and `__mediapm__` from folder-variant ZIP members but does **not** rewrite yt-dlp basenames into root projection shape.
 
 ## One naming family, two titles
 
