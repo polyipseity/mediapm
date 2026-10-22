@@ -663,6 +663,95 @@ fn parse_selectors(expr: &str) -> Result<(String, Vec<PostSelector>), ConductorE
     Ok((remaining.to_string(), selectors))
 }
 
+/// Collects every CAS hash one template string reads through
+/// `${external_data.<hash>}`.
+///
+/// The walk follows the resolver instead of matching text: it parses the string
+/// with the same segment scanner (which counts nested braces and honours `\${`
+/// escapes), takes the base reference of every reference, and descends into both
+/// branches of a conditional, because either branch is resolved depending on the
+/// environment. Selector arguments are not descended into: `:file(…)`, `:zip(…)`,
+/// and `:folder(…)` take a literal path or member, which the resolver never
+/// interpolates. A string the scanner cannot parse yields nothing — the resolver
+/// is what reports a malformed template.
+///
+/// Each hash appears once, in the order the template names it, so a rejection
+/// message built from the result reads in template order and does not repeat
+/// itself when both branches of a conditional name the same bytes.
+///
+/// The document invariant in `config::documents` uses this, so the two agree by
+/// construction about which strings name bytes.
+#[must_use]
+pub(crate) fn external_data_hashes(template: &str) -> Vec<Hash> {
+    let mut hashes = Vec::new();
+    collect_external_data_hashes(template, &mut hashes);
+    hashes
+}
+
+/// Appends one hash unless an earlier part of the same template already named
+/// it.
+fn push_hash(hashes: &mut Vec<Hash>, hash: Hash) {
+    if !hashes.contains(&hash) {
+        hashes.push(hash);
+    }
+}
+
+/// Walks one template string, appending the hashes it reads.
+fn collect_external_data_hashes(template: &str, hashes: &mut Vec<Hash>) {
+    let processed = template.replace("\\${", ESCAPED_SENTINEL);
+    let Ok(segments) = parse_into_segments(&processed) else {
+        return;
+    };
+
+    for segment in &segments {
+        let Segment::Reference(parsed) = segment else {
+            continue;
+        };
+
+        if let Some(conditional) = &parsed.conditional {
+            match conditional {
+                ConditionalExpr::Comparison(comparison) => {
+                    collect_conditional_branch_hashes(&comparison.true_expr, hashes);
+                    collect_conditional_branch_hashes(&comparison.false_expr, hashes);
+                }
+                ConditionalExpr::Exists(exists) => {
+                    // The guard is resolved as written, so a bare
+                    // `external_data.<hash>` there is text the resolver never
+                    // reads; only a `${…}` form is a reference.
+                    collect_external_data_hashes(&exists.ref_expr, hashes);
+                    collect_conditional_branch_hashes(&exists.true_expr, hashes);
+                    collect_conditional_branch_hashes(&exists.false_expr, hashes);
+                }
+            }
+            continue;
+        }
+
+        if let Some(BaseRef::ExternalData(hash)) = &parsed.base {
+            push_hash(hashes, *hash);
+        }
+    }
+}
+
+/// Walks one conditional branch, which is either a bare reference expression or
+/// a template of its own.
+///
+/// The resolver wraps a branch that names a reference before resolving it, so
+/// the walk wraps it the same way.
+fn collect_conditional_branch_hashes(branch: &str, hashes: &mut Vec<Hash>) {
+    let trimmed = branch.trim();
+
+    if trimmed.starts_with("inputs.")
+        || trimmed.starts_with("*inputs.")
+        || trimmed.starts_with("step_output.")
+        || trimmed.starts_with("external_data.")
+        || trimmed.starts_with("env.")
+    {
+        collect_external_data_hashes(&format!("${{{trimmed}}}"), hashes);
+    } else {
+        collect_external_data_hashes(trimmed, hashes);
+    }
+}
+
 /// Parses the last `:name(args)` suffix from an expression.
 fn split_last_selector(expr: &str) -> Option<(PostSelector, &str)> {
     for (prefix, ctor) in &SEL_PREFIXES {
@@ -2083,5 +2172,105 @@ mod tests {
         assert!(is_deterministic_command_part("--plain"));
         assert!(is_deterministic_command_part("${inputs.url}"));
         assert!(is_deterministic_command_part(""));
+    }
+
+    // -----------------------------------------------------------------------
+    // external_data_hashes: the scanner the document invariant shares
+    // -----------------------------------------------------------------------
+
+    /// A plain reference names the hash it reads, wherever it sits in the string.
+    #[test]
+    fn external_data_hashes_finds_a_plain_reference() {
+        let hash = Hash::from([21u8; 32]);
+
+        assert_eq!(external_data_hashes(&format!("${{external_data.{hash}}}")), vec![hash]);
+        assert_eq!(external_data_hashes(&format!("-i ${{external_data.{hash}}} -y")), vec![hash]);
+    }
+
+    /// A reference that carries a selector names the hash the selector applies
+    /// to, not the selector text.
+    #[test]
+    fn external_data_hashes_strips_a_selector() {
+        let hash = Hash::from([22u8; 32]);
+
+        assert_eq!(
+            external_data_hashes(&format!("${{external_data.{hash}:file(payload.bin)}}")),
+            vec![hash]
+        );
+        assert_eq!(
+            external_data_hashes(&format!("${{external_data.{hash}:zip(member):file(out)}}")),
+            vec![hash]
+        );
+    }
+
+    /// A reference inside a conditional branch is read when that branch is
+    /// taken, so both branches are scanned.
+    #[test]
+    fn external_data_hashes_walks_conditional_branches() {
+        let true_hash = Hash::from([23u8; 32]);
+        let false_hash = Hash::from([24u8; 32]);
+
+        let exists = format!(
+            "${{*inputs.probe ? external_data.{true_hash}:file(a.bin) | external_data.{false_hash}:file(b.bin)}}"
+        );
+        assert_eq!(external_data_hashes(&exists), vec![true_hash, false_hash]);
+
+        // The comparison form splits its branches on the first `:` at depth
+        // zero, so a branch can only carry the bare hex form of a hash.
+        let comparison = format!(
+            "${{context.os == \"macos\" ? external_data.{} : external_data.{}}}",
+            true_hash.to_hex(),
+            false_hash.to_hex(),
+        );
+        assert_eq!(external_data_hashes(&comparison), vec![true_hash, false_hash]);
+    }
+
+    /// An escaped reference is literal text the resolver never reads.
+    #[test]
+    fn external_data_hashes_ignores_an_escaped_reference() {
+        let hash = Hash::from([25u8; 32]);
+
+        assert!(external_data_hashes(&format!("\\${{external_data.{hash}}}")).is_empty());
+    }
+
+    /// A hash named twice is reported once, in the order it appears.
+    #[test]
+    fn external_data_hashes_reports_each_hash_once() {
+        let first = Hash::from([27u8; 32]);
+        let second = Hash::from([28u8; 32]);
+
+        assert_eq!(
+            external_data_hashes(&format!(
+                "${{*inputs.probe ? external_data.{first} | external_data.{second}}}"
+            )),
+            vec![first, second]
+        );
+        assert_eq!(
+            external_data_hashes(&format!(
+                "${{*inputs.probe ? external_data.{first} | external_data.{first}}}"
+            )),
+            vec![first]
+        );
+    }
+
+    /// A selector argument is a literal path, so a reference written inside one
+    /// names nothing.
+    #[test]
+    fn external_data_hashes_ignores_a_selector_argument() {
+        let hash = Hash::from([26u8; 32]);
+
+        assert!(
+            external_data_hashes(&format!("${{inputs.payload:file(${{env.{hash}}})}}")).is_empty()
+        );
+    }
+
+    /// A reference whose payload is not a hash, and a template with no
+    /// reference at all, name nothing.
+    #[test]
+    fn external_data_hashes_ignores_values_that_name_no_hash() {
+        assert!(external_data_hashes("${external_data.not-a-hash}").is_empty());
+        assert!(external_data_hashes("${external_data.}").is_empty());
+        assert!(external_data_hashes("plain text").is_empty());
+        assert!(external_data_hashes("${external_data.unclosed").is_empty());
     }
 }

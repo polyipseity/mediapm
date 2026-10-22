@@ -58,30 +58,22 @@ pub struct NickelDocument {
 /// content-map CAS hashes against pruning.
 const MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX: &str = "managed tool content CAS root for";
 
-/// Returns the pattern one `${external_data.<hash>}` template reference is
-/// written with.
-///
-/// The capture is the reference payload, which the engine parses as a `Hash`
-/// in either display form (`blake3:<hex>` or bare hex). A match whose payload
-/// does not parse is a reference the engine rejects at resolve time, with a
-/// message about the reference itself; that is not this pass's verdict to make,
-/// so such matches are skipped rather than reported here.
-fn external_data_reference_pattern() -> &'static regex::Regex {
-    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    PATTERN.get_or_init(|| {
-        regex::Regex::new(r"\$\{external_data\.([^}]+)\}")
-            .expect("external-data reference pattern is a valid regex")
-    })
-}
-
-/// Extracts every CAS hash one template string names through
+/// Extracts every CAS hash one template string reads through
 /// `${external_data.<hash>}`.
+///
+/// The scan is the resolver's own parse of the string, so it agrees with what a
+/// step reads by construction: a reference that carries post-processing
+/// selectors (`${external_data.<hash>:file(name)}`) and a reference inside a
+/// conditional branch are both found, because both are resolved. A reference the
+/// resolver would reject, a `${…}` after a `\${` escape, and a `${…}` inside a
+/// selector argument name nothing here, because the resolver never reads them.
+///
+/// Both this crate's document invariant and the mediapm application's
+/// declaration pass call this function, so the two cannot disagree with the
+/// engine, or with each other, about which strings name bytes.
 #[must_use]
-fn external_data_references(value: &str) -> Vec<Hash> {
-    external_data_reference_pattern()
-        .captures_iter(value)
-        .filter_map(|captures| captures[1].trim().parse::<Hash>().ok())
-        .collect()
+pub fn external_data_reference_hashes(value: &str) -> Vec<Hash> {
+    crate::orchestration::step_worker::template::external_data_hashes(value)
 }
 
 /// Collects all CAS hashes referenced by tool content maps AND external data
@@ -219,11 +211,21 @@ impl NickelDocument {
     ///
     /// - a tool's `runtime.content_map` value, which is the payload the tool
     ///   runs on;
-    /// - a `${external_data.<hash>}` reference in a step input or in a tool's
-    ///   default input, which the template engine resolves by reading those
-    ///   bytes out of CAS; and
+    /// - a `${external_data.<hash>}` reference in a step input, in a tool's
+    ///   default input, or in a tool's command part, which the template engine
+    ///   resolves by reading those bytes out of CAS. The reference is found by
+    ///   parsing the template with the engine's own scanner, so a reference that
+    ///   carries post-processing selectors
+    ///   (`${external_data.<hash>:file(name)}`) and one inside either branch of a
+    ///   conditional are both found; a `${…}` after a `\${` escape or inside a
+    ///   selector argument is not, because the resolver never interpolates those;
+    ///   and
     /// - an input value that *is* a hash, which a builtin such as `import`
     ///   consumes as one.
+    ///
+    /// Step output captures are deliberately not checked: a capture selector is
+    /// matched literally against the sandbox, never interpolated, so a
+    /// `${external_data.…}` inside one resolves to nothing.
     ///
     /// The declaration is what makes the bytes reachable, and it has to be here
     /// rather than inferred: the GC's root set is built from `external_data`
@@ -235,8 +237,8 @@ impl NickelDocument {
     /// # Errors
     ///
     /// Returns `ConductorError::Workflow` listing every hash that is named
-    /// without being declared, with the tool, workflow, step, and input key that
-    /// named it.
+    /// without being declared, with the tool, workflow, step, and input key or
+    /// command part that named it.
     pub(crate) fn validate_external_data_invariant(&self) -> Result<(), ConductorError> {
         let mut missing: Vec<String> = Vec::new();
 
@@ -259,6 +261,18 @@ impl NickelDocument {
                     self.collect_input_hash_gaps(
                         &format!("workflow '{}' step '{}' input '{key}'", workflow.name, step.id),
                         value,
+                        &mut missing,
+                    );
+                }
+            }
+        }
+
+        for (tool_name, spec) in &self.tools {
+            if let ToolKindSpec::Executable { command, .. } = &spec.kind {
+                for (index, part) in command.iter().enumerate() {
+                    self.collect_reference_gaps(
+                        &format!("tool '{tool_name}' command part {index}"),
+                        part,
                         &mut missing,
                     );
                 }
@@ -302,14 +316,7 @@ impl NickelDocument {
     /// rejection points at the input to fix rather than at the document as a
     /// whole.
     fn collect_input_hash_gaps(&self, location: &str, value: &str, missing: &mut Vec<String>) {
-        for hash in external_data_references(value) {
-            if !self.external_data.contains_key(&hash) {
-                missing.push(format!(
-                    "{location} references hash {hash} through ${{external_data.…}}, which is \
-                     not in external_data"
-                ));
-            }
-        }
+        self.collect_reference_gaps(location, value, missing);
 
         let trimmed = value.trim();
         if let Ok(hash) = trimmed.parse::<Hash>()
@@ -317,6 +324,23 @@ impl NickelDocument {
         {
             missing
                 .push(format!("{location} is the CAS hash {hash}, which is not in external_data"));
+        }
+    }
+
+    /// Records every `${external_data.<hash>}` reference one value makes that
+    /// `external_data` omits.
+    ///
+    /// Separate from [`Self::collect_input_hash_gaps`] because only an input
+    /// value is read as a hash by a builtin: a command part that happens to
+    /// spell out a hash is a literal argument, not a CAS read.
+    fn collect_reference_gaps(&self, location: &str, value: &str, missing: &mut Vec<String>) {
+        for hash in external_data_reference_hashes(value) {
+            if !self.external_data.contains_key(&hash) {
+                missing.push(format!(
+                    "{location} references hash {hash} through ${{external_data.…}}, which is \
+                     not in external_data"
+                ));
+            }
         }
     }
 }
@@ -689,6 +713,141 @@ mod tests {
             "error should name the default input that carried the reference: {msg}"
         );
         assert!(msg.contains(hash_a.to_string().as_str()), "error should name the hash: {msg}");
+    }
+
+    /// Verifies a reference that carries a post-processing selector is checked
+    /// by the hash it reads, not by the selector text after it.
+    ///
+    /// The engine strips `:file(…)` before it resolves the base reference, so
+    /// `${external_data.<hash>:file(name)}` reads those bytes out of CAS and the
+    /// GC must keep them.
+    #[test]
+    fn validate_external_data_invariant_rejects_selector_carrying_reference() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let reference = format!("${{external_data.{hash_a}:file(payload.bin)}}");
+        let doc = document_with_step_inputs(&[("text", reference.as_str())], &[]);
+
+        let err = doc.validate_external_data_invariant().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains(hash_a.to_string().as_str()),
+            "error should name the hash the reference reads, not the selector text: {msg}"
+        );
+    }
+
+    /// Verifies the same reference passes once the hash it reads is declared.
+    #[test]
+    fn validate_external_data_invariant_accepts_declared_selector_carrying_reference() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let reference = format!("${{external_data.{hash_a}:file(payload.bin)}}");
+        let doc = document_with_step_inputs(&[("text", reference.as_str())], &[hash_a]);
+
+        doc.validate_external_data_invariant().expect("a declared selector reference is rooted");
+    }
+
+    /// Verifies a reference inside a tool command part is checked.
+    ///
+    /// Command parts are interpolated before the process runs, so a reference
+    /// there reads CAS exactly as an input does.
+    #[test]
+    fn validate_external_data_invariant_rejects_undeclared_command_part_reference() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let reference = format!("${{external_data.{hash_a}}}");
+        let doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "probe".to_string(),
+                ToolSpec {
+                    version: None,
+                    kind: ToolKindSpec::Executable {
+                        command: vec!["probe".to_string(), reference],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    name: "probe".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime::default(),
+                },
+            )]),
+            workflows: vec![],
+            runtime: ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::new(),
+        };
+
+        let err = doc.validate_external_data_invariant().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("tool 'probe' command part 1"),
+            "error should name the command part that carried the reference: {msg}"
+        );
+        assert!(msg.contains(hash_a.to_string().as_str()), "error should name the hash: {msg}");
+    }
+
+    /// Verifies a command part that merely spells out a hash is not treated as a
+    /// CAS read.
+    ///
+    /// Only an input value is read as a hash, by a builtin such as `import`; a
+    /// command part is an argument, and requiring a declaration for every hex
+    /// string a command mentions would reject documents that name no bytes.
+    #[test]
+    fn validate_external_data_invariant_ignores_bare_hash_command_parts() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let doc = NickelDocument {
+            tools: BTreeMap::from([(
+                "probe".to_string(),
+                ToolSpec {
+                    version: None,
+                    kind: ToolKindSpec::Executable {
+                        command: vec!["probe".to_string(), hash_a.to_string()],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    name: "probe".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime::default(),
+                },
+            )]),
+            workflows: vec![],
+            runtime: ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::new(),
+        };
+
+        doc.validate_external_data_invariant()
+            .expect("a bare hash argument names no bytes the engine reads");
+    }
+
+    /// Verifies a reference inside a conditional branch is checked.
+    ///
+    /// The resolver picks a branch at run time and wraps a branch that names a
+    /// reference, so either branch can read CAS and both have to be declared.
+    #[test]
+    fn validate_external_data_invariant_rejects_reference_in_conditional_branch() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let reference =
+            format!("${{*inputs.probe ? external_data.{hash_a}:file(payload.bin) | ''}}");
+        let doc = document_with_step_inputs(&[("text", reference.as_str())], &[]);
+
+        let err = doc.validate_external_data_invariant().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains(hash_a.to_string().as_str()),
+            "error should name the hash the branch reads: {msg}"
+        );
+    }
+
+    /// Verifies an escaped reference names nothing, because the resolver reads it
+    /// as literal text.
+    #[test]
+    fn validate_external_data_invariant_ignores_escaped_reference() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let reference = format!("\\${{external_data.{hash_a}}}");
+        let doc = document_with_step_inputs(&[("text", reference.as_str())], &[]);
+
+        doc.validate_external_data_invariant()
+            .expect("an escaped reference is literal text, not a CAS read");
     }
 
     /// Verifies `collect_config_content_hashes` returns an empty set for empty inputs.

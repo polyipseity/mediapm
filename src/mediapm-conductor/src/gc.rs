@@ -241,7 +241,9 @@ pub(crate) fn run_instance_gc(
 /// what a record mentions. What it says about bytes no record mentions is what
 /// the document declares: a byte an application supplies through a step input
 /// has an `external_data` entry, which is a root, and a byte nothing declares is
-/// an orphan by definition.
+/// an orphan by definition. An application that stages bytes before the document
+/// declaring them exists is the one case where that definition costs it work:
+/// the pass reclaims the staged bytes, and the next run imports them again.
 ///
 /// # Errors
 ///

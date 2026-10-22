@@ -87,21 +87,32 @@ Document contract:
 ### Hashes named by a document must be declared
 
 Every CAS hash a document names must have a corresponding entry in the document's
-`external_data` map. Three shapes name one: a tool's `runtime.content_map` value,
-a `${external_data.<hash>}` reference in a step input or in a tool's
-`default_inputs`, and an input value that is itself a CAS hash (the `import`
-builtin's `hash` input is the live case). A declaration is what makes the bytes
-reachable — the CAS GC root set is built from `external_data` keys and recorded
-instance outputs — so a hash named only inside an input is an orphan to the next
-sweep, including the sweep the background maintenance loop runs.
+`external_data` map. Three shapes name one: a tool's `runtime.content_map` value;
+a `${external_data.<hash>}` reference in a step input, in a tool's
+`default_inputs`, or in a tool's `command` part; and an input value that is
+itself a CAS hash (the `import` builtin's `hash` input is the live case). A
+declaration is what makes the bytes reachable — the CAS GC root set is built from
+`external_data` keys and recorded instance outputs — so a hash named only inside
+an input is an orphan to the next sweep, including the sweep the background
+maintenance loop runs.
+
+A reference is found by parsing the template with the engine's own scanner, so the
+check covers every shape the resolver reads: `${external_data.<hash>}` with or
+without post-processing selectors, and a reference inside either branch of a
+conditional, which the resolver picks between at run time. A payload that names
+no hash is left to the engine, which rejects the reference when it resolves it,
+and so is a `${…}` written after a `\${` escape or inside a selector argument,
+neither of which the resolver interpolates. Step output captures are not checked
+either: a capture selector is matched literally against the sandbox.
 
 The invariant is enforced at encoding (via `encode_document()`), decoding (via
 `decode_document()`), and merging, all through
 `validate_external_data_invariant()`. Failures produce a
 `ConductorError::Workflow` listing every named-but-undeclared hash with the tool,
-workflow, step, and input key that named it. A reference whose payload does not
-parse as a hash is left to the template engine, which rejects it at resolve time
-with a message about the reference itself.
+workflow, step, and input or command part that named it. The scan is the
+resolver's own parse of the template
+(`orchestration::step_worker::template::external_data_hashes`), so what it reports
+and what a step reads cannot drift apart.
 
 ## Cache Architecture (Three-Tier)
 
@@ -513,15 +524,15 @@ After `list_hashes`, every hash outside the root set is removed with a plain `Ca
 - the unified document's `external_data` policy keys
 - the unified document's `tool_content_hashes`
 
-Every other CAS hash is deleted as an orphan, then `run_cas_gc_sweep` runs CAS maintenance and constraint pruning. There is no state pointer and no per-instance blob: the state file lives on disk in its own right. The document side of the root set is complete because the external-data invariant is enforced at decode: `content_map` values, `${external_data.<hash>}` references in step inputs and tool default inputs, and input values that are themselves CAS hashes must all have an `external_data` entry, or the document is rejected at load.
+Every other CAS hash is deleted as an orphan, then `run_cas_gc_sweep` runs CAS maintenance and constraint pruning. There is no state pointer and no per-instance blob: the state file lives on disk in its own right. The document side of the root set is complete because the external-data invariant is enforced at decode: `content_map` values, `${external_data.<hash>}` references in step inputs, tool default inputs, and tool command parts, and input values that are themselves CAS hashes must all have an `external_data` entry, or the document is rejected at load.
 
 ## H. Background GC Loop
 
 `Conductor::start_background_maintenance` (`src/conductor_impl.rs`) owns the loop, because maintenance needs the state the facade holds: a coordinator-only sweep could act on the store but could not write back the instance decisions that justify the action. It is started by the first successful `ensure_actor_client`, spawns a cancel-guarded task held by a `BackgroundMaintenanceGuard`, and runs a pass immediately: it takes the state gate, loads the merged config, runs one `gc::run_conductor_gc` with `DEFAULT_CONDUCTOR_GC_TTL_SECONDS`, writes the state file, then sleeps `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS` (86400). The timer starts only after a pass finishes, and a pass that fails is logged with `tracing::warn!` and retried on the next interval — maintenance never fails a workflow.
 
-**The pass runs the full cycle, and the external-data invariant is what makes that safe.** A blob is deletable only when the root set names every live byte, and the root set is built from two sources: the surviving instances' outputs, and the merged document's `external_data` keys plus its `content_map` hashes. The first covers what a run produced. The second covers what the application supplied, and it is complete because `NickelDocument::validate_external_data_invariant` rejects a document that names a hash without declaring it — whether it names it in a tool `content_map`, in a `${external_data.<hash>}` reference from a step input or a tool default input, or by putting the hash itself in an input, which is the shape the `import` builtin consumes. So a step that needs bytes kept alive declares them, and a document that forgets fails when it is read, before a pass can act on it. The invariant is enforced at decode, encode, and merge, so no path writes a document the sweep would misread.
+**The pass runs the full cycle, and the external-data invariant is what makes that safe.** A blob is deletable only when the root set names every live byte, and the root set is built from two sources: the surviving instances' outputs, and the merged document's `external_data` keys plus its `content_map` hashes. The first covers what a run produced. The second covers what the application supplied, and it is complete because `NickelDocument::validate_external_data_invariant` rejects a document that names a hash without declaring it — whether it names it in a tool `content_map`, in a `${external_data.<hash>}` reference from a step input, a tool default input, or a tool command part, or by putting the hash itself in an input, which is the shape the `import` builtin consumes. So a step that needs bytes kept alive declares them, and a document that forgets fails when it is read, before a pass can act on it. The invariant is enforced at decode, encode, and merge, so no path writes a document the sweep would misread.
 
-The gate is what keeps a pass from racing a run: it runs under the facade's `state_gate`, which every read-modify-write of the whole state also takes (`run_workflow`, `run_gc`). Without it a pass and a run can each start from the same snapshot and the later write erases the earlier one's records. The merged config is read *inside* the gate as well, immediately before the cycle: the root set comes from that document, so a document read before the gate could be one a concurrent reconcile has already replaced, and the pass would then delete bytes a newer declaration names. A reconcile is not itself gated, so the two can still interleave between the read and the reclamation; an application that declares a hash and stages its bytes under that declaration is unaffected. An empty in-memory snapshot is filled from the state file first, so a facade whose actor was spawned for a non-workflow call cannot publish its empty snapshot over the records on disk.
+The gate is what keeps a pass from racing a run: it runs under the facade's `state_gate`, which every read-modify-write of the whole state also takes (`run_workflow`, `run_gc`). Without it a pass and a run can each start from the same snapshot and the later write erases the earlier one's records. The merged config is read *inside* the gate as well, immediately before the cycle: the root set comes from that document, so a document read before the gate could be one a concurrent reconcile has already replaced, and the pass would then delete bytes a newer declaration names. A reconcile is not itself gated, so the two can still interleave between the read and the reclamation, and the window that leaves is real for an application that stages bytes before the document declaring them exists — mediapm imports a payload during provisioning and writes the declaring document at the end of the same sync, so a pass running in that interval reads the previous document and can reclaim the payload being imported. The cost is a failed sync that the next run repairs by re-importing, not a silent loss: the application's own declaration is what makes the bytes a root. An application that declares a hash before it stages the bytes has no such window. An empty in-memory snapshot is filled from the state file first, so a facade whose actor was spawned for a non-workflow call cannot publish its empty snapshot over the records on disk.
 
 `Conductor::shutdown` awaits the guard, so after it returns no pass is running and the loop's CAS handle is released.
 
