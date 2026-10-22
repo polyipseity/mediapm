@@ -17,6 +17,10 @@ managed tool content root for ffmpeg
       hash = "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df",
       save = true,
     },
+    "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac" = {
+      hash = "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
+      save = true,
+    },
     "blake3:2a0af4cca3406c50132f3c982bdba0398e36dd78c393d4da21ccdab9f0dbfec1" = {
       description = m%%"
 managed tool content root for rsgain

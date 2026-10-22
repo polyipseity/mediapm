@@ -47,6 +47,12 @@ const MEDIA_ID: &str = "resync-media";
 /// The variant the single CAS payload is published under.
 const VARIANT: &str = "default";
 
+/// A second seeded variant the revised document drops.
+///
+/// It exists so a payload can be declared by the document the collector reads
+/// before the document that resolves it exists.
+const SPARE_VARIANT: &str = "spare";
+
 /// Hierarchy path template that puts the media id itself in the materialized
 /// path, so the entry's output is observable on disk after each run.
 const HIERARCHY_PATH: &str = "${media.id}/track.mp4";
@@ -81,11 +87,26 @@ const EXTERNAL_WRITE: &[u8] = b"an outside writer left these bytes here instead"
 /// The source carries no steps, so both syncs resolve the variant from the
 /// hash the document declares and no workflow has to run to produce one.
 fn document_with_one_media_entry(variant_hash: &str) -> MediaPmDocument {
+    document_with_declared_variants(&[(VARIANT, variant_hash)])
+}
+
+/// Builds the same document as [`document_with_one_media_entry`], with every
+/// pair in `variants` seeded as a variant hash.
+///
+/// A seeded variant is a declaration: the conductor keeps the payload, because
+/// a hash a document names is a GC root and a payload no document names is
+/// reclaimed. A test that stages a payload it will only resolve later has to
+/// name it here, in the document the collector reads first, rather than in the
+/// document that finally resolves it.
+fn document_with_declared_variants(variants: &[(&str, &str)]) -> MediaPmDocument {
     MediaPmDocument {
         media: BTreeMap::from([(
             MEDIA_ID.to_string(),
             MediaSourceSpec {
-                variant_hashes: BTreeMap::from([(VARIANT.to_string(), variant_hash.to_string())]),
+                variant_hashes: variants
+                    .iter()
+                    .map(|(variant, hash)| ((*variant).to_string(), (*hash).to_string()))
+                    .collect(),
                 steps: Vec::new(),
                 ..MediaSourceSpec::default()
             },
@@ -374,9 +395,16 @@ async fn resync_after_a_changed_hash_rewrites_the_entry() -> Result<(), mediapm:
     ensure_blob_is_materialized(&service, &first_hash).await?;
     ensure_blob_is_materialized(&service, &second_hash).await?;
 
+    // The first document names both payloads, including the one the second
+    // document is about to resolve. Naming it later is too late: a payload no
+    // document names is one the collector reclaims, and the first run's
+    // background pass reads the document this call writes.
     save_mediapm_document(
         &service.paths().mediapm_ncl,
-        &document_with_one_media_entry(&first_hash.to_string()),
+        &document_with_declared_variants(&[
+            (VARIANT, first_hash.to_string().as_str()),
+            (SPARE_VARIANT, second_hash.to_string().as_str()),
+        ]),
     )?;
     let first = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(first.materialized_paths, 1, "the first run must write the entry: {first:?}");

@@ -23,8 +23,10 @@ use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
+use mediapm_conductor::config::ExternalDataEntry;
 use mediapm_conductor::provision::{ProvisionCache, retain_only_tool_dirs};
 use mediapm_conductor::runtime_env::write_generated_dotenv;
+use mediapm_conductor::state::OutputSaveMode;
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
 use mediapm_conductor::{NickelDocument, ToolRuntime, ToolSpec};
@@ -1616,9 +1618,18 @@ pub(crate) async fn reconcile_desired_tools(
         bar.advance(actual_pruned as u64);
     }
 
-    // Rebuild external_data from scratch by scanning all tool specs'
-    // content_maps. Hashes not referenced by any tool are automatically
-    // excluded — no separate cleanup needed.
+    // Rebuild external_data from scratch: every hash a surviving tool content
+    // map names, plus every hash a surviving workflow step references. A step
+    // that names a bare CAS hash (the import builtin's payload) or an
+    // `${external_data.<hash>}` expression is a consumer of those bytes, so
+    // dropping its entry would both fail the conductor's encode invariant and
+    // hand the payload to the GC. Hashes nothing references are excluded — no
+    // separate cleanup needed.
+    //
+    // A step reference is declared without a description, because that is how
+    // the plan declares the same hash when it synthesizes the step. A
+    // description here would make the second sync rewrite the document the
+    // first sync wrote, and an unchanged library has to leave it byte-identical.
     let mut data_usage = self::external_data::DataUsageTracker::new();
     for spec in generated_doc.tools.values() {
         for hash_str in spec.runtime.content_map.values() {
@@ -1627,7 +1638,13 @@ pub(crate) async fn reconcile_desired_tools(
             }
         }
     }
-    generated_doc.external_data = data_usage.finalize();
+    let mut rebuilt = data_usage.finalize();
+    for hash in self::external_data::referenced_hashes(&generated_doc) {
+        rebuilt
+            .entry(hash)
+            .or_insert(ExternalDataEntry { description: None, save_mode: OutputSaveMode::Saved });
+    }
+    generated_doc.external_data = rebuilt;
 
     // 4. Ensure the tools runtime directory exists.
     std::fs::create_dir_all(&paths.tools_dir).map_err(|source| MediaPmError::Io {

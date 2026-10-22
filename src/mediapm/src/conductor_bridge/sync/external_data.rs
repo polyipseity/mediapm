@@ -1,17 +1,63 @@
 //! Decoupled external_data usage tracker.
 //!
-//! Tracks which CAS hashes are referenced by tool content_map entries.
-//! Produces the exact external_data map for `conductor.generated.ncl`,
-//! satisfying the `content_map ⊆ external_data` invariant.
+//! Tracks which CAS hashes are referenced by tool content_map entries and by
+//! workflow steps. Produces the exact external_data map for
+//! `conductor.generated.ncl`, satisfying the `content_map ⊆ external_data`
+//! invariant and the step-reference rule beside it.
 //!
 //! Pure data structure — no I/O, no caching, no subsystem coupling.
 //! `Send + Sync` by construction.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::Hash;
+use mediapm_conductor::NickelDocument;
 use mediapm_conductor::config::ExternalDataEntry;
 use mediapm_conductor::state::OutputSaveMode;
+
+/// Collects every CAS hash the workflows of `document` reference.
+///
+/// Two reference shapes name a CAS object: an input value that is a bare hash
+/// (the import builtin's payload, which the step reads under `kind=cas_hash`)
+/// and an `${external_data.<hash>}` expression in an input or an output capture.
+/// Both must appear in `external_data`, or the conductor refuses to encode the
+/// document and the GC reclaims the bytes the step reads.
+///
+/// A value that does not parse as a hash names no object and is skipped: the
+/// builtin rejects an unusable payload at run time, and a path or URL that
+/// happens to sit in the same input cannot be a CAS reference.
+#[must_use]
+pub(crate) fn referenced_hashes(document: &NickelDocument) -> BTreeSet<Hash> {
+    let mut hashes = BTreeSet::new();
+    for workflow in &document.workflows {
+        for step in &workflow.steps {
+            for value in step.inputs.values() {
+                if let Ok(hash) = value.parse::<Hash>() {
+                    hashes.insert(hash);
+                }
+                collect_external_data_references(value, &mut hashes);
+            }
+            for capture in step.outputs.values() {
+                collect_external_data_references(&capture.capture, &mut hashes);
+            }
+        }
+    }
+    hashes
+}
+
+/// Extracts every `${external_data.<hash>}` reference from one string value.
+fn collect_external_data_references(value: &str, hashes: &mut BTreeSet<Hash>) {
+    const PREFIX: &str = "${external_data.";
+    let mut rest = value;
+    while let Some(start) = rest.find(PREFIX) {
+        let remainder = &rest[start + PREFIX.len()..];
+        let Some(end) = remainder.find('}') else { break };
+        if let Ok(hash) = remainder[..end].parse::<Hash>() {
+            hashes.insert(hash);
+        }
+        rest = remainder;
+    }
+}
 
 /// Tracks CAS hash usage across managed tool content maps.
 ///
@@ -85,6 +131,80 @@ impl DataUsageTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Wraps one workflow with one step whose inputs and capture carry `values`.
+    fn document_with_step(inputs: BTreeMap<String, String>, capture: &str) -> NickelDocument {
+        let mut document = NickelDocument::default();
+        let step = mediapm_conductor::WorkflowStepSpec {
+            id: "step-0".to_string(),
+            tool: "import".to_string(),
+            inputs,
+            outputs: BTreeMap::from([(
+                "primary".to_string(),
+                mediapm_conductor::OutputCaptureSpec {
+                    name: "primary".to_string(),
+                    capture: capture.to_string(),
+                    save: mediapm_conductor::SaveMode::True,
+                    allow_empty: false,
+                    include_topmost_folder: true,
+                },
+            )]),
+            max_retries: 0,
+            depends_on: Vec::new(),
+        };
+        document.workflows.push(mediapm_conductor::WorkflowSpec {
+            name: "mediapm.media.probe".to_string(),
+            steps: vec![step],
+            ..mediapm_conductor::WorkflowSpec::default()
+        });
+        document
+    }
+
+    /// A bare hash input is a reference: the import builtin reads it as its
+    /// payload, so nothing else in the document names those bytes.
+    #[test]
+    fn a_bare_hash_input_is_referenced() {
+        let hash = Hash::from([7u8; 32]);
+        let document =
+            document_with_step(BTreeMap::from([("hash".to_string(), hash.to_string())]), "stdout");
+
+        assert_eq!(referenced_hashes(&document), BTreeSet::from([hash]));
+    }
+
+    /// An `${external_data.<hash>}` expression in an input or a capture is a
+    /// reference, wherever in the string it appears.
+    #[test]
+    fn external_data_expressions_are_referenced() {
+        let input_hash = Hash::from([8u8; 32]);
+        let capture_hash = Hash::from([9u8; 32]);
+        let document = document_with_step(
+            BTreeMap::from([
+                ("input".to_string(), format!("${{external_data.{input_hash}}}")),
+                ("nested".to_string(), format!("prefix ${{external_data.{input_hash}}} suffix")),
+            ]),
+            &format!("${{external_data.{capture_hash}}}"),
+        );
+
+        assert_eq!(
+            referenced_hashes(&document),
+            BTreeSet::from([input_hash, capture_hash]),
+            "a reference in either position counts once, however it is embedded",
+        );
+    }
+
+    /// A value that is not a hash is not a reference.
+    #[test]
+    fn values_that_name_no_object_are_ignored() {
+        let document = document_with_step(
+            BTreeMap::from([
+                ("uri".to_string(), "https://example.com/video".to_string()),
+                ("path".to_string(), "output-0.m4a".to_string()),
+            ]),
+            "file_regex:^output-0(?:[.][^/\\\\]+)?$",
+        );
+
+        assert!(referenced_hashes(&document).is_empty());
+    }
 
     #[test]
     fn empty_tracker_produces_empty_map() {

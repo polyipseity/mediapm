@@ -26,6 +26,8 @@ mod all_platform;
 mod capture_union;
 /// Dual-write strategy: state.json always-writes, NCL files skip when unchanged.
 mod dual_write;
+/// Every CAS hash a generated step names must be declared as external data.
+mod import_payload_rooting;
 /// Explicit invalidation: invalidating a media step must re-execute its
 /// workflow on the next sync even though the step's material is unchanged.
 mod media_step_invalidation;

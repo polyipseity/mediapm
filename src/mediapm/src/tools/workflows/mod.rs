@@ -18,7 +18,7 @@ pub(crate) mod variant_binding;
 pub(crate) mod yt_dlp;
 pub(crate) mod yt_dlp_inputs;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -398,11 +398,25 @@ fn import_step_output_capture(
     )]))
 }
 
-/// submodule). The CAS hash is bound to the import builtin's `hash` input
-/// per its `kind=cas_hash` contract.
+/// Builds the import steps for one media step, one step per variant mapping.
+///
+/// The import builtin reads its payload from the `hash` input under
+/// `kind=cas_hash`, so the hash is bound there rather than to the
+/// executable-side `source_url` name the media tools use. Because that input is
+/// a bare CAS hash, the same function declares it in `plan.external_data`:
+/// the conductor's GC reclaims every object that neither a recorded instance
+/// output nor an `external_data` entry names, and the import step is the
+/// payload's only consumer.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when the step declares no `hash` option,
+/// the tool is absent from the generated document, or an output variant carries
+/// no capture spec.
 #[allow(clippy::too_many_arguments)]
 fn synthesize_import_step(
     workflow: &mut WorkflowSpec,
+    plan: &mut MediaWorkflowPlan,
     media_id: &str,
     step_index: usize,
     step: &MediaStep,
@@ -419,6 +433,20 @@ fn synthesize_import_step(
             step.tool.as_str()
         ))
     })?;
+
+    // Root the payload for the conductor's GC. A value that does not parse as a
+    // CAS hash names no object, so there is nothing to declare for it: the
+    // conductor refuses to encode a bare hash input it cannot find in
+    // `external_data`, and the builtin rejects an unusable one at run time.
+    if kind == IMPORT_KIND_CAS_HASH
+        && let Ok(parsed) = hash.parse::<Hash>()
+    {
+        // `or_insert` rather than `insert`: a tool's content map can legitimately
+        // name the same hash, and its entry carries the description.
+        plan.external_data
+            .entry(parsed)
+            .or_insert(ExternalDataEntry { description: None, save_mode: OutputSaveMode::Saved });
+    }
 
     let mut pending_variant_updates = Vec::new();
 
@@ -469,6 +497,7 @@ fn synthesize_import_step(
 #[allow(clippy::too_many_arguments)]
 fn synthesize_media_steps(
     workflow: &mut WorkflowSpec,
+    plan: &mut MediaWorkflowPlan,
     media_id: &str,
     source: &MediaSourceSpec,
     generated_doc: &NickelDocument,
@@ -485,6 +514,7 @@ fn synthesize_media_steps(
             MediaStepTool::Import => {
                 synthesize_import_step(
                     workflow,
+                    plan,
                     media_id,
                     step_index,
                     step,
@@ -597,6 +627,7 @@ fn build_media_workflow_plan_with_limits(
         seed_local_variant_sources(&mut plan, media_id, source, &mut variant_producers)?;
         synthesize_media_steps(
             &mut workflow,
+            &mut plan,
             media_id,
             source,
             generated_doc,
@@ -609,37 +640,6 @@ fn build_media_workflow_plan_with_limits(
     }
 
     Ok(plan)
-}
-
-/// Collects every `${external_data.{hash}}` reference found in user-owned
-/// workflow step inputs and output captures.
-fn collect_user_workflow_external_data_hashes(user_doc: &NickelDocument) -> BTreeSet<Hash> {
-    let mut hashes = BTreeSet::new();
-    for workflow in &user_doc.workflows {
-        for step in &workflow.steps {
-            for value in step.inputs.values() {
-                collect_external_data_hash(value, &mut hashes);
-            }
-            for capture in step.outputs.values() {
-                collect_external_data_hash(&capture.capture, &mut hashes);
-            }
-        }
-    }
-    hashes
-}
-
-/// Extracts all `${external_data.{hash}}` references from one string value.
-fn collect_external_data_hash(value: &str, hashes: &mut BTreeSet<Hash>) {
-    const PREFIX: &str = "${external_data.";
-    let mut rest = value;
-    while let Some(start) = rest.find(PREFIX) {
-        let remainder = &rest[start + PREFIX.len()..];
-        let Some(end) = remainder.find('}') else { break };
-        if let Ok(hash) = Hash::from_str(&remainder[..end]) {
-            hashes.insert(hash);
-        }
-        rest = remainder;
-    }
 }
 
 /// Reconciles managed media workflows into the conductor generated document.
@@ -682,7 +682,7 @@ pub(crate) fn reconcile_media_workflows(
     // (`external_data` ⊇ referenced hashes) holds even before the tools
     // phase rebuilds the map from usage.
     if let Some(user_doc) = user_doc {
-        for hash in collect_user_workflow_external_data_hashes(user_doc) {
+        for hash in crate::conductor_bridge::sync::external_data::referenced_hashes(user_doc) {
             generated_doc.external_data.entry(hash).or_insert(ExternalDataEntry {
                 description: None,
                 save_mode: OutputSaveMode::Saved,
@@ -1575,6 +1575,47 @@ mod tests {
         }
         let bytes = mediapm_conductor::encode_document(doc).expect("encode");
         mediapm_conductor::decode_document(&bytes).expect("decode roundtrip");
+    }
+
+    /// An import step's payload hash is declared as external data by the plan
+    /// that names it.
+    ///
+    /// The import step is the payload's only consumer, and the conductor's GC
+    /// reclaims every CAS object that neither a recorded instance output nor an
+    /// `external_data` entry names. A plan that omits the declaration therefore
+    /// hands the bytes the step reads to the collector.
+    #[test]
+    fn import_step_payload_hash_is_declared_as_external_data() {
+        let document = media_document(
+            "import-rooting",
+            media_source(
+                "",
+                vec![],
+                vec![media_step(
+                    MediaStepTool::Import,
+                    vec![],
+                    vec![("default", yt_dlp_output_variant("primary"))],
+                    vec![("kind", "cas_hash"), ("hash", AAA_HASH)],
+                )],
+            ),
+        );
+        let generated_doc = tools_document(&["import"]);
+        let plan = build_plan(&document, &generated_doc).expect("plan");
+
+        let declared = AAA_HASH.parse::<Hash>().expect("AAA_HASH parses as a CAS hash");
+        let entry = plan
+            .external_data
+            .get(&declared)
+            .expect("the import payload hash must be declared as external data");
+        assert!(entry.description.is_none());
+        assert_eq!(entry.save_mode, OutputSaveMode::Saved);
+
+        let step = &plan.workflows[&managed_workflow_name("import-rooting")].steps[0];
+        assert_eq!(
+            step.inputs.get("hash").map(String::as_str),
+            Some(AAA_HASH),
+            "the declaration roots the payload; it must not change what the step is given",
+        );
     }
 
     #[test]
