@@ -380,8 +380,13 @@ where
     /// Runs garbage collection on the orchestration state and CAS.
     ///
     /// CONDUCTOR GC — distinct from CAS GC.  Runs the full three-phase cycle:
-    /// instance TTL pruning, CAS orphan reclamation, and CAS metadata
+    /// instance reachability pruning, CAS orphan reclamation, and CAS metadata
     /// maintenance.
+    ///
+    /// Which instances survive is decided inside the pass, from the seeds each
+    /// successful run recorded and the input edges their records name.  A
+    /// caller cannot supply a key set: the only caller that ever did passed an
+    /// empty one, which would have made every sweep a full wipe.
     ///
     /// # Errors
     ///
@@ -393,9 +398,8 @@ where
     pub async fn run_gc(&self) -> Result<(), ConductorError> {
         let client = self.ensure_actor_client().await?;
         let unified = load_unified_config(self.storage_paths())?;
-        let referenced_keys = std::collections::BTreeSet::new();
         let state = self.state.lock().expect("state lock").clone();
-        let new_state = client.run_gc(referenced_keys, state, unified).await?;
+        let new_state = client.run_gc(state, unified).await?;
         *self.state.lock().expect("state lock") = new_state;
         Ok(())
     }

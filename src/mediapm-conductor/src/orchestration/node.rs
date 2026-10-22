@@ -12,7 +12,7 @@ use std::sync::Arc;
 use ractor::rpc::CallResult;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
 
-use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
+use mediapm_cas::{CasApi, CasMaintenanceApi};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use crate::error::ConductorError;
@@ -47,9 +47,10 @@ pub(crate) enum ConductorMessage {
         reply: RpcReplyPort<RuntimeDiagnostics>,
     },
     /// Runs garbage collection on the orchestration state.
+    ///
+    /// The reachable set is computed inside the pass from the recorded seeds,
+    /// so the requester supplies state and config only.
     RunGc {
-        /// Set of referenced instance keys to retain.
-        referenced_keys: std::collections::BTreeSet<Hash>,
         /// Current orchestration state (cloned, actor owns its copy).
         state: ConductorState,
         /// Unified configuration whose hashes protect blobs from reclamation.
@@ -122,8 +123,8 @@ where
                 let diagnostics = state.runtime_diagnostics();
                 let _ = reply.send(diagnostics);
             }
-            ConductorMessage::RunGc { referenced_keys, state: mut gc_state, unified, reply } => {
-                let result = state.run_gc(&mut gc_state, &referenced_keys, &unified).await;
+            ConductorMessage::RunGc { state: mut gc_state, unified, reply } => {
+                let result = state.run_gc(&mut gc_state, &unified).await;
                 let _ = reply.send(result.map(|_| gc_state));
             }
             ConductorMessage::Shutdown { reply } => {
@@ -257,22 +258,22 @@ impl ConductorActorClient {
 
     /// Sends a `RunGc` request and awaits the updated orchestration state.
     ///
+    /// The reachable set is not a parameter: the actor computes it from the
+    /// seeds each successful run recorded, which no caller outside the state
+    /// can see.
+    ///
     /// # Errors
     ///
     /// Returns [`ConductorError::Internal`] when the actor is unreachable or
     /// the RPC times out.
     pub(crate) async fn run_gc(
         &self,
-        referenced_keys: std::collections::BTreeSet<Hash>,
         state: ConductorState,
         unified: UnifiedNickelDocument,
     ) -> Result<ConductorState, ConductorError> {
         match self
             .actor_ref
-            .call(
-                |reply| ConductorMessage::RunGc { referenced_keys, state, unified, reply },
-                Some(self.rpc_timeout),
-            )
+            .call(|reply| ConductorMessage::RunGc { state, unified, reply }, Some(self.rpc_timeout))
             .await
         {
             Ok(CallResult::Success(Ok(gc_state))) => Ok(gc_state),

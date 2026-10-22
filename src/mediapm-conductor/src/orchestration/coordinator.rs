@@ -1149,6 +1149,25 @@ where
                 }
             }
 
+            // Record this run as the workflow's live set: the instances it
+            // executed and the ones it reused. That set is the seed of the GC
+            // reachability walk, so it decides which recorded work a later pass
+            // keeps — the keys a hit added are as live as the keys a run
+            // produced.
+            //
+            // Replaced wholesale, never merged: a step that left the workflow
+            // must stop protecting what it used to read. A run with a failed
+            // step records nothing and leaves the previous seed in place, since
+            // the instances the failed step would have replaced were never
+            // replaced.
+            if failed_steps == 0 {
+                let live: BTreeSet<Hash> = step_state_contributions
+                    .values()
+                    .map(|contribution| contribution.instance.instance_key)
+                    .collect();
+                state.aux.live_instances.insert(workflow_name.to_string(), live);
+            }
+
             Ok(RunSummary {
                 total_steps,
                 executed_steps,
@@ -1183,10 +1202,13 @@ where
     /// CONDUCTOR GC — distinct from CAS GC.  Calls the three-phase
     /// [`crate::gc::run_conductor_gc`] which handles instance pruning, CAS orphan
     /// reclamation, and CAS metadata maintenance.
+    ///
+    /// The reachable set is computed by the pass from the seeds the runs
+    /// recorded; it is deliberately not a parameter, so no caller can hand the
+    /// sweep a key set that happens to be empty.
     pub(crate) async fn run_gc(
         &self,
         state: &mut ConductorState,
-        referenced_keys: &BTreeSet<Hash>,
         unified: &UnifiedNickelDocument,
     ) -> Result<crate::gc::ConductorGcReport, ConductorError> {
         use crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS;
@@ -1194,7 +1216,6 @@ where
             &*self.cas,
             state,
             unified,
-            referenced_keys,
             DEFAULT_CONDUCTOR_GC_TTL_SECONDS,
         )
         .await?;

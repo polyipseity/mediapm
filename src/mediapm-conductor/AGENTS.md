@@ -469,21 +469,25 @@ The design ensures prior successful instances remain recorded after a step failu
 
 ### Instance GC Lifecycle
 
-Instance GC runs inside `gc::run_conductor_gc`, in two steps over `ConductorState`:
+The reachable set is computed by the pass from the run seeds, never supplied by a caller. `aux.live_instances` maps a workflow name to the instance keys its last successful run executed or reused, and `gc::run_conductor_gc` works in four steps over `ConductorState`:
 
-1. **Reachability refresh**: every key in `referenced_keys` is kept and its `aux.instances[key].last_referenced_at` is set to the GC epoch.
-2. **TTL sweep**: an unreferenced instance is evicted once `last_referenced_at + ttl < conductor_gc_epoch`, and its aux entry is dropped with it. A key with no aux entry counts as epoch 0, so it is evicted on the first sweep.
+1. **Seed pruning**: an entry whose workflow the merged document no longer declares is dropped, so a deleted workflow's instances become unreachable.
+2. **Closure**: the seed keys, plus every instance that recorded, as an output, a hash some reached instance names in `materialized_inputs`. Sharing widens the set; `invalidated_at` does not narrow it, so a marked instance a live consumer still reads keeps its bytes.
+3. **Reachability refresh**: every key in the closure is kept and its `aux.instances[key].last_referenced_at` is set to the GC epoch.
+4. **TTL sweep**: an instance outside the closure is evicted once `last_referenced_at + ttl < conductor_gc_epoch`, and its aux entry is dropped with it. A key with no aux entry counts as epoch 0, so it is evicted on the first seeded sweep.
+
+A workflow declared in the document with no seed makes the whole pass refresh and evict nothing, logging once: a closure computed from an absent seed is empty, and an empty closure past the grace period would empty the store.
 
 `aux.instances[*].last_referenced_at` is the only TTL clock: it is refreshed on every reference and on every retained sweep, so an instance that stops being referenced survives the full TTL window. `AuxData::conductor_gc_epoch` advances to `Timestamp::now()` at the end of each sweep, so the sweep measures the TTL against the previous sweep's clock.
 
-**Trigger points**: `Conductor::run_gc` (the CLI `gc` command) calls the actor's `run_gc`, which passes an empty `referenced_keys` set — so every instance is TTL-eligible and only the grace period retains anything. The background maintenance task (`start_background_gc`, default 86400s) runs `run_cas_gc_sweep` only, not instance GC.
+**Trigger points**: `Conductor::run_gc` (the CLI `gc` command) calls the actor's `run_gc`, which computes the reachable set inside the pass — the requester supplies state and config only. The background maintenance task (`start_background_gc`, default 86400s) runs `run_cas_gc_sweep` only, not instance GC.
 
 ## G. CAS GC Sweep
 
 `gc.rs` exposes two entry points:
 
 - `run_cas_gc_sweep()` runs CAS maintenance only: `run_maintenance_cycle()` (optimize under the maintenance policy), then `prune_constraints()` (drop stale constraint entries). It deletes no payload data.
-- `run_conductor_gc()` is the full cycle: instance TTL sweep, then root-set orphan deletion through `CasApi::delete`, then `run_cas_gc_sweep()`.
+- `run_conductor_gc()` is the full cycle: seeded reachability sweep, then root-set orphan deletion through `CasApi::delete`, then `run_cas_gc_sweep()`.
 
 Callers: `start_background_gc` runs `run_cas_gc_sweep` on its interval; `Conductor::run_gc` (CLI `conductor gc`) runs the full cycle through the actor. MediaPM does not trigger conductor GC.
 

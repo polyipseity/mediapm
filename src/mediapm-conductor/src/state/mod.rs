@@ -222,26 +222,40 @@ impl ConductorState {
     }
 
     /// Runs conductor GC on instances: refreshes
-    /// `aux.instances[key].last_referenced_at` for referenced instances,
-    /// evicts unreferenced instances past the TTL grace period, then updates
+    /// `aux.instances[key].last_referenced_at` for reachable instances, evicts
+    /// everything else past the TTL grace period, then updates
     /// `conductor_gc_epoch`.
+    ///
+    /// `reachable_keys` is the set a live workflow can still reach, not a
+    /// caller's opinion: `crate::gc::run_conductor_gc` derives it from
+    /// `aux.live_instances` and the input/output edges the records carry, and
+    /// takes it here as an argument so this method stays a pure state
+    /// transition with no config to read. An instance outside the set is not
+    /// deleted on sight — it keeps its last reference and ages out only once
+    /// the grace period has passed.
     ///
     /// This is CONDUCTOR GC — prunes stale tool call instances and reclaims
     /// unreachable CAS blobs. Distinct from CAS GC which is a separate
     /// mechanism.
-    pub fn run_conductor_gc(&mut self, referenced_keys: &BTreeSet<Hash>, ttl_seconds: u64) {
+    pub fn run_conductor_gc(&mut self, reachable_keys: &BTreeSet<Hash>, ttl_seconds: u64) {
         let ttl_nanos = ttl_seconds.saturating_mul(1_000_000_000);
         let epoch = self.aux.conductor_gc_epoch;
         let epoch_nanos = epoch.as_unix_nanos();
         let aux = &mut self.aux;
 
         self.tool_call_instances.retain(|key, _instance| {
-            if referenced_keys.contains(key) {
+            if reachable_keys.contains(key) {
                 // Referenced instances survive and get their last-reference
-                // clock refreshed to the current GC epoch.
-                if let Some(entry) = aux.instances.get_mut(key) {
-                    entry.last_referenced_at = epoch;
-                }
+                // clock refreshed to the current GC epoch. A reachable instance
+                // with no aux entry gets one here rather than being skipped: the
+                // eviction branch reads a missing entry as "never referenced",
+                // so a record that is protected this pass and loses its aux
+                // entry would otherwise be evicted the moment it becomes
+                // unreachable, skipping its grace period.
+                aux.instances
+                    .entry(*key)
+                    .or_insert_with(|| InstanceAux { last_referenced_at: epoch })
+                    .last_referenced_at = epoch;
                 true
             } else {
                 let last_ref = aux
@@ -545,10 +559,13 @@ fn same_recorded_capture_identity(
 
 #[cfg(test)]
 mod tests {
-    use super::{CapturedOutput, SettlingStep, merge_captured_outputs};
+    use super::{
+        CapturedOutput, ConductorState, SettlingStep, ToolCallInstance, merge_captured_outputs,
+    };
     use crate::config::{OutputCaptureSpec, SaveMode};
     use mediapm_cas::Hash;
-    use std::collections::BTreeMap;
+    use mediapm_utils::Timestamp;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// The settlement context these tests run under unless a test varies it: a
     /// pure step named `s1`.
@@ -1025,6 +1042,46 @@ mod tests {
         assert!(
             error.to_string().contains("'transcode'"),
             "the message must name the step: {error}",
+        );
+    }
+    /// A reachable instance with no aux entry keeps its grace period.
+    ///
+    /// The eviction branch reads a missing entry as "never referenced", so
+    /// a record protected this pass and lacking a clock would be evicted on
+    /// sight the moment it stopped being reachable. Giving it a clock is
+    /// what makes the two branches agree about what "no entry" means.
+    #[test]
+    fn a_reachable_instance_without_an_aux_entry_gets_a_clock() {
+        let key = Hash::from_content(b"instance");
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            key,
+            ToolCallInstance {
+                instance_key: key,
+                tool_call_id: "echo@v1".to_string(),
+                impure: false,
+                invalidated_at: None,
+                executed_at: Timestamp::default(),
+                step_ids: BTreeSet::new(),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+        );
+        assert!(state.aux.instances.is_empty(), "the fixture starts without a clock");
+        // The pass refreshes to the epoch it found, then advances the epoch, so
+        // a fixed starting epoch is what makes "the clock it gets" checkable.
+        state.aux.conductor_gc_epoch = Timestamp::from_unix_nanos(42);
+
+        state.run_conductor_gc(&BTreeSet::from([key]), 0);
+
+        assert!(state.tool_call_instances.contains_key(&key), "a reachable key survives");
+        let entry = state.aux.instances.get(&key).expect("the pass must record the clock");
+        assert_eq!(
+            entry.last_referenced_at,
+            Timestamp::from_unix_nanos(42),
+            "the clock it gets is the epoch this pass used",
         );
     }
 }
