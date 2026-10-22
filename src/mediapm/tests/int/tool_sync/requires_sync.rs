@@ -141,13 +141,15 @@ async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmEr
     Ok(())
 }
 
-/// A v2 state.json on disk is automatically bridged to v3 on load.
+/// A v2 state.json on disk is automatically bridged to the current version on
+/// load.
 ///
-/// This tests the full version-dispatch path: JSON parsing → version
-/// field extraction → v2→v3 bridge → `MediaPmState` with
+/// This tests the full version-dispatch path: JSON parsing → version field
+/// extraction → v2→v3 advance → v4 migration → `MediaPmState` with
 /// `Vec<ToolRegistryEntry>`.
 #[tokio::test]
-async fn state_v2_on_disk_bridges_to_v3_on_load() -> Result<(), mediapm::MediaPmError> {
+async fn state_v2_on_disk_bridges_to_current_version_on_load() -> Result<(), mediapm::MediaPmError>
+{
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let state_path = root.path().join("state.json");
 
@@ -156,7 +158,7 @@ async fn state_v2_on_disk_bridges_to_v3_on_load() -> Result<(), mediapm::MediaPm
 
     let state = mediapm::load_mediapm_state_document(&state_path).expect("load v2 state.json");
 
-    assert_eq!(state.version, 3, "v2 state should bridge to version 3");
+    assert_eq!(state.version, 4, "v2 state should bridge to the current version");
     assert_eq!(state.managed_tools.len(), 1, "v2 bridge should produce one tool entry");
     assert_eq!(state.managed_tools[0].tool_id, "ffmpeg");
     assert_eq!(state.managed_tools[0].canonical_version, "ffmpeg-v7.1");
@@ -164,17 +166,18 @@ async fn state_v2_on_disk_bridges_to_v3_on_load() -> Result<(), mediapm::MediaPm
     Ok(())
 }
 
-/// Sync with a v2 state.json on disk automatically upgrades it to v3.
+/// Sync with a v2 state.json on disk automatically upgrades it to the current
+/// format.
 ///
-/// The service reads the v2 state via the bridge, reconciles with desired
-/// tools (none), and writes the state back as v3.
+/// The service reads the v2 state via the bridge, reconciles with desired tools
+/// (none), and writes the state back in the current version.
 #[tokio::test]
-async fn sync_upgrades_v2_state_to_v3_format() -> Result<(), mediapm::MediaPmError> {
+async fn sync_upgrades_v2_state_to_current_format() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await?;
 
-    // Seed a v2-format state.json; the service loads it via the v2→v3 bridge
-    // during sync and writes the upgraded v3 format back.
+    // Seed a v2-format state.json; the service loads it through the ladder
+    // during sync and writes the current format back.
     let state_path = service.paths().mediapm_state_json.clone();
     std::fs::write(&state_path, serde_json::to_string_pretty(&v2_state_json(false)).unwrap())
         .expect("write v2 state.json");
@@ -182,14 +185,17 @@ async fn sync_upgrades_v2_state_to_v3_format() -> Result<(), mediapm::MediaPmErr
         .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
         .await?;
 
-    // After sync, state.json should be v3 format (array instead of map).
+    // After sync, state.json should be the current format (array instead of map).
     let content = std::fs::read_to_string(&state_path).expect("read state.json after sync");
     let value: serde_json::Value =
         serde_json::from_str(&content).expect("state.json after sync should be valid JSON");
-    assert_eq!(value["version"], 3, "state.json must be version 3 after sync with v2 input");
+    assert_eq!(
+        value["version"], 4,
+        "state.json must be the current version after sync with v2 input"
+    );
     assert!(
         value["managed_tools"].is_array(),
-        "state.json managed_tools must be an array after v2→v3 upgrade"
+        "state.json managed_tools must be an array after the upgrade"
     );
     assert_eq!(
         value["managed_tools"].as_array().map(std::vec::Vec::len),
@@ -206,7 +212,7 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let missing_path = root.path().join("does-not-exist.json");
     let state = mediapm::load_mediapm_state_document(&missing_path)?;
-    assert_eq!(state.version, 3, "default state should be version 3");
+    assert_eq!(state.version, 4, "default state should be the current version");
     assert!(state.managed_tools.is_empty(), "default state should have no managed tools");
     Ok(())
 }

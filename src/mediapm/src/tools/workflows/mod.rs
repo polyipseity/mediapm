@@ -288,6 +288,44 @@ pub(crate) fn ffmpeg_step_id(step_index: usize) -> String {
     format!("step-{step_index}-ffmpeg")
 }
 
+/// Returns the media step index encoded in a managed step id.
+///
+/// The inverse of [`media_step_id`] and [`ffmpeg_step_id`], which both write
+/// `step-{index}-…`. Parsing the id is how a step index selects its steps: one
+/// media step can synthesize several conductor steps (one per mapping) and an
+/// aggregated ffmpeg step is a single one, so the index is not an ordinal
+/// position in the workflow. The prefix is matched as a whole token, so
+/// `step-1-…` never matches `step-10-…`.
+///
+/// `None` means the id was not produced by either constructor — a user-authored
+/// step, which `media invalidate` has no business touching.
+#[must_use]
+pub(crate) fn step_index_of(step_id: &str) -> Option<usize> {
+    let rest = step_id.strip_prefix("step-")?;
+    let (index, _mapping_or_tool) = rest.split_once('-')?;
+    index.parse().ok()
+}
+
+/// Collects the step ids the generated document assigned to one media step
+/// index.
+///
+/// A media step synthesizes one conductor step per output mapping, and some
+/// builtins fan a single mapping out further — media-tagger has a metadata and
+/// an apply call, rsgain has five — so the answer is a set, not an id. Filtering
+/// is by the index encoded in the id, which is why ids must be built by the
+/// constructors this module owns: an id that does not parse belongs to a step no
+/// invalidation may touch, and is skipped.
+///
+/// An empty result means the index is not in this workflow, which the caller
+/// reports: a valid index always resolves, so silence here is a stale document,
+/// not a no-op.
+pub(crate) fn step_ids_for_index(
+    mut steps: impl Iterator<Item = String>,
+    index: usize,
+) -> Vec<String> {
+    steps.by_ref().filter(|id| step_index_of(id) == Some(index)).collect()
+}
+
 /// Normalizes one identifier segment into a lowercase ASCII-safe token.
 fn sanitize_identifier(value: &str) -> String {
     let sanitized =
@@ -660,6 +698,70 @@ mod tests {
     use super::*;
 
     use mediapm_conductor::{ToolKindSpec, ToolSpec};
+
+    /// The index of a step id round-trips through both constructors.
+    ///
+    /// Invalidation selects steps by this parse, so a constructor that wrote a
+    /// different prefix would make `media invalidate` match nothing.
+    #[test]
+    fn step_index_of_reads_back_both_managed_id_shapes() {
+        assert_eq!(step_index_of("step-0-ffmpeg"), Some(0));
+        assert_eq!(step_index_of("step-3-ffmpeg"), Some(3));
+        assert_eq!(step_index_of("step-12-1-import-primary-to-media"), Some(12));
+    }
+
+    /// One index resolves to every id a fan-out wrote for it.
+    ///
+    /// A media-tagger step emits a metadata and an apply call under one index,
+    /// rsgain emits five. Resolving a single id would leave the other calls
+    /// cached and re-tag half a library, so the set shape is the contract, not an
+    /// implementation detail.
+    #[test]
+    fn step_ids_for_index_collects_every_id_a_fan_out_wrote() {
+        let ids = [
+            "step-0-1-media-tagger-to-media-metadata".to_string(),
+            "step-0-1-media-tagger-to-media-apply".to_string(),
+            "step-1-1-import-to-media".to_string(),
+            "step-10-1-import-to-media".to_string(),
+        ];
+
+        assert_eq!(
+            step_ids_for_index(ids.iter().cloned(), 0),
+            vec![
+                "step-0-1-media-tagger-to-media-metadata".to_string(),
+                "step-0-1-media-tagger-to-media-apply".to_string(),
+            ],
+            "both calls of the step are selected, and nothing from another index",
+        );
+        assert_eq!(
+            step_ids_for_index(ids.iter().cloned(), 1),
+            vec!["step-1-1-import-to-media".to_string()],
+            "index 1 must not pick up index 10",
+        );
+        assert!(
+            step_ids_for_index(ids.iter().cloned(), 2).is_empty(),
+            "an index the workflow does not have resolves to nothing",
+        );
+    }
+
+    /// The index is the whole token, not a prefix of it.
+    ///
+    /// A substring match would resolve index 1 to the steps of index 10 and
+    /// invalidate work the operator did not name.
+    #[test]
+    fn step_index_of_does_not_confuse_indexes_with_the_same_prefix() {
+        assert_eq!(step_index_of("step-10-ffmpeg"), Some(10));
+        assert_ne!(step_index_of("step-10-ffmpeg"), Some(1));
+    }
+
+    /// Ids this module did not build belong to nobody.
+    #[test]
+    fn step_index_of_rejects_foreign_ids() {
+        assert_eq!(step_index_of("import-step-0"), None);
+        assert_eq!(step_index_of("step-"), None);
+        assert_eq!(step_index_of("step-abc-ffmpeg"), None);
+        assert_eq!(step_index_of(""), None);
+    }
     use serde_json::{Value, json};
 
     const ZERO_HASH: &str =

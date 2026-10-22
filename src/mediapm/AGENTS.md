@@ -144,10 +144,10 @@ Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 
 Instance keys are content-derived, so elapsed time never re-executes a step. Two levers ask for a fresh run, and they differ in scope and lifetime:
 
-- `mediapm media invalidate <media> --step N` queues the media's generated workflow name (`mediapm.media.<id>`) in `MediaPmState.pending_force_rerun`. The next sync runs that workflow with `RunWorkflowOptions::force_rerun` and drops the entry once the run completes with `failed_steps == 0`; a failed run keeps it. Persisting the request is what lets the invalidating process be a different one from the syncing process.
+- `mediapm media invalidate <media> <step-index>` marks the recorded conductor instances of that step (`ToolCallInstance.invalidated_at`) and writes no mediapm state. The probe that decides reuse misses on a marked instance, so the next sync re-executes that step. `--undo` clears the same markers. A re-execution clears the marker by recording a fresh instance; a failed run leaves it, so the request is never spent on work that did not happen.
 - `mediapm sync --force-rerun` (`SyncLibraryOptions.force_workflow_rerun`) forces every workflow this run executes and leaves nothing behind.
 
-Neither deletes an instance: the re-execution re-records the same content-derived key. `last_impure_sync_at` is not a lever — nothing writes it, and clearing it re-executes nothing.
+Neither deletes an instance: the re-execution re-records the same content-derived key. `last_impure_sync_at` is not a lever — nothing writes it, and clearing it re-executes nothing. Instance keys carry no media identity, so marking one media's step also marks the bytes another media would reuse; that blast radius is accepted, and it is why `media invalidate` no longer clears `variant_hashes`.
 
 ## Managed Tool Provisioning
 

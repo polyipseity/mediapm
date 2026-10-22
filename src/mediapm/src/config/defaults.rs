@@ -91,7 +91,11 @@ pub const DEFAULT_PROFILER_ENABLED: bool = false;
 pub const DEFAULT_VERIFY_MATERIALIZATION: bool = false;
 
 /// Current persisted schema marker for `state.json`.
-pub const MEDIAPM_STATE_VERSION: u32 = 3;
+///
+/// V4 removed the `pending_force_rerun` queue: explicit invalidation marks the
+/// recorded instance instead, so a stored workflow name was a second place for
+/// the same decision to live.
+pub const MEDIAPM_STATE_VERSION: u32 = 4;
 
 /// Serde default function for state `version` field.
 #[must_use]

@@ -33,8 +33,9 @@ pub mod cli_tools;
 
 // Re-exports for the public API surface.
 pub use api::{
-    ConductorApi, ManagedToolExecutableResolution, RunSummary, RunWorkflowOptions,
-    RuntimeDiagnostics, RuntimeStoragePaths, resolve_managed_tool_executable_with_filesystem_cas,
+    ConductorApi, InstanceMarkerCounts, ManagedToolExecutableResolution, RunSummary,
+    RunWorkflowOptions, RuntimeDiagnostics, RuntimeStoragePaths,
+    resolve_managed_tool_executable_with_filesystem_cas,
 };
 pub use conductor_impl::Conductor;
 pub use config::documents::NickelDocument;

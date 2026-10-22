@@ -153,6 +153,24 @@ pub struct RunSummary {
     pub retried_steps: usize,
 }
 
+/// Counts of recorded instances one marker request touched.
+///
+/// The two fields partition the instances that served the requested steps, so a
+/// caller can tell "there was nothing recorded yet" (`changed == 0` and
+/// `unchanged == 0`) from "every instance already carried this marker"
+/// (`unchanged > 0`) without a second query. Neither is an error: the commands
+/// that produce these counts report what they found and succeed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct InstanceMarkerCounts {
+    /// Instances whose marker this request set or cleared.
+    pub changed: usize,
+    /// Instances that already carried the requested marker state.
+    ///
+    /// A repeated mark keeps the timestamp the first one recorded, which is why
+    /// these are counted rather than re-stamped silently.
+    pub unchanged: usize,
+}
+
 /// Scheduler + worker diagnostics snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RuntimeDiagnostics {

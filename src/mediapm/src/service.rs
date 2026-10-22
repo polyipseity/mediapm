@@ -626,16 +626,6 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
 
         save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
 
-        // Drop any queued invalidation for the workflow that just disappeared:
-        // no run will ever match it again, so keeping it would leave an entry
-        // no sync could spend.
-        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
-        if state
-            .pending_force_rerun
-            .remove(&crate::tools::workflows::managed_workflow_name(media_id))
-        {
-            save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
-        }
         Ok(())
     }
 
@@ -735,73 +725,129 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         Ok(())
     }
 
-    /// Invalidates a media step and asks the next sync to re-execute its
-    /// workflow.
+    /// Marks every recorded instance that served a media step, so the next sync
+    /// re-executes it.
     ///
-    /// Clears the media's recorded step progress (variant hashes and the
-    /// completed-step count) and, when `invalidate_calls` is true, the impure
-    /// timestamps. `invalidate_calls` or `regenerate` queues the media's
-    /// workflow in `MediaPmState::pending_force_rerun`,
-    /// which the next sync consumes by running that workflow with
-    /// [`mediapm_conductor::RunWorkflowOptions::force_rerun`]. The marker is
-    /// persisted rather than held on the service, so the sync that honours it
-    /// may be a different process from the one that issued it. Instance keys
-    /// are derived from step content, so no tool-call instance is deleted and
-    /// none could be. `regenerate` requests the re-execution without clearing
-    /// the timestamps; both flags queue the same marker.
+    /// The step index is the mediapm config's numbering; the step ids are the
+    /// ones the generated conductor document assigned, which is also what the
+    /// recorded instances carry. Resolving one to the other is this method's
+    /// whole job, and it writes no mediapm state: the marker lives on the
+    /// conductor's [`mediapm_conductor::ToolCallInstance`], and the probe that
+    /// decides reuse consults it before serving recorded work.
+    ///
+    /// Instance keys are derived from step content and are shared by every media
+    /// that asks for the same work, so marking one media's step also marks the
+    /// bytes another media would have reused. That is the accepted direction of
+    /// the mistake: the alternative — remembering which instance each media last
+    /// used — goes stale exactly when the record is superseded, and a step the
+    /// operator asked to re-run would then silently not re-run.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError::Workflow`] if the media id is not found.
-    pub fn invalidate_media_step_tool_calls(
-        &mut self,
+    /// Returns [`MediaPmError::Workflow`] when the media id is not in the
+    /// document, when no workflow has been generated for it yet, or when the
+    /// workflow has no step at `step_index`; and [`MediaPmError::Conductor`] when
+    /// the marker cannot be persisted.
+    pub async fn invalidate_media_step_tool_calls(
+        &self,
         media_id: &str,
         step_index: usize,
-        invalidate_calls: bool,
-        regenerate: bool,
     ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
-        let effective_paths = self.resolve_effective_paths()?;
-        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
-
-        if !state.workflow_states.contains_key(media_id) {
-            return Err(MediaPmError::Workflow(format!(
-                "media source '{media_id}' not found in state",
-            )));
-        }
-        // The generated-document workflow name, which is what the sync's
-        // workflow loop matches the marker against. Naming it anything else
-        // here would queue an entry no run could ever consume.
-        let workflow_id = crate::tools::workflows::managed_workflow_name(media_id);
-
-        let mut removed_generated_timestamps = Vec::new();
-        if invalidate_calls {
-            mark_media_step_for_regeneration(&mut state, media_id, step_index);
-            // Collected before the clear so the report names what was actually
-            // removed rather than a placeholder.
-            removed_generated_timestamps.extend(
-                state
-                    .workflow_states
-                    .iter()
-                    .filter(|(_, step_state)| step_state.last_impure_sync_at.is_some())
-                    .map(|(id, _)| id.clone()),
-            );
-            remove_all_step_impure_timestamps(&mut state);
-        }
-
-        let regeneration_requested = invalidate_calls || regenerate;
-        if regeneration_requested {
-            state.pending_force_rerun.insert(workflow_id.clone());
-        }
-
-        save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
-
+        let (workflow_id, targeted_step_ids) = self.resolve_media_step_ids(media_id, step_index)?;
+        let counts = self
+            .conductor
+            .invalidate_instances_for_steps(&targeted_step_ids.iter().cloned().collect())
+            .await
+            .map_err(MediaPmError::Conductor)?;
         Ok(MediaStepInvalidationSummary {
             workflow_id,
-            targeted_step_ids: vec![step_index.to_string()],
-            removed_generated_timestamps,
-            regeneration_requested,
-            warnings: Vec::new(),
+            targeted_step_ids: targeted_step_ids.into_iter().collect(),
+            changed_instances: counts.changed,
+            unchanged_instances: counts.unchanged,
         })
+    }
+
+    /// Clears the invalidation markers of a media step, so the recorded work is
+    /// reusable again.
+    ///
+    /// The undo of [`Self::invalidate_media_step_tool_calls`], resolving the step
+    /// the same way. Clearing a marker that is not there is reported, not an
+    /// error: the caller asked for a state the record is already in.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`Self::invalidate_media_step_tool_calls`].
+    pub async fn revalidate_media_step_tool_calls(
+        &self,
+        media_id: &str,
+        step_index: usize,
+    ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
+        let (workflow_id, targeted_step_ids) = self.resolve_media_step_ids(media_id, step_index)?;
+        let counts = self
+            .conductor
+            .revalidate_instances_for_steps(&targeted_step_ids.iter().cloned().collect())
+            .await
+            .map_err(MediaPmError::Conductor)?;
+        Ok(MediaStepInvalidationSummary {
+            workflow_id,
+            targeted_step_ids: targeted_step_ids.into_iter().collect(),
+            changed_instances: counts.changed,
+            unchanged_instances: counts.unchanged,
+        })
+    }
+
+    /// Resolves a media step index to the workflow that owns it and the step ids
+    /// the generated document assigned to it.
+    ///
+    /// One media step can synthesize several conductor steps (one per mapping),
+    /// and an aggregated ffmpeg step is one conductor step, so the index is
+    /// parsed back out of the id rather than compared to an ordinal. Both
+    /// mistakes this can report are silent no-ops otherwise: a typo in the media
+    /// id and an index the workflow does not have would each leave every
+    /// instance unmarked while the command exited successfully.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Workflow`] when the media is not in the document,
+    /// when no workflow has been generated for it, or when no step carries the
+    /// index.
+    fn resolve_media_step_ids(
+        &self,
+        media_id: &str,
+        step_index: usize,
+    ) -> Result<(String, Vec<String>), MediaPmError> {
+        let effective_paths = self.resolve_effective_paths()?;
+        let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
+        if !document.media.contains_key(media_id) {
+            return Err(MediaPmError::Workflow(format!(
+                "media source '{media_id}' not found in the document",
+            )));
+        }
+
+        let workflow_id = crate::tools::workflows::managed_workflow_name(media_id);
+        let generated_doc = load_conductor_generated_document(&effective_paths)?;
+        let workflow = generated_doc
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == workflow_id)
+            .ok_or_else(|| {
+                MediaPmError::Workflow(format!(
+                    "workflow '{workflow_id}' is not in the generated conductor document; run \
+                     'mediapm sync' so its steps exist before invalidating them",
+                ))
+            })?;
+
+        let targeted_step_ids = crate::tools::workflows::step_ids_for_index(
+            workflow.steps.iter().map(|step| step.id.clone()),
+            step_index,
+        );
+        if targeted_step_ids.is_empty() {
+            return Err(MediaPmError::Workflow(format!(
+                "workflow '{workflow_id}' has no step at index {step_index}",
+            )));
+        }
+        Ok((workflow_id, targeted_step_ids))
     }
 
     /// Refreshes the runtime configuration by loading dotenv files, creating
@@ -1297,13 +1343,11 @@ impl MediaPmService<FileSystemCas> {
         let mut executed_instances: usize = 0;
         let mut cached_instances: usize = 0;
         let mut workflow_failed_steps: usize = 0;
-        // Loaded before the workflow phase because the persisted invalidation
-        // marker is part of what decides how each workflow runs, and loaded
-        // *after* tool sync because that phase rewrites the managed-tool
-        // registry and saves it. Loading earlier would leave this handle with
-        // a `managed_tools` list that predates the run, and the save below
-        // would then drop the tools this sync just provisioned — one
-        // read-modify-write cycle has to start from the newest document.
+        // Loaded *after* tool sync because that phase rewrites the managed-tool
+        // registry and saves it. Loading earlier would leave this handle with a
+        // `managed_tools` list that predates the run, and a later save would
+        // then drop the tools this sync just provisioned — one read-modify-write
+        // cycle has to start from the newest document.
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
         self.conductor
             .ensure_persisted_state_loaded()
@@ -1325,8 +1369,6 @@ impl MediaPmService<FileSystemCas> {
             Some(Arc::new(workflow_group));
         let workflow_overall: Option<Arc<dyn ProgressBarApi>> =
             Some(Arc::new(workflow_overall_handle));
-        // Workflows whose forced run completed are recorded above, one save at
-        // a time, so nothing is left to spend here.
         for workflow_name in workflow_names {
             let mut run_options = conductor_run_workflow_options(
                 &effective_paths,
@@ -1334,10 +1376,11 @@ impl MediaPmService<FileSystemCas> {
                 workflow_pg.clone(),
                 workflow_overall.clone(),
             );
-            // Either the run asked for it (`mediapm sync --force-rerun`) or a
-            // previous process queued it for this workflow.
-            run_options.force_rerun =
-                force_workflow_rerun || state.pending_force_rerun.contains(&workflow_name);
+            // Only the run-scoped escape hatch reaches here. A per-step
+            // invalidation is recorded on the instances themselves, so the
+            // probe misses on its own and this flag has nothing to add — which
+            // is what keeps one decision from having two places to live.
+            run_options.force_rerun = force_workflow_rerun;
             let summary = self.conductor.run_workflow(&workflow_name, run_options).await?;
             // Counted from the run summary directly: a step's instance key is
             // content-derived, so a forced re-execution of unchanged material
@@ -1352,12 +1395,6 @@ impl MediaPmService<FileSystemCas> {
                     "workflow '{workflow_name}' had {} failed step(s)",
                     summary.failed_steps
                 ));
-            } else if state.pending_force_rerun.remove(&workflow_name) {
-                // A queued invalidation is spent by the run that honoured it,
-                // and saved immediately: a later workflow's failure returns
-                // from here without reaching any later save, and the next sync
-                // must not be handed work this run has already done.
-                save_mediapm_state_document(&effective_paths.mediapm_state_json, &state)?;
             }
         }
         // Block until the conductor-owned workflow screen has flushed its

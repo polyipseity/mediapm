@@ -203,31 +203,30 @@ pub struct ToolsSyncSummary {
     pub warnings: Vec<String>,
 }
 
-/// Summary of media step invalidation operations.
+/// Summary of one media step marker request.
+///
+/// The counts describe the recorded conductor instances the targeted steps
+/// resolved to, which is the only place the request has an effect: invalidating
+/// work a mediapm-side record could express was the destructive half this
+/// replaces, and it no longer writes mediapm state at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaStepInvalidationSummary {
-    /// The workflow id that was targeted.
+    /// The mediapm workflow that owns the targeted step.
     pub workflow_id: String,
-    /// Step ids targeted by the invalidation.
+    /// Step ids in that workflow that the requested index resolves to.
+    ///
+    /// One media step can synthesize several conductor steps, so this is a list
+    /// even when the caller named one index.
     pub targeted_step_ids: Vec<String>,
-    /// Media ids whose cleared impure timestamp is what this call removed.
+    /// Recorded instances whose marker this request set or cleared.
+    pub changed_instances: usize,
+    /// Recorded instances that already carried the requested marker state.
     ///
-    /// The timestamp is provenance, never key material, so clearing it does
-    /// not by itself re-execute anything; the entry is reported because the
-    /// caller asked for it to be cleared.
-    pub removed_generated_timestamps: Vec<String>,
-    /// Whether this call queued a forced re-execution of the workflow.
-    ///
-    /// The request is persisted in
-    /// `MediaPmState::pending_force_rerun`, so the sync
-    /// that honours it need not be the process that issued it.
-    ///
-    /// There is no instance-removal counterpart: instance keys are derived
-    /// from step content, so an invalidation keeps every instance and asks
-    /// the next run to bypass it through the conductor's `force_rerun`.
-    pub regeneration_requested: bool,
-    /// Warnings during invalidation.
-    pub warnings: Vec<String>,
+    /// Together with [`Self::changed_instances`] this distinguishes "nothing has
+    /// served those step ids yet" (both zero) from "the request was already
+    /// satisfied" (`changed` zero, `unchanged` not). Neither is an error: a
+    /// retried request reports what it found.
+    pub unchanged_instances: usize,
 }
 
 /// Describes where to insert a new item relative to existing items.

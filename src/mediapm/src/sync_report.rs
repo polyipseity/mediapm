@@ -65,13 +65,12 @@ pub struct SyncLibraryOptions {
     ///
     /// `false` (the default) serves every step whose key material is unchanged
     /// from the conductor instance cache. Instance keys are content-derived, so
-    /// elapsed time never expires one: this flag, a queued
-    /// `MediaPmState::pending_force_rerun` entry, or
-    /// changed step material is what re-executes a step. Scope is the whole
-    /// run, because the conductor's invalidation granularity is a workflow run
-    /// rather than a single step. Unlike the marker, which a previous process
-    /// may have queued for one workflow, this flag applies to every workflow
-    /// this run executes and leaves nothing behind.
+    /// elapsed time never expires one: this flag, a marker set on the recorded
+    /// instance by explicit invalidation, or changed step material is what
+    /// re-executes a step. Scope is the whole run, because this flag has no
+    /// finer granularity than that. Unlike the marker — which names one step and
+    /// is written by whichever process invalidated it — this flag applies to
+    /// every workflow this run executes and leaves nothing behind.
     pub force_workflow_rerun: bool,
     /// Receives one report per completed phase, in execution order.
     pub observer: Option<Arc<dyn SyncPhaseObserver + Send + Sync>>,

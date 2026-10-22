@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::{MediaPmDocument, MediaPmState, MediaRuntimeStorage, load_mediapm_document};
+use crate::config::{MediaPmDocument, MediaRuntimeStorage, load_mediapm_document};
 use crate::error::MediaPmError;
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 
@@ -83,39 +83,10 @@ pub fn resolve_effective_paths_for_root(
     MediaPmPaths::from_root(root_dir).with_overrides(&overrides)
 }
 
-/// Marks a media step for regeneration by clearing its variant hashes in
-/// the state.
-pub(crate) fn mark_media_step_for_regeneration(
-    state: &mut MediaPmState,
-    media_id: &str,
-    step_index: usize,
-) {
-    if let Some(step_state) = state.workflow_states.get_mut(media_id) {
-        // Clear variant hashes to force regeneration
-        step_state.variant_hashes.clear();
-        step_state.steps_completed = u32::try_from(step_index).unwrap_or(u32::MAX);
-    }
-}
-
-/// Removes impure timestamps from every media step state.
-///
-/// The previous signature took a `_tool_id` that the body never read, while
-/// the sole call site passed a media id. The parameter is gone because an
-/// unused parameter is not part of the API, and keeping it under a `_`
-/// prefix hid the fact that the call site and the name disagreed.
-pub(crate) fn remove_all_step_impure_timestamps(state: &mut MediaPmState) {
-    for step_state in state.workflow_states.values_mut() {
-        if step_state.last_impure_sync_at.is_some() {
-            step_state.last_impure_sync_at = None;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::RuntimePathsConfig;
-    use std::collections::BTreeMap;
 
     /// Ensures `registered_builtin_ids` returns expected builtins.
     #[test]
@@ -127,23 +98,6 @@ mod tests {
         assert!(ids.contains(&"export@v1".to_string()));
         assert!(ids.contains(&"archive@v1".to_string()));
         assert_eq!(ids.len(), 5);
-    }
-
-    /// Ensures `mark_media_step_for_regeneration` clears variant hashes.
-    #[test]
-    fn mark_media_step_for_regeneration_clears_variant_hashes() {
-        let mut state = MediaPmState::default();
-        state.workflow_states.insert(
-            "test-source".to_string(),
-            crate::config::ManagedWorkflowStepState {
-                variant_hashes: BTreeMap::from([("media".to_string(), "hash123".to_string())]),
-                steps_completed: 3,
-                last_impure_sync_at: None,
-            },
-        );
-
-        mark_media_step_for_regeneration(&mut state, "test-source", 0);
-        assert!(state.workflow_states["test-source"].variant_hashes.is_empty());
     }
 
     /// Ensures `resolve_effective_paths_for_root` works with overrides.

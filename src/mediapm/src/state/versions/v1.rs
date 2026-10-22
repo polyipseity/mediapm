@@ -200,8 +200,6 @@ fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
         managed_files,
         managed_tools: Vec::new(),
         workflow_states,
-        // A V1 document predates the invalidation marker: nothing can be queued.
-        pending_force_rerun: BTreeSet::new(),
     }
 }
 
@@ -237,7 +235,5 @@ fn migrate_flat_v1_fields(value: &Value) -> Result<MediaPmState, MediaPmError> {
         managed_files,
         managed_tools: Vec::new(),
         workflow_states,
-        // A V1 document predates the invalidation marker: nothing can be queued.
-        pending_force_rerun: BTreeSet::new(),
     })
 }

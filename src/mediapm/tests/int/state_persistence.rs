@@ -13,7 +13,7 @@
 //!
 //! Does NOT test the full tool-sync pipeline — see `tool_sync/` for that.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use mediapm::{
     ManagedFileRecord, MediaPmState, ToolRegistryEntry, load_mediapm_state_document,
@@ -49,7 +49,6 @@ fn state_round_trip() {
             resolved_vcs_hash: None,
         }],
         workflow_states: BTreeMap::new(),
-        pending_force_rerun: BTreeSet::new(),
     };
 
     let value = to_json_value(&state).expect("serialization must succeed");
@@ -58,7 +57,7 @@ fn state_round_trip() {
     assert_eq!(state.managed_files, decoded.managed_files);
     assert_eq!(state.managed_tools, decoded.managed_tools);
     assert_eq!(state.workflow_states, decoded.workflow_states);
-    assert_eq!(decoded.version, 3);
+    assert_eq!(decoded.version, 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +157,7 @@ fn migrate_flat_to_v2() {
 #[test]
 fn default_state_round_trip() {
     let state = MediaPmState::default();
-    assert_eq!(state.version, 3);
+    assert_eq!(state.version, 4);
 
     let value = to_json_value(&state).expect("serialization must succeed");
     let decoded = from_json_value(value).expect("deserialization must succeed");
@@ -166,7 +165,7 @@ fn default_state_round_trip() {
     assert!(decoded.managed_files.is_empty());
     assert!(decoded.managed_tools.is_empty());
     assert!(decoded.workflow_states.is_empty());
-    assert_eq!(decoded.version, 3);
+    assert_eq!(decoded.version, 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +206,6 @@ fn json_save_idempotent() {
             resolved_vcs_hash: None,
         }],
         workflow_states: BTreeMap::new(),
-        pending_force_rerun: BTreeSet::new(),
     };
 
     let value1 = to_json_value(&state).expect("first serialization");
@@ -243,7 +241,7 @@ fn ncl_to_json_file_migration() {
 
     assert!(json_path.exists(), "state.json should exist");
     assert!(!ncl_path.exists(), "state.ncl should be deleted after migration");
-    assert_eq!(state.version, 3);
+    assert_eq!(state.version, 4);
     assert!(state.managed_files.is_empty());
     assert!(state.workflow_states.is_empty());
 }
@@ -254,7 +252,7 @@ fn load_missing_state_returns_default() {
     let json_path = dir.path().join("state.json");
 
     let state = load_mediapm_state_document(&json_path).expect("load should return default");
-    assert_eq!(state.version, 3);
+    assert_eq!(state.version, 4);
     assert!(state.managed_files.is_empty());
     assert!(state.managed_tools.is_empty());
 }
@@ -427,7 +425,6 @@ fn state_json_always_writes_to_disk() {
         managed_files: BTreeMap::new(),
         managed_tools: Vec::new(),
         workflow_states: BTreeMap::new(),
-        pending_force_rerun: BTreeSet::new(),
     };
 
     // First save: create the file.
@@ -488,7 +485,6 @@ fn state_v3_roundtrip_resolved_options() {
             resolved_vcs_hash: Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".to_string()),
         }],
         workflow_states: BTreeMap::new(),
-        pending_force_rerun: BTreeSet::new(),
     };
 
     let value = to_json_value(&state).expect("serialization must succeed");
@@ -522,7 +518,6 @@ fn state_v3_roundtrip_resolved_options() {
             resolved_vcs_hash: None,
         }],
         workflow_states: BTreeMap::new(),
-        pending_force_rerun: BTreeSet::new(),
     };
     let value_none = to_json_value(&state_none).expect("serialization must succeed");
     let entry_none = &value_none["managed_tools"][0];
@@ -572,5 +567,58 @@ fn state_v3_roundtrip_resolved_options() {
     assert!(
         from_json_value(empty_json).is_err(),
         "V3 parser must reject empty-string resolved fields"
+    );
+}
+
+/// A V3 document loads and is written back as V4 without its queue.
+///
+/// The queue named a workflow a later run had to re-execute; V4 removed it
+/// because a marker on the recorded instance says the same thing where the
+/// decision is actually made. Dropping it is the whole migration — everything
+/// else is shared with V4 — and the rewritten document must not mention it, or a
+/// later reader would believe a request is pending.
+#[test]
+fn v3_document_migrates_to_v4_without_its_queue() {
+    let v3_document = json!({
+        "version": 3,
+        "managed_files": {
+            "/media/kept.mkv": {
+                "media_id": "kept",
+                "variant": "primary",
+                "hash": "blake3:kept"
+            }
+        },
+        "managed_tools": [{
+            "tool_id": "ffmpeg",
+            "version": "7.1",
+            "canonical_version": "ffmpeg-v7.1",
+            "content_map_hash": "blake3:tools",
+            "deployed_at": 1_700_000_000
+        }],
+        "workflow_states": {
+            "kept": {
+                "variant_hashes": { "primary": "blake3:variant" },
+                "steps_completed": 4
+            }
+        },
+        "pending_force_rerun": ["mediapm.media.kept", "mediapm.media.gone"]
+    });
+
+    let state = from_json_value(v3_document).expect("a V3 document must still load");
+
+    assert_eq!(state.version, 4, "loading always resolves to the current version");
+    assert_eq!(state.managed_files.len(), 1);
+    assert_eq!(state.managed_tools.len(), 1);
+    assert_eq!(state.managed_tools[0].canonical_version, "ffmpeg-v7.1");
+    assert_eq!(
+        state.workflow_states["kept"].steps_completed, 4,
+        "the progress the queue named is not the queue, and it survives",
+    );
+
+    let rewritten = to_json_value(&state).expect("re-encoding must succeed");
+    assert_eq!(rewritten["version"], 4);
+    assert!(
+        rewritten.get("pending_force_rerun").is_none(),
+        "the removed queue must not reappear on write: {rewritten}",
     );
 }

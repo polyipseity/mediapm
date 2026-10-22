@@ -347,44 +347,44 @@ async fn main_cli() -> anyhow::Result<()> {
                     Ok(())
                 }
                 MediaCommand::Invalidate(args) => {
-                    let invalidate_calls =
-                        if args.no_invalidate_calls { false } else { args.invalidate_calls };
-                    let regenerate = args.regenerate;
-                    let summary = service.invalidate_media_step_tool_calls(
-                        &args.media_id,
-                        args.step_index,
-                        invalidate_calls,
-                        regenerate,
-                    )?;
+                    let summary = if args.undo {
+                        service
+                            .revalidate_media_step_tool_calls(&args.media_id, args.step_index)
+                            .await?
+                    } else {
+                        service
+                            .invalidate_media_step_tool_calls(&args.media_id, args.step_index)
+                            .await?
+                    };
+                    let marker = if args.undo { "cleared" } else { "marked" };
                     print_result(
                         StatusIcon::Success,
-                        "media invalidated",
+                        if args.undo { "media revalidated" } else { "media invalidated" },
                         &[
                             ("id", &args.media_id as &dyn std::fmt::Display),
                             ("step", &args.step_index),
                             ("workflow", &summary.workflow_id as &dyn std::fmt::Display),
-                            (
-                                "regenerate",
-                                &(if summary.regeneration_requested { "requested" } else { "no" })
-                                    as &dyn std::fmt::Display,
-                            ),
+                            ("steps", &summary.targeted_step_ids.len()),
+                            ("instances", &summary.changed_instances),
+                            ("unchanged", &summary.unchanged_instances),
                         ],
                         None,
                     );
-                    for warning in &summary.warnings {
-                        print_warning(warning);
-                    }
-                    if summary.regeneration_requested {
+                    if summary.changed_instances == 0 && summary.unchanged_instances == 0 {
                         print_hint(
-                            "the re-run is queued in state; run 'mediapm sync' to re-execute this \
-                             workflow, or 'mediapm sync --force-rerun' to re-execute every step \
-                             this run",
+                            "no recorded instance carries the step ids this index resolves to; \
+                             the next sync runs the step from scratch",
+                        );
+                    } else if summary.changed_instances == 0 {
+                        print_hint(
+                            "every matching instance already carried this marker, so there is \
+                             nothing new to apply",
                         );
                     } else {
-                        print_hint(
-                            "run 'mediapm sync --force-rerun' to re-execute every workflow step \
-                             this run",
-                        );
+                        print_hint(format!(
+                            "{marker} {} instance(s); run 'mediapm sync' to apply",
+                            summary.changed_instances,
+                        ));
                     }
                     Ok(())
                 }
@@ -750,38 +750,28 @@ impl From<AddInsertPositionArg> for AddInsertPosition {
 }
 
 /// Arguments for `media invalidate <media-id> <step-index>`.
+///
+/// The command sets one marker: the recorded instances of the named step miss
+/// the probe, so the next sync re-executes them. `--undo` clears the same
+/// marker. `--invalidate-calls` and `--regenerate` stay accepted because they
+/// named the two halves of the command that used to differ — clearing recorded
+/// progress and queuing the run — and neither half exists any more: there is no
+/// progress to clear, and the marker is not a queue.
 #[derive(Debug, Args)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "CLI args struct mirrors the command surface; booleans map 1:1 to flags"
-)]
 struct MediaInvalidateArgs {
-    /// Media source id whose recorded step progress should be cleared.
+    /// Media source id that owns the step.
     media_id: String,
-    /// Zero-based step index to invalidate.
+    /// Zero-based step index to mark (or unmark with `--undo`).
     step_index: usize,
-    /// Arm the next sync to re-execute the workflow (default: yes).
-    #[arg(
-        long,
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        conflicts_with = "no_invalidate_calls"
-    )]
+    /// Clear the marker instead of setting it.
+    #[arg(long, conflicts_with_all = ["invalidate_calls", "regenerate"])]
+    undo: bool,
+    /// Accepted for compatibility; marking is what this command does.
+    #[arg(long)]
     invalidate_calls: bool,
-    /// Clear only the recorded progress, leaving the next sync cache-first.
-    #[arg(long, conflicts_with = "invalidate_calls")]
-    no_invalidate_calls: bool,
-    /// Request re-execution without clearing impure timestamps (default: no).
-    #[arg(
-        long,
-        default_value_t = false,
-        action = clap::ArgAction::Set,
-        conflicts_with = "no_regenerate"
-    )]
+    /// Accepted for compatibility; marking is what this command does.
+    #[arg(long)]
     regenerate: bool,
-    /// Do not request re-execution.
-    #[arg(long, conflicts_with = "regenerate")]
-    no_regenerate: bool,
 }
 
 /// Hierarchy registry commands.
@@ -1028,12 +1018,12 @@ struct SyncArgs {
     /// Instance keys are content-derived, so elapsed time never expires a
     /// step; this flag is the explicit way to re-run one whose external
     /// circumstances changed. It applies to every workflow this run executes
-    /// and leaves nothing behind. A workflow queued by `mediapm media
-    /// invalidate` re-executes on a plain sync instead, and keeps its queued
-    /// entry until a run completes without a failed step.
+    /// and leaves nothing behind.
     ///
-    /// The scope is the whole run: the conductor's invalidation granularity is
-    /// a workflow run, not a single step.
+    /// A step marked by `mediapm media invalidate` re-executes on a plain sync
+    /// instead: the marker sits on the recorded instance, so the probe misses
+    /// without any run-wide flag. The scope here is the whole run, which is
+    /// wider than that command's one step.
     #[arg(long)]
     force_rerun: bool,
 }
@@ -1281,8 +1271,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        Cli, EXIT_INCOMPLETE_LIBRARY, EXIT_WARNING, inject_cas_passthrough_defaults,
-        inject_conductor_passthrough_defaults, sync_exit_status, tool_sync_exit_status,
+        Cli, Command, EXIT_INCOMPLETE_LIBRARY, EXIT_WARNING, MediaCommand,
+        inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults, sync_exit_status,
+        tool_sync_exit_status,
     };
 
     /// Protects no-backcompat policy by rejecting removed hidden internal route.
@@ -1318,6 +1309,46 @@ mod tests {
     fn media_invalidate_route_with_default_mode_is_parsed() {
         let parsed = Cli::try_parse_from(["mediapm", "media", "invalidate", "media-123", "2"]);
         assert!(parsed.is_ok(), "media invalidate route with default mode must parse");
+    }
+
+    /// `--undo` selects the clearing half of the command.
+    #[test]
+    fn media_invalidate_accepts_undo() {
+        let parsed =
+            Cli::try_parse_from(["mediapm", "media", "invalidate", "media-123", "2", "--undo"]);
+        let cli = parsed.expect("media invalidate --undo must parse");
+        let Command::Media { command } = cli.command else { panic!("expected a media command") };
+        let MediaCommand::Invalidate(args) = command else { panic!("expected invalidate") };
+        assert!(args.undo, "--undo must reach the args struct");
+    }
+
+    /// The two retired modes stay parseable as aliases.
+    ///
+    /// They named "clear recorded progress" and "queue a run", neither of which
+    /// exists any more, so they select nothing — but a script that still passes
+    /// one must not start failing.
+    #[test]
+    fn media_invalidate_still_accepts_the_retired_flags() {
+        for flag in ["--invalidate-calls", "--regenerate"] {
+            let parsed =
+                Cli::try_parse_from(["mediapm", "media", "invalidate", "media-123", "2", flag]);
+            assert!(parsed.is_ok(), "media invalidate {flag} must still parse");
+        }
+    }
+
+    /// `--undo` cannot be combined with a flag that asks for the opposite.
+    #[test]
+    fn media_invalidate_rejects_undo_with_a_marking_flag() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "media",
+            "invalidate",
+            "media-123",
+            "2",
+            "--undo",
+            "--invalidate-calls",
+        ]);
+        assert!(parsed.is_err(), "--undo and --invalidate-calls contradict each other");
     }
 
     /// Protects hierarchy-add local preset route with explicit root folder.

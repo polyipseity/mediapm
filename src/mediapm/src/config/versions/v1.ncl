@@ -280,8 +280,7 @@ let ToolRegistryEntryV1 = {
 in
 
 # ||| mediapm V1 state document (mirrors the V1 shape only; later versions add
-# fields such as `pending_force_rerun`).  Closed: no open `..`
-# tail.
+# and, at V4, remove fields).  Closed: no open `..` tail.
 let MediaPmStateV1 = {
   version | IntegerNumberV1 | default = 3,
   managed_files | { _ : ManagedFileRecordV1 } | default = {},

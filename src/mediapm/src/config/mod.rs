@@ -59,7 +59,7 @@ pub use source_types::{
 /// path would be, and this module does neither.
 pub use versions::MediaPmDocument;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use mediapm_conductor::tools::provider::ConfigVersionSpec;
@@ -482,11 +482,12 @@ pub struct ManagedFileRecord {
 
 /// Persisted mediapm machine state (`state.json`).
 ///
-/// V3 format with `managed_files` (path → record map), `managed_tools`
-/// (flat tool deployment metadata list), `workflow_states` (per-media
-/// workflow progress), and `pending_force_rerun` (queued explicit
-/// invalidations). No longer stores tool requirements, active instances,
-/// or last-materialization hash — the document config owns those.
+/// V4 format with `managed_files` (path → record map), `managed_tools` (flat
+/// tool deployment metadata list), and `workflow_states` (per-media workflow
+/// progress). No longer stores tool requirements, active instances,
+/// last-materialization hash, or a queue of workflows to force-rerun — explicit
+/// invalidation marks the recorded conductor instance, and the document config
+/// owns everything the user authored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaPmState {
@@ -502,18 +503,6 @@ pub struct MediaPmState {
     /// Per-media-source workflow state.
     #[serde(default)]
     pub workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
-    /// Workflows whose next run must ignore the instance cache.
-    ///
-    /// Written by
-    /// [`MediaPmService::invalidate_media_step_tool_calls`](crate::MediaPmService::invalidate_media_step_tool_calls)
-    /// and consumed by the next sync: a workflow listed here runs with
-    /// [`mediapm_conductor::RunWorkflowOptions::force_rerun`] and loses its
-    /// entry once it completes without a failed step. Persisting the request is
-    /// what lets one process invalidate and another honour it — an in-memory
-    /// flag cannot cross that boundary. A failed run keeps its entry, so an
-    /// invalidation is never spent on work that did not happen.
-    #[serde(default)]
-    pub pending_force_rerun: BTreeSet<String>,
 }
 
 impl Default for MediaPmState {
@@ -523,7 +512,6 @@ impl Default for MediaPmState {
             managed_files: BTreeMap::new(),
             managed_tools: Vec::new(),
             workflow_states: BTreeMap::new(),
-            pending_force_rerun: BTreeSet::new(),
         }
     }
 }

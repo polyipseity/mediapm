@@ -2,7 +2,7 @@
 //!
 //! [`Conductor`] is the concrete implementation of the conductor API.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,7 +10,8 @@ use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
 use tokio::sync::OnceCell;
 
 use crate::api::{
-    ConductorApi, RunSummary, RunWorkflowOptions, RuntimeDiagnostics, RuntimeStoragePaths,
+    ConductorApi, InstanceMarkerCounts, RunSummary, RunWorkflowOptions, RuntimeDiagnostics,
+    RuntimeStoragePaths,
 };
 use crate::config::documents::NickelDocument;
 use crate::config::versions;
@@ -190,6 +191,100 @@ where
     pub fn replace_resolved_state(&self, new_state: ConductorState) -> Result<(), ConductorError> {
         *self.state.lock().expect("state lock") = new_state;
         Ok(())
+    }
+
+    /// Marks every recorded instance that served one of `step_ids` as not to be
+    /// reused, and persists the state.
+    ///
+    /// This is the programmatic half of `conductor state invalidate-tool-call`,
+    /// scoped by step rather than by instance key: the caller knows which steps
+    /// it wants re-run, and the keys are content-derived — a caller cannot name
+    /// an instance it has not already found. An instance is selected when any of
+    /// the steps it has served is in `step_ids`, which includes one that served a
+    /// targeted step under a different workflow run.
+    ///
+    /// An instance that already carries a marker keeps the timestamp it has: the
+    /// field says since when the bytes have been marked, so re-marking must not
+    /// restart that clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the persisted state cannot be loaded, or when the
+    /// updated state cannot be written. A write failure leaves the in-memory
+    /// state untouched, so the two never disagree about what was saved.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
+    pub async fn invalidate_instances_for_steps(
+        &self,
+        step_ids: &BTreeSet<String>,
+    ) -> Result<InstanceMarkerCounts, ConductorError> {
+        self.set_instances_marker(step_ids, true).await
+    }
+
+    /// Clears the invalidation marker from every instance that served one of
+    /// `step_ids`, and persists the state.
+    ///
+    /// The undo of [`Self::invalidate_instances_for_steps`]. Clearing a marker
+    /// that is not there is counted, not an error: the caller asked for a state
+    /// the record is already in.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the persisted state cannot be loaded, or when the
+    /// updated state cannot be written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
+    pub async fn revalidate_instances_for_steps(
+        &self,
+        step_ids: &BTreeSet<String>,
+    ) -> Result<InstanceMarkerCounts, ConductorError> {
+        self.set_instances_marker(step_ids, false).await
+    }
+
+    /// Applies one marker request to the recorded instances of `step_ids`.
+    ///
+    /// The state is loaded from disk first, because the caller may be the first
+    /// thing the process does, and written back before the in-memory snapshot is
+    /// replaced, because a failed write must not leave the process holding an
+    /// edit the file does not have.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be loaded or written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory orchestration state mutex is poisoned.
+    async fn set_instances_marker(
+        &self,
+        step_ids: &BTreeSet<String>,
+        invalidated: bool,
+    ) -> Result<InstanceMarkerCounts, ConductorError> {
+        self.ensure_persisted_state_loaded().await?;
+        let mut state = self.get_state()?;
+        let mut counts = InstanceMarkerCounts::default();
+        for instance in state.tool_call_instances.values_mut() {
+            if instance.step_ids.is_disjoint(step_ids) {
+                continue;
+            }
+            let already_set = instance.invalidated_at.is_some() == invalidated;
+            if already_set {
+                counts.unchanged += 1;
+                continue;
+            }
+            instance.invalidated_at =
+                if invalidated { Some(mediapm_utils::Timestamp::now()) } else { None };
+            counts.changed += 1;
+        }
+        if counts.changed > 0 {
+            save_state_file(self.storage_paths(), &state)?;
+            self.replace_resolved_state(state)?;
+        }
+        Ok(counts)
     }
 
     /// Adds a tool configuration to the first available config document.
@@ -722,6 +817,103 @@ mod tests {
         std::fs::create_dir_all(&paths.conductor_dir).expect("create conductor dir");
         std::fs::write(&paths.state_file_path, b"not json").expect("write corrupt state");
         assert!(load_state_file(&paths).is_err());
+    }
+
+    /// Builds a conductor over a scratch directory whose state file already
+    /// holds `state`, returning the conductor and the directory that must
+    /// outlive it.
+    fn conductor_with_state(
+        state: &ConductorState,
+    ) -> (tempfile::TempDir, Conductor<mediapm_cas::InMemoryCas>) {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        save_state_file(&paths, state).expect("seed state file");
+        (dir, Conductor::new(paths, mediapm_cas::new_in_memory_cas()))
+    }
+
+    /// Builds a state with one recorded instance that served `step_id`.
+    fn state_with_step_instance(step_id: &str) -> (ConductorState, Hash) {
+        let key = Hash::from_content(step_id.as_bytes());
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            key,
+            crate::state::ToolCallInstance {
+                instance_key: key,
+                tool_call_id: "echo@v1".to_string(),
+                impure: false,
+                invalidated_at: None,
+                executed_at: mediapm_utils::Timestamp::default(),
+                step_ids: BTreeSet::from([step_id.to_string()]),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+        );
+        (state, key)
+    }
+
+    /// Marking by step id reaches the instance that served the step, persists,
+    /// and is idempotent.
+    ///
+    /// The marker is read by the probe, which reads the state that was loaded
+    /// from the file, so a mark that stayed in memory would be invisible to the
+    /// next process and to the next run in this one.
+    #[tokio::test]
+    async fn invalidating_instances_for_steps_marks_and_persists() {
+        let (state, key) = state_with_step_instance("step-0-echo");
+        let (_dir, conductor) = conductor_with_state(&state);
+        let steps = BTreeSet::from(["step-0-echo".to_string()]);
+
+        let counts = conductor.invalidate_instances_for_steps(&steps).await.expect("mark");
+        assert_eq!(counts, InstanceMarkerCounts { changed: 1, unchanged: 0 });
+
+        let on_disk = load_state_file(conductor.storage_paths())
+            .expect("load state file")
+            .expect("state file must exist");
+        let marked_at = on_disk.tool_call_instances[&key]
+            .invalidated_at
+            .expect("the marker must reach the file");
+
+        // A repeated mark reports the state it found and keeps the timestamp, so
+        // "marked since" does not restart on every retry.
+        let again = conductor.invalidate_instances_for_steps(&steps).await.expect("mark again");
+        assert_eq!(again, InstanceMarkerCounts { changed: 0, unchanged: 1 });
+        let on_disk = load_state_file(conductor.storage_paths())
+            .expect("load state file")
+            .expect("state file must exist");
+        assert_eq!(on_disk.tool_call_instances[&key].invalidated_at, Some(marked_at));
+
+        // A step no instance served reaches nothing and says so.
+        let unrelated = conductor
+            .invalidate_instances_for_steps(&BTreeSet::from(["step-9-echo".to_string()]))
+            .await
+            .expect("mark an unserved step");
+        assert_eq!(unrelated, InstanceMarkerCounts::default());
+
+        let cleared = conductor.revalidate_instances_for_steps(&steps).await.expect("clear");
+        assert_eq!(cleared, InstanceMarkerCounts { changed: 1, unchanged: 0 });
+        let on_disk = load_state_file(conductor.storage_paths())
+            .expect("load state file")
+            .expect("state file must exist");
+        assert_eq!(on_disk.tool_call_instances[&key].invalidated_at, None);
+    }
+
+    /// Clearing a marker that is not there changes nothing, including the file.
+    #[tokio::test]
+    async fn revalidating_an_unmarked_instance_writes_nothing() {
+        let (state, _key) = state_with_step_instance("step-0-echo");
+        let (_dir, conductor) = conductor_with_state(&state);
+        let path = conductor.storage_paths().state_file_path.clone();
+        let before = std::fs::read(&path).expect("read state file");
+
+        let counts = conductor
+            .revalidate_instances_for_steps(&BTreeSet::from(["step-0-echo".to_string()]))
+            .await
+            .expect("clear");
+
+        assert_eq!(counts, InstanceMarkerCounts { changed: 0, unchanged: 1 });
+        assert_eq!(std::fs::read(&path).expect("read state file"), before);
     }
 
     /// `with_config_paths` relocates the state file to the custom path.

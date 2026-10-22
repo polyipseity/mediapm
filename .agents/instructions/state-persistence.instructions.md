@@ -108,16 +108,18 @@ Flat→v2 mapping:
 
 ## State-specific versioning scheme
 
-- `MEDIAPM_STATE_VERSION = 3` (independent constant from `MEDIAPM_DOCUMENT_VERSION`).
+- `MEDIAPM_STATE_VERSION = 4` in `src/mediapm/src/config/defaults.rs` (independent constant from `MEDIAPM_DOCUMENT_VERSION`).
 - `MediaPmState.version` uses `state_version` default, not `document_version`.
 - V1 = legacy Nickel formats (both wrapper and flat).
-- V2 = intermediate JSON format, migrated to V3 on load (never written).
-- V3 = current JSON format (always written, never reverted). Schema changes to V3 are applied in place, with no version bump for field-level changes.
+- V2 = intermediate JSON format, read-only: decoded as V3, then migrated to V4 on load (never written).
+- V3 = JSON format before instance invalidation: read-only, migrated to V4 on load (never written).
+- V4 = current JSON format (always written, never reverted).
+- A schema change is a version bump. Versions are integers; a field that appears or disappears is a new `vN` module plus a `from_v(N-1)_into_vN` migration, never an in-place edit of the current version's shape.
 
 ## Version dispatch
 
-- On load (`state/ser.rs::from_json_value`): delegates to `versions::extract_state_version_field`, then `versions::v1::from_v1_json_value`, `versions::v3::from_v2_into_v3` (version 2), or `versions::v3::from_v3_json_value` (version 3).
-- On save (`state/ser.rs::to_json_value`): delegates to `versions::v3::to_v3_json_value` (always V3).
+- On load (`state/ser.rs::from_json_value` → `state/versions/mod.rs::from_json_value`): `versions::extract_state_version_field`, then `v1::from_v1_json_value` (1), `v4::from_v3_into_v4(v3::decode_v2_as_v3(..))` (2), `v4::from_v3_into_v4(v3::decode_v3(..))` (3), or `v4::from_v4_json_value` (4). Anything else is an `unsupported mediapm state schema version` error.
+- On save (`state/ser.rs::to_json_value` → `state/versions/mod.rs::to_json_value`): `v4::to_v4_json_value` (always V4).
 - Migration from `.ncl` (`state/ser.rs::migrate_from_old_nickel`): delegates to `versions::v1::from_v1_json_value` which handles both wrapper and flat V1 shapes → writes `state.json` → deletes `state.ncl`.
 
 ## `deployed_at` ordering semantics
