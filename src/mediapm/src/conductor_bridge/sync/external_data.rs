@@ -24,10 +24,12 @@ use mediapm_conductor::{InputBinding, NickelDocument, ToolKindSpec};
 /// - a step input that is a bare hash, which the `import` builtin reads under
 ///   `kind=cas_hash`;
 /// - a `${external_data.<hash>}` reference in a step input, in a tool command
-///   part, or in a tool default input, which the engine resolves out of CAS.
-///   The reference is found by the conductor's scanner, which is the resolver's
-///   own parse, so a reference that carries post-processing selectors and one
-///   inside a conditional branch both count;
+///   part, or in a tool default input. A command part is the one surface the
+///   engine resolves with a CAS handle; on the other two the reference fails its
+///   step at run time instead, and the declaration is kept because it is the
+///   safe direction. The reference is found by the conductor's scanner, which is
+///   the resolver's own parse, so a reference that carries post-processing
+///   selectors and one inside a conditional branch both count;
 /// - the same references in a step output capture, which the engine never
 ///   interpolates. Declaring a hash nothing reads costs retention; leaving one
 ///   undeclared costs the payload, so the scan stays liberal here.
@@ -241,6 +243,56 @@ mod tests {
                     env_vars: BTreeMap::new(),
                     success_codes: vec![0],
                 },
+                ..mediapm_conductor::ToolSpec::default()
+            },
+        );
+
+        assert_eq!(referenced_hashes(&document), BTreeSet::from([hash]));
+    }
+
+    /// A default input that is a reference is declared too: the tool's own input
+    /// contract names the bytes, and no step has to bind it for the tool to read
+    /// them.
+    #[test]
+    fn a_default_input_reference_is_referenced() {
+        let hash = Hash::from([12u8; 32]);
+        let mut document = NickelDocument::default();
+        document.tools.insert(
+            "probe".to_string(),
+            mediapm_conductor::ToolSpec {
+                name: "probe".to_string(),
+                version: Some("1".to_string()),
+                kind: ToolKindSpec::Builtin { builtin_id: "probe@v1".to_string() },
+                default_inputs: BTreeMap::from([(
+                    "payload".to_string(),
+                    InputBinding::String(format!("${{external_data.{hash}}}")),
+                )]),
+                ..mediapm_conductor::ToolSpec::default()
+            },
+        );
+
+        assert_eq!(referenced_hashes(&document), BTreeSet::from([hash]));
+    }
+
+    /// Every entry of a default input list is scanned, because a splat input
+    /// resolves each of them.
+    #[test]
+    fn a_default_input_list_reference_is_referenced() {
+        let hash = Hash::from([13u8; 32]);
+        let mut document = NickelDocument::default();
+        document.tools.insert(
+            "probe".to_string(),
+            mediapm_conductor::ToolSpec {
+                name: "probe".to_string(),
+                version: Some("1".to_string()),
+                kind: ToolKindSpec::Builtin { builtin_id: "probe@v1".to_string() },
+                default_inputs: BTreeMap::from([(
+                    "flags".to_string(),
+                    InputBinding::Vec(vec![
+                        "--plain".to_string(),
+                        format!("${{external_data.{hash}}}"),
+                    ]),
+                )]),
                 ..mediapm_conductor::ToolSpec::default()
             },
         );

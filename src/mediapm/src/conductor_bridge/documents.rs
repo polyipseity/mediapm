@@ -132,6 +132,13 @@ fn save_conductor_document(
 /// and the only other symptom of that is a document that silently stops being
 /// read.
 ///
+/// Discarding the document also discards the tool content maps it carried, so
+/// this sync re-resolves and re-fetches the managed tools instead of skipping
+/// them. That is the right trade for a document this build could not read at
+/// all, and it is why the recovery stays here: the conductor's own
+/// `conductor run` loads the same file without an arm and refuses it, because a
+/// document that cannot be read is not one it may run.
+///
 /// A read failure that is not a document-shape failure still fails here, because
 /// regenerating would overwrite a file that is merely unreadable right now.
 ///

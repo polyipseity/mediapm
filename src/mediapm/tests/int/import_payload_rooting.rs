@@ -8,9 +8,10 @@
 //!
 //! The assertion is made from outside the crate, on the document a real sync
 //! left on disk: decode it, and require every step input that parses as a CAS
-//! hash to have an `external_data` entry. That catches a new unrooted reference
+//! hash to have an `external_data` entry. That catches an unrooted bare hash
 //! anywhere in the synthesized tree, not only in the import step this fixture
-//! happens to exercise.
+//! happens to exercise. A reference-shaped name is the conductor's own rule to
+//! enforce, and it rejects the document when it is encoded.
 
 use mediapm::MediaRuntimeStorage;
 use mediapm_cas::{FileSystemCas, Hash};

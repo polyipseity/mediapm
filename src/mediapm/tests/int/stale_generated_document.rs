@@ -8,10 +8,12 @@
 //! owns the file is the thing that would replace it.
 //!
 //! So a generated document that fails to decode is discarded and regenerated,
-//! while the user-owned document beside it still fails loudly. This test pins
-//! both halves: the stale file is unreadable before the run (or the test proves
-//! nothing), the run succeeds anyway, and what it leaves on disk decodes and
-//! declares the payload the media document names.
+//! while the user-owned document beside it still fails loudly. The tests here
+//! pin both halves: the generated half proves the stale file is unreadable before
+//! the run (or the test proves nothing), that the run succeeds anyway, and that
+//! what it leaves on disk decodes and declares the payload the media document
+//! names; the user half proves a hand-written document this build refuses stops
+//! the sync instead of being discarded with it.
 
 use bytes::Bytes;
 use mediapm::{
@@ -76,7 +78,8 @@ fn document_with_one_media_entry(variant_hash: &str) -> MediaPmDocument {
 ///
 /// The current encoder rejects exactly this document, which is the point: the
 /// file cannot be produced through the API any more, so it is written as the
-/// text the earlier build left behind.
+/// text the earlier build left behind. The same text stands in for a hand-written
+/// user document the current build refuses.
 fn stale_generated_document_text(hash: &str) -> String {
     format!(
         r#"{{
@@ -146,6 +149,41 @@ async fn a_stale_generated_document_is_regenerated() -> Result<(), mediapm::Medi
         regenerated.external_data.contains_key(&hash),
         "the regenerated document must declare the payload the media document names"
     );
+
+    Ok(())
+}
+
+/// A user-owned document this build cannot decode stops the sync.
+///
+/// The recovery above is for the machine-owned file only. The user's document is
+/// the input to the run, so a document the run cannot read is a document it must
+/// not silently replace: the sync fails, and the file is left as the user wrote
+/// it.
+#[tokio::test]
+async fn a_stale_user_document_stops_the_sync() -> Result<(), mediapm::MediaPmError> {
+    let (mut service, _root, _cache) = service_with_cache(MediaRuntimeStorage::default()).await?;
+
+    let hash = seed_cas(&service, Bytes::from_static(PAYLOAD), "stale user variant").await?;
+    save_mediapm_document(
+        &service.paths().mediapm_ncl,
+        &document_with_one_media_entry(&hash.to_string()),
+    )?;
+
+    let user_path = service.paths().conductor_user_ncl.clone();
+    std::fs::write(&user_path, stale_generated_document_text(&hash.to_string()))
+        .expect("the stale user document should be writable");
+    let before = std::fs::read(&user_path).expect("the stale user document should be readable");
+
+    let error = sync_library_with_test_terminal(&mut service, false)
+        .await
+        .expect_err("a user document this build refuses must fail the sync");
+    assert!(
+        error.to_string().contains("not in external_data"),
+        "the failure must name the undeclared hash: {error}"
+    );
+
+    let after = std::fs::read(&user_path).expect("the user document should still be readable");
+    assert_eq!(after, before, "the sync must not rewrite the user document it refused to read");
 
     Ok(())
 }
