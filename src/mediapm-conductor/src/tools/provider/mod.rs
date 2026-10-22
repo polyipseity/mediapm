@@ -1090,19 +1090,15 @@ pub async fn process_tool_sources(
 
     // Compute total items: archive sources get 2 items (decompress + compress),
     // binary/launcher sources get 1 item.
-    let total_items: usize = downloaded
-        .entries
-        .iter()
-        .map(|e| if is_archive_source(&e.producer) { 2usize } else { 1usize })
-        .sum();
+    let total_items: usize =
+        downloaded.entries.iter().map(|e| if is_archive_source(e) { 2usize } else { 1usize }).sum();
     let mut budget = MultiItemBudget::with_capacity(total_items);
     for entry in &downloaded.entries {
-        let is_archive = is_archive_source(&entry.producer);
+        let is_archive = is_archive_source(entry);
         let initial_total = entry.expected_size.unwrap_or(entry.bytes.len() as u64);
         budget.add_item(initial_total); // item 0: decompress (or single binary item)
         if is_archive {
-            let (archive_format, _) =
-                resolve_format_and_filename(&entry.producer, &downloaded.tool_id);
+            let (archive_format, _) = resolve_format_and_filename(entry, &downloaded.tool_id);
             let compress_estimate = estimate_uncompressed_size(&entry.bytes, archive_format);
             budget.add_item(compress_estimate); // item 1: compress — starts at accurate estimate
         }
@@ -1134,11 +1130,10 @@ pub async fn process_tool_sources(
         // above rejects that case outright; this keeps the two concerns
         // independent.
         let os_dir = temp_root.path().join(os_label).join(source_idx.to_string());
-        let is_archive = is_archive_source(&source.producer);
+        let is_archive = is_archive_source(source);
         let item_count = if is_archive { 2usize } else { 1usize };
 
-        let (archive_format, filename) =
-            resolve_format_and_filename(&source.producer, &downloaded.tool_id);
+        let (archive_format, filename) = resolve_format_and_filename(source, &downloaded.tool_id);
 
         let processed = process_single_source(
             &source.bytes,
@@ -1263,46 +1258,99 @@ fn infer_archive_format(url: &str) -> Option<&'static str> {
     }
 }
 
-/// Returns `true` if the source producer represents an archive download.
+/// Detects an archive container from a payload's leading magic bytes.
 ///
-/// Archive sources produce compressed payloads that require decompression
-/// (e.g. `.zip`, `.tar.gz`, `.tar.xz`). Binary and launcher sources are
-/// used as-is.
-fn is_archive_source(producer: &SourceProducer) -> bool {
-    match producer {
-        SourceProducer::Fetch { urls } => {
-            urls.first().is_some_and(|url| infer_archive_format(url).is_some())
-        }
-        SourceProducer::GenerateLauncher { .. } => false,
+/// Magic outranks the URL extension because a source may declare its
+/// candidates in more than one container format: the ffmpeg macOS chain
+/// advertises a martin-riedl `.zip` permalink first and a jellyfin `.tar.xz`
+/// last, so the bytes that actually arrived are the only authoritative
+/// statement of which container they are. A payload matching no magic is not
+/// classified here; [`archive_format_of_entry`] then falls back to the served
+/// URL, which keeps a declared-but-unrecognizable archive on the extraction
+/// path (where it fails loudly) instead of importing it as an opaque binary.
+#[cfg(feature = "tool-presets")]
+fn infer_archive_format_from_bytes(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]) {
+        Some(ARCHIVE_TAR_XZ)
+    } else if bytes.starts_with(&[0x50, 0x4b, 0x03, 0x04])
+        || bytes.starts_with(&[0x50, 0x4b, 0x05, 0x06])
+        || bytes.starts_with(&[0x50, 0x4b, 0x07, 0x08])
+    {
+        Some(ARCHIVE_ZIP)
+    } else if bytes.starts_with(&[0x1f, 0x8b]) {
+        Some(ARCHIVE_TAR_GZ)
+    } else {
+        None
     }
 }
 
-/// Resolves archive format and filename from a source producer and tool ID.
+/// Returns the URL that describes a downloaded source: the one its bytes came
+/// from when the fetch recorded one, and the first declared candidate
+/// otherwise.
+///
+/// `actual_url` is the post-redirect URL for a network fetch and the requested
+/// candidate URL for a cache hit, so it names the chain member that served this
+/// source rather than the chain's nominal head. Every fetch records it, so the
+/// fallback arm is unreachable for entries this module produces; it exists so a
+/// constructed entry without a served URL still resolves to something finite.
+fn served_source_url(entry: &DownloadedSource) -> &str {
+    if let Some(url) = entry.actual_url.as_deref() {
+        return url;
+    }
+    match &entry.producer {
+        SourceProducer::Fetch { urls } => urls.first().map_or("", String::as_str),
+        SourceProducer::GenerateLauncher { .. } => "",
+    }
+}
+
+/// Resolves one downloaded source's archive format.
+///
+/// The served bytes decide when they match a known container, and the served
+/// URL's extension decides otherwise; see [`infer_archive_format_from_bytes`]
+/// for why the bytes outrank the URL.
+#[cfg(feature = "tool-presets")]
+fn archive_format_of_entry(entry: &DownloadedSource) -> Option<&'static str> {
+    infer_archive_format_from_bytes(&entry.bytes)
+        .or_else(|| infer_archive_format(served_source_url(entry)))
+}
+
+/// Returns `true` if the source is an archive download.
+///
+/// Archive sources produce compressed payloads that require decompression
+/// (e.g. `.zip`, `.tar.gz`, `.tar.xz`). Binary and launcher sources are used
+/// as-is. This is [`archive_format_of_entry`] read as a boolean so the item
+/// budget and the extraction decision cannot disagree about one source.
+fn is_archive_source(entry: &DownloadedSource) -> bool {
+    archive_format_of_entry(entry).is_some()
+}
+
+/// Resolves one downloaded source's archive format and binary filename.
 ///
 /// Extracted from inline code in the per-source loop of `process_tool_sources`
-/// to be reusable in budget setup (before the loop) and during processing.
+/// to be reusable in budget setup (before the loop) and during processing. An
+/// archive's filename is empty because `process_single_source` never uses it;
+/// a binary payload's filename is the basename of the URL the payload came
+/// from, so a chain member that serves under a name different from the
+/// chain's first candidate still keys under the name that arrived. Query and
+/// fragment are dropped before the basename is taken, matching how
+/// [`infer_archive_format`] reads an extension out of the same URL.
 fn resolve_format_and_filename(
-    producer: &SourceProducer,
+    entry: &DownloadedSource,
     tool_id: &str,
 ) -> (Option<&'static str>, String) {
-    match producer {
-        SourceProducer::Fetch { urls } => {
-            let url = urls.first().map_or("", |s| s.as_str());
-            let fmt = infer_archive_format(url);
+    match &entry.producer {
+        SourceProducer::Fetch { .. } => {
+            let fmt = archive_format_of_entry(entry);
             let fname = if fmt.is_some() {
-                // Archive — filename unused in process_single_source
                 String::new()
             } else {
-                // Binary — derive filename from URL basename
-                url.split('/').rfind(|s| !s.is_empty()).unwrap_or(tool_id).to_string()
+                let url = served_source_url(entry);
+                let path = url.split(['?', '#']).next().unwrap_or(url);
+                path.split('/').rfind(|segment| !segment.is_empty()).unwrap_or(tool_id).to_string()
             };
             (fmt, fname)
         }
-        SourceProducer::GenerateLauncher { .. } => {
-            // Launcher scripts are treated as binary format with
-            // filename = tool_id.
-            (None, tool_id.to_string())
-        }
+        SourceProducer::GenerateLauncher { .. } => (None, tool_id.to_string()),
     }
 }
 
@@ -4611,6 +4659,200 @@ mod tests {
             result.os_exec_paths.get("macos").map(String::as_str),
             Some(format!("{}/ffmpeg", host_arch_label()).as_str()),
             "dual-arch slot resolves the host-arch payload path"
+        );
+    }
+
+    /// Every container this module can extract is recognized from its header
+    /// alone, and a payload carrying no archive magic stays unclassified. The
+    /// empty-ZIP end-of-central-directory record is included because a
+    /// legitimately empty archive must not read as a binary payload.
+    #[test]
+    fn infer_archive_format_from_bytes_recognizes_each_container_by_magic() {
+        assert_eq!(
+            infer_archive_format_from_bytes(&synthetic_zip(&[("a.bin", b"1")])),
+            Some(ARCHIVE_ZIP),
+            "a ZIP local-file header starts `PK\\x03\\x04`"
+        );
+        assert_eq!(
+            infer_archive_format_from_bytes(&[0x50, 0x4b, 0x05, 0x06]),
+            Some(ARCHIVE_ZIP),
+            "an empty ZIP is only its end-of-central-directory record"
+        );
+        assert_eq!(
+            infer_archive_format_from_bytes(&synthetic_tar_xz(&[("a.bin", b"1")])),
+            Some(ARCHIVE_TAR_XZ),
+            "xz payloads start `fd 37 7a 58 5a 00`"
+        );
+        assert_eq!(
+            infer_archive_format_from_bytes(&synthetic_tar_gz(&[("a.bin", b"1")])),
+            Some(ARCHIVE_TAR_GZ),
+            "gzip payloads start `1f 8b`"
+        );
+        assert_eq!(
+            infer_archive_format_from_bytes(&[0x7f, b'E', b'L', b'F']),
+            None,
+            "an ELF payload is a binary, not an archive"
+        );
+        assert_eq!(infer_archive_format_from_bytes(b"<html>error</html>"), None);
+        assert_eq!(infer_archive_format_from_bytes(&[]), None);
+    }
+
+    /// A source's format and binary filename follow the URL that served it,
+    /// not the head of the candidate chain it was resolved from, and bytes
+    /// matching a container outrank any URL.
+    #[test]
+    fn resolve_format_and_filename_prefers_the_served_url() {
+        let jellyfin = "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz";
+        let fetch = |urls: Vec<&str>, actual_url: Option<&str>| DownloadedSource {
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            producer: SourceProducer::Fetch {
+                urls: urls.into_iter().map(str::to_string).collect(),
+            },
+            bytes: Vec::new(),
+            expected_size: None,
+            actual_url: actual_url.map(str::to_string),
+        };
+
+        let served_fallback = fetch(
+            vec![
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+                jellyfin,
+            ],
+            Some(jellyfin),
+        );
+        assert_eq!(
+            resolve_format_and_filename(&served_fallback, "ffmpeg").0,
+            Some(ARCHIVE_TAR_XZ),
+            "the served URL names the container that arrived"
+        );
+
+        let declared_only = fetch(
+            vec!["https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"],
+            None,
+        );
+        assert_eq!(
+            resolve_format_and_filename(&declared_only, "ffmpeg").0,
+            Some(ARCHIVE_ZIP),
+            "with no served URL recorded, the first candidate is all there is"
+        );
+
+        let mut bytes_decide = fetch(vec!["https://example.com/tool.zip"], None);
+        bytes_decide.bytes = synthetic_tar_xz(&[("tool", b"payload")]);
+        assert_eq!(
+            resolve_format_and_filename(&bytes_decide, "tool").0,
+            Some(ARCHIVE_TAR_XZ),
+            "bytes matching a container outrank a contradicting URL extension"
+        );
+
+        let binary = fetch(vec!["https://example.com/tools/tool-bin"], None);
+        assert_eq!(
+            resolve_format_and_filename(&binary, "tool"),
+            (None, "tool-bin".to_string()),
+            "a binary payload keys under the basename of the URL that served it"
+        );
+
+        let with_query = fetch(vec!["https://example.com/download?file=tool"], None);
+        assert_eq!(
+            resolve_format_and_filename(&with_query, "tool"),
+            (None, "download".to_string()),
+            "a query string is not part of the filename, matching how the extension is read"
+        );
+    }
+
+    /// A source whose candidate chain mixes container formats must be
+    /// processed as the format its bytes actually are, not as the format its
+    /// first declared candidate advertises. The ffmpeg macOS chain declares a
+    /// martin-riedl `.zip` permalink first and a jellyfin `.tar.xz` last, so a
+    /// martin-riedl outage legitimately lands xz bytes on a source described by
+    /// a `.zip` URL; reading the format off the declared URL opened those bytes
+    /// as a ZIP and failed with `ZIP open error: invalid Zip archive: Could not
+    /// find EOCD` before any payload was imported. This test fails that way on
+    /// the pre-fix code and passes only once the served bytes decide the
+    /// format.
+    #[tokio::test]
+    async fn mixed_format_chain_processes_the_format_its_bytes_are() {
+        let arm = synthetic_tar_xz(&[("ffmpeg", b"arm-payload")]);
+        let intel = synthetic_tar_xz(&[("ffmpeg", b"intel-payload")]);
+        let downloaded = DownloadedSources {
+            tool_id: "ffmpeg".to_string(),
+            entries: vec![
+                DownloadedSource {
+                    os: "macos".to_string(),
+                    arch: "aarch64".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec![
+                            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"
+                                .to_string(),
+                            "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz".to_string(),
+                        ],
+                    },
+                    bytes: arm,
+                    expected_size: None,
+                    actual_url: Some(
+                        "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz"
+                            .to_string(),
+                    ),
+                },
+                DownloadedSource {
+                    os: "macos".to_string(),
+                    arch: "x86_64".to_string(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec![
+                            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/snapshot/ffmpeg.zip"
+                                .to_string(),
+                            "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/x86_64/jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz".to_string(),
+                        ],
+                    },
+                    bytes: intel,
+                    expected_size: None,
+                    actual_url: Some(
+                        "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/x86_64/jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz"
+                            .to_string(),
+                    ),
+                },
+            ],
+            cached_count: 0,
+            warnings: Vec::new(),
+        };
+
+        let cas = InMemoryCas::default();
+        let result = process_tool_sources(&downloaded, &cas, None)
+            .await
+            .expect("a mixed-format chain must be processed as the format its bytes are");
+
+        let keys: Vec<&str> = result.content_map.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            vec!["macos/aarch64/", "macos/x86_64/"],
+            "both macOS payloads land under arch-segmented keys"
+        );
+        for (key, expected) in
+            [("macos/aarch64/", b"arm-payload".as_slice()), ("macos/x86_64/", b"intel-payload")]
+        {
+            let hash = result
+                .content_map
+                .get(key)
+                .unwrap_or_else(|| panic!("content_map must key '{key}'"));
+            let hash = hash.parse::<Hash>().expect("content_map hash must be a valid hash string");
+            let stored = cas.get(hash).await.expect("the imported payload must be in the CAS");
+            // Each arch's content is stored as the repacked archive, so the
+            // payload has to be read back out of the entry it was packed into.
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(stored.as_ref()))
+                .expect("each processed source must be stored as a ZIP payload");
+            let mut entry = archive.by_name("ffmpeg").expect("the archive must carry the binary");
+            let mut payload = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut payload)
+                .expect("the packed binary must be readable");
+            assert_eq!(
+                payload, expected,
+                "'{key}' must hold its own arch's payload, not the other arch's"
+            );
+        }
+        assert_eq!(
+            result.os_exec_paths.get("macos").map(String::as_str),
+            Some(format!("{}/ffmpeg", host_arch_label()).as_str()),
+            "the extracted payload's exec path resolves below the host-arch segment"
         );
     }
 

@@ -100,7 +100,14 @@ pub(super) enum PreResolveOutcome {
 ///
 /// Archive sources produce compressed payloads that require decompression
 /// (e.g., `.zip`, `.tar.gz`, `.tar.xz`). Binary and launcher sources are
-/// used as-is. Mirrors the logic in `mediapm-conductor/src/tools/provider/mod.rs`.
+/// used as-is.
+///
+/// This classifies by the declared URL because it runs before the fetch, when
+/// the bytes do not exist yet; the conductor decides extraction from the served
+/// bytes and only falls back to the URL. The two agree on every chain in this
+/// repository, whose declared head and served payload are both archives or both
+/// binaries, and a chain that mixes them would show a wrong item total here
+/// rather than a wrong extraction there.
 fn is_archive_source(producer: &SourceProducer) -> bool {
     match producer {
         SourceProducer::Fetch { urls } => {
@@ -113,8 +120,11 @@ fn is_archive_source(producer: &SourceProducer) -> bool {
 /// Infers archive format from a URL's file extension.
 ///
 /// Returns `Some(format)` for recognized archive extensions, or `None` for
-/// binary/launcher payloads. Mirrors the logic in
-/// `mediapm-conductor/src/tools/provider/mod.rs`.
+/// binary/launcher payloads.
+///
+/// The conductor's own resolver reads the served bytes first and consults the
+/// URL only when they match no container header, so this extension table is
+/// the pre-fetch half of that decision and not a copy of it.
 fn infer_archive_format(url: &str) -> Option<&'static str> {
     let url_path = url.split('?').next().unwrap_or(url);
     let filename = url_path.trim_end_matches('/').split('/').next_back().unwrap_or(url_path);
