@@ -330,6 +330,12 @@ enum MergeDecision {
 ///   later execution is told it exists.
 /// - A name the stored map does not hold is inserted. This is the union itself,
 ///   and it is what lets a step-only declaration survive a sibling's settlement.
+/// - A name recorded under a *different* capture identity is replaced by the
+///   incoming entry. That is the "a changed capture spec under the same name
+///   re-executes and replaces only that entry" case. Identity outranks the
+///   identical-bytes no-op on purpose: keeping the old entry would leave the
+///   probe comparing against a spec the step no longer declares, so it would
+///   miss on every later sync and re-execute forever.
 /// - A name recorded under the *same* capture identity must hold the same bytes.
 ///   Equal bytes are a no-op that keeps the stored entry, spec and `save`
 ///   included, so a `save`-only difference between two steps never rewrites the
@@ -374,12 +380,6 @@ enum MergeDecision {
 ///   replace each other with nothing recorded about the substitution. That gap
 ///   predates this rule, and stating it keeps it from being read as something
 ///   impurity covered.
-/// - A name recorded under a *different* capture identity is replaced by the
-///   incoming entry. That is the "a changed capture spec under the same name
-///   re-executes and replaces only that entry" case. Identity outranks the
-///   identical-bytes no-op on purpose: keeping the old entry would leave the
-///   probe comparing against a spec the step no longer declares, so it would
-///   miss on every later sync and re-execute forever.
 ///
 /// Capture identity is one comparison for every capture kind:
 /// [`crate::config::OutputCaptureSpec::same_capture_identity`] compares the

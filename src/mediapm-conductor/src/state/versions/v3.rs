@@ -93,7 +93,10 @@ pub(crate) struct OutputCaptureSpecV3 {
     /// `file:<path>`, `file_regex:<pattern>`, `folder:<path>`,
     /// `folder_regex:<pattern>`).
     pub capture: String,
-    /// Whether to persist this output to CAS.
+    /// The persistence intent recorded for this output.
+    ///
+    /// Written and read as provenance: the capture phase stores every output
+    /// whatever this says, so it is never the reason bytes are or are not kept.
     #[serde(default, skip_serializing_if = "is_save_mode_true_v3")]
     pub save: SaveModeV3,
     /// Whether an empty capture result is acceptable.
@@ -150,7 +153,11 @@ pub(crate) struct ToolCallInstanceV3 {
     pub instance_key: Hash,
     /// Tool call identifier: the unified tools-catalog map key.
     pub tool_call_id: String,
-    /// Whether the tool is impure. Provenance only; never key material.
+    /// Whether the tool is impure.
+    ///
+    /// Settlement reads it to decide whether a differing artifact for one
+    /// capture identity replaces the stored entry or is divergence, so it is
+    /// behaviour and not only provenance. It is never key material.
     pub impure: bool,
     /// Execution timestamp. Provenance only; never key material.
     pub executed_at: ImpureTimestampV3,
