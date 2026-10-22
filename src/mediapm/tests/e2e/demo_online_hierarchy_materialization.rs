@@ -43,10 +43,12 @@ const ONLINE_LINK_RENAME_REPLACEMENT: &str = "${media.metadata.title} [${media.i
 
 fn demo_metadata_literals() -> BTreeMap<String, MediaMetadataValue> {
     BTreeMap::from([
-        // The title carries the artist (single-source basename stem), matching the
-        // live demo where `${media.metadata.title}` resolves to the yt-dlp provider
-        // title. No separate artist entry: no template interpolates it.
-        ("title".to_string(), MediaMetadataValue::Literal(online_demo_yt_dlp_provider_title())),
+        // The online demo's naming family single-sources from `${media.metadata.title}`, which
+        // resolves to the canonical MusicBrainz recording title once tagging has run. No separate
+        // artist entry: no template interpolates it, and the canonical title carries no artist.
+        // The upstream provider title, which does embed one, belongs to the pre-tagging artifact
+        // and to the yt-dlp-named sidecar links.
+        ("title".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_TITLE.to_string())),
         ("video_ext".to_string(), MediaMetadataValue::Literal(".mkv".to_string())),
         ("id".to_string(), MediaMetadataValue::Literal("dQw4w9WgXcQ".to_string())),
     ])
@@ -108,21 +110,24 @@ fn assert_materialized_content_matches_seeds(
 ) -> Result<(), String> {
     let media_folder =
         hierarchy_root.join(mediapm::demo_hierarchy_spec::online_demo_media_folder_relative());
-    let provider_title = online_demo_yt_dlp_provider_title();
+    // Root names follow the media metadata title, which is the canonical MusicBrainz recording
+    // title: the hermetic seed stands in for what a tagged run resolves. The upstream provider
+    // title, which embeds the artist, names only the yt-dlp-named sidecar links below.
+    let canonical_title = DEMO_METADATA_TITLE;
     // Hierarchy templates use `${media.id}` which resolves to the full media ID
     // (e.g., `youtube.dQw4w9WgXcQ`), not the raw yt-dlp video ID.
     let media_id = ONLINE_DEMO_MEDIA_ID;
 
     // Tagged video file
-    let tagged_name = format!("{provider_title} [{media_id}].mkv");
+    let tagged_name = format!("{canonical_title} [{media_id}].mkv");
     assert_file_bytes(&media_folder.join(&tagged_name), MKV_HEADER, "[video tagged]")?;
 
     // Untagged video file
-    let untagged_name = format!("{provider_title} [{media_id}].untagged.mkv");
+    let untagged_name = format!("{canonical_title} [{media_id}].untagged.mkv");
     assert_file_bytes(&media_folder.join(&untagged_name), MKV_HEADER, "[video untagged]")?;
 
     // Subtitle (root-level .en.vtt from primary variant)
-    let vtt_name = format!("{provider_title} [{media_id}].en.vtt");
+    let vtt_name = format!("{canonical_title} [{media_id}].en.vtt");
     assert_file_bytes(&media_folder.join(&vtt_name), b"WEBVTT\n", "[subtitle root]")?;
     // Subtitle (sidecar)
     assert_file_bytes(
@@ -132,7 +137,7 @@ fn assert_materialized_content_matches_seeds(
     )?;
 
     // Description (root-level)
-    let desc_name = format!("{provider_title} [{media_id}].description.txt");
+    let desc_name = format!("{canonical_title} [{media_id}].description.txt");
     assert_file_bytes(
         &media_folder.join(&desc_name),
         b"description fixture",
@@ -146,7 +151,7 @@ fn assert_materialized_content_matches_seeds(
     )?;
 
     // Info.json (root-level)
-    let info_name = format!("{provider_title} [{media_id}].info.json");
+    let info_name = format!("{canonical_title} [{media_id}].info.json");
     assert_file_bytes(
         &media_folder.join(&info_name),
         br#"{"title":"Never Gonna Give You Up"}"#,
@@ -179,9 +184,9 @@ fn assert_materialized_content_matches_seeds(
     )?;
 
     // Thumbnails (root projection)
-    let thumb_jpg_name = format!("{provider_title} [{media_id}].thumbnail.jpg");
+    let thumb_jpg_name = format!("{canonical_title} [{media_id}].thumbnail.jpg");
     assert_file_bytes(&media_folder.join(&thumb_jpg_name), b"jpg-bytes", "[thumbnail root jpg]")?;
-    let thumb_webp_name = format!("{provider_title} [{media_id}].thumbnail.webp");
+    let thumb_webp_name = format!("{canonical_title} [{media_id}].thumbnail.webp");
     assert_file_bytes(
         &media_folder.join(&thumb_webp_name),
         b"webp-bytes",

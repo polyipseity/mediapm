@@ -123,8 +123,11 @@ async fn online_sync_post_sync_dump() {
         .collect();
 
     let hierarchy_root = paths.hierarchy_root_dir;
-    let media_folder = PathBuf::from("music videos")
-        .join("Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]");
+    // The media root carries the canonical title the tagged variant resolves to: the online demo's
+    // name templates single-source from `${media.metadata.title}`, and media-tagger writes
+    // MusicBrainz's recording title, which has no artist prefix.
+    let media_folder =
+        PathBuf::from(mediapm::demo_hierarchy_spec::online_demo_media_folder_relative());
     let sidecar_info = hierarchy_root.join(&media_folder).join("sidecars/info.json");
 
     let yt_dlp_tool_keys: Vec<String> =

@@ -11,8 +11,11 @@
 //!
 //! ## Online link naming (two formats)
 //!
-//! Sidecar links under `sidecars/links/` use the **yt-dlp output basename** (`%(title)s [%(id)s].{ext}`).
-//! Root link projections use the **mediapm hierarchy rename** shape (`… [{media.id}].link.{ext}`).
+//! Sidecar links under `sidecars/links/` use the **yt-dlp output basename** (`%(title)s [%(id)s].{ext}`),
+//! so their title is the upstream provider title, which embeds the artist.
+//! Root link projections use the **mediapm hierarchy rename** shape (`… [{media.id}].link.{ext}`),
+//! so their title is the media metadata title, which is the canonical `MusicBrainz` recording title
+//! and carries no artist.
 //! Helpers encode both exact forms for golden JSON, e2e seeds, and live demo asserts — see
 //! `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
@@ -36,7 +39,11 @@ pub const OFFLINE_DEMO_PLAYLIST: &str = "local-demo.m3u8";
 /// Online demo playlist leaf under `playlists/`.
 pub const ONLINE_DEMO_PLAYLIST: &str = "rickroll.m3u8";
 
-/// Returns Jellyfin-style media folder name for one media id.
+/// Returns the Jellyfin-style media folder name the **offline** demo's template renders.
+///
+/// The offline demo declares `"${media.metadata.artist} - ${media.metadata.title} [${media.id}]"`,
+/// so its folder carries the artist explicitly. The online demo's templates name only
+/// `${media.metadata.title}`, which is why it needs [`online_demo_media_folder_relative`] instead.
 #[must_use]
 pub fn demo_media_folder_name(artist: &str, title: &str, media_id: &str) -> String {
     format!("{artist} - {title} [{media_id}]")
@@ -52,12 +59,14 @@ pub fn offline_demo_media_folder_relative() -> String {
 }
 
 /// Returns online demo media folder relative path under hierarchy root.
+///
+/// The online demo's naming family single-sources from `${media.metadata.title}`, which resolves to
+/// the canonical `MusicBrainz` recording title once tagging has run — no artist prefix. A run that
+/// never reached the tagging steps resolves the upstream provider title instead, which embeds the
+/// artist; that run is a failed run, so this canonical form is the one the golden records.
 #[must_use]
 pub fn online_demo_media_folder_relative() -> String {
-    format!(
-        "{DEMO_LIBRARY_ROOT}/{}",
-        demo_media_folder_name(DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID)
-    )
+    format!("{DEMO_LIBRARY_ROOT}/{DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}]")
 }
 
 /// Raw yt-dlp video id for the online demo Rick Astley URL.
@@ -83,6 +92,9 @@ pub fn online_demo_public_artifact_filename(
 }
 
 /// yt-dlp-format sidecar link basename under `sidecars/links/` (`{title} [{video_id}].{ext}`).
+///
+/// The title here is the **upstream** provider title, because yt-dlp names these files itself from
+/// its own output template; mediapm never renames them.
 #[must_use]
 pub fn online_demo_sidecar_link_filename(extension: &str) -> String {
     online_demo_public_artifact_filename(
@@ -93,9 +105,13 @@ pub fn online_demo_sidecar_link_filename(extension: &str) -> String {
 }
 
 /// mediapm root link projection basename (`…[{media.id}].link.{ext}`).
+///
+/// The title here is the **canonical** media metadata title, because mediapm renders this name
+/// through its own `rename_files` template; the `link` projections are therefore the one link
+/// family whose title differs from the sidecar family's.
 #[must_use]
 pub fn online_demo_root_link_filename(extension: &str) -> String {
-    format!("{} [{}].link.{}", online_demo_yt_dlp_provider_title(), ONLINE_DEMO_MEDIA_ID, extension)
+    format!("{DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].link.{extension}")
 }
 
 /// Golden-relative path for one online demo sidecar link file under `sidecars/links/`.
@@ -369,15 +385,15 @@ mod tests {
     fn online_demo_root_link_filenames_are_canonical() {
         assert_eq!(
             online_demo_root_link_filename("url"),
-            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url"
+            "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url"
         );
         assert_eq!(
             online_demo_root_link_filename("webloc"),
-            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc"
+            "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc"
         );
         assert_eq!(
             online_demo_root_link_filename("desktop"),
-            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop"
+            "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop"
         );
     }
 

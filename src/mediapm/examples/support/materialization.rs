@@ -372,10 +372,10 @@ const XTAL_TRACK: &str = "Music/Aphex Twin/Selected Ambient Works 85-92/02 - Xta
 /// Media folder entry the online demo materializes, as
 /// `demo_hierarchy_spec::online_demo_media_folder_relative()` spells it.
 ///
-/// The basename is fifty-nine columns, so the row is the one the elastic
-/// `entry_name` exists for.
-const ONLINE_MEDIA_FOLDER: &str =
-    "music videos/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
+/// The basename is forty-five columns, past the thirty-six the row's label slot
+/// gets at these widths, so the row is the one the elastic `entry_name` exists
+/// for: it keeps the tail, which is where the media id lives.
+const ONLINE_MEDIA_FOLDER: &str = "music videos/Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
 
 /// Playlist entry the online demo materializes, under the `playlists/` leaf
 /// `demo_hierarchy_spec::ONLINE_DEMO_PLAYLIST` names.

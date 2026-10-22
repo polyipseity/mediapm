@@ -15,6 +15,8 @@
 //! [`mediapm::demo_hierarchy_spec`]. Offline demo tree: see `mediapm_demo`.
 //!
 //! Shared constants: artist `Rick Astley`, title `Never Gonna Give You Up`, library root `music videos`.
+//! The title is the canonical `MusicBrainz` recording title, which the media root basename uses once
+//! tagging has run; upstream's own title embeds the artist and names the yt-dlp sidecar links.
 //!
 //! **Media id:** `youtube.dQw4w9WgXcQ` · **Raw yt-dlp video id:** `dQw4w9WgXcQ`
 //!
@@ -23,7 +25,7 @@
 //! ```text
 //! media/
 //! ├── music videos/
-//! │   └── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/
+//! │   └── Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/
 //! │       ├── sidecars/                                    [Folder]
 //! │       │   ├── subtitles/                             [MediaFolder → subtitles] NON-EMPTY
 //! │       │   ├── subtitles.en.vtt                         [Media → subtitles_en]
@@ -35,15 +37,15 @@
 //! │       │   ├── archive.txt                              [Media → archive]
 //! │       │   ├── description.txt                          [Media → description]
 //! │       │   └── info.json                                [Media → infojson]
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].untagged.mkv   # video_untagged
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].mkv            # video (tagged + replaygain)
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].en.vtt
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].description.txt
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].info.json
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].thumbnail.<ext>   # glob `*.thumbnail.*`
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url          # mediapm rename format
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc       # mediapm rename format
-//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop      # mediapm rename format
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].untagged.mkv   # video_untagged
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].mkv            # video (tagged + replaygain)
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].en.vtt
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].description.txt
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].info.json
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].thumbnail.<ext>   # glob `*.thumbnail.*`
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url          # mediapm rename format
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc       # mediapm rename format
+//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop      # mediapm rename format
 //! │       └── folder.<ext>                                    # glob `folder.*` (id `.thumbnails.folder`)
 //! └── playlists/
 //!     └── rickroll.m3u8                                      # playlist, 2 entries
@@ -51,16 +53,22 @@
 //!
 //! ## Link filename formats (two families)
 //!
-//! | Location | Format owner | Bracket id |
-//! | -------- | ------------ | ---------- |
-//! | `sidecars/links/` | yt-dlp `%(title)s [%(id)s].{ext}` — LIVE provider title | `dQw4w9WgXcQ` |
-//! | Media folder root | mediapm `rename_files` → `.link.$1` — structural `[media.id]` suffix | `youtube.dQw4w9WgXcQ` |
+//! | Location | Format owner | Title provenance | Bracket id |
+//! | -------- | ------------ | ---------------- | ---------- |
+//! | `sidecars/links/` | yt-dlp `%(title)s [%(id)s].{ext}` | LIVE provider title, artist included | `dQw4w9WgXcQ` |
+//! | Media folder root | mediapm `rename_files` → `.link.$1` | Canonical metadata title, no artist | `youtube.dQw4w9WgXcQ` |
 //!
 //! Sidecar links under `sidecars/links/` carry the LIVE yt-dlp provider title read from
 //! `sidecars/info.json` (`title` key), so post-sync asserts expect `{provider_title} [{video_id}].{ext}`
-//! instead of a hardcoded stand-in. Media-root projections (subtitles, thumbnails, links) are asserted
-//! STRUCTURALLY by their media-id suffix (` [{media.id}].`) — their title text is live metadata and is
-//! not hardcoded.
+//! instead of a hardcoded stand-in. That title embeds the artist, because upstream's does.
+//!
+//! Media-root projections (subtitles, thumbnails, links) are named by mediapm's own templates, which
+//! single-source their stem from `${media.metadata.title}`. That resolves to the canonical
+//! `MusicBrainz` recording title once tagging has run, so a root name carries no artist prefix while a
+//! sidecar link basename does — the two families differ in provenance, not just in the bracket id.
+//! Their title text is live metadata, so post-sync asserts resolve it from the materialized tree
+//! instead of pinning it; only the media root basename itself is pinned, by
+//! `expected_demo_media_root_name`.
 //!
 //! See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 //!
@@ -147,7 +155,9 @@ const DEMO_METADATA_SOURCE_LITERAL: &str = "youtube-demo";
 
 const DEMO_EXPECTED_VIDEO_ID: &str = "dQw4w9WgXcQ";
 
+/// Canonical `MusicBrainz` recording title of the demo video, which carries no artist.
 const DEMO_EXPECTED_TITLE: &str = "Never Gonna Give You Up";
+/// Artist the demo asserts on, in the `artist` metadata entry and the tagged artifact's `ARTIST` tag.
 const DEMO_METADATA_ARTIST: &str = "Rick Astley";
 
 const DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT: &str = ".mkv";
@@ -493,13 +503,20 @@ fn emit_watchdog_notice(message: &str) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DemoResolvedMetadata {
+    /// Canonical metadata title, parsed back out of the materialized media root's own name.
+    ///
+    /// The online demo's name templates single-source their stem from `${media.metadata.title}`,
+    /// so every root-level projection renders this title. It is the `MusicBrainz` recording title
+    /// once tagging has run and the upstream provider title otherwise, which is why
+    /// `assert_metadata_files_present` pins the media root against the canonical form.
     title: String,
     /// yt-dlp provider title (`info.json` `title` key).
     ///
     /// This is the LIVE basename stem for `sidecars/links/` files:
-    /// `{provider_title} [{video_id}].{ext}`. It is read from the infojson
-    /// instead of a hardcoded stand-in so live yt-dlp title drift does not
-    /// break the post-sync asserts.
+    /// `{provider_title} [{video_id}].{ext}`, and it embeds the artist because upstream's does.
+    /// It is read from the infojson instead of a hardcoded stand-in so live yt-dlp title drift
+    /// does not break the post-sync asserts. The root link projections do **not** use it: mediapm
+    /// renders those from `${media.metadata.title}`.
     provider_title: String,
     video_id: String,
     media_id: String,
@@ -539,9 +556,10 @@ fn resolve_demo_metadata_template(template: &str, metadata: &DemoResolvedMetadat
 fn parse_jellyfin_root_folder_name(folder_name: &str) -> Option<(String, String)> {
     let (title_segment, media_id_segment) = folder_name.rsplit_once(" [")?;
     let media_id = media_id_segment.strip_suffix(']')?.trim();
-    // The basename single-sources from `${media.metadata.title}`, which itself
-    // carries the artist (the live yt-dlp provider title). The whole segment
-    // before ` [<media-id>]` is the title — never split it back apart on ` - `.
+    // The basename single-sources from `${media.metadata.title}`: the canonical MusicBrainz
+    // recording title once tagging has run, or the upstream provider title — which embeds the
+    // artist — in a run that never reached the tagging steps. The whole segment before
+    // ` [<media-id>]` is the title either way; never split it back apart on ` - `.
     let title = title_segment.trim();
     if title.is_empty() || media_id.is_empty() {
         return None;
@@ -1204,22 +1222,24 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 (
                     "title".to_string(),
                     MediaMetadataValue::Fallback(vec![
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "infojson".to_string(),
-                            metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
-                            transform: None,
-                        }),
+                        // The tagged `video` variant: yt-dlp produces it, media-tagger redefines it
+                        // with MusicBrainz's recording title, and rsgain redefines it once more.
+                        // Every name template single-sources from this key, so the materialized
+                        // tree carries the canonical title once tagging has run.
                         MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
                             variant: "video".to_string(),
                             metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
                             transform: None,
                         }),
-                        // The basename single-sources from `title`, so the literal
-                        // fallback carries the artist to keep exactly one prefix even
-                        // when infojson is unavailable.
-                        MediaMetadataValueCandidate::Literal(format!(
-                            "{DEMO_METADATA_ARTIST} - {DEMO_EXPECTED_TITLE}"
-                        )),
+                        // A run that never reached the tagging steps resolves the upstream download
+                        // instead, whose title embeds the artist. That run fails its post-sync
+                        // assertion rather than silently materializing an artist-prefixed tree.
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "infojson".to_string(),
+                            metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Literal(DEMO_EXPECTED_TITLE.to_string()),
                     ]),
                 ),
                 (
@@ -2612,14 +2632,64 @@ fn assert_audio_stream_properties(payload: &serde_json::Value) -> ExampleResult<
     Ok(())
 }
 
+/// Asserts the tags the pre-tagging artifact must carry, which are the upstream download's own.
+///
+/// `provider_title` is the live yt-dlp title read from `sidecars/info.json`, so the title check
+/// follows upstream's text instead of pinning a stand-in. The `MusicBrainz`-only tags are asserted
+/// absent: this artifact is produced before media-tagger runs, so any of them appearing here means
+/// a tagging step wrote into the wrong variant. Upstream's `DATE` and `GENRE` are deliberately not
+/// pinned — they are upstream's to change, and pinning them recreates the drift this split removes.
+fn assert_untagged_format_tags(
+    payload: &serde_json::Value,
+    provider_title: &str,
+) -> ExampleResult<()> {
+    let format_tags = payload
+        .get("format")
+        .and_then(|format| format.get("tags"))
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "[ffprobe] payload missing format.tags".to_string())?;
+    assert_tag_eq(format_tags, "title", provider_title)?;
+    assert_tag_eq(format_tags, "ARTIST", DEMO_METADATA_ARTIST)?;
+    let comment = format_tags.get("COMMENT").and_then(serde_json::Value::as_str).unwrap_or("");
+    if !comment.contains(ONLINE_DEMO_YT_DLP_VIDEO_ID) {
+        return Err(format!(
+            "[ffprobe] tag 'COMMENT' expected to contain video ID '{ONLINE_DEMO_YT_DLP_VIDEO_ID}', got '{comment}'",
+        )
+        .into());
+    }
+    for key in [
+        "ALBUM",
+        "LABEL",
+        "ISRC",
+        "MUSICBRAINZ_ARTISTID",
+        "MUSICBRAINZ_ALBUMARTISTID",
+        "MUSICBRAINZ_ALBUMID",
+        "MUSICBRAINZ_RECORDINGID",
+        "REPLAYGAIN_TRACK_GAIN",
+        "REPLAYGAIN_REFERENCE_LOUDNESS",
+    ] {
+        if format_tags.contains_key(key) {
+            return Err(format!(
+                "[ffprobe] tag '{key}' must be absent from the untagged artifact: media-tagger and rsgain write it"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Asserts the tags the post-tagging artifact must carry, which are the canonical ones.
+///
+/// This is the tagged `video` variant — media-tagger's `MusicBrainz` tags with rsgain's loudness
+/// tags on top — so it is the only artifact whose tags may be pinned to those literals.
 fn assert_format_tags_structural(payload: &serde_json::Value) -> ExampleResult<()> {
     let format_tags = payload
         .get("format")
         .and_then(|format| format.get("tags"))
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| "[ffprobe] payload missing format.tags".to_string())?;
-    assert_tag_eq(format_tags, "title", "Never Gonna Give You Up")?;
-    assert_tag_eq(format_tags, "ARTIST", "Rick Astley")?;
+    assert_tag_eq(format_tags, "title", DEMO_EXPECTED_TITLE)?;
+    assert_tag_eq(format_tags, "ARTIST", DEMO_METADATA_ARTIST)?;
     assert_tag_eq(format_tags, "ALBUM", "Never Gonna Give You Up")?;
     assert_tag_eq(format_tags, "DATE", "1987-07-27")?;
     assert_tag_eq(format_tags, "LABEL", "RCA")?;
@@ -2703,7 +2773,7 @@ fn assert_tagged_media_metadata(path: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
-fn assert_untagged_media_metadata(path: &Path) -> ExampleResult<()> {
+fn assert_untagged_media_metadata(path: &Path, provider_title: &str) -> ExampleResult<()> {
     let payload = ffprobe_json_payload(
         path,
         "format=format_name,duration,nb_streams:stream=codec_type,codec_name,width,height,pix_fmt,field_order,r_frame_rate,display_aspect_ratio,sample_aspect_ratio,color_space,color_transfer,color_primaries,sample_rate,channel_layout,channels",
@@ -2739,19 +2809,18 @@ fn assert_untagged_media_metadata(path: &Path) -> ExampleResult<()> {
     assert_video_stream_properties(&payload)?;
     assert_audio_stream_properties(&payload)?;
     let full_payload = ffprobe_json_payload(path, "format_tags:stream_tags")?;
-    if let Some(tags) = full_payload
-        .get("format")
-        .and_then(|f| f.get("tags"))
-        .and_then(serde_json::Value::as_object)
-        && tags.contains_key("REPLAYGAIN_TRACK_GAIN")
-    {
-        return Err("[ffprobe] untagged media should not have REPLAYGAIN_TRACK_GAIN tag".into());
-    }
+    assert_untagged_format_tags(&full_payload, provider_title)?;
     Ok(())
 }
 
+/// Canonical media-root basename for the online demo: the `MusicBrainz` recording title.
+///
+/// The hierarchy templates single-source their basename stem from `${media.metadata.title}`,
+/// so this is the canonical form of every materialized name once tagging has run. Upstream's
+/// own title embeds the artist, which is why the same template renders an artist-prefixed name
+/// in a run that never reached the tagging steps.
 fn expected_demo_media_root_name() -> String {
-    format!("{DEMO_METADATA_ARTIST} - {DEMO_EXPECTED_TITLE} [{DEMO_MEDIA_ID}]")
+    format!("{DEMO_EXPECTED_TITLE} [{DEMO_MEDIA_ID}]")
 }
 
 fn resolve_interpolated_demo_root(hierarchy_root: &Path) -> ExampleResult<PathBuf> {
@@ -2795,6 +2864,10 @@ fn resolve_interpolated_demo_root(hierarchy_root: &Path) -> ExampleResult<PathBu
     Ok(candidates.remove(0))
 }
 
+/// Asserts the artifact is a Matroska container, which both the tagged and the untagged media are.
+///
+/// Container shape is the one thing the two artifacts share, so it is the one thing this helper
+/// checks; tags differ between them and are asserted by their own helpers.
 fn assert_video_file_integrity(path: &Path, context: &str) -> ExampleResult<()> {
     let bytes = fs::read(path)
         .map_err(|e| format!("{context}: read video file '{}': {e}", path.display()))?;
@@ -2826,6 +2899,11 @@ fn assert_file_extension(
     }
 }
 
+/// Asserts the media root carries the canonical basename and that its sibling names derive from it.
+///
+/// The canonical basename is the `MusicBrainz` recording title, which carries no artist, while
+/// upstream's title embeds one; an artist in this name is therefore the fingerprint of a run
+/// whose names came from the pre-tagging variant.
 fn assert_metadata_files_present(
     interpolated_root: &Path,
     resolved_metadata: &DemoResolvedMetadata,
@@ -2843,13 +2921,22 @@ fn assert_metadata_files_present(
         .into());
     }
 
-    // Exactly one artist prefix: the title metadata already carries the artist
-    // (the live yt-dlp provider title), so a second `Rick Astley - ` here means
-    // a template prepended it again.
-    let artist_hits = resolved_output_base.matches(DEMO_METADATA_ARTIST).count();
-    if artist_hits != 1 {
+    // The canonical basename is the MusicBrainz recording title, which carries no
+    // artist; upstream's title embeds one. So an exact match against the canonical
+    // base is the assertion that tagging ran, and the artist check names the one way
+    // the name can drift towards the pre-tagging variant without changing its shape.
+    // A run that never reached the tagging steps is a failed run, not a run whose
+    // names are allowed to differ.
+    let canonical_base = expected_demo_media_root_name();
+    if resolved_output_base != canonical_base {
         return Err(format!(
-            "[metadata] materialized basename '{resolved_output_base}' must contain exactly one '{DEMO_METADATA_ARTIST}' prefix, found {artist_hits}"
+            "[metadata] materialized basename '{resolved_output_base}' must be the canonical title '{canonical_base}'"
+        )
+        .into());
+    }
+    if resolved_output_base.contains(DEMO_METADATA_ARTIST) {
+        return Err(format!(
+            "[metadata] materialized basename '{resolved_output_base}' must not carry '{DEMO_METADATA_ARTIST}': the canonical recording title has no artist prefix"
         )
         .into());
     }
@@ -3025,7 +3112,7 @@ fn resolve_demo_output_paths(
     )?;
     assert_video_file_integrity(&video_path, "[video] untagged")?;
     assert_mkv_video_audio_with_ffprobe(&video_path)?;
-    assert_untagged_media_metadata(&video_path)?;
+    assert_untagged_media_metadata(&video_path, &resolved_metadata.provider_title)?;
 
     let tagged_video_path = interpolated_root.join(&resolved_tagged_file_name);
     if !tagged_video_path.is_file() {
@@ -3350,6 +3437,181 @@ async fn main() -> ExampleResult<()> {
 #[cfg(test)]
 mod tests {
     use mediapm::example_isolation::{self, IsolatedExampleRoots};
+
+    /// Stands in for the live yt-dlp provider title, which the run reads from `sidecars/info.json`.
+    ///
+    /// It is the shape upstream writes, artist embedded and all, which is what the untagged
+    /// artifact's title assertion follows at run time.
+    const UPSTREAM_TITLE: &str =
+        "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)";
+
+    /// Ensures the pre-tagging artifact's tag assertion accepts the upstream download.
+    ///
+    /// Upstream writes the provider title, the channel as `ARTIST`, and the video URL as
+    /// `COMMENT`; none of the `MusicBrainz` or rsgain tags exists yet, which is exactly what this
+    /// assertion has to accept.
+    #[test]
+    fn untagged_format_tags_accept_the_upstream_download() {
+        let payload = serde_json::json!({
+            "format": {
+                "tags": {
+                    "title": UPSTREAM_TITLE,
+                    "ARTIST": super::DEMO_METADATA_ARTIST,
+                    "COMMENT": format!(
+                        "https://www.youtube.com/watch?v={}",
+                        super::ONLINE_DEMO_YT_DLP_VIDEO_ID
+                    ),
+                    "DATE": "20091025",
+                    "GENRE": "Music",
+                }
+            }
+        });
+
+        super::assert_untagged_format_tags(&payload, UPSTREAM_TITLE)
+            .expect("the upstream download's own tags must satisfy the untagged assertion");
+    }
+
+    /// Ensures the pre-tagging artifact's tag assertion rejects a tag a later step writes.
+    ///
+    /// `ISRC` is written by media-tagger and `REPLAYGAIN_TRACK_GAIN` by rsgain, so either one
+    /// appearing on the untagged artifact means a tagging step wrote into the wrong variant.
+    #[test]
+    fn untagged_format_tags_reject_tags_a_later_step_writes() {
+        // Every tag a later step writes, so the production list cannot silently lose one.
+        for key in [
+            "ALBUM",
+            "LABEL",
+            "ISRC",
+            "MUSICBRAINZ_ARTISTID",
+            "MUSICBRAINZ_ALBUMARTISTID",
+            "MUSICBRAINZ_ALBUMID",
+            "MUSICBRAINZ_RECORDINGID",
+            "REPLAYGAIN_TRACK_GAIN",
+            "REPLAYGAIN_REFERENCE_LOUDNESS",
+        ] {
+            let mut tags = serde_json::Map::new();
+            tags.insert("title".to_string(), serde_json::json!(UPSTREAM_TITLE));
+            tags.insert("ARTIST".to_string(), serde_json::json!(super::DEMO_METADATA_ARTIST));
+            tags.insert(
+                "COMMENT".to_string(),
+                serde_json::json!(format!(
+                    "https://www.youtube.com/watch?v={}",
+                    super::ONLINE_DEMO_YT_DLP_VIDEO_ID
+                )),
+            );
+            tags.insert(key.to_string(), serde_json::json!("present"));
+            let payload = serde_json::json!({ "format": { "tags": tags } });
+
+            let error = super::assert_untagged_format_tags(&payload, UPSTREAM_TITLE)
+                .expect_err("a later step's tag must not appear on the untagged artifact");
+            assert!(error.to_string().contains(key), "the rejection must name '{key}': {error}");
+        }
+    }
+
+    /// Ensures the two artifacts' tag assertions disagree, so neither can cover both.
+    ///
+    /// The tagged assertion pins `MusicBrainz`'s recording title and the `MusicBrainz` tags; the
+    /// untagged one pins upstream's title and their absence. A payload cannot satisfy both.
+    #[test]
+    fn the_two_artifact_tag_assertions_disagree() {
+        let payload = serde_json::json!({
+            "format": {
+                "tags": {
+                    "title": UPSTREAM_TITLE,
+                    "ARTIST": super::DEMO_METADATA_ARTIST,
+                    "COMMENT": format!(
+                        "https://www.youtube.com/watch?v={}",
+                        super::ONLINE_DEMO_YT_DLP_VIDEO_ID
+                    ),
+                }
+            }
+        });
+
+        super::assert_untagged_format_tags(&payload, UPSTREAM_TITLE)
+            .expect("the upstream tags are the untagged artifact's expectation");
+        let error = super::assert_format_tags_structural(&payload)
+            .expect_err("the tagged assertion must reject an untagged artifact");
+        assert!(
+            error.to_string().contains("title"),
+            "the tagged assertion must reject on the title: {error}"
+        );
+    }
+
+    /// Ensures the example's pinned media-root basename agrees with the shared golden helper.
+    ///
+    /// Two modules spell the canonical name: this example pins it for the live run, and
+    /// `demo_hierarchy_spec` renders it inside the golden's relative path. Drift between the two
+    /// would leave the live demo asserting a name the golden no longer records.
+    #[test]
+    fn canonical_media_root_name_agrees_with_the_golden_helper() {
+        let golden = mediapm::demo_hierarchy_spec::online_demo_media_folder_relative();
+        let basename = golden.rsplit('/').next().expect("golden path has a final component");
+
+        assert_eq!(super::expected_demo_media_root_name(), basename);
+    }
+
+    /// Ensures the canonical media-root basename is the bare recording title.
+    ///
+    /// The materialized name follows the tagged `video` variant whenever tagging ran, and
+    /// media-tagger writes `MusicBrainz`'s recording title, which carries no artist. Upstream's
+    /// title embeds one, so an artist prefix in the expected name would mean the name followed
+    /// the pre-tagging variant instead.
+    #[test]
+    fn canonical_media_root_name_is_the_bare_recording_title() {
+        assert_eq!(
+            super::expected_demo_media_root_name(),
+            format!("{} [{}]", super::DEMO_EXPECTED_TITLE, super::DEMO_MEDIA_ID)
+        );
+        assert!(
+            !super::expected_demo_media_root_name().contains(super::DEMO_METADATA_ARTIST),
+            "the canonical name must not carry the artist"
+        );
+    }
+
+    /// Ensures the online demo resolves its title from the tagged variant first.
+    ///
+    /// The order is what makes the materialized names canonical: media-tagger redefines the
+    /// `video` variant with `MusicBrainz`'s recording title, while the `infojson` variant carries
+    /// upstream's title, which embeds the artist. Nothing hermetic exercises the live chain — the
+    /// tagging steps need the network — so this test reads the document the demo configures and
+    /// pins the order the live run resolves in.
+    #[test]
+    fn the_title_chain_prefers_the_tagged_variant() -> super::ExampleResult<()> {
+        let isolated = IsolatedExampleRoots::with_cache();
+        let workspace_root = isolated.artifact_root_path();
+        super::configure_document_for_online_demo(workspace_root)?;
+
+        let document = super::load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
+        let source =
+            document.media.get(super::DEMO_MEDIA_ID).expect("the demo configures its own media id");
+        let super::MediaMetadataValue::Fallback(candidates) =
+            source.metadata.get("title").expect("the demo configures a title")
+        else {
+            panic!("the demo's title must be a fallback chain");
+        };
+
+        let described: Vec<String> = candidates
+            .iter()
+            .map(|candidate| match candidate {
+                super::MediaMetadataValueCandidate::Variant(binding) => {
+                    format!("variant:{}", binding.variant)
+                }
+                super::MediaMetadataValueCandidate::Literal(text) => format!("literal:{text}"),
+            })
+            .collect();
+        assert_eq!(
+            described,
+            vec![
+                "variant:video".to_string(),
+                "variant:infojson".to_string(),
+                format!("literal:{}", super::DEMO_EXPECTED_TITLE),
+            ],
+            "the tagged variant must win, the upstream one must follow it, and the literal must \
+             be the bare canonical title"
+        );
+
+        Ok(())
+    }
 
     /// Ensures sync-mode override parser accepts disabled values (reduced mode).
     #[test]

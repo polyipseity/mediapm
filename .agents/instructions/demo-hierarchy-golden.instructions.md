@@ -6,16 +6,22 @@ applyTo: "src/mediapm/src/demo_hierarchy_spec.rs,src/mediapm/tests/fixtures/demo
 
 # Demo hierarchy golden contract
 
-The online demo (`mediapm_demo_online`) materializes a large hierarchy under `<artifact_root>/media/`. Tests encode that tree in `tests/fixtures/demo_hierarchy_golden.json` and `demo_hierarchy_spec.rs`. Link files appear in **two places** with **two naming formats**.
+The online demo (`mediapm_demo_online`) materializes a large hierarchy under `<artifact_root>/media/`. Tests encode that tree in `tests/fixtures/demo_hierarchy_golden.json` and `demo_hierarchy_spec.rs`. Link files appear in **two places** with **two naming formats**, and their titles have **two provenances**.
 
 ## Two link filename formats
 
-| Location | Format family | Bracket id | Example basename |
-| -------- | ------------- | ---------- | ---------------- |
-| `sidecars/links/` | yt-dlp output template (`%(title)s [%(id)s].{ext}` after materializer strip) | Raw video id `dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url` |
-| Media folder root | mediapm hierarchy `rename_files` on links `MediaFolder` | Media id `youtube.dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url` |
+| Location | Format family | Title provenance | Bracket id | Example basename |
+| -------- | ------------- | ---------------- | ---------- | ---------------- |
+| `sidecars/links/` | yt-dlp output template (`%(title)s [%(id)s].{ext}` after materializer strip) | LIVE upstream provider title, which embeds the artist | Raw video id `dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url` |
+| Media folder root | mediapm hierarchy `rename_files` on links `MediaFolder` | Canonical metadata title: the MusicBrainz recording title, no artist | Media id `youtube.dQw4w9WgXcQ` | `Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url` |
 
 Sidecar links are yt-dlp-native (`tools/workflows/yt_dlp.rs`). Root projections are mediapm-config-owned (`${media.metadata.title} [${media.id}].link.$1`). The provider title already carries the artist name, so the root projection template must not prepend `${media.metadata.artist}` — doing so doubled the prefix on every materialized basename. The materializer strips `downloads/` and `__mediapm__` from folder-variant ZIP members but does **not** rewrite yt-dlp basenames into root projection shape.
+
+## One naming family, two titles
+
+Every name mediapm renders — the media root folder, the video leaves, the root link projections — single-sources its stem from `${media.metadata.title}`, and `title` resolves to the tagged `video` variant first. media-tagger writes MusicBrainz's recording title, which carries no artist, so the canonical materialized name is `Never Gonna Give You Up [youtube.dQw4w9WgXcQ]`. Only the yt-dlp-named sidecar links keep the upstream title, because mediapm never renames those.
+
+A run that never reached the tagging steps resolves the upstream title instead and materializes an artist-prefixed tree. That run is a failed run: `assert_metadata_files_present` pins the media root against the canonical basename (`expected_demo_media_root_name`) and rejects any artist in it, and the tagging step's absence fails the workflow rather than downgrading the assertion.
 
 ## Assertions (exact filenames)
 
@@ -28,11 +34,12 @@ All three extensions (`url`, `webloc`, `desktop`) are required in both locations
 
 ## Reinforcement rules
 
-1. Do not conflate the two formats — sidecar bracket id is raw `dQw4w9WgXcQ`; root projection bracket id is `youtube.dQw4w9WgXcQ` with `.link.` before the extension.
+1. Do not conflate the two formats — sidecar bracket id is raw `dQw4w9WgXcQ` and its title is the upstream provider title; root projection bracket id is `youtube.dQw4w9WgXcQ` with `.link.` before the extension and its title is the canonical one.
 2. Do not use suffix-only link asserts in the live demo when exact helper filenames apply.
 3. Do not add materializer logic to rename sidecar link basenames into root projection shape.
-4. When extending link coverage: update helpers in `demo_hierarchy_spec.rs`, golden JSON, `golden_fixture_link_paths_match_helpers`, then live exact asserts.
-5. Do not modify hermetic golden fixtures (`tests/fixtures/demo_hierarchy_golden.json`, `demo_hierarchy_spec.rs`) casually — they are the offline contract for the materialized tree; update fixtures and the helper-linkage test in the same commit as a materialization change.
+4. Assert each artifact's tags separately: the untagged file carries upstream's own tags, the tagged file carries the canonical ones. A tag assertion that applies to both artifacts is wrong for one of them.
+5. When extending link coverage: update helpers in `demo_hierarchy_spec.rs`, golden JSON, `golden_fixture_link_paths_match_helpers`, then live exact asserts.
+6. Do not modify hermetic golden fixtures (`tests/fixtures/demo_hierarchy_golden.json`, `demo_hierarchy_spec.rs`) casually — they are the offline contract for the materialized tree; update fixtures and the helper-linkage test in the same commit as a materialization change.
 
 ## Content verification assertions
 
@@ -46,7 +53,7 @@ Every materialized file is verified for content correctness. Two strategies:
 |------|--------|---------|
 | **Magic bytes** | File header matches format | JPEG `FF D8 FF`, WebP `RIFF+WEBP`, MKV `1A 45 DF A3` |
 | **Content format** | Structure + deterministic URL content | `.url` = `[InternetShortcut]` + YouTube URL; `.webloc` = plist XML |
-| **ffprobe metadata** | Exact codec/container/tag values | h264, aac, matroska, 256x144, bt709, ARTIST=Rick Astley, ISRC=GBUM71029573 |
+| **ffprobe metadata** | Exact codec/container/tag values, asserted per artifact | h264, aac, matroska, 256x144, bt709; tagged: ARTIST=Rick Astley, ISRC=GBUM71029573; untagged: upstream title, no MusicBrainz or replaygain tags |
 
 Shared constants/helpers in `demo_hierarchy_spec.rs`: `ONLINE_DEMO_YOUTUBE_URL`, `ONLINE_DEMO_YT_DLP_VIDEO_ID`, `assert_starts_with_webvtt()`, `assert_valid_image_magic_bytes()`, `assert_content_contains_youtube_url()`, `assert_ffprobe_has_video_and_audio()`.
 
@@ -54,8 +61,11 @@ Coverage matrix: `sdd-tdd-workflow.instructions.md` → "Demo online content ver
 
 ## Key symbols
 
-- `online_demo_yt_dlp_provider_title()` — `{artist} - {title}` stand-in for yt-dlp `%(title)s`
-- `online_demo_sidecar_link_filename(ext)` — yt-dlp-format basename under `sidecars/links/`
-- `online_demo_root_link_filename(ext)` — mediapm root projection basename
+- `online_demo_yt_dlp_provider_title()` — `{artist} - {title}` stand-in for the upstream yt-dlp `%(title)s`
+- `online_demo_media_folder_relative()` — canonical media folder path (bare title)
+- `online_demo_sidecar_link_filename(ext)` — yt-dlp-format basename under `sidecars/links/` (upstream title)
+- `online_demo_root_link_filename(ext)` — mediapm root projection basename (canonical title)
 - `online_demo_sidecar_link_relative_path` / `online_demo_root_link_relative_path` — golden-relative paths
 - `golden_fixture_link_paths_match_helpers` — golden ↔ helper linkage test
+- `assert_untagged_format_tags()` / `assert_format_tags_structural()` — the per-artifact tag assertions
+- `expected_demo_media_root_name()` — the live demo's pinned canonical media root basename
