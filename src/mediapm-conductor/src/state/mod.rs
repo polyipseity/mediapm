@@ -17,19 +17,20 @@ pub mod versions;
 /// Current orchestration-state schema version.
 ///
 /// Bumped when the persisted JSON layout changes in a way older or newer
-/// readers cannot absorb. Every V3 wire type denies unknown fields
-/// (`#[serde(deny_unknown_fields)]`), so an older reader handed a newer
+/// readers cannot absorb. Every V4 wire type that can carry a field denies
+/// unknown ones (`#[serde(deny_unknown_fields)]`; a fieldless enum and a
+/// newtype cannot carry the attribute), so an older reader handed a newer
 /// document fails on the field it cannot name instead of decoding it away and
 /// then writing the document back without it. That makes the unsupported
 /// direction a loud error rather than a silent loss, while the direction that
-/// matters still holds: every field a V3 document may omit is
+/// matters still holds: every field a V4 document may omit is
 /// `#[serde(default)]`, so a document this version wrote always decodes here,
-/// and so does one an earlier V3 build wrote, whose fields are a subset. A
-/// field a V3 document must carry stays required: `capture` is the example,
-/// because no V3 build has ever written a record without one.
+/// and so does one an earlier version wrote, whose fields are a subset. A
+/// field a V4 document must carry stays required: `capture` is the example,
+/// because no reader has ever written a record without one.
 ///
 /// Backward compatibility is handled via the `state/versions/` module.
-pub(crate) const STATE_VERSION: u32 = 3;
+pub(crate) const STATE_VERSION: u32 = 4;
 
 /// Persistence policy for a CAS-referenced blob declared as external data.
 ///
@@ -109,6 +110,29 @@ pub struct ToolCallInstance {
     /// reclassification changes what a settlement accepts without invalidating
     /// the entries already recorded.
     pub impure: bool,
+    /// When an operator last marked this instance's recorded bytes as not to be
+    /// reused, or `None` while they may be.
+    ///
+    /// This is the whole of explicit invalidation. The two commands that set it
+    /// (`conductor state invalidate-tool-call`, `mediapm media invalidate`) and
+    /// the one reader on the execution path are deliberately asymmetric: only
+    /// `step_worker::cache::probe_cache` consults it, so every decision about
+    /// reusing recorded work passes through the single place that cannot forget
+    /// to check it. Materialization is the one reader that ignores it: it runs
+    /// no work, and refusing a marked record would remove bytes from the
+    /// library before the re-execution that replaces them exists, which is the
+    /// destruction this marker exists to avoid.
+    ///
+    /// A re-execution clears it by rewriting the record: the fresh instance is
+    /// built with no marker. Without that, a re-execution of unchanged inputs —
+    /// which derives the same key — would miss forever. A cache hit never
+    /// clears it, because a marked instance cannot be a hit.
+    ///
+    /// Provenance for the GC's purposes and never key material. The marker does
+    /// not pin the record: retention is decided by reachability, so an
+    /// invalidated instance that nothing references ages out like any other.
+    #[serde(default)]
+    pub invalidated_at: Option<Timestamp>,
     /// Execution timestamp recorded at run time. Provenance only; it is never
     /// part of any instance key, impure or pure.
     pub executed_at: Timestamp,
@@ -161,6 +185,18 @@ pub struct AuxData {
     pub conductor_gc_epoch: Timestamp,
     /// Per-instance aux metadata keyed by instance key.
     pub instances: BTreeMap<Hash, InstanceAux>,
+    /// Instance keys each workflow's most recent successful run produced or
+    /// hit, keyed by workflow id.
+    ///
+    /// The seed of the GC reachability walk: a key in this set, or reachable
+    /// from one through the inputs it consumed, is live, and only an instance
+    /// outside that closure can age out. Replaced wholesale by a successful
+    /// run and left untouched by a failed one, so a failure never shortens a
+    /// record's life. A workflow with no entry here contributes nothing to the
+    /// closure, so a pass with no seeds has nothing to protect and evicts
+    /// nothing.
+    #[serde(default)]
+    pub live_instances: BTreeMap<String, BTreeSet<Hash>>,
 }
 
 /// Full orchestration state snapshot.

@@ -210,6 +210,11 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         instance_key,
         tool_call_id,
         impure: tool_spec.is_impure,
+        // A fresh execution clears any marker: the bytes below were produced
+        // now, under the config in hand, so they may be reused again. Without
+        // this, re-executing invalidated work would leave the record marked and
+        // the next run would miss forever on a key it cannot change.
+        invalidated_at: None,
         executed_at,
         step_ids: BTreeSet::from([request.step.id.clone()]),
         command_args,
@@ -571,6 +576,10 @@ mod tests {
         )
         .await;
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
+        assert!(
+            first.instance.invalidated_at.is_none(),
+            "a fresh execution must record the instance without an invalidation marker",
+        );
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());

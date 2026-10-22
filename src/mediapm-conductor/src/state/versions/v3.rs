@@ -415,7 +415,11 @@ mod tests {
         );
 
         let state = super::super::decode_state_json(json.as_bytes()).expect("the v2 file migrates");
-        assert_eq!(state.version, 3, "a migrated document declares the current schema version");
+        assert_eq!(
+            state.version,
+            crate::state::STATE_VERSION,
+            "a migrated document declares the current schema version",
+        );
         let instance = state.tool_call_instances.values().next().expect("one instance");
         assert_eq!(
             instance.outputs["content"].capture, None,
@@ -428,7 +432,7 @@ mod tests {
         let re_encoded =
             super::super::encode_state_json(&state).expect("the migrated state encodes");
         let value: serde_json::Value = serde_json::from_slice(&re_encoded).expect("valid JSON");
-        assert_eq!(value["version"], json!(3));
+        assert_eq!(value["version"], json!(crate::state::STATE_VERSION));
         let encoded_aux = value["aux"]["instances"]
             .as_object()
             .and_then(|instances| instances.values().next())

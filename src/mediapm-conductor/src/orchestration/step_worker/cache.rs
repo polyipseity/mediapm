@@ -31,14 +31,22 @@ fn capture_identity_matches(recorded: &OutputCaptureSpec, required: &OutputCaptu
 
 /// Returns the cached instance for `instance_key` when it can serve this step.
 ///
-/// "Can serve" means the instance exists and records every required name under
-/// the required capture identity. `required` is the names this step binds — its
-/// dependents' references unioned with its own declarations — mapped to the spec
-/// the probed step's *producible* set gives each one: the merged tool-plus-step
-/// declarations plus the implicit streams every execution records (`stdout`,
-/// `stderr`, `process_code`). A name outside even that set never appears here,
-/// because no instance of this work can hold it; the executor filters the
-/// requirement through the producible set before probing.
+/// "Can serve" means the instance exists, carries no invalidation marker, and
+/// records every required name under the required capture identity. `required`
+/// is the names this step binds — its dependents' references unioned with its
+/// own declarations — mapped to the spec the probed step's *producible* set
+/// gives each one: the merged tool-plus-step declarations plus the implicit
+/// streams every execution records (`stdout`, `stderr`, `process_code`). A name
+/// outside even that set never appears here, because no instance of this work
+/// can hold it; the executor filters the requirement through the producible set
+/// before probing.
+///
+/// The marker is checked before the names, and on every path: an empty
+/// requirement accepts any instance under the key, so a check that ran after
+/// (or inside) the name loop would leave a step that binds no output able to
+/// reuse work an operator explicitly invalidated. Nothing else in the run
+/// consults the marker, which is why this is the whole of the mechanism rather
+/// than one gate among several.
 ///
 /// Equality is on capture identity, not on the whole spec and not on the name
 /// alone: `content` read from a file and `content` read from a folder are
@@ -46,9 +54,7 @@ fn capture_identity_matches(recorded: &OutputCaptureSpec, required: &OutputCaptu
 /// while `save` differs harmlessly because it changes no bytes (see
 /// [`capture_identity_matches`]). A recorded `capture: None` is the v2
 /// migration's "spec unknown" sentinel and never equals a declared spec, so a
-/// migrated instance re-executes once and re-records under the spec it used. An
-/// empty requirement checks nothing and accepts any instance under the key,
-/// which is what a step that binds no output by name asks for.
+/// migrated instance re-executes once and re-records under the spec it used.
 ///
 /// The check is pure and synchronous; whether the store still holds the bytes
 /// those names point at is a separate fact the executor asks the CAS about.
@@ -58,6 +64,9 @@ pub(super) fn probe_cache(
     required: &BTreeMap<String, OutputCaptureSpec>,
 ) -> Option<ToolCallInstance> {
     let instance = state.tool_call_instances.get(instance_key)?;
+    if instance.invalidated_at.is_some() {
+        return None;
+    }
     let satisfies_requirements = required.iter().all(|(name, spec)| {
         instance
             .outputs
@@ -95,6 +104,7 @@ mod tests {
                 instance_key: key,
                 tool_call_id: "echo@v1".to_string(),
                 impure: false,
+                invalidated_at: None,
                 executed_at: Timestamp::default(),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
@@ -155,6 +165,54 @@ mod tests {
             )
             .is_none(),
             "a name recorded under a different spec must be a miss",
+        );
+    }
+
+    /// An instance an operator invalidated cannot serve a step, however well
+    /// its recorded names match.
+    ///
+    /// The marker is the whole of explicit invalidation and this probe is its
+    /// only reader, so a probe that ignored it would make every invalidation
+    /// command a no-op that reports success.
+    #[test]
+    fn an_invalidated_instance_is_a_miss() {
+        let key = Hash::from_content(b"instance");
+        let content = spec("content", "stdout");
+        let mut state = state_with(
+            key,
+            BTreeMap::from([(
+                "content".to_string(),
+                CapturedOutput {
+                    hash: Hash::from_content(b"bytes"),
+                    capture: Some(content.clone()),
+                },
+            )]),
+        );
+        state.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at =
+            Some(Timestamp::from_unix_nanos(1));
+
+        assert!(
+            probe_cache(&key, &state, &BTreeMap::from([("content".to_string(), content)]))
+                .is_none(),
+            "a marked instance must not serve a step",
+        );
+    }
+
+    /// A marked instance is a miss even when the step binds nothing by name.
+    ///
+    /// An empty requirement accepts any instance under the key, which would
+    /// otherwise be the one path around the marker: a step whose outputs are
+    /// all derived from a sibling's would reuse invalidated work.
+    #[test]
+    fn an_invalidated_instance_is_a_miss_with_an_empty_requirement() {
+        let key = Hash::from_content(b"instance");
+        let mut state = state_with(key, BTreeMap::new());
+        state.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at =
+            Some(Timestamp::from_unix_nanos(1));
+
+        assert!(
+            probe_cache(&key, &state, &BTreeMap::new()).is_none(),
+            "an empty requirement must not accept a marked instance",
         );
     }
 

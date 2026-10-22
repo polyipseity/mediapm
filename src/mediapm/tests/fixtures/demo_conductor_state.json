@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "tool_call_instances": {
     "blake3:12d08bc1c0155ec10a7e636ad47ce90b4f37793393466af078d18096e8edfa4e": {
       "instance_key": "blake3:12d08bc1c0155ec10a7e636ad47ce90b4f37793393466af078d18096e8edfa4e",
@@ -515,6 +515,7 @@
       "blake3:f40b2e87f4ca40a3dae4a609e32d9ccaa9a28eb175eaab036d4538f97c08b63a": {
         "last_referenced_at": 1785987881255441000
       }
-    }
+    },
+    "live_instances": {}
   }
 }

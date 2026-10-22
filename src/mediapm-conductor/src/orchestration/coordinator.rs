@@ -1445,6 +1445,7 @@ mod tests {
             instance_key,
             tool_call_id: "echo@v1".to_string(),
             impure: false,
+            invalidated_at: None,
             executed_at: Timestamp::default(),
             step_ids: BTreeSet::new(),
             command_args: Vec::new(),
@@ -1452,6 +1453,28 @@ mod tests {
             materialized_inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
         }
+    }
+
+    /// A settlement records the run that produced it, so a fresh execution
+    /// clears an operator's invalidation marker.
+    ///
+    /// The key is derived from inputs alone, so a re-execution of unchanged
+    /// inputs lands on the same key it was invalidated under. Leaving the marker
+    /// on the new record would make that key miss forever: every later run would
+    /// re-execute and re-store, and the marker could never be cleared by doing
+    /// the work.
+    #[test]
+    fn a_fresh_settlement_clears_the_invalidation_marker() {
+        let key = Hash::from_content(b"instance");
+        let mut stored = test_instance(key);
+        stored.invalidated_at = Some(Timestamp::from_unix_nanos(5));
+        stored.step_ids = BTreeSet::from(["step-0-echo".to_string()]);
+        let incoming = test_instance(key);
+
+        let settled = with_accumulated_step_ids(Some(&stored), incoming);
+
+        assert_eq!(settled.invalidated_at, None);
+        assert_eq!(settled.step_ids, BTreeSet::from(["step-0-echo".to_string()]));
     }
 
     /// Verifies the ancestor closure is transitive (a join sees its root),

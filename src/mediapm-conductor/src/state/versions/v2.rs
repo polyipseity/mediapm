@@ -344,6 +344,7 @@ mod tests {
                 tool_call_instance_counter: 7,
                 conductor_gc_epoch: Timestamp::from_unix_nanos(99),
                 instances: BTreeMap::new(),
+                live_instances: BTreeMap::new(),
             },
         };
         let state = migrate_v1_to_v2(&cas, envelope).await.unwrap();

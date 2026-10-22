@@ -22,6 +22,7 @@ fn sample_instance(key: Hash) -> ToolCallInstance {
         instance_key: key,
         tool_call_id: "echo@v1".to_string(),
         impure: false,
+        invalidated_at: None,
         executed_at: Timestamp::default(),
         step_ids: BTreeSet::new(),
         command_args: Vec::new(),
@@ -42,6 +43,7 @@ fn seed_state_with(keys: &[Hash]) -> ConductorState {
             .iter()
             .map(|key| (*key, InstanceAux { last_referenced_at: Timestamp::from_unix_nanos(0) }))
             .collect(),
+        live_instances: BTreeMap::new(),
     };
     state.tool_call_instances = keys.iter().map(|key| (*key, sample_instance(*key))).collect();
     state

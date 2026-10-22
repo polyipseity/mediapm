@@ -984,6 +984,52 @@ mod tests {
         );
     }
 
+    /// A marked instance is still projected into the library.
+    ///
+    /// Invalidation asks for the next execution to produce the bytes again; it
+    /// does not retract the bytes the library already holds. Refusing a marked
+    /// record here would delete a file before its replacement exists, which is
+    /// the destruction the marker exists to avoid — so materialization ignores
+    /// the marker and the re-execution is what changes what is on disk.
+    #[tokio::test]
+    async fn a_marked_instance_is_still_materializable() {
+        let generated = load_generated_doc();
+        let state = load_conductor_state();
+        let workflow = generated
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
+            .expect("demo workflow");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        for instance in state.tool_call_instances.values() {
+            for output in instance.outputs.values() {
+                if cas.get(output.hash).await.is_err() {
+                    let _ = cas.put(bytes::Bytes::from_static(b"fixture-bytes")).await;
+                }
+            }
+        }
+
+        let before = resolve_workflow_step_output_hashes(&cas, &generated, &state, workflow)
+            .await
+            .expect("resolve before marking")
+            .expect("expected step outputs");
+
+        let mut marked = state.clone();
+        for instance in marked.tool_call_instances.values_mut() {
+            instance.invalidated_at = Some(mediapm_utils::Timestamp::now());
+        }
+        let after = resolve_workflow_step_output_hashes(&cas, &generated, &marked, workflow)
+            .await
+            .expect("resolve after marking")
+            .expect("expected step outputs");
+
+        assert_eq!(
+            before, after,
+            "an invalidation marker must not change what the materializer projects",
+        );
+    }
+
     #[tokio::test]
     async fn demo_ffmpeg_instance_matches_step_inputs() {
         let generated = load_generated_doc();
@@ -1086,6 +1132,7 @@ mod tests {
             instance_key: mediapm_conductor::derive_tool_call_instance_key(tool_call_id, &[], &[]),
             tool_call_id: tool_call_id.to_string(),
             impure: false,
+            invalidated_at: None,
             executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
             step_ids: BTreeSet::new(),
             command_args: Vec::new(),
@@ -1128,6 +1175,7 @@ mod tests {
             instance_key: mediapm_conductor::derive_tool_call_instance_key(tool_call_id, &[], &[]),
             tool_call_id: tool_call_id.to_string(),
             impure: false,
+            invalidated_at: None,
             executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
             step_ids: BTreeSet::new(),
             command_args: Vec::new(),
@@ -2249,6 +2297,7 @@ mod tests {
                 instance_key: primary_key,
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
+                invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(2),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
@@ -2272,6 +2321,7 @@ mod tests {
                 instance_key: sidecar_key,
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
+                invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(1),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
@@ -2403,6 +2453,7 @@ mod tests {
                 instance_key,
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
+                invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(1),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
@@ -2534,6 +2585,7 @@ mod tests {
                 instance_key: primary_key,
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
+                invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(2),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
@@ -2644,6 +2696,7 @@ mod tests {
                 instance_key,
                 tool_call_id: versioned_tool_id.clone(),
                 impure: true,
+                invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(1),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
