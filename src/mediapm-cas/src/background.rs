@@ -43,6 +43,22 @@ impl BackgroundMaintenanceGuard {
         self.cancelled.load(Ordering::SeqCst)
     }
 
+    /// Returns `true` when no background task is running under this guard.
+    ///
+    /// True once the task has ended on its own — the maintenance loop stops when
+    /// the runtime root it maintains is gone — and true after [`shutdown`](Self::shutdown)
+    /// or [`cancel`](Self::cancel) has taken the handle. An owner that keeps one
+    /// guard in a slot reads this as "a task is already running" and replaces a
+    /// guard that answers `true` instead of treating it as live.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.handle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished)
+    }
+
     /// Request cancellation of the background task without waiting for it.
     /// Idempotent, and callable through a shared reference.
     ///

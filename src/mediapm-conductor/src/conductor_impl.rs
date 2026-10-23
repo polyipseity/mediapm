@@ -119,7 +119,7 @@ where
     /// panicked while starting or stopping the task.
     fn start_background_maintenance(&self) {
         let mut slot = self.background_maintenance.lock().expect("background maintenance lock");
-        if slot.is_some() {
+        if slot.as_ref().is_some_and(|guard| !guard.is_finished()) {
             return;
         }
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -640,6 +640,7 @@ where
     ///
     /// Returns an error when the state cannot be encoded or written.
     pub(crate) fn save_state(&self, state: &ConductorState) -> Result<(), ConductorError> {
+        ensure_runtime_root(self.storage_paths())?;
         save_state_file(self.storage_paths(), state)
     }
 
@@ -940,7 +941,7 @@ fn state_file_parent(paths: &RuntimeStoragePaths) -> Result<PathBuf, ConductorEr
 /// stops rather than warning on every interval for the rest of the process's
 /// life.
 fn runtime_root_is_gone(paths: &RuntimeStoragePaths) -> bool {
-    !state_file_parent(paths).is_ok_and(|parent| parent.exists())
+    !state_file_parent(paths).is_ok_and(|parent| parent.is_dir())
 }
 
 /// Discovers all user config files.
@@ -1442,12 +1443,15 @@ mod tests {
         assert!(!root.exists(), "the save recreated the removed runtime root: {error}");
     }
 
-    /// The loop stops when its root is removed instead of recreating it.
+    /// The loop stops when its root is removed, and stays stopped.
     ///
     /// Mirrors `the_background_loop_runs_a_pass_and_stops_on_shutdown`, which
-    /// proves the loop runs a pass on its interval. This one proves what it does
-    /// when the directory its state file lives in is gone: it stops, and the
-    /// directory stays gone.
+    /// proves the loop runs a pass on its interval. This one removes the root and
+    /// then brings it back: a loop that stopped writes nothing, while a loop that
+    /// kept running would run a pass in the second window and publish the state
+    /// file again. That second window is what makes the break observable rather
+    /// than merely consistent with the strict write path, which keeps a removed
+    /// root removed whether the loop stops or not.
     #[tokio::test]
     async fn the_background_loop_stops_when_its_root_is_removed() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
@@ -1456,6 +1460,7 @@ mod tests {
         let state = ConductorState::new_empty();
         save_state_file(&paths, &state).expect("seed state file");
         let root = paths.state_file_path.parent().expect("state parent").to_path_buf();
+        let state_file = paths.state_file_path.clone();
 
         let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
         conductor.background_gc_interval_secs = 1;
@@ -1465,9 +1470,16 @@ mod tests {
 
         drop(dir);
         tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(!root.exists(), "a removed runtime root must not be recreated by the loop");
+
+        std::fs::create_dir_all(&root).expect("recreate the runtime root");
+        tokio::time::sleep(Duration::from_secs(2)).await;
         conductor.shutdown().await.expect("shutdown");
 
-        assert!(!root.exists(), "a removed runtime root must not be recreated by the loop");
+        assert!(
+            !state_file.exists(),
+            "a stopped loop must not run a pass after its root comes back",
+        );
     }
 
     /// A removed root reads as gone, and an existing one does not.

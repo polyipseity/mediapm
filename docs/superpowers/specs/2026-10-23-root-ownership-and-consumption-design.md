@@ -25,7 +25,7 @@ A runtime root is a directory whose owner is the thing that created it, but thre
 
 ### 1. Who creates a runtime root
 
-`ensure_runtime_root` creates the state file's parent directory, and runs at the three foreground entry points: `Conductor::new`, `run_workflow`, and `run_gc`. It is the only directory creation in the conductor's state path.
+`ensure_runtime_root` creates the state file's parent directory, and runs at the foreground entry points: `ensure_actor_client` — the path `run_workflow` takes — and `run_gc`. It is the only directory creation in the conductor's state path.
 
 ### 2. The state write stops creating it
 
