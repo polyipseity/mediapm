@@ -1,0 +1,37 @@
+[package]
+name = "mediapm-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+description = "Dev-only mock upstream and synthetic tool payloads for mediapm hermetic tests"
+
+[features]
+# On by default so this crate's own tests need no flags. A consumer that turns
+# it off gets the loud refusal in `seams::enforce_seam_feature` instead of a
+# silent pass through to the real network.
+default = ["test-seams"]
+test-seams = []
+
+[lints]
+workspace = true
+
+[dependencies]
+# `wiremock` is a normal dependency rather than a dev-dependency because the
+# mock's server is part of this crate's public surface. It still cannot reach a
+# shipped binary: this crate is only ever a dev-dependency of its consumers.
+wiremock = "0.6"
+flate2.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+tokio.workspace = true
+xz2.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+# Only the stub-payload builder's own tests need a temp directory; no non-test
+# code in this crate references `mediapm-utils`.
+mediapm-utils.workspace = true
+reqwest.workspace = true

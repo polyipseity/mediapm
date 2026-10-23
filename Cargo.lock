@@ -2090,6 +2090,7 @@ dependencies = [
  "libc",
  "mediapm-cas",
  "mediapm-conductor",
+ "mediapm-test-support",
  "mediapm-utils",
  "musicbrainz_rs",
  "nickel-lang-core",
@@ -2157,6 +2158,7 @@ dependencies = [
  "mediapm-conductor-builtin-export",
  "mediapm-conductor-builtin-fs",
  "mediapm-conductor-builtin-import",
+ "mediapm-test-support",
  "mediapm-utils",
  "nickel-lang-core",
  "proptest",
@@ -2234,6 +2236,22 @@ name = "mediapm-conductor-examples-concat-tool"
 version = "0.0.0"
 dependencies = [
  "mediapm-utils",
+]
+
+[[package]]
+name = "mediapm-test-support"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "mediapm-utils",
+ "parking_lot",
+ "reqwest",
+ "serde_json",
+ "tar",
+ "tokio",
+ "wiremock",
+ "xz2",
+ "zip",
 ]
 
 [[package]]

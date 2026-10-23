@@ -40,6 +40,19 @@ pub fn lock_process_env() -> parking_lot::MutexGuard<'static, ()> {
     ENV_LOCK.lock()
 }
 
+/// Borrows the process-wide env lock.
+///
+/// [`lock_process_env`] acquires it; this accessor hands out the same static to
+/// a caller that must name the mutex it locks rather than take an implicit one.
+/// `mediapm-test-support`'s `SeamGuard::new` takes its lock as a required
+/// argument and is that caller: the provider seam tests below hold this lock
+/// while reading the seam variables, so a seam guard taken under an independent
+/// mutex would race them.
+#[must_use]
+pub fn env_lock() -> &'static parking_lot::Mutex<()> {
+    &ENV_LOCK
+}
+
 /// Example user-level tool download cache root.
 ///
 /// Honors [`CACHE_ROOT_ENV`] (set by [`IsolatedExampleRoots::with_cache`] for

@@ -67,6 +67,7 @@ xz2 = { workspace = true, optional = true }
 zip = { workspace = true }
 
 [dev-dependencies]
+mediapm-test-support = { path = "../mediapm-test-support", features = ["test-seams"] }
 proptest.workspace = true
 wiremock = "0.6"
 

@@ -80,6 +80,7 @@ build-utils = { path = "../../scripts/build-utils" }
 
 [dev-dependencies]
 indicatif = { workspace = true, features = ["in_memory"] }
+mediapm-test-support = { path = "../mediapm-test-support", features = ["test-seams"] }
 proptest.workspace = true
 same-file.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
