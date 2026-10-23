@@ -110,8 +110,9 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
             .await?;
 
     let local_source_path = write_dummy_local_source(&root)?;
-    let local_media_id =
-        service.add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End)?;
+    let local_media_id = service
+        .add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End)
+        .await?;
     let remote_uri = Url::parse(DUMMY_YOUTUBE_URL)?;
     let remote_media_id = "youtube-dQw4w9WgXcQ".to_string();
     service.add_media_source(

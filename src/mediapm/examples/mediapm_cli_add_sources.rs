@@ -78,8 +78,9 @@ async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
     let mut service = MediaPmService::new_fs_at(&root).await?;
 
     let local_source_path = write_dummy_local_source(&root)?;
-    let local_media_id =
-        service.add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End)?;
+    let local_media_id = service
+        .add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End)
+        .await?;
 
     let remote_uri = Url::parse(DUMMY_YOUTUBE_URL)?;
     let remote_media_id = mediapm::media_id_from_uri(&remote_uri);

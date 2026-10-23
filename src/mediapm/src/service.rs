@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
+use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
@@ -480,27 +480,31 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// # Errors
     ///
     /// Delegates to [`add_local_source_with_position`](Self::add_local_source_with_position).
-    pub fn add_local_source(
+    pub async fn add_local_source(
         &mut self,
         path: &Path,
         ffprobe_command: &str,
         media_id: Option<String>,
         position: AddInsertPosition,
     ) -> Result<String, MediaPmError> {
-        self.add_local_source_with_position(path, ffprobe_command, media_id, position, false)
+        self.add_local_source_with_position(path, ffprobe_command, media_id, position, false).await
     }
 
     /// Adds one local media source at the given position, auto-resolving
     /// metadata via ffprobe, and saves the document.
     ///
-    /// Reads the file into CAS to obtain a content hash, then builds default
-    /// media steps and metadata entries.
+    /// Stages the file's bytes in the store and names the hash they resolve
+    /// to, then builds default media steps and metadata entries. The staging
+    /// happens in the same call as the naming because a name whose bytes are
+    /// absent is a source that fails at its first sync, and the hash comes
+    /// from the store's own write so the name and the bytes cannot diverge.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError::Io`] if the file cannot be read, or
-    /// [`MediaPmError::Workflow`] if the media id already exists.
-    pub fn add_local_source_with_position(
+    /// Returns [`MediaPmError::Io`] if the file cannot be read,
+    /// [`MediaPmError::Workflow`] if the bytes cannot be stored or the media
+    /// id already exists, and the metadata probe's error when ffprobe fails.
+    pub async fn add_local_source_with_position(
         &mut self,
         path: &Path,
         ffprobe_command: &str,
@@ -512,13 +516,14 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
-        // Compute content hash from the file.
         let bytes = std::fs::read(path).map_err(|e| MediaPmError::Io {
             operation: "reading local file for media add".to_string(),
             path: path.to_path_buf(),
             source: e,
         })?;
-        let hash = Hash::from_content(&bytes);
+        let hash = self.conductor.cas().put(bytes.into()).await.map_err(|error| {
+            MediaPmError::Workflow(format!("storing a local media source: {error}"))
+        })?;
         let resolved_media_id =
             media_id.filter(|s| !s.is_empty()).unwrap_or_else(|| media_id_from_local_path(&hash));
 

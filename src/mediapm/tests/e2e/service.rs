@@ -93,7 +93,7 @@ async fn add_local_source_caches_metadata() -> Result<(), mediapm::MediaPmError>
     ];
     std::fs::write(&media_path, wav).expect("write media file");
     let media_id =
-        service.add_local_source(&media_path, "ffprobe", None, AddInsertPosition::End)?;
+        service.add_local_source(&media_path, "ffprobe", None, AddInsertPosition::End).await?;
     assert!(!media_id.is_empty(), "local add must produce a media id");
 
     // The cache flushes when the service is dropped; drop before asserting.

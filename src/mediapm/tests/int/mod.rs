@@ -4,6 +4,8 @@ mod builtins;
 mod demo;
 mod demo_hierarchy_golden;
 mod demo_online;
+/// A local media source stages the bytes its content hash names.
+mod local_source_staging;
 /// Hermetic media-tagger metadata-stage tests over a mocked network.
 mod media_tagger_hermetic;
 mod online_sync_post_sync_dump;

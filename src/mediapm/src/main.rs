@@ -315,13 +315,15 @@ async fn main_cli() -> anyhow::Result<()> {
                         }
                         MediaAddPreset::Local => {
                             let path = PathBuf::from(&args.source);
-                            service.add_local_source_with_position(
-                                &path,
-                                args.ffprobe_command.as_deref().unwrap_or("ffprobe"),
-                                None,
-                                args.insert_position.into(),
-                                args.overwrite,
-                            )?
+                            service
+                                .add_local_source_with_position(
+                                    &path,
+                                    args.ffprobe_command.as_deref().unwrap_or("ffprobe"),
+                                    None,
+                                    args.insert_position.into(),
+                                    args.overwrite,
+                                )
+                                .await?
                         }
                     };
                     print_result(
