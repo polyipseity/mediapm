@@ -58,10 +58,10 @@ const MUSICBRAINZ_FETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 /// The minimum interval between two `MusicBrainz` requests.
 ///
 /// The web service rate limits by interval rather than by burst, and its
-/// limiter answers `503` when callers ignore that. `api_bindium` carries a
-/// `governor` limiter for exactly this interval, but it is compiled out behind
-/// a feature `musicbrainz_rs` does not expose, so the spacing is enforced on
-/// this side. Spacing requests is cheaper than retrying them.
+/// limiter answers `503` when callers ignore that. The spacing is enforced on
+/// this side because the dependency's own limiter sits behind a feature
+/// `musicbrainz_rs` does not expose. Spacing requests is cheaper than retrying
+/// them.
 const MUSICBRAINZ_MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The next free request slot and the wait until it.
@@ -89,9 +89,13 @@ fn next_pacing_slot(
 ///
 /// The slot is reserved before the wait, so concurrent callers queue instead of
 /// racing: each takes the next slot and sleeps until it. The wait runs inside the
-/// fetch deadline, because the interval is a fraction of a second while the
-/// deadline is the whole pair's budget; the retry loop's own backoff is bounded
-/// the same way.
+/// fetch deadline, because one second of interval is small against the whole
+/// pair's budget; the retry loop's own backoff is bounded the same way.
+///
+/// One call to this reserves one slot for one API call, not one HTTP request:
+/// the dependency's own retry can issue a second request for the same call — it
+/// does so for a `503`, sleeping its own backoff or the server's `Retry-After`
+/// first — while a `502` is handed straight back and so is spaced by the caller.
 async fn pace_musicbrainz_request() {
     static LAST_SLOT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
     let wait = {
@@ -144,8 +148,12 @@ fn musicbrainz_user_agent() -> String {
 /// 503 handling sleeps until the server's `Retry-After` instant with no
 /// cap — a server-controlled wait no request-level timeout reaches.
 /// Wrapping the whole fetch in this deadline cuts that sleep without
-/// patching the dependency, and 90 seconds sits above the worst legitimate
-/// two-attempt-per-entity time so a slow-but-working fetch still completes.
+/// patching the dependency.
+///
+/// It bounds everything the pair costs: its requests, their pacing waits, the
+/// backoff between attempts, and the server's own `Retry-After` stalls, across
+/// `MUSICBRAINZ_FETCH_ATTEMPTS` attempts. 90 seconds sits above the worst
+/// legitimate run of those so a slow-but-working fetch still completes.
 pub(super) const MUSICBRAINZ_FETCH_DEADLINE: Duration = Duration::from_secs(90);
 
 /// Build an agent that identifies this application and aborts a stalled
@@ -353,7 +361,9 @@ pub(super) async fn fetch_musicbrainz_payloads(
 ///
 /// Every request waits for its own pacing slot and the whole pair runs inside
 /// the deadline, so the deadline is the total budget for one pair including the
-/// pacing waits and the retry backoff between attempts.
+/// pacing waits and the retry backoff between attempts. The pacing bounds this
+/// path's requests; a `503` the dependency retries is spaced by its own backoff
+/// or by the server's `Retry-After` rather than by this loop.
 async fn fetch_musicbrainz_payloads_on(
     client: &MusicBrainzClient,
     shape: &MusicBrainzFetchShape,
@@ -591,6 +601,10 @@ mod tests {
     /// waits for nothing, the next waits out the previous request's slot, and a
     /// caller arriving after its slot has passed waits for nothing rather than
     /// being pushed further into the future.
+    ///
+    /// The slot that caller reserves is asserted too, not only its wait: a slot
+    /// left in the past would let the next caller skip its interval, which is
+    /// the compression the clamp exists to prevent.
     #[test]
     fn the_pacer_spaces_requests_by_the_interval() {
         let interval = Duration::from_secs(1);
@@ -599,8 +613,14 @@ mod tests {
         assert_eq!(first_wait, Duration::ZERO);
         let (second_slot, second_wait) = next_pacing_slot(Some(first_slot), start, interval);
         assert_eq!(second_wait, interval);
-        let (_, third_wait) = next_pacing_slot(Some(second_slot), start + interval * 3, interval);
+        let (third_slot, third_wait) =
+            next_pacing_slot(Some(second_slot), start + interval * 3, interval);
         assert_eq!(third_wait, Duration::ZERO);
+        assert_eq!(
+            third_slot,
+            start + interval * 3,
+            "a caller past its slot takes the current instant, not the slot it missed",
+        );
     }
 
     /// The client the fetch path uses caps its retries and carries a request

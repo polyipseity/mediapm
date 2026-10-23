@@ -219,6 +219,11 @@ async fn a_recording_mbid_fetches_metadata_through_the_configured_endpoint() {
 /// so the retry cycle stays fast; the production-shaped guard that cuts a
 /// server-supplied hour-long `Retry-After` at the outer fetch deadline is
 /// pinned at the unit level, where that deadline is injectable.
+///
+/// The bound below is loose because this test pays for the pacing it shares with
+/// its siblings in this binary: three attempts of a retried `503`, each waiting
+/// out a `Retry-After` and a one-second request slot. It still fails a step that
+/// honors a server-controlled stall instead of surfacing the failure.
 #[tokio::test]
 async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
     let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
@@ -253,7 +258,7 @@ async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
         "the 503 storm must have actually reached the local server; otherwise the error names the endpoint without the endpoint having answered"
     );
     assert!(
-        elapsed < Duration::from_secs(20),
+        elapsed < Duration::from_secs(60),
         "the bounded client must surface the failure rather than honor a server-controlled stall: {elapsed:?}"
     );
 }
@@ -289,6 +294,12 @@ async fn a_musicbrainz_502_is_retried() {
     let result = run_internal_media_tagger(options).await;
 
     assert!(result.is_ok(), "one dropped connection must not fail the step: {result:?}");
+    let received = musicbrainz.received_requests().await.expect("request recorder is enabled");
+    assert_eq!(
+        received.len(),
+        3,
+        "the 502 attempt plus the recording and its release: two would mean the 502 mock never matched",
+    );
 }
 
 /// A persistent `502` still fails, and is attempted the declared number of

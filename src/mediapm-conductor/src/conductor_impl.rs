@@ -1480,7 +1480,7 @@ mod tests {
         // path is already dropped, so a failure here would otherwise leave the
         // recreated root behind for the workspace janitor to find.
         let wrote_a_pass = state_file.exists();
-        let _ = std::fs::remove_dir_all(&root);
+        mediapm_utils::temp::remove_dir_all_with_retry(&root).expect("remove the recreated root");
         assert!(!wrote_a_pass, "a stopped loop must not run a pass after its root comes back");
     }
 
