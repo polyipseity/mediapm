@@ -1476,10 +1476,12 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
         conductor.shutdown().await.expect("shutdown");
 
-        assert!(
-            !state_file.exists(),
-            "a stopped loop must not run a pass after its root comes back",
-        );
+        // Removed before the assertion, not after: the tempdir that owned this
+        // path is already dropped, so a failure here would otherwise leave the
+        // recreated root behind for the workspace janitor to find.
+        let wrote_a_pass = state_file.exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!wrote_a_pass, "a stopped loop must not run a pass after its root comes back");
     }
 
     /// A removed root reads as gone, and an existing one does not.
