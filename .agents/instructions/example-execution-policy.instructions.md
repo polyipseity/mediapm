@@ -10,9 +10,9 @@ Each example under `src/*/examples/` must contain a `#[cfg(test)]` test that run
 
 ## Deterministic vs nondeterministic examples
 
-Nondeterministic examples (network, external services, managed-tool downloads) detect CI in the test that calls `main()`, never inside `main()`. This applies to all cache-using examples that reach the network (`mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`, `mediapm_demo_online`); deterministic examples (the offline demo) run their full path in tests with no CI detection.
+Nondeterministic examples (network, external services, managed-tool downloads) detect CI in the test that calls `main()`, never inside `main()`. Of the examples only `mediapm_demo_online` carries that gate: `mediapm_cli_add_tools` and `mediapm_cli_add_hierarchy` carry **no** gate at all, because neither reaches an upstream — the tools example syncs before it writes any tool requirement and then fabricates its own dummy payloads, and the hierarchy example declares no managed tool. Deterministic examples (the offline demo) run their full path in tests with no CI detection.
 
-- **Deterministic** (offline demo): always full path in tests (no reduced mode, no CI detection). Its single `import` step provisions with no network, so the full path is genuinely offline. The demo therefore covers no real managed binary: `ffmpeg`, `sd`, and `rsgain` fetch real payloads, and `media-tagger` is classified impure because it performs network lookups at run time, so none of them can appear in a demo whose defining property is that it needs no network. Real-binary coverage of the transform and tagging stages lives behind the `MEDIAPM_RUN_ONLINE_SYNC` gate (see the three-level model below), exercised by `online_sync_post_sync_dump`. Excluding them moved that coverage from the default suite, where it failed at payload fetch, to the opt-in gate, where it runs.
+- **Deterministic** (offline demo): always full path in tests (no reduced mode, no CI detection). Its single `import` step provisions with no network, so the full path is genuinely offline. The demo therefore covers no real managed binary: `ffmpeg`, `sd`, and `rsgain` fetch real payloads, and `media-tagger` is classified impure because it performs network lookups at run time, so none of them can appear in a demo whose defining property is that it needs no network. Real-binary coverage of the transform and tagging stages lives behind the `MEDIAPM_RUN_ONLINE_SYNC` gate (see the three-level skip model below), exercised by `online_sync_post_sync_dump`. Excluding them moved that coverage from the default suite, where it failed at payload fetch, to the opt-in gate, where it runs.
 - **Nondeterministic** (online demo) (three-level model:
   - **Level 1 (CI:)** `cargo test` with any of `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE` set → embedded test skips via `ci_mode_detected()`.
   - **Level 2 (harness outside CI:)** `cargo test`/`test-all`/pre-push (no CI env) → runs `main()` in a deterministic reduced mode (e.g. config-only) via documented env vars, never touching the network.
@@ -20,7 +20,40 @@ Nondeterministic examples (network, external services, managed-tool downloads) d
 
 `main()` must be deterministic given env inputs: no CI detection, no network probing, only the documented env vars select behavior.
 
-## The 3-level mechanism also gates non-example regression tests
+## A network-bound test gets two paths, not a skip ladder
+
+Where the subject is an upstream, prefer a mocked upstream over a skip. The shape is:
+
+- **One shared assertion function** holds the contract, so the two paths cannot end up asserting different things.
+- **A hermetic test** runs it against a mocked upstream and always executes — in CI, in `test-all`, and in pre-push — so the gate reports a real pass instead of a skip.
+- **A real-network twin** runs the same assertion against the real hosts, carries `#[ignore]` with its reason, and is reached only by an explicit ignored run (`cargo test -p mediapm --all-features -- --ignored`, as the twin's own doc names). An ignored test is reported as ignored, so it can never be mistaken for coverage.
+
+`src/mediapm/tests/int/all_platform.rs` is the worked example: `every_managed_tool_provisions_a_payload_for_every_os_slot` asserts `assert_every_managed_tool_covers_every_os` against the mock, and `every_managed_tool_provisions_a_payload_for_every_os_slot_online` is its `#[ignore]`d twin. The `tool_sync` modules answer their upstream the same way, through the stub in `tests/common/stub_upstream.rs` — a mock copied per module is a mock that drifts, and a drifted mock is the silent-coverage failure this shape exists to remove.
+
+`MANAGED_TOOLS` in `all_platform.rs` names the managed-tool set a full sync must provision. It is hand-maintained, and the repository keeps equivalent lists at three further sites — `resolve_tool_fetch_routes_all_tools` and `resolve_tool_fetch_each_fetched_tool_covers_three_oses` (unit, `tools/provider/mod.rs`) and `every_latest_payload_url_is_built_from_the_download_seam` — so nothing derives the set from `resolve_tool_fetch`'s dispatch; a shared production constant is a separate change.
+
+## Seams: four upstream base URLs, behind `test-seams`
+
+A mock is only reachable when production code reads its host from somewhere a test can set:
+
+| Env var                        | Default                          |
+| ------------------------------ | -------------------------------- |
+| `MEDIAPM_GITHUB_API_BASE`      | `https://api.github.com`         |
+| `MEDIAPM_GITHUB_DOWNLOAD_BASE` | `https://github.com`             |
+| `MEDIAPM_MARTIN_RIEDL_BASE`    | `https://ffmpeg.martin-riedl.de` |
+| `MEDIAPM_JELLYFIN_BASE`        | `https://repo.jellyfin.org`      |
+
+Each is read per call and never cached. Each reader is gated `#[cfg(feature = "test-seams")]` on its **own body** rather than at its call sites, so no call site carries a conditional, a build without the feature returns the literal default, and the environment cannot redirect a release binary.
+
+`mediapm-test-support` (`src/mediapm-test-support/`) owns the mock: `MockUpstream` serves a mounted tool's release assets, and `SeamGuard` installs the seams for its lifetime, taking its lock as a required argument so no call site can pick the wrong mutex by omission. It is a **dev-dependency** of `mediapm` and `mediapm-conductor` and must never depend back on either, which would close a dev-dependency cycle; its `wiremock` dependency is a normal one because the mount API is part of its public surface. A build of that crate without its own `test-seams` feature refuses to install a seam, naming the feature and the command to run instead.
+
+Seam-dependent tests are gated `#[cfg(feature = "test-seams")]`, so they need an `--all-features` build, which every gate passes. A bare `cargo test -p mediapm` compiles the seams out, and `tests/int/mod.rs` refuses to build with a `compile_error!` naming the command to run instead, so the mistake fails at the compiler rather than quietly reaching the real hosts.
+
+The env-lock rule a test that sets a seam must follow is in `example-temp-isolation.instructions.md` ("Parallelism constraints").
+
+## The three-level skip model still applies where no mock exists
+
+Two tests still reach the real network and have no mock to answer them: the online demo, whose subject is the real upstream, and the YouTube regression below. They keep the skip model; the two-path model above is what a new upstream-dependent test should use.
 
 Any non-deterministic test doing real network downloads must apply the same gating. Canonical case: `src/mediapm/tests/int/online_sync_post_sync_dump.rs` (YouTube-download regression):
 

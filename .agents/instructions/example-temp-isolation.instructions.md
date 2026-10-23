@@ -101,6 +101,10 @@ mediapm-driven runs wire `conductor_tmp_dir` from `MediaPmPaths` (`mediapm-runti
 
 Tests that mutate `MEDIAPM_EXAMPLE_*` (or any process env) directly without a guard must hold the lock via `example_isolation::lock_process_env()` for the mutation scope. The lock is a `parking_lot::MutexGuard` (Send), so it can be held across `.await` in `#[tokio::test]` bodies that keep an `IsolatedExampleRoots` guard alive. Never nest `lock_process_env()` inside `with_cache()`/`artifact_only()` (or inside another guard): the `parking_lot::Mutex` is non-reentrant and nesting deadlocks.
 
+A test that depends on the **default** environment must hold the lock too, whether it reads a seam or merely assumes one is not installed. The lock excludes only the tests that take it, and the failure it prevents is a torn read: a test that resolves metadata through a mock and then builds a download URL from a restored real base, or one that seeds caches under literal production hosts while another installs the seams. The hermetic tool-sync conversions were bitten by this twice, in `int/tool_sync/inline_deps.rs` and `int/tool_sync/requires_sync.rs`.
+
+A helper that takes the lock **internally** deadlocks for a caller that already holds it, and a deadlock reads as a hang rather than as a failure. The rule is two-sided: a constructor that returns a guard taking a lock must not itself already hold that lock, and a caller must not hold what the constructor is about to take. One slice hit that hazard three times — `MockUpstream::start()`, `mock_all_managed_tools()`, and the interaction between the two.
+
 ## Managed temp path detection
 
 `mediapm_utils::temp::is_managed_path` returns true when the final path component starts with `mediapm-artifact-`, `mediapm-cache-`, or `mediapm-runtime-`. Use this when deciding whether aggressive cleanup is safe.

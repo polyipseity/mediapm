@@ -24,12 +24,15 @@
 //! That refusal cannot see the consumer's feature. `mediapm`'s `test-seams` is
 //! deliberately outside its default feature list, so a build of `mediapm`
 //! without `--all-features` compiles the provider's environment reads out while
-//! this crate's guard is satisfied and installs the variables anyway — the test
-//! then reaches the real upstream, silently, which is the one failure mode the
-//! refusal exists to prevent. **Seams are therefore only safe under
-//! `--all-features`**, which is what every gate in this repository passes. The
-//! compile-time half of that guarantee — a consumer-side assertion that its own
-//! feature is on wherever seams are used — is Task 3's, not this crate's.
+//! this crate's guard is satisfied and would install the variables anyway.
+//! **Seams are therefore only safe under `--all-features`**, which is what every
+//! gate in this repository passes.
+//!
+//! The compile-time half of that guarantee belongs to the consumer, and
+//! `mediapm` now carries it: `tests/int/mod.rs` refuses to build without
+//! `test-seams`, naming the command to run instead. A consumer that never adds
+//! that refusal would still reach the real upstream silently, so this crate
+//! documents the requirement rather than enforcing it.
 //!
 //! Every guard takes its lock as a **required argument**, so no call site can
 //! pick the wrong mutex by omission: `mediapm`'s tests pass
