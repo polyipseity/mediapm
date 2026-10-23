@@ -53,10 +53,10 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 os: "windows".to_string(),
                 arch: arch_for_os("windows"),
                 producer: SourceProducer::Fetch {
-                    urls: vec![
-                        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-                            .to_string(),
-                    ],
+                    urls: vec![format!(
+                        "{}/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+                        super::github_download_base()
+                    )],
                 },
                 expected_size: None,
                 size_hint_bytes: Some(25_000_000),
@@ -66,10 +66,10 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 os: "macos".to_string(),
                 arch: arch_for_os("macos"),
                 producer: SourceProducer::Fetch {
-                    urls: vec![
-                        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-                            .to_string(),
-                    ],
+                    urls: vec![format!(
+                        "{}/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
+                        super::github_download_base()
+                    )],
                 },
                 expected_size: None,
                 size_hint_bytes: Some(25_000_000),
@@ -79,10 +79,10 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 os: "linux".to_string(),
                 arch: arch_for_os("linux"),
                 producer: SourceProducer::Fetch {
-                    urls: vec![
-                        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
-                            .to_string(),
-                    ],
+                    urls: vec![format!(
+                        "{}/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
+                        super::github_download_base()
+                    )],
                 },
                 expected_size: None,
                 size_hint_bytes: Some(25_000_000),

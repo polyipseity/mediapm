@@ -64,7 +64,8 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 arch,
                 producer: SourceProducer::Fetch {
                     urls: vec![format!(
-                        "https://github.com/chmln/sd/releases/latest/download/sd-latest{suffix}"
+                        "{}/chmln/sd/releases/latest/download/sd-latest{suffix}",
+                        super::github_download_base()
                     )],
                 },
                 expected_size: None,

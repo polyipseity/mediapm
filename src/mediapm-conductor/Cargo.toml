@@ -21,6 +21,10 @@ cli = [
 ]
 fetch = ["mediapm-conductor-builtin-import/fetch"]
 proptest = []
+# Test-only seam, the same switch `mediapm` declares. Declared here so a test
+# crate that links the conductor can turn it on by name, and so the feature
+# matrix covers the combination.
+test-seams = []
 tool-presets = ["dep:flate2", "dep:tar", "dep:zip", "dep:xz2", "dep:sha2", "progress"]
 
 [lints]

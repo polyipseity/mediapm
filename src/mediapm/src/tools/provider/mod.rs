@@ -132,20 +132,73 @@ pub(crate) struct ResolvedToolMetadata {
     pub(crate) resolved_vcs_hash: Option<String>,
 }
 
+/// Production GitHub REST API base URL.
+const GITHUB_API_BASE_DEFAULT: &str = "https://api.github.com";
+
+/// Production base URL for GitHub release-asset downloads.
+///
+/// A tag-pinned asset is served at
+/// `{base}/{owner}/{repo}/releases/download/{tag}/{asset}`.
+const GITHUB_DOWNLOAD_BASE_DEFAULT: &str = "https://github.com";
+
 /// Environment variable overriding the GitHub REST API base URL.
 ///
-/// Hermetic-test seam only: tests point it at a local `wiremock` server to
-/// exercise tag-pinned resolution without real network access. Unset (the
-/// production default) resolves every endpoint against the real GitHub API.
+/// Compiled only into a `test-seams` build: a test points it at a local
+/// `wiremock` server to exercise tag-pinned resolution without real network
+/// access. A build without the feature has no such variable.
+#[cfg(feature = "test-seams")]
 const GITHUB_API_BASE_ENV: &str = "MEDIAPM_GITHUB_API_BASE";
 
-/// Returns the GitHub REST API base URL — the production GitHub API, or the
-/// `MEDIAPM_GITHUB_API_BASE` test override when set.
+/// Environment variable overriding the GitHub release-download base URL.
 ///
-/// Read per call (not cached in a `OnceLock`) so per-test wiremock servers
-/// can each take a turn under the process env lock.
+/// Compiled only into a `test-seams` build, same rule as
+/// [`GITHUB_API_BASE_ENV`].
+#[cfg(feature = "test-seams")]
+const GITHUB_DOWNLOAD_BASE_ENV: &str = "MEDIAPM_GITHUB_DOWNLOAD_BASE";
+
+/// Returns the GitHub REST API base URL.
+///
+/// In a build with the `test-seams` feature the value is the
+/// `MEDIAPM_GITHUB_API_BASE` override when set, read per call (never cached in
+/// a `OnceLock`) so per-test `wiremock` servers can each take a turn under the
+/// process env lock. Every other build returns [`GITHUB_API_BASE_DEFAULT`], so
+/// the environment cannot redirect a shipped binary.
 fn github_api_base() -> String {
-    std::env::var(GITHUB_API_BASE_ENV).unwrap_or_else(|_| "https://api.github.com".to_string())
+    #[cfg(feature = "test-seams")]
+    {
+        std::env::var(GITHUB_API_BASE_ENV).unwrap_or_else(|_| GITHUB_API_BASE_DEFAULT.to_string())
+    }
+    #[cfg(not(feature = "test-seams"))]
+    {
+        GITHUB_API_BASE_DEFAULT.to_string()
+    }
+}
+
+/// Returns the base URL GitHub release assets are downloaded from.
+///
+/// Same feature rule as [`github_api_base`]: the
+/// `MEDIAPM_GITHUB_DOWNLOAD_BASE` override is read per call in a `test-seams`
+/// build, and every other build returns [`GITHUB_DOWNLOAD_BASE_DEFAULT`].
+///
+/// Every GitHub payload URL is built from here rather than from a literal
+/// host: [`github_release_asset_url`] for a tag-pinned asset, and the per-tool
+/// provider modules for the `latest/download` templates a `Latest` spec
+/// resolves — [`yt_dlp`], [`deno`], [`rsgain`], [`sd`], and the `BtbN` legs of
+/// [`ffmpeg`]. A template that hardcoded its host would compile, resolve, and
+/// fetch from the real GitHub even in a `test-seams` build, so
+/// `every_latest_payload_url_is_built_from_the_download_seam` walks every
+/// managed tool's resolved sources and fails on any URL that still names
+/// `github.com`.
+pub(crate) fn github_download_base() -> String {
+    #[cfg(feature = "test-seams")]
+    {
+        std::env::var(GITHUB_DOWNLOAD_BASE_ENV)
+            .unwrap_or_else(|_| GITHUB_DOWNLOAD_BASE_DEFAULT.to_string())
+    }
+    #[cfg(not(feature = "test-seams"))]
+    {
+        GITHUB_DOWNLOAD_BASE_DEFAULT.to_string()
+    }
 }
 
 /// Resolves the commit SHA a tag points at, dereferencing annotated tags.
@@ -429,7 +482,8 @@ fn missing_release_asset_error(
 ///
 /// GitHub serves tag-pinned assets at `releases/download/{tag}/{asset}`,
 /// mirroring the `releases/latest/download/{asset}` template the `Latest`
-/// path substitutes.
+/// path substitutes. The host comes from [`github_download_base`], so a test
+/// can point the whole payload path at a local server.
 #[must_use]
 pub(crate) fn github_release_asset_url(
     owner: &str,
@@ -437,7 +491,7 @@ pub(crate) fn github_release_asset_url(
     tag: &str,
     asset_name: &str,
 ) -> String {
-    format!("https://github.com/{owner}/{repo}/releases/download/{tag}/{asset_name}")
+    format!("{}/{owner}/{repo}/releases/download/{tag}/{asset_name}", github_download_base())
 }
 
 /// Resolves a tag-pinned GitHub tool into its fetch and metadata.
@@ -886,6 +940,12 @@ pub(crate) async fn resolve_tool_fetch(
 #[cfg(test)]
 mod tests_version_targeting;
 
+/// Provider tests, including the ones that drive a `MEDIAPM_*` seam.
+///
+/// A test that sets a seam variable carries `#[cfg(feature = "test-seams")]`,
+/// because a build without the feature ignores that variable: the test would
+/// reach the real network instead of a local server. Every workspace gate
+/// passes `--all-features`, so those tests run wherever the suite runs.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -896,61 +956,13 @@ mod tests {
         clippy::await_holding_lock,
         reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "integration-style test seeds six tools' metadata caches and asserts each route"
-    )]
     async fn resolve_tool_fetch_routes_all_tools() {
         let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
-        // Pre-seed metadata cache for network-backed tools to avoid real API calls.
-        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag (yt-dlp, deno, rsgain, sd)
-        // and plain "{tag}" for resolve_latest_autobuild_tag (ffmpeg BtbN) or the
-        // martin-riedl macOS-leg build id.
-        for (api_url, tag, hash) in &[
-            (
-                "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
-                "2025.07.15",
-                "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
-            ),
-            (
-                "https://api.github.com/repos/denoland/deno/releases/latest",
-                "v2.2.12",
-                "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
-            ),
-            (
-                "https://api.github.com/repos/complexlogic/rsgain/releases/latest",
-                "v3.7",
-                "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
-            ),
-            (
-                "https://api.github.com/repos/chmln/sd/releases/latest",
-                "v1.1.0",
-                "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3",
-            ),
-        ] {
-            cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
-        }
-        // ffmpeg: autobuild tag + martin-riedl macOS-leg build id
-        cache
-            .store_bytes(
-                "default",
-                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
-                b"autobuild-2025-07-15-12-00",
-            )
-            .await;
-        cache
-            .store_bytes(
-                "default",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
-                b"1759500000_N-127260-g7bc3576910",
-            )
-            .await;
-
-        seed_jellyfin_metadata(&cache, "default").await;
+        seed_all_tools_metadata(&cache, "default").await;
 
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "media-tagger", "import", "sd"] {
             let result = resolve_tool_fetch(
@@ -1088,6 +1100,58 @@ mod tests {
                 b"jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz\n",
             )
             .await;
+    }
+
+    /// Seeds the metadata cache every network-backed managed tool resolves
+    /// through, so a test can walk all of them without reaching the network:
+    /// the four GitHub release lookups the tag-resolving tools read, the
+    /// `BtbN` autobuild listing and the martin-riedl leg the ffmpeg chain
+    /// probes, and the jellyfin repository lookups behind
+    /// [`seed_jellyfin_metadata`].
+    ///
+    /// `{tag}\n{hash}` is the shape `resolve_latest_github_tag` stores, so one
+    /// entry carries both the tag and the commit hash it dereferences to; the
+    /// autobuild and martin-riedl lookups store a bare tag.
+    async fn seed_all_tools_metadata(cache: &ToolDownloadCache, domain: &str) {
+        for (api_url, tag, hash) in [
+            (
+                "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+                "2025.07.15",
+                "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            ),
+            (
+                "https://api.github.com/repos/denoland/deno/releases/latest",
+                "v2.2.12",
+                "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
+            ),
+            (
+                "https://api.github.com/repos/complexlogic/rsgain/releases/latest",
+                "v3.7",
+                "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
+            ),
+            (
+                "https://api.github.com/repos/chmln/sd/releases/latest",
+                "v1.1.0",
+                "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3",
+            ),
+        ] {
+            cache.store_bytes(domain, api_url, format!("{tag}\n{hash}").as_bytes()).await;
+        }
+        cache
+            .store_bytes(
+                domain,
+                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+                b"autobuild-2025-07-15-12-00",
+            )
+            .await;
+        cache
+            .store_bytes(
+                domain,
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
+        seed_jellyfin_metadata(cache, domain).await;
     }
 
     /// Seeded metadata cache for a single tool's resolved fields, avoiding real
@@ -1543,49 +1607,7 @@ mod tests {
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
 
-        // Pre-seed metadata cache with known tags/hashes for all tools.
-        // Cache format is "{tag}\n{hash}" for resolve_latest_github_tag and plain "{tag}" for autobuild/ martin-riedl build id.
-        for (api_url, tag, hash) in &[
-            (
-                "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
-                "2025.07.15",
-                "y1y2y3y4y5y6y7y8y9y0y1y2y3y4y5y6y7y8y9y0y1y2y3",
-            ),
-            (
-                "https://api.github.com/repos/denoland/deno/releases/latest",
-                "v2.2.12",
-                "d1d2d3d4d5d6d7d8d9d0d1d2d3d4d5d6d7d8d9d0d1d2d3",
-            ),
-            (
-                "https://api.github.com/repos/complexlogic/rsgain/releases/latest",
-                "v3.7",
-                "r1r2r3r4r5r6r7r8r9r0r1r2r3r4r5r6r7r8r9r0r1r2r3",
-            ),
-            (
-                "https://api.github.com/repos/chmln/sd/releases/latest",
-                "v1.1.0",
-                "s1s2s3s4s5s6s7s8s9s0s1s2s3s4s5s6s7s8s9s0s1s2s3",
-            ),
-        ] {
-            cache.store_bytes("default", api_url, format!("{tag}\n{hash}").as_bytes()).await;
-        }
-        // ffmpeg: autobuild tag + martin-riedl macOS-leg build id
-        cache
-            .store_bytes(
-                "default",
-                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
-                b"autobuild-2025-07-15-12-00",
-            )
-            .await;
-        cache
-            .store_bytes(
-                "default",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
-                b"1759500000_N-127260-g7bc3576910",
-            )
-            .await;
-
-        seed_jellyfin_metadata(&cache, "default").await;
+        seed_all_tools_metadata(&cache, "default").await;
 
         // — yt-dlp (tag "2025.07.15", no v-prefix, no filename rewrite) —
         {
@@ -1599,7 +1621,7 @@ mod tests {
             .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
-                canonical, "y1y2y3y4y5y6y7y8y9y0y1y2y3y4y5y6y7y8y9y0y1y2y3",
+                canonical, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
                 "yt-dlp canonical version"
             );
             assert_eq!(fetch.sources.len(), 3, "yt-dlp: expected 3 OS sources");
@@ -1710,7 +1732,7 @@ mod tests {
             .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
-                canonical, "d1d2d3d4d5d6d7d8d9d0d1d2d3d4d5d6d7d8d9d0d1d2d3",
+                canonical, "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
                 "deno canonical version"
             );
             assert_eq!(fetch.sources.len(), 3, "deno: expected 3 OS sources");
@@ -1759,7 +1781,7 @@ mod tests {
             .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
-                canonical, "r1r2r3r4r5r6r7r8r9r0r1r2r3r4r5r6r7r8r9r0r1r2r3",
+                canonical, "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
                 "rsgain canonical version"
             );
             assert_eq!(fetch.sources.len(), 3, "rsgain: expected 3 OS sources");
@@ -1804,7 +1826,7 @@ mod tests {
             .unwrap();
             let canonical = metadata.canonical_version;
             assert_eq!(
-                canonical, "s1s2s3s4s5s6s7s8s9s0s1s2s3s4s5s6s7s8s9s0s1s2s3",
+                canonical, "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3",
                 "sd canonical version"
             );
             assert_eq!(fetch.sources.len(), 3, "sd: expected 3 OS sources");
@@ -2088,6 +2110,7 @@ mod tests {
     /// GitHub API answers the list endpoint and the first `autobuild-*` tag
     /// is picked from it, proving the URL is built from `github_api_base()`
     /// and not a hardcoded host.
+    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -2261,5 +2284,174 @@ mod tests {
             "a1b2c3d4",
             "only ffmpeg's canonical carries a macOS leg to correct"
         );
+    }
+
+    /// The API seam answers the `MEDIAPM_GITHUB_API_BASE` override in a
+    /// `test-seams` build, which is what lets a test point the provider at a
+    /// local server instead of the real GitHub API.
+    #[cfg(feature = "test-seams")]
+    #[test]
+    fn github_api_base_returns_the_override_when_the_seam_is_set() {
+        let _env = lock_process_env();
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(GITHUB_API_BASE_ENV, "http://127.0.0.1:9/github-api");
+        }
+        assert_eq!(github_api_base(), "http://127.0.0.1:9/github-api");
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(GITHUB_API_BASE_ENV);
+        }
+    }
+
+    /// The download seam answers the `MEDIAPM_GITHUB_DOWNLOAD_BASE` override
+    /// in a `test-seams` build, which is what lets a test serve every managed
+    /// tool's payload URLs from a local server.
+    #[cfg(feature = "test-seams")]
+    #[test]
+    fn github_download_base_returns_the_override_when_the_seam_is_set() {
+        let _env = lock_process_env();
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(GITHUB_DOWNLOAD_BASE_ENV, "http://127.0.0.1:9/assets");
+        }
+        assert_eq!(github_download_base(), "http://127.0.0.1:9/assets");
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(GITHUB_DOWNLOAD_BASE_ENV);
+        }
+    }
+
+    /// The release-asset URL is composed from the download seam rather than
+    /// from a literal host, so a test can redirect the whole payload path and
+    /// a future edit cannot quietly reintroduce `github.com`.
+    #[cfg(feature = "test-seams")]
+    #[test]
+    fn github_release_asset_url_is_composed_from_the_download_seam() {
+        let _env = lock_process_env();
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(GITHUB_DOWNLOAD_BASE_ENV, "http://127.0.0.1:9/assets");
+        }
+        assert_eq!(
+            github_release_asset_url("yt-dlp", "yt-dlp", "2025.07.15", "yt-dlp_linux"),
+            "http://127.0.0.1:9/assets/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_linux",
+            "only the host comes from the seam; the path shape is unchanged"
+        );
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(GITHUB_DOWNLOAD_BASE_ENV);
+        }
+    }
+
+    /// Every payload URL a `Latest` spec resolves is built from
+    /// [`github_download_base`], so pointing that seam at a local server moves
+    /// the default spec — the one `mediapm.ncl` and the all-platform test use
+    /// — off the real GitHub.
+    ///
+    /// The walk is the point. The `latest/download` templates live in five
+    /// provider modules, and a template that hardcoded its host would compile,
+    /// resolve, and fetch from `github.com` while every per-tool assertion
+    /// still passed: the resolve phase only rewrites the path segment, never
+    /// the host. So this resolves every managed tool and fails on the first
+    /// URL that still names `github.com`, naming the tool and the URL.
+    #[cfg(feature = "test-seams")]
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_download_base() reads against the MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scope"
+    )]
+    async fn every_latest_payload_url_is_built_from_the_download_seam() {
+        let _env = lock_process_env();
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        seed_all_tools_metadata(&cache, "default").await;
+
+        let seam = "http://127.0.0.1:9/assets";
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(GITHUB_DOWNLOAD_BASE_ENV, seam);
+        }
+
+        for name in ["ffmpeg", "yt-dlp", "deno", "rsgain", "sd", "media-tagger", "import"] {
+            let (fetch, _) = resolve_tool_fetch(
+                name,
+                &VersionSpec::Latest,
+                Some((&*cache, "default")),
+                RecheckPolicy::default(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("tool {name}: resolve should succeed, got {error:?}"));
+
+            let mut payload_urls = 0_usize;
+            for source in &fetch.sources {
+                let SourceProducer::Fetch { urls } = &source.producer else {
+                    continue;
+                };
+                for url in urls {
+                    payload_urls += 1;
+                    assert!(
+                        !url.contains("github.com"),
+                        "tool {name} (os {}): the Latest payload URL {url} still names github.com, \
+                         so MEDIAPM_GITHUB_DOWNLOAD_BASE cannot move it",
+                        source.os
+                    );
+                }
+            }
+            if matches!(name, "media-tagger" | "import") {
+                assert_eq!(payload_urls, 0, "tool {name}: a launcher fetches no payload");
+            } else {
+                assert!(
+                    payload_urls > 0,
+                    "tool {name}: no payload URL to check, so this walk would pass vacuously"
+                );
+            }
+        }
+
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(GITHUB_DOWNLOAD_BASE_ENV);
+        }
+    }
+
+    /// Without the `test-seams` feature the environment cannot redirect the
+    /// provider: both bases stay at their production values, and the asset URL
+    /// keeps the production host, even with the variables set.
+    ///
+    /// Run with
+    /// `cargo test -p mediapm --no-default-features --features cli,media-tagger`.
+    /// The plain `--no-default-features` form cannot compile in this workspace:
+    /// with `tool-presets` off, `mediapm-conductor` fails on its optional `zip`
+    /// dependency in `step_worker/capture.rs`. This test cannot run under
+    /// `--all-features` either, which compiles the seam in and would take the
+    /// override branch instead.
+    #[cfg(not(feature = "test-seams"))]
+    #[test]
+    fn github_bases_ignore_the_environment_without_the_seam_feature() {
+        let _env = lock_process_env();
+        // SAFETY: the env lock the guard holds scopes these process-global
+        // variables to this test, per the documented MEDIAPM_* mutation-scope
+        // rule. The names are spelled here rather than through the constants
+        // because this build compiles those constants out.
+        unsafe {
+            std::env::set_var("MEDIAPM_GITHUB_API_BASE", "http://127.0.0.1:9/github-api");
+            std::env::set_var("MEDIAPM_GITHUB_DOWNLOAD_BASE", "http://127.0.0.1:9/assets");
+        }
+        assert_eq!(github_api_base(), GITHUB_API_BASE_DEFAULT);
+        assert_eq!(github_download_base(), GITHUB_DOWNLOAD_BASE_DEFAULT);
+        assert_eq!(
+            github_release_asset_url("yt-dlp", "yt-dlp", "2025.07.15", "yt-dlp_linux"),
+            "https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_linux"
+        );
+        // SAFETY: same env-lock scope as the sets above.
+        unsafe {
+            std::env::remove_var("MEDIAPM_GITHUB_API_BASE");
+            std::env::remove_var("MEDIAPM_GITHUB_DOWNLOAD_BASE");
+        }
     }
 }

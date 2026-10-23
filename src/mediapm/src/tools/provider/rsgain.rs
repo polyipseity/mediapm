@@ -52,7 +52,8 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 arch: "x86_64".to_string(),
                 producer: SourceProducer::Fetch {
                     urls: vec![format!(
-                        "https://github.com/complexlogic/rsgain/releases/latest/download/rsgain-latest{suffix}"
+                        "{}/complexlogic/rsgain/releases/latest/download/rsgain-latest{suffix}",
+                        super::github_download_base()
                     )],
                 },
                 expected_size: None,

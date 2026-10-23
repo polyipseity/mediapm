@@ -57,7 +57,8 @@ pub(crate) fn sources() -> ResolvedToolFetch {
                 arch,
                 producer: SourceProducer::Fetch {
                     urls: vec![format!(
-                        "https://github.com/denoland/deno/releases/latest/download/{name}"
+                        "{}/denoland/deno/releases/latest/download/{name}",
+                        super::github_download_base()
                     )],
                 },
                 expected_size: None,

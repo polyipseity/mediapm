@@ -54,22 +54,25 @@ use mediapm_conductor::tools::provider::{
 
 use super::MetadataCacheTracker;
 
-/// Environment variable overriding the martin-riedl.de base URL.
-///
-/// Hermetic-test seam only: tests point it at a local `wiremock` server.
-/// Unset (the production default) resolves against the real endpoint.
-const MARTIN_RIEDL_BASE_ENV: &str = "MEDIAPM_MARTIN_RIEDL_BASE";
-
 /// Production martin-riedl.de base URL.
 const MARTIN_RIEDL_BASE_DEFAULT: &str = "https://ffmpeg.martin-riedl.de";
 
-/// Environment variable overriding the repo.jellyfin.org base URL.
-///
-/// Hermetic-test seam only, same rule as [`MARTIN_RIEDL_BASE_ENV`].
-const JELLYFIN_BASE_ENV: &str = "MEDIAPM_JELLYFIN_BASE";
-
 /// Production repo.jellyfin.org base URL.
 const JELLYFIN_BASE_DEFAULT: &str = "https://repo.jellyfin.org";
+
+/// Environment variable overriding the martin-riedl.de base URL.
+///
+/// Compiled only into a `test-seams` build: a test points it at a local
+/// `wiremock` server. A build without the feature has no such variable.
+#[cfg(feature = "test-seams")]
+const MARTIN_RIEDL_BASE_ENV: &str = "MEDIAPM_MARTIN_RIEDL_BASE";
+
+/// Environment variable overriding the repo.jellyfin.org base URL.
+///
+/// Compiled only into a `test-seams` build, same rule as
+/// [`MARTIN_RIEDL_BASE_ENV`].
+#[cfg(feature = "test-seams")]
+const JELLYFIN_BASE_ENV: &str = "MEDIAPM_JELLYFIN_BASE";
 
 /// macOS architectures the martin-riedl primary and jellyfin fallback both
 /// publish. Both land in the content map (`macos/{arch}/…` keys) and the
@@ -94,20 +97,38 @@ const JELLYFIN_MACOS_ARCH_LABELS: [JellyfinArchLabels; 2] = [
     JellyfinArchLabels { canonical: "x86_64", dir: "x86_64", file: "mac64" },
 ];
 
-/// Returns the martin-riedl base URL — the production endpoint, or the
-/// `MEDIAPM_MARTIN_RIEDL_BASE` test override when set.
+/// Returns the martin-riedl base URL.
 ///
-/// Read per call (not cached in a `OnceLock`) so per-test wiremock servers
-/// can each take a turn under the process env lock, mirroring
-/// `MEDIAPM_GITHUB_API_BASE` in the provider module.
+/// In a build with the `test-seams` feature the value is the
+/// `MEDIAPM_MARTIN_RIEDL_BASE` override when set, read per call (never cached
+/// in a `OnceLock`) so per-test `wiremock` servers can each take a turn under
+/// the process env lock, mirroring [`github_api_base`](super::github_api_base).
+/// Every other build returns [`MARTIN_RIEDL_BASE_DEFAULT`].
 fn martin_riedl_base() -> String {
-    std::env::var(MARTIN_RIEDL_BASE_ENV).unwrap_or_else(|_| MARTIN_RIEDL_BASE_DEFAULT.to_string())
+    #[cfg(feature = "test-seams")]
+    {
+        std::env::var(MARTIN_RIEDL_BASE_ENV)
+            .unwrap_or_else(|_| MARTIN_RIEDL_BASE_DEFAULT.to_string())
+    }
+    #[cfg(not(feature = "test-seams"))]
+    {
+        MARTIN_RIEDL_BASE_DEFAULT.to_string()
+    }
 }
-/// Returns the jellyfin base URL — the production endpoint, or the
-/// `MEDIAPM_JELLYFIN_BASE` test override when set. Per-call read, same rule
-/// as [`martin_riedl_base`].
+
+/// Returns the jellyfin base URL.
+///
+/// Same feature rule as [`martin_riedl_base`], over
+/// `MEDIAPM_JELLYFIN_BASE` and [`JELLYFIN_BASE_DEFAULT`].
 fn jellyfin_base() -> String {
-    std::env::var(JELLYFIN_BASE_ENV).unwrap_or_else(|_| JELLYFIN_BASE_DEFAULT.to_string())
+    #[cfg(feature = "test-seams")]
+    {
+        std::env::var(JELLYFIN_BASE_ENV).unwrap_or_else(|_| JELLYFIN_BASE_DEFAULT.to_string())
+    }
+    #[cfg(not(feature = "test-seams"))]
+    {
+        JELLYFIN_BASE_DEFAULT.to_string()
+    }
 }
 
 /// martin-riedl's release channel for a macOS permalink.
@@ -594,22 +615,26 @@ pub(crate) fn sources(
     // picked is what tells one build's bytes from another's either way.
     let autobuild_identity: Option<String> = Some(autobuild_tag.to_string());
 
-    let mut sources = vec![
-        ResolvedSource {
-            os: "windows".to_string(),
-            // WHY: BtbN win64 builds are x86_64-only.
-            arch: "x86_64".to_string(),
-            producer: SourceProducer::Fetch {
-                urls: vec![
-                    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl-shared.zip".to_string(),
-                    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip".to_string(),
-                ],
-            },
-            expected_size: None,
-            size_hint_bytes: Some(120_000_000),
-            identity: autobuild_identity.clone(),
+    let mut sources = vec![ResolvedSource {
+        os: "windows".to_string(),
+        // WHY: BtbN win64 builds are x86_64-only.
+        arch: "x86_64".to_string(),
+        producer: SourceProducer::Fetch {
+            urls: vec![
+                format!(
+                    "{}/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl-shared.zip",
+                    super::github_download_base()
+                ),
+                format!(
+                    "{}/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+                    super::github_download_base()
+                ),
+            ],
         },
-    ];
+        expected_size: None,
+        size_hint_bytes: Some(120_000_000),
+        identity: autobuild_identity.clone(),
+    }];
 
     for arch in MACOS_ARCHES {
         // `Exact` addresses one pinned build directly; `Latest` walks the
@@ -642,8 +667,14 @@ pub(crate) fn sources(
         arch: "x86_64".to_string(),
         producer: SourceProducer::Fetch {
             urls: vec![
-                "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl-shared.tar.xz".to_string(),
-                "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz".to_string(),
+                format!(
+                    "{}/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl-shared.tar.xz",
+                    super::github_download_base()
+                ),
+                format!(
+                    "{}/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz",
+                    super::github_download_base()
+                ),
             ],
         },
         expected_size: None,
@@ -654,6 +685,11 @@ pub(crate) fn sources(
     ResolvedToolFetch { tool_id: "ffmpeg".to_string(), sources }
 }
 
+/// Tests for the ffmpeg macOS source chain and its base-URL seams.
+///
+/// A test that sets a seam variable carries `#[cfg(feature = "test-seams")]`,
+/// because a build without the feature ignores that variable and the test
+/// would reach the real network. Every workspace gate passes `--all-features`.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,6 +992,7 @@ mod tests {
     /// The permalink probe reads the build id out of the final redirect
     /// target and caches it under the permalink URL (the same key the fetch
     /// phase caches its bytes under); the second resolve is a cache hit.
+    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -1027,6 +1064,7 @@ mod tests {
     ///
     /// The probe therefore walks the same method the fetch walks, and carries a
     /// one-byte `Range` so the redirect target is known without the payload.
+    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -1085,6 +1123,7 @@ mod tests {
     /// the chain still holds its candidates, and fetch feedback corrects the
     /// canonical version if the primary serves later. With no resolved
     /// fallback the leg is the explicit unresolved sentinel.
+    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -1165,6 +1204,7 @@ mod tests {
     /// The repository is read for its newest build line and each
     /// architecture's pointer file; the resolved URLs name the archives the
     /// repository currently serves, and the second resolve is a cache hit.
+    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -1260,6 +1300,7 @@ mod tests {
 
     /// An unreadable index is not a failure: the macOS chain drops to its
     /// martin-riedl candidates rather than aborting the resolve.
+    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -1286,6 +1327,67 @@ mod tests {
         // SAFETY: same env-lock scope as the set above.
         unsafe {
             std::env::remove_var(JELLYFIN_BASE_ENV);
+        }
+    }
+
+    /// Both macOS base seams answer their overrides in a `test-seams` build,
+    /// which is what lets a test serve the permalinks and the repository from
+    /// a local server.
+    #[cfg(feature = "test-seams")]
+    #[test]
+    fn macos_base_seams_return_their_overrides() {
+        let _env = crate::example_isolation::lock_process_env();
+        // SAFETY: the env lock the guard holds scopes these process-global
+        // seams to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(MARTIN_RIEDL_BASE_ENV, "http://127.0.0.1:9/martin-riedl");
+            std::env::set_var(JELLYFIN_BASE_ENV, "http://127.0.0.1:9/jellyfin");
+        }
+        assert_eq!(martin_riedl_base(), "http://127.0.0.1:9/martin-riedl");
+        assert_eq!(jellyfin_base(), "http://127.0.0.1:9/jellyfin");
+        assert_eq!(
+            martin_riedl_permalink("aarch64", MartinRiedlChannel::Snapshot),
+            "http://127.0.0.1:9/martin-riedl/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+            "the permalink is built from the seam, not from the production host"
+        );
+        // SAFETY: same env-lock scope as the sets above.
+        unsafe {
+            std::env::remove_var(MARTIN_RIEDL_BASE_ENV);
+            std::env::remove_var(JELLYFIN_BASE_ENV);
+        }
+    }
+
+    /// Without the `test-seams` feature the environment cannot redirect the
+    /// macOS sources: both bases stay at their production values with the
+    /// variables set.
+    ///
+    /// Run with
+    /// `cargo test -p mediapm --no-default-features --features cli,media-tagger`.
+    /// The plain `--no-default-features` form cannot compile in this workspace:
+    /// with `tool-presets` off, `mediapm-conductor` fails on its optional `zip`
+    /// dependency in `step_worker/capture.rs`. This test cannot run under
+    /// `--all-features` either, which compiles the seam in.
+    #[cfg(not(feature = "test-seams"))]
+    #[test]
+    fn macos_base_seams_ignore_the_environment_without_the_seam_feature() {
+        let _env = crate::example_isolation::lock_process_env();
+        // SAFETY: the env lock the guard holds scopes these process-global
+        // variables to this test. The names are spelled here rather than
+        // through the constants because this build compiles those out.
+        unsafe {
+            std::env::set_var("MEDIAPM_MARTIN_RIEDL_BASE", "http://127.0.0.1:9/martin-riedl");
+            std::env::set_var("MEDIAPM_JELLYFIN_BASE", "http://127.0.0.1:9/jellyfin");
+        }
+        assert_eq!(martin_riedl_base(), MARTIN_RIEDL_BASE_DEFAULT);
+        assert_eq!(jellyfin_base(), JELLYFIN_BASE_DEFAULT);
+        assert_eq!(
+            martin_riedl_permalink("aarch64", MartinRiedlChannel::Snapshot),
+            format!("{MARTIN_RIEDL_BASE_DEFAULT}/redirect/latest/macos/arm64/snapshot/ffmpeg.zip")
+        );
+        // SAFETY: same env-lock scope as the sets above.
+        unsafe {
+            std::env::remove_var("MEDIAPM_MARTIN_RIEDL_BASE");
+            std::env::remove_var("MEDIAPM_JELLYFIN_BASE");
         }
     }
 }
