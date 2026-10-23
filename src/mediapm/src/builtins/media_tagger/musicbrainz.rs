@@ -1,13 +1,15 @@
 //! MusicBrainz payload fetching and FFmetadata mapping helpers.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use musicbrainz_rs::client::MusicBrainzClient;
 use musicbrainz_rs::entity::recording::Recording;
 use musicbrainz_rs::entity::release::Release;
 use musicbrainz_rs::prelude::*;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::cover_art::MediaTaggerHttpCache;
@@ -36,6 +38,73 @@ const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_HTTP_TIMEOUT_SECONDS";
 /// — minutes of sleeping inside one tagging step. Two retries keep a blip
 /// recoverable and a 503 storm terminal.
 const MUSICBRAINZ_MAX_RETRIES: u32 = 2;
+
+/// How many times one recording+release pair is attempted.
+///
+/// A dropped upstream connection arrives as a `502` *response*, which
+/// `api_bindium`'s retry loop never sees: it retries a `503` status and
+/// transport errors, and hands every other status to the caller. So the retry
+/// that makes such a drop survivable has to sit here. The fetch deadline still
+/// cuts the whole sequence.
+pub const MUSICBRAINZ_FETCH_ATTEMPTS: u32 = 3;
+
+/// The base delay between two attempts of the pair fetch.
+///
+/// Grows linearly with the attempt number, so three attempts wait 250 ms and
+/// then 500 ms: enough to let a dropped connection recover, far short of the
+/// per-request timeout a stalled server would otherwise cost.
+const MUSICBRAINZ_FETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+
+/// The minimum interval between two `MusicBrainz` requests.
+///
+/// The web service rate limits by interval rather than by burst, and its
+/// limiter answers `503` when callers ignore that. `api_bindium` carries a
+/// `governor` limiter for exactly this interval, but it is compiled out behind
+/// a feature `musicbrainz_rs` does not expose, so the spacing is enforced on
+/// this side. Spacing requests is cheaper than retrying them.
+const MUSICBRAINZ_MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The next free request slot and the wait until it.
+///
+/// Pure, so the spacing rule is testable without a clock: `last` is the slot
+/// the previous request reserved, `now` the current instant, and the returned
+/// instant is the slot this request takes. A caller that arrives after its slot
+/// has already passed takes the current instant rather than a slot in the past,
+/// which is what keeps the interval from compressing once a queue drains.
+fn next_pacing_slot(
+    last: Option<Instant>,
+    now: Instant,
+    interval: Duration,
+) -> (Instant, Duration) {
+    match last {
+        Some(last) => {
+            let slot = last + interval;
+            (slot.max(now), slot.saturating_duration_since(now))
+        }
+        None => (now, Duration::ZERO),
+    }
+}
+
+/// Waits until this process may send another `MusicBrainz` request.
+///
+/// The slot is reserved before the wait, so concurrent callers queue instead of
+/// racing: each takes the next slot and sleeps until it. The wait runs inside the
+/// fetch deadline, because the interval is a fraction of a second while the
+/// deadline is the whole pair's budget; the retry loop's own backoff is bounded
+/// the same way.
+async fn pace_musicbrainz_request() {
+    static LAST_SLOT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    let wait = {
+        let mut last = LAST_SLOT.get_or_init(|| Mutex::new(None)).lock();
+        let (slot, wait) =
+            next_pacing_slot(*last, Instant::now(), MUSICBRAINZ_MIN_REQUEST_INTERVAL);
+        *last = Some(slot);
+        wait
+    };
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+}
 
 /// Parse the request timeout from the documented env var: whole seconds,
 /// floored at the conductor client's documented 30-second floor, defaulting
@@ -177,14 +246,92 @@ impl MusicBrainzFetchShape {
     }
 }
 
+/// Fetches one recording and its release, with no retry of its own.
+///
+/// The caller owns the retry loop and the deadline, so this stays a single
+/// attempt whose error says which entity failed. Each request waits for its own
+/// pacing slot, so the interval spaces requests rather than pairs: a pair is two
+/// requests, and pacing the pair would let both leave inside one slot and double
+/// the rate the server publishes.
+async fn fetch_pair_once(
+    client: &MusicBrainzClient,
+    shape: &MusicBrainzFetchShape,
+    recording_mbid: &str,
+    release_mbid: Option<&str>,
+) -> anyhow::Result<MusicBrainzPayload> {
+    let mut recording_fetch_base = Recording::fetch();
+    let mut recording_fetch = recording_fetch_base
+        .id(recording_mbid)
+        .with_artists()
+        .with_releases()
+        .with_isrcs()
+        .with_genres()
+        .with_tags();
+
+    if shape.write_all_tags {
+        recording_fetch = recording_fetch.with_annotations().with_work_level_relations();
+    }
+
+    pace_musicbrainz_request().await;
+    let recording = recording_fetch
+        .execute_with_client_async(client)
+        .await
+        .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
+
+    let release_id = release_mbid.map(ToOwned::to_owned).or_else(|| {
+        recording
+            .releases
+            .as_ref()
+            .and_then(|releases| releases.first())
+            .map(|release| release.id.clone())
+    });
+
+    let release = if let Some(release_id) = release_id {
+        let mut release_fetch_base = Release::fetch();
+        let mut release_fetch = release_fetch_base
+            .id(&release_id)
+            .with_artists()
+            .with_recordings()
+            .with_release_groups()
+            .with_media()
+            .with_labels()
+            .with_isrcs()
+            .with_genres()
+            .with_tags();
+
+        if shape.write_all_tags {
+            release_fetch = release_fetch.with_annotations();
+        }
+        if shape.write_all_tags || shape.release_ars {
+            release_fetch =
+                release_fetch.with_recording_level_relations().with_release_group_level_relations();
+        }
+
+        Some({
+            pace_musicbrainz_request().await;
+            release_fetch
+                .execute_with_client_async(client)
+                .await
+                .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?
+        })
+    } else {
+        None
+    };
+
+    Ok(MusicBrainzPayload { recording, release })
+}
+
 /// Fetches recording/release payloads through `musicbrainz_rs`, on a client
 /// built from `shape.endpoint` rather than the crate's unbounded global.
 ///
-/// The whole recording+release fetch is bounded by `deadline`, which caps
-/// the server-controlled `Retry-After` sleep the per-request timeout cannot
-/// reach. A fetch failure propagates: the caller decides what a failure
-/// means for the tagging step, and no stale cache row is served in its
-/// place.
+/// The whole recording+release fetch is bounded by `deadline`, which caps the
+/// server-controlled `Retry-After` sleep the per-request timeout cannot reach,
+/// and a pair that fails is attempted again up to `MUSICBRAINZ_FETCH_ATTEMPTS`
+/// times, because the most common failure on this path — a dropped connection —
+/// reaches the caller as a response that the dependency's own retry loop never
+/// examines. A fetch failure propagates once the attempts are spent: the caller
+/// decides what a failure means for the tagging step, and no stale cache row is
+/// served in its place.
 pub(super) async fn fetch_musicbrainz_payloads(
     shape: &MusicBrainzFetchShape,
     recording_mbid: &str,
@@ -203,6 +350,10 @@ pub(super) async fn fetch_musicbrainz_payloads(
 /// so a payload is only ever read from or written to the row of the exact
 /// shape that produced it. The endpoint string also rides the deadline
 /// error so a stalled fetch names where it stalled.
+///
+/// Every request waits for its own pacing slot and the whole pair runs inside
+/// the deadline, so the deadline is the total budget for one pair including the
+/// pacing waits and the retry backoff between attempts.
 async fn fetch_musicbrainz_payloads_on(
     client: &MusicBrainzClient,
     shape: &MusicBrainzFetchShape,
@@ -220,65 +371,20 @@ async fn fetch_musicbrainz_payloads_on(
     }
 
     let fetched_payload = tokio::time::timeout(deadline, async {
-        let mut recording_fetch_base = Recording::fetch();
-        let mut recording_fetch = recording_fetch_base
-            .id(recording_mbid)
-            .with_artists()
-            .with_releases()
-            .with_isrcs()
-            .with_genres()
-            .with_tags();
-
-        if shape.write_all_tags {
-            recording_fetch = recording_fetch.with_annotations().with_work_level_relations();
+        let mut attempt = 0;
+        loop {
+            match fetch_pair_once(client, shape, recording_mbid, release_mbid).await {
+                Ok(payload) => break Ok(payload),
+                Err(error) => {
+                    attempt += 1;
+                    if attempt >= MUSICBRAINZ_FETCH_ATTEMPTS {
+                        break Err(error);
+                    }
+                    tracing::warn!(attempt, "retrying a failed MusicBrainz fetch: {error:#}");
+                    tokio::time::sleep(MUSICBRAINZ_FETCH_RETRY_BASE_DELAY * attempt).await;
+                }
+            }
         }
-
-        let recording = recording_fetch
-            .execute_with_client_async(client)
-            .await
-            .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
-
-        let release_id = release_mbid.map(ToOwned::to_owned).or_else(|| {
-            recording
-                .releases
-                .as_ref()
-                .and_then(|releases| releases.first())
-                .map(|release| release.id.clone())
-        });
-
-        let release = if let Some(release_id) = release_id {
-            let mut release_fetch_base = Release::fetch();
-            let mut release_fetch = release_fetch_base
-                .id(&release_id)
-                .with_artists()
-                .with_recordings()
-                .with_release_groups()
-                .with_media()
-                .with_labels()
-                .with_isrcs()
-                .with_genres()
-                .with_tags();
-
-            if shape.write_all_tags {
-                release_fetch = release_fetch.with_annotations();
-            }
-            if shape.write_all_tags || shape.release_ars {
-                release_fetch = release_fetch
-                    .with_recording_level_relations()
-                    .with_release_group_level_relations();
-            }
-
-            Some(
-                release_fetch
-                    .execute_with_client_async(client)
-                    .await
-                    .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?,
-            )
-        } else {
-            None
-        };
-
-        Ok::<_, anyhow::Error>(MusicBrainzPayload { recording, release })
     })
     .await
     .with_context(|| {
@@ -478,6 +584,25 @@ mod tests {
         assert_eq!(parse_musicbrainz_timeout(Some("120")), Duration::from_mins(2));
     }
 
+    /// The pacer spaces requests by the interval and never waits for a slot
+    /// that has already passed.
+    ///
+    /// The rule is pure, so it is pinned without a clock: the first request
+    /// waits for nothing, the next waits out the previous request's slot, and a
+    /// caller arriving after its slot has passed waits for nothing rather than
+    /// being pushed further into the future.
+    #[test]
+    fn the_pacer_spaces_requests_by_the_interval() {
+        let interval = Duration::from_secs(1);
+        let start = Instant::now();
+        let (first_slot, first_wait) = next_pacing_slot(None, start, interval);
+        assert_eq!(first_wait, Duration::ZERO);
+        let (second_slot, second_wait) = next_pacing_slot(Some(first_slot), start, interval);
+        assert_eq!(second_wait, interval);
+        let (_, third_wait) = next_pacing_slot(Some(second_slot), start + interval * 3, interval);
+        assert_eq!(third_wait, Duration::ZERO);
+    }
+
     /// The client the fetch path uses caps its retries and carries a request
     /// timeout: the two settings whose absence let a 503 storm hold a tagging
     /// step for minutes.
@@ -604,8 +729,9 @@ mod tests {
         // before the fetch is attempted.
         tokio::time::sleep(Duration::from_millis(2500)).await;
 
-        // A closed local port: the connection fails instantly, one attempt
-        // (cap 1 — the loop condition `0 < 1` admits a single try), no waits.
+        // A closed local port: the connection fails instantly, and the
+        // client's cap of 1 admits a single try per attempt, so the pair fetch
+        // fails after its own attempts rather than on a server-controlled wait.
         let broken = MusicBrainzClient::builder()
             .musicbrainz_domain("127.0.0.1:1".to_string())
             .api_client(

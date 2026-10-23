@@ -17,7 +17,7 @@ use mediapm::builtins::media_tagger::{
     DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_CLEAR_EXISTING_TAGS, DEFAULT_COVER_ART_SLOT_COUNT,
     DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE, DEFAULT_ENABLE_TAG_SAVING, DEFAULT_PRESERVE_IMAGES,
     DEFAULT_RELEASE_ARS, DEFAULT_SAVE_IMAGES_TO_TAGS, InternalMediaTaggerOptions,
-    run_internal_media_tagger,
+    MUSICBRAINZ_FETCH_ATTEMPTS, run_internal_media_tagger,
 };
 
 /// A valid recording MBID the mock server serves and the run requests.
@@ -255,6 +255,72 @@ async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
     assert!(
         elapsed < Duration::from_secs(20),
         "the bounded client must surface the failure rather than honor a server-controlled stall: {elapsed:?}"
+    );
+}
+
+/// A dropped connection is retried instead of failing the step.
+///
+/// The proxy and the upstream both drop connections under load, and the failure
+/// arrives as a `502` *response* — which `api_bindium`'s retry loop never
+/// examines, because it retries only a `503` status and transport errors. One
+/// `502` followed by a good response must therefore succeed.
+///
+/// The expiring `502` mock carries priority 1, above the default 5, because
+/// wiremock scans its mocks in mounting order and breaks a priority tie by
+/// insertion: the recording mock mounted first would otherwise answer every
+/// request and the `502` would never be served. Once the mock has matched its
+/// one request it stops matching, so the retry reaches the recording mock.
+#[tokio::test]
+async fn a_musicbrainz_502_is_retried() {
+    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let musicbrainz = wiremock::MockServer::start().await;
+    mount_musicbrainz(&musicbrainz).await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex("^/ws/2/"))
+        .respond_with(wiremock::ResponseTemplate::new(502))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&musicbrainz)
+        .await;
+
+    let endpoint = format!("{}/ws/2", musicbrainz.uri());
+    let options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
+
+    let result = run_internal_media_tagger(options).await;
+
+    assert!(result.is_ok(), "one dropped connection must not fail the step: {result:?}");
+}
+
+/// A persistent `502` still fails, and is attempted the declared number of
+/// times.
+///
+/// Retrying is bounded: the step surfaces the failure instead of looping, and
+/// the attempt count is what bounds it. One request per attempt is the other
+/// half of the contract — the dependency's own loop does not retry a `502`, so
+/// a count above the declared attempts would mean a retry nobody asked for.
+#[tokio::test]
+async fn a_persistent_musicbrainz_502_is_surfaced() {
+    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let musicbrainz = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex("^/ws/2/"))
+        .respond_with(wiremock::ResponseTemplate::new(502))
+        .mount(&musicbrainz)
+        .await;
+
+    let endpoint = format!("{}/ws/2", musicbrainz.uri());
+    let options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
+
+    let error =
+        run_internal_media_tagger(options).await.expect_err("a persistent 502 must fail the step");
+
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("MusicBrainz"), "the error should name the fetch: {rendered}");
+    let received = musicbrainz.received_requests().await.expect("request recorder is enabled");
+    assert_eq!(
+        received.len(),
+        MUSICBRAINZ_FETCH_ATTEMPTS as usize,
+        "each attempt makes one request, so the count is the bound",
     );
 }
 

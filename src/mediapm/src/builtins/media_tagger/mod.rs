@@ -567,6 +567,11 @@ use self::cover_art::{
     select_cover_art_for_tag_embedding,
 };
 use self::ffmetadata::parse_ffmetadata_global_map;
+/// How many attempts one recording+release pair fetch makes.
+///
+/// Re-exported because the bound is part of the step's contract: a test asserts
+/// the request count a persistent `502` costs, and that count is this number.
+pub use self::musicbrainz::MUSICBRAINZ_FETCH_ATTEMPTS;
 use self::musicbrainz::{
     MUSICBRAINZ_FETCH_DEADLINE, MusicBrainzFetchShape, build_ffmetadata_map,
     fetch_musicbrainz_payloads,
