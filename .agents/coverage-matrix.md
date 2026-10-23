@@ -1189,3 +1189,13 @@ The key no longer covers captures. One instance is now shared by every step that
 | Requests are spaced by the one-second interval, one slot per request rather than per pair, and a caller past its slot takes the current instant instead of the slot it missed. | `the_pacer_spaces_requests_by_the_interval` (mediapm `src/builtins/media_tagger/musicbrainz.rs`) | [covered] |
 | A dropped connection's 502 arrives as a response, is retried inside the fetch deadline, and is bounded by the declared attempt count. | `a_musicbrainz_502_is_retried`, `a_persistent_musicbrainz_502_is_surfaced`, `a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint` (mediapm `src/mediapm/tests/int/media_tagger_hermetic.rs`) | [covered] |
 | Every test fixture that owns a runtime root stops its conductor before the directory goes. | `every_fixture_owner_stops_its_conductor` (mediapm-conductor `tests/int/fixture_teardown.rs`) | [covered] |
+
+## Tag names on an applied file (2026-10-23)
+
+| Spec item | Test(s) | Status |
+| --- | --- | --- |
+| An internal tag key stays lowercase and valid: punctuation becomes `_`, runs collapse, a leading digit takes a prefix | `an_internal_metadata_key_is_sanitized` (`media_tagger::util`) | [covered] |
+| The ffmetadata document is written under the tag names the Matroska specification assigns (Latin capitals, digits, underscores), including keys merged in from the source file | `a_written_document_carries_matroska_tag_names` (`media_tagger::util`); `a_recording_mbid_fetches_metadata_through_the_configured_endpoint`, `cover_art_is_discovered_and_downloaded_through_the_configured_archive_endpoint` (`int::media_tagger_hermetic`, document keys) | [covered] |
+| The title is written as `title`, the key ffmpeg reads as the container's Title element, not as a `TITLE` tag that leaves the element empty | `a_written_document_carries_matroska_tag_names` (`media_tagger::util`) | [covered] |
+| The online demo's tagged assertions accept the names and values the tagging steps produce, including the `RCA Victor` label of the release `MusicBrainz` returns for the recording | `tagged_format_tags_accept_what_the_tagging_steps_write` (example embedded tests) | [covered] |
+| The tag names that reach an applied file, after the apply step's `-map_metadata` copy, are the assigned names and the title element | No hermetic test runs the apply step: the tagger's hermetic tests stop at the ffmetadata document, so the document/apply boundary is exercised only by a live online demo run | [partial] |
