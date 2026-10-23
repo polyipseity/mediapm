@@ -194,7 +194,16 @@ pub(super) fn sanitize_metadata_key(input: &str) -> String {
 /// Latin capitals, digits, and underscores, and the IANA registry that lists them
 /// is what a reader looks up: a document written with `artist` applies a private
 /// tag, so a player asking for `ARTIST` finds nothing.
+///
+/// `title` is the one exception, because ffmpeg reads that key as the container's
+/// Title element rather than as a tag. Measured on a real file: `title` in the
+/// document becomes the `title` a player reads, while `TITLE` becomes a second,
+/// separate tag and leaves the element empty.
 fn matroska_tag_name(internal_key: &str) -> String {
+    if internal_key == "title" {
+        return "title".to_string();
+    }
+
     sanitize_metadata_key(internal_key).to_ascii_uppercase()
 }
 
@@ -303,7 +312,8 @@ mod tests {
     /// This is the boundary the format lives at: the map is keyed by internal
     /// lowercase names, and a document written with those would apply private tags
     /// that no player looks up, so the capitals are asserted on the bytes rather
-    /// than on the map.
+    /// than on the map. The title is the exception the assertion pins separately,
+    /// because ffmpeg reads that key as the Title element rather than as a tag.
     #[test]
     fn a_written_document_carries_matroska_tag_names() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
@@ -317,7 +327,6 @@ mod tests {
         write_ffmetadata_document(&path, &map).expect("write the document");
 
         let written = std::fs::read_to_string(&path).expect("read the document");
-        assert!(written.contains("TITLE=A Title"), "title must be written as TITLE: {written}");
         assert!(
             written.contains("MUSICBRAINZ_RECORDINGID=an-mbid"),
             "a MusicBrainz key must be written in capitals: {written}",
@@ -327,8 +336,12 @@ mod tests {
             "a ReplayGain key must be written in capitals: {written}",
         );
         assert!(
-            !written.contains("title="),
-            "no lowercase tag name may reach the document: {written}",
+            written.contains("title=A Title"),
+            "the title must stay the key ffmpeg reads as the Title element: {written}",
+        );
+        assert!(
+            !written.contains("TITLE="),
+            "a TITLE tag would leave the container's Title element empty: {written}",
         );
     }
 }

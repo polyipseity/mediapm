@@ -3561,6 +3561,44 @@ mod tests {
         );
     }
 
+    /// Ensures the tagged artifact's assertion accepts the names the tagging steps write.
+    ///
+    /// The names and values here are the ones measured on a real tagged file: every tag
+    /// media-tagger and rsgain write is in the capitals the `Matroska` tag specification
+    /// assigns, and the title stays `title`, the key ffmpeg reads as the container's Title
+    /// element. The tagged artifact needs the network, so this fixture is what keeps the
+    /// assertion honest about the names the steps actually produce; a required key added
+    /// without measuring one fails here rather than only in a live run.
+    #[test]
+    fn tagged_format_tags_accept_what_the_tagging_steps_write() {
+        let payload = serde_json::json!({
+            "format": {
+                "tags": {
+                    "title": super::DEMO_EXPECTED_TITLE,
+                    "ARTIST": super::DEMO_METADATA_ARTIST,
+                    "ALBUM": "Never Gonna Give You Up",
+                    "ALBUMARTIST": super::DEMO_METADATA_ARTIST,
+                    "DATE": "1987-07-27",
+                    "LABEL": "RCA Victor",
+                    "GENRE": "blue-eyed soul; dance; dance-pop",
+                    "COMMENT": format!(
+                        "https://www.youtube.com/watch?v={}",
+                        super::ONLINE_DEMO_YT_DLP_VIDEO_ID
+                    ),
+                    "ISRC": "GB5KW2103369",
+                    "MUSICBRAINZ_ARTISTID": "db92a151-1ac2-438b-bc43-b82e149ddd50",
+                    "MUSICBRAINZ_ALBUMARTISTID": "db92a151-1ac2-438b-bc43-b82e149ddd50",
+                    "MUSICBRAINZ_ALBUMID": "7171f94c-7307-4ca7-a2db-a5e4be09cdac",
+                    "MUSICBRAINZ_RECORDINGID": "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
+                    "REPLAYGAIN_REFERENCE_LOUDNESS": "89.0 dB",
+                }
+            }
+        });
+
+        super::assert_format_tags_structural(&payload)
+            .expect("the names the tagging steps write must satisfy the tagged assertion");
+    }
+
     /// Ensures the example's pinned media-root basename agrees with the shared golden helper.
     ///
     /// Two modules spell the canonical name: this example pins it for the live run, and

@@ -188,7 +188,7 @@ async fn a_recording_mbid_fetches_metadata_through_the_configured_endpoint() {
 
     let text = std::fs::read_to_string(&output_path).expect("ffmetadata output written");
     let tags = parse_ffmetadata(&text);
-    assert_eq!(tags.get("TITLE").map(String::as_str), Some("Test Recording"));
+    assert_eq!(tags.get("title").map(String::as_str), Some("Test Recording"));
     assert_eq!(tags.get("ARTIST").map(String::as_str), Some("Test Artist"));
     assert_eq!(tags.get("MUSICBRAINZ_RECORDINGID").map(String::as_str), Some(RECORDING_MBID));
     assert_eq!(tags.get("ISRC").map(String::as_str), Some("USUM71300001"));
