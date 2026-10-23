@@ -163,7 +163,11 @@ const GITHUB_DOWNLOAD_BASE_ENV: &str = "MEDIAPM_GITHUB_DOWNLOAD_BASE";
 /// a `OnceLock`) so per-test `wiremock` servers can each take a turn under the
 /// process env lock. Every other build returns [`GITHUB_API_BASE_DEFAULT`], so
 /// the environment cannot redirect a shipped binary.
-fn github_api_base() -> String {
+///
+/// `pub(crate)` because a metadata seed outside this module keys the cache by
+/// these URLs; a seed naming the production host would miss under a redirected
+/// seam, so it has to read the same base the resolve does.
+pub(crate) fn github_api_base() -> String {
     #[cfg(feature = "test-seams")]
     {
         std::env::var(GITHUB_API_BASE_ENV).unwrap_or_else(|_| GITHUB_API_BASE_DEFAULT.to_string())
@@ -1078,25 +1082,31 @@ mod tests {
     /// ffmpeg never reaches the live repository: the directory index, which
     /// names the newest build line, and both architectures' pointer files,
     /// which name the archives.
+    ///
+    /// Every key is built from [`ffmpeg::jellyfin_base`] rather than from the
+    /// production host: the resolve reads that base, so a seed naming the real
+    /// host would miss under a redirected seam and send the test to the
+    /// network.
     async fn seed_jellyfin_metadata(cache: &ToolDownloadCache, domain: &str) {
+        let base = ffmpeg::jellyfin_base();
         cache
             .store_bytes(
                 domain,
-                "https://repo.jellyfin.org/files/ffmpeg/macos/",
+                &format!("{base}/files/ffmpeg/macos/"),
                 b"<a href=\"latest-7.x/\">latest-7.x/</a><a href=\"latest-8.x/\">latest-8.x/</a>",
             )
             .await;
         cache
             .store_bytes(
                 domain,
-                "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/macarm64-gpl.txt",
+                &format!("{base}/files/ffmpeg/macos/latest-8.x/arm64/macarm64-gpl.txt"),
                 b"jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz\n",
             )
             .await;
         cache
             .store_bytes(
                 domain,
-                "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/x86_64/mac64-gpl.txt",
+                &format!("{base}/files/ffmpeg/macos/latest-8.x/x86_64/mac64-gpl.txt"),
                 b"jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz\n",
             )
             .await;
@@ -1112,42 +1122,35 @@ mod tests {
     /// `{tag}\n{hash}` is the shape `resolve_latest_github_tag` stores, so one
     /// entry carries both the tag and the commit hash it dereferences to; the
     /// autobuild and martin-riedl lookups store a bare tag.
+    ///
+    /// Every key is built from the seam base the resolve reads —
+    /// [`github_api_base`] and [`ffmpeg::martin_riedl_base`] — so a test that
+    /// redirects the seams seeds the URLs the resolve will actually look up.
     async fn seed_all_tools_metadata(cache: &ToolDownloadCache, domain: &str) {
-        for (api_url, tag, hash) in [
-            (
-                "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
-                "2025.07.15",
-                "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
-            ),
-            (
-                "https://api.github.com/repos/denoland/deno/releases/latest",
-                "v2.2.12",
-                "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
-            ),
-            (
-                "https://api.github.com/repos/complexlogic/rsgain/releases/latest",
-                "v3.7",
-                "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
-            ),
-            (
-                "https://api.github.com/repos/chmln/sd/releases/latest",
-                "v1.1.0",
-                "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3",
-            ),
+        let api = github_api_base();
+        for (repo, tag, hash) in [
+            ("yt-dlp/yt-dlp", "2025.07.15", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"),
+            ("denoland/deno", "v2.2.12", "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"),
+            ("complexlogic/rsgain", "v3.7", "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2"),
+            ("chmln/sd", "v1.1.0", "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3"),
         ] {
-            cache.store_bytes(domain, api_url, format!("{tag}\n{hash}").as_bytes()).await;
+            let api_url = format!("{api}/repos/{repo}/releases/latest");
+            cache.store_bytes(domain, &api_url, format!("{tag}\n{hash}").as_bytes()).await;
         }
         cache
             .store_bytes(
                 domain,
-                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+                &format!("{api}/repos/BtbN/FFmpeg-Builds/releases?per_page=10"),
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
         cache
             .store_bytes(
                 domain,
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+                &format!(
+                    "{}/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+                    ffmpeg::martin_riedl_base()
+                ),
                 b"1759500000_N-127260-g7bc3576910",
             )
             .await;
@@ -1156,31 +1159,41 @@ mod tests {
 
     /// Seeded metadata cache for a single tool's resolved fields, avoiding real
     /// API calls.
+    ///
+    /// The ffmpeg keys come from the same seam bases the resolve reads
+    /// ([`github_api_base`], [`ffmpeg::martin_riedl_base`],
+    /// [`ffmpeg::jellyfin_base`]), so a test that redirects a seam still finds
+    /// its own seeds.
     async fn seed_metadata_cache(tool_name: &str) -> (ToolDownloadCache, tempfile::TempDir) {
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
-        let (urls, values): (Vec<&str>, Vec<&[u8]>) = match tool_name {
-            "ffmpeg" => (
-                vec![
-                    "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
-                    "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
-                    "https://repo.jellyfin.org/files/ffmpeg/macos/",
-                    "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/arm64/macarm64-gpl.txt",
-                    "https://repo.jellyfin.org/files/ffmpeg/macos/latest-8.x/x86_64/mac64-gpl.txt",
-                ],
-                vec![
-                    b"autobuild-2025-07-15-12-00",
-                    b"1759500000_N-127260-g7bc3576910",
-                    b"<a href=\"latest-8.x/\">latest-8.x/</a>",
-                    b"jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz\n",
-                    b"jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz\n",
-                ],
-            ),
+        let (urls, values): (Vec<String>, Vec<&[u8]>) = match tool_name {
+            "ffmpeg" => {
+                let api = github_api_base();
+                let martin_riedl = ffmpeg::martin_riedl_base();
+                let jellyfin = ffmpeg::jellyfin_base();
+                (
+                    vec![
+                        format!("{api}/repos/BtbN/FFmpeg-Builds/releases?per_page=10"),
+                        format!("{martin_riedl}/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"),
+                        format!("{jellyfin}/files/ffmpeg/macos/"),
+                        format!("{jellyfin}/files/ffmpeg/macos/latest-8.x/arm64/macarm64-gpl.txt"),
+                        format!("{jellyfin}/files/ffmpeg/macos/latest-8.x/x86_64/mac64-gpl.txt"),
+                    ],
+                    vec![
+                        b"autobuild-2025-07-15-12-00",
+                        b"1759500000_N-127260-g7bc3576910",
+                        b"<a href=\"latest-8.x/\">latest-8.x/</a>",
+                        b"jellyfin-ffmpeg_8.1.3-1_portable_macarm64-gpl.tar.xz\n",
+                        b"jellyfin-ffmpeg_8.1.3-1_portable_mac64-gpl.tar.xz\n",
+                    ],
+                )
+            }
             _ => (vec![], vec![]),
         };
         for (url, value) in urls.into_iter().zip(values) {
-            cache.store_bytes("default", url, value).await;
+            cache.store_bytes("default", &url, value).await;
         }
         (cache, temp_dir)
     }

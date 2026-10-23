@@ -158,7 +158,7 @@ pub(crate) fn display_version(version: &str) -> &str {
 }
 
 /// Fetches a tool payload for **all** platforms, extracts each to a
-/// per-OS temp directory, imports files to CAS with `./{os}/` key prefixes,
+/// per-OS temp directory, imports files to CAS under `{os}/` key prefixes,
 /// and builds an OS-conditional command-selector template.
 ///
 /// `group` provides 3 phase-agnostic progress bars per tool (res, fch,

@@ -40,18 +40,26 @@ async fn seed_two_tool_cache(cache_root: &std::path::Path) {
     // Metadata: yt-dlp tag resolution served from cache (no GitHub API).
     let tag = "2025.07.15";
     let hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
-    let api_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
-    cache.store_bytes("tool_metadata", api_key, format!("{tag}\n{hash}").as_bytes()).await;
+    let api_key = format!(
+        "{}/repos/yt-dlp/yt-dlp/releases/latest",
+        crate::tools::provider::github_api_base()
+    );
+    cache.store_bytes("tool_metadata", &api_key, format!("{tag}\n{hash}").as_bytes()).await;
 
     // Payloads: three plain binaries at the REWRITTEN release URLs.
     // `fetch_tool_sources` consults the cache by final URL, so seeding
-    // these exact keys makes the run network-free.
+    // these exact keys makes the run network-free. The keys are built from
+    // the same base the provider builds its URLs from, so a seam-redirected
+    // run seeds the URLs that run will look up.
     for (filename, payload) in &[
         ("yt-dlp.exe", &b"fake yt-dlp windows binary"[..]),
         ("yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
         ("yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
     ] {
-        let url = format!("https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/{filename}");
+        let url = format!(
+            "{}/yt-dlp/yt-dlp/releases/download/{tag}/{filename}",
+            crate::tools::provider::github_download_base()
+        );
         cache.store_bytes("tools", &url, payload).await;
     }
     // Cache handle dropped here — directory lock released, data persists

@@ -104,7 +104,11 @@ const JELLYFIN_MACOS_ARCH_LABELS: [JellyfinArchLabels; 2] = [
 /// in a `OnceLock`) so per-test `wiremock` servers can each take a turn under
 /// the process env lock, mirroring [`github_api_base`](super::github_api_base).
 /// Every other build returns [`MARTIN_RIEDL_BASE_DEFAULT`].
-fn martin_riedl_base() -> String {
+///
+/// `pub(super)` rather than private because the provider's metadata seeds key
+/// the cache by these URLs: a seed that named the production host would miss
+/// under a redirected seam, so it has to read the same base the resolve does.
+pub(super) fn martin_riedl_base() -> String {
     #[cfg(feature = "test-seams")]
     {
         std::env::var(MARTIN_RIEDL_BASE_ENV)
@@ -119,8 +123,9 @@ fn martin_riedl_base() -> String {
 /// Returns the jellyfin base URL.
 ///
 /// Same feature rule as [`martin_riedl_base`], over
-/// `MEDIAPM_JELLYFIN_BASE` and [`JELLYFIN_BASE_DEFAULT`].
-fn jellyfin_base() -> String {
+/// `MEDIAPM_JELLYFIN_BASE` and [`JELLYFIN_BASE_DEFAULT`], and the same
+/// `pub(super)` rule for the metadata seeds.
+pub(super) fn jellyfin_base() -> String {
     #[cfg(feature = "test-seams")]
     {
         std::env::var(JELLYFIN_BASE_ENV).unwrap_or_else(|_| JELLYFIN_BASE_DEFAULT.to_string())
