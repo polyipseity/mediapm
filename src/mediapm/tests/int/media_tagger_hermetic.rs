@@ -258,7 +258,7 @@ async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
         "the 503 storm must have actually reached the local server; otherwise the error names the endpoint without the endpoint having answered"
     );
     assert!(
-        elapsed < Duration::from_secs(60),
+        elapsed < Duration::from_mins(1),
         "the bounded client must surface the failure rather than honor a server-controlled stall: {elapsed:?}"
     );
 }
