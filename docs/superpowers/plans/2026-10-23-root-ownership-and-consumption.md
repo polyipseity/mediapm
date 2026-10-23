@@ -743,3 +743,43 @@ Expected: rc 0, `sync_executed: true`, 1 executed instance, 2 materialized paths
 - **Spec coverage:** §1 root ownership → Task 1; §2 strict write and the loop stop → Task 1; §3 local staging → Task 2; §4 consumable hash → Task 3; §5 pacing and 502 → Task 4; §6 fixture → Task 5; contracts and coverage → Task 6; gates and demo → Task 7. The spec's "Out of scope" items map to no task, deliberately.
 - **Placeholders:** none. Every test body is written out; the helpers each one calls (`full_ctx_with_inputs`, `mount_musicbrainz`, `hermetic_options`, `run_internal_media_tagger`, `state_with_step_instance`, `ConductorState::new_empty`) already exist in the files named. No step says "add error handling" or "similar to Task N".
 - **Type consistency:** `ensure_runtime_root`/`runtime_root_is_gone`/`state_file_parent` are introduced once and used by name; `next_pacing_slot`'s tuple shape matches its test; `MUSICBRAINZ_FETCH_ATTEMPTS` is a `u32` compared against a `u32` counter; `add_local_source_with_position` returns `Result<Hash, MediaPmError>` before and after.
+
+---
+
+### Task 8: A declared-hash variant is consumable end to end
+
+Added after Task 3 landed: the spec's Testing section requires that "an ffmpeg step whose input variant is declared only in `variant_hashes` runs", and Task 3 pinned only the resolver. This task pins the whole path.
+
+**Files:**
+
+- Create: `src/mediapm-conductor/tests/int/step_input_external_data.rs`
+- Modify: `src/mediapm-conductor/tests/int/mod.rs`
+
+**Interfaces:**
+
+- Consumes: the document schema's `external_data` map, a step's `inputs` map, and the input `:file(...)` materialization selector.
+- Produces: no new symbol.
+- [ ] **Step 1: Write the failing test**
+
+Build a Nickel document with one workflow whose step has `inputs = { in0 = "${external_data.<hash>}" }`, a command that reads the materialized input (`sh -c 'cat <materialized path>'`, as `step_rpc_layering.rs` already runs `sh -c`), and a capture of that stdout. Stage the bytes with `cas.put` first and declare the same hash in `external_data`, as `external_data_and_validation.rs` does. Run the workflow and assert the captured stdout equals the staged bytes.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `RUSTC_WRAPPER= cargo test-pkg mediapm-conductor --test mod step_input_external_data`
+Expected: FAIL against the pre-Task-3 resolver with the missing-CAS-handle error. If it passes without Task 3, the test is not exercising the path — say so rather than keeping it.
+
+- [ ] **Step 3: Confirm the command surface materializes the hash**
+
+The assertion is the whole test: the input resolves to the hash, and the command's `:file(...)` selector turns it into bytes. No implementation change is expected.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `RUSTC_WRAPPER= cargo test-pkg mediapm-conductor`
+Expected: PASS, with the count one higher than 628.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/mediapm-conductor/tests/int/step_input_external_data.rs src/mediapm-conductor/tests/int/mod.rs
+git commit -m "test(conductor): run a step whose input is a declared hash"
+```
