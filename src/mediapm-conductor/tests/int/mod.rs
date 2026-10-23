@@ -11,6 +11,11 @@ mod bootstrap;
 #[cfg(unix)]
 mod step_rpc_layering;
 
+/// A step whose input is a declared hash reads the declared bytes
+/// (unix-only: the test step is a real `sh` process).
+#[cfg(unix)]
+mod step_input_external_data;
+
 /// Instance GC with configurable TTL.
 mod gc;
 
