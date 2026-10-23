@@ -304,6 +304,7 @@ async fn overall_row_installs_no_label_and_sets_total_once() {
     assert_eq!(truncations, 0, "the overall row never installs a label: {overall:?}");
     let totals = overall.iter().filter(|op| matches!(op, ProgressOp::SetTotal { .. })).count();
     assert_eq!(totals, 1, "the overall row's total is set exactly once per workflow: {overall:?}");
+    tc.shutdown().await;
 }
 
 /// Worker-slot bars suppress their auto rate and eta; the overall row keeps
@@ -345,6 +346,7 @@ async fn worker_slots_suppress_rate_and_eta_but_the_overall_row_keeps_them() {
     let overall_suppressions =
         overall.iter().filter(|op| matches!(op, ProgressOp::SetSuppressRateEta { .. })).count();
     assert_eq!(overall_suppressions, 0, "the overall row keeps its rate and eta: {overall:?}");
+    tc.shutdown().await;
 }
 
 /// Single-step echo workflow emits the expected progress sequence:
@@ -403,6 +405,7 @@ async fn single_step_success_progress_ops() {
             ProgressOp::FinishSuccess,
         ],
     );
+    tc.shutdown().await;
 }
 
 /// Two independent steps at the same level — each worker's idle bar is
@@ -477,6 +480,7 @@ async fn two_step_same_level_success_progress_ops() {
             ProgressOp::FinishSuccess,
         ],
     );
+    tc.shutdown().await;
 }
 
 /// A workflow with three independent steps — verifies the ready-queue
@@ -571,6 +575,7 @@ async fn three_step_same_level_progress_ops() {
             ProgressOp::FinishSuccess,
         ],
     );
+    tc.shutdown().await;
 }
 
 /// Regression: a slot that is not running a step stops at its activity
@@ -618,6 +623,7 @@ async fn regression_idle_slot_prefix_stops_at_the_activity_marker() {
         vec!["default s1 (broken) [active]".to_string(); 3],
         "a slot running a step still names workflow, step and tool"
     );
+    tc.shutdown().await;
 }
 
 /// When `progress_group` is `None`, no progress ops are recorded and the
@@ -640,6 +646,7 @@ async fn no_progress_group_succeeds_silently() {
     assert_eq!(summary.executed_steps, 1);
     assert_eq!(summary.failed_steps, 0);
     assert!(tracker.ops().is_empty(), "no progress ops when progress_group is None");
+    tc.shutdown().await;
 }
 
 /// Two steps with a dependency — step2 depends on step1 (two levels).
@@ -720,6 +727,7 @@ async fn two_step_sequential_levels_progress_ops() {
             ProgressOp::FinishSuccess,
         ],
     );
+    tc.shutdown().await;
 }
 
 /// Regression: the fixed worker-slot grid emits exactly `pool_size` idle bars
@@ -760,6 +768,7 @@ async fn regression_no_per_step_flicker() {
         })
         .count();
     assert_eq!(step_bars, 0, "no per-step AddBar (no flicker)");
+    tc.shutdown().await;
 }
 
 /// Regression: a step that exhausts its retries is dispatched exactly
@@ -811,6 +820,7 @@ async fn regression_worker_invariant_holds() {
         "the overall row does not carry the failure marker"
     );
     assert_eq!(count_advances(&ops), 4, "3 step-bar advances + 1 overall advance");
+    tc.shutdown().await;
 }
 
 /// Regression: a step that retries then succeeds emits a pending-retry marker
@@ -850,6 +860,7 @@ async fn regression_overall_advances_only_on_final_terminal() {
     );
     assert_eq!(count_markers_f(&ops), 0, "no final-failure marker on success");
     assert_eq!(count_advances(&ops), 3, "2 step-bar advances + 1 overall advance");
+    tc.shutdown().await;
 }
 
 /// Regression: after a retry succeeds, no pending-retry marker lingers — the
@@ -887,6 +898,7 @@ async fn regression_pending_retry_trends_to_zero() {
         "the overall row ends clean once the retry succeeds"
     );
     assert_eq!(count_markers_f(&ops), 0, "no final-failure marker after success");
+    tc.shutdown().await;
 }
 
 /// A flaky step that fails once then succeeds is dispatched twice (initial +
@@ -925,6 +937,7 @@ async fn retry_then_succeed_progress_ops() {
     );
     assert_eq!(count_markers_f(&ops), 0, "no final-failure marker on success");
     assert_eq!(count_dispatches(&ops), 2, "dispatched initial + one retry");
+    tc.shutdown().await;
 }
 
 /// A broken step with `max_retries: 2` is dispatched three times (initial +
@@ -972,6 +985,7 @@ async fn retry_exhausted_progress_ops() {
         0,
         "the overall row does not carry the failure marker"
     );
+    tc.shutdown().await;
 }
 
 /// A broken step with `max_retries: 0` is dispatched exactly once and fails
@@ -1019,6 +1033,7 @@ async fn no_retry_when_max_retries_zero() {
         0,
         "the overall row does not carry the failure marker"
     );
+    tc.shutdown().await;
 }
 
 /// An impure broken step with `max_retries: 2` is NOT retried when
@@ -1076,6 +1091,7 @@ async fn impure_no_retry_without_flag() {
         0,
         "the overall row does not carry the failure marker"
     );
+    tc.shutdown().await;
 }
 
 /// The overall workflow bar's suffix is a comma-joined status list of
@@ -1114,6 +1130,7 @@ async fn overall_bar_suffix_status_list() {
     assert!(suffix.contains("failed"), "failed step appears in status list: {suffix:?}");
     assert!(!suffix.contains("cached"), "zero-count cached dropped: {suffix:?}");
     assert!(!suffix.contains("retried"), "zero-count retried dropped: {suffix:?}");
+    tc.shutdown().await;
 }
 
 /// When all steps succeed, the overall bar's status-list suffix contains no
@@ -1149,6 +1166,7 @@ async fn overall_bar_suffix_no_failed_on_success() {
         suffix, "1 executed",
         "a clean run reports its executed count instead of an empty suffix: {suffix:?}"
     );
+    tc.shutdown().await;
 }
 
 /// The pinned overall row finishes as a warning when the run ends in
@@ -1194,6 +1212,8 @@ async fn overall_row_marks_a_warned_run_and_leaves_a_clean_run_unmarked() {
         Some(&ProgressOp::FinishSuccess),
         "a clean run ends the overall row with a success: {ops:?}"
     );
+    warned.shutdown().await;
+    clean.shutdown().await;
 }
 
 /// A run with a failed step finishes the pinned overall row as a warning.
@@ -1253,6 +1273,7 @@ async fn overall_bar_finishes_warning_when_a_step_failed() {
         "the warning is reported with the tally that caused it; a count of zero is \
          not rendered, so the two phases this run did not enter leave no word behind"
     );
+    tc.shutdown().await;
 }
 
 /// Regression: the worker-bar tally counts a retryable failed attempt in
@@ -1334,6 +1355,7 @@ async fn retry_tally_counts_the_attempt_in_total_only() {
             ProgressOp::FinishSuccess,
         ],
     );
+    tc.shutdown().await;
 }
 
 /// Regression: a final failure is a terminal outcome, so the worker-bar
@@ -1402,4 +1424,5 @@ async fn final_failure_tally_counts_the_terminal_outcome() {
             ProgressOp::FinishWarning,
         ],
     );
+    tc.shutdown().await;
 }

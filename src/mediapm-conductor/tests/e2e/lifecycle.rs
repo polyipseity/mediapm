@@ -103,4 +103,5 @@ async fn workflow_lifecycle_cache_gc_tool_update() {
         .expect("phase 8b");
     assert_eq!(s.executed_steps, 0, "phase 8b: updated cached post-GC");
     assert_eq!(s.cached_steps, 1, "phase 8b: updated cached post-GC");
+    tc.shutdown().await;
 }

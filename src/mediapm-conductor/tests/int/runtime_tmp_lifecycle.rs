@@ -36,6 +36,7 @@ async fn runtime_tmp_removed_on_normal_workflow_exit() {
         "runtime tmp root removed on normal exit: {}",
         runtime_tmp.display()
     );
+    test.shutdown().await;
 }
 
 #[tokio::test]
@@ -65,4 +66,5 @@ async fn runtime_tmp_removed_on_failed_workflow_unknown_tool() {
         "runtime tmp root removed on failed workflow: {}",
         runtime_tmp.display()
     );
+    test.shutdown().await;
 }

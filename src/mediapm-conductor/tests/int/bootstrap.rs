@@ -24,6 +24,7 @@ async fn run_workflow_bootstraps_missing_documents() {
 
     let state = tc.conductor().get_state().expect("state snapshot");
     assert_eq!(state.tool_call_instances.len(), 1);
+    tc.shutdown().await;
 }
 
 /// Protects integer-only validation for executable `success_codes`.
@@ -71,4 +72,5 @@ async fn run_workflow_rejects_fractional_success_codes() {
         message.contains("success_codes") || message.contains("Integer"),
         "expected integer-contract error mentioning success_codes or Integer, got: {message}"
     );
+    tc.shutdown().await;
 }

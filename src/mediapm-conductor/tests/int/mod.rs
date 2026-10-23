@@ -23,6 +23,10 @@ mod gc;
 /// store re-executes instead of reusing the instance that names it.
 mod cache_probe;
 
+/// Every test that builds a `TestConductor` stops it before the fixture's
+/// directory goes.
+mod fixture_teardown;
+
 /// Name-addressed capture union: one instance serves steps that declare
 /// different names, a changed capture spec replaces only its entry, and two
 /// steps disagreeing about one name's capture fail the run.

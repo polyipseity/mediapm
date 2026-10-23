@@ -147,6 +147,7 @@ async fn two_disjoint_declarations_union_into_one_instance_and_the_re_run_execut
         (0, 2, 0),
         "the unioned instance must serve both steps on the next run: {second:?}",
     );
+    tc.shutdown().await;
 }
 
 /// A name the tool declares is recorded by whichever step executes the work,
@@ -207,6 +208,7 @@ async fn a_tool_declared_capture_is_recorded_by_the_executing_step() {
         (0, 2, 0),
         "an unchanged re-run must execute nothing once both names are on the instance: {second:?}",
     );
+    tc.shutdown().await;
 }
 
 /// A changed capture identity under one name re-executes and replaces only that
@@ -293,6 +295,7 @@ async fn a_changed_capture_spec_replaces_only_that_entry() {
         (0, 2, 0),
         "the replaced entry must satisfy the probe from then on: {after:?}",
     );
+    tc.shutdown().await;
 }
 
 /// Two steps in one run that claim one name with different capture identities
@@ -337,6 +340,7 @@ async fn two_steps_disagreeing_on_one_name_fail_the_run_before_a_write() {
         !tc.path().join("state.json").exists(),
         "a run rejected for a capture disagreement must write no state",
     );
+    tc.shutdown().await;
 }
 
 /// A cache hit claims nothing and writes nothing back, so a sibling's changed
@@ -449,6 +453,7 @@ async fn a_cache_hit_neither_claims_nor_rewrites_a_siblings_entry() {
         (0, 2, 0),
         "the replacement must stick, so the next run executes nothing: {after:?}",
     );
+    tc.shutdown().await;
 }
 
 /// Builds an `fs@v1` tool that writes one text file per call.
@@ -592,6 +597,7 @@ async fn an_impure_step_replaces_a_stale_recorded_artifact_on_a_forced_rerun() {
         produced,
         "the newest execution's bytes must be the record, replacing the stale hash",
     );
+    tc.shutdown().await;
 }
 
 /// A pure step whose re-execution produces a different artifact fails the run,
@@ -629,6 +635,7 @@ async fn a_pure_step_producing_a_different_artifact_fails_the_run_naming_the_ste
         message.contains(&seeded.to_string()),
         "the message must name the recorded hash: {message}",
     );
+    tc.shutdown().await;
 }
 
 /// Two same-work siblings dispatched in one parallel cohort both execute.
@@ -687,4 +694,5 @@ async fn two_same_work_siblings_in_one_cohort_both_execute_and_then_share_the_in
         (0, 2, 0),
         "the unioned instance must serve both siblings from then on: {second:?}",
     );
+    tc.shutdown().await;
 }

@@ -284,6 +284,7 @@ async fn ready_queue_dispatches_a_step_before_an_unrelated_branch_finishes() {
         pos(&events, "start d") < pos(&events, "finish c"),
         "d must start before the held, unrelated c finishes: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// A dependent step is dispatched onto a freed worker while another branch
@@ -326,6 +327,7 @@ async fn free_pool_dispatches_a_dependent_while_another_branch_holds_a_worker() 
         pos(&events, "start s3") < pos(&events, "finish s1"),
         "s3 must start while the held s1 still runs: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// A diamond join releases only when every branch feeding it has settled:
@@ -383,6 +385,7 @@ async fn ready_queue_releases_a_diamond_join_only_after_both_branches_finish() {
         pos(&events, "finish c") < pos(&events, "start d"),
         "d starts only after the last branch c completed: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// An independent branch completes while an unrelated step still occupies a
@@ -433,6 +436,7 @@ async fn fast_branch_completes_while_an_unrelated_held_step_is_in_flight() {
         pos(&events, "finish b") < pos(&events, "finish c"),
         "b completed while the held, unrelated c was still in flight: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// A retry does not hold its worker while pending: the attempt's
@@ -481,6 +485,7 @@ async fn retry_releases_the_worker_for_the_re_dispatched_attempt() {
         summary.retried_steps, 2,
         "both steps succeed only after one retry, which requires the worker released: {summary:?}"
     );
+    tc.shutdown().await;
 }
 
 /// A step's request carries exactly its own branch's outputs: a sibling
@@ -551,6 +556,7 @@ async fn dependency_scoped_outputs_isolate_sibling_branches() {
         !events.iter().any(|event| event == "start p_d_a"),
         "d must not see the sibling a's outputs: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// A diamond join sees its whole closure — root and both branches — and
@@ -616,6 +622,7 @@ async fn dependency_scoped_outputs_cover_the_whole_diamond_closure() {
         !events.iter().any(|event| event == "start p_x"),
         "the join must not see the unrelated root's outputs: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// An in-flight step's outputs never leak into a later step's view: the
@@ -686,6 +693,7 @@ async fn dependency_scoped_outputs_exclude_an_unsettled_step() {
         pos(&events, "finish p_b") < pos(&events, "start c"),
         "c must still have been in flight when the probes dispatched: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// A step that already settled does not leak into a later unrelated step's
@@ -756,6 +764,7 @@ async fn dependency_scoped_outputs_exclude_a_step_that_already_settled() {
         !events.iter().any(|event| event == "start p_c"),
         "the settled unrelated step's outputs must not be visible: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// A step's state snapshot carries only its ancestors' tool-call
@@ -805,6 +814,7 @@ async fn dependency_scoped_state_exposes_only_ancestor_instances() {
         "a, x, and y execute — y must not see a's instance: {summary:?}"
     );
     assert_eq!(summary.failed_steps, 0, "no step fails: {summary:?}");
+    tc.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -847,6 +857,7 @@ async fn tool_cap_serializes_a_single_tool() {
         pos(&events, "finish a") < pos(&events, "start b"),
         "b must not start before a finished under cap=1: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// Parking behind a cap is per-tool: tool X (cap=1) serializes its two
@@ -899,6 +910,7 @@ async fn tool_cap_does_not_block_other_tools() {
         pos(&events, "finish x1") < pos(&events, "start x2"),
         "x2 must stay parked until x1 releases the tool slot: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// `max_concurrent_calls = 0` means unlimited: three independent steps of
@@ -939,6 +951,7 @@ async fn tool_cap_zero_runs_all_steps() {
         pos(&events, "start b") < pos(&events, "finish a"),
         "b must start while the uncapped a still runs: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// A settle releases the capped tool's slot to a parked step: with cap=1
@@ -972,6 +985,7 @@ async fn tool_cap_settle_releases_a_parked_step() {
         pos(&events, "finish a") < pos(&events, "start b"),
         "the parked step must dispatch once a releases the tool slot: {events:?}"
     );
+    tc.shutdown().await;
 }
 
 /// Parking never livelocks: with cap=1 and three independent steps, each
@@ -1011,4 +1025,5 @@ async fn tool_cap_park_does_not_livelock() {
         pos(&events, "finish b") < pos(&events, "start c"),
         "c must follow b under cap=1: {events:?}"
     );
+    tc.shutdown().await;
 }

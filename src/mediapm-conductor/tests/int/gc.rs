@@ -192,6 +192,7 @@ async fn a_successful_run_records_the_instances_it_executed_and_reused() {
         after_execution,
         "a run of cache hits must keep the reused instances live"
     );
+    tc.shutdown().await;
 }
 
 /// A run with a failed step leaves the previous seed untouched.
@@ -242,6 +243,7 @@ async fn a_failed_run_leaves_the_previous_seed_in_place() {
         previous,
         "a failed run must not replace the seed the last clean run recorded"
     );
+    tc.shutdown().await;
 }
 
 /// The seed survives the process, and a pass classifies instead of abstaining.
@@ -296,4 +298,5 @@ async fn the_seed_reaches_the_file_and_a_pass_classifies_with_it() {
         !after.tool_call_instances.contains_key(&superseded),
         "a pass that classified must evict the unreachable record; keeping it means it abstained",
     );
+    tc.shutdown().await;
 }

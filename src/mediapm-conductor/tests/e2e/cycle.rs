@@ -35,4 +35,5 @@ async fn circular_dependency_raises_cycle_error() {
         msg.contains("cycle") || msg.contains("Cycle"),
         "error should mention cycle detection: {msg}"
     );
+    tc.shutdown().await;
 }

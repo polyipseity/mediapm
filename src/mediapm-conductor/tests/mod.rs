@@ -155,6 +155,35 @@ impl TestConductor {
         self.dir.path()
     }
 
+    /// Stops the conductor and waits for its background pass to finish.
+    ///
+    /// A fixture owns the directory its conductor writes into, so it must
+    /// quiesce that conductor before the directory goes: dropping a
+    /// [`mediapm_cas::BackgroundMaintenanceGuard`] only requests the abort, and
+    /// the pass that is already running would otherwise reach the state file
+    /// after the directory has been removed. Consuming `self` keeps the two
+    /// facts in order — a fixture cannot be read after it has been stopped.
+    async fn shutdown(self) {
+        self.conductor.shutdown().await.expect("conductor shutdown");
+    }
+
+    /// Stops the conductor when the test has already broken its actor client.
+    ///
+    /// [`Conductor::shutdown`] stops the background pass first and
+    /// unconditionally, then asks the actor client to stop. A test that shrinks
+    /// the RPC budget to make a run time out has already broken that second
+    /// half, so its error says nothing about the fixture — but only that error
+    /// is tolerated here, because the pass is what writes into the directory
+    /// the fixture owns and any other failure is still a fixture problem.
+    async fn shutdown_broken_client(self) {
+        if let Err(error) = self.conductor.shutdown().await {
+            assert!(
+                error.to_string().contains("RPC timeout"),
+                "only the client's own timed-out shutdown is expected here: {error}",
+            );
+        }
+    }
+
     fn conductor(&self) -> &Conductor<InMemoryCas> {
         &self.conductor
     }

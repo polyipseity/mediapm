@@ -132,6 +132,7 @@ async fn a_missing_blob_turns_a_cache_hit_into_a_rerun() {
         produced,
         "a deterministic re-execution must restore the same content under the same hash"
     );
+    tc.shutdown().await;
 }
 
 /// A workflow's last step has no downstream reader inside the run, and its
@@ -183,4 +184,5 @@ async fn a_terminal_step_whose_blob_is_missing_reexecutes() {
         produced,
         "the re-executed step must restore the same content under the same hash"
     );
+    tc.shutdown().await;
 }

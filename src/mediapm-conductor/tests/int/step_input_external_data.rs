@@ -131,6 +131,7 @@ async fn a_step_reading_a_declared_hash_sees_the_declared_bytes() {
         DECLARED_PAYLOAD,
         "the command must materialize the declared payload, not the hash naming it",
     );
+    tc.shutdown().await;
 }
 
 /// The same step run twice reads the same payload out of one recorded instance.
@@ -171,4 +172,5 @@ async fn a_declared_hash_input_is_the_same_work_on_a_second_run() {
         (0, 1),
         "the second run reuses the recorded instance: {second:?}",
     );
+    tc.shutdown().await;
 }

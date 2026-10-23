@@ -91,6 +91,7 @@ async fn a_step_longer_than_the_per_step_rpc_budget_still_completes() {
     assert_eq!(summary.total_steps, 1);
     assert_eq!(summary.executed_steps, 1, "the 3s step executes exactly once: {summary:?}");
     assert_eq!(summary.failed_steps, 0, "no step fails: {summary:?}");
+    tc.shutdown().await;
 }
 
 /// Proves a run-workflow RPC timeout reports the budget and the knob.
@@ -122,7 +123,9 @@ async fn a_run_workflow_rpc_timeout_names_the_budget_and_the_knob() {
         .expect_err("the 1s run-level budget expires while the 3s step still runs");
 
     // The step is still in flight when the caller gives up; the actor is
-    // torn down with this test's runtime rather than joined.
+    // torn down with this test's runtime rather than joined, which is why the
+    // fixture stops it through the path that tolerates the client's own
+    // timed-out shutdown RPC.
     let message = error.to_string();
     assert!(
         message.contains("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS"),
@@ -133,4 +136,5 @@ async fn a_run_workflow_rpc_timeout_names_the_budget_and_the_knob() {
         message.contains("MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS"),
         "timeout error must name the per-step bound: {message}"
     );
+    tc.shutdown_broken_client().await;
 }
