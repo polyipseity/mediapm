@@ -970,17 +970,26 @@ async fn resolve_step_output<C: mediapm_cas::CasApi + Send + Sync>(
     Ok(ResolvedValue::String(hash.to_string()))
 }
 
-/// Resolves `${external_data.<hash>}` by fetching from CAS.
+/// Resolves `${external_data.<hash>}`.
+///
+/// A context with no store handle — which is how a step input resolves — hands
+/// the reference on as the hash it names, the contract the sibling step-output
+/// resolver already honours: the input surface carries the hash and the command
+/// surface, which holds a handle, fetches the bytes it names. An existence test
+/// on such a reference is therefore true, because the document naming the hash
+/// is what the test asks about and the store is not consulted.
+///
+/// # Errors
+///
+/// Returns a workflow error when a handle is present and the object the hash
+/// names is not in the store.
 async fn resolve_external_data<C: mediapm_cas::CasApi + Send + Sync>(
     hash: Hash,
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
-    let cas = ctx.cas.ok_or_else(|| {
-        ConductorError::Workflow(format!(
-            "template: external_data reference '${{external_data.{hash}}}' requires \
-             a CAS handle but none was provided",
-        ))
-    })?;
+    let Some(cas) = ctx.cas else {
+        return Ok(ResolvedValue::String(hash.to_string()));
+    };
 
     let data = cas.get(hash).await.map_err(|e| {
         ConductorError::Workflow(format!(
@@ -1539,15 +1548,51 @@ mod tests {
         assert_eq!(result, "hello from CAS");
     }
 
+    /// A step input holding an external-data reference resolves to its hash.
+    ///
+    /// Step inputs resolve without a store handle, so the reference cannot be
+    /// read there. Returning the hash is what the sibling step-output resolver
+    /// already does, and the command surface — the one with a handle — turns it
+    /// into bytes.
     #[tokio::test]
-    async fn resolve_external_data_no_cas() {
-        let hash = Hash::from_content(b"data");
+    async fn an_external_data_input_resolves_to_its_hash() {
+        let hash = Hash::from_content(b"declared payload");
         let step_outputs = BTreeMap::new();
         let env_vars = BTreeMap::new();
         let tokens = BTreeMap::new();
-        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
-        let result = resolve_template(&format!("${{external_data.{hash}}}"), &ctx).await;
-        assert!(result.is_err());
+        let inputs = BTreeMap::new();
+        let ctx =
+            full_ctx_with_inputs(None, &step_outputs, &env_vars, &tokens, None, &inputs, "linux");
+
+        let resolved = resolve_template(&format!("${{external_data.{hash}}}"), &ctx)
+            .await
+            .expect("a declared hash must resolve without a store handle");
+
+        assert_eq!(resolved, hash.to_string());
+    }
+
+    /// An existence test on an external-data input sees the hash.
+    ///
+    /// With no store handle the reference is present, so `exists` is true. This
+    /// is a deliberate consequence of resolving to the hash, not an accident:
+    /// a conditional that gates a step on a declared payload is asking whether
+    /// the document names it.
+    #[tokio::test]
+    async fn an_external_data_exists_test_is_true_without_a_store_handle() {
+        let hash = Hash::from_content(b"declared payload");
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::new();
+        let ctx =
+            full_ctx_with_inputs(None, &step_outputs, &env_vars, &tokens, None, &inputs, "linux");
+
+        let resolved =
+            resolve_template(&format!("${{${{external_data.{hash}}} ? yes | no}}"), &ctx)
+                .await
+                .expect("the existence test must resolve");
+
+        assert_eq!(resolved, "yes");
     }
 
     // -----------------------------------------------------------------------
