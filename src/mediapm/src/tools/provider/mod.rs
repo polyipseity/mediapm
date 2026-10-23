@@ -954,7 +954,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     async fn resolve_tool_fetch_routes_all_tools() {
         let _env = lock_process_env();
@@ -1060,7 +1060,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test against sibling tests that mutate the seam variables; its unknown-tool path returns before reading one"
     )]
     async fn resolve_tool_fetch_rejects_unknown() {
         let _env = lock_process_env();
@@ -1188,7 +1188,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     async fn resolve_tool_fetch_ffmpeg_leaves_version_and_vcs_hash_none() {
         let _env = lock_process_env();
@@ -1236,7 +1236,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     async fn resolve_tool_fetch_ffmpeg_threads_the_leg_into_the_permalink_identities() {
         let _env = lock_process_env();
@@ -1275,7 +1275,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     async fn resolve_tool_fetch_ffmpeg_threads_the_autobuild_tag_into_the_alias_identities() {
         let _env = lock_process_env();
@@ -1303,7 +1303,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test against sibling tests that mutate the seam variables; the media-tagger arm resolves from build-time constants and reads none"
     )]
     async fn resolve_tool_fetch_media_tagger_leaves_tag_none() {
         let _env = lock_process_env();
@@ -1328,7 +1328,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     async fn resolve_tool_fetch_each_fetched_tool_covers_three_oses() {
         let _env = lock_process_env();
@@ -1418,7 +1418,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     #[expect(
         clippy::too_many_lines,
@@ -1595,7 +1595,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     #[expect(
         clippy::too_many_lines,
@@ -1866,7 +1866,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test against sibling tests that mutate the seam variables; the media-tagger arm resolves from build-time constants and reads none"
     )]
     async fn resolve_tool_fetch_media_tagger_canonical_is_git_hash() {
         let _env = lock_process_env();
@@ -1894,7 +1894,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     async fn resolve_canonical_version_is_deterministic() {
         let _env = lock_process_env();
@@ -1969,7 +1969,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
     )]
     async fn all_fetch_providers_have_size_hint_bytes() {
         let _env = lock_process_env();
@@ -2114,7 +2114,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the env lock must serialize the whole set-seam -> await -> unset-seam resolve; the guard is Send and this is the documented MEDIAPM_* test-seam mutation-scope rule"
+        reason = "the env lock must serialize the whole set-seam -> await -> unset-seam resolve of github_api_base(); the guard is Send and this is the documented MEDIAPM_* test-seam mutation-scope rule"
     )]
     async fn resolve_latest_autobuild_tag_routes_through_the_github_api_base_seam() {
         use wiremock::matchers::{method, path};
@@ -2362,7 +2362,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_download_base() reads against the MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scope"
+        reason = "the process env lock scopes this test's own MEDIAPM_GITHUB_DOWNLOAD_BASE mutation and serializes its github_api_base() and github_download_base() reads against sibling mutations"
     )]
     async fn every_latest_payload_url_is_built_from_the_download_seam() {
         let _env = lock_process_env();

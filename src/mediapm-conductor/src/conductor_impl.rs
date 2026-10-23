@@ -651,6 +651,11 @@ where
     /// # Errors
     ///
     /// Delegates to [`load_unified_config`].
+    ///
+    /// The `cli` feature's document-printing subcommands are its only
+    /// consumers, so it is compiled with that feature rather than left dead in
+    /// a build without it.
+    #[cfg(feature = "cli")]
     pub(crate) fn get_unified_config(&self) -> Result<UnifiedNickelDocument, ConductorError> {
         load_unified_config(self.storage_paths())
     }

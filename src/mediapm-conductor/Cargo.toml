@@ -25,7 +25,7 @@ proptest = []
 # crate that links the conductor can turn it on by name, and so the feature
 # matrix covers the combination.
 test-seams = []
-tool-presets = ["dep:flate2", "dep:tar", "dep:zip", "dep:xz2", "dep:sha2", "progress"]
+tool-presets = ["dep:flate2", "dep:tar", "dep:xz2", "dep:sha2", "progress"]
 
 [lints]
 workspace = true
@@ -61,7 +61,10 @@ tokio.workspace = true
 tracing.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
 xz2 = { workspace = true, optional = true }
-zip = { workspace = true, optional = true }
+# Not optional: folder-regex capture archives its matched sandbox files as a
+# ZIP blob from the step executor, which is core capture behavior rather than
+# managed-tool provisioning, so the codec is required in every configuration.
+zip = { workspace = true }
 
 [dev-dependencies]
 proptest.workspace = true

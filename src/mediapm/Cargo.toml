@@ -47,7 +47,13 @@ futures-util.workspace = true
 libc.workspace = true
 mediapm-cas = { path = "../mediapm-cas", default-features = false }
 mediapm-utils = { workspace = true, features = ["nickel", "progress", "report"] }
-mediapm-conductor = { path = "../mediapm-conductor", default-features = false }
+# The conductor's tool-presets surface is not optional for this crate: the config
+# types, the sync bridge, and the workflow options it passes all use it directly,
+# in code that no feature of this crate gates. Declaring the requirement here is
+# what makes `--no-default-features` a build rather than a compile error.
+mediapm-conductor = { path = "../mediapm-conductor", default-features = false, features = [
+  "tool-presets",
+] }
 musicbrainz_rs = { workspace = true, features = [
   "async",
   "rustls",
