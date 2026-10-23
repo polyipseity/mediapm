@@ -1,7 +1,10 @@
-use mediapm::{MediaRuntimeStorage, ToolRequirement};
-use mediapm_conductor::ToolKindSpec;
+use mediapm::{MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement};
+use mediapm_conductor::{ToolKindSpec, ToolSpec};
 
-use crate::common::{read_generated_doc, service_with_cache, test_sync_progress_overrides};
+use crate::common::stub_upstream::{STUB_COMMIT_SHA, mock_all_managed_tools};
+use crate::common::{
+    read_generated_doc, read_state, service_with_cache, test_sync_progress_overrides,
+};
 
 // ---------------------------------------------------------------------------
 // Structural side-effect tests (no counter assertions)
@@ -254,5 +257,107 @@ async fn sync_is_idempotent() -> Result<(), mediapm::MediaPmError> {
     let state_after_second =
         std::fs::read(&service.paths().mediapm_state_json).expect("state.json should exist");
     assert_eq!(state_after_first, state_after_second, "state.json must be identical after re-sync");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Hermetic download-provider test
+// ---------------------------------------------------------------------------
+
+/// A sync that declares a download provider provisions a real payload, and that
+/// payload reaches all three artifacts the structural tests above inspect.
+///
+/// Every test above syncs an empty workspace, so each assertion they make about
+/// `.env.generated` content holds vacuously: with no payload there is no entry
+/// to check, and a broken path or a leaked `@` in a name would go unnoticed.
+/// This case supplies the upstream they lack, so the same guarantees are
+/// checked against a populated file rather than an empty one.
+///
+/// The tool is `yt-dlp`, whose payload is downloaded and whose version comes
+/// from the mocked GitHub API, unlike `media-tagger`, whose payload is a
+/// launcher script generated per OS with no upstream to answer.
+#[tokio::test]
+async fn sync_provisions_downloaded_payload() -> Result<(), mediapm::MediaPmError> {
+    /// The three OS slot labels a provisioned payload's content-map keys are
+    /// prefixed by, walked so an unrecognized prefix fails rather than passing
+    /// unexamined.
+    const OS_LABELS: [&str; 3] = ["linux", "macos", "windows"];
+
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert("yt-dlp".to_string(), ToolRequirement::default());
+
+    let (_mock, _seams) = mock_all_managed_tools().await;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
+
+    // state.json records a real resolved version and a real payload hash. The
+    // tool declares no dependencies, so its stored version is bare rather than a
+    // composite.
+    let state = read_state(&service);
+    let entries: Vec<&ToolRegistryEntry> =
+        state.managed_tools.iter().filter(|entry| entry.tool_id == "yt-dlp").collect();
+    assert_eq!(entries.len(), 1, "one sync must record exactly one yt-dlp entry");
+    let entry = entries[0];
+    assert_eq!(
+        entry.canonical_version, STUB_COMMIT_SHA,
+        "yt-dlp's canonical version is the commit hash the mocked API resolved",
+    );
+    assert!(
+        !entry.content_map_hash.is_empty(),
+        "a provisioned payload must record a content map hash",
+    );
+
+    // .env.generated is populated, and every entry obeys this module's rules.
+    let env = std::fs::read_to_string(&service.paths().env_generated_file)
+        .expect("env file should be readable");
+    let vars: Vec<(&str, &str)> = env
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .map(|line| line.split_once('=').expect("every non-comment env line is KEY=VALUE"))
+        .collect();
+    assert!(
+        !vars.is_empty(),
+        "a provisioned download payload must produce env entries, or the content assertions in \
+         this module are vacuous",
+    );
+    for (name, value) in &vars {
+        assert!(!name.contains('@'), "env var name must not contain @: '{name}'");
+        assert!(value.contains("/payload/"), "env value must contain /payload/: {value}");
+        let raw = value.trim_matches('"');
+        assert!(
+            raw.starts_with('/') || raw.starts_with("\\\\") || raw.chars().nth(1) == Some(':'),
+            "env var value must be absolute: {raw}",
+        );
+    }
+
+    // conductor.generated.ncl holds the active spec, and its content map is the
+    // payload that was imported. Keys are prefixed by the OS slot label, and the
+    // host's slot is among them, so the payload is usable here.
+    let doc = read_generated_doc(&service);
+    let specs: Vec<&ToolSpec> = doc
+        .tools
+        .values()
+        .filter(|spec| spec.name == "yt-dlp" && !spec.runtime.content_map.is_empty())
+        .collect();
+    assert_eq!(specs.len(), 1, "the generated doc must hold exactly one active yt-dlp spec");
+    let content_map = &specs[0].runtime.content_map;
+    for key in content_map.keys() {
+        assert!(
+            OS_LABELS
+                .iter()
+                .any(|os| key.strip_prefix(os).is_some_and(|rest| rest.starts_with('/'))),
+            "payload key must be prefixed by a supported OS slot label: {key}",
+        );
+    }
+    let host = std::env::consts::OS;
+    assert!(
+        content_map
+            .keys()
+            .any(|key| key.strip_prefix(host).is_some_and(|rest| rest.starts_with('/'))),
+        "the host OS slot {host} must be provisioned: {:?}",
+        content_map.keys().collect::<Vec<_>>(),
+    );
     Ok(())
 }

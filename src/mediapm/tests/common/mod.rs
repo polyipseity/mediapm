@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use indicatif::InMemoryTerm;
-use mediapm::{MediaPmService, MediaRuntimeStorage};
+use mediapm::{MediaPmService, MediaPmState, MediaRuntimeStorage};
 use mediapm_cas::CasApi;
 use mediapm_conductor::{NickelDocument, decode_document};
 use mediapm_utils::progress::{DimensionSource, ProgressTerminal, TestDimensionSource};
@@ -157,4 +157,20 @@ pub(crate) fn read_generated_doc(
     let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
         .expect("conductor.generated.ncl should be readable");
     decode_document(&bytes).expect("valid Nickel document")
+}
+
+/// Reads `state.json` after a sync.
+///
+/// # Panics
+///
+/// Panics when `state.json` is missing or does not deserialize. Every caller
+/// runs it on a service that just completed a sync, which writes the file.
+///
+/// Production reads this file through [`mediapm::load_mediapm_state_document`].
+/// This stays a direct parse so that a caller asserts the file's own shape
+/// rather than the loader's fallbacks, and so that a malformed file fails with
+/// the parse error rather than a loader-level one.
+pub(crate) fn read_state(service: &MediaPmService<mediapm_cas::FileSystemCas>) -> MediaPmState {
+    let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
+    serde_json::from_slice(&bytes).expect("state.json deserializes")
 }

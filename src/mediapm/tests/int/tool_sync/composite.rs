@@ -1,12 +1,10 @@
-use mediapm::{
-    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
-};
+use mediapm::{MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement};
 
 use crate::common::stub_upstream::{
     STUB_BTBN_TAG, STUB_COMMIT_SHA, STUB_DENO_COMMIT_SHA, STUB_MARTIN_RIEDL_BUILD_ID,
     mock_all_managed_tools,
 };
-use crate::common::{service_with_cache, test_sync_progress_overrides};
+use crate::common::{read_state, service_with_cache, test_sync_progress_overrides};
 
 // ---------------------------------------------------------------------------
 // Composite canonical_version integration tests
@@ -24,17 +22,6 @@ use crate::common::{service_with_cache, test_sync_progress_overrides};
 // The end-to-end SameStep composite needs providers that download, so it needs
 // a mocked upstream; `sync_composite_carries_same_step_dep_segments` below
 // supplies one.
-
-/// Reads `state.json` after a sync.
-///
-/// # Panics
-///
-/// Panics when `state.json` is missing or does not deserialize — every caller
-/// runs it on a service that just completed a sync.
-fn read_state(service: &MediaPmService<mediapm_cas::FileSystemCas>) -> MediaPmState {
-    let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
-    serde_json::from_slice(&bytes).expect("state.json deserializes")
-}
 
 /// Returns the part of a canonical version before its first `;`.
 ///
