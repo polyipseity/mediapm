@@ -1484,6 +1484,59 @@ mod tests {
         assert!(!wrote_a_pass, "a stopped loop must not run a pass after its root comes back");
     }
 
+    /// A guard whose task has ended does not block the next one.
+    ///
+    /// The loop stops on its own when its runtime root goes, and it leaves its
+    /// guard in the slot while doing so. A conductor that read that spent guard as
+    /// running would never maintain anything again, so the restart is the
+    /// property: the epoch the first loop published moves once the root is back.
+    /// Stopping through `shutdown` does not exercise this, because that empties
+    /// the slot on its way out.
+    #[tokio::test]
+    async fn a_stopped_background_loop_can_be_started_again() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        write_single_workflow_config(dir.path(), "default");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let root = paths.state_file_path.parent().expect("state parent").to_path_buf();
+        let live = Hash::from_content(b"live");
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(live, bare_instance(live));
+        state.aux.live_instances =
+            BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]);
+        save_state_file(&paths, &state).expect("seed state file");
+
+        let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        conductor.background_gc_interval_secs = 1;
+        conductor.replace_resolved_state(state).expect("replace state");
+        conductor.start_background_maintenance();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        drop(dir);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let after_stopping = conductor.get_state().expect("state").aux.conductor_gc_epoch;
+        assert!(
+            after_stopping > mediapm_utils::Timestamp::from_unix_nanos(0),
+            "the first loop must have run a pass before it stopped: {after_stopping:?}",
+        );
+
+        std::fs::create_dir_all(&root).expect("recreate the runtime root");
+        write_single_workflow_config(&root, "default");
+        conductor.start_background_maintenance();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let after_restarting = conductor.get_state().expect("state").aux.conductor_gc_epoch;
+        conductor.shutdown().await.expect("shutdown");
+
+        // Removed before the assertion, not after: the tempdir that owned this
+        // path is already dropped, so a failure here would otherwise leave the
+        // recreated root behind for the workspace janitor to find.
+        mediapm_utils::temp::remove_dir_all_with_retry(&root).expect("remove the recreated root");
+        assert!(
+            after_restarting > after_stopping,
+            "a guard whose task has ended must not block a new loop: {after_stopping:?} then \
+             {after_restarting:?}",
+        );
+    }
+
     /// A removed root reads as gone, and an existing one does not.
     #[test]
     fn runtime_root_is_gone_tracks_the_state_directory() {
