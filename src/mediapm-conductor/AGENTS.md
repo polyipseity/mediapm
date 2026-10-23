@@ -543,6 +543,8 @@ The gate is what keeps a pass from racing a run: it runs under the facade's `sta
 
 `Conductor::shutdown` awaits the guard, so after it returns no pass is running and the loop's CAS handle is released.
 
+**Only a foreground entry point creates the runtime root, and the loop never does.** `ensure_runtime_root` creates the state file's parent directory, and the calls that act for the owner are the ones that make it: `ensure_actor_client` — the path `run_workflow` takes — `run_gc`, and `save_state`. `Conductor::new` does not, because it is infallible and cannot report the failure it would meet. The write path itself creates nothing, so a save into a removed root fails with an I/O error instead of resurrecting it as an orphan holding one `state.json`; the loop reads that same condition (`runtime_root_is_gone`, which requires the parent to be a directory rather than merely to exist) and stops. Because it stops with its guard still in the slot, `BackgroundMaintenanceGuard::is_finished` is what lets a later foreground call start a new loop rather than reading the spent guard as one still running. The property the pair buys: a conductor never recreates a directory its owner removed, and it resumes maintaining one that comes back.
+
 > **Agent policy — do NOT disable the background GC loop**: Agents must never make the loop a no-op or raise its interval to dodge a GC problem. If the loop causes issues, fix the GC implementation; removal needs an explicit decision, not a quiet change.
 
 ## I. Channel-Based Workflow Progress Events
