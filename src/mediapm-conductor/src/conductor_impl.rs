@@ -83,6 +83,7 @@ where
     /// that never runs a workflow holds nothing worth collecting, and one that
     /// does gets its collection for as long as it lives.
     async fn ensure_actor_client(&self) -> Result<&ConductorActorClient, ConductorError> {
+        ensure_runtime_root(&self.storage_paths)?;
         let client = self
             .actor_client
             .get_or_try_init(|| async {
@@ -131,6 +132,9 @@ where
         let handle = tokio::spawn(async move {
             loop {
                 if cancelled_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                if runtime_root_is_gone(&paths) {
                     break;
                 }
                 if let Err(error) = maintenance_pass(&*cas, &paths, &state, &gate).await {
@@ -615,6 +619,7 @@ where
     ///
     /// Panics if the in-memory orchestration state mutex is poisoned.
     pub async fn run_gc(&self) -> Result<(), ConductorError> {
+        ensure_runtime_root(&self.storage_paths)?;
         let client = self.ensure_actor_client().await?;
         let unified = load_unified_config(self.storage_paths())?;
         let _gate = self.state_gate.lock().await;
@@ -825,7 +830,13 @@ fn load_state_file(
 ///
 /// The document is published atomically, so a reader in another process — or the
 /// next load after a crash — sees either the previous state or the new one, never
-/// a prefix of either.
+/// a prefix of either. The state file's directory must exist; a foreground entry
+/// point creates it through [`ensure_runtime_root`].
+///
+/// # Errors
+///
+/// Returns an error when the state cannot be encoded, and an I/O error when the
+/// file cannot be written — including the case where its directory is gone.
 fn save_state_file(
     storage_paths: &RuntimeStoragePaths,
     state: &ConductorState,
@@ -855,6 +866,11 @@ fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), ConductorErro
 
 /// Runs `write` against a temporary sibling of `path` and renames it into place.
 ///
+/// The directory `path` lives in must already exist: this publishes into a root
+/// its owner created, and never creates one. A save that could create its own
+/// parent would resurrect a directory a teardown had just removed, which is how
+/// a background pass used to leave an orphan holding one state file.
+///
 /// Split from [`write_bytes_atomically`] so a test can fail the write halfway
 /// and observe what the target holds afterwards; that is the state a crash
 /// leaves behind, and it is the whole reason the temporary file exists.
@@ -862,11 +878,6 @@ fn write_atomically(
     path: &Path,
     write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
 ) -> Result<(), ConductorError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| {
-            ConductorError::io("creating state file directory", parent, source)
-        })?;
-    }
     let mut temporary_name =
         path.file_name().map_or_else(std::ffi::OsString::new, std::ffi::OsStr::to_os_string);
     temporary_name.push(format!(".tmp-{}", std::process::id()));
@@ -888,6 +899,48 @@ fn write_atomically(
         drop(std::fs::remove_file(&temporary));
         ConductorError::io("writing state file", path, source)
     })
+}
+
+/// Creates the runtime root the state file lives in.
+///
+/// A root belongs to the actor that owns it, so only a foreground entry point —
+/// an operation the caller asked for — creates one. The write path deliberately
+/// does not: a save that could create its own parent would resurrect a directory
+/// its owner had already removed, which is how a background pass used to leave an
+/// orphan holding one state file.
+///
+/// # Errors
+///
+/// Returns an I/O error when the directory cannot be created, and a workflow
+/// error when the state file path names no parent to create.
+fn ensure_runtime_root(paths: &RuntimeStoragePaths) -> Result<(), ConductorError> {
+    let parent = state_file_parent(paths)?;
+    std::fs::create_dir_all(&parent)
+        .map_err(|source| ConductorError::io("creating the conductor runtime root", parent, source))
+}
+
+/// The directory the state file lives in.
+///
+/// # Errors
+///
+/// Returns a workflow error when the state file path names no parent, which
+/// would leave a save nowhere to publish.
+fn state_file_parent(paths: &RuntimeStoragePaths) -> Result<PathBuf, ConductorError> {
+    paths.state_file_path.parent().map(Path::to_path_buf).ok_or_else(|| {
+        ConductorError::Workflow(format!(
+            "the state file path '{}' has no parent directory",
+            paths.state_file_path.display()
+        ))
+    })
+}
+
+/// Whether the runtime root the maintenance loop maintains is gone.
+///
+/// A gone root means the owner is gone and the store went with it, so the loop
+/// stops rather than warning on every interval for the rest of the process's
+/// life.
+fn runtime_root_is_gone(paths: &RuntimeStoragePaths) -> bool {
+    !state_file_parent(paths).is_ok_and(|parent| parent.exists())
 }
 
 /// Discovers all user config files.
@@ -1054,10 +1107,15 @@ mod tests {
 
     /// A saved state file round-trips through `save_state_file` /
     /// `load_state_file`.
+    ///
+    /// The root is created the way a foreground entry point creates it: a save
+    /// requires the directory to exist rather than creating it, so that a pass
+    /// running past its owner's teardown fails instead of resurrecting the tree.
     #[test]
     fn state_file_roundtrip() {
         let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"));
+        ensure_runtime_root(&paths).expect("create runtime root");
 
         let state = ConductorState::new_empty();
         save_state_file(&paths, &state).expect("save state file");
@@ -1366,6 +1424,76 @@ mod tests {
         assert_eq!(names.len(), 1, "the abandoned temporary must be removed: {names:?}");
     }
 
+    /// A save must not recreate the directory its owner removed.
+    ///
+    /// The write path is the last step of a background pass, so a
+    /// `create_dir_all` here resurrects a removed runtime root as an orphan
+    /// holding one `state.json`. Failing instead is what lets the pass stop.
+    #[test]
+    fn a_state_save_into_a_removed_root_does_not_recreate_it() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let root = paths.state_file_path.parent().expect("state parent").to_path_buf();
+        drop(dir);
+
+        let error = save_state_file(&paths, &ConductorState::new_empty())
+            .expect_err("a save into a removed root must fail");
+
+        assert!(!root.exists(), "the save recreated the removed runtime root: {error}");
+    }
+
+    /// The loop stops when its root is removed instead of recreating it.
+    ///
+    /// Mirrors `the_background_loop_runs_a_pass_and_stops_on_shutdown`, which
+    /// proves the loop runs a pass on its interval. This one proves what it does
+    /// when the directory its state file lives in is gone: it stops, and the
+    /// directory stays gone.
+    #[tokio::test]
+    async fn the_background_loop_stops_when_its_root_is_removed() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        write_single_workflow_config(dir.path(), "default");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let state = ConductorState::new_empty();
+        save_state_file(&paths, &state).expect("seed state file");
+        let root = paths.state_file_path.parent().expect("state parent").to_path_buf();
+
+        let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
+        conductor.background_gc_interval_secs = 1;
+        conductor.replace_resolved_state(state).expect("replace state");
+        conductor.start_background_maintenance();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        drop(dir);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        conductor.shutdown().await.expect("shutdown");
+
+        assert!(!root.exists(), "a removed runtime root must not be recreated by the loop");
+    }
+
+    /// A removed root reads as gone, and an existing one does not.
+    #[test]
+    fn runtime_root_is_gone_tracks_the_state_directory() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let paths = RuntimeStoragePaths::new(dir.path());
+        std::fs::create_dir_all(paths.state_file_path.parent().expect("state parent"))
+            .expect("create root");
+        assert!(!runtime_root_is_gone(&paths), "an existing root is not gone");
+
+        drop(dir);
+        assert!(runtime_root_is_gone(&paths), "a removed root must read as gone");
+    }
+
+    /// A foreground entry point creates the root it is about to write into.
+    #[test]
+    fn ensure_runtime_root_creates_the_state_directory() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let paths = RuntimeStoragePaths::new(&dir.path().join("nested").join("runtime"));
+
+        ensure_runtime_root(&paths).expect("create root");
+
+        assert!(paths.state_file_path.parent().expect("state parent").is_dir());
+    }
+
     /// The background loop runs a pass on its interval and stops on shutdown.
     ///
     /// The pass is observable through the GC epoch, which only a completed pass
@@ -1502,12 +1630,16 @@ mod tests {
     }
 
     /// `with_config_paths` relocates the state file to the custom path.
+    ///
+    /// The custom path's directory is the root, so it is created the way a
+    /// foreground entry point creates it before the save that needs it.
     #[test]
     fn state_file_path_is_configurable() {
         let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let custom = tmp.path().join("custom").join("state.json");
         let paths = RuntimeStoragePaths::new(&tmp.path().join("conductor_dir"))
             .with_config_paths(Vec::new(), custom.clone());
+        ensure_runtime_root(&paths).expect("create runtime root");
 
         let state = ConductorState::new_empty();
         save_state_file(&paths, &state).expect("save state file");
