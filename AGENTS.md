@@ -56,6 +56,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 
 - Spec-to-test coverage is tracked in `.agents/coverage-matrix.md`. Update it when spec items or tests change.
 - All new features follow spec-first, test-first implementation per `.agents/instructions/sdd-tdd-workflow.instructions.md`.
+- Design docs, specs and implementation plans live in `.pi/plans/`, which the global gitignore excludes. Never create a `docs/` directory in this repository.
 - Close high-priority test gaps before feature work in the same area.
 
 ## Build and Test

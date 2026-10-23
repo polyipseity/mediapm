@@ -40,6 +40,7 @@ Every `.instructions.md` and `.prompt.md` file must keep valid YAML frontmatter 
 ## Safe editing patterns
 
 - Do not add `.github/copilot-instructions.md`; root `AGENTS.md` is the workspace-wide source of truth.
+- Do not create a `docs/` directory; design docs, specs and implementation plans live in `.pi/plans/` (`sdd-tdd-workflow.instructions.md`, "Where the artifacts live").
 - When retiring plan docs, migrate normative rules into active instruction files in the same change and remove stale references.
 - Merge temporary repo-memory notes into instruction files and delete them in the same workflow.
 - Prefer relative file references valid after cloning to a different path.

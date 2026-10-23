@@ -8,6 +8,12 @@ applyTo: "**/*"
 
 Spec-first, test-first development workflow for the mediapm workspace.
 
+## Where the artifacts live
+
+A design doc, a spec and an implementation plan are working artifacts, not repository content, so they live in `.pi/plans/` under the project root. The global gitignore (`~/.config/git/ignore`) excludes `.pi/`, so nothing under it is ever committed.
+
+**Never create a `docs/` directory.** The brainstorming skill writes its spec to `docs/superpowers/specs/` by default, and that default is overridden here; the skill's own text allows a user preference to override it. If a durable fact belongs in the repository, it belongs in an instruction file, `AGENTS.md`, or a coverage-matrix row, never in a document under `docs/`.
+
 ## When Adding a Feature
 
 1. **Write the spec**: Update the relevant `AGENTS.md` with invariants, contracts, edge cases, and cross-crate integration boundaries if applicable.
