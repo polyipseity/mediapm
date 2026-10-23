@@ -1,5 +1,7 @@
 //! Shared scaffolding for integration tests.
 
+pub(crate) mod stub_upstream;
+
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;

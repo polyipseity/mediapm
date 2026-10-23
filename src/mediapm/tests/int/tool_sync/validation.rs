@@ -1,6 +1,7 @@
 use mediapm::{MediaRuntimeStorage, ToolRequirement};
 
-use crate::common::{service_with_cache, test_sync_progress_overrides};
+use crate::common::stub_upstream::mock_all_managed_tools;
+use crate::common::{read_generated_doc, service_with_cache, test_sync_progress_overrides};
 
 // ---------------------------------------------------------------------------
 // Dependency validation integration tests
@@ -113,14 +114,61 @@ async fn sync_rejects_slot_field_on_non_ffmpeg() {
     assert!(msg.contains("yt-dlp"), "error should mention the tool: {msg}");
 }
 
-// The former `sync_accepts_slot_field_on_ffmpeg` sync-level test moved to the
-// crate-internal boundary unit test `slot_fields_are_accepted_on_ffmpeg`
-// (`tools/dependency.rs`): no network-free tool accepts slot fields (only
-// ffmpeg does), so a sync-level acceptance run cannot be hermetic, and under
-// fail-fast provisioning a real ffmpeg fetch aborts the sync on an
-// unreachable upstream. The reject direction stays at the sync level in
-// `sync_rejects_slot_field_on_non_ffmpeg` (it fires before any
-// network). Do not re-add a network-dependent sync-level acceptance test here.
+// The former `sync_accepts_slot_field_on_ffmpeg` sync-level test was moved to
+// the crate-internal boundary unit test `slot_fields_are_accepted_on_ffmpeg`
+// (`tools/dependency.rs`) because no network-free tool accepts slot fields
+// (only ffmpeg does), so a sync-level acceptance run could not be hermetic and
+// under fail-fast provisioning a real ffmpeg fetch aborted the sync on an
+// unreachable upstream. That premise no longer holds: the provider seams let a
+// test answer ffmpeg's three upstream hosts locally, so the test is back at the
+// sync level below, where it exercises the real provisioning path. The reject
+// direction stays in `sync_rejects_slot_field_on_non_ffmpeg` (it fires before
+// any network).
+
+/// Sync accepts `max_input_slots` and `max_output_slots` on ffmpeg, the only
+/// tool those fields apply to.
+///
+/// ffmpeg is the one tool that accepts slot fields, and its payload is a real
+/// download across three upstream hosts, so an acceptance run at the sync level
+/// needs a mocked upstream: under fail-fast provisioning an unmocked ffmpeg
+/// fetch aborts the sync on an unreachable host.
+///
+/// Asserting the sync returned `Ok` alone would be weak, because it would also
+/// pass if validation short-circuited before provisioning. The payload
+/// assertion is what makes the acceptance real: it can only hold if the run got
+/// past validation and completed a full ffmpeg provision.
+#[tokio::test]
+async fn sync_accepts_slot_field_on_ffmpeg() -> Result<(), mediapm::MediaPmError> {
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert(
+        "ffmpeg".to_string(),
+        ToolRequirement { max_input_slots: 8, max_output_slots: 4, ..ToolRequirement::default() },
+    );
+
+    let (_mock, _seams) = mock_all_managed_tools().await;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
+
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
+
+    let doc = read_generated_doc(&service);
+    let content_map = &doc
+        .tools
+        .values()
+        .find(|spec| spec.name == "ffmpeg" && !spec.runtime.content_map.is_empty())
+        .expect("ffmpeg must carry an active spec after an accepted sync")
+        .runtime
+        .content_map;
+    for os in ["linux", "macos", "windows"] {
+        assert!(
+            content_map.keys().any(|key| key.starts_with(&format!("{os}/"))),
+            "ffmpeg must have provisioned the {os} slot; keys are {:?}",
+            content_map.keys().collect::<Vec<_>>(),
+        );
+    }
+    Ok(())
+}
 
 /// Sync accepts `recheck_seconds` on any tool — it is a global optional field,
 /// not a tool-specific slot field.

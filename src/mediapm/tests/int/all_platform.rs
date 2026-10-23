@@ -5,33 +5,25 @@
 //! across platforms: a tool that resolved one slot produces a command selector
 //! with no branch for the others. [`assert_every_managed_tool_covers_every_os`]
 //! is that contract, and both tests in this module run it — the hermetic one
-//! against a [`MockUpstream`] that answers all four upstream hosts, the other
-//! against the real hosts behind an `#[ignore]` opt-in.
+//! against a mock upstream that answers all four hosts, the other against the
+//! real hosts behind an `#[ignore]` opt-in.
+//!
+//! The stub upstream this module mounts lives in [`crate::common::stub_upstream`],
+//! shared with the `tool_sync` modules so two tests cannot disagree about the
+//! upstream's shape.
 //!
 //! Both tests require `--all-features`, because the seams they drive exist only
-//! in a `test-seams` build and `mediapm`'s defaults exclude that feature. A plain
-//! `cargo test -p mediapm` therefore cannot compile this target at all: the
-//! refusal below is deliberate, and every gate in this repository passes
+//! in a `test-seams` build and `mediapm`'s defaults exclude that feature. The
+//! refusal that enforces it sits in `tests/int/mod.rs`, covering this module and
+//! the `tool_sync` modules together, and every gate in this repository passes
 //! `--all-features`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::common::stub_upstream::mock_all_managed_tools;
 use crate::common::{read_generated_doc, service_with_cache, test_sync_progress_overrides};
 use mediapm::MediaRuntimeStorage;
-use mediapm_conductor::tools::provider::host_arch_label;
 use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
-use mediapm_test_support::{MockUpstream, PayloadFormat, StubAsset, StubEntry};
-
-// The hermetic test drives the provider base-URL seams, and those seams exist
-// only in a `test-seams` build. Without the feature the sync would ignore the
-// mock and reach the real hosts, which is the silent pass this refusal exists
-// to prevent: a test that quietly downloads from the network is worse than one
-// that will not build.
-#[cfg(not(feature = "test-seams"))]
-compile_error!(
-    "all_platform's hermetic test drives the provider base-URL seams; run it with \
-     `cargo test -p mediapm --all-features`"
-);
 
 /// The OS labels every managed tool's payload set must cover.
 ///
@@ -65,42 +57,6 @@ const LAUNCHER_ONLY_TOOLS: [&str; 1] = ["media-tagger"];
 /// Inlining nests a dependency's own payload map under `deps/<tool_id>/`, so
 /// those keys belong to the dependency's OS slots and not to the requester's.
 const INLINED_DEP_PREFIX: &str = "deps/";
-
-/// The tag the mocked yt-dlp release reports.
-const STUB_YT_DLP_TAG: &str = "2026.01.01";
-
-/// The tag the mocked deno release reports.
-const STUB_DENO_TAG: &str = "v2.5.0";
-
-/// The tag the mocked rsgain release reports.
-///
-/// rsgain tags carry a leading `v` that the provider strips before building
-/// the versioned asset names, so this fixture exercises that strip.
-const STUB_RSGAIN_TAG: &str = "v3.7.0";
-
-/// The tag the mocked sd release reports.
-const STUB_SD_TAG: &str = "v1.1.0";
-
-/// The commit hash every mocked GitHub tag ref reports as its object.
-///
-/// The value is arbitrary: it becomes the tool's canonical version, which is
-/// compared as a string and never parsed.
-const STUB_COMMIT_SHA: &str = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f";
-
-/// The `BtbN` autobuild tag the mocked releases list names.
-const STUB_BTBN_TAG: &str = "autobuild-2026-01-01-12-00";
-
-/// The martin-riedl build id the mocked permalink redirects to.
-///
-/// martin-riedl publishes one build id for both macOS architectures, so both
-/// permalinks redirect to a path carrying this id.
-const STUB_MARTIN_RIEDL_BUILD_ID: &str = "1767225600_N-127260-g7bc3576910";
-
-/// The jellyfin build line the mocked repository index names.
-const STUB_JELLYFIN_LINE: &str = "latest-10.x";
-
-/// The jellyfin version the mocked archive names carry.
-const STUB_JELLYFIN_VERSION: &str = "7.1.1";
 
 /// Declares every managed tool at `latest`.
 ///
@@ -221,199 +177,6 @@ fn assert_every_managed_tool_covers_every_os(doc: &NickelDocument) {
     }
 }
 
-/// Builds the entries one archive slot packs: an executable named for the tool
-/// plus its `.exe` twin.
-///
-/// The name matters twice. `find_os_executable` looks for `{tool_id}` and
-/// `{tool_id}.exe`, and deno's permission wrapper renames the file it finds,
-/// so a deno slot without either name fails the sync outright. The body names
-/// the tool and the slot so two slots can never pack identical bytes.
-fn archive_entries(tool: &str, slot: &str) -> Vec<StubEntry> {
-    let body = |suffix: &str| format!("{tool} stub for {slot}{suffix}\n").into_bytes();
-    vec![
-        StubEntry::executable(tool, body("")),
-        StubEntry::executable(format!("{tool}.exe"), body(".exe")),
-    ]
-}
-
-/// Builds one archive asset with its slot's entries packed inside it.
-fn archive_asset(name: &str, tool: &str, slot: &str, format: PayloadFormat) -> StubAsset {
-    StubAsset { name: name.to_string(), bytes: format.pack(&archive_entries(tool, slot)) }
-}
-
-/// Builds one bare-binary asset whose bytes name the tool and the slot.
-fn binary_asset(name: &str, tool: &str, slot: &str) -> StubAsset {
-    StubAsset { name: name.to_string(), bytes: format!("{tool} stub for {slot}\n").into_bytes() }
-}
-
-/// Mounts yt-dlp's upstream traffic: one bare binary per OS slot.
-///
-/// yt-dlp's asset names carry no version token, so the tag reaches the URL
-/// path alone.
-async fn mount_yt_dlp(mock: &MockUpstream) {
-    let assets = [
-        binary_asset("yt-dlp.exe", "yt-dlp", "windows"),
-        binary_asset("yt-dlp_macos", "yt-dlp", "macos"),
-        binary_asset("yt-dlp_linux", "yt-dlp", "linux"),
-    ];
-    mock.mount_github_release("yt-dlp", "yt-dlp", STUB_YT_DLP_TAG, STUB_COMMIT_SHA, &assets).await;
-}
-
-/// Mounts deno's upstream traffic: one ZIP per OS slot.
-///
-/// The macOS and Linux asset names follow the host architecture, exactly as
-/// the provider's own slot table does.
-async fn mount_deno(mock: &MockUpstream) {
-    let arch = host_arch_label();
-    let assets = [
-        archive_asset("deno-x86_64-pc-windows-msvc.zip", "deno", "windows", PayloadFormat::Zip),
-        archive_asset(
-            &format!("deno-{arch}-apple-darwin.zip"),
-            "deno",
-            "macos",
-            PayloadFormat::Zip,
-        ),
-        archive_asset(
-            &format!("deno-{arch}-unknown-linux-gnu.zip"),
-            "deno",
-            "linux",
-            PayloadFormat::Zip,
-        ),
-    ];
-    mock.mount_github_release("denoland", "deno", STUB_DENO_TAG, STUB_COMMIT_SHA, &assets).await;
-}
-
-/// Mounts rsgain's upstream traffic: two ZIPs and one `tar.xz`.
-///
-/// rsgain is a single `x86_64` build per OS, so no asset name follows the host
-/// architecture. Its asset names embed the version with the tag's leading `v`
-/// stripped, which is the shape the provider's own rewrite builds.
-async fn mount_rsgain(mock: &MockUpstream) {
-    let version = STUB_RSGAIN_TAG.strip_prefix('v').unwrap_or(STUB_RSGAIN_TAG);
-    let assets = [
-        archive_asset(
-            &format!("rsgain-{version}-win64.zip"),
-            "rsgain",
-            "windows",
-            PayloadFormat::Zip,
-        ),
-        archive_asset(
-            &format!("rsgain-{version}-macOS-x86_64.zip"),
-            "rsgain",
-            "macos",
-            PayloadFormat::Zip,
-        ),
-        archive_asset(
-            &format!("rsgain-{version}-Linux.tar.xz"),
-            "rsgain",
-            "linux",
-            PayloadFormat::TarXz,
-        ),
-    ];
-    mock.mount_github_release("complexlogic", "rsgain", STUB_RSGAIN_TAG, STUB_COMMIT_SHA, &assets)
-        .await;
-}
-
-/// Mounts sd's upstream traffic: one ZIP and two `tar.gz` archives.
-///
-/// sd's asset names embed the tag itself, `v` included.
-async fn mount_sd(mock: &MockUpstream) {
-    let arch = host_arch_label();
-    let tag = STUB_SD_TAG;
-    let assets = [
-        archive_asset(
-            &format!("sd-{tag}-x86_64-pc-windows-msvc.zip"),
-            "sd",
-            "windows",
-            PayloadFormat::Zip,
-        ),
-        archive_asset(
-            &format!("sd-{tag}-{arch}-apple-darwin.tar.gz"),
-            "sd",
-            "macos",
-            PayloadFormat::TarGz,
-        ),
-        archive_asset(
-            &format!("sd-{tag}-x86_64-unknown-linux-gnu.tar.gz"),
-            "sd",
-            "linux",
-            PayloadFormat::TarGz,
-        ),
-    ];
-    mock.mount_github_release("chmln", "sd", STUB_SD_TAG, STUB_COMMIT_SHA, &assets).await;
-}
-
-/// Mounts ffmpeg's upstream traffic: the `BtbN` alias downloads, the
-/// martin-riedl macOS chain, and the jellyfin macOS fallback.
-///
-/// Both `BtbN` candidates are mounted, so the fixture does not depend on which
-/// of the shared/non-shared assets the chain prefers. Both martin-riedl
-/// channels are mounted for the same reason: the chain tries the snapshot
-/// permalink first, and mounting the release permalink too keeps the fixture
-/// from encoding that order. The jellyfin index and both pointer files are
-/// read during resolve even though the snapshot permalink serves the fetch, so
-/// a fallback that is never downloaded is still resolved.
-async fn mount_ffmpeg(mock: &MockUpstream) {
-    mock.mount_github_release_list("BtbN", "FFmpeg-Builds", &[STUB_BTBN_TAG]).await;
-    let assets = [
-        archive_asset(
-            "ffmpeg-master-latest-win64-gpl-shared.zip",
-            "ffmpeg",
-            "windows",
-            PayloadFormat::Zip,
-        ),
-        archive_asset(
-            "ffmpeg-master-latest-win64-gpl.zip",
-            "ffmpeg",
-            "windows",
-            PayloadFormat::Zip,
-        ),
-        archive_asset(
-            "ffmpeg-master-latest-linux64-gpl-shared.tar.xz",
-            "ffmpeg",
-            "linux",
-            PayloadFormat::TarXz,
-        ),
-        archive_asset(
-            "ffmpeg-master-latest-linux64-gpl.tar.xz",
-            "ffmpeg",
-            "linux",
-            PayloadFormat::TarXz,
-        ),
-    ];
-    mock.mount_github_release("BtbN", "FFmpeg-Builds", STUB_BTBN_TAG, STUB_COMMIT_SHA, &assets)
-        .await;
-
-    for (canonical, site_label) in [("aarch64", "arm64"), ("x86_64", "amd64")] {
-        let payload = PayloadFormat::Zip.pack(&archive_entries("ffmpeg", canonical));
-        for channel in ["snapshot", "release"] {
-            mock.mount_martin_riedl(site_label, channel, STUB_MARTIN_RIEDL_BUILD_ID, &payload)
-                .await;
-        }
-    }
-
-    for (canonical, site_dir, site_token) in
-        [("aarch64", "arm64", "macarm64"), ("x86_64", "x86_64", "mac64")]
-    {
-        let archive =
-            format!("jellyfin-ffmpeg_{STUB_JELLYFIN_VERSION}_portable_{site_token}-gpl.tar.xz");
-        let payload = PayloadFormat::TarXz.pack(&archive_entries("ffmpeg", canonical));
-        mock.mount_jellyfin(STUB_JELLYFIN_LINE, site_dir, site_token, &archive, &payload).await;
-    }
-}
-
-/// Mounts every managed tool's upstream traffic on one mock server.
-///
-/// media-tagger is absent on purpose: it is a launcher-only builtin whose
-/// script is generated locally, so it has no upstream to mock.
-async fn mount_managed_tool_upstreams(mock: &MockUpstream) {
-    mount_yt_dlp(mock).await;
-    mount_deno(mock).await;
-    mount_rsgain(mock).await;
-    mount_sd(mock).await;
-    mount_ffmpeg(mock).await;
-}
-
 /// A full sync against mocked upstream hosts provisions every managed tool's
 /// payload for every OS slot.
 ///
@@ -423,9 +186,7 @@ async fn mount_managed_tool_upstreams(mock: &MockUpstream) {
 #[tokio::test]
 async fn every_managed_tool_provisions_a_payload_for_every_os_slot()
 -> Result<(), mediapm::MediaPmError> {
-    let mock = MockUpstream::start().await;
-    mount_managed_tool_upstreams(&mock).await;
-    let _seams = mock.all_seams(mediapm::example_isolation::env_lock());
+    let (_mock, _seams) = mock_all_managed_tools().await;
 
     let (mut service, _root, _cache_root) = service_with_cache(all_managed_tools_storage()).await?;
     service

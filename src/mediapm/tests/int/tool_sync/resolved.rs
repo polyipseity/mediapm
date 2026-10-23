@@ -1,7 +1,10 @@
-use mediapm::{MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement};
+use mediapm::{
+    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
+};
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, encode_document};
 
+use crate::common::stub_upstream::{STUB_COMMIT_SHA, STUB_YT_DLP_TAG, mock_all_managed_tools};
 use crate::common::{service_with_cache, test_sync_progress_overrides};
 
 // ---------------------------------------------------------------------------
@@ -10,8 +13,32 @@ use crate::common::{service_with_cache, test_sync_progress_overrides};
 //
 // These tests validate the Phase 3 wiring: the provider's resolved metadata
 // is persisted into `state.json` on provision, backfilled in place for
-// skipped tools, and matched by exact version specs. Media-tagger is used
-// throughout because it resolves without network.
+// skipped tools, and matched by exact version specs.
+//
+// Both provider kinds are covered. Media-tagger is a builtin launcher that
+// resolves with no network, and it pins the *empty* side of the why-empty
+// invariant. yt-dlp is a GitHub release behind a mocked upstream, and it pins
+// the *populated* side — the only direction where a field left empty would be
+// a regression rather than the expected value.
+
+/// Reads `state.json` and returns the registry entry for `tool_id`.
+///
+/// # Panics
+///
+/// Panics when `state.json` is missing, unreadable, or holds no entry for
+/// `tool_id` — every caller asserts on a tool the sync just recorded.
+fn managed_tool_entry(
+    service: &MediaPmService<mediapm_cas::FileSystemCas>,
+    tool_id: &str,
+) -> ToolRegistryEntry {
+    let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
+    let state: MediaPmState = serde_json::from_slice(&bytes).expect("state.json deserializes");
+    state
+        .managed_tools
+        .into_iter()
+        .find(|entry| entry.tool_id == tool_id)
+        .unwrap_or_else(|| panic!("{tool_id} entry should exist after sync"))
+}
 
 /// Sync persists provider-resolved fields into the managed-tool registry.
 ///
@@ -55,6 +82,54 @@ async fn sync_populates_resolved_fields_in_state() -> Result<(), mediapm::MediaP
         entry.canonical_version,
         mediapm::MEDIAPM_GIT_HASH,
         "canonical_version should equal MEDIAPM_GIT_HASH for builtin launcher"
+    );
+    Ok(())
+}
+
+/// A download provider fills every resolved provenance field from its own
+/// upstream metadata.
+///
+/// The media-tagger case above asserts three empty-or-build-derived values,
+/// which a provider that populated nothing at all would also satisfy. yt-dlp is
+/// a GitHub release whose tag, version and commit hash all exist, so it is the
+/// direction that can fail: a `resolved_tag` left `None`, or a
+/// `resolved_version` taken from the mediapm build rather than the release,
+/// shows up here as a wrong value instead of a passing one.
+///
+/// The canonical version is asserted separately because it is the field the
+/// skip decision reads, and for a release provider it is the commit hash rather
+/// than the tag — a distinction no launcher-only tool can demonstrate.
+#[tokio::test]
+async fn sync_populates_resolved_fields_from_a_download_provider()
+-> Result<(), mediapm::MediaPmError> {
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert("yt-dlp".to_string(), ToolRequirement::default());
+    let (_mock, _seams) = mock_all_managed_tools().await;
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
+
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
+
+    let entry = managed_tool_entry(&service, "yt-dlp");
+    assert_eq!(
+        entry.resolved_tag.as_deref(),
+        Some(STUB_YT_DLP_TAG),
+        "a GitHub-release tool reports the resolved tag"
+    );
+    assert_eq!(
+        entry.resolved_version.as_deref(),
+        Some(STUB_YT_DLP_TAG),
+        "a release-only provider reports the tag as its version"
+    );
+    assert_eq!(
+        entry.resolved_vcs_hash.as_deref(),
+        Some(STUB_COMMIT_SHA),
+        "the resolved VCS hash is the commit the tag ref names"
+    );
+    assert_eq!(
+        entry.canonical_version, STUB_COMMIT_SHA,
+        "a release tool's canonical version is its commit hash, not its tag"
     );
     Ok(())
 }

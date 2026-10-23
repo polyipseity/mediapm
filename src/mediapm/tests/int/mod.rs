@@ -1,5 +1,22 @@
 //! Focused integration tests for mediapm contracts.
 
+// The hermetic provisioning tests below — `all_platform`, and the `tool_sync`
+// cases that answer a mock upstream — drive the provider base-URL seams, and
+// those seams exist only in a `test-seams` build. Without the feature such a
+// test would ignore the mock and reach the real hosts, which is the silent pass
+// this refusal exists to prevent: a test that quietly downloads from the
+// network is worse than one that will not build. Every gate in this repository
+// passes `--all-features`.
+//
+// It sits here rather than inside one of those modules because `all_platform`
+// and `tool_sync` are submodules of this same test binary, so one refusal
+// covers both and no module needs a copy of its own.
+#[cfg(not(feature = "test-seams"))]
+compile_error!(
+    "the hermetic provisioning tests drive the provider base-URL seams; run them with \
+     `cargo test -p mediapm --all-features`"
+);
+
 mod builtins;
 mod demo;
 mod demo_hierarchy_golden;

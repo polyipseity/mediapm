@@ -368,14 +368,11 @@ mod tests {
 
     /// Slot fields are accepted on ffmpeg — the only tool they apply to.
     ///
-    /// Hermetic replacement for the old sync-level acceptance test
-    /// (`sync_accepts_slot_field_on_ffmpeg`): no network-free tool accepts
-    /// slot fields, and under fail-fast provisioning a real ffmpeg fetch
-    /// aborts the sync on an unreachable upstream, so a sync-level
-    /// acceptance run cannot exist hermetically. The reject direction for
-    /// non-ffmpeg tools is pinned at the sync level by
-    /// `sync_rejects_slot_field_on_non_ffmpeg` (which fires before any
-    /// network) and here by the field-set contract.
+    /// The sync-level acceptance run is `sync_accepts_slot_field_on_ffmpeg` in
+    /// `tests/int/tool_sync/validation.rs`, which answers ffmpeg's upstream
+    /// traffic from a mock. This unit test pins the field-set contract that the
+    /// reject direction shares; that direction is covered at the sync level by
+    /// `sync_rejects_slot_field_on_non_ffmpeg`, which fires before any network.
     #[test]
     fn slot_fields_are_accepted_on_ffmpeg() {
         let requirement = serde_json::json!({ "max_input_slots": 8, "max_output_slots": 2 });

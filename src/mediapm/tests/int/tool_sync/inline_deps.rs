@@ -2,6 +2,7 @@ use super::seeded_three_tool_skip_service;
 use crate::common::{
     make_zip, read_generated_doc, service_with_cache, test_sync_progress_overrides,
 };
+use mediapm::example_isolation::lock_process_env;
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
@@ -321,7 +322,12 @@ async fn provisioned_yt_dlp_with_deno(
 /// `canonical_version` in state.
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "this test seeds its caches under the production host URLs, so it must see the default environment; the lock excludes a concurrent test that installs the provider seams"
+)]
 async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::MediaPmError> {
+    let _env = lock_process_env();
     let yt_dlp_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
     let deno_tag = "1.46.0";
     let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
@@ -419,7 +425,12 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
 ///   falls through to reprovision.
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "this test seeds its caches under the production host URLs, so it must see the default environment; the lock excludes a concurrent test that installs the provider seams"
+)]
 async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm::MediaPmError> {
+    let _env = lock_process_env();
     let yt_dlp_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
     let old_deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
     let new_deno_tag = "1.47.0";
@@ -552,7 +563,12 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
 ///   2. Every dep key appears as a `deps/<dep_id>/` subset in the requester.
 ///   3. Exactly one state entry per distinct tool id.
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "this test seeds its caches under the production host URLs, so it must see the default environment; the lock excludes a concurrent test that installs the provider seams"
+)]
 async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), mediapm::MediaPmError> {
+    let _env = lock_process_env();
     let deno_tag = "1.46.0";
     let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
 
@@ -617,7 +633,12 @@ async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), medi
 /// of the same hermetic workspace produce byte-identical generated docs
 /// and identical summary fields.
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "this test seeds its caches under the production host URLs, so it must see the default environment; the lock excludes a concurrent test that installs the provider seams"
+)]
 async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmError> {
+    let _env = lock_process_env();
     let deno_tag = "1.46.0";
     let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
 

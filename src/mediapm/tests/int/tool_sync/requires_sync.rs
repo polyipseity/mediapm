@@ -1,4 +1,5 @@
 use super::v2_state_json;
+use mediapm::example_isolation::lock_process_env;
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
@@ -227,7 +228,12 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
 /// seeded override cache; media-tagger resolves to `MEDIAPM_GIT_HASH`
 /// regardless of cache, so it cannot demonstrate the divergence.
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "this test seeds ffmpeg's metadata under the production host URLs and then resolves it through the provider seam, so it must see the default environment; the lock excludes a concurrent test that installs the seams"
+)]
 async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::MediaPmError> {
+    let _env = lock_process_env();
     let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("ffmpeg".to_string(), ToolRequirement::default());
     let (service, _root, cache_root) = service_with_cache(runtime).await?;
