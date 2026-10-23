@@ -155,7 +155,15 @@ pub(super) fn json_scalar_to_string(value: &Value) -> Option<String> {
     }
 }
 
-/// Sanitizes one metadata key for broad ffmpeg tag compatibility.
+/// Sanitizes one metadata key into this pipeline's internal tag key.
+///
+/// Keys stay lowercase here because they are lookup keys inside the pipeline —
+/// `insert_extended_picard_tags` reads one tag to derive another — so their case
+/// is a stable internal convention rather than a wire format. The wire format is
+/// settled once, in `write_ffmetadata_document`, which converts these into the
+/// capitals the `Matroska` tag specification assigns. Every character outside the
+/// alphanumeric set becomes an underscore, runs of underscores collapse, and a
+/// leading digit is prefixed so the result stays a valid name.
 pub(super) fn sanitize_metadata_key(input: &str) -> String {
     let mut key =
         input
@@ -180,6 +188,16 @@ pub(super) fn sanitize_metadata_key(input: &str) -> String {
     key
 }
 
+/// Converts one internal tag key into the name the document is written under.
+///
+/// The `Matroska` tag specification requires assigned tag names to consist of
+/// Latin capitals, digits, and underscores, and the IANA registry that lists them
+/// is what a reader looks up: a document written with `artist` applies a private
+/// tag, so a player asking for `ARTIST` finds nothing.
+fn matroska_tag_name(internal_key: &str) -> String {
+    sanitize_metadata_key(internal_key).to_ascii_uppercase()
+}
+
 /// Truncates one metadata value to bounded maximum length.
 pub(super) fn truncate_metadata_value(value: &str) -> String {
     if value.len() <= MAX_FLATTENED_VALUE_LEN {
@@ -189,7 +207,15 @@ pub(super) fn truncate_metadata_value(value: &str) -> String {
     }
 }
 
-/// Persists one FFmetadata document to requested output path.
+/// Writes one `FFmetadata` document for the apply step to read.
+///
+/// Every key is converted to a `Matroska` tag name here, at the one place a
+/// document is produced, rather than at each site that inserts one: the tag
+/// specification assigns names in capitals and the registry listing them is what
+/// a reader looks up, so a document written with a literal `artist` would apply a
+/// private tag that no player asks for. Normalizing on the way out also covers
+/// keys merged in from the source file, whatever convention wrote them, while the
+/// parser stays a faithful reader of whatever document it is handed.
 pub(super) fn write_ffmetadata_document(
     output_path: &Path,
     metadata_map: &BTreeMap<String, String>,
@@ -197,7 +223,7 @@ pub(super) fn write_ffmetadata_document(
     let document = FFMetadata {
         global: metadata_map
             .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
+            .map(|(key, value)| (matroska_tag_name(key), value.clone()))
             .collect::<Vec<_>>(),
         ..FFMetadata::default()
     };
@@ -251,4 +277,58 @@ pub(super) fn resolve_ffmpeg_executable_from_configured_path(
     }
 
     configured
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_metadata_key, write_ffmetadata_document};
+
+    /// An internal metadata key stays lowercase and becomes a valid name.
+    ///
+    /// The casing is deliberately not the wire format: these keys are looked up
+    /// inside the pipeline, so they keep one stable spelling. The rest of the rule
+    /// keeps the name valid — punctuation becomes underscores, runs collapse, and
+    /// a leading digit takes a prefix.
+    #[test]
+    fn an_internal_metadata_key_is_sanitized() {
+        assert_eq!(sanitize_metadata_key("artist"), "artist");
+        assert_eq!(sanitize_metadata_key("MusicBrainz Recording Id"), "musicbrainz_recording_id");
+        assert_eq!(sanitize_metadata_key("replaygain-track_gain"), "replaygain_track_gain");
+        assert_eq!(sanitize_metadata_key("..."), "metadata");
+        assert_eq!(sanitize_metadata_key("7digital"), "meta_7digital");
+    }
+
+    /// The document is written under the tag names the specification assigns.
+    ///
+    /// This is the boundary the format lives at: the map is keyed by internal
+    /// lowercase names, and a document written with those would apply private tags
+    /// that no player looks up, so the capitals are asserted on the bytes rather
+    /// than on the map.
+    #[test]
+    fn a_written_document_carries_matroska_tag_names() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let path = dir.path().join("output.ffmetadata");
+        let map = std::collections::BTreeMap::from([
+            ("title".to_string(), "A Title".to_string()),
+            ("musicbrainz_recordingid".to_string(), "an-mbid".to_string()),
+            ("replaygain-track_gain".to_string(), "-3.5 dB".to_string()),
+        ]);
+
+        write_ffmetadata_document(&path, &map).expect("write the document");
+
+        let written = std::fs::read_to_string(&path).expect("read the document");
+        assert!(written.contains("TITLE=A Title"), "title must be written as TITLE: {written}");
+        assert!(
+            written.contains("MUSICBRAINZ_RECORDINGID=an-mbid"),
+            "a MusicBrainz key must be written in capitals: {written}",
+        );
+        assert!(
+            written.contains("REPLAYGAIN_TRACK_GAIN=-3.5 dB"),
+            "a ReplayGain key must be written in capitals: {written}",
+        );
+        assert!(
+            !written.contains("title="),
+            "no lowercase tag name may reach the document: {written}",
+        );
+    }
 }

@@ -188,15 +188,15 @@ async fn a_recording_mbid_fetches_metadata_through_the_configured_endpoint() {
 
     let text = std::fs::read_to_string(&output_path).expect("ffmetadata output written");
     let tags = parse_ffmetadata(&text);
-    assert_eq!(tags.get("title").map(String::as_str), Some("Test Recording"));
-    assert_eq!(tags.get("artist").map(String::as_str), Some("Test Artist"));
-    assert_eq!(tags.get("musicbrainz_recordingid").map(String::as_str), Some(RECORDING_MBID));
-    assert_eq!(tags.get("isrc").map(String::as_str), Some("USUM71300001"));
-    assert_eq!(tags.get("originaldate").map(String::as_str), Some("1987-07-27"));
-    assert_eq!(tags.get("album").map(String::as_str), Some("Test Album"));
-    assert_eq!(tags.get("date").map(String::as_str), Some("1987-07-27"));
-    assert_eq!(tags.get("musicbrainz_albumid").map(String::as_str), Some(RELEASE_MBID));
-    assert_eq!(tags.get("tracknumber").map(String::as_str), Some("1"));
+    assert_eq!(tags.get("TITLE").map(String::as_str), Some("Test Recording"));
+    assert_eq!(tags.get("ARTIST").map(String::as_str), Some("Test Artist"));
+    assert_eq!(tags.get("MUSICBRAINZ_RECORDINGID").map(String::as_str), Some(RECORDING_MBID));
+    assert_eq!(tags.get("ISRC").map(String::as_str), Some("USUM71300001"));
+    assert_eq!(tags.get("ORIGINALDATE").map(String::as_str), Some("1987-07-27"));
+    assert_eq!(tags.get("ALBUM").map(String::as_str), Some("Test Album"));
+    assert_eq!(tags.get("DATE").map(String::as_str), Some("1987-07-27"));
+    assert_eq!(tags.get("MUSICBRAINZ_ALBUMID").map(String::as_str), Some(RELEASE_MBID));
+    assert_eq!(tags.get("TRACKNUMBER").map(String::as_str), Some("1"));
 
     let paths = musicbrainz
         .received_requests()
@@ -385,11 +385,11 @@ async fn cover_art_is_discovered_and_downloaded_through_the_configured_archive_e
     let text = std::fs::read_to_string(&output_path).expect("ffmetadata output written");
     let tags = parse_ffmetadata(&text);
     assert_eq!(
-        tags.get("coverart_url").map(String::as_str),
+        tags.get("COVERART_URL").map(String::as_str),
         Some(image_url.as_str()),
         "the front image url must be written into the cover-art tag"
     );
-    assert_eq!(tags.get("coverart_maintype").map(String::as_str), Some("front"));
+    assert_eq!(tags.get("COVERART_MAINTYPE").map(String::as_str), Some("front"));
 
     let slot = workspace.path().join("coverart").join("coverart-slot-1.bin");
     let slot_bytes = std::fs::read(&slot).expect("first cover-art slot artifact written");

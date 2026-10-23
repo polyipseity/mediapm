@@ -2697,7 +2697,14 @@ fn assert_format_tags_structural(payload: &serde_json::Value) -> ExampleResult<(
     assert_tag_eq(format_tags, "ARTIST", DEMO_METADATA_ARTIST)?;
     assert_tag_eq(format_tags, "ALBUM", "Never Gonna Give You Up")?;
     assert_tag_eq(format_tags, "DATE", "1987-07-27")?;
-    assert_tag_eq(format_tags, "LABEL", "RCA")?;
+    // The step is given no release MBID, so the release is whichever one
+    // `MusicBrainz` returns for the recording and the label is asserted by family
+    // rather than by the exact string that release happens to carry: the same
+    // recording's releases are labelled `RCA` and `RCA Victor`.
+    let label = format_tags.get("LABEL").and_then(serde_json::Value::as_str).unwrap_or("");
+    if !label.starts_with("RCA") {
+        return Err(format!("[ffprobe] tag 'LABEL' expected an RCA label, got '{label}'").into());
+    }
     let genre = format_tags.get("GENRE").and_then(serde_json::Value::as_str).unwrap_or("");
     if !genre.contains("blue-eyed soul") && !genre.contains("dance") {
         return Err(format!(
