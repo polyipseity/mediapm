@@ -1,20 +1,22 @@
 use super::seeded_three_tool_skip_service;
-use crate::common::{
-    make_zip, read_generated_doc, service_with_cache, test_sync_progress_overrides,
+use crate::common::stub_upstream::{
+    STUB_COMMIT_SHA, STUB_DENO_COMMIT_SHA, binary_asset, mock_all_managed_tools,
 };
-use mediapm::example_isolation::lock_process_env;
+use crate::common::{
+    read_generated_doc, read_state, service_with_cache, test_sync_progress_overrides,
+};
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
-use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
+use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, encode_document};
 
 // ---------------------------------------------------------------------------
 // Same-step dependency payload inlining (deps/<mediapm tool id>/)
 // ---------------------------------------------------------------------------
 //
 // The inlining itself (`inline_same_step_deps`) is covered by the unit tests
-// in `conductor_bridge/sync/mod.rs`. The integration tests below are hermetic
-// (no network) and cover the observable pipeline contracts around it:
+// in `conductor_bridge/sync/mod.rs`. The integration tests below cover the
+// observable pipeline contracts around it:
 //
 // - `sync_skip_preserves_inlined_deps` — a generated-doc runtime that already
 //   carries `deps/` keys survives a spec-based skip intact; the reserved
@@ -22,30 +24,32 @@ use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 // - `sync_env_has_no_deps_garbage` — inlined `deps/` keys never leak into
 //   `.env.generated` (no `_DEPS` / `_DIR` / `_COMPANIONS_` lines).
 // - `sync_composite_non_transitive` — a dep whose stored `canonical_version`
-//   is itself composite (realistic post-network-sync state) never triggers a
-//   false reprovision of the requester; composite segments reference each
-//   dep's OWN version segment only (Phase 1 wiring through `service.rs`).
+//   is itself composite never triggers a false reprovision of the requester;
+//   composite segments reference each dep's OWN version segment only.
 //
 // - `sync_inlines_same_step_deps_into_content_map` — a fresh sync of a
 //   requester (yt-dlp) with a same-step dep (deno) inlines the dep's payload
 //   under `deps/deno/<key>` into the generated-doc runtime, mirroring the
 //   dep's own content-map values exactly, with no recursion and no
 //   `companions/` residue.
-// - `sync_dep_version_change_reprovisions_requester` — bumping a dep's
-//   resolved version changes the requester's composite `canonical_version`
-//   and forces a reprovision with freshly inlined payloads, while the
-//   requester's own payload keys stay byte-identical.
+// - `sync_dep_version_change_reprovisions_requester` — a requester whose
+//   recorded composite names a dep version upstream no longer serves
+//   reprovisions with freshly inlined payloads, while its own payload keys
+//   keep byte-identical hashes.
+// - `sync_level_ordering_applies_deps_before_requesters` — every dep key
+//   reaches the requester, which holds only if the dep was applied first.
+// - `sync_parallel_driver_is_deterministic` — two independent syncs of the
+//   same fixture produce byte-identical generated documents.
 //
-// The provisioning-path tests above are hermetic via download-cache
-// pre-seeding (metadata + payload domains), mirroring
-// `fetch_and_import_ytdlp_full_pipeline` in
-// `conductor_bridge/sync/provision.rs`. yt-dlp + deno are the only
-// network-resolved managed tools whose payloads are pure downloads with
-// tooling mediapm already has (`zip`); ffmpeg is excluded because its linux
-// payload is tar.xz (mediapm has no tar/xz decoder). One tolerated network
-// touch remains: `prefetch_expected_sizes` fires tolerant one-byte ranged
-// `GET` probes (`Range: bytes=0-0`) at the rewritten GitHub URLs before fetch;
-// failures are silently ignored, so offline runs only pay a fast DNS failure.
+// Every provisioning test here runs against the mocked upstream
+// (`mock_all_managed_tools`), which serves yt-dlp's release metadata, its tag
+// ref, and one bare binary per OS slot. The mock is what makes a
+// download-backed provider exercisable end to end: the payload bytes arrive
+// over HTTP from the fixture, so the download, extraction and content-import
+// stages all run. yt-dlp + deno are the pair used throughout because deno is
+// the same-step dependency the inlining assertions name; the fixture mounts
+// every managed tool's traffic, so a test that later needs ffmpeg needs no
+// fixture change.
 
 /// Hermetic: seeds a generated doc whose `yt-dlp` runtime already carries
 /// inlined `deps/ffmpeg/...` and `deps/deno/...` keys (as a previous network
@@ -56,7 +60,6 @@ use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 /// keeps the `deps/` keys alongside the requester's own keys, the state entry
 /// keeps its non-transitive composite `canonical_version`, and no
 /// `companions/` prefix ever appears.
-#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) = seeded_three_tool_skip_service().await?;
@@ -116,7 +119,6 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
 /// `deps/ffmpeg/linux/ffmpeg` on the first `/` and emit `MEDIAPM_YT_DLP_DEPS_*`
 /// garbage pointing at `.../payload/deps/...`. Inlined companions are
 /// referenced via the predictable `deps/<tool_id>/` path, never env vars.
-#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) = seeded_three_tool_skip_service().await?;
@@ -151,39 +153,28 @@ async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
 }
 
 /// `logical_tool_requires_sync` stays stable when a dep's stored
-/// `canonical_version` is itself composite (realistic state after a network
-/// sync in which the dep had its own same-step deps).
+/// `canonical_version` is itself composite (the state a sync leaves when the
+/// dep had same-step deps of its own).
 ///
-/// Guards the Phase 1 wiring through `service.rs`: composite segments
-/// reference each dep's OWN version segment (`own_version_segment`), so a
-/// composite-bearing dep entry never changes the requester's computed
-/// composite and never triggers a false reprovision. (The same-step
-/// version-segment math itself is unit-tested in
-/// `compute_composite_canonical_version_non_transitive`; no same-step tool
-/// resolves without network, so the integration check uses media-tagger's
-/// `CrossStep` dep to assert composite-dep tolerance.)
+/// Guards the wiring through `service.rs`: composite segments reference each
+/// dep's OWN version segment (`own_version_segment`), so a composite-bearing
+/// dep entry never changes the requester's computed composite and never
+/// triggers a false reprovision. The requester is yt-dlp because its `deno`
+/// dependency carries the `SameStep` role, which is what puts a dep into the
+/// composite at all; a `CrossStep` dep is excluded from it and would make this
+/// assertion hold whether or not the own-segment rule worked.
 #[tokio::test]
 async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.tools.insert(
-        "media-tagger".to_string(),
-        ToolRequirement {
-            dependencies: std::collections::BTreeMap::from([(
-                "ffmpeg".to_string(),
-                mediapm::ConfigVersionSpec::Latest,
-            )]),
-            ..Default::default()
-        },
-    );
-    let (service, _root, _cache_root) = service_with_cache(runtime).await?;
+    let (_mock, _seams) = mock_all_managed_tools().await;
+    let (service, _root, _cache_root) = yt_dlp_with_deno_service().await?;
 
     let mut state = MediaPmState::default();
-    // ffmpeg stored with a COMPOSITE canonical_version — as if it had been
-    // network-synced with its own same-step dep (`deno`) in a prior pass.
+    // deno stored with a COMPOSITE canonical_version — as if it had been
+    // network-synced with a same-step dep of its own in a prior pass.
     state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "ffmpeg".to_string(),
+        tool_id: "deno".to_string(),
         version: String::new(),
-        canonical_version: "ffmpeg-v7.1;deno:deno-v1.46.0".to_string(),
+        canonical_version: format!("{STUB_DENO_COMMIT_SHA};other-tool:deadbeef"),
         content_map_hash: "blake3:abc".to_string(),
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
@@ -191,9 +182,9 @@ async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
         resolved_vcs_hash: None,
     });
     state.managed_tools.push(ToolRegistryEntry {
-        tool_id: "media-tagger".to_string(),
+        tool_id: "yt-dlp".to_string(),
         version: String::new(),
-        canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
+        canonical_version: format!("{STUB_COMMIT_SHA};deno:{STUB_DENO_COMMIT_SHA}"),
         content_map_hash: "blake3:abc".to_string(),
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
@@ -202,140 +193,49 @@ async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
     });
 
     assert!(
-        !service.logical_tool_requires_sync("media-tagger", &state).await?,
-        "composite-bearing dep entries must not trigger reprovision of the requester"
+        !service.logical_tool_requires_sync("yt-dlp", &state).await?,
+        "a composite-bearing dep entry must contribute its own version segment only"
     );
     Ok(())
 }
 
-/// Opens a user-level download cache with the two domains the sync pipeline
-/// uses (`tools` payload domain + `tool_metadata` tag domain), mirroring the
-/// `CacheDomainConfig`s from `reconcile_desired_tools`.
-async fn open_test_cache(root: &std::path::Path) -> Cache {
-    Cache::open(
-        root,
-        &[
-            CacheDomainConfig {
-                domain: "tools".to_string(),
-                index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: ENTRY_TTL_SECONDS,
-            },
-            CacheDomainConfig {
-                domain: "tool_metadata".to_string(),
-                index_file_name: "tool_metadata.json".to_string(),
-                entry_ttl_seconds: 24 * 60 * 60,
-            },
-        ],
-    )
-    .await
-    .expect("test cache opens")
-}
-
-/// Hermetic provisioning fixture: pre-seeds a user-level download cache with
-/// yt-dlp (fixed tag/hash/payloads) and deno (tag/hash parameterized — the
-/// zip entry content embeds the tag, so a version bump changes the payload
-/// bytes and thus the content address), then builds a fresh service whose
-/// yt-dlp requirement carries deno as a same-step dependency. See the
-/// module-level hermeticity recipe for why these two tools are seedable. The
-/// cache handle is dropped before the service is created (two open `Cache`
-/// handles at the same root contend for the directory lock).
-async fn provisioned_yt_dlp_with_deno(
-    root: &std::path::Path,
-    cache_root: &std::path::Path,
-    deno_tag: &str,
-    deno_hash: &str,
-) -> Result<MediaPmService<mediapm_cas::FileSystemCas>, mediapm::MediaPmError> {
-    use std::collections::BTreeMap;
-
-    let yt_dlp_tag = "2025.07.15";
-    let yt_dlp_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
-    let yt_dlp_payloads = [
-        ("yt-dlp.exe", &b"fake yt-dlp windows binary"[..]),
-        ("yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
-        ("yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
-    ];
-
-    let cache = open_test_cache(cache_root).await;
-    // Metadata cache: tag resolution is served from cache (no GitHub API).
-    let yt_dlp_metadata_key = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
-    cache
-        .store_bytes(
-            "tool_metadata",
-            yt_dlp_metadata_key,
-            format!("{yt_dlp_tag}\n{yt_dlp_hash}").as_bytes(),
-        )
-        .await;
-    let deno_metadata_key = "https://api.github.com/repos/denoland/deno/releases/latest";
-    cache
-        .store_bytes(
-            "tool_metadata",
-            deno_metadata_key,
-            format!("{deno_tag}\n{deno_hash}").as_bytes(),
-        )
-        .await;
-    // Payload cache: REWRITTEN download URLs (`/download/{tag}/`).
-    for (filename, payload) in &yt_dlp_payloads {
-        let url =
-            format!("https://github.com/yt-dlp/yt-dlp/releases/download/{yt_dlp_tag}/{filename}");
-        cache.store_bytes("tools", &url, payload).await;
-    }
-    for os in ["windows", "macos", "linux"] {
-        let zip_name = match os {
-            "windows" => "deno-x86_64-pc-windows-msvc.zip",
-            "macos" => "deno-aarch64-apple-darwin.zip",
-            _ => "deno-aarch64-unknown-linux-gnu.zip",
-        };
-        let zip_bytes =
-            make_zip(&[("deno", format!("fake deno {deno_tag} {os} binary").as_bytes())]);
-        let url =
-            format!("https://github.com/denoland/deno/releases/download/{deno_tag}/{zip_name}");
-        cache.store_bytes("tools", &url, &zip_bytes).await;
-    }
-    // Drop BEFORE sync: a second open `Cache` at the same root would contend
-    // for the directory lock.
-    drop(cache);
-
-    let mut runtime = MediaRuntimeStorage {
-        cache_root_override: Some(cache_root.to_path_buf()),
-        ..MediaRuntimeStorage::default()
-    };
+/// Builds a service whose `yt-dlp` requirement carries `deno` as a same-step
+/// dependency, over a fresh workspace and a hermetic download cache.
+///
+/// yt-dlp is the requester whose payload is inlined, and deno is the dep whose
+/// payload is inlined into it. Both are pure downloads, so against
+/// [`mock_all_managed_tools`] the pair exercises the download, extraction and
+/// content-import stages end to end. The caller installs the mock before
+/// syncing, and keeps the returned workspace and cache roots alive for as long
+/// as the service reads them.
+async fn yt_dlp_with_deno_service() -> Result<
+    (MediaPmService<mediapm_cas::FileSystemCas>, tempfile::TempDir, tempfile::TempDir),
+    mediapm::MediaPmError,
+> {
+    let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert(
         "yt-dlp".to_string(),
         ToolRequirement {
-            version_spec: mediapm::ConfigVersionSpec::Latest,
-            dependencies: BTreeMap::from([(
+            dependencies: std::collections::BTreeMap::from([(
                 "deno".to_string(),
                 mediapm::ConfigVersionSpec::Latest,
             )]),
             ..Default::default()
         },
     );
-    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, runtime).await
+    service_with_cache(runtime).await
 }
 
-/// Hermetic fresh-sync of the provisioning path: yt-dlp (requester) with a
-/// same-step dep (deno) is provisioned entirely from a pre-seeded
-/// user-level download cache (no network). Asserts the generated-doc
-/// runtime carries the dep's payload inlined under `deps/deno/<key>` with
-/// values mirroring the dep's own content map exactly, no recursion into
-/// `deps/deno/deps/`, no `companions/` residue, and a composite
-/// `canonical_version` in state.
-#[allow(clippy::too_many_lines)]
+/// Fresh sync of the provisioning path: yt-dlp (requester) with a same-step
+/// dep (deno), both provisioned from the mocked upstream. Asserts the
+/// generated-doc runtime carries the dep's payload inlined under
+/// `deps/deno/<key>` with values mirroring the dep's own content map exactly,
+/// no recursion into `deps/deno/deps/`, no `companions/` residue, and a
+/// composite `canonical_version` in state.
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "this test seeds its caches under the production host URLs, so it must see the default environment; the lock excludes a concurrent test that installs the provider seams"
-)]
 async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::MediaPmError> {
-    let _env = lock_process_env();
-    let yt_dlp_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
-    let deno_tag = "1.46.0";
-    let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
-
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut service =
-        provisioned_yt_dlp_with_deno(root.path(), cache_root.path(), deno_tag, deno_hash).await?;
+    let (_mock, _seams) = mock_all_managed_tools().await;
+    let (mut service, _root, _cache_root) = yt_dlp_with_deno_service().await?;
     service
         .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
         .await?;
@@ -387,9 +287,8 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
 
     // State: yt-dlp carries the composite canonical version referencing the
     // dep's OWN version segment; deno carries its bare hash.
-    let state_bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state readable");
-    let state: MediaPmState = serde_json::from_slice(&state_bytes).expect("valid state json");
-    let expected_composite = format!("{yt_dlp_hash};deno:{deno_hash}");
+    let state = read_state(&service);
+    let expected_composite = format!("{STUB_COMMIT_SHA};deno:{STUB_DENO_COMMIT_SHA}");
     assert!(
         state
             .managed_tools
@@ -398,64 +297,89 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
         "yt-dlp must carry composite canonical {expected_composite}"
     );
     assert!(
-        state.managed_tools.iter().any(|e| e.tool_id == "deno" && e.canonical_version == deno_hash),
-        "deno must carry bare canonical {deno_hash}"
+        state
+            .managed_tools
+            .iter()
+            .any(|e| e.tool_id == "deno" && e.canonical_version == STUB_DENO_COMMIT_SHA),
+        "deno must carry bare canonical {STUB_DENO_COMMIT_SHA}"
     );
     Ok(())
 }
 
-/// Hermetic dep-version-change reprovision: bumps deno's resolved tag/hash
-/// (1.46.0 → 1.47.0) while yt-dlp's payload stays identical, then syncs a
-/// workspace whose `state.json` was seeded with the PREVIOUS deployment
-/// records. Asserts yt-dlp reprovisions (composite canonical becomes
-/// `{yt_dlp_hash};deno:{new_deno_hash}`) with freshly inlined deno payloads,
-/// while its own binary keys keep byte-identical hashes (same cached
-/// payloads → same blake3 content addresses).
+/// Dep-version-change reprovision: a workspace whose recorded composite names
+/// a deno version upstream no longer serves reprovisions the requester instead
+/// of skipping it.
 ///
-/// The seeded state drives the composite skip check:
-/// - deno's entry carries an EMPTY `content_map_hash`. The composite
-///   computation (`compute_composite_canonical_version`) matches only
-///   non-empty-hash entries via `find()`, so the stale deno record is
-///   ignored — this dodges the find-first hazard where an accumulated stale
-///   entry with a non-empty hash would be matched first and suppress
-///   yt-dlp's reprovision — and deno itself cannot skip either.
-/// - yt-dlp's entry carries the OLD composite `{yt_dlp_hash};deno:{old_deno_hash}`
-///   with a non-empty placeholder hash: the composite skip check compares it
-///   against the freshly computed `{yt_dlp_hash};deno:{new_deno_hash}` and
-///   falls through to reprovision.
-#[allow(clippy::too_many_lines)]
-#[tokio::test]
+/// The composite skip is gated on three conditions in `sync/mod.rs`: the
+/// recorded composite must match the freshly computed one, an active
+/// generated-doc spec must exist for the tool, and that spec's content map
+/// must be available in the workspace CAS. The fixture satisfies the last two
+/// and fails the first, so the skip is reachable and is rejected on the
+/// composite alone — which is the property under test. Without the seeded
+/// document the skip could never fire, and the assertions below would hold for
+/// any fresh sync, so the seeded document is part of the fixture rather than
+/// decoration.
+///
+/// The seeded state:
+/// - yt-dlp's entry carries the OLD composite
+///   `{STUB_COMMIT_SHA};deno:{STALE_DENO_VERSION}` with a non-empty
+///   placeholder hash, so `should_skip` is false.
+/// - deno's entry carries an EMPTY `content_map_hash` and is inert in this
+///   path: a sync takes a dependency's version from the pool's published
+///   `gates.dep_version` (`provision_entry` in `sync/mod.rs`), not from
+///   persisted state, so the seeded entry contributes no segment to the
+///   requester's computed composite. `dep_segments_from_live_state` reads
+///   persisted state the same way, but only from
+///   `logical_tool_requires_sync`, which this test does not reach.
+///
+/// Asserts yt-dlp re-provisions: nothing is reported skipped, the active spec
+/// carries freshly downloaded payload hashes rather than the seeded
+/// placeholders, the inlined dep payloads mirror deno's own map, and the
+/// recorded composite is the new one.
 #[expect(
-    clippy::await_holding_lock,
-    reason = "this test seeds its caches under the production host URLs, so it must see the default environment; the lock excludes a concurrent test that installs the provider seams"
+    clippy::too_many_lines,
+    reason = "the fixture is the point here: a reachable-but-rejected composite skip needs a seeded generated document, a seeded state entry for the requester and for its dep, and the assertions that together tell a re-provision apart from a skip"
 )]
+#[tokio::test]
 async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm::MediaPmError> {
-    let _env = lock_process_env();
-    let yt_dlp_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
-    let old_deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
-    let new_deno_tag = "1.47.0";
-    let new_deno_hash = "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2";
-    let yt_dlp_payloads = [
-        ("yt-dlp.exe", &b"fake yt-dlp windows binary"[..]),
-        ("yt-dlp_macos", &b"fake yt-dlp macos binary"[..]),
-        ("yt-dlp_linux", &b"fake yt-dlp linux binary"[..]),
-    ];
+    let (_mock, _seams) = mock_all_managed_tools().await;
+    let (mut service, _root, _cache_root) = yt_dlp_with_deno_service().await?;
 
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    // The helper pre-seeds deno at the NEW tag/hash; yt-dlp stays put.
-    let mut service =
-        provisioned_yt_dlp_with_deno(root.path(), cache_root.path(), new_deno_tag, new_deno_hash)
-            .await?;
+    // A deno commit hash no upstream serves, standing in for the version a
+    // previous sync recorded before the release moved.
+    let stale_deno_version = "9999999999999999999999999999999999999999";
 
-    // Seed the PREVIOUS deployment records (as a prior network sync would
-    // have left them). The generated doc is left empty — this sync pass
-    // rebuilds it from scratch.
+    // Seed an active yt-dlp spec whose content map is non-empty, so the
+    // composite skip is reachable. The values are non-hash placeholders, which
+    // `workspace_content_map_is_available` ignores.
+    let mut doc = NickelDocument::default();
+    doc.tools.insert(
+        "yt-dlp@blake3:stale".to_string(),
+        ToolSpec {
+            version: None,
+            name: "yt-dlp".to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime {
+                content_map: std::collections::BTreeMap::from([
+                    ("linux/yt-dlp".to_string(), "provisioned".to_string()),
+                    ("deps/deno/linux/".to_string(), "provisioned".to_string()),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let generated_path = service.paths().conductor_generated_ncl.clone();
+    std::fs::write(&generated_path, encode_document(doc).expect("seeded doc encodes"))
+        .expect("write seeded generated doc");
+
+    // Seed the PREVIOUS deployment records, so the recorded composite is the
+    // stale one the skip check compares against.
     let mut state = MediaPmState::default();
     state.managed_tools.push(ToolRegistryEntry {
         tool_id: "deno".to_string(),
         version: String::new(),
-        canonical_version: old_deno_hash.to_string(),
+        canonical_version: stale_deno_version.to_string(),
         content_map_hash: String::new(),
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
@@ -465,7 +389,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
     state.managed_tools.push(ToolRegistryEntry {
         tool_id: "yt-dlp".to_string(),
         version: String::new(),
-        canonical_version: format!("{yt_dlp_hash};deno:{old_deno_hash}"),
+        canonical_version: format!("{STUB_COMMIT_SHA};deno:{stale_deno_version}"),
         content_map_hash: "blake3:old".to_string(),
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
@@ -478,9 +402,17 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
     std::fs::write(&state_path, serde_json::to_vec(&state).expect("state serializes"))
         .expect("write seeded state");
 
-    service
+    let summary = service
         .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
         .await?;
+
+    // The skip was reachable and the composite was stale, so the entry had to
+    // provision. A skip here would mean the composite check accepted the old
+    // version.
+    assert_eq!(
+        summary.skipped_tools, 0,
+        "a stale composite must not skip when an active spec and its content map are present",
+    );
 
     // Generated doc: yt-dlp's ACTIVE spec carries freshly inlined deno
     // payloads; deno's own map reflects the NEW zip contents.
@@ -496,16 +428,23 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
         .find(|s| s.name == "deno" && !s.runtime.content_map.is_empty())
         .expect("active deno spec");
 
-    // yt-dlp's own keys are UNCHANGED: identical cached payloads → identical
-    // blake3 content addresses (binary format imports the raw bytes as-is).
-    for (filename, payload) in &yt_dlp_payloads {
-        let os = match *filename {
-            "yt-dlp.exe" => "windows",
-            "yt-dlp_macos" => "macos",
-            _ => "linux",
-        };
-        let key = format!("{os}/{filename}");
-        let expected_hash = blake3::hash(payload).to_hex().to_string();
+    // The seeded placeholders are gone: the spec was rebuilt from the
+    // downloaded payloads rather than kept from the seeded document.
+    assert!(
+        yt_dlp_spec.runtime.content_map.values().all(|v| v != "provisioned"),
+        "the seeded placeholder content map must be replaced by provisioned hashes: {:?}",
+        yt_dlp_spec.runtime.content_map,
+    );
+
+    // yt-dlp's own keys are UNCHANGED: the requester's payload is the same
+    // fixture bytes as before the dep bump, so the content addresses match.
+    // The expectation is derived from the same builder the mock mounts.
+    for (asset_name, os) in
+        [("yt-dlp.exe", "windows"), ("yt-dlp_macos", "macos"), ("yt-dlp_linux", "linux")]
+    {
+        let key = format!("{os}/{asset_name}");
+        let expected_hash =
+            blake3::hash(&binary_asset(asset_name, "yt-dlp", os).bytes).to_hex().to_string();
         assert_eq!(
             yt_dlp_spec.runtime.content_map.get(&key),
             Some(&expected_hash),
@@ -530,9 +469,8 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
 
     // State: yt-dlp reprovisioned with the NEW composite; deno carries the
     // NEW bare hash.
-    let state_bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state readable");
-    let state: MediaPmState = serde_json::from_slice(&state_bytes).expect("valid state json");
-    let expected_composite = format!("{yt_dlp_hash};deno:{new_deno_hash}");
+    let state = read_state(&service);
+    let expected_composite = format!("{STUB_COMMIT_SHA};deno:{STUB_DENO_COMMIT_SHA}");
     assert!(
         state
             .managed_tools
@@ -544,8 +482,8 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
         state
             .managed_tools
             .iter()
-            .any(|e| e.tool_id == "deno" && e.canonical_version == new_deno_hash),
-        "deno must reprovision to bare canonical {new_deno_hash}"
+            .any(|e| e.tool_id == "deno" && e.canonical_version == STUB_DENO_COMMIT_SHA),
+        "deno must reprovision to bare canonical {STUB_DENO_COMMIT_SHA}"
     );
     Ok(())
 }
@@ -563,19 +501,9 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
 ///   2. Every dep key appears as a `deps/<dep_id>/` subset in the requester.
 ///   3. Exactly one state entry per distinct tool id.
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "this test seeds its caches under the production host URLs, so it must see the default environment; the lock excludes a concurrent test that installs the provider seams"
-)]
 async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), mediapm::MediaPmError> {
-    let _env = lock_process_env();
-    let deno_tag = "1.46.0";
-    let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
-
-    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut service =
-        provisioned_yt_dlp_with_deno(root.path(), cache_root.path(), deno_tag, deno_hash).await?;
+    let (_mock, _seams) = mock_all_managed_tools().await;
+    let (mut service, _root, _cache_root) = yt_dlp_with_deno_service().await?;
     service
         .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
         .await?;
@@ -611,8 +539,7 @@ async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), medi
     }
 
     // Property 3: exactly one state entry per distinct tool id.
-    let state_bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state readable");
-    let state: MediaPmState = serde_json::from_slice(&state_bytes).expect("valid state json");
+    let state = read_state(&service);
     let mut tool_ids: Vec<_> = state.managed_tools.iter().map(|e| e.tool_id.as_str()).collect();
     tool_ids.sort_unstable();
     tool_ids.dedup();
@@ -629,24 +556,17 @@ async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), medi
     Ok(())
 }
 
-/// Determinism test for the parallel provisioning driver: two fresh syncs
-/// of the same hermetic workspace produce byte-identical generated docs
-/// and identical summary fields.
+/// Determinism test for the parallel provisioning driver: two independent
+/// syncs of the same fixture produce byte-identical generated docs and
+/// identical summary fields.
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "this test seeds its caches under the production host URLs, so it must see the default environment; the lock excludes a concurrent test that installs the provider seams"
-)]
 async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmError> {
-    let _env = lock_process_env();
-    let deno_tag = "1.46.0";
-    let deno_hash = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
+    // One mock serves both runs: the guard holds the process environment lock,
+    // which is not reentrant, so a second mock in one test would deadlock.
+    let (_mock, _seams) = mock_all_managed_tools().await;
 
     // Run 1
-    let root1 = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache1 = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut svc1 =
-        provisioned_yt_dlp_with_deno(root1.path(), cache1.path(), deno_tag, deno_hash).await?;
+    let (mut svc1, _root1, _cache1) = yt_dlp_with_deno_service().await?;
     let summary1 = svc1
         .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
         .await?;
@@ -654,10 +574,7 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
         .expect("generated doc readable");
 
     // Run 2 (separate workspace, separate cache)
-    let root2 = mediapm_utils::temp::artifact_dir().expect("tempdir");
-    let cache2 = mediapm_utils::temp::cache_dir().expect("cache tempdir");
-    let mut svc2 =
-        provisioned_yt_dlp_with_deno(root2.path(), cache2.path(), deno_tag, deno_hash).await?;
+    let (mut svc2, _root2, _cache2) = yt_dlp_with_deno_service().await?;
     let summary2 = svc2
         .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
         .await?;

@@ -73,7 +73,10 @@ fn v2_state_json(resolved: bool) -> serde_json::Value {
 /// yt-dlp/ffmpeg/deno tools: exact version specs, a seeded `state.json` with
 /// matching entries, and a seeded generated doc that already carries the
 /// inlined `deps/` keys a previous network sync would have produced.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture is a whole skip scenario written top to bottom: three tool requirements, the three state entries that have to agree with them, and the three generated-doc specs they skip against, and splitting it would separate a requirement from the entry it must match"
+)]
 async fn seeded_three_tool_skip_service() -> Result<
     (MediaPmService<mediapm_cas::FileSystemCas>, tempfile::TempDir, tempfile::TempDir),
     mediapm::MediaPmError,

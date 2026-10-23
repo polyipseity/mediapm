@@ -1,5 +1,4 @@
 use super::v2_state_json;
-use mediapm::example_isolation::lock_process_env;
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
@@ -8,7 +7,8 @@ use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::VersionSpecFields;
 
-use crate::common::{service_with_cache, test_sync_progress_overrides};
+use crate::common::stub_upstream::{STUB_MARTIN_RIEDL_BUILD_ID, mock_all_managed_tools};
+use crate::common::{read_state, service_with_cache, test_sync_progress_overrides};
 
 // ---------------------------------------------------------------------------
 // Pure-function logic tests
@@ -224,19 +224,25 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
 /// spurious `canonical_version != expected_composite` mismatch and a false
 /// "tools require sync" warning.
 ///
-/// ffmpeg is used (not media-tagger) because its provider resolves from the
-/// seeded override cache; media-tagger resolves to `MEDIAPM_GIT_HASH`
+/// The sync cache root is pre-seeded with a `BtbN` autobuild tag the mocked
+/// upstream does not serve, and state records the composite that tag yields,
+/// so the assertion holds only while the warning check reads the sync cache: a
+/// check that fell through to the default cache would resolve from the mock
+/// and compare a different tag. ffmpeg is used (not media-tagger) because its
+/// provider resolves from cache; media-tagger resolves to `MEDIAPM_GIT_HASH`
 /// regardless of cache, so it cannot demonstrate the divergence.
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "this test seeds ffmpeg's metadata under the production host URLs and then resolves it through the provider seam, so it must see the default environment; the lock excludes a concurrent test that installs the seams"
-)]
 async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::MediaPmError> {
-    let _env = lock_process_env();
+    let (mock, _seams) = mock_all_managed_tools().await;
     let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert("ffmpeg".to_string(), ToolRequirement::default());
     let (service, _root, cache_root) = service_with_cache(runtime).await?;
+
+    // A tag no upstream serves, so only this cache can produce it. The macOS
+    // leg is left unseeded, so it resolves from the mock and the two cache
+    // roots differ in the tag alone.
+    let seeded_tag = "autobuild-1970-01-01-00-00";
+    let expected_composite = format!("{seeded_tag}+{STUB_MARTIN_RIEDL_BUILD_ID}");
 
     // Seed the override cache's `tool_metadata` domain with the exact values
     // the ffmpeg provider resolves to, so the warning check (using the sync
@@ -250,20 +256,9 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
         let cache =
             Cache::open(cache_root.path(), &[metadata_domain]).await.expect("open override cache");
         let user_cache = UserLevelCache::from_cache(cache);
-        user_cache
-            .store_bytes(
-                "tool_metadata",
-                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
-                b"autobuild-2025-07-15-12-00",
-            )
-            .await;
-        user_cache
-            .store_bytes(
-                "tool_metadata",
-                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
-                b"1759500000_N-127260-g7bc3576910",
-            )
-            .await;
+        let api_base = mock.github_api_base();
+        let releases_key = format!("{api_base}/repos/BtbN/FFmpeg-Builds/releases?per_page=10");
+        user_cache.store_bytes("tool_metadata", &releases_key, seeded_tag.as_bytes()).await;
         // Drop the handle before the warning check opens the same root
         // (flock contention otherwise fails the cache open).
     }
@@ -275,7 +270,7 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
     state.managed_tools.push(ToolRegistryEntry {
         tool_id: "ffmpeg".to_string(),
         version: String::new(),
-        canonical_version: "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910".to_string(),
+        canonical_version: expected_composite.clone(),
         content_map_hash: "blake3:abc".to_string(),
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
@@ -284,11 +279,57 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
     });
 
     // Without the fix, the warning check resolves from the default cache
-    // (None) → divergent canonical version → returns `true` (false positive).
-    // With the fix, it uses the override cache → matching version → `false`.
+    // (which holds no such tag) → divergent canonical version → returns `true`
+    // (false positive). With the fix, it uses the override cache → matching
+    // version → `false`.
     assert!(
         !service.logical_tool_requires_sync("ffmpeg", &state).await?,
         "warning check must resolve from the sync cache root and report no sync needed",
     );
+    Ok(())
+}
+
+/// A completed sync records exactly the canonical version the post-sync
+/// warning check computes, so a sync never reports a warning about itself.
+///
+/// This is the end-to-end form of `regression_warning_check_uses_sync_cache`:
+/// instead of seeding state by hand it syncs yt-dlp, whose same-step deno
+/// dependency makes its stored version a composite, and then asks the warning
+/// check about both tools. A warning check that compared the composite against
+/// the bare resolved version would report a mismatch here.
+///
+/// deno's recorded version is its own bare hash, because deno has no same-step
+/// deps, so this does not exercise the own-segment rule for a dependency that
+/// is itself composite. `inline_deps::sync_composite_non_transitive` covers
+/// that case.
+#[tokio::test]
+async fn sync_leaves_no_tool_requiring_sync() -> Result<(), mediapm::MediaPmError> {
+    let (_mock, _seams) = mock_all_managed_tools().await;
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert(
+        "yt-dlp".to_string(),
+        ToolRequirement {
+            dependencies: std::collections::BTreeMap::from([(
+                "deno".to_string(),
+                mediapm::ConfigVersionSpec::Latest,
+            )]),
+            ..Default::default()
+        },
+    );
+    // deno is declared as well as depended on, so the warning check has a
+    // requirement to resolve it against rather than skipping it as undeclared.
+    runtime.tools.insert("deno".to_string(), ToolRequirement::default());
+    let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
+
+    let state = read_state(&service);
+    for tool_id in ["yt-dlp", "deno"] {
+        assert!(
+            !service.logical_tool_requires_sync(tool_id, &state).await?,
+            "{tool_id} was just synced, so the warning check must agree it is current",
+        );
+    }
     Ok(())
 }
