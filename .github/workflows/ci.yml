@@ -135,10 +135,24 @@ jobs:
         run: cargo --locked test-pkg test-runner
 
       # Runs each completion-generating package's build script on Windows, which
-      # no other step does. Deliberately without `--all-targets`: the
-      # `mediapm-cas` test target does not compile on Windows (see
-      # `src/mediapm-cas/tests/int/contention.rs`), so including test targets
-      # would fail this step on a pre-existing defect rather than on a
-      # regression.
+      # no other step does.
       - name: Check the completion-generating packages
         run: cargo --locked check -p mediapm-cas -p mediapm-conductor -p mediapm
+
+      # Reaches the CAS integration test target on Windows. That target used to
+      # fail to compile because a test called `std::os::unix::fs::symlink`
+      # behind a runtime `ignore`, which skips a test only after the whole file
+      # has compiled; the gate is `cfg(unix)` now, so the exclusion is
+      # structural.
+      #
+      # Scoped rather than `--all-targets`, because one target still does not
+      # compile on Windows on a stable toolchain: `is_same_file` in
+      # `src/mediapm-cas/src/storage/blob_store/fs.rs` compares
+      # `volume_serial_number` and `file_index`, which are behind the unstable
+      # `windows_by_handle` feature, so the lib's own unit tests fail to build
+      # there. This step names the targets it can check rather than failing on a
+      # defect it does not cover. Features stay at `--all-features`, so the
+      # narrowing is targets only and the run covers the same modules every
+      # other gate does.
+      - name: Check the CAS integration test target
+        run: cargo --locked check -p mediapm-cas --all-features --lib --bins --examples --test mod

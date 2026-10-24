@@ -87,8 +87,13 @@ async fn file_system_cas_concurrent_clones_no_contention() {
 /// Opening `FileSystemCas` through a symlink to the same directory must
 /// still detect contention because `DirectoryLockGuard::lock` calls
 /// `std::fs::canonicalize()` to unify paths.
+///
+/// Unix only, because the fixture creates the link through `std::os::unix`.
+/// The gate is `cfg` rather than `ignore` on purpose: a runtime attribute skips
+/// the test after the file has compiled, and this file cannot compile for a
+/// target that has no `std::os::unix` to name.
+#[cfg(unix)]
 #[tokio::test]
-#[cfg_attr(target_os = "windows", ignore = "symlink support varies on Windows")]
 async fn file_system_cas_contention_with_canonical_symlink() {
     let dir = artifact_dir();
     let link = dir.path().join("link");
