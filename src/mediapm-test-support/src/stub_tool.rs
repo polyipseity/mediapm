@@ -74,8 +74,10 @@ pub fn stub_tool_path() -> PathBuf {
 ///
 /// Cargo's hashed file name replaces the binary name's hyphens with underscores
 /// and appends a build hash, so the prefix is derived rather than spelled out.
-/// Several copies can coexist after a change to this crate's manifest; the
-/// newest is returned first, because that is the one the current build wrote.
+/// Only the executable qualifies: [`is_hashed_executable_name`] rejects the
+/// sidecars Cargo writes beside it. Several copies can coexist after a change to
+/// this crate's manifest; the newest is returned first, because that is the one
+/// the current build wrote.
 fn hashed_candidates(directories: &[PathBuf], file_name: &str) -> Vec<PathBuf> {
     let stem = file_name.strip_suffix(std::env::consts::EXE_SUFFIX).unwrap_or(file_name);
     let prefix = format!("{}-", stem.replace('-', "_"));
@@ -89,7 +91,7 @@ fn hashed_candidates(directories: &[PathBuf], file_name: &str) -> Vec<PathBuf> {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if !name.starts_with(&prefix) || !name.ends_with(std::env::consts::EXE_SUFFIX) {
+            if !is_hashed_executable_name(name, &prefix) {
                 continue;
             }
             let path = entry.path();
@@ -105,6 +107,32 @@ fn hashed_candidates(directories: &[PathBuf], file_name: &str) -> Vec<PathBuf> {
     }
     found.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     found.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Reports whether `name` is Cargo's hashed executable for a target.
+///
+/// Cargo's hashed file name is the stem, a build hash, and the platform suffix,
+/// and nothing further. So the remainder after `prefix` must be a hash with no
+/// further extension. Testing the suffix alone cannot answer this: `EXE_SUFFIX`
+/// is the empty string on Unix, every string ends with the empty string, and the
+/// `.d` and `.rmeta` sidecars Cargo writes for every target would pass as the
+/// executable. Returning one of those is worse than finding nothing, because the
+/// caller receives a path that exists and cannot be executed instead of the
+/// panic that names the build command, so the failure moves from the build step
+/// to wherever the stub is spawned.
+///
+/// A rejected name is not an error: `deps/` holds sidecars beside every target,
+/// and skipping them is the purpose here. The emptiness check covers a prefix with
+/// nothing after it; the dot rule covers a sidecar such as
+/// `mediapm_stub_tool-.d`.
+fn is_hashed_executable_name(name: &str, prefix: &str) -> bool {
+    let Some(remainder) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(hash) = remainder.strip_suffix(std::env::consts::EXE_SUFFIX) else {
+        return false;
+    };
+    !hash.is_empty() && !hash.contains('.')
 }
 
 #[cfg(test)]
@@ -142,6 +170,88 @@ mod tests {
             name.starts_with("mediapm_stub_tool") || name.starts_with(STUB_TOOL_BIN_NAME),
             "the located path must be the stub, found {name}",
         );
+    }
+
+    /// Returns a hashed-artifact file name for the stub, platform suffix included.
+    ///
+    /// The hash is a placeholder. The locator matches the prefix and the shape of
+    /// the name, never a particular hash, so a spelled-out value places a file
+    /// exactly where the search looks.
+    ///
+    /// The prefix is derived from [`STUB_TOOL_BIN_NAME`] the way the locator
+    /// derives it, because a spelled-out `mediapm_stub_tool` would keep passing
+    /// against a prefix nothing builds after the `[[bin]]` target is renamed.
+    fn hashed_name(hash: &str) -> String {
+        fixture_name(&format!("{hash}{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    /// Returns a sidecar file name Cargo writes beside the hashed executable.
+    ///
+    /// A sidecar shares the executable's derived prefix and differs only in what
+    /// follows the build hash, so it takes the same derivation rather than a
+    /// second spelling of the target's name.
+    fn fixture_name(remainder: &str) -> String {
+        format!("{}-{remainder}", STUB_TOOL_BIN_NAME.replace('-', "_"))
+    }
+
+    /// Sets a fixture's modification time, which the locator ranks by.
+    ///
+    /// The assertion needs times it chose rather than times the filesystem
+    /// happened to assign: two writes in one test can land on the same clock
+    /// tick, and an ordering assertion would then hold for the wrong reason. The
+    /// file is opened for writing because setting a time is a mutation.
+    fn set_modified(path: &std::path::Path, modified: std::time::SystemTime) {
+        let file = std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open the fixture for a modification-time update");
+        file.set_modified(modified).expect("set the fixture's modification time");
+    }
+
+    /// The locator returns the executable alone, skipping Cargo's sidecars.
+    ///
+    /// `deps/` holds several files per hashed target under the executable's
+    /// prefix: a `.d` dep-info file, a `.rmeta` for a library or binary target,
+    /// the per-codegen-unit `.rcgu.o` objects that dominate a real
+    /// `target/debug/deps/`, and a `.pdb` on Windows. Testing `EXE_SUFFIX` alone
+    /// kept every one of them, because that suffix is the empty string on Unix and
+    /// every string ends with the empty string: a run whose stub had not been
+    /// built received a sidecar instead of the panic naming `cargo build-pkg
+    /// mediapm-test-support`. That is how a mutation in an earlier effort
+    /// appeared to reach nothing.
+    ///
+    /// The ordering assertion belongs beside the filtering one because both
+    /// concern the returned list: two copies coexist after a manifest change, and
+    /// the newer is the one the current build wrote.
+    #[test]
+    fn hashed_candidates_return_the_executable_and_not_cargo_sidecars() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let older = dir.path().join(hashed_name("0f1e2d3c4b5a6978"));
+        let newer = dir.path().join(hashed_name("8877665544332211"));
+        std::fs::write(&older, b"#!/bin/sh\nexit 0\n").expect("write the older executable");
+        std::fs::write(&newer, b"#!/bin/sh\nexit 0\n").expect("write the newer executable");
+        let now = std::time::SystemTime::now();
+        set_modified(&older, now - std::time::Duration::from_hours(1));
+        set_modified(&newer, now);
+
+        for sidecar in [
+            fixture_name("1111222233334444.d"),
+            fixture_name("5555666677778888.rmeta"),
+            fixture_name("9999aaaabbbbcccc.pdb"),
+            fixture_name("aaaabbbbccccdddd.7f3a1b2.rcgu.o"),
+        ] {
+            std::fs::write(dir.path().join(&sidecar), b"sidecar").expect("write the sidecar");
+        }
+        // A directory can carry the executable's whole name shape, so only
+        // `is_file` keeps it out. Handing one to a caller as a binary fails at
+        // the spawn, far from the build step that would have named the cause.
+        std::fs::create_dir(dir.path().join(hashed_name("ddddeeeeffff0000")))
+            .expect("create a same-name directory");
+
+        let stub_file_name = format!("{STUB_TOOL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+        let candidates = hashed_candidates(&[dir.path().to_path_buf()], &stub_file_name);
+
+        assert_eq!(candidates, vec![newer, older], "only the executables qualify, newest first");
     }
 
     /// `copy` writes the first input's bytes to the last argument.
