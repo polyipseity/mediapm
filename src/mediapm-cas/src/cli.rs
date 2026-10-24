@@ -1,8 +1,12 @@
 //! Command-line interface for `mediapm-cas`.
 //!
-//! This module owns argument parsing and command dispatch for the CAS CLI.
+//! This module owns argument parsing and command dispatch for the CAS CLI. The
+//! clap definition it parses with lives in `mediapm-cas-cli` and is re-exported
+//! below: a build script cannot depend on the package it builds, so a
+//! definition that lived here would be unreachable from this package's own
+//! build script.
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 use std::io::{self, Read, Write};
 
@@ -12,45 +16,7 @@ use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-/// Top-level `mediapm-cas` CLI arguments.
-#[derive(Debug, Parser)]
-#[command(author, version, about = "mediapm CAS CLI")]
-struct Cli {
-    /// Storage backend locator (e.g. "memory", "/path/to/store").
-    #[arg(long, default_value = "memory")]
-    storage: String,
-
-    /// Subcommand to execute.
-    #[command(subcommand)]
-    command: CasCommand,
-}
-
-/// CAS CLI subcommands.
-#[derive(Debug, Subcommand)]
-enum CasCommand {
-    /// Store data from stdin and print the hash.
-    Put,
-    /// Retrieve data by hash and write to stdout.
-    Get {
-        /// BLAKE3 hash of the object (hex).
-        hash: String,
-    },
-    /// Print metadata for an object.
-    Stat {
-        /// BLAKE3 hash of the object (hex).
-        hash: String,
-    },
-    /// Delete an object by hash.
-    Delete {
-        /// BLAKE3 hash of the object (hex).
-        hash: String,
-    },
-    /// Generate shell completions.
-    Completions {
-        /// Shell name (bash, elvish, fish, powershell, zsh).
-        shell: String,
-    },
-}
+pub use mediapm_cas_cli::{CasCommand, Cli};
 
 /// Run the CLI from environment arguments and exit.
 ///

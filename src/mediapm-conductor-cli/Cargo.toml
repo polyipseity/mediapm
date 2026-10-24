@@ -1,0 +1,22 @@
+[package]
+name = "mediapm-conductor-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+description = "Clap command definition for the mediapm-conductor binary"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The definition is the CLI's observable surface, so this crate declares the
+# clap features that surface needs rather than inheriting them from whatever
+# else happens to be in the build. Cargo unifies features across a build, and
+# another workspace member declares these, so a whole-workspace build supplies
+# them either way; a build script's dependency graph has no such member, and
+# without this line the generated completion script would quietly lose the
+# `help` subcommand.
+clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
+clap_complete.workspace = true

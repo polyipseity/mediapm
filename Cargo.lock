@@ -2126,6 +2126,7 @@ dependencies = [
  "clap_complete",
  "dashmap",
  "fs4",
+ "mediapm-cas-cli",
  "mediapm-utils",
  "multihash",
  "oxidelta",
@@ -2135,6 +2136,13 @@ dependencies = [
  "thiserror",
  "tokio",
  "zerocopy",
+]
+
+[[package]]
+name = "mediapm-cas-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
 ]
 
 [[package]]
@@ -2158,6 +2166,7 @@ dependencies = [
  "mediapm-conductor-builtin-export",
  "mediapm-conductor-builtin-fs",
  "mediapm-conductor-builtin-import",
+ "mediapm-conductor-cli",
  "mediapm-test-support",
  "mediapm-utils",
  "nickel-lang-core",
@@ -2229,6 +2238,14 @@ dependencies = [
  "reqwest",
  "tempfile",
  "url",
+]
+
+[[package]]
+name = "mediapm-conductor-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "clap_complete",
 ]
 
 [[package]]

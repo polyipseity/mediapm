@@ -1,4 +1,9 @@
 //! Command-line interface for `mediapm-conductor`.
+//!
+//! This module owns argument parsing and command dispatch. The clap definition
+//! it parses with lives in `mediapm-conductor-cli` and is re-exported below: a
+//! build script cannot depend on the package it builds, so a definition that
+//! lived here would be unreachable from this package's own build script.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -7,7 +12,7 @@ use std::sync::Arc;
 #[cfg(feature = "progress")]
 use mediapm_utils::progress::ProgressScreenApi;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 use mediapm_cas::{CasApi, CasMaintenanceApi, ConfiguredCas, FileSystemCas, Hash};
 use tokio::sync::OnceCell;
@@ -23,179 +28,14 @@ use crate::state::versions::decode_state_json;
 // CLI structure
 // ---------------------------------------------------------------------------
 
-#[derive(Parser)]
-#[command(name = "conductor", version, about = "mediapm-conductor workflow orchestrator")]
-struct Cli {
-    /// Override the conductor runtime directory.
-    #[arg(long, env = "MEDIAPM_CONDUCTOR_DIR")]
-    conductor_dir: Option<PathBuf>,
-    /// Override the CAS store directory.
-    #[arg(long, env = "MEDIAPM_CAS_STORE_DIR")]
-    cas_store_dir: Option<PathBuf>,
-    /// Override the schema export directory.
-    #[arg(long, env = "MEDIAPM_CONDUCTOR_SCHEMA_DIR")]
-    conductor_schema_dir: Option<PathBuf>,
-    /// Override the temporary directory.
-    #[arg(long, env = "MEDIAPM_CONDUCTOR_TMP_DIR")]
-    conductor_tmp_dir: Option<PathBuf>,
-    /// Override the tools materialization directory.
-    #[arg(long, env = "MEDIAPM_CONDUCTOR_TOOLS_DIR")]
-    conductor_tools_dir: Option<PathBuf>,
-
-    #[command(subcommand)]
-    command: CliCommand,
-}
-
-#[derive(Subcommand)]
-enum CliCommand {
-    /// Run a workflow by name.
-    Run {
-        /// Name of the workflow to execute.
-        workflow: String,
-        /// Re-execute every step even when its instance is cached.
-        ///
-        /// Explicit invalidation: instances are never invalidated by the
-        /// passage of time, so this flag (or changed step material) is the
-        /// way to force a fresh run.
-        #[arg(long)]
-        force_rerun: bool,
-    },
-    /// Inspect or manipulate orchestration state.
-    State(StateArgs),
-    /// Import tools or data.
-    Import(ImportArgs),
-    /// Remove tools or data.
-    Remove(RemoveArgs),
-    /// Inspect or run tools.
-    Tool(ToolArgs),
-    /// Passthrough to the CAS CLI.
-    Cas {
-        /// Arguments forwarded to the CAS binary.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Export schemas to a directory.
-    ExportSchemas {
-        /// Output directory for schema files.
-        #[arg(default_value = "schemas")]
-        output: PathBuf,
-    },
-    /// Run garbage collection on the CAS store.
-    Gc,
-    /// Generate shell completions.
-    Completions {
-        /// Target shell.
-        shell: Shell,
-    },
-}
-
-#[derive(clap::Args)]
-struct StateArgs {
-    #[command(subcommand)]
-    command: Option<StateCommand>,
-}
-
-#[derive(Subcommand)]
-enum StateCommand {
-    /// Compile and display the effective configuration.
-    Compile,
-    /// Export state to a JSON file.
-    Export {
-        /// Output file path.
-        path: PathBuf,
-    },
-    /// Import state from a JSON file.
-    Import {
-        /// Input file path.
-        path: PathBuf,
-    },
-    /// Show runtime diagnostics.
-    Show,
-
-    /// Mark a tool call instance as not to be reused.
-    ///
-    /// The cache probe answers "miss" for a marked instance, so the work behind
-    /// it runs again on the next sync. Nothing is deleted: the record, its
-    /// outputs, and the blobs they name stay until garbage collection finds them
-    /// unreachable, and re-running the work clears the marker by recording a
-    /// fresh instance. Undo with `state revalidate-tool-call`.
-    InvalidateToolCall {
-        /// Instance key to invalidate.
-        key: String,
-    },
-    /// Clear a tool call instance's invalidation marker.
-    ///
-    /// Undoes [`StateCommand::InvalidateToolCall`]: the recorded instance
-    /// becomes reusable again. A re-execution that landed on the same key has
-    /// already cleared the marker by rewriting the record, so this reports that
-    /// there was nothing to clear; one that landed on a new key leaves the old
-    /// record marked, and clearing it is still meaningful because that record
-    /// can still be projected by the materializer.
-    RevalidateToolCall {
-        /// Instance key to revalidate.
-        key: String,
-    },
-}
-
-#[derive(clap::Args)]
-struct ImportArgs {
-    #[command(subcommand)]
-    command: ImportCommand,
-}
-
-#[derive(Subcommand)]
-enum ImportCommand {
-    /// Import a tool (directory or file).
-    Tool {
-        /// Path to the tool directory or binary file.
-        path: Option<PathBuf>,
-        /// Tool name override.
-        #[arg(long)]
-        name: Option<String>,
-        /// Process name override.
-        #[arg(long)]
-        process_name: Option<String>,
-    },
-}
-
-#[derive(clap::Args)]
-struct RemoveArgs {
-    #[command(subcommand)]
-    command: RemoveCommand,
-}
-
-#[derive(Subcommand)]
-enum RemoveCommand {
-    /// Remove external data by hash.
-    Data { hash: String },
-    /// Remove a tool configuration.
-    Tool {
-        name: String,
-        #[arg(long)]
-        metadata: bool,
-    },
-}
-
-#[derive(clap::Args)]
-struct ToolArgs {
-    #[command(subcommand)]
-    command: ToolCommand,
-}
-
-#[derive(Subcommand)]
-enum ToolCommand {
-    /// Run a tool with passthrough arguments.
-    Run {
-        /// Tool name to run.
-        #[arg(long)]
-        tool: String,
-        /// Arguments forwarded to the tool.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// List configured tools with their binary presence status.
-    List,
-}
+// The clap definition lives in `mediapm-conductor-cli` and is re-exported
+// here. A build script cannot depend on the package it builds, so a
+// definition that lived in this crate would be unreachable from this
+// package's own build script.
+pub use mediapm_conductor_cli::{
+    Cli, CliCommand, ImportArgs, ImportCommand, RemoveArgs, RemoveCommand, StateArgs, StateCommand,
+    ToolArgs, ToolCommand,
+};
 
 /// Global conductor runtime initialized once per process.
 static CONDUCTOR: OnceCell<Conductor<ConfiguredCas>> = OnceCell::const_new();

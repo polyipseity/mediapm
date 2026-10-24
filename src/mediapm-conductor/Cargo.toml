@@ -12,6 +12,7 @@ default = ["cli"]
 progress = ["mediapm-utils/progress"]
 cli = [
   "dep:clap",
+  "dep:mediapm-conductor-cli",
   "dep:clap_complete",
   "mediapm-cas/cli",
   "mediapm-utils/report",
@@ -48,6 +49,7 @@ mediapm-conductor-builtin-fs = { path = "../mediapm-conductor-builtins/fs", defa
 mediapm-conductor-builtin-import = { path = "../mediapm-conductor-builtins/import", default-features = false }
 mediapm-conductor-builtin-archive = { path = "../mediapm-conductor-builtins/archive", default-features = false }
 mediapm-conductor-builtin-export = { path = "../mediapm-conductor-builtins/export", default-features = false }
+mediapm-conductor-cli = { path = "../mediapm-conductor-cli", optional = true }
 nickel-lang-core.workspace = true
 ractor.workspace = true
 regex.workspace = true
@@ -73,6 +75,7 @@ wiremock = "0.6"
 
 [build-dependencies]
 build-utils = { path = "../../scripts/build-utils" }
+mediapm-conductor-cli = { path = "../mediapm-conductor-cli" }
 
 [[bin]]
 name = "mediapm-conductor"
