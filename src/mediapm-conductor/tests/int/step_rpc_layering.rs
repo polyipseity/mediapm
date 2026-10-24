@@ -13,8 +13,8 @@
 //!
 //! # Prerequisite
 //!
-//! `the_control_plane_arms_keep_their_short_rpc_timeout_text` runs the stub tool
-//! from `mediapm-test-support`, which is a dev-dependency. `cargo test-pkg
+//! Every test in this module runs the stub tool from `mediapm-test-support`,
+//! which is a dev-dependency. `cargo test-pkg
 //! mediapm-conductor` selects that package alone and does not build a
 //! dev-dependency's binary target, so run `cargo build-pkg mediapm-test-support`
 //! once first — on a clean `target/` the test panics inside `stub_tool_path()`
@@ -27,39 +27,6 @@ use crate::{RpcEnvGuard, TestConductor, doc_with_workflows, rpc_env_lock, workfl
 use mediapm_conductor::api::RunWorkflowOptions;
 use mediapm_conductor::{ConductorError, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowStepSpec};
 use mediapm_test_support::stub_tool_path;
-
-/// Builds the one-step "sleep 3s" workflow used by this module's tests.
-///
-/// The step is a real `sh` process on unix; it outlasts the 1s RPC budgets
-/// these tests install, so the layer under test is the one that speaks.
-#[cfg(unix)]
-fn sleeping_workflow(tc: &TestConductor) {
-    let sleeper = ToolSpec {
-        version: None,
-        kind: ToolKindSpec::Executable {
-            command: vec!["sh".to_string(), "-c".to_string(), "sleep 3".to_string()],
-            env_vars: BTreeMap::new(),
-            success_codes: vec![0],
-        },
-        name: "sleeper".into(),
-        inputs: BTreeMap::new(),
-        default_inputs: BTreeMap::new(),
-        outputs: BTreeMap::new(),
-        runtime: ToolRuntime::default(),
-    };
-    let step = WorkflowStepSpec {
-        id: "s1".into(),
-        tool: "sleeper".into(),
-        inputs: BTreeMap::new(),
-        outputs: BTreeMap::new(),
-        max_retries: 0,
-        depends_on: Vec::new(),
-    };
-    tc.write_config(doc_with_workflows(
-        BTreeMap::from([("sleeper".to_string(), sleeper)]),
-        vec![workflow_with_steps("default", vec![step])],
-    ));
-}
 
 /// Asserts `result` failed with the RPC layer's own short timeout text.
 ///
@@ -92,9 +59,9 @@ fn assert_short_timeout_text(arm: &str, result: Result<(), ConductorError>) {
 ///
 /// The stub is a Rust binary this workspace ships, so the step is a real
 /// process on every platform and the sleep is long enough that the 1s budgets
-/// these tests install expire while it is still running. Its sleep mode is used
-/// here rather than the `sh -c sleep` process [`sleeping_workflow`] builds,
-/// which is unix-only.
+/// these tests install expire while it is still running. It is this module's
+/// only sleeper: every test here needs a step that outlasts a short budget, and
+/// none of them may depend on a shell being present.
 fn stub_sleeping_workflow(tc: &TestConductor, seconds: u64) {
     let sleeper = ToolSpec {
         version: None,
@@ -172,7 +139,6 @@ async fn the_control_plane_arms_keep_their_short_rpc_timeout_text() {
 /// pre-fix coordinator (per-dispatch `Some(1s)` cap) this 3-second step is
 /// killed by the RPC layer and the run reports an opaque step failure; with
 /// the cap removed the run succeeds and the step executes exactly once.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_step_longer_than_the_per_step_rpc_budget_still_completes() {
     let _lock = rpc_env_lock().await;
@@ -195,7 +161,7 @@ async fn a_step_longer_than_the_per_step_rpc_budget_still_completes() {
     // the summary assertions below fail (see rpc_env_lock docs).
     let _shrink = RpcEnvGuard::set_seconds("1");
 
-    sleeping_workflow(&tc);
+    stub_sleeping_workflow(&tc, 3);
 
     let summary = tc
         .conductor()
@@ -219,7 +185,6 @@ async fn a_step_longer_than_the_per_step_rpc_budget_still_completes() {
 /// policy layer fired. Before the fix this surfaced as the bare
 /// `RPC call to 'ConductorActor' failed: RPC timeout`, which is what turned
 /// the demo's legitimate long run into a misleading transport error.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_run_workflow_rpc_timeout_names_the_budget_and_the_knob() {
     let _lock = rpc_env_lock().await;
@@ -229,7 +194,7 @@ async fn a_run_workflow_rpc_timeout_names_the_budget_and_the_knob() {
     let _budget = RpcEnvGuard::set_seconds("1");
 
     let tc = TestConductor::new();
-    sleeping_workflow(&tc);
+    stub_sleeping_workflow(&tc, 3);
 
     let error = tc
         .conductor()

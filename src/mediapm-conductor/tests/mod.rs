@@ -217,10 +217,9 @@ impl TestConductor {
 /// which is not visible from this integration-test crate; the literal here
 /// must stay in sync with it.
 //
-// The `cfg(unix)` gate mirrors this module's only consumer
-// (`int::step_rpc_layering`, itself unix-gated); un-gated items would be
-// dead code on other platforms and trip the workspace `warnings = "deny"`.
-#[cfg(unix)]
+// `int::step_rpc_layering` is this module's only consumer and is compiled on
+// every platform, so these items must be too; a gate here would leave that
+// module with an unresolved import wherever the gate applied.
 pub(crate) async fn rpc_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     LOCK.lock().await
@@ -232,15 +231,12 @@ pub(crate) async fn rpc_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
 ///
 /// Hold [`rpc_env_lock`] for the guard's whole lifetime — `set_var` is not
 /// thread-safe and sibling tests construct nodes that capture this value.
-// The gate mirrors this module's only consumer; see [`rpc_env_lock`].
-#[cfg(unix)]
+// Compiled on every platform, like its only consumer; see [`rpc_env_lock`].
 pub(crate) struct RpcEnvGuard {
     /// Value the variable held before the guard mutated it, if any.
     previous: Option<String>,
 }
 
-// The gate mirrors this module's only consumer; see [`rpc_env_lock`].
-#[cfg(unix)]
 impl RpcEnvGuard {
     /// Removes the variable for the guard's lifetime (the lib falls back to
     /// its default budget while unset).
@@ -268,8 +264,6 @@ impl RpcEnvGuard {
     }
 }
 
-// The gate mirrors this module's only consumer; see [`rpc_env_lock`].
-#[cfg(unix)]
 impl Drop for RpcEnvGuard {
     fn drop(&mut self) {
         // SAFETY: caller holds rpc_env_lock for the guard's lifetime; see struct docs.

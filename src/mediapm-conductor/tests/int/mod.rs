@@ -6,9 +6,8 @@ mod external_data_and_validation;
 /// Bootstrap, validation, and state-shape focused checks.
 mod bootstrap;
 
-/// Per-step RPC layering — no transport timeout on `ExecuteStep` dispatch
-/// (unix-only: the test step is a real `sh` process).
-#[cfg(unix)]
+/// Per-step RPC layering — no transport timeout on `ExecuteStep` dispatch.
+/// The test step runs the `mediapm-test-support` stub, so no shell is needed.
 mod step_rpc_layering;
 
 /// A step whose input is a declared hash reads the declared bytes
