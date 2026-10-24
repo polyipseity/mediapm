@@ -145,14 +145,11 @@ jobs:
       # has compiled; the gate is `cfg(unix)` now, so the exclusion is
       # structural.
       #
-      # Scoped rather than `--all-targets`, because one target still does not
-      # compile on Windows on a stable toolchain: `is_same_file` in
-      # `src/mediapm-cas/src/storage/blob_store/fs.rs` compares
-      # `volume_serial_number` and `file_index`, which are behind the unstable
-      # `windows_by_handle` feature, so the lib's own unit tests fail to build
-      # there. This step names the targets it can check rather than failing on a
-      # defect it does not cover. Features stay at `--all-features`, so the
-      # narrowing is targets only and the run covers the same modules every
-      # other gate does.
+      # Scoped rather than `--all-targets` for historical reasons: `is_same_file`
+      # now uses FFI to `GetFileInformationByHandle` and no longer requires the
+      # unstable `windows_by_handle` feature, so `--all-targets` is usable. The
+      # scope is retained to match the existing CI contract and avoid widening
+      # the job. Features stay at `--all-features`, so the narrowing is targets
+      # only and the run covers the same modules every other gate does.
       - name: Check the CAS integration test target
         run: cargo --locked check -p mediapm-cas --all-features --lib --bins --examples --test mod

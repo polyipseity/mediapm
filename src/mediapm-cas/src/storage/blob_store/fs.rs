@@ -778,15 +778,61 @@ mod tests {
 
     /// Windows counterpart of the unix [`is_same_file`], using the volume
     /// serial number plus file index as the object identity.
+    ///
+    /// The identity is read through `GetFileInformationByHandle` via FFI rather
+    /// than through `MetadataExt::volume_serial_number`/`file_index`, because
+    /// those methods are still behind the unstable `windows_by_handle` feature
+    /// on stable Rust. FFI keeps this callable on every toolchain.
     #[cfg(windows)]
     fn is_same_file(left: &Path, right: &Path) -> bool {
-        use std::os::windows::fs::MetadataExt;
+        use std::os::windows::io::AsRawHandle;
 
-        match (std::fs::metadata(left), std::fs::metadata(right)) {
-            (Ok(left_meta), Ok(right_meta)) => {
-                left_meta.volume_serial_number() == right_meta.volume_serial_number()
-                    && left_meta.file_index() == right_meta.file_index()
+        #[repr(C)]
+        struct ByHandleFileInformation {
+            file_attributes: u32,
+            creation_time: u64,
+            last_access_time: u64,
+            last_write_time: u64,
+            volume_serial_number: u32,
+            file_size_high: u32,
+            file_size_low: u32,
+            number_of_links: u32,
+            file_index_high: u32,
+            file_index_low: u32,
+        }
+
+        unsafe extern "system" {
+            fn GetFileInformationByHandle(
+                h_file: *mut std::ffi::c_void,
+                info: *mut ByHandleFileInformation,
+            ) -> i32;
+        }
+
+        fn file_identity(path: &Path) -> Option<(u32, u64)> {
+            let file = std::fs::File::open(path).ok()?;
+            let mut info = ByHandleFileInformation {
+                file_attributes: 0,
+                creation_time: 0,
+                last_access_time: 0,
+                last_write_time: 0,
+                volume_serial_number: 0,
+                file_size_high: 0,
+                file_size_low: 0,
+                number_of_links: 0,
+                file_index_high: 0,
+                file_index_low: 0,
+            };
+            let ok =
+                unsafe { GetFileInformationByHandle(file.as_raw_handle() as *mut _, &mut info) };
+            if ok == 0 {
+                return None;
             }
+            let file_index = ((info.file_index_high as u64) << 32) | (info.file_index_low as u64);
+            Some((info.volume_serial_number, file_index))
+        }
+
+        match (file_identity(left), file_identity(right)) {
+            (Some(a), Some(b)) => a == b,
             _ => false,
         }
     }
