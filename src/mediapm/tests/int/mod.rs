@@ -46,6 +46,9 @@ mod capture_union;
 /// The binary and the extracted CLI definition describe the same commands.
 #[cfg(feature = "cli")]
 mod cli_surface;
+/// The completion scripts a build script writes agree with the CLIs they describe.
+#[cfg(feature = "cli")]
+mod completion_contract;
 /// Dual-write strategy: state.json always-writes, NCL files skip when unchanged.
 mod dual_write;
 /// Every CAS hash a generated step names must be declared as external data.

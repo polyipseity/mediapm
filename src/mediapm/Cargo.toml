@@ -93,7 +93,10 @@ build-utils = { path = "../../scripts/build-utils" }
 mediapm-cli = { path = "../mediapm-cli" }
 
 [dev-dependencies]
+build-utils = { path = "../../scripts/build-utils" }
 indicatif = { workspace = true, features = ["in_memory"] }
+mediapm-cas-cli = { path = "../mediapm-cas-cli" }
+mediapm-conductor-cli = { path = "../mediapm-conductor-cli" }
 mediapm-test-support = { path = "../mediapm-test-support", features = ["test-seams"] }
 proptest.workspace = true
 same-file.workspace = true

@@ -60,6 +60,36 @@ jobs:
           cargo --locked fmt-check
           cargo --locked build-all
 
+  # Release: the profile the shipped artifacts are built in.
+  #
+  # Why this is its own job rather than a step in `build`: the completion
+  # scripts are rendered by each package's build script, and rendering used to
+  # return early unless the profile was release. CI builds debug, so nothing in
+  # this workflow ran the generator, and a CLI whose binary entry point had been
+  # broken for three months still built and shipped here.
+  #
+  # Three packages, not the workspace: they are the ones whose build scripts
+  # render completions, and a release build of every crate would spend the job's
+  # budget on packages this gate does not cover.
+  #
+  # No skip flag is set, and that is the point. `MEDIAPM_SKIP_COMPLETION_BUILD`
+  # no longer exists; a job that skipped generation would guard nothing.
+  release:
+    name: "Release Build"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606
+
+      - name: Build the completion-generating packages in release
+        run: >-
+          cargo --locked build --release --package mediapm-cas --package mediapm-conductor
+          --package mediapm
+
   # Feature combinations: one `cargo check` per crate per combination.
   #
   # The combinations are derived from `cargo metadata` by the runner, not
