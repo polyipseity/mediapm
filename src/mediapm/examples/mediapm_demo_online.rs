@@ -59,8 +59,10 @@
 //! | Media folder root | mediapm `rename_files` → `.link.$1` | Canonical metadata title, no artist | `youtube.dQw4w9WgXcQ` |
 //!
 //! Sidecar links under `sidecars/links/` carry the LIVE yt-dlp provider title read from
-//! `sidecars/info.json` (`title` key), so post-sync asserts expect `{provider_title} [{video_id}].{ext}`
-//! instead of a hardcoded stand-in. That title embeds the artist, because upstream's does.
+//! `sidecars/info.json` (`title` key), so post-sync asserts never pin that text to a stand-in: they
+//! match the family — the raw video id and the extension — exactly and the title half by normalized
+//! prefix, because upstream appends to its own title. That title embeds the artist, because
+//! upstream's does.
 //!
 //! Media-root projections (subtitles, thumbnails, links) are named by mediapm's own templates, which
 //! single-source their stem from `${media.metadata.title}`. That resolves to the canonical
@@ -120,7 +122,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use mediapm::config::versions::{RuntimeBoundaryDeviations, runtime_boundary};
 use mediapm::demo_hierarchy_spec::{
     ONLINE_DEMO_YOUTUBE_URL, ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_valid_image_magic_bytes,
-    online_demo_public_artifact_filename,
 };
 use mediapm::{
     ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
@@ -189,6 +190,9 @@ const DEMO_LIBRARY_ROOT: &str = "music videos";
 const DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "${media.metadata.title} [${media.id}]";
 
 const DEMO_HIERARCHY_ROOT_TEMPLATE: &str = "music videos/${media.metadata.title} [${media.id}]";
+
+/// Link extensions yt-dlp writes for one video, in the order the post-sync checks name them.
+const DEMO_LINK_EXTENSIONS: [&str; 3] = ["url", "webloc", "desktop"];
 
 const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
     ("subtitles_sidecars", "subtitles", "sidecars/subtitles/"),
@@ -1848,7 +1852,7 @@ fn assert_sidecar_directory_family_content(
             .into());
         }
         "links" => {
-            assert_sidecar_links_directory_has_exact_public_filenames(
+            assert_sidecar_links_directory_matches_the_yt_dlp_family(
                 directory,
                 provider_title,
                 video_id,
@@ -1871,36 +1875,120 @@ fn assert_sidecar_directory_family_content(
     Ok(())
 }
 
-// yt-dlp-format basenames under `sidecars/links/` — see demo-hierarchy-golden.instructions.md.
-// The basename uses the LIVE yt-dlp provider title from the infojson sidecar, so it is
-// derived via `online_demo_public_artifact_filename` instead of a hardcoded stand-in.
-fn assert_sidecar_links_directory_has_exact_public_filenames(
+/// Asserts `sidecars/links/` holds exactly one yt-dlp link file per link extension.
+///
+/// The basename of each file is `<upstream title> [<raw video id>].<ext>`, because yt-dlp names
+/// these files from its own output template and mediapm never renames them — see
+/// `demo-hierarchy-golden.instructions.md`. The title half therefore belongs to **upstream**, not
+/// to the canonical `MusicBrainz` recording title that `expected_demo_media_root_name` asserts for
+/// the media root, and upstream appends to its own title over time. So the title half is matched by
+/// normalized prefix while the family — the raw video id and the extension — stays exact.
+///
+/// Those exact halves are what identify the file and what the materializer must leave alone: a
+/// root-projection basename renamed into mediapm's `… [<media.id>].link.<ext>` shape carries the
+/// `youtube.dQw4w9WgXcQ` media id instead of the raw `dQw4w9WgXcQ` video id, and fails here. A file
+/// outside the family, a second file for one extension, and a missing extension are materialization
+/// defects, reported rather than tolerated.
+///
+/// # Errors
+///
+/// Returns an error naming the offending file when a link's name does not belong to the family,
+/// when its title half names a different title, when one extension has two files, or when one of
+/// [`DEMO_LINK_EXTENSIONS`] has none. Returns an error when the directory cannot be read.
+fn assert_sidecar_links_directory_matches_the_yt_dlp_family(
     directory: &Path,
     provider_title: &str,
     video_id: &str,
 ) -> ExampleResult<()> {
-    for extension in ["url", "webloc", "desktop"] {
-        let expected_name =
-            online_demo_public_artifact_filename(provider_title, video_id, extension);
-        let path = directory.join(&expected_name);
-        if !path.is_file() {
-            let files = collect_regular_files_recursive(directory)?;
-            let observed: Vec<String> = files
-                .iter()
-                .filter_map(|entry| {
-                    entry.file_name().and_then(|value| value.to_str()).map(str::to_string)
-                })
-                .collect();
+    let mut observed = BTreeMap::new();
+    for entry in collect_regular_files_recursive(directory)? {
+        let name = entry.file_name().and_then(|value| value.to_str()).ok_or_else(|| {
+            format!("[links] sidecar link '{}' has a non-UTF-8 name", entry.display())
+        })?;
+        let (title, extension) = split_yt_dlp_sidecar_link_name(name, video_id).ok_or_else(|| {
+            format!(
+                "[links] sidecar link '{name}' is not a yt-dlp link for video id '{video_id}': expected '<title> [{video_id}].<ext>'"
+            )
+        })?;
+        if !title_matches_under_upstream_drift(title, provider_title) {
             return Err(format!(
-                "expected sidecar links directory '{}' to contain exact file '{}' but found: {observed:?}",
+                "[links] sidecar link '{name}' carries title '{title}', which is neither the provider title '{provider_title}' nor a longer form of it"
+            )
+            .into());
+        }
+        if let Some(previous) = observed.insert(extension.to_string(), name.to_string()) {
+            return Err(format!(
+                "[links] sidecar links directory '{}' holds two '.{extension}' links: '{previous}' and '{name}'",
+                directory.display()
+            )
+            .into());
+        }
+    }
+
+    for extension in DEMO_LINK_EXTENSIONS {
+        if !observed.contains_key(extension) {
+            return Err(format!(
+                "[links] sidecar links directory '{}' is missing a '.{extension}' link for video id '{video_id}'; observed: {:?}",
                 directory.display(),
-                expected_name
+                observed.values().collect::<Vec<_>>()
             )
             .into());
         }
     }
 
     Ok(())
+}
+
+/// Splits a yt-dlp link basename into its upstream-title and extension halves.
+///
+/// The shape is `<title> [<video id>].<ext>`, so the split is on the last ` [<video id>].` marker.
+/// Returns `None` for a name without that marker, for an empty title, or for an extension outside
+/// [`DEMO_LINK_EXTENSIONS`]. Both of those halves are what make a mediapm-renamed
+/// `… [<media.id>].link.<ext>` basename fail rather than pass.
+#[must_use]
+fn split_yt_dlp_sidecar_link_name<'a>(name: &'a str, video_id: &str) -> Option<(&'a str, &'a str)> {
+    let (title, extension) = name.rsplit_once(&format!(" [{video_id}]."))?;
+    let title = title.trim();
+    if title.is_empty() || !DEMO_LINK_EXTENSIONS.contains(&extension) {
+        return None;
+    }
+    Some((title, extension))
+}
+
+/// Reports whether a link file's title half still names the provider title.
+///
+/// Upstream owns that text and appends to it — the live run observed a trailing
+/// `(Official Video) (4K Remaster)` — so exact equality would fail a clean sync. The comparison is
+/// on a normalized form (trimmed, internal whitespace collapsed, ASCII-lowercased) and accepts
+/// either side being a prefix of the other, provided the longer side continues at a word boundary:
+/// a suffix has to start a new word, so `Never Gonna Give You Up (Official Video)` matches
+/// `Never Gonna Give You Up` while an unrelated `Never Gonna Give You Uppercut` does not.
+#[must_use]
+fn title_matches_under_upstream_drift(observed: &str, provider_title: &str) -> bool {
+    let observed = normalize_title_for_comparison(observed);
+    let provider_title = normalize_title_for_comparison(provider_title);
+    if observed == provider_title {
+        return true;
+    }
+    let (shorter, longer) = if observed.len() < provider_title.len() {
+        (observed.as_str(), provider_title.as_str())
+    } else {
+        (provider_title.as_str(), observed.as_str())
+    };
+    !shorter.is_empty()
+        && longer
+            .strip_prefix(shorter)
+            .is_some_and(|suffix| suffix.starts_with(|c: char| !c.is_alphanumeric()))
+}
+
+/// Folds a title into the form the upstream-drift comparison uses.
+///
+/// Whitespace runs collapse to one space and the text is ASCII-lowercased, so a title upstream
+/// re-spaced or re-cased still compares equal. Nothing else is rewritten, because the point is to
+/// tolerate upstream's edits without ignoring a different title.
+#[must_use]
+fn normalize_title_for_comparison(title: &str) -> String {
+    title.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1997,7 +2085,7 @@ fn assert_flat_media_root_sidecar_families(
 
     // mediapm root link projections — structural media-id suffix, title-free:
     // `… [{media_id}].link.{ext}` (exact tail match per extension).
-    for extension in ["url", "webloc", "desktop"] {
+    for extension in DEMO_LINK_EXTENSIONS {
         let expected_suffix = format!(" [{expected_media_id}].link.{extension}");
         let found = root_files.iter().any(|path| {
             path.file_name()
@@ -3460,6 +3548,8 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use mediapm::example_isolation::{self, IsolatedExampleRoots};
 
     use super::{CasApi, FileSystemCas};
@@ -4399,5 +4489,243 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// The provider title the recorded demo metadata pins, which upstream's own title extends.
+    const RECORDED_PROVIDER_TITLE: &str = "Rick Astley - Never Gonna Give You Up";
+
+    /// The link body the seeded fixtures carry; link *content* is asserted by its own helper.
+    const LINK_FILE_BODY: &[u8] =
+        b"[InternetShortcut]\nURL=https://www.youtube.com/watch?v=dQw4w9WgXcQ\n";
+
+    /// Writes each basename into a fresh `sidecars/links/` directory under `root`.
+    ///
+    /// `root` stays owned by the caller, so the seeded tree is removed when the test ends. Returns
+    /// the links directory the assertion under test expects.
+    fn seed_sidecar_links(root: &Path, names: &[&str]) -> PathBuf {
+        let links = root.join("sidecars").join("links");
+        std::fs::create_dir_all(&links).expect("create links directory");
+        for name in names {
+            std::fs::write(links.join(name), LINK_FILE_BODY).expect("write link file");
+        }
+        links
+    }
+
+    /// Ensures the exact provider title is still accepted.
+    ///
+    /// The tolerant comparison must not replace the exact one: a link named after the recorded
+    /// title has to pass, or the check would only prove that *some* file exists.
+    #[test]
+    fn sidecar_links_accept_the_recorded_provider_title() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let links = seed_sidecar_links(
+            temp.path(),
+            &[
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url",
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].webloc",
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].desktop",
+            ],
+        );
+
+        super::assert_sidecar_links_directory_matches_the_yt_dlp_family(
+            &links,
+            RECORDED_PROVIDER_TITLE,
+            super::ONLINE_DEMO_YT_DLP_VIDEO_ID,
+        )
+        .expect("the recorded provider title must be accepted");
+    }
+
+    /// Ensures a link named after a longer upstream title still passes.
+    ///
+    /// This is the drift the tolerant comparison exists for: upstream appended a suffix to its own
+    /// title, so the file on disk carries text the recorded metadata does not. Requiring an exact
+    /// string fails a clean sync here, and this test is what detects that regression.
+    #[test]
+    fn sidecar_links_accept_a_provider_title_upstream_extended() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let links = seed_sidecar_links(
+            temp.path(),
+            &[
+                "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) [dQw4w9WgXcQ].url",
+                "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) [dQw4w9WgXcQ].webloc",
+                "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) [dQw4w9WgXcQ].desktop",
+            ],
+        );
+
+        super::assert_sidecar_links_directory_matches_the_yt_dlp_family(
+            &links,
+            RECORDED_PROVIDER_TITLE,
+            super::ONLINE_DEMO_YT_DLP_VIDEO_ID,
+        )
+        .expect("a longer upstream title must be accepted");
+    }
+
+    /// Ensures a mediapm root projection inside `sidecars/links/` is rejected.
+    ///
+    /// The sidecar family is the one link family mediapm must not rename: its basename carries the
+    /// raw video id, while a root projection carries the `youtube.<id>` media id and a `.link.`
+    /// segment. Accepting the projection here would make the split between the two families
+    /// unasserted.
+    #[test]
+    fn sidecar_links_reject_a_mediapm_root_projection_basename() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let links = seed_sidecar_links(
+            temp.path(),
+            &[
+                "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url",
+                "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc",
+                "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop",
+            ],
+        );
+
+        let error = super::assert_sidecar_links_directory_matches_the_yt_dlp_family(
+            &links,
+            RECORDED_PROVIDER_TITLE,
+            super::ONLINE_DEMO_YT_DLP_VIDEO_ID,
+        )
+        .expect_err("a root-projection basename must be rejected");
+        assert!(error.to_string().contains("not a yt-dlp link"), "{error}");
+    }
+
+    /// Ensures a missing link extension is reported rather than passed over.
+    #[test]
+    fn sidecar_links_reject_a_missing_extension() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let links = seed_sidecar_links(
+            temp.path(),
+            &[
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url",
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].webloc",
+            ],
+        );
+
+        let error = super::assert_sidecar_links_directory_matches_the_yt_dlp_family(
+            &links,
+            RECORDED_PROVIDER_TITLE,
+            super::ONLINE_DEMO_YT_DLP_VIDEO_ID,
+        )
+        .expect_err("a missing extension must be reported");
+        assert!(error.to_string().contains("missing a '.desktop' link"), "{error}");
+    }
+
+    /// Ensures a link named after a different title is rejected.
+    ///
+    /// The prefix tolerance is bounded: a title that merely shares a prefix does not name the
+    /// provider title, and accepting it would leave the title half effectively unasserted.
+    #[test]
+    fn sidecar_links_reject_an_unrelated_title() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let links = seed_sidecar_links(
+            temp.path(),
+            &[
+                "Someone Else - A Different Song [dQw4w9WgXcQ].url",
+                "Someone Else - A Different Song [dQw4w9WgXcQ].webloc",
+                "Someone Else - A Different Song [dQw4w9WgXcQ].desktop",
+            ],
+        );
+
+        let error = super::assert_sidecar_links_directory_matches_the_yt_dlp_family(
+            &links,
+            RECORDED_PROVIDER_TITLE,
+            super::ONLINE_DEMO_YT_DLP_VIDEO_ID,
+        )
+        .expect_err("a link named after another title must be rejected");
+        assert!(error.to_string().contains("neither the provider title"), "{error}");
+    }
+
+    /// Ensures two links for one extension are reported.
+    #[test]
+    fn sidecar_links_reject_a_duplicate_extension() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let links = seed_sidecar_links(
+            temp.path(),
+            &[
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url",
+                "Rick Astley - Never Gonna Give You Up (Official Video) [dQw4w9WgXcQ].url",
+            ],
+        );
+
+        let error = super::assert_sidecar_links_directory_matches_the_yt_dlp_family(
+            &links,
+            RECORDED_PROVIDER_TITLE,
+            super::ONLINE_DEMO_YT_DLP_VIDEO_ID,
+        )
+        .expect_err("two links for one extension must be reported");
+        assert!(error.to_string().contains("holds two"), "{error}");
+    }
+
+    /// Pins the drift predicate's normalization and its word-boundary rule.
+    #[test]
+    fn title_drift_predicate_normalizes_and_requires_a_word_boundary() {
+        assert!(super::title_matches_under_upstream_drift(
+            "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
+            RECORDED_PROVIDER_TITLE
+        ));
+        assert!(super::title_matches_under_upstream_drift(
+            "rick astley -  never   gonna give you up",
+            RECORDED_PROVIDER_TITLE
+        ));
+        assert!(!super::title_matches_under_upstream_drift(
+            "Rick Astley - Never Gonna Give You Uppercut",
+            RECORDED_PROVIDER_TITLE
+        ));
+        assert!(!super::title_matches_under_upstream_drift(
+            "Someone Else - A Different Song",
+            RECORDED_PROVIDER_TITLE
+        ));
+    }
+
+    /// Ensures the family splitter reads the raw video id and rejects a name outside the family.
+    #[test]
+    fn sidecar_link_name_splits_on_the_raw_video_id() {
+        assert_eq!(
+            super::split_yt_dlp_sidecar_link_name(
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url",
+                super::ONLINE_DEMO_YT_DLP_VIDEO_ID
+            ),
+            Some(("Rick Astley - Never Gonna Give You Up", "url"))
+        );
+        assert_eq!(
+            super::split_yt_dlp_sidecar_link_name(
+                "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url",
+                super::ONLINE_DEMO_YT_DLP_VIDEO_ID
+            ),
+            None
+        );
+        assert_eq!(
+            super::split_yt_dlp_sidecar_link_name(
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].txt",
+                super::ONLINE_DEMO_YT_DLP_VIDEO_ID
+            ),
+            None,
+            "an extension outside DEMO_LINK_EXTENSIONS is not a link, however well the id matches"
+        );
+    }
+
+    /// Ensures a file outside the link family in `sidecars/links/` is rejected.
+    ///
+    /// The three link extensions are the directory's whole contract: yt-dlp writes only those, so a
+    /// `.txt` beside them came from something else. A check that ignored it would pass any stray
+    /// file as long as the three links were present.
+    #[test]
+    fn sidecar_links_reject_a_file_outside_the_link_family() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let links = seed_sidecar_links(
+            temp.path(),
+            &[
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url",
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].webloc",
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].desktop",
+                "Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].txt",
+            ],
+        );
+
+        let error = super::assert_sidecar_links_directory_matches_the_yt_dlp_family(
+            &links,
+            RECORDED_PROVIDER_TITLE,
+            super::ONLINE_DEMO_YT_DLP_VIDEO_ID,
+        )
+        .expect_err("a file outside the link family must be rejected");
+        assert!(error.to_string().contains("not a yt-dlp link"), "{error}");
     }
 }

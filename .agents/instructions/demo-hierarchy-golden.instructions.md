@@ -1,5 +1,5 @@
 ---
-description: "Use when editing demo hierarchy golden fixtures, demo_hierarchy_spec helpers, mediapm_demo_online post-sync content assertions, or online hierarchy e2e seeds. Documents the two online link filename formats (yt-dlp sidecar vs mediapm root projection), the canonical-title naming family and its title provenance, the per-artifact tag split, and the content verification strategy (exact bytes in e2e, resilient structural checks in live demo)."
+description: "Use when editing demo hierarchy golden fixtures, demo_hierarchy_spec helpers, mediapm_demo_online post-sync content assertions, or online hierarchy e2e seeds. Documents the two online link filename formats (yt-dlp sidecar vs mediapm root projection), the canonical-title naming family and its title provenance, which basenames are exact and which match the sidecar title by normalized prefix, the per-artifact tag split, and the content verification strategy (exact bytes in e2e, resilient structural checks in live demo)."
 name: "Demo Hierarchy Golden and Content Verification Contract"
 applyTo: "src/mediapm/src/demo_hierarchy_spec.rs,src/mediapm/tests/fixtures/demo_hierarchy_golden.json,src/mediapm/tests/int/demo_hierarchy_golden.rs,src/mediapm/tests/int/online_sync_post_sync_dump.rs,src/mediapm/tests/e2e/demo_online_hierarchy_materialization.rs,src/mediapm/examples/mediapm_demo_online.rs,src/mediapm/examples/support/materialization.rs"
 ---
@@ -23,22 +23,24 @@ Every name mediapm renders — the media root folder, the video leaves, the root
 
 A run that never reached the tagging steps resolves the upstream title instead and materializes an artist-prefixed tree. That run is a failed run: `assert_metadata_files_present` pins the media root against the canonical basename (`expected_demo_media_root_name`) and rejects any artist in it, and the tagging step's absence fails the workflow rather than downgrading the assertion.
 
-## Assertions (exact filenames)
+## Assertions (which basenames are exact)
 
-Hermetic e2e and live `mediapm_demo_online` post-sync checks must use **exact** basenames from `demo_hierarchy_spec` helpers:
+Hermetic e2e and golden assertions must use **exact** basenames from `demo_hierarchy_spec` helpers, because the mock controls the title:
 
 - Sidecar: `online_demo_sidecar_link_filename(ext)` → yt-dlp format
 - Root: `online_demo_root_link_filename(ext)` → mediapm projection format
+
+The live `mediapm_demo_online` post-sync check cannot pin the sidecar title, because that text is upstream's and upstream appends to it. It asserts the family exactly — the raw video id and the extension — and matches the title half by normalized prefix (`assert_sidecar_links_directory_matches_the_yt_dlp_family`). Its root-link check asserts the `[{media_id}].link.{ext}` suffix and leaves the title text unasserted, for the same reason. Only the media root basename is pinned exactly, by `expected_demo_media_root_name`, because its title is the canonical one.
 
 All three extensions (`url`, `webloc`, `desktop`) are required in both locations. Do not replace explicit golden `required_files` with `*.link.*` globs.
 
 ## Reinforcement rules
 
 1. Do not conflate the two formats — sidecar bracket id is raw `dQw4w9WgXcQ` and its title is the upstream provider title; root projection bracket id is `youtube.dQw4w9WgXcQ` with `.link.` before the extension and its title is the canonical one.
-2. Do not use suffix-only link asserts in the live demo when exact helper filenames apply.
+2. Keep the live sidecar check on the family: the raw video id and the extension are exact, and the title half is matched by normalized prefix. Do not reduce it to a `*.link.*` glob or a suffix-only assert — the family is what tells a yt-dlp sidecar link apart from a root projection renamed into `sidecars/links/`.
 3. Do not add materializer logic to rename sidecar link basenames into root projection shape.
 4. Assert each artifact's tags separately: the untagged file carries upstream's own tags, the tagged file carries the canonical ones. A tag assertion that applies to both artifacts is wrong for one of them.
-5. When extending link coverage: update helpers in `demo_hierarchy_spec.rs`, golden JSON, `golden_fixture_link_paths_match_helpers`, then live exact asserts.
+5. When extending link coverage: update helpers in `demo_hierarchy_spec.rs`, golden JSON, `golden_fixture_link_paths_match_helpers`, then the live check — exact helper basenames in the hermetic tests, family-exact plus normalized-prefix title in the live demo.
 6. Do not modify hermetic golden fixtures (`tests/fixtures/demo_hierarchy_golden.json`, `demo_hierarchy_spec.rs`) casually — they are the offline contract for the materialized tree; update fixtures and the helper-linkage test in the same commit as a materialization change.
 
 ## Content verification assertions
