@@ -3462,6 +3462,8 @@ async fn main() -> ExampleResult<()> {
 mod tests {
     use mediapm::example_isolation::{self, IsolatedExampleRoots};
 
+    use super::{CasApi, FileSystemCas};
+
     /// Stands in for the live yt-dlp provider title, which the run reads from `sidecars/info.json`.
     ///
     /// It is the shape upstream writes, artist embedded and all, which is what the untagged
@@ -4356,5 +4358,46 @@ mod tests {
             assert_eq!(provenance.resolved_version.as_deref(), Some("2026.02.02"));
             assert_eq!(provenance.resolved_vcs_hash.as_deref(), Some("newer-vcs"));
         }
+    }
+
+    /// Pins the demo manifest's store-size walk against a store this test seeds.
+    ///
+    /// The walk sums each blob object's own length under `<cas_root>/blobs/v1/`,
+    /// so it reports zero when the root is wrong — which is what the
+    /// pre-versioned `v1/` path did before the walk was corrected — and it
+    /// reports one object's length rather than the total when the accumulation
+    /// is dropped. Neither failure is visible to a Level-3 run, whose manifest
+    /// records only the resulting number.
+    ///
+    /// The payloads are committed small and then materialized explicitly,
+    /// because a payload under `WAL_INLINE_LIMIT` stays WAL-only until the
+    /// consumer runs: the walk reads the blob store, so an unmaterialized store
+    /// is invisible to it however many bytes it holds. Materializing each hash
+    /// is also what a sync does before it links an object, so the store this
+    /// test measures is the shape the demo measures.
+    #[tokio::test]
+    async fn store_size_sums_every_materialized_blob() -> super::ExampleResult<()> {
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let cas_root = temp.path().join("store");
+        let cas = FileSystemCas::open(&cas_root).await?;
+
+        // Two payloads of different lengths, so the expected total differs from
+        // either one and a walk that returned a single object's length fails.
+        let payloads: [&[u8]; 2] =
+            [b"first blob payload", b"a second, deliberately longer blob payload"];
+        let mut expected = 0u64;
+        for payload in payloads {
+            let hash = cas.put(payload.to_vec().into()).await?;
+            cas.ensure_blob_materialized(hash).await?;
+            expected += payload.len() as u64;
+        }
+
+        assert_eq!(
+            super::summarize_store_size(&cas, &cas_root).await?,
+            expected,
+            "the walk must sum every materialized blob, not one of them and not zero"
+        );
+
+        Ok(())
     }
 }
