@@ -684,6 +684,78 @@ mod tests {
         );
     }
 
+    /// Builds a media-tagger step with the given `output_container` option.
+    fn media_tagger_step(output_container: Option<&str>) -> MediaStep {
+        MediaStep {
+            tool: MediaStepTool::MediaTagger,
+            input_variants: vec![],
+            output_variants: BTreeMap::new(),
+            options: output_container
+                .map(|value| {
+                    BTreeMap::from([(
+                        "output_container".to_string(),
+                        TransformInputValue::String(value.to_string()),
+                    )])
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The apply step's fixed merge bindings and the file it writes.
+    ///
+    /// The user-level guarantee: an apply step merges the metadata document
+    /// into a copy of the source instead of re-encoding it. `map_metadata=1`
+    /// names the metadata document as the merge source, `codec_copy=true`
+    /// keeps the streams untouched, and `vn=false` keeps the video stream —
+    /// the three values that decide whether a tagged file still holds its
+    /// media. The output path is the slot-0 file the step's own capture
+    /// matches, so a tool that wrote anywhere else would produce no output.
+    #[test]
+    fn build_media_tagger_apply_inputs_fixes_the_merge_bindings() {
+        let step = media_tagger_step(None);
+        let metadata_step_id = "step-0-0-media-tagger-default-to-tagged-metadata";
+        let source_binding = "${external_data.blake3:abc}";
+        let inputs = build_media_tagger_apply_inputs(&step, source_binding, metadata_step_id);
+
+        assert_eq!(inputs.get("map_metadata").map(String::as_str), Some("1"));
+        assert_eq!(inputs.get("codec_copy").map(String::as_str), Some("true"));
+        assert_eq!(inputs.get("vn").map(String::as_str), Some("false"));
+        assert_eq!(inputs.get(INPUT_LEADING_ARGS).map(String::as_str), Some("[]"));
+        assert_eq!(inputs.get(INPUT_TRAILING_ARGS).map(String::as_str), Some("[]"));
+        assert_eq!(
+            inputs.get(INPUT_FFMETADATA_CONTENT).map(String::as_str),
+            Some(format!("${{step_output.{metadata_step_id}.content}}").as_str()),
+            "the metadata document is the step's second input, so the merge source is the step that wrote it",
+        );
+        assert_eq!(
+            inputs.get(&ffmpeg_input_content_name(0)).map(String::as_str),
+            Some(source_binding),
+            "the source keeps the binding its producer resolved",
+        );
+        assert_eq!(
+            inputs.get(&ffmpeg_output_path_input_name(0)).map(String::as_str),
+            Some(ffmpeg_output_file_path(0).as_str()),
+            "the output path is the slot-0 file the apply capture matches",
+        );
+        assert!(
+            !inputs.contains_key("container"),
+            "a step that names no output_container must not constrain the muxer",
+        );
+    }
+
+    /// A step's `output_container` option reaches the apply step's command.
+    ///
+    /// The user-level guarantee: asking for a container is enough to get it.
+    /// The option is the only way a media-tagger step can override the muxer,
+    /// and dropping it would silently write the tool's own default instead.
+    #[test]
+    fn build_media_tagger_apply_inputs_forwards_a_container_override() {
+        let step = media_tagger_step(Some("mp4"));
+        let inputs = build_media_tagger_apply_inputs(&step, "input", "meta");
+
+        assert_eq!(inputs.get("container").map(String::as_str), Some("mp4"));
+    }
+
     /// The names of the ten media-tagger options that the CLI accepts as
     /// value-style booleans (`--flag true` / `--flag false`) rather than
     /// presence flags.

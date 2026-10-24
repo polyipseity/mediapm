@@ -7,6 +7,15 @@ license-file.workspace = true
 publish.workspace = true
 description = "Dev-only mock upstream and synthetic tool payloads for mediapm hermetic tests"
 
+# A stand-in managed-tool executable for hermetic tests: it lets a test run a
+# step whose tool is a downloaded binary, and it replaces the shell-based
+# stand-ins whose platform dependency this crate exists to remove. Located by
+# path through `stub_tool::stub_tool_path`, because `CARGO_BIN_EXE_*` names the
+# current package's binaries only.
+[[bin]]
+name = "mediapm-stub-tool"
+path = "src/bin/mediapm-stub-tool.rs"
+
 [features]
 # On by default so this crate's own tests need no flags. A consumer that turns
 # it off gets the loud refusal in `seams::enforce_seam_feature` instead of a

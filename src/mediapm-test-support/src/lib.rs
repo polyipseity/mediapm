@@ -14,6 +14,14 @@
 //! never become a normal dependency of anything, which is also what keeps
 //! `wiremock` out of a shipped binary.
 //!
+//! # Running a tool
+//!
+//! [`stub_tool_path`] resolves the `mediapm-stub-tool` binary this crate ships,
+//! which stands in for a managed tool a test cannot download. It is located by
+//! path rather than through `CARGO_BIN_EXE_*`, which names the current package's
+//! binaries alone, and it panics when absent rather than letting an execution
+//! assertion pass vacuously.
+//!
 //! # Seams
 //!
 //! The provider layer reads its four base URLs from the environment only when
@@ -61,6 +69,7 @@
 pub mod mock_upstream;
 pub mod seams;
 pub mod stub_payload;
+pub mod stub_tool;
 
 pub use mock_upstream::MockUpstream;
 pub use seams::{
@@ -70,3 +79,4 @@ pub use seams::{
 pub use stub_payload::{
     PayloadFormat, StubAsset, StubEntry, StubPayload, StubPayloadBuilder, host_arch, host_os,
 };
+pub use stub_tool::{STUB_TOOL_BIN_NAME, stub_tool_path};
