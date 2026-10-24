@@ -1015,6 +1015,23 @@ mod tests {
         assert!(result.is_ok(), "cas passthrough help should succeed: {result:?}");
     }
 
+    /// Protects `mediapm cas stat --help` passthrough by requiring that help
+    /// rendering succeeds and targets the `stat` subcommand rather than the
+    /// root command. Before the fix, the help fast-path matched `--help`
+    /// anywhere in the args and printed root help; now clap parses the
+    /// subcommand first and renders its help.
+    #[tokio::test]
+    async fn passthrough_cas_subcommand_help_prints_subcommand_help() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
+        let default_store = temp.path().join("store");
+
+        let result =
+            super::passthrough_cas(&["stat".to_string(), "--help".to_string()], &default_store)
+                .await;
+
+        assert!(result.is_ok(), "cas passthrough subcommand help should succeed: {result:?}");
+    }
+
     /// Protects `mediapm tool run <tool> ...` passthrough routing by requiring
     /// that conductor subcommand help is reachable through the injected
     /// runtime-path wrapper.

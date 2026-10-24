@@ -40,23 +40,27 @@ pub async fn run_from_env() -> anyhow::Result<()> {
 ///
 /// Returns anyhow errors from argument parsing and CAS operations.
 pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
-    if passthrough_requests_help_or_version(args) {
-        let mut cmd = Cli::command();
-        cmd.print_help()?;
-        return Ok(());
-    }
     let name = Cli::command().get_name().to_owned();
     let with_program_name = std::iter::once(name.as_str()).chain(args.iter().map(String::as_str));
-    let cli = Cli::try_parse_from(with_program_name)?;
+    let cli = match Cli::try_parse_from(with_program_name) {
+        Ok(cli) => cli,
+        Err(err)
+            if err.kind() == clap::error::ErrorKind::DisplayHelp
+                || err.kind() == clap::error::ErrorKind::DisplayVersion =>
+        {
+            // clap returns help and version as errors instead of printing them,
+            // so a caller that returned here without rendering would report
+            // success while showing the user nothing. Rendering here also keeps
+            // subcommand help (`cas stat --help`) correct: clap builds the help
+            // for the command it actually parsed, not the root.
+            err.print().map_err(|error| anyhow::anyhow!("printing CLI help failed: {error}"))?;
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(anyhow::anyhow!("CLI parse error: {err}"));
+        }
+    };
     run(cli).await
-}
-
-/// Returns true when passthrough argv explicitly requests help/version text.
-fn passthrough_requests_help_or_version(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        matches!(arg.as_str(), "-h" | "--help" | "-V" | "--version")
-            || arg.split_once('=').is_some_and(|(flag, _)| matches!(flag, "--help" | "--version"))
-    })
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
