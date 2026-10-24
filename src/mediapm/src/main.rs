@@ -678,33 +678,48 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
 }
 
 /// Executes CAS CLI passthrough in-process.
-async fn passthrough_cas(args: &[String], default_root: &std::path::Path) -> anyhow::Result<()> {
-    let injected = inject_cas_passthrough_defaults(args, default_root);
+///
+/// The CAS entry point supplies the program name clap reads from position zero,
+/// so the vector built here carries the caller's arguments plus the injected
+/// store locator only.
+async fn passthrough_cas(args: &[String], default_store: &std::path::Path) -> anyhow::Result<()> {
+    let injected = inject_cas_passthrough_defaults(args, default_store);
     mediapm_cas::cli::run_from_passthrough_args(&injected).await
 }
 
 /// Executes conductor CLI passthrough in-process.
+///
+/// The conductor entry point supplies the program name clap reads from position
+/// zero, so the vector built here carries the caller's arguments plus the
+/// injected runtime paths only. Prepending a name would give the vector two.
 async fn passthrough_conductor(
     args: &[String],
     effective_paths: &MediaPmPaths,
 ) -> anyhow::Result<()> {
     let injected = inject_conductor_passthrough_defaults(args, effective_paths);
-    let mut passthrough = vec!["mediapm-conductor"];
-    passthrough.extend(injected.iter().map(String::as_str));
+    let passthrough: Vec<&str> = injected.iter().map(String::as_str).collect();
     mediapm_conductor::cli::run_from_args(&passthrough).await.map_err(Into::into)
 }
 
-/// Injects default CAS root when the caller did not provide one explicitly.
+/// Injects a default CAS store locator when the caller did not provide one.
+///
+/// The injected flag is the one the CAS CLI declares, `--storage`, and its value
+/// is a storage locator, which a directory path is. The name here has to match
+/// the definition rather than describe the value: a flag the CLI does not
+/// declare makes the whole vector fail to parse.
 #[must_use]
-fn inject_cas_passthrough_defaults(args: &[String], default_root: &std::path::Path) -> Vec<String> {
+fn inject_cas_passthrough_defaults(
+    args: &[String],
+    default_store: &std::path::Path,
+) -> Vec<String> {
     if passthrough_requests_help_or_version(args) {
         return args.to_vec();
     }
 
     let mut injected = Vec::new();
-    if !passthrough_option_present(args, &["--root"]) {
-        injected.push("--root".to_string());
-        injected.push(default_root.to_string_lossy().to_string());
+    if !passthrough_option_present(args, &["--storage"]) {
+        injected.push("--storage".to_string());
+        injected.push(default_store.to_string_lossy().to_string());
     }
     injected.extend(args.iter().cloned());
     injected
@@ -913,41 +928,63 @@ mod tests {
 
     /// Protects parent-owned mediapm defaults for direct `cas` passthrough.
     #[test]
-    fn inject_cas_passthrough_defaults_adds_root_when_missing() {
+    fn inject_cas_passthrough_defaults_adds_storage_when_missing() {
         let injected = inject_cas_passthrough_defaults(
-            &["optimize".to_string()],
+            &["stat".to_string()],
             PathBuf::from(".mediapm/store").as_path(),
         );
 
-        assert_eq!(injected[0], "--root");
+        assert_eq!(injected[0], "--storage");
         assert_eq!(injected[1], ".mediapm/store");
-        assert_eq!(injected[2], "optimize");
+        assert_eq!(injected[2], "stat");
     }
 
-    /// Protects explicit passthrough overrides so user-supplied CAS roots win.
+    /// Protects explicit passthrough overrides so user-supplied CAS stores win.
     #[test]
-    fn inject_cas_passthrough_defaults_respects_explicit_root() {
+    fn inject_cas_passthrough_defaults_respects_explicit_storage() {
         let injected = inject_cas_passthrough_defaults(
-            &["--root".to_string(), "custom-store".to_string(), "optimize".to_string()],
+            &["--storage".to_string(), "custom-store".to_string(), "stat".to_string()],
             PathBuf::from(".mediapm/store").as_path(),
         );
 
         assert_eq!(
             injected,
-            vec!["--root".to_string(), "custom-store".to_string(), "optimize".to_string(),]
+            vec!["--storage".to_string(), "custom-store".to_string(), "stat".to_string(),]
         );
     }
 
-    /// Protects direct help passthrough by avoiding default-root injection
+    /// Protects direct help passthrough by avoiding default-store injection
     /// when CAS help/version output is requested.
     #[test]
-    fn inject_cas_passthrough_defaults_skips_root_for_help_routes() {
+    fn inject_cas_passthrough_defaults_skips_storage_for_help_routes() {
         let injected = inject_cas_passthrough_defaults(
             &["--help".to_string()],
             PathBuf::from("store").as_path(),
         );
 
         assert_eq!(injected, vec!["--help".to_string()]);
+    }
+
+    /// The flag and subcommand the injection tests use are declared by the CAS
+    /// CLI.
+    ///
+    /// Those tests assert the injected vector's shape without parsing it, so a
+    /// flag or subcommand the CLI does not declare leaves them green while every
+    /// real invocation fails. This is the check that the `--root` injection and
+    /// the `optimize` subcommand beside it would have failed.
+    #[test]
+    fn cas_passthrough_test_inputs_are_declared_by_the_cas_cli() {
+        let command = mediapm_cas_cli::command();
+        let declared: Vec<&str> = command.get_subcommands().map(clap::Command::get_name).collect();
+        assert!(
+            declared.contains(&"stat"),
+            "the CAS CLI must declare the subcommand these tests pass through; declared: \
+             {declared:?}"
+        );
+        assert!(
+            command.get_arguments().any(|argument| argument.get_long() == Some("storage")),
+            "the CAS CLI must declare the `--storage` flag the injection supplies"
+        );
     }
 
     /// Protects parent-owned mediapm defaults for `mediapm conductor ...`
@@ -971,9 +1008,9 @@ mod tests {
     #[tokio::test]
     async fn passthrough_cas_help_is_routable() {
         let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
-        let default_root = temp.path().join("store");
+        let default_store = temp.path().join("store");
 
-        let result = super::passthrough_cas(&["--help".to_string()], &default_root).await;
+        let result = super::passthrough_cas(&["--help".to_string()], &default_store).await;
 
         assert!(result.is_ok(), "cas passthrough help should succeed: {result:?}");
     }

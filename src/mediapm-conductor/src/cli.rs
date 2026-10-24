@@ -69,7 +69,13 @@ pub async fn run_from_env() -> Result<(), ConductorError> {
     run(cli).await
 }
 
-/// Runs the CLI from explicit args (for testing).
+/// Runs the CLI from explicit args.
+///
+/// The vector carries the caller's arguments only. The program name clap reads
+/// from position zero is supplied here from the command definition, so a caller
+/// cannot omit it: a vector without one has its first real argument read as the
+/// program name and its second as the subcommand, which routes nothing while
+/// still looking like a successful parse.
 ///
 /// # Errors
 ///
@@ -78,14 +84,20 @@ pub async fn run_from_env() -> Result<(), ConductorError> {
 /// Help and version requests are handled by printing to stdout and returning
 /// `Ok(())` (they are not treated as errors).
 pub async fn run_from_args(args: &[&str]) -> Result<(), ConductorError> {
-    let cli = match Cli::try_parse_from(args.iter()) {
+    let name = Cli::command().get_name().to_owned();
+    let with_program_name = std::iter::once(name.as_str()).chain(args.iter().copied());
+    let cli = match Cli::try_parse_from(with_program_name) {
         Ok(cli) => cli,
         Err(err)
             if err.kind() == clap::error::ErrorKind::DisplayHelp
                 || err.kind() == clap::error::ErrorKind::DisplayVersion =>
         {
-            // Help/version is printed by clap internally; return Ok so
-            // passthrough callers don't treat it as a routing failure.
+            // clap returns help and version as errors instead of printing them,
+            // so a caller that returned here without rendering would report
+            // success while showing the user nothing.
+            err.print().map_err(|error| {
+                ConductorError::Internal(format!("printing CLI help failed: {error}"))
+            })?;
             return Ok(());
         }
         Err(err) => {
