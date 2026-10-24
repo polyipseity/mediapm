@@ -378,6 +378,11 @@ dependencies = [
 [[package]]
 name = "build-utils"
 version = "0.0.0"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "mediapm-utils",
+]
 
 [[package]]
 name = "bumpalo"

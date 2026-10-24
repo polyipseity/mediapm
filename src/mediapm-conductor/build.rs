@@ -4,7 +4,8 @@
 include!("http_decoupling_check.rs");
 
 fn main() {
-    build_utils::generate_completions("mediapm-conductor", &["src/cli.rs"]);
+    let mut command = mediapm_conductor_cli::command();
+    build_utils::generate_completions(&mut command, "mediapm-conductor");
 
     // ---------------------------------------------------------------
     // Regression check: enforce HTTP module decoupling invariant.

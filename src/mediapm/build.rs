@@ -16,7 +16,8 @@ fn main() {
     // Rebuild when HEAD changes.
     println!("cargo:rerun-if-changed=.git/HEAD");
 
-    build_utils::generate_completions("mediapm", &[]);
+    let mut command = mediapm_cli::command();
+    build_utils::generate_completions(&mut command, "mediapm");
 
     // ---------------------------------------------------------------
     // Regression check: enforce HTTP client configuration consistency.

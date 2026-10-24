@@ -8,3 +8,10 @@ description = "Shared build-script utilities for the mediapm workspace"
 
 [lints]
 workspace = true
+
+[dependencies]
+clap.workspace = true
+clap_complete.workspace = true
+
+[dev-dependencies]
+mediapm-utils = { path = "../../src/mediapm-utils" }
