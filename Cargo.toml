@@ -7,6 +7,7 @@ members = [
 	"src/mediapm",
 	"src/mediapm-cas",
 	"src/mediapm-cas-cli",
+	"src/mediapm-cli",
 	"src/mediapm-conductor",
 	"src/mediapm-conductor-cli",
 	"src/mediapm-conductor/examples/support/concat-tool",

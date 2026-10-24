@@ -2089,6 +2089,7 @@ dependencies = [
  "indicatif",
  "libc",
  "mediapm-cas",
+ "mediapm-cli",
  "mediapm-conductor",
  "mediapm-test-support",
  "mediapm-utils",
@@ -2143,6 +2144,14 @@ name = "mediapm-cas-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+]
+
+[[package]]
+name = "mediapm-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "clap_complete",
 ]
 
 [[package]]

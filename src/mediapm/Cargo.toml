@@ -12,10 +12,16 @@ default = ["cli", "media-tagger"]
 cli = [
   "dep:clap",
   "dep:clap_complete",
+  "dep:mediapm-cli",
   "mediapm-cas/cli",
   "mediapm-conductor/cli",
 ]
-media-tagger = ["dep:chromaprint-next", "dep:musicbrainz_rs", "dep:ffmetadata"]
+media-tagger = [
+  "dep:chromaprint-next",
+  "dep:musicbrainz_rs",
+  "dep:ffmetadata",
+  "mediapm-cli?/media-tagger",
+]
 proptest = []
 # Test-only seam for the provider base URLs. Every gate passes `--all-features`,
 # so the seam is active wherever the suite runs; a release build leaves it off,
@@ -46,6 +52,9 @@ ffmetadata = { workspace = true, optional = true }
 futures-util.workspace = true
 libc.workspace = true
 mediapm-cas = { path = "../mediapm-cas", default-features = false }
+# The definition the binary parses with. Optional, because it is reachable only
+# from the `cli`-gated binary and the two conversions the library hosts.
+mediapm-cli = { path = "../mediapm-cli", default-features = false, optional = true }
 mediapm-utils = { workspace = true, features = ["nickel", "progress", "report"] }
 # The conductor's tool-presets surface is not optional for this crate: the config
 # types, the sync bridge, and the workflow options it passes all use it directly,
@@ -77,6 +86,11 @@ zip.workspace = true
 
 [build-dependencies]
 build-utils = { path = "../../scripts/build-utils" }
+# Default features on purpose: the build script renders completions for the
+# shipped CLI, which is the full-featured one. Declaring `default-features =
+# false` here would make the generated scripts lose `builtin media-tagger`,
+# which is a regression against the shell-out this replaces.
+mediapm-cli = { path = "../mediapm-cli" }
 
 [dev-dependencies]
 indicatif = { workspace = true, features = ["in_memory"] }

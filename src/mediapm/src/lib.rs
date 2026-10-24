@@ -12,6 +12,10 @@
 //! - realized state: `.mediapm/state.json` by default (configurable).
 
 pub mod builtins;
+// The seam between the extracted CLI definition and this library. See the
+// module docs for why the two conversions cannot live with the definition.
+#[cfg(feature = "cli")]
+pub mod cli;
 pub(crate) mod conductor_bridge;
 pub mod config;
 /// Golden demo hierarchy layout contract (examples + tests).

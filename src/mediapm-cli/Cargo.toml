@@ -1,0 +1,37 @@
+[package]
+name = "mediapm-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+description = "Clap command definition for the mediapm binary"
+
+[features]
+default = ["media-tagger"]
+# `builtin media-tagger` exists only when the tagger does, and which subcommands
+# the definition declares is part of the definition itself. `mediapm` enables
+# this through `mediapm-cli?/media-tagger` so the two cannot disagree about
+# whether the subcommand is there.
+media-tagger = []
+
+[lints]
+workspace = true
+
+[dependencies]
+# The definition is the CLI's observable surface, so this crate declares the
+# clap features that surface needs rather than inheriting them from whatever
+# else happens to be in the build. Cargo unifies features across a build, and
+# another workspace member declares several of these, so a whole-workspace build
+# supplies them either way; a build script's dependency graph has no such
+# member, and without this line the generated completion script would quietly
+# lose the `help` subcommand and the `env`-backed options.
+clap = { workspace = true, features = [
+	"derive",
+	"env",
+	"help",
+	"usage",
+	"error-context",
+	"suggestions",
+] }
+clap_complete.workspace = true

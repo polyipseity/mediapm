@@ -43,6 +43,9 @@ mod all_platform;
 /// One instance, several capture names: two steps over identical work union
 /// their outputs and both variants materialize.
 mod capture_union;
+/// The binary and the extracted CLI definition describe the same commands.
+#[cfg(feature = "cli")]
+mod cli_surface;
 /// Dual-write strategy: state.json always-writes, NCL files skip when unchanged.
 mod dual_write;
 /// Every CAS hash a generated step names must be declared as external data.
