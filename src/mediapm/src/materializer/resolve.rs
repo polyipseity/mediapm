@@ -152,6 +152,18 @@ pub(crate) async fn backfill_source_variant_hashes_from_workflow_outputs(
 }
 
 /// Resolves variant bytes with optional fallback notice and source hash.
+///
+/// Two outcomes are deliberately not errors. A conductor-state lookup that yields
+/// nothing, or bytes that cannot be read or are not the ZIP archive the caller
+/// asked for, falls through to the source's own variant hashes. That fallback is
+/// why the enclosing block falls through instead of returning early.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when a ZIP member the binding names cannot
+/// be extracted. The failure is reported rather than answered with the pack:
+/// returning the archive as the variant's content would be a wrong success, and a
+/// caller cannot tell that apart from the right answer.
 pub(super) async fn resolve_variant_source_bytes(
     lookup: &MaterializationLookupContext,
     media_id: &str,
@@ -190,13 +202,12 @@ pub(super) async fn resolve_variant_source_bytes(
             }
         });
 
-        if let Ok((materialized_bytes, source_hash)) = materialized_result {
-            return Ok(VariantSourceBytes {
-                bytes: materialized_bytes,
-                notice: fallback_notice,
-                source_hash,
-            });
-        }
+        let (materialized_bytes, source_hash) = materialized_result?;
+        return Ok(VariantSourceBytes {
+            bytes: materialized_bytes,
+            notice: fallback_notice,
+            source_hash,
+        });
     }
 
     if source.variant_hashes.is_empty() {
@@ -2745,6 +2756,188 @@ mod tests {
             outputs.get("yt_dlp_infojson_file"),
             Some(&infojson_hash),
             "versioned yt-dlp tool_call_id should still resolve infojson output"
+        );
+    }
+
+    /// Media id whose managed workflow the demo fixtures record.
+    ///
+    /// The fixture's workflow is named for this id, which is what the arm under
+    /// test looks up before it can reach the extraction.
+    const PINNED_MEDIA_ID: &str = "demo.local.dQw4w9WgXcQ";
+
+    /// Variant the fixture declares as a folder pack holding [`PINNED_MEMBER`].
+    const PINNED_VARIANT: &str = "packed";
+
+    /// Member the fixture's binding asks the extraction to pull out of the pack.
+    ///
+    /// Named rather than derived, because it is the member name the assertion
+    /// looks for in the failure message.
+    const PINNED_MEMBER: &str = "track.en.vtt";
+
+    /// The ffmpeg step the demo workflow records, which the fixture's binding
+    /// has to name for the arm to resolve an output hash at all.
+    const PINNED_FFMPEG_STEP_ID: &str = "step-1-ffmpeg";
+
+    /// Returns the demo fixtures' source spec, declaring one variant that the
+    /// workflow records as a pack and materializes one member out of.
+    ///
+    /// The steps mirror the demo document's order so the binding derives the
+    /// step id the recorded workflow actually carries; a different order would
+    /// resolve to a step the fixture never ran.
+    fn pinned_zip_member_source(input_hash: &str, pack_hash: &str) -> MediaSourceSpec {
+        use crate::config::source_types::{MediaStep, MediaStepTool};
+        use crate::config::{GenericOutputVariantConfig, OutputVariantValue};
+
+        MediaSourceSpec {
+            steps: vec![
+                MediaStep {
+                    tool: MediaStepTool::Import,
+                    input_variants: vec![],
+                    output_variants: BTreeMap::from([(
+                        "default".into(),
+                        OutputVariantValue::Generic(GenericOutputVariantConfig {
+                            kind: "primary".to_string(),
+                            ..Default::default()
+                        }),
+                    )]),
+                    options: BTreeMap::new(),
+                },
+                MediaStep {
+                    tool: MediaStepTool::Ffmpeg,
+                    input_variants: vec!["default".to_string()],
+                    output_variants: BTreeMap::from([(
+                        PINNED_VARIANT.into(),
+                        OutputVariantValue::Generic(GenericOutputVariantConfig {
+                            kind: "primary".to_string(),
+                            zip_member: PINNED_MEMBER.to_string(),
+                            extension: "vtt".to_string(),
+                            ..Default::default()
+                        }),
+                    )]),
+                    options: BTreeMap::new(),
+                },
+            ],
+            variant_hashes: BTreeMap::from([
+                ("default".to_string(), input_hash.to_string()),
+                (PINNED_VARIANT.to_string(), pack_hash.to_string()),
+            ]),
+            ..MediaSourceSpec::default()
+        }
+    }
+
+    /// A failed ZIP-member extraction is reported, not answered with the pack.
+    ///
+    /// **This test names its own reach.** It calls [`resolve_variant_source_bytes`]
+    /// directly with `full_zip_archive = false`, and no production caller does
+    /// that: the only caller in `materializer::mod` hard-codes `true`, so every
+    /// `!full_zip_archive` arm in the function is dead in production. What is
+    /// pinned here is the helper's contract, not a user-visible path. The arm is
+    /// worth pinning for the same reason it is dead: nothing in production will
+    /// ever draw attention to it.
+    ///
+    /// The defect is not the extraction failing, which is correct. It is what the
+    /// failure used to become: the `Err` was discarded, control fell out of the
+    /// block into the raw-bytes fallback, and the caller received the *pack* as
+    /// the variant's content. The assertion therefore distinguishes an error from
+    /// a wrong success, which is why it checks the error and not only its message.
+    ///
+    /// The demo fixture supplies the recorded conductor state the arm needs before
+    /// it extracts anything, so the resolution above the defect is real rather than
+    /// stubbed.
+    #[tokio::test]
+    async fn a_directly_called_zip_member_extraction_failure_is_reported_rather_than_answered_with_the_pack()
+     {
+        let generated = load_generated_doc();
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        // The arm reads the bound step's bytes out of the store by the hash the
+        // state records, so the state has to record the pack. A store is
+        // content-addressed, which makes recording the pack's own hash the only
+        // way to put chosen bytes behind a recorded hash.
+        let pack_hash = cas.put(bytes::Bytes::from_static(b"not a zip archive")).await.unwrap();
+        let mut state = load_conductor_state();
+        // The fixture records more than one ffmpeg instance, and resolution
+        // selects among them by inputs rather than by key, so every one of them
+        // has to record the pack. Pointing only the first at it left the test
+        // reading a hash nothing held, which is how it silently reached nothing.
+        let mut recorded_pack = 0;
+        for instance in state.tool_call_instances.values_mut() {
+            if instance.tool_call_id.starts_with("ffmpeg@")
+                && let Some(primary) = instance.outputs.get_mut("primary")
+            {
+                primary.hash = pack_hash;
+                recorded_pack += 1;
+            }
+        }
+        assert!(
+            recorded_pack > 0,
+            "the fixture must record the pack on an ffmpeg instance, or no step output resolves \
+             to it"
+        );
+        assert!(
+            cas.get(pack_hash).await.is_ok(),
+            "the fixture's recorded output hash must be readable, or the arm bails before it \
+             extracts anything and this test reaches nothing"
+        );
+
+        let input_hash = cas.put(bytes::Bytes::from_static(b"pinned input")).await.unwrap();
+        let source = pinned_zip_member_source(&input_hash.to_string(), &pack_hash.to_string());
+
+        // Precondition, asserted rather than assumed: if the binding stops
+        // naming the recorded step and output, the arm stops resolving and the
+        // assertions below would pass without the extraction ever running.
+        let slot_limits = resolve_ffmpeg_slot_limits(&MediaPmDocument::default());
+        let binding = resolve_media_variant_output_binding_with_limits(
+            &source,
+            PINNED_VARIANT,
+            slot_limits.max_input_slots,
+            slot_limits.max_output_slots,
+        )
+        .expect("the fixture's binding resolves")
+        .expect("the fixture declares a binding for its variant");
+        assert_eq!(
+            binding.step_id, PINNED_FFMPEG_STEP_ID,
+            "the binding must name the step the demo workflow recorded, or the arm resolves no \
+             output hash and never reaches the extraction"
+        );
+        assert_eq!(
+            binding.output_name, "primary",
+            "the demo state records the ffmpeg step's `primary` output, and the binding has to \
+             ask for that name or the lookup finds nothing"
+        );
+        assert_eq!(
+            binding.zip_member.as_deref(),
+            Some(PINNED_MEMBER),
+            "the arm only extracts when the binding carries a member"
+        );
+
+        let lookup =
+            MaterializationLookupContext::new(cas.clone(), Some(state), generated, slot_limits);
+        let result =
+            resolve_variant_source_bytes(&lookup, PINNED_MEDIA_ID, &source, PINNED_VARIANT, false)
+                .await;
+
+        let error = match result {
+            Ok(payload) => panic!(
+                "an extraction that failed must be reported; returning the pack's {} bytes instead \
+                 is the defect this test exists for",
+                payload.bytes.len()
+            ),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, MediaPmError::Workflow(_)),
+            "a failed extraction is a workflow error, not an I/O one: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("extracting ZIP member"),
+            "the message must name the extraction that failed rather than a later fallback: \
+             {message}"
+        );
+        assert!(
+            message.contains(PINNED_MEMBER),
+            "the message must name the member the binding asked for: {message}"
         );
     }
 }
