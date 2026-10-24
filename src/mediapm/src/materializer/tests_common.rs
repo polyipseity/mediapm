@@ -279,6 +279,45 @@ pub(super) fn zip_member_media_document(input_hash: &str, pack_hash: &str) -> Me
     }
 }
 
+/// The directory a nested zip-member fixture nests its entry under.
+pub(super) const ZIP_MEMBER_NESTED_DIR: &str = "nested";
+
+/// The hierarchy path the nested zip-member fixture writes, two components
+/// deep so the target's parent directory is not the hierarchy root.
+pub(super) const ZIP_MEMBER_NESTED_PATH: &str = "nested/song";
+
+/// A zip-member document whose entry sits one directory below the hierarchy
+/// root, so the target's parent does not exist when a run starts.
+///
+/// Every other zip-member fixture declares a single-component path, which puts
+/// the target directly under the hierarchy root: that directory exists before
+/// the run, so the write path's parent-directory creation is never what makes
+/// the write possible. A `Folder` parent node is what nests the path, because a
+/// media node carrying children is rejected at the config boundary; the leaf
+/// keeps the same media id, variant and member binding as
+/// [`zip_member_media_document`].
+pub(super) fn nested_zip_member_media_document(
+    input_hash: &str,
+    pack_hash: &str,
+) -> MediaPmDocument {
+    let mut document = zip_member_media_document(input_hash, pack_hash);
+    let leaf = document.hierarchy.remove(0);
+    document.hierarchy = vec![HierarchyNode {
+        path: HierarchyPath::simple(ZIP_MEMBER_NESTED_DIR),
+        kind: HierarchyNodeKind::Folder,
+        id: None,
+        media_id: None,
+        variant: None,
+        variants: vec![],
+        rename_files: vec![],
+        format: PlaylistFormat::M3u8,
+        ids: vec![],
+        sanitize_names: Some(SanitizeNamesConfig::Inherit),
+        children: vec![leaf],
+    }];
+    document
+}
+
 /// A one-folder-entry document whose single variant resolves from
 /// `variant_hash`, so a `sync_hierarchy` over it reaches the folder arm.
 ///

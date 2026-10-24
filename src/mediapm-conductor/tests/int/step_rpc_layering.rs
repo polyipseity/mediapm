@@ -10,12 +10,23 @@
 //! The run-level bound keeps its budget, but its timeout error must name that
 //! budget and the knob that set it so the caller learns which policy layer
 //! fired rather than a bare transport failure.
+//!
+//! # Prerequisite
+//!
+//! `the_control_plane_arms_keep_their_short_rpc_timeout_text` runs the stub tool
+//! from `mediapm-test-support`, which is a dev-dependency. `cargo test-pkg
+//! mediapm-conductor` selects that package alone and does not build a
+//! dev-dependency's binary target, so run `cargo build-pkg mediapm-test-support`
+//! once first — on a clean `target/` the test panics inside `stub_tool_path()`
+//! with that command in its message rather than asserting. The workspace gate
+//! (`cargo test-all`) passes `--workspace --all-targets` and needs no such step.
 
 use std::collections::BTreeMap;
 
 use crate::{RpcEnvGuard, TestConductor, doc_with_workflows, rpc_env_lock, workflow_with_steps};
 use mediapm_conductor::api::RunWorkflowOptions;
-use mediapm_conductor::{ToolKindSpec, ToolRuntime, ToolSpec, WorkflowStepSpec};
+use mediapm_conductor::{ConductorError, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowStepSpec};
+use mediapm_test_support::stub_tool_path;
 
 /// Builds the one-step "sleep 3s" workflow used by this module's tests.
 ///
@@ -48,6 +59,110 @@ fn sleeping_workflow(tc: &TestConductor) {
         BTreeMap::from([("sleeper".to_string(), sleeper)]),
         vec![workflow_with_steps("default", vec![step])],
     ));
+}
+
+/// Asserts `result` failed with the RPC layer's own short timeout text.
+///
+/// The three control-plane arms are administrative calls: they report the
+/// transport failure the RPC layer produced. The fix that made `run_workflow`'s
+/// timeout name the budget and the knobs applies to that arm alone, so this
+/// helper asserts both halves of the control-plane contract — the failure is a
+/// timeout, and it carries neither the budget nor the knob.
+fn assert_short_timeout_text(arm: &str, result: Result<(), ConductorError>) {
+    let error = match result {
+        Ok(()) => panic!("the {arm} arm must time out while the actor is busy"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("RPC timeout"),
+        "the {arm} arm reports the RPC layer's own timeout text: {message}"
+    );
+    assert!(
+        !message.contains("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS"),
+        "the {arm} arm is not the run-level watchdog, so its text must not name the knob: {message}"
+    );
+    assert!(
+        !message.contains("budget of"),
+        "the {arm} arm reports no budget, which only the run-level arm computes: {message}"
+    );
+}
+
+/// Builds a one-step workflow whose step sleeps through the stub tool.
+///
+/// The stub is a Rust binary this workspace ships, so the step is a real
+/// process on every platform and the sleep is long enough that the 1s budgets
+/// these tests install expire while it is still running. Its sleep mode is used
+/// here rather than the `sh -c sleep` process [`sleeping_workflow`] builds,
+/// which is unix-only.
+fn stub_sleeping_workflow(tc: &TestConductor, seconds: u64) {
+    let sleeper = ToolSpec {
+        version: None,
+        kind: ToolKindSpec::Executable {
+            command: vec![
+                stub_tool_path().to_string_lossy().into_owned(),
+                "--mode".to_string(),
+                "sleep".to_string(),
+                "--seconds".to_string(),
+                seconds.to_string(),
+            ],
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
+        name: "sleeper".into(),
+        inputs: BTreeMap::new(),
+        default_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime::default(),
+    };
+    let step = WorkflowStepSpec {
+        id: "s1".into(),
+        tool: "sleeper".into(),
+        inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        max_retries: 0,
+        depends_on: Vec::new(),
+    };
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("sleeper".to_string(), sleeper)]),
+        vec![workflow_with_steps("default", vec![step])],
+    ));
+}
+
+/// The control-plane arms keep the short `RPC timeout` text.
+///
+/// The run-level watchdog's error names the budget and the knobs so a caller
+/// learns which policy layer fired. The three administrative calls are not that
+/// watchdog, and the fix must not have widened to them: a control-plane caller
+/// that reads a budget it never set is worse off than one that reads the
+/// transport failure the RPC layer produced. Each arm is called while the actor
+/// is busy with a step that outlasts the 1s budget, so each times out.
+#[tokio::test]
+async fn the_control_plane_arms_keep_their_short_rpc_timeout_text() {
+    let _lock = rpc_env_lock().await;
+    // Set before the first RPC: the client OnceCell captures the budget on
+    // first use, and the first use here is the run below. See `rpc_env_lock`.
+    let _budget = RpcEnvGuard::set_seconds("1");
+
+    let tc = TestConductor::new();
+    stub_sleeping_workflow(&tc, 20);
+
+    // The run-level budget expires first, which leaves the actor busy with the
+    // step rather than idle, so the three calls below reach their own timeout.
+    let _ = tc.conductor().run_workflow("default", RunWorkflowOptions::default()).await;
+
+    let diagnostics = tc.conductor().get_runtime_diagnostics().await;
+    assert_short_timeout_text("runtime_diagnostics", diagnostics.map(|_| ()));
+
+    let gc = tc.conductor().run_gc().await;
+    assert_short_timeout_text("RunGc", gc);
+
+    let shutdown = tc.conductor().shutdown().await;
+    assert_short_timeout_text("Shutdown", shutdown);
+
+    // The step is still in flight, so the fixture stops the actor through the
+    // path that tolerates the client's own timed-out shutdown RPC.
+    tc.shutdown_broken_client().await;
 }
 
 /// Proves a step that outlives a short per-step RPC budget still completes.

@@ -3758,6 +3758,91 @@ mod tests {
     /// (1) CI → skip via `example_isolation::ci_mode_detected()`; (2) any other
     /// test harness → reduced mode via `MEDIAPM_RUN_ONLINE_SYNC=false`; (3)
     /// explicit `cargo run --example` → full sync (no test binary exists).
+    /// The demo respects a caller-set conductor RPC budget instead of
+    /// replacing it with its own computed one.
+    ///
+    /// `configure_demo_conductor_rpc_timeout` sizes the budget from the demo's
+    /// own sync budget, but the conductor captures the knob on first actor use,
+    /// so a caller who set it has already chosen the policy layer that should
+    /// fire. The test runs the documented entry point rather than the helper,
+    /// because the export happens on `main`'s reduced path and the assertion is
+    /// that `main` left the caller's value alone. The sentinel is asserted to
+    /// differ from the computed default first: a run that overwrote the knob
+    /// with the same number would otherwise pass.
+    #[test]
+    fn main_leaves_a_caller_set_rpc_budget_untouched() {
+        if example_isolation::ci_mode_detected() {
+            eprintln!(
+                "[demo_online] skipping main_leaves_a_caller_set_rpc_budget_untouched in CI; \
+                 the full-sync online path is nondeterministic and needs \
+                 network and external tools"
+            );
+            return;
+        }
+
+        let _isolated = IsolatedExampleRoots::with_cache();
+
+        /// The budget the caller sets, which has to differ from the one the
+        /// demo would compute or the assertion below cannot tell the two apart.
+        const SENTINEL: &str = "4321";
+        let computed_default = (super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT
+            - super::DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS)
+            .to_string();
+        assert_ne!(
+            SENTINEL, computed_default,
+            "the sentinel must differ from the value the demo computes, or an overwrite is \
+             invisible to this test"
+        );
+
+        let previous_run_online = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
+        let previous_rpc_budget = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).ok();
+        let previous_sync_budget = std::env::var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV).ok();
+        let previous_exec_timeout =
+            std::env::var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV).ok();
+        // SAFETY: test mutates process env keys in a controlled scope and
+        // restores every previous value before exit.
+        unsafe {
+            std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
+            std::env::set_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, SENTINEL);
+            std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV);
+            std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV);
+        }
+
+        super::main().expect("example main should run to completion");
+
+        assert_eq!(
+            std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV)
+                .expect("the knob the caller set is still present after the run"),
+            SENTINEL,
+            "a caller-set conductor RPC budget is respected: the demo must leave it alone rather \
+             than replacing it with the budget it computes"
+        );
+
+        // SAFETY: restore previous env var values for test isolation.
+        unsafe {
+            match previous_run_online {
+                Some(value) => std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value),
+                None => std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV),
+            }
+            match previous_rpc_budget {
+                Some(value) => {
+                    std::env::set_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, value)
+                }
+                None => std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV),
+            }
+            match previous_sync_budget {
+                Some(value) => std::env::set_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV, value),
+                None => std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV),
+            }
+            match previous_exec_timeout {
+                Some(value) => {
+                    std::env::set_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV, value)
+                }
+                None => std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV),
+            }
+        }
+    }
+
     #[test]
     fn main_is_exercised() {
         if example_isolation::ci_mode_detected() {

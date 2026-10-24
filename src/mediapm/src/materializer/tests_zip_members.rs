@@ -11,8 +11,9 @@
 //! the read-only file the previous run left.
 
 use super::tests_common::{
-    ZIP_MEMBER_MEDIA_ID, ZIP_MEMBER_PATH, ZIP_MEMBER_SUFFIX, ZIP_MEMBER_VARIANT,
-    open_hierarchy_cas, run_sync, zip_member_media_document, zip_payload,
+    ZIP_MEMBER_MEDIA_ID, ZIP_MEMBER_NESTED_PATH, ZIP_MEMBER_PATH, ZIP_MEMBER_SUFFIX,
+    ZIP_MEMBER_VARIANT, nested_zip_member_media_document, open_hierarchy_cas, run_sync,
+    zip_member_media_document, zip_payload,
 };
 use super::*;
 
@@ -20,6 +21,121 @@ use super::*;
 /// under the member name the fixture's binding extracts.
 fn pack_holding(member: &[u8]) -> Vec<u8> {
     zip_payload(&[(ZIP_MEMBER_SUFFIX, member)])
+}
+
+/// Runs the zip-member fixture with `pack_hash` standing in for the pack, so a
+/// test can point the variant at bytes that are not a pack.
+async fn run_zip_member_sync_with_pack(
+    paths: &MediaPmPaths,
+    cas: &FileSystemCas,
+    input_hash: &str,
+    pack_hash: &str,
+) -> Result<MaterializeReport, MediaPmError> {
+    let document = zip_member_media_document(input_hash, pack_hash);
+    sync_hierarchy(
+        paths,
+        &document,
+        &mut MediaPmState::default(),
+        cas,
+        false,
+        &ConductorState::new_empty(),
+        &NickelDocument::default(),
+        None,
+        None,
+    )
+    .await
+}
+
+/// The write path creates the parent directories a nested target needs.
+///
+/// Every other fixture in this module declares a single-component hierarchy
+/// path, which puts the target directly under the hierarchy root, so that
+/// directory exists before the run starts and the write path's parent-directory
+/// creation is never what makes the write possible. A two-component path puts
+/// the target one directory deeper, and the fixture asserts that directory is
+/// absent before the run. A write path that skipped the creation step fails
+/// outright rather than writing the member somewhere else, which is what makes
+/// this test load-bearing rather than a restatement of the code.
+#[tokio::test]
+async fn a_nested_zip_member_target_has_its_parent_directory_created() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let input_hash = cas.put(bytes::Bytes::from_static(b"zip-member-input")).await.unwrap();
+    let member = b"WEBVTT\n\nnested member body";
+    let pack_hash = cas.put(bytes::Bytes::from(pack_holding(member))).await.unwrap();
+    let document =
+        nested_zip_member_media_document(&input_hash.to_string(), &pack_hash.to_string());
+
+    let target = paths.hierarchy_root_dir.join(ZIP_MEMBER_NESTED_PATH);
+    let parent = target.parent().expect("the nested target names a parent directory");
+    assert!(
+        !parent.exists(),
+        "the fixture must start with the target's parent missing, or the guard under test is \
+         never what makes the write possible: {}",
+        parent.display()
+    );
+
+    let report = run_sync(&paths, &document, &mut MediaPmState::default(), &cas, None, None).await;
+    assert_eq!(
+        (report.materialized_paths, report.missing_paths),
+        (1, 0),
+        "the nested entry must materialize: {report:?}"
+    );
+    assert!(
+        parent.is_dir(),
+        "the write path creates the parent directory the nested target needs: {}",
+        parent.display()
+    );
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        member,
+        "the target holds the extracted member, not the pack: {}",
+        target.display()
+    );
+}
+
+/// A pack whose stored bytes are not a ZIP archive fails the run with a
+/// `Workflow` error rather than an `Io` one.
+///
+/// The contract is the error *variant*. The write path reads the pack out of
+/// the store and extracts the member before it touches the target, and a
+/// failure there is reported as `Workflow`, which names the media, the variant
+/// and the member, rather than as `Io`, which would present a corrupt pack as a
+/// filesystem problem the caller is meant to retry differently. The message is
+/// asserted beside the variant so a run that failed for an unrelated reason
+/// cannot pass as this coverage.
+#[tokio::test]
+async fn a_pack_that_is_not_a_zip_archive_fails_the_run_with_a_workflow_error() {
+    let root = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(root.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let input_hash = cas.put(bytes::Bytes::from_static(b"zip-member-input")).await.unwrap();
+    let pack_hash =
+        cas.put(bytes::Bytes::from_static(b"these bytes are not a zip archive")).await.unwrap();
+
+    let error = run_zip_member_sync_with_pack(
+        &paths,
+        &cas,
+        &input_hash.to_string(),
+        &pack_hash.to_string(),
+    )
+    .await
+    .expect_err("the stored pack cannot be opened as a ZIP archive");
+
+    assert!(
+        matches!(&error, MediaPmError::Workflow(_)),
+        "an extraction failure on this arm is a workflow error, not an I/O one: {error:?}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("extracting ZIP member"),
+        "the message names the extraction that failed: {message}"
+    );
+    assert!(
+        message.contains(ZIP_MEMBER_SUFFIX),
+        "the message names the member the binding asked for: {message}"
+    );
 }
 
 /// A second `sync_hierarchy` over an unchanged zip-member variant counts a
