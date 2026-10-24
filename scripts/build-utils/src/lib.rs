@@ -48,10 +48,13 @@ fn render(command: &mut Command, shell: Shell) -> String {
 /// the failure stays invisible until someone notices completion has stopped
 /// working. An empty rendering is a defect to surface, not a result to write.
 ///
-/// One reachable cause is a command with no subcommands: `clap_complete`'s
-/// fish generator renders nothing for one. Reaching this from a real build
-/// therefore means the CLI grew nothing to complete, which is a decision to
-/// make deliberately rather than to ship as a zero-byte script.
+/// One reachable cause is a command with no options and no subcommands:
+/// `clap_complete`'s fish generator renders nothing for one, while the other
+/// four shells still emit their boilerplate. Both halves of the command matter,
+/// because clap adds a `--help` option of its own whenever its `help` feature is
+/// enabled. Reaching this from a real build therefore means the CLI grew nothing
+/// to complete, which is a decision to make deliberately rather than to ship as
+/// a zero-byte script.
 ///
 /// # Errors
 ///
@@ -197,14 +200,22 @@ mod tests {
     /// that discarded the rejection would report success and ship a script that
     /// registers no completion.
     ///
-    /// A command with no subcommands is the reachable case, because
-    /// `clap_complete`'s fish generator renders nothing for one, so this drives
-    /// the real generator rather than a stub. If that upstream behaviour
-    /// changes, this fails loudly instead of losing its coverage quietly.
+    /// A command with nothing to complete is the reachable case, so this drives
+    /// the real generator rather than a stub. That case is narrower than it
+    /// looks: only `clap_complete`'s fish generator renders nothing for a
+    /// command with no options and no subcommands, while the other four shells
+    /// emit boilerplate whatever the command holds. Emptiness also depends on
+    /// the whole command rather than on its subcommands alone, because clap adds
+    /// a `--help` option of its own whenever its `help` feature is enabled.
+    /// Nothing in this crate's own dependency graph enables that feature, so the
+    /// test must not rely on its absence; the flag is disabled here instead. If
+    /// a generator stops rendering nothing for such a command, this fails loudly
+    /// instead of losing its coverage quietly.
     #[test]
     fn an_empty_rendering_fails_the_generation_path() {
         let dir = artifact_dir().expect("artifact dir");
-        let error = write_all(&mut Command::new("bare"), "bare", dir.path())
+        let mut command = Command::new("bare").disable_help_flag(true);
+        let error = write_all(&mut command, "bare", dir.path())
             .expect_err("a command with nothing to complete must not report success");
         assert!(error.contains("empty"), "the failure must name the empty rendering, got: {error}");
         for entry in std::fs::read_dir(dir.path().join("completions")).expect("read completions") {
