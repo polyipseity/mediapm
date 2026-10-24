@@ -1,4 +1,9 @@
 mod api_workflows;
+
+/// The binary's own entry point reaches its subcommands (cli-only: the test
+/// spawns the binary, which Cargo builds only when the `cli` feature is on).
+#[cfg(feature = "cli")]
+mod cli_entry_point;
 mod concurrent;
 mod constraints;
 mod contention;

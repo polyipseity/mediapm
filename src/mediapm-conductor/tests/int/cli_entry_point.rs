@@ -86,10 +86,16 @@ fn subcommand_help_describes_the_subcommand() {
 /// `completions <shell>` reaches its handler and emits a script for this CLI.
 ///
 /// The handler is reached rather than merely parsed: a completion script is
-/// only produced by running it. The assertion names a subcommand of this CLI
-/// so the script cannot be an empty or generic one, and it reads the script
-/// rather than only the exit status because a handler that printed nothing
-/// would still exit successfully.
+/// only produced by running it. The assertions name a subcommand of this CLI and
+/// the function the script registers, so the script cannot be an empty or
+/// generic one, and they read the script rather than only the exit status
+/// because a handler that printed nothing would still exit successfully.
+///
+/// The registered name is the half the build script and this handler share only
+/// while both take it from the command: the binary's file name is
+/// `mediapm-conductor` while the command's name is `conductor`, so a handler
+/// naming the command itself would emit a script registering under a name no
+/// invocation reaches while every installed script kept working.
 #[test]
 fn completions_reaches_its_handler() {
     let run = run_binary(&["completions", "bash"]);
@@ -97,6 +103,12 @@ fn completions_reaches_its_handler() {
     assert!(
         run.stdout.contains("export-schemas"),
         "the completion script does not name this CLI's subcommands; stdout: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stdout.contains("_conductor()"),
+        "the completion script must register `_conductor()`, the command's name rather than the \
+         binary's; stdout: {}",
         run.stdout,
     );
 }

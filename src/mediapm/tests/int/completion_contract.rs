@@ -17,10 +17,12 @@
 //!
 //! `CARGO_BIN_EXE_*` exposes the current package's binaries alone, so only
 //! `mediapm`'s binary is reachable from this test binary. The other two CLIs'
-//! on-the-fly paths are covered by their own crates' tests. What this file adds
-//! for all three is the generation surface, which is the half no crate's unit
-//! tests reach: it renders through the same `build_utils` entry point the build
-//! scripts call.
+//! on-the-fly paths are covered by their own crates' tests — a
+//! `tests/int/cli_entry_point.rs` in each of `mediapm-conductor` and
+//! `mediapm-cas`, both of which spawn the built binary — so the claim is
+//! checkable rather than assumed. What this file adds for all three is the
+//! generation surface, which is the half no crate's unit tests reach: it renders
+//! through the same `build_utils` entry point the build scripts call.
 
 use std::collections::BTreeSet;
 use std::path::Path;

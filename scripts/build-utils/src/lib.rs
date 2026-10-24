@@ -207,10 +207,10 @@ mod tests {
     /// emit boilerplate whatever the command holds. Emptiness also depends on
     /// the whole command rather than on its subcommands alone, because clap adds
     /// a `--help` option of its own whenever its `help` feature is enabled.
-    /// Nothing in this crate's own dependency graph enables that feature, so the
-    /// test must not rely on its absence; the flag is disabled here instead. If
-    /// a generator stops rendering nothing for such a command, this fails loudly
-    /// instead of losing its coverage quietly.
+    /// The flag is disabled here so the test does not depend on clap's `help`
+    /// feature being off, which a workspace resolution enables. If a generator
+    /// stops rendering nothing for such a command, this fails loudly instead of
+    /// losing its coverage quietly.
     #[test]
     fn an_empty_rendering_fails_the_generation_path() {
         let dir = artifact_dir().expect("artifact dir");

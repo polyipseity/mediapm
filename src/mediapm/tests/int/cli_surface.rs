@@ -89,9 +89,12 @@ fn every_declared_subcommand_is_routed_by_the_binary() {
 
 /// The binary's `--help` is the definition's own rendering.
 ///
-/// Comparing the two catches the help text clap assembles from doc comments and
-/// any option the binary would resolve differently from the definition the build
-/// script renders completions from.
+/// The comparison holds because both sides build from `mediapm_cli`, which is
+/// what it is for: it fails when the binary parses a definition the build script
+/// does not render, not when the definition's wording changes, since a doc
+/// comment moves both sides together. The `Usage:` assertion below carries the
+/// half the comparison cannot — the command must be named after the binary, not
+/// after the crate the definition lives in.
 ///
 /// The expected string comes from `render_help` rather than `render_long_help`
 /// because that is what clap prints for a command where no argument carries a

@@ -5,12 +5,13 @@
 - Root `AGENTS.md` is the workspace-wide source of truth. Do not add `.github/copilot-instructions.md`.
 - This is a Rust workspace organized around mediapm's crate architecture. Keep guidance aligned to concrete files and current implementation state.
 - Put file-type and workflow rules in `.agents/instructions/*.instructions.md`, reusable workflows in `.agents/prompts/*.prompt.md`, skill assets in `.agents/skills/<skill>/`.
-- Every crate directory ships an `AGENTS.md` with crate-local guidance.
+- Every runtime crate ships an `AGENTS.md` with crate-local guidance. A support crate such as `src/mediapm-test-support/` is covered by the workspace-level file instead.
 - Workspace member crates under `src/`:
   - `src/mediapm-cas/` (CAS)
   - `src/mediapm-conductor/` (Conductor)
   - `src/mediapm-conductor-builtins/` (parent, has its own `AGENTS.md`) and its `*/` builtins (each with an `AGENTS.md`)
   - `src/mediapm/` (mediapm application)
+  - `src/mediapm-cli/`, `src/mediapm-cas-cli/`, `src/mediapm-conductor-cli/` (clap definitions, shared by each binary and its own build script)
   - `src/mediapm-utils/` (shared utilities for builtins)
   - `tests/` (repository script integration tests, package `mediapm-tests`)
 - Integration tests live with workspace crates (e.g. `src/mediapm/tests/`). Use one shared harness shape: top-level `tests/mod.rs` as the entrypoint, grouped submodules under `tests/e2e/`, `tests/int/`, `tests/prop/`.

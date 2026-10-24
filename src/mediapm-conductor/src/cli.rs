@@ -467,9 +467,18 @@ async fn cmd_gc() -> Result<(), ConductorError> {
     Ok(())
 }
 
+/// Renders `shell`'s completion script for this CLI to stdout.
+///
+/// The name the script registers its completion under comes from
+/// [`clap::Command::get_name`], which is the same source the build script bakes
+/// into the installed scripts. Naming the command literally here would let the
+/// two disagree the moment the definition's `name` attribute changed: the
+/// installed scripts would keep working while `conductor completions` emitted
+/// one registering under a name no invocation reaches.
 fn cmd_completions(shell: Shell) {
     let mut cmd = Cli::command();
-    clap_complete::generate(shell, &mut cmd, "conductor", &mut std::io::stdout());
+    let name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, &name, &mut std::io::stdout());
 }
 
 #[cfg(test)]

@@ -133,3 +133,12 @@ jobs:
 
       - name: Run test-runner gate tests
         run: cargo --locked test-pkg test-runner
+
+      # Runs each completion-generating package's build script on Windows, which
+      # no other step does. Deliberately without `--all-targets`: the
+      # `mediapm-cas` test target does not compile on Windows (see
+      # `src/mediapm-cas/tests/int/contention.rs`), so including test targets
+      # would fail this step on a pre-existing defect rather than on a
+      # regression.
+      - name: Check the completion-generating packages
+        run: cargo --locked check -p mediapm-cas -p mediapm-conductor -p mediapm

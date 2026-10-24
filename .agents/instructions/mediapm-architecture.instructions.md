@@ -29,6 +29,7 @@ applyTo: "src/**/*.rs"
 | `mediapm-conductor/` | Workflow orchestration, Nickel config evaluation |
 | `mediapm-conductor-builtins/*/` | Built-in tools (echo, fs, archive, import, export) |
 | `mediapm/` | Media-facing API, CLI, managed-tool lifecycle |
+| `mediapm-cli/`, `mediapm-cas-cli/`, `mediapm-conductor-cli/` | Clap command definitions, shared by each binary and its own build script |
 | `mediapm-utils/` | Shared utilities for builtins |
 
 Per-crate `AGENTS.md` holds detailed invariants and contracts.

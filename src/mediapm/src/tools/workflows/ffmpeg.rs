@@ -764,6 +764,29 @@ mod tests {
         );
     }
 
+    /// The template's `-i` for the media input precedes the one for the
+    /// ffmetadata input.
+    ///
+    /// The order is load-bearing: a step hands ffmpeg the media before the
+    /// metadata it should read, and the apply step's stub is deliberately given
+    /// the reverse order so it cannot pass by accident. Both tokens carry `-i`,
+    /// so each is found by the input it belongs to rather than by the flag — a
+    /// test that looked only for `-i` would pass under either order.
+    #[test]
+    fn build_ffmpeg_command_orders_the_media_input_before_ffmetadata() {
+        let command = build_ffmpeg_command("ffmpeg", 2, 2);
+        let position = |input: &str| {
+            command
+                .iter()
+                .position(|token| token.contains(input) && token.contains("-i"))
+                .unwrap_or_else(|| panic!("no `-i` token for `{input}` in: {command:?}"))
+        };
+        assert!(
+            position(&ffmpeg_input_content_name(0)) < position("ffmetadata_content"),
+            "the media input's `-i` must precede the ffmetadata input's: {command:?}"
+        );
+    }
+
     #[test]
     fn build_ffmpeg_inputs_includes_option_and_slot_inputs() {
         let inputs = build_ffmpeg_inputs(2, 2);
