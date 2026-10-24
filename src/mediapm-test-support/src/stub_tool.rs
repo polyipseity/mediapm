@@ -166,8 +166,9 @@ mod tests {
         let path = stub_tool_path();
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
         assert!(path.is_file(), "the stub must exist at {}", path.display());
+        let expected_prefix = STUB_TOOL_BIN_NAME.replace('-', "_");
         assert!(
-            name.starts_with("mediapm_stub_tool") || name.starts_with(STUB_TOOL_BIN_NAME),
+            name.starts_with(&expected_prefix) || name.starts_with(STUB_TOOL_BIN_NAME),
             "the located path must be the stub, found {name}",
         );
     }
