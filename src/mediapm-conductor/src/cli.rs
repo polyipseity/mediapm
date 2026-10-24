@@ -214,11 +214,18 @@ fn set_conductor_overrides(conductor_dir_override: Option<PathBuf>, overrides: P
 
 /// Runs the CLI from environment arguments.
 ///
+/// The argument vector is passed whole, with the program name in position
+/// zero. clap reads position zero as the program name, so a vector that omits
+/// it makes clap read the first real argument as the program name and the
+/// second as the top-level subcommand: the subcommand a caller typed is
+/// swallowed, and `--help` answers with the root command's help instead of the
+/// help for the command that was asked about.
+///
 /// # Errors
 ///
 /// Returns [`ConductorError`] when CLI argument parsing or command dispatch fails.
 pub async fn run_from_env() -> Result<(), ConductorError> {
-    let cli = Cli::parse_from(std::env::args().skip(1));
+    let cli = Cli::parse_from(std::env::args());
     run(cli).await
 }
 

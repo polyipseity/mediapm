@@ -78,3 +78,8 @@ mod workflow_scheduler;
 /// step bars yield the version before the tool name.
 #[cfg(feature = "progress")]
 mod progress_labels;
+
+/// The binary's own entry point reaches its subcommands (cli-only: the test
+/// spawns the binary, which Cargo builds only when the `cli` feature is on).
+#[cfg(feature = "cli")]
+mod cli_entry_point;
