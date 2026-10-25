@@ -529,6 +529,13 @@ async fn an_untouched_output_skips_whatever_method_produced_it() {
         cas,
         flattened: Vec::new(),
         verify_materialization: false,
+        materialization_order: vec![
+            MaterializationMethod::Hardlink,
+            MaterializationMethod::Symlink,
+            MaterializationMethod::Reflink,
+            MaterializationMethod::Copy,
+        ],
+        notices: std::sync::Mutex::new(Vec::new()),
         recorded_hashes: outputs
             .iter()
             .map(|(relative_path, _, _)| (relative_path.clone(), hash.to_string()))

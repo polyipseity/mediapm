@@ -29,7 +29,9 @@ use crate::config::hierarchy_types::{
     collect_playlist_media_index, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
 use crate::config::source_types::MediaSourceSpec;
-use crate::config::{ManagedFileRecord, MediaPmDocument, MediaPmState};
+use crate::config::{
+    ManagedFileRecord, MaterializationMethod, MediaPmDocument, MediaPmState, defaults,
+};
 use crate::error::MediaPmError;
 use crate::output::progress::{ProgressBarApi, ProgressBarHandle, ProgressScreenApi};
 use crate::path_component::{SanitizePolicy, render_relative_path};
@@ -164,6 +166,22 @@ struct SyncSharedState {
     flattened: Vec<ValidatedHierarchyEntry>,
     /// Whether to CAS-verify materialized outputs after writing.
     verify_materialization: bool,
+    /// Order this run attempts materialization methods in, as the document
+    /// asked for it.
+    ///
+    /// The order is a document decision, not a property of the materializer:
+    /// a library whose outputs must survive the store being pruned wants a
+    /// copy, and a library on one filesystem can afford a hardlink. Attempting
+    /// a literal order here would silently ignore what the document said.
+    materialization_order: Vec<MaterializationMethod>,
+    /// Notices the entry workers produced, collected for the report.
+    ///
+    /// A fallback is not an error and not silence: the run succeeded with a
+    /// method further down the order than the document preferred, and the
+    /// report is where that reaches the user. Workers push here because an
+    /// entry worker has no report of its own; [`sync_hierarchy`] drains this
+    /// into [`MaterializeReport::notices`] once the entries are done.
+    notices: std::sync::Mutex<Vec<String>>,
     /// The hash [`crate::config::ManagedFileRecord`] recorded for each managed
     /// output path when this sync started, copied out of
     /// `state.managed_files` before any worker runs.
@@ -231,11 +249,19 @@ pub async fn sync_hierarchy(
     );
     metadata::resolve_flattened_entry_paths(&mut flattened, document, &lookup_context).await?;
     let validated = sanitize_and_validate_hierarchy_paths(flattened)?;
+    let materialization_order = document
+        .runtime
+        .materialization
+        .materialization_preference_order
+        .clone()
+        .unwrap_or_else(defaults::default_materialization_preference_order);
     let shared = Arc::new(SyncSharedState {
         hierarchy_root: hierarchy_root.clone(),
         cas: cas.clone(),
         flattened: validated.clone(),
         verify_materialization,
+        materialization_order,
+        notices: std::sync::Mutex::new(Vec::new()),
         recorded_hashes: state
             .managed_files
             .iter()
@@ -338,6 +364,10 @@ pub async fn sync_hierarchy(
             }
         }
     }
+
+    // Whatever the entries reported about how they wrote, whether or not the
+    // loop above stopped early: a notice describes work that already finished.
+    report.notices = shared.drain_notices();
 
     // A path left unwritten ends the row as an error, not as a neutral
     // success: its content was unavailable, so the library is not the shape
@@ -871,13 +901,16 @@ fn finish_entry_row(
 }
 
 /// Materialises one file entry from CAS directly to the target path.
+///
+/// The method order comes from the document through [`SyncSharedState`], and a
+/// method that falls through to a later one is recorded as a notice there, so
+/// the run can report which method actually wrote the file.
 async fn materialize_file_entry(
     target_path: &Path,
     relative_path: &str,
     hash: &Hash,
     shared: &SyncSharedState,
 ) -> Result<(), MediaPmError> {
-    use crate::config::MaterializationMethod;
     use crate::materializer::file_ops::materialize_file_from_cas_with_order;
 
     // Ensure parent directory exists.
@@ -889,25 +922,17 @@ async fn materialize_file_entry(
         })?;
     }
 
-    // Determine materialization methods from runtime config.
-    // Use default order: hardlink → symlink → reflink → copy.
-    let methods = vec![
-        MaterializationMethod::Hardlink,
-        MaterializationMethod::Symlink,
-        MaterializationMethod::Reflink,
-        MaterializationMethod::Copy,
-    ];
-
     let mut notices = Vec::new();
     materialize_file_from_cas_with_order(
         &shared.cas,
         *hash,
         target_path,
         relative_path,
-        &methods,
+        &shared.materialization_order,
         &mut notices,
     )
     .await?;
+    shared.record_notices(notices);
 
     // Verify materialized content matches the expected CAS hash.
     if shared.verify_materialization {
@@ -1836,6 +1861,28 @@ fn normalize_yt_dlp_sandbox_zip_member_path(path: &Path) -> PathBuf {
 }
 
 impl SyncSharedState {
+    /// Records notices the write path produced for one entry.
+    ///
+    /// A poisoned mutex means an entry worker panicked while it held the lock.
+    /// The notices already collected stay readable through
+    /// [`std::sync::PoisonError::into_inner`], and the join loop turns such a
+    /// panic into a run error anyway, so discarding them here would lose
+    /// information without protecting anything.
+    fn record_notices(&self, notices: Vec<String>) {
+        if notices.is_empty() {
+            return;
+        }
+        let mut sink = self.notices.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sink.extend(notices);
+    }
+
+    /// Takes every notice recorded so far, leaving the sink empty.
+    ///
+    /// Recovery from a poisoned lock matches [`Self::record_notices`].
+    fn drain_notices(&self) -> Vec<String> {
+        std::mem::take(&mut *self.notices.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
     /// Warns that an arm of the run produced nothing. Every caller accompanies such an arm, so
     /// these messages stay out of `MaterializeReport.notices`, which collects non-fatal findings.
     #[expect(
@@ -2092,6 +2139,8 @@ mod tests_entry_row_total;
 mod tests_entry_rows;
 #[cfg(test)]
 mod tests_folder_members;
+#[cfg(test)]
+mod tests_link_strategy;
 #[cfg(test)]
 mod tests_overall_row_finish;
 #[cfg(test)]

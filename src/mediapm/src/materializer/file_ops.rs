@@ -457,9 +457,15 @@ pub(super) async fn materialize_file_from_cas_with_order(
         {
             Ok(()) => {
                 if method_index > 0 {
+                    // The methods that failed are the reason this one ran, so
+                    // they belong in the notice: a reader told only which
+                    // method wrote the file cannot tell a filesystem that
+                    // cannot link from one that is misconfigured.
                     notices.push(format!(
-                        "hierarchy file '{managed_relative_path}' materialization fell back to '{}'",
-                        materialization_method_label(*method)
+                        "hierarchy file '{managed_relative_path}' materialization fell back to \
+                         '{}': {}",
+                        materialization_method_label(*method),
+                        failures.join("; ")
                     ));
                 }
                 return Ok(());
