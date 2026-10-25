@@ -53,8 +53,8 @@ pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
 /// runtime validates a document against, so no hand-maintained schema can
 /// describe a rule the process does not enforce. The list is the source of
 /// truth for that export: a version added below reaches it without a second
-/// edit, and [`SUPPORTED_VERSIONS`] stays the single statement of which
-/// versions exist.
+/// edit, and `SUPPORTED_VERSIONS` stays the single statement of which versions
+/// exist.
 #[must_use]
 pub fn contract_sources() -> &'static [(&'static str, &'static str)] {
     &[
