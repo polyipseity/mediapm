@@ -24,7 +24,8 @@ async fn reconcile_desired_tools_records_progress_ops() {
         &tracker,
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
@@ -97,7 +98,8 @@ async fn reconcile_desired_tools_resolve_failure_fails_fast() {
         &tracker,
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     // The sync now fails fast naming the failing tool and its phase.
     let err = result.expect_err("an unresolvable tool must abort the whole sync");
@@ -154,7 +156,8 @@ async fn reconcile_desired_tools_drives_the_callers_overall_bar() {
         &screen,
         Some(Arc::new(overall)),
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
     // The unknown tool aborts the sync (fail fast), but the caller's overall
     // bar is totalled to the entry count BEFORE provisioning runs, so the
     // SetTotal is still observable on the failure path.

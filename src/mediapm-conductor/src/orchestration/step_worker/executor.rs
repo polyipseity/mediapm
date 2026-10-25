@@ -22,7 +22,10 @@ use super::cache::probe_cache;
 use super::capture::{capture_outputs, implicit_stream_specs};
 use super::inputs::resolve_step_inputs;
 use super::process::{ExecutionResult, run_builtin, run_executable_process};
-use super::sandbox::{create_sandbox, prepare_tool_payload, resolve_executable_under_payload_root};
+use super::sandbox::{
+    create_sandbox, pre_qualify_payload_arguments, prepare_tool_payload,
+    resolve_executable_under_payload_root,
+};
 use super::template::{TemplateContext, resolve_command_parts};
 use crate::instance_key::{derive_instance_key, deterministic_input_hashes_from_resolved_inputs};
 
@@ -59,8 +62,10 @@ async fn dispatch_tool_execution<C: CasApi + Send + Sync>(
             resolve_command_parts(&tool_spec.command_parts, &cmd_ctx).await?;
         // `in_place` executes the tool where the provisioner put it, so the
         // executable the document names relative to the sandbox is resolved
-        // against the payload root before anything runs.
+        // against the payload root before anything runs, and so is every
+        // companion path an argument names.
         resolve_executable_under_payload_root(&mut resolved_parts, tool_spec)?;
+        pre_qualify_payload_arguments(&mut resolved_parts, tool_spec);
         let command_args = resolved_parts
             .iter()
             .zip(&determinism)

@@ -95,9 +95,12 @@ pub(crate) fn resolve_step_output_binding(
 
 /// OS-conditional inlined companion-dep path for yt-dlp post-processing.
 ///
-/// The path is relative to the sandbox root (a direct child), because the
-/// step process runs with the sandbox directory as its working directory and
-/// the inlined companion payload is materialized at `deps/ffmpeg/<os>/…`.
+/// The path is sandbox-relative, and which tree it names is the staging
+/// strategy's business: under `copy` and `hard_link` the inlined companion
+/// sits at `deps/ffmpeg/<os>/…` inside the sandbox, and under `in_place` the
+/// step worker pre-qualifies the value against the tool's payload root, where
+/// the same `deps/` key lives. This selector states the key and never an
+/// absolute path, so it means the same thing under every strategy.
 /// macOS is dual-arch: the inlined ffmpeg payload lives under the arch
 /// segment (`deps/ffmpeg/macos/{host_arch}/ffmpeg`, mirroring the `macos/`
 /// content keys two macOS sources produce), so its selector resolves the
@@ -119,10 +122,10 @@ fn yt_dlp_managed_ffmpeg_location_selector() -> String {
 /// OS-conditional inlined companion-dep path for the deno JS runtime yt-dlp
 /// requires for modern `YouTube` extraction. yt-dlp's `--js-runtimes` expects
 /// the `RUNTIME[:PATH]` form, so the `deno:` runtime name prefixes the
-/// OS-conditional path selector. The path is relative to the sandbox root (a
-/// direct child), because the step process runs with the sandbox directory as
-/// its working directory and the inlined companion payload is materialized at
-/// `deps/deno/<os>/deno`.
+/// OS-conditional path selector. The path is the content-map key
+/// `deps/deno/<os>/deno`, which names the companion inside the sandbox under
+/// `copy` and `hard_link` and under the payload root under `in_place`, where
+/// the step worker pre-qualifies it.
 ///
 /// Uses `build_raw_os_conditional_selector` because the paths already contain
 /// the OS directory component (`deps/deno/{os}/deno`). Using

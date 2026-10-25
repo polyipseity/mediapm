@@ -80,7 +80,8 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
@@ -151,7 +152,8 @@ async fn reconcile_prunes_old_tool_version_clears_content_map() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();
@@ -224,6 +226,7 @@ async fn reconcile_media_tagger_latest(
     )
     .await
     .expect("reconcile_desired_tools must succeed for an offline builtin launcher")
+    .into_report()
 }
 
 /// A generated-doc entry whose `name` is the bare logical tool id makes the
@@ -435,7 +438,8 @@ async fn reconcile_drops_manual_entries_from_generated_doc() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();
@@ -493,7 +497,8 @@ async fn regression_a_seeded_flaky_entry_is_pruned() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();

@@ -29,7 +29,8 @@ async fn reconcile_desired_tools_with_override_does_not_touch_real_cache() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();
@@ -76,7 +77,8 @@ async fn reconcile_desired_tools_cache_override_supports_explicit_paths() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(
         result.is_ok(),

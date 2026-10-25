@@ -607,6 +607,11 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
 /// The assertion that the token appears is what keeps this honest: a
 /// normalization that matched nothing would leave the comparison exactly as it
 /// was and hide the reason it was introduced.
+///
+/// `conductor_bridge/sync/tests_multi_tool_sync.rs` carries the same helper. The
+/// two cannot share one: that copy lives in a `#[cfg(test)]` module inside the
+/// crate and this one in a separate crate, so a shared helper would have to be
+/// public API of `mediapm` and would export a test-only utility.
 fn normalize_workspace_root(document: &[u8], root: &std::path::Path) -> String {
     let text = String::from_utf8(document.to_vec()).expect("the generated document is UTF-8");
     let root_text = root.to_string_lossy();

@@ -79,7 +79,8 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 

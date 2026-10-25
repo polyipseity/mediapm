@@ -6,6 +6,11 @@
 //! execute from the provisioned tree, link that tree into the sandbox, or copy
 //! it as before. These tests pin all three against one payload, and pin the
 //! refusal that keeps a document with no usable root from running a tool.
+//!
+//! A test that runs a tool drives a `#!/bin/sh` fixture, so it compiles out on
+//! Windows. The step that decides what the sandbox holds is not platform
+//! specific, and `payload_staging_prepares_the_sandbox_on_every_platform`
+//! covers it there.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -24,6 +29,29 @@ use crate::orchestration::protocol::{
 use crate::state::ConductorState;
 
 use super::executor::execute_step;
+use super::sandbox::prepare_tool_payload;
+
+/// The tool body that records its whole argument vector instead of one argument.
+///
+/// A companion path is an *argument*, so a fixture that asserted only one
+/// argument could not tell where the others resolved.
+const ARGV_SCRIPT: &str =
+    "#!/bin/sh\nmkdir -p downloads\nprintf '%s\\n' \"$@\" > downloads/out.txt\n";
+
+/// The archive companion's directory key, which the provisioner unpacks.
+fn companion_dir_key() -> String {
+    format!("deps/ffmpeg/{}/", host_platform_dir())
+}
+
+/// The path inside the archive companion's tree that a flag names.
+fn companion_file_path_key() -> String {
+    format!("deps/ffmpeg/{}/ffmpeg", host_platform_dir())
+}
+
+/// The file companion's content-map key.
+fn companion_binary_key() -> String {
+    format!("deps/deno/{}/deno", host_platform_dir())
+}
 
 /// The tool body every fixture runs: it writes its argument into a
 /// sandbox-relative path, which is what the capture phase reads.
@@ -126,16 +154,28 @@ fn write_script(payload_root: &Path) -> PathBuf {
 /// rather than a constant: the writer has to be able to produce the whole tree
 /// a reconciled payload root holds.
 fn write_script_at(payload_root: &Path, key: &str) -> PathBuf {
+    write_payload_file(payload_root, key, SCRIPT.as_bytes(), true)
+}
+
+/// Writes `bytes` at `key` under `payload_root`, executable where the platform
+/// has a mode.
+fn write_payload_file(payload_root: &Path, key: &str, bytes: &[u8], executable: bool) -> PathBuf {
     let path = payload_root.join(key);
-    std::fs::create_dir_all(path.parent().expect("the script path names a directory"))
+    std::fs::create_dir_all(path.parent().expect("the payload path names a directory"))
         .expect("create the payload directory");
-    std::fs::write(&path, SCRIPT).expect("write the fixture script");
+    std::fs::write(&path, bytes).expect("write the payload file");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(&path).expect("script metadata").permissions();
-        permissions.set_mode(permissions.mode() | 0o700);
-        std::fs::set_permissions(&path, permissions).expect("make the script executable");
+        if executable {
+            let mut permissions = std::fs::metadata(&path).expect("payload metadata").permissions();
+            permissions.set_mode(permissions.mode() | 0o700);
+            std::fs::set_permissions(&path, permissions).expect("make the payload executable");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = executable;
     }
     path
 }
@@ -368,6 +408,10 @@ async fn an_archive_payload_is_unpacked_once() {
 /// This is the test that keeps `copy` honest: it stays in the enum, so a
 /// strategy that misbehaves on a platform still has a covered alternative, and
 /// every alternative has to produce what `copy` produced.
+///
+/// The rows compare execution, so they run on unix only; the staging step itself
+/// is covered on every platform by
+/// `payload_staging_prepares_the_sandbox_on_every_platform`.
 #[cfg(unix)]
 #[tokio::test]
 async fn payload_staging_matrix() {
@@ -494,6 +538,190 @@ async fn a_deps_prefixed_payload_stages_under_every_strategy() {
     }
 }
 
+/// Reads the argument vector the fixture script recorded.
+///
+/// The argument-writing script puts one argument per line, so the comparison can
+/// say which argument resolved where instead of only that some argument did.
+#[cfg(unix)]
+fn recorded_arguments(sandbox: &Path) -> Vec<String> {
+    let text = String::from_utf8(written_output(sandbox))
+        .expect("the fixture script writes its arguments as text");
+    text.lines().map(str::to_string).collect()
+}
+
+/// Builds a fixture whose payload root holds the tool and both shapes of
+/// inlined companion: an archive unpacked under a directory key, and a file
+/// under a file key.
+///
+/// The two argument spellings the fixture feeds the tool are the ones
+/// `mediapm`'s yt-dlp spec emits (`--ffmpeg-location deps/ffmpeg/<os>/ffmpeg`
+/// and `--js-runtimes deno:deps/deno/<os>/deno`). They are spelled out here
+/// because this crate cannot depend on `mediapm` to import them, so a change to
+/// those spellings has to be mirrored here.
+///
+/// These are the two shapes a reconciled content map carries, and a flag that
+/// names a path inside an unpacked archive is the case a key-by-key comparison
+/// would miss.
+async fn fixture_with_companions() -> (Fixture, BTreeMap<String, String>) {
+    let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let runtime_root = tmp.path().join("runtime");
+    let payload_root = tmp.path().join("payload");
+    let cas = InMemoryCas::new();
+
+    write_payload_file(&payload_root, &script_key(), ARGV_SCRIPT.as_bytes(), true);
+    // The provisioner unpacks an archive source under its directory key, so the
+    // path a flag names inside it exists before any step runs.
+    let archive = make_zip(&[("ffmpeg", b"companion-binary")]);
+    let archive_hash = cas.put(Bytes::from(archive)).await.expect("import the archive");
+    write_payload_file(&payload_root, &companion_file_path_key(), b"companion-binary", true);
+
+    let deno_bytes = b"deno-binary";
+    let deno_hash = cas.put(Bytes::from_static(deno_bytes)).await.expect("import the deno bytes");
+    write_payload_file(&payload_root, &companion_binary_key(), deno_bytes, true);
+
+    let tool_hash =
+        cas.put(Bytes::from_static(ARGV_SCRIPT.as_bytes())).await.expect("import the tool body");
+    let content_map = BTreeMap::from([
+        (script_key(), tool_hash.to_hex()),
+        (companion_dir_key(), archive_hash.to_hex()),
+        (companion_binary_key(), deno_hash.to_hex()),
+    ]);
+    (Fixture { tmp, runtime_root, payload_root, cas }, content_map)
+}
+
+/// Builds the tool whose arguments name both companion shapes the way the
+/// yt-dlp spec does: one as a bare path, one inside a `<runtime>:<path>` pair.
+fn companion_argument_tool(
+    content_map: BTreeMap<String, String>,
+    payload_root: &Path,
+    staging: PayloadStaging,
+) -> UnifiedToolSpec {
+    let mut tool = script_tool(content_map, payload_root, staging);
+    tool.command_parts = vec![
+        script_key(),
+        "--ffmpeg-location".to_string(),
+        companion_file_path_key(),
+        "--js-runtimes".to_string(),
+        format!("deno:{}", companion_binary_key()),
+        "--marker".to_string(),
+        "tail".to_string(),
+    ];
+    tool
+}
+
+/// `in_place` names every companion under the payload root.
+///
+/// A companion is named by an *argument*, not by the executable, and the sandbox
+/// no longer holds the `deps/` tree it once did. A step that left those values
+/// relative would hand the tool a path that does not exist, and the failure would
+/// report itself as the tool's rather than as the document's.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_in_place_step_names_its_companions_absolutely() {
+    let (fixture, content_map) = fixture_with_companions().await;
+    let tool = companion_argument_tool(content_map, &fixture.payload_root, PayloadStaging::InPlace);
+    let (bundle, sandbox) = run_step(&fixture, tool, "companions-in-place", "companions-in-place")
+        .await
+        .expect("the step runs with its companions");
+
+    let root = fixture.payload_root.to_string_lossy().into_owned();
+    assert_eq!(
+        recorded_arguments(&sandbox),
+        vec![
+            "--ffmpeg-location".to_string(),
+            format!("{root}/{}", companion_file_path_key()),
+            "--js-runtimes".to_string(),
+            format!("deno:{root}/{}", companion_binary_key()),
+            "--marker".to_string(),
+            "tail".to_string(),
+        ],
+        "an in-place step has to name each companion under the payload root, and has to leave a \
+         value that names no payload entry alone",
+    );
+    assert!(
+        !sandbox.join("deps").exists(),
+        "in_place still must not copy any part of the payload into the sandbox",
+    );
+    assert!(
+        bundle.instance.outputs.contains_key("out"),
+        "the step has to run and capture its declared output",
+    );
+}
+
+/// `hard_link` keeps the arguments the document wrote.
+///
+/// The tree is in the sandbox under exactly those names, so rewriting them would
+/// point the tool at the provisioned tree instead of the staged one — and would
+/// make the two strategies indistinguishable in the recorded arguments.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hard_link_step_keeps_its_companion_arguments_relative() {
+    let (fixture, content_map) = fixture_with_companions().await;
+    let tool =
+        companion_argument_tool(content_map, &fixture.payload_root, PayloadStaging::HardLink);
+    let (_bundle, sandbox) =
+        run_step(&fixture, tool, "companions-hard-link", "companions-hard-link")
+            .await
+            .expect("the step runs with its companions");
+
+    assert_eq!(
+        recorded_arguments(&sandbox),
+        vec![
+            "--ffmpeg-location".to_string(),
+            companion_file_path_key(),
+            "--js-runtimes".to_string(),
+            format!("deno:{}", companion_binary_key()),
+            "--marker".to_string(),
+            "tail".to_string(),
+        ],
+        "a hard-linked step resolves the companions the document named, unchanged",
+    );
+    assert!(
+        sandbox.join(companion_binary_key()).is_file(),
+        "hard_link puts the companion tree in the sandbox under the key the document used",
+    );
+}
+
+/// The staging step itself is platform-neutral, and this pins each strategy's
+/// topology without executing anything.
+///
+/// The execution-based tests above drive a `#!/bin/sh` fixture, so they compile
+/// out on Windows. The step that decides what the sandbox holds is not platform
+/// specific, so it is checked here on every platform: `copy` writes the content
+/// map, `in_place` writes nothing into the sandbox, and `hard_link` stages the
+/// payload without going through the CAS.
+#[tokio::test]
+async fn payload_staging_prepares_the_sandbox_on_every_platform() {
+    let fixture = Fixture::with_script().await;
+    let content_map = fixture.content_map().await;
+
+    for staging in [PayloadStaging::InPlace, PayloadStaging::HardLink, PayloadStaging::Copy] {
+        let tool = script_tool(content_map.clone(), &fixture.payload_root, staging);
+        let sandbox = fixture.tmp.path().join(format!("sandbox-{}", staging.as_str()));
+        std::fs::create_dir_all(&sandbox).expect("create the sandbox");
+        prepare_tool_payload(&fixture.cas, &tool, &sandbox)
+            .await
+            .expect("staging a payload root this fixture holds succeeds");
+        let staged = sandbox.join(script_key());
+        match staging {
+            PayloadStaging::InPlace => assert!(
+                !staged.exists(),
+                "in_place stages nothing: the tool runs where the provisioner put it",
+            ),
+            PayloadStaging::HardLink => assert_eq!(
+                std::fs::read(&staged).expect("the linked payload is readable"),
+                SCRIPT.as_bytes(),
+                "hard_link stages the payload bytes into the sandbox",
+            ),
+            PayloadStaging::Copy => assert_eq!(
+                std::fs::read(&staged).expect("the copied payload is readable"),
+                SCRIPT.as_bytes(),
+                "copy stages the payload bytes into the sandbox",
+            ),
+        }
+    }
+}
+
 /// A strategy that reads a payload root refuses a document that names no usable
 /// one, naming the tool and the path.
 ///
@@ -507,10 +735,13 @@ async fn strict_a_missing_payload_root_fails_before_execution() {
     let content_map = fixture.content_map().await;
     let not_a_directory = fixture.payload_root.join(script_key());
 
-    for (label, root) in [
-        ("empty", String::new()),
-        ("relative", "relative/payload".to_string()),
-        ("file", not_a_directory.to_string_lossy().into_owned()),
+    // Each label carries the phrase the pre-execution check emits for that root,
+    // so the assertion cannot be satisfied by a later diagnostic: the resolver
+    // says "is not a file under its payload_root", which none of these match.
+    for (label, root, expected) in [
+        ("empty", String::new(), "records no payload_root"),
+        ("relative", "relative/payload".to_string(), "is not an absolute path"),
+        ("file", not_a_directory.to_string_lossy().into_owned(), "is not a directory"),
     ] {
         for staging in [PayloadStaging::InPlace, PayloadStaging::HardLink] {
             let mut tool = script_tool(content_map.clone(), &fixture.payload_root, staging);
@@ -527,6 +758,16 @@ async fn strict_a_missing_payload_root_fails_before_execution() {
             assert!(
                 message.contains("payload_root"),
                 "the {label} root diagnostic for {staging:?} has to name the field: {message}",
+            );
+            assert!(
+                message.contains(expected),
+                "the {label} root diagnostic for {staging:?} has to be the one the check \
+                 before execution emits ('{expected}'): {message}",
+            );
+            assert!(
+                message.contains(staging.as_str()),
+                "the {label} root diagnostic for {staging:?} has to name the strategy that \
+                 needs the root: {message}",
             );
             if !root.is_empty() {
                 assert!(
@@ -567,6 +808,11 @@ async fn strict_an_incomplete_payload_root_fails_before_execution() {
         message.contains(&empty_root.to_string_lossy().to_string()),
         "the diagnostic has to name the root it searched: {message}",
     );
+    assert!(
+        message.contains("does not hold the content-map entry"),
+        "the step has to be refused by the check before execution, not by the resolver \
+         afterwards: {message}",
+    );
 }
 
 /// A payload root that holds the tool's own script but not its inlined
@@ -605,6 +851,11 @@ async fn strict_a_missing_deps_entry_fails_before_execution() {
         assert!(
             message.contains(&expected_path.to_string_lossy().to_string()),
             "the {staging:?} diagnostic has to name where it looked: {message}",
+        );
+        assert!(
+            message.contains("does not hold the content-map entry"),
+            "the {staging:?} step has to be refused before it runs, not fail as the tool: \
+             {message}",
         );
     }
 }

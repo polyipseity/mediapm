@@ -52,7 +52,8 @@ async fn reconcile_desired_tools_registers_prune_bar_on_the_caller_screen() {
         &tracker,
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();
     assert!(
@@ -148,7 +149,8 @@ async fn prune_bar_reaches_the_display() {
         &screen,
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();
     assert!(
@@ -287,7 +289,8 @@ async fn prune_bar_is_inert_on_a_disabled_screen() {
         &screen,
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
     assert!(result.is_ok(), "a disabled screen must not fail the sync: {:?}", result.err());
     assert!(result.unwrap().pruned_tools >= 1, "the prune must still run with progress disabled");
     assert_eq!(

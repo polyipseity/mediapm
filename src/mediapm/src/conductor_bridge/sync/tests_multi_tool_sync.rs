@@ -167,7 +167,8 @@ async fn sync_multi_tool_per_tool_bars_are_order_independent() {
         &tracker,
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
@@ -294,7 +295,8 @@ async fn per_tool_phase_bars_carry_the_version_between_the_tool_and_the_phase() 
         &tracker,
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
     let ops = tracker.ops();
@@ -501,6 +503,11 @@ async fn sync_parallel_fetch_is_deterministic() {
 /// The token assertion is what keeps the normalization honest: one that matched
 /// nothing would leave the comparison exactly as it was and hide the reason it
 /// exists.
+///
+/// `tests/int/tool_sync/inline_deps.rs` carries the same helper. The two cannot
+/// share one: this copy lives in a `#[cfg(test)]` module inside the crate and
+/// that one in a separate crate, so a shared helper would have to be public API
+/// of `mediapm` and would export a test-only utility.
 fn normalize_workspace_root(document: &[u8], root: &std::path::Path) -> String {
     let text = String::from_utf8(document.to_vec()).expect("the generated document is UTF-8");
     let root_text = root.to_string_lossy();

@@ -63,7 +63,8 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
@@ -158,7 +159,8 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     assert_eq!(result.unwrap().tools_skipped, 1, "exact spec matching stored fields must skip");
@@ -245,7 +247,8 @@ async fn regression_skip_path_registers_managed_tool() {
         &ProgressScreen::disabled(),
         None,
     )
-    .await;
+    .await
+    .map(ToolSyncOutcome::into_report);
 
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();

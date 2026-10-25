@@ -249,6 +249,17 @@ fn render_dotenv_quoted_value(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+/// Returns the directory a tool's payload is materialized into.
+///
+/// This is the layout `ProvisionCache::materialize` writes and the generated
+/// dotenv reads: `<tools_base_dir>/<sanitized conductor tool id>/payload`. One
+/// function answers it because a document that stages from a payload root has to
+/// name the same directory the provisioner filled.
+#[must_use]
+pub fn provisioned_payload_dir(tools_base_dir: &Path, conductor_tool_id: &str) -> PathBuf {
+    tools_base_dir.join(sanitize_tool_id(conductor_tool_id)).join(PAYLOAD_DIR_NAME)
+}
+
 /// Overwrites `.env.generated` with the canonical header and tool binary path
 /// entries derived from tool runtimes' content maps.
 ///
@@ -273,23 +284,6 @@ fn render_dotenv_quoted_value(value: &str) -> String {
 /// # Errors
 ///
 /// Returns [`ConductorError`] when path resolution or file writes fail.
-/// Returns the directory a tool's payload is materialized into.
-///
-/// This is the layout `ProvisionCache::materialize` writes and the generated
-/// dotenv reads: `<tools_base_dir>/<sanitized conductor tool id>/payload`. One
-/// function answers it because a document that stages from a payload root has to
-/// name the same directory the provisioner filled.
-#[must_use]
-pub fn provisioned_payload_dir(tools_base_dir: &Path, conductor_tool_id: &str) -> PathBuf {
-    tools_base_dir.join(sanitize_tool_id(conductor_tool_id)).join(PAYLOAD_DIR_NAME)
-}
-
-/// Writes the generated dotenv for one conductor runtime root.
-///
-/// # Errors
-///
-/// Returns [`ConductorError::Io`] when a tool path cannot be made absolute or
-/// the file cannot be written.
 pub fn write_generated_dotenv(
     conductor_dir: &Path,
     tools_base_dir: &Path,

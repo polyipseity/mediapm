@@ -47,9 +47,11 @@ fn document_with_tool(key: &str, staging: PayloadStaging, payload_root: &str) ->
 /// The stamp names the provisioned directory on both carriers, and the strategy
 /// that reads it.
 ///
-/// The document is what a standalone `mediapm-conductor run` reads and the
-/// runtime map is what the same process executes from, so a stamp that reached
-/// only one of them would leave the two disagreeing about the same tool.
+/// The document is what a run executes a tool from, whether the run is this
+/// process or a standalone `mediapm-conductor run`; the runtime map is what the
+/// sync itself reads to materialize a payload and write `.env.generated`. A
+/// stamp that reached only one of them would leave the two disagreeing about the
+/// same tool.
 #[test]
 fn regression_stamp_payload_roots_names_the_provisioned_directory() {
     let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
@@ -85,7 +87,7 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
     );
     assert_eq!(
         runtimes[conductor_tool_id].payload_root, expected,
-        "the runtime map is what this process executes from, so it has to name the same root"
+        "the runtime map drives provisioning and the generated dotenv, so it has to name the same root"
     );
     assert_eq!(runtimes[conductor_tool_id].payload_staging, PayloadStaging::InPlace);
 }
@@ -120,6 +122,59 @@ fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
     );
     assert_eq!(document.tools[conductor_tool_id].runtime.payload_staging, PayloadStaging::Copy);
     assert_eq!(runtimes[conductor_tool_id].payload_staging, PayloadStaging::Copy);
+}
+
+/// A payload a run holds stays on disk through a retain pass that keeps nothing.
+///
+/// The run executes managed tools after the tool phase returns, and the default
+/// `in_place` strategy executes them out of the provisioned tree itself. A
+/// retain pass that removed that tree mid-run would take the bytes a live step
+/// is running, so the guards the phase materializes have to outlive the phase.
+/// This test is the reason the phase answers them instead of dropping them: with
+/// the guards held the sweep skips the entry, and once they go it removes it.
+///
+/// Its reach stops at that mechanism. Whether the library sync keeps the guards
+/// bound for the whole run is a property of a call site this test does not
+/// enter, and no test here observes a retain pass racing a live step.
+#[tokio::test]
+async fn regression_a_payload_survives_a_retain_pass_while_the_run_holds_it() {
+    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let paths = paths_under(root.path());
+    std::fs::create_dir_all(&paths.tools_dir).expect("tools directory");
+    let cas = open_workspace_cas_store(&paths).await.expect("open the workspace CAS");
+    let hash = cas.put(bytes::Bytes::from_static(b"payload")).await.expect("import the payload");
+    let conductor_tool_id = format!("scripted@{hash}");
+
+    let content_map = BTreeMap::from([("linux/scripted".to_string(), hash.to_string())]);
+    let mut document = document_with_tool(&conductor_tool_id, PayloadStaging::InPlace, "");
+    document.tools.get_mut(&conductor_tool_id).expect("the spec").runtime.content_map =
+        content_map.clone();
+    let runtimes = BTreeMap::from([(
+        conductor_tool_id.clone(),
+        ToolRuntime { content_map, payload_staging: PayloadStaging::InPlace, ..Default::default() },
+    )]);
+
+    let guards = materialize_active_tool_runtimes(&paths.tools_dir, cas, &document, &runtimes)
+        .await
+        .expect("materializing the only active tool succeeds");
+    let payload_dir = provisioned_payload_dir(&paths.tools_dir, &conductor_tool_id);
+    assert!(payload_dir.is_dir(), "the phase has to materialize the payload it reports on");
+
+    let held = retain_only_tool_dirs(paths.tools_dir.clone(), std::collections::HashSet::new())
+        .await
+        .expect("the retain pass runs");
+    assert!(
+        payload_dir.is_dir(),
+        "a retain pass must keep a payload the run is still holding, or a live step loses its tool"
+    );
+    assert!(held.is_empty(), "an entry kept for being in use is not reported as a failed removal");
+
+    drop(guards);
+    let released = retain_only_tool_dirs(paths.tools_dir.clone(), std::collections::HashSet::new())
+        .await
+        .expect("the retain pass runs");
+    assert!(!payload_dir.exists(), "once the run lets go, the same sweep reclaims the entry");
+    assert!(released.is_empty(), "a successful removal is not a warning");
 }
 
 /// A tool with an empty content map is not stamped even when a directory exists

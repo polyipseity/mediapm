@@ -12,6 +12,7 @@ use std::sync::Arc;
 use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
+use mediapm_conductor::provision::ProvisionedTool;
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::{Conductor, RuntimeStoragePaths};
@@ -956,7 +957,12 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         // opened for a run that asked for no progress output.
         let terminal = sync_progress_terminal(overrides, no_progress);
 
-        self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, &terminal).await
+        // This entry point runs the tool phase and nothing after it, so no step
+        // ever executes from the payloads the phase materialized and the guards
+        // end with it.
+        self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, &terminal)
+            .await
+            .map(|(summary, _payload_guards)| summary)
     }
 
     /// Internal tool-sync implementation that reconciles desired tools from
@@ -972,13 +978,18 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     ///
     /// Returns [`MediaPmError::Io`] if document loading fails, or
     /// [`MediaPmError::Conductor`] if reconciliation fails.
+    ///
+    /// Answers the summary together with the provision guards for the payloads
+    /// this phase materialized. A caller that runs no later phase taking a
+    /// payload drops them; a caller that does keeps them until that phase
+    /// returns.
     async fn sync_tools_from_document(
         &mut self,
         effective_paths: &MediaPmPaths,
         runtime_storage: &MediaRuntimeStorage,
         recheck_policy: RecheckPolicy,
         terminal: &ProgressTerminal,
-    ) -> Result<ToolsSyncSummary, MediaPmError> {
+    ) -> Result<(ToolsSyncSummary, Vec<ProvisionedTool>), MediaPmError> {
         // Build the desired tools map from runtime storage.
         let desired_tools: BTreeMap<String, serde_json::Value> = runtime_storage
             .tools
@@ -1009,7 +1020,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         let workspace_cas =
             Cas::workspace_provisioning_cas(self.conductor(), effective_paths).await?;
 
-        let report = reconcile_desired_tools(
+        let outcome = reconcile_desired_tools(
             workspace_cas,
             effective_paths,
             &desired_tools,
@@ -1021,6 +1032,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             Some(Arc::new(tool_overall)),
         )
         .await?;
+        let report = outcome.report;
         // The phase's screen is kept live through its `[prn]` prune bar, which
         // it registers only after the provisioning loop — so the join belongs
         // here, once the phase has returned and the bar has finished.
@@ -1057,14 +1069,17 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             user_doc.as_ref(),
         )?;
 
-        Ok(ToolsSyncSummary {
-            added_tools: report.tools_added,
-            updated_tools: report.tools_updated,
-            pruned_tools: report.pruned_tools,
-            removed_tools: report.tools_removed,
-            skipped_tools: report.tools_skipped,
-            warnings: report.warnings,
-        })
+        Ok((
+            ToolsSyncSummary {
+                added_tools: report.tools_added,
+                updated_tools: report.tools_updated,
+                pruned_tools: report.pruned_tools,
+                removed_tools: report.tools_removed,
+                skipped_tools: report.tools_skipped,
+                warnings: report.warnings,
+            },
+            outcome.payload_guards,
+        ))
     }
 
     /// Validates and normalizes a source URI, returning a [`MediaPackage`].
@@ -1321,9 +1336,16 @@ impl MediaPmService<FileSystemCas> {
         // 2. Sync tools. The phase derives its screen from the sync's terminal,
         // so the user's `--no-progress` flag reaches it through the terminal
         // rather than through a separate flag.
-        let tools_report = self
+        let (tools_report, payload_guards) = self
             .sync_tools_from_document(&effective_paths, &merged, recheck_policy, &terminal)
             .await?;
+        // The guards hold every provisioned payload for the rest of this run:
+        // the workflow phase executes managed tools and the materializer writes
+        // their outputs, and `in_place` runs a step out of the very directory a
+        // guard holds. Binding them here — not inside the tool phase, which has
+        // already returned — is what keeps a prune or an expiry sweep from
+        // removing a payload a live step is executing out of.
+        let _payload_guards = payload_guards;
 
         // Notify observer: tool sync phase complete.
         if let Some(ref obs) = observer {

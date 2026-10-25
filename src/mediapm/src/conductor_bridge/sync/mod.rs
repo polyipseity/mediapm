@@ -777,8 +777,10 @@ async fn parse_available_content_map_hashes(
 /// Returns one guard per materialized payload. The guard holds a shared lock on
 /// the entry directory, so a step that executes from that directory — which is
 /// what the `in_place` staging strategy does — keeps the payload it is running
-/// from while the run holds it. Dropping the guards early is what lets an expiry
-/// sweep or a retain pass remove a tree a live step is executing out of.
+/// from for as long as the caller holds the guard. The guards become part of
+/// [`ToolSyncOutcome`] for that reason: a phase that dropped them on return
+/// would let an expiry sweep or a retain pass remove a tree a live step is
+/// executing out of.
 async fn materialize_active_tool_runtimes(
     tools_dir: &Path,
     provision_cas: Arc<FileSystemCas>,
@@ -811,6 +813,33 @@ async fn materialize_active_tool_runtimes(
         guards.push(provision_cache.materialize(&materialize_key, &content_map).await?);
     }
     Ok(guards)
+}
+
+/// What one reconciliation pass answers: its report, and the guards that keep
+/// the payloads it materialized alive.
+///
+/// The guards are part of the outcome rather than a detail of the pass because
+/// the caller owns the phases that execute out of those payloads. A pass that
+/// kept them for itself would hand the next phase a directory any expiry sweep
+/// or prune is free to remove.
+pub(crate) struct ToolSyncOutcome {
+    /// What the pass recorded, for the summary and the persisted registry.
+    pub(crate) report: ToolSyncReport,
+    /// One guard per materialized tool payload, held until the last phase that
+    /// executes from the provisioned tree has finished.
+    pub(crate) payload_guards: Vec<ProvisionedTool>,
+}
+
+#[cfg(test)]
+impl ToolSyncOutcome {
+    /// Answers the report and lets the guards go.
+    ///
+    /// A test drives one reconciliation pass and asserts on its counts; it runs
+    /// no phase that executes from a payload, so it takes the report and drops
+    /// the guards with it. The library sync keeps them instead.
+    pub(crate) fn into_report(self) -> ToolSyncReport {
+        self.report
+    }
 }
 
 /// Summary of one `mediapm tool sync` reconciliation pass.
@@ -1325,6 +1354,10 @@ pub(crate) async fn open_workspace_cas_store(
 ///
 /// # Errors
 ///
+/// The outcome carries the provision guards for the payloads this pass
+/// materialized; the caller holds them for as long as the run executes from
+/// those payloads.
+///
 /// Returns an error when any critical step (document loading, builtin
 /// registration, content-map import) fails. Non-critical failures are
 /// reported as warnings in [`ToolSyncReport`].
@@ -1346,7 +1379,7 @@ pub(crate) async fn reconcile_desired_tools(
     cache_root_override: Option<&Path>,
     progress_group: &dyn ProgressScreenApi,
     overall_bar: Option<Arc<dyn ProgressBarApi>>,
-) -> Result<ToolSyncReport, MediaPmError> {
+) -> Result<ToolSyncOutcome, MediaPmError> {
     let mut report = ToolSyncReport::default();
 
     // Validate all dependency keys before any provisioning begins.
@@ -1666,9 +1699,10 @@ pub(crate) async fn reconcile_desired_tools(
 
     // 4b. Materialize active tool payloads into tools_dir via the provision
     // cache so `.env.generated` paths and workflow execution share one layout.
-    // The guards stay bound until this phase returns, so everything below —
-    // including the prune pass — runs while the payloads it names are locked.
-    let _payload_guards = materialize_active_tool_runtimes(
+    // The guards go back to the caller, which holds them for the phases that
+    // execute from these payloads: everything below, including this phase's own
+    // prune pass, runs while the payloads it names are locked.
+    let payload_guards = materialize_active_tool_runtimes(
         &paths.tools_dir,
         Arc::clone(&workspace_cas),
         &generated_doc,
@@ -1718,7 +1752,7 @@ pub(crate) async fn reconcile_desired_tools(
 
     report.pruned_tools = pruned_tools;
 
-    Ok(report)
+    Ok(ToolSyncOutcome { report, payload_guards })
 }
 
 /// Records the provisioned payload directory and the staging strategy on every
@@ -1798,6 +1832,7 @@ mod tests_payload_roots;
 mod tests_provision_concurrency;
 #[cfg(test)]
 mod tests_provisioning_entries;
+#[cfg(test)]
 mod tests_prune_bar;
 #[cfg(test)]
 mod tests_pruning;

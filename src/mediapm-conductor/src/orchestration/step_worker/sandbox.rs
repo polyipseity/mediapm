@@ -174,11 +174,15 @@ pub(super) async fn prepare_tool_payload<C: CasApi + Send + Sync>(
 /// step runs rather than after: a missing root that surfaced as "command not
 /// found" would send the reader to the tool instead of to the document.
 ///
+/// A content-map value is checked only when it parses as a hash. A value that
+/// does not is an inline description rather than an entry in the payload, so
+/// there is nothing under the root for it to name.
+///
 /// # Errors
 ///
 /// Returns [`ConductorError::Workflow`] when the root is empty, is not absolute,
-/// is not a directory, or when a payload entry the content map declares is
-/// missing from it.
+/// is not a directory, or when a hash-valued content-map entry is missing from
+/// it.
 fn require_usable_payload_root(
     tool_spec: &UnifiedToolSpec,
 ) -> Result<Option<PathBuf>, ConductorError> {
@@ -252,8 +256,9 @@ fn payload_entry_path(payload_root: &Path, key: &str) -> PathBuf {
 /// Only the first part moves: it is the executable, and a document describes it
 /// as a payload-relative path (`linux/ffmpeg`, or `deps/ffmpeg/linux/ffmpeg` for
 /// an inlined companion) because the copy strategy once put it in the sandbox.
-/// Every other part is a flag, a resolved input path, or an output path, and all
-/// of those resolve against the sandbox.
+/// Companion paths in later parts are handled by
+/// [`pre_qualify_payload_arguments`]; everything else is a flag, a resolved
+/// input path, or an output path, and all of those resolve against the sandbox.
 ///
 /// # Errors
 ///
@@ -285,6 +290,138 @@ pub(super) fn resolve_executable_under_payload_root(
     }
     *first = executable.to_string_lossy().into_owned();
     Ok(())
+}
+
+/// Characters that may precede a path-shaped value inside one command part.
+///
+/// A part is not always a bare path. yt-dlp names a companion as a
+/// `<runtime>:<path>` pair, and a document may join a flag to its value with
+/// `=` or list several paths after a comma, so a path may begin after any of
+/// these rather than only at the start of the part.
+const ARGUMENT_VALUE_SEPARATORS: [char; 3] = [':', '=', ','];
+
+/// Resolves the payload paths a command names outside its executable.
+///
+/// A document names an inlined companion relative to the sandbox
+/// (`deps/ffmpeg/linux/ffmpeg`, `deps/deno/linux/deno`) because the copy
+/// strategy put that tree in the sandbox. `in_place` leaves the sandbox without
+/// one, so every command part is rewritten to name the same entry under the
+/// payload root: otherwise a flag such as `--ffmpeg-location` would point at a
+/// path that does not exist and the tool would fail on a payload the document
+/// declared.
+///
+/// The rewrite is driven by the tool's own content map, so it can only reach a
+/// path the payload actually holds. A directory key names a tree and covers
+/// every path inside it (`deps/ffmpeg/linux/` covers
+/// `deps/ffmpeg/linux/ffmpeg`); a file key covers itself. Nothing else is
+/// rewritten: an output template a tool fills in later, a URL, and a plain flag
+/// value name no content-map entry, so they keep the sandbox-relative spelling
+/// the document gave them.
+///
+/// `hard_link` and `copy` leave the arguments alone, because both put the tree
+/// in the sandbox under the names the document already used.
+pub(super) fn pre_qualify_payload_arguments(
+    command_parts: &mut [String],
+    tool_spec: &UnifiedToolSpec,
+) {
+    if tool_spec.payload_staging != PayloadStaging::InPlace {
+        return;
+    }
+    let prefixes = payload_argument_prefixes(tool_spec);
+    if prefixes.is_empty() || tool_spec.payload_root.is_empty() {
+        return;
+    }
+    let root = tool_spec.payload_root.trim_end_matches(['/', '\\']);
+    for part in command_parts.iter_mut().skip(1) {
+        if let Some(qualified) = qualify_argument(part, root, &prefixes) {
+            *part = qualified;
+        }
+    }
+}
+
+/// The content-map keys a command argument may name, longest first.
+///
+/// Longest first is what makes `deps/deno/linux/deno` win over `deps/deno/`, so
+/// a file key inside a directory key resolves to the file rather than to the
+/// directory that contains it. A value that does not parse as a hash is an
+/// inline description rather than a payload entry, so it contributes no prefix —
+/// the same rule `require_usable_payload_root` applies.
+fn payload_argument_prefixes(tool_spec: &UnifiedToolSpec) -> Vec<String> {
+    let mut prefixes: Vec<String> = tool_spec
+        .tool_content_map
+        .iter()
+        .filter(|(_, value)| value.parse::<Hash>().is_ok())
+        .filter_map(|(key, _)| {
+            let trimmed = key.trim_end_matches(['/', '\\']);
+            if trimmed.is_empty() || trimmed == "." {
+                return None;
+            }
+            if key.ends_with('/') || key.ends_with('\\') {
+                Some(format!("{trimmed}/"))
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect();
+    prefixes.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    prefixes
+}
+
+/// Rewrites every content-map path one command part names, or answers `None`
+/// when it names none.
+fn qualify_argument(part: &str, payload_root: &str, prefixes: &[String]) -> Option<String> {
+    let mut qualified = String::with_capacity(part.len());
+    let mut rest = part;
+    let mut rewrote = false;
+    while !rest.is_empty() {
+        let Some((index, prefix)) = first_payload_path(rest, prefixes) else {
+            qualified.push_str(rest);
+            break;
+        };
+        qualified.push_str(&rest[..index]);
+        qualified.push_str(payload_root);
+        qualified.push('/');
+        qualified.push_str(prefix);
+        rewrote = true;
+        rest = &rest[index + prefix.len()..];
+    }
+    rewrote.then_some(qualified)
+}
+
+/// Finds the first content-map path in `text`, answering where it starts and
+/// what it spells.
+///
+/// A match begins at the start of the text or after one of
+/// [`ARGUMENT_VALUE_SEPARATORS`], and a file key also has to end at the end of
+/// the text or before a path separator. Without those boundaries a coincidental
+/// substring of an unrelated value — a filename that happens to contain a key,
+/// or a longer path the key only prefixes — would be rewritten.
+fn first_payload_path<'a>(text: &str, prefixes: &'a [String]) -> Option<(usize, &'a String)> {
+    for (index, _) in text.char_indices() {
+        if index > 0 {
+            let preceding = text[..index].chars().next_back()?;
+            if !ARGUMENT_VALUE_SEPARATORS.contains(&preceding) {
+                continue;
+            }
+        }
+        for prefix in prefixes {
+            let Some(candidate) = text.get(index..index + prefix.len()) else {
+                continue;
+            };
+            if candidate != prefix.as_str() {
+                continue;
+            }
+            let trailing = &text[index + prefix.len()..];
+            let ends_cleanly = trailing.is_empty()
+                || trailing.starts_with('/')
+                || trailing.starts_with('\\')
+                || prefix.ends_with('/');
+            if ends_cleanly {
+                return Some((index, prefix));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

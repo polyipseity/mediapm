@@ -280,7 +280,10 @@ pub enum PayloadStaging {
     #[default]
     InPlace,
     /// Link the provisioned payload tree into the step sandbox, so the files
-    /// share the provisioned inodes. Requires a payload root.
+    /// share the provisioned inodes. Requires a payload root, and the tree it
+    /// links is the one the content map names: an entry the root does not hold
+    /// is refused before the link pass rather than left missing from the
+    /// sandbox.
     HardLink,
     /// Write a copy of the content map into the step sandbox, unpacking
     /// archives as the content map declares. Needs no payload root.
