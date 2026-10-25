@@ -2268,6 +2268,9 @@ mod tests {
             .expect("object path must exist after materialization for large object");
 
         // Overwrite the blob with garbage to trigger CorruptObject on next read.
+        // The store writes objects read-only, so the test plants its bytes the
+        // way a damaged disk would: by making the file writable first.
+        make_writable(&blob_path);
         tokio::fs::write(&blob_path, b"garbage data").await.expect("overwrite blob with garbage");
 
         // lookup_bytes must return None (transient error surfaced as miss).
@@ -2277,5 +2280,26 @@ mod tests {
         // The index entry must survive — transient errors do NOT remove it.
         let survived = cache.get_entry_hash("test", "key-a");
         assert!(survived.is_some(), "index entry must survive transient CAS error");
+    }
+
+    /// Makes a stored object writable so a test can plant corrupt bytes in it.
+    ///
+    /// A stored object is read-only because the store writes it that way, so a test
+    /// that simulates a damaged blob has to clear the mode first; the store's own
+    /// tests do the same through a private helper.
+    fn make_writable(path: &std::path::Path) {
+        let mut permissions = std::fs::metadata(path).expect("blob metadata").permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "the test plants corrupt bytes in a stored object, and the read-only attribute is the gate it has to clear on this platform"
+        )]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions).expect("make the blob writable");
     }
 }
