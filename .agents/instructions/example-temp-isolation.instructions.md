@@ -127,5 +127,5 @@ A helper that takes the lock **internally** deadlocks for a caller that already 
 
 - `example-execution-policy.instructions.md` : `main_is_exercised`, three-level run model for nondeterministic examples (CI skip / test-harness reduced config-only mode / explicit-run full sync)
 - `rust-conventions.instructions.md` — general test isolation, `StoreLocked`, async tests
-- `paths-layout.instructions.md` — `conductor_tmp_dir`, `mediapm_tmp_dir`, workspace cache layout
+- `paths-layout.instructions.md` — `conductor_tmp_dir` and the workspace cache layout
 - `tool-sync-coordinator-and-identity.instructions.md` — hermetic cache override for provisioning

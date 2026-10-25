@@ -66,8 +66,6 @@ pub struct MediaPmPaths {
     /// to: the `mod.ncl`, `v1.ncl`, and `v2.ncl` the runtime evaluates.
     /// `None` means the export is skipped.
     pub schema_export_dir: Option<PathBuf>,
-    /// Temporary staging directory used by atomic sync.
-    pub mediapm_tmp_dir: PathBuf,
     /// Materialized media library root.
     pub hierarchy_root_dir: PathBuf,
     /// Tool-content unpack cache under the workspace runtime root.
@@ -80,20 +78,19 @@ impl MediaPmPaths {
     pub fn from_root(root_dir: impl Into<PathBuf>) -> Self {
         let root_dir = root_dir.into();
         let runtime_root = root_dir.join(".mediapm");
-        let tmp_dir = mediapm_utils::temp::runtime_dir_for_workspace(&root_dir);
+        let conductor_tmp_dir = mediapm_utils::temp::runtime_dir_for_workspace(&root_dir);
 
         Self {
             mediapm_ncl: root_dir.join("mediapm.ncl"),
             conductor_user_ncl: root_dir.join("mediapm.conductor.ncl"),
             conductor_generated_ncl: root_dir.join("mediapm.conductor.generated.ncl"),
             conductor_state_config: runtime_root.join("state.conductor.json"),
-            conductor_tmp_dir: tmp_dir.clone(),
+            conductor_tmp_dir,
             conductor_schema_dir: runtime_root.join("config").join("conductor"),
             mediapm_state_json: runtime_root.join("state.json"),
             env_file: runtime_root.join(".env"),
             env_generated_file: runtime_root.join(".env.generated"),
             schema_export_dir: Some(runtime_root.join("config").join("mediapm")),
-            mediapm_tmp_dir: tmp_dir,
             hierarchy_root_dir: root_dir.clone(),
             tools_dir: runtime_root.join("tools"),
             runtime_root,
@@ -163,7 +160,7 @@ impl MediaPmPaths {
             .clone()
             .map_or_else(|| config_dir.to_path_buf(), |raw| resolve_path(config_dir, raw));
 
-        let tmp_dir = mediapm_utils::temp::runtime_dir_for_workspace(&self.root_dir);
+        let conductor_tmp_dir = mediapm_utils::temp::runtime_dir_for_workspace(&self.root_dir);
 
         let conductor_user_ncl = overrides
             .conductor_config
@@ -212,14 +209,13 @@ impl MediaPmPaths {
             conductor_user_ncl,
             conductor_generated_ncl,
             conductor_state_config,
-            conductor_tmp_dir: tmp_dir.clone(),
+            conductor_tmp_dir,
             conductor_schema_dir,
             mediapm_state_json,
             env_file,
             env_generated_file,
             schema_export_dir,
             runtime_root: runtime_root.clone(),
-            mediapm_tmp_dir: tmp_dir,
             hierarchy_root_dir,
             tools_dir: runtime_root.join("tools"),
         }
@@ -248,7 +244,6 @@ mod tests {
 
         assert_eq!(paths.runtime_root, root.path().join(".mediapm"));
         assert_eq!(paths.hierarchy_root_dir, root.path());
-        assert_eq!(paths.mediapm_tmp_dir, expected_tmp_dir);
         assert_eq!(
             paths.conductor_state_config,
             root.path().join(".mediapm").join("state.conductor.json")
@@ -309,7 +304,6 @@ mod tests {
 
         assert_eq!(resolved.runtime_root, root.path().join(".mediapm-runtime"));
         assert_eq!(resolved.hierarchy_root_dir, root.path().join("library-custom"));
-        assert_eq!(resolved.mediapm_tmp_dir, expected_tmp_dir);
         assert_eq!(resolved.conductor_tmp_dir, expected_tmp_dir);
         assert_eq!(resolved.conductor_schema_dir, root.path().join("schemas/conductor"));
         assert_eq!(
