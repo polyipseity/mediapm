@@ -856,70 +856,160 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
     }
 }
 
-/// Returns true when the executable basename is the mediapm CLI.
+/// Returns true when the executable's file stem is exactly `mediapm`.
+///
+/// The accepted names are exactly `mediapm` and `mediapm.exe`, so this reads
+/// the file stem rather than the file name. A `mediapm-*` name is not the CLI:
+/// `mediapm-conductor` shares the prefix and dispatches workflow steps, and it
+/// does not implement the `builtin` subcommands the managed-tool launcher
+/// scripts invoke, so accepting it hands every launcher-based tool a binary
+/// that cannot run them.
 #[must_use]
 fn is_mediapm_cli_executable(path: &std::path::Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "mediapm" || name.starts_with("mediapm-"))
+    path.file_stem().and_then(|stem| stem.to_str()) == Some("mediapm")
 }
 
-/// Resolves the mediapm CLI executable used by managed-tool launcher scripts.
+/// Resolves the mediapm CLI executable from an explicit override and the
+/// current executable.
 ///
-/// Honors a pre-set `MEDIAPM_EXECUTABLE`, then the current process when it is
-/// already the mediapm binary, then common `target/debug/mediapm` siblings used
-/// by example and integration tests.
+/// Precedence: a valid explicit override, the current executable when it is
+/// the CLI, `mediapm` beside the current executable, then `mediapm` in the
+/// parent directory (the `target/debug` layout a test or example binary
+/// lives under).
 ///
-/// # Errors
-///
-/// Returns [`MediaPmError::Workflow`] when the current executable path cannot
-/// be read.
-pub(crate) fn resolve_mediapm_executable_path() -> Result<std::path::PathBuf, MediaPmError> {
-    if let Ok(configured) = std::env::var("MEDIAPM_EXECUTABLE") {
-        let trimmed = configured.trim();
-        if !trimmed.is_empty() {
-            return Ok(std::path::PathBuf::from(trimmed));
+/// Returns `Ok(None)` when nothing usable exists. Returns `Err` only when an
+/// explicit override was supplied and is not the mediapm CLI, because a
+/// wrong override is a configuration error the caller must see.
+fn resolve_mediapm_executable_path_in(
+    configured: Option<&str>,
+    current_exe: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, MediaPmError> {
+    if let Some(configured) = configured {
+        let path = std::path::PathBuf::from(configured);
+        if !is_mediapm_cli_executable(&path) {
+            return Err(MediaPmError::Workflow(format!(
+                "MEDIAPM_EXECUTABLE names '{}', which is not the mediapm CLI; set it to the mediapm binary",
+                path.display()
+            )));
         }
+        return Ok(Some(path));
     }
 
-    let current = std::env::current_exe().map_err(|error| {
-        MediaPmError::Workflow(format!("failed to resolve current executable path: {error}"))
-    })?;
-    if is_mediapm_cli_executable(&current) {
-        return Ok(current);
+    if is_mediapm_cli_executable(current_exe) {
+        return Ok(Some(current_exe.to_path_buf()));
     }
 
-    if let Some(parent) = current.parent() {
+    if let Some(parent) = current_exe.parent() {
         let sibling = parent.join("mediapm");
         if sibling.is_file() {
-            return Ok(sibling);
+            return Ok(Some(sibling));
         }
-        if let Some(debug_dir) = parent.parent() {
-            let debug_binary = debug_dir.join("mediapm");
-            if debug_binary.is_file() {
-                return Ok(debug_binary);
+        if let Some(target_dir) = parent.parent() {
+            let target_binary = target_dir.join("mediapm");
+            if target_binary.is_file() {
+                return Ok(Some(target_binary));
             }
         }
     }
 
-    Ok(current)
+    Ok(None)
+}
+
+/// Resolves the mediapm CLI executable used by managed-tool launcher scripts.
+///
+/// Reads `MEDIAPM_EXECUTABLE` and the current executable path, then delegates
+/// the precedence rules to [`resolve_mediapm_executable_path_in`]. A blank
+/// `MEDIAPM_EXECUTABLE` counts as unset.
+///
+/// `Ok(None)` means no mediapm CLI exists on this host, a value the callers
+/// interpret differently: [`ensure_mediapm_executable`] reports it as an error
+/// while [`ensure_mediapm_executable_env`] only warns. The current executable
+/// is never substituted for a missing CLI, because a host binary that is not
+/// the CLI would then be exported as one.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when the current executable path cannot
+/// be read, when `MEDIAPM_EXECUTABLE` is not valid Unicode, or when the value
+/// it holds is not the mediapm CLI.
+pub(crate) fn resolve_mediapm_executable_path() -> Result<Option<std::path::PathBuf>, MediaPmError>
+{
+    let configured = match std::env::var("MEDIAPM_EXECUTABLE") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error @ std::env::VarError::NotUnicode(_)) => {
+            return Err(MediaPmError::Workflow(format!(
+                "MEDIAPM_EXECUTABLE is not valid Unicode: {error}"
+            )));
+        }
+    };
+    let configured = configured.as_deref().map(str::trim).filter(|value| !value.is_empty());
+
+    let current = std::env::current_exe().map_err(|error| {
+        MediaPmError::Workflow(format!("failed to resolve current executable path: {error}"))
+    })?;
+    resolve_mediapm_executable_path_in(configured, &current)
+}
+
+/// Remedy stated wherever no mediapm CLI can be resolved.
+///
+/// Managed-tool launcher scripts dispatch through `MEDIAPM_EXECUTABLE`, so
+/// every message reporting the condition has to name both ways out: build the
+/// CLI, or point the variable at an existing build.
+const MISSING_MEDIAPM_CLI_MESSAGE: &str = "no mediapm CLI executable found; build it with `cargo build --package mediapm` or set MEDIAPM_EXECUTABLE to the mediapm binary";
+
+/// Exports `path` as `MEDIAPM_EXECUTABLE` for the child processes this process
+/// spawns.
+///
+/// The variable is process-global state that conductor reads when it spawns a
+/// workflow step, so this is the single side effect of resolution and it is
+/// kept in one place: no caller can export a path it did not just resolve.
+fn export_mediapm_executable(path: &std::path::Path) {
+    // SAFETY: mediapm orchestration runs workflow steps sequentially on one
+    // thread; the variable is read when conductor spawns child processes.
+    unsafe {
+        std::env::set_var("MEDIAPM_EXECUTABLE", path);
+    }
+}
+
+/// Resolves the mediapm CLI executable and exports it as
+/// `MEDIAPM_EXECUTABLE`, returning the resolved path.
+///
+/// Managed-tool launcher scripts dispatch through `MEDIAPM_EXECUTABLE`, so a
+/// caller that runs launcher-based tools needs this to have succeeded.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when no mediapm CLI can be resolved, or
+/// when `MEDIAPM_EXECUTABLE` names a binary that is not the CLI.
+pub fn ensure_mediapm_executable() -> Result<std::path::PathBuf, MediaPmError> {
+    let resolved = resolve_mediapm_executable_path()?
+        .ok_or_else(|| MediaPmError::Workflow(MISSING_MEDIAPM_CLI_MESSAGE.to_string()))?;
+    export_mediapm_executable(&resolved);
+    Ok(resolved)
 }
 
 /// Ensures launcher-based managed tools can resolve the mediapm executable.
 ///
-/// Conductor launcher scripts dispatch through `MEDIAPM_EXECUTABLE`; mediapm
-/// sets the host value before spawning conductor workflow steps.
+/// Best effort by design: `sync_library` calls this before running workflows,
+/// and a library embed whose tools are not launcher-based must not fail because
+/// the host has no mediapm CLI built beside it. When nothing is resolvable this
+/// exports nothing and warns with the remedy; it never fabricates a value and
+/// never substitutes the current executable. A caller that genuinely needs the
+/// variable wants [`ensure_mediapm_executable`] instead, which reports the
+/// condition as an error.
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError::Workflow`] when the mediapm executable path cannot
-/// be resolved.
+/// Returns [`MediaPmError::Workflow`] when the current executable path cannot
+/// be read, when `MEDIAPM_EXECUTABLE` is not valid Unicode, or when the value
+/// it holds is not the mediapm CLI: a configured-but-wrong override is a real
+/// error and must not be swallowed.
 pub(crate) fn ensure_mediapm_executable_env() -> Result<(), MediaPmError> {
-    let executable = resolve_mediapm_executable_path()?;
-    // SAFETY: mediapm orchestration runs workflow steps sequentially on one
-    // thread; the variable is read when conductor spawns child processes.
-    unsafe {
-        std::env::set_var("MEDIAPM_EXECUTABLE", executable);
+    if let Some(executable) = resolve_mediapm_executable_path()? {
+        export_mediapm_executable(&executable);
+    } else {
+        tracing::warn!("{}", MISSING_MEDIAPM_CLI_MESSAGE);
     }
     Ok(())
 }
@@ -996,4 +1086,161 @@ pub(crate) fn local_source_default_steps(
             options: BTreeMap::new(),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for mediapm CLI executable resolution.
+    //!
+    //! Every case drives [`resolve_mediapm_executable_path_in`], which takes the
+    //! override and the current executable as arguments, so no test reads or
+    //! mutates process-global environment. The guarantee under test is that a
+    //! host binary which is not the CLI is never resolved as one: exporting such
+    //! a path as `MEDIAPM_EXECUTABLE` makes every managed-tool launcher script
+    //! re-run the host binary instead of the tool it was built to dispatch.
+
+    use super::{is_mediapm_cli_executable, resolve_mediapm_executable_path_in};
+    use std::path::{Path, PathBuf};
+
+    /// Creates the isolated artifact root a test writes its fake executables
+    /// into. Fake executables are empty files: resolution checks existence only.
+    fn artifact_root() -> tempfile::TempDir {
+        mediapm_utils::temp::artifact_dir().expect("create artifact temp dir")
+    }
+
+    /// Returns `path` in the `&str` form the resolver takes for an override.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the path is not valid Unicode, which a temp root never is.
+    fn override_arg(path: &Path) -> &str {
+        path.to_str().expect("temp path is valid Unicode")
+    }
+
+    /// A current executable that is not the CLI resolves to nothing, so the
+    /// caller learns that no CLI exists instead of exporting the host binary.
+    #[test]
+    fn resolve_refuses_a_non_cli_current_executable() {
+        let root = artifact_root();
+        let current = root.path().join("examples").join("mediapm_demo_online");
+
+        let resolved =
+            resolve_mediapm_executable_path_in(None, &current).expect("resolution succeeds");
+
+        assert_eq!(resolved, None);
+    }
+
+    /// An override that is not the CLI is a configuration error, so the caller
+    /// sees which value is wrong instead of silently resolving something else.
+    #[test]
+    fn resolve_rejects_an_override_that_is_not_the_cli() {
+        let root = artifact_root();
+        let current = root.path().join("examples").join("mediapm_demo_online");
+        let override_path = current.clone();
+
+        let error =
+            resolve_mediapm_executable_path_in(Some(override_arg(&override_path)), &current)
+                .expect_err("a non-CLI override must be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("MEDIAPM_EXECUTABLE"), "message names the variable: {message}");
+        assert!(
+            message.contains(&override_path.display().to_string()),
+            "message names the rejected path: {message}"
+        );
+    }
+
+    /// An explicit override naming the CLI is the user's statement of where it
+    /// lives, so it is accepted without stat'ing the path: the binary may be
+    /// built later, and a build-then-run sequence must not depend on ordering.
+    #[test]
+    fn resolve_accepts_an_override_naming_the_cli() {
+        let root = artifact_root();
+        let cli = root.path().join("mediapm");
+        let current = root.path().join("examples").join("mediapm_demo_online");
+
+        let resolved = resolve_mediapm_executable_path_in(Some(override_arg(&cli)), &current)
+            .expect("resolution succeeds");
+
+        assert_eq!(resolved, Some(cli));
+    }
+
+    /// A process that already is the CLI resolves to itself, which is how a
+    /// `mediapm` invocation hands its own path to the children it spawns.
+    #[test]
+    fn resolve_prefers_the_current_executable_over_siblings() {
+        let root = artifact_root();
+        let cli = root.path().join("mediapm");
+
+        let resolved = resolve_mediapm_executable_path_in(None, &cli).expect("resolution succeeds");
+
+        assert_eq!(resolved, Some(cli));
+    }
+
+    /// A test or example binary lives in `<target>/debug/deps`, so its direct
+    /// sibling is that directory's CLI build. The neighbour wins over the
+    /// target directory's own `mediapm`, which may be a different build.
+    #[test]
+    fn resolve_prefers_a_sibling_cli_over_the_target_dir_cli() {
+        let root = artifact_root();
+        let target_dir = root.path().join("debug");
+        let deps_dir = target_dir.join("deps");
+        std::fs::create_dir_all(&deps_dir).expect("create deps dir");
+        let sibling = deps_dir.join("mediapm");
+        let target_cli = target_dir.join("mediapm");
+        std::fs::write(&sibling, b"").expect("write deps sibling cli stub");
+        std::fs::write(&target_cli, b"").expect("write target dir cli stub");
+        let current = deps_dir.join("mod-abc");
+
+        let resolved =
+            resolve_mediapm_executable_path_in(None, &current).expect("resolution succeeds");
+
+        assert_eq!(resolved, Some(sibling));
+    }
+
+    /// With no `deps` sibling, the target directory's `mediapm` is still a CLI
+    /// build of this workspace, so it is the fallback.
+    #[test]
+    fn resolve_falls_back_to_the_target_dir_cli() {
+        let root = artifact_root();
+        let target_dir = root.path().join("debug");
+        let deps_dir = target_dir.join("deps");
+        std::fs::create_dir_all(&deps_dir).expect("create deps dir");
+        let target_cli = target_dir.join("mediapm");
+        std::fs::write(&target_cli, b"").expect("write target dir cli stub");
+        let current = deps_dir.join("mod-abc");
+
+        let resolved =
+            resolve_mediapm_executable_path_in(None, &current).expect("resolution succeeds");
+
+        assert_eq!(resolved, Some(target_cli));
+    }
+
+    /// Windows ships the CLI as `mediapm.exe`, so the `.exe` suffix counts as
+    /// the CLI without a platform gate.
+    #[test]
+    fn resolve_accepts_a_windows_cli_file_stem() {
+        assert!(is_mediapm_cli_executable(Path::new("mediapm.exe")));
+    }
+
+    /// Only the CLI's own stem is accepted: `mediapm-conductor` and the example
+    /// binaries share the `mediapm-` prefix, and exporting one of them hands the
+    /// launcher a binary that does not implement its `builtin` subcommands.
+    #[test]
+    fn is_mediapm_cli_executable_accepts_only_the_cli_name() {
+        let accepted = [PathBuf::from("mediapm"), PathBuf::from("mediapm.exe")];
+        let rejected = [
+            PathBuf::from("mediapm-conductor"),
+            PathBuf::from("mediapm-cas"),
+            PathBuf::from("mediapm_demo_online"),
+            PathBuf::from("mod-abc"),
+        ];
+
+        for name in accepted {
+            assert!(is_mediapm_cli_executable(&name), "accepts {name:?}");
+        }
+        for name in rejected {
+            assert!(!is_mediapm_cli_executable(&name), "rejects {name:?}");
+        }
+    }
 }
