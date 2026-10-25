@@ -682,6 +682,106 @@ async fn a_hard_link_step_keeps_its_companion_arguments_relative() {
     );
 }
 
+/// A comma-separated list of companions resolves every member.
+///
+/// A document may name several paths in one argument, and a comma ends one path
+/// and begins the next, so a matcher that only accepted a separator before a
+/// path would resolve the second member and leave the first relative.
+#[tokio::test]
+async fn a_comma_separated_list_of_companions_is_fully_qualified() {
+    let (_fixture, content_map) = fixture_with_companions().await;
+    let root = Path::new("/payload");
+    let mut tool =
+        companion_argument_tool(content_map, root, crate::config::PayloadStaging::InPlace);
+    tool.command_parts = vec![
+        script_key(),
+        "--paths".to_string(),
+        format!("{},{}", companion_file_path_key(), companion_binary_key()),
+    ];
+
+    let spec = tool.clone();
+    super::sandbox::pre_qualify_payload_arguments(&mut tool.command_parts, &spec);
+
+    assert_eq!(
+        tool.command_parts[2],
+        format!("/payload/{},/payload/{}", companion_file_path_key(), companion_binary_key()),
+        "both members of a separated list name payload entries and both have to resolve",
+    );
+}
+
+/// A value that names only a directory above a payload entry resolves too.
+///
+/// A tool takes a directory where another takes a file, so a value that spells
+/// `deps/ffmpeg/<os>` — a tree the payload holds but the content map does not
+/// name as a key — still has to point at the payload rather than at a sandbox the
+/// `in_place` strategy left empty.
+#[tokio::test]
+async fn a_directory_that_holds_payload_entries_is_qualified() {
+    let (_fixture, content_map) = fixture_with_companions().await;
+    let root = Path::new("/payload");
+    let mut tool =
+        companion_argument_tool(content_map, root, crate::config::PayloadStaging::InPlace);
+    let directory = format!("deps/ffmpeg/{}", host_platform_dir());
+    tool.command_parts = vec![script_key(), "--dir".to_string(), directory.clone()];
+
+    let spec = tool.clone();
+    super::sandbox::pre_qualify_payload_arguments(&mut tool.command_parts, &spec);
+
+    assert_eq!(
+        tool.command_parts[2],
+        format!("/payload/{directory}"),
+        "a directory the payload holds has to resolve under the payload root",
+    );
+}
+
+/// A companion spelled with backslashes resolves as the same tree.
+///
+/// Windows accepts both spellings of a separator, and a document written for it
+/// may use either, so matching has to read the two the same way — while leaving
+/// every byte of a value it does not rewrite exactly as written.
+#[tokio::test]
+async fn a_backslash_spelled_companion_is_qualified() {
+    let (_fixture, content_map) = fixture_with_companions().await;
+    let root = Path::new("/payload");
+    let mut tool =
+        companion_argument_tool(content_map, root, crate::config::PayloadStaging::InPlace);
+    let spelled = companion_binary_key().replace('/', "\\");
+    tool.command_parts = vec![script_key(), "--runtime".to_string(), spelled];
+
+    let spec = tool.clone();
+    super::sandbox::pre_qualify_payload_arguments(&mut tool.command_parts, &spec);
+
+    assert_eq!(
+        tool.command_parts[2],
+        format!("/payload/{}", companion_binary_key()),
+        "a backslash-spelled companion names the same payload entry and has to resolve",
+    );
+}
+
+/// A drive-relative path is left alone.
+///
+/// `C:deps/deno/...` names a path relative to the working directory of the `C:`
+/// drive, so the colon belongs to the path and not to a value separator.
+/// Resolving it against the payload root would point the tool at a different
+/// absolute path than the document meant.
+#[tokio::test]
+async fn a_drive_relative_path_is_not_qualified() {
+    let (_fixture, content_map) = fixture_with_companions().await;
+    let root = Path::new("/payload");
+    let mut tool =
+        companion_argument_tool(content_map, root, crate::config::PayloadStaging::InPlace);
+    let drive_relative = format!("C:{}", companion_binary_key());
+    tool.command_parts = vec![script_key(), "--runtime".to_string(), drive_relative.clone()];
+
+    let spec = tool.clone();
+    super::sandbox::pre_qualify_payload_arguments(&mut tool.command_parts, &spec);
+
+    assert_eq!(
+        tool.command_parts[2], drive_relative,
+        "a drive-relative value names a path of its own and must not be rewritten",
+    );
+}
+
 /// The staging step itself is platform-neutral, and this pins each strategy's
 /// topology without executing anything.
 ///

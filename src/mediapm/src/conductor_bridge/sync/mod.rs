@@ -1352,11 +1352,11 @@ pub(crate) async fn open_workspace_cas_store(
 /// whole call, including the `[prn]` prune bar it registers after the
 /// provisioning loop, so it must not be committed before the call returns.
 ///
-/// # Errors
-///
 /// The outcome carries the provision guards for the payloads this pass
 /// materialized; the caller holds them for as long as the run executes from
 /// those payloads.
+///
+/// # Errors
 ///
 /// Returns an error when any critical step (document loading, builtin
 /// registration, content-map import) fails. Non-critical failures are

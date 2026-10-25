@@ -20,7 +20,7 @@
 //! "command not found" would send the reader to the tool instead of to the
 //! document that got it wrong.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mediapm_cas::{CasApi, Hash};
@@ -295,10 +295,17 @@ pub(super) fn resolve_executable_under_payload_root(
 /// Characters that may precede a path-shaped value inside one command part.
 ///
 /// A part is not always a bare path. yt-dlp names a companion as a
-/// `<runtime>:<path>` pair, and a document may join a flag to its value with
-/// `=` or list several paths after a comma, so a path may begin after any of
-/// these rather than only at the start of the part.
+/// `<runtime>:<path>` pair, a document may join a flag to its value with `=`,
+/// and a comma-separated list of paths puts one after each comma, so a path may
+/// begin after any of these rather than only at the start of the part.
 const ARGUMENT_VALUE_SEPARATORS: [char; 3] = [':', '=', ','];
+
+/// The characters a path is spelled with.
+///
+/// Both spellings name the same tree, and a content-map key always uses `/`, so
+/// matching normalizes to that and leaves the parts of a value it does not
+/// rewrite exactly as the document wrote them.
+const PATH_SEPARATORS: [char; 2] = ['/', '\\'];
 
 /// Resolves the payload paths a command names outside its executable.
 ///
@@ -339,30 +346,37 @@ pub(super) fn pre_qualify_payload_arguments(
     }
 }
 
-/// The content-map keys a command argument may name, longest first.
+/// Every path a command argument may name that the payload holds, longest first.
 ///
-/// Longest first is what makes `deps/deno/linux/deno` win over `deps/deno/`, so
-/// a file key inside a directory key resolves to the file rather than to the
-/// directory that contains it. A value that does not parse as a hash is an
-/// inline description rather than a payload entry, so it contributes no prefix —
-/// the same rule `require_usable_payload_root` applies.
+/// Each hash-valued content-map key contributes itself and every directory above
+/// it, so a value that names only the directory still resolves: `deps/ffmpeg`
+/// and `deps/ffmpeg/linux` both name trees the payload holds when it holds
+/// `deps/ffmpeg/linux/ffmpeg`.
+///
+/// Longest first is what makes such a value resolve to the deepest path that
+/// matches rather than to an ancestor, and a value that does not parse as a hash
+/// is an inline description rather than a payload entry, so it contributes
+/// nothing — the same rule `require_usable_payload_root` applies.
 fn payload_argument_prefixes(tool_spec: &UnifiedToolSpec) -> Vec<String> {
-    let mut prefixes: Vec<String> = tool_spec
-        .tool_content_map
-        .iter()
-        .filter(|(_, value)| value.parse::<Hash>().is_ok())
-        .filter_map(|(key, _)| {
-            let trimmed = key.trim_end_matches(['/', '\\']);
-            if trimmed.is_empty() || trimmed == "." {
-                return None;
+    let mut prefixes: BTreeSet<String> = BTreeSet::new();
+    for (key, value) in &tool_spec.tool_content_map {
+        if value.parse::<Hash>().is_err() {
+            continue;
+        }
+        let trimmed = key.trim_end_matches(PATH_SEPARATORS);
+        if trimmed.is_empty() || trimmed == "." {
+            continue;
+        }
+        let mut end = trimmed.len();
+        loop {
+            prefixes.insert(trimmed[..end].to_string());
+            match trimmed[..end].rfind('/') {
+                Some(index) => end = index,
+                None => break,
             }
-            if key.ends_with('/') || key.ends_with('\\') {
-                Some(format!("{trimmed}/"))
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-        .collect();
+        }
+    }
+    let mut prefixes: Vec<String> = prefixes.into_iter().collect();
     prefixes.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
     prefixes
 }
@@ -370,20 +384,28 @@ fn payload_argument_prefixes(tool_spec: &UnifiedToolSpec) -> Vec<String> {
 /// Rewrites every content-map path one command part names, or answers `None`
 /// when it names none.
 fn qualify_argument(part: &str, payload_root: &str, prefixes: &[String]) -> Option<String> {
+    // A backslash and a forward slash name the same tree and both occupy one
+    // byte, so the normalized spelling can be matched and the part sliced at the
+    // same offsets: only the matched path is rewritten, and every other byte of a
+    // value the document wrote survives untouched.
+    let normalized = part.replace('\\', "/");
     let mut qualified = String::with_capacity(part.len());
-    let mut rest = part;
+    let mut offset = 0;
     let mut rewrote = false;
-    while !rest.is_empty() {
-        let Some((index, prefix)) = first_payload_path(rest, prefixes) else {
-            qualified.push_str(rest);
+    while offset < part.len() {
+        let Some((index, prefix)) = first_payload_path(&normalized[offset..], prefixes) else {
             break;
         };
-        qualified.push_str(&rest[..index]);
+        let start = offset + index;
+        qualified.push_str(&part[offset..start]);
         qualified.push_str(payload_root);
         qualified.push('/');
         qualified.push_str(prefix);
         rewrote = true;
-        rest = &rest[index + prefix.len()..];
+        offset = start + prefix.len();
+    }
+    if rewrote {
+        qualified.push_str(&part[offset..]);
     }
     rewrote.then_some(qualified)
 }
@@ -403,6 +425,9 @@ fn first_payload_path<'a>(text: &str, prefixes: &'a [String]) -> Option<(usize, 
             if !ARGUMENT_VALUE_SEPARATORS.contains(&preceding) {
                 continue;
             }
+            if starts_a_drive_relative_path(text, index) {
+                continue;
+            }
         }
         for prefix in prefixes {
             let Some(candidate) = text.get(index..index + prefix.len()) else {
@@ -412,16 +437,38 @@ fn first_payload_path<'a>(text: &str, prefixes: &'a [String]) -> Option<(usize, 
                 continue;
             }
             let trailing = &text[index + prefix.len()..];
-            let ends_cleanly = trailing.is_empty()
-                || trailing.starts_with('/')
-                || trailing.starts_with('\\')
-                || prefix.ends_with('/');
+            let ends_cleanly =
+                trailing.is_empty() || trailing.starts_with('/') || trailing.starts_with(',');
             if ends_cleanly {
                 return Some((index, prefix));
             }
         }
     }
     None
+}
+
+/// Whether the match at `index` follows a Windows drive letter rather than a
+/// value separator.
+///
+/// `C:deps/ffmpeg/linux` names a path relative to the current directory of the
+/// `C:` drive, so the `:` belongs to the path and resolving what follows it
+/// against the payload root would turn the value into a different absolute path
+/// than the document meant.
+fn starts_a_drive_relative_path(text: &str, index: usize) -> bool {
+    if index < 2 || !text[..index].ends_with(':') {
+        return false;
+    }
+    let mut before = text[..index - 1].chars();
+    let Some(letter) = before.next_back() else {
+        return false;
+    };
+    if !letter.is_ascii_alphabetic() {
+        return false;
+    }
+    match before.next_back() {
+        None => true,
+        Some(separator) => ARGUMENT_VALUE_SEPARATORS.contains(&separator),
+    }
 }
 
 #[cfg(test)]

@@ -97,8 +97,8 @@ impl DirectoryLockGuard {
         // remove, produced by exactly the shared-store case that creates it. The
         // cursor is still at the start of the file here, which is where the
         // header goes.
-        file.set_len(0).await?;
         file.write_all(STORE_LOCK_HEADER.as_bytes()).await?;
+        file.set_len(STORE_LOCK_HEADER.len() as u64).await?;
         file.flush().await?;
 
         Ok(Self { _file: file, _in_process_guard: in_process_guard })

@@ -284,6 +284,11 @@ pub enum PayloadStaging {
     /// links is the one the content map names: an entry the root does not hold
     /// is refused before the link pass rather than left missing from the
     /// sandbox.
+    ///
+    /// A file the filesystem refuses to link — a payload root and a sandbox on
+    /// different volumes — is copied instead of failing the step, so this
+    /// strategy always produces the tree; the copy costs the bytes the link
+    /// would have shared.
     HardLink,
     /// Write a copy of the content map into the step sandbox, unpacking
     /// archives as the content map declares. Needs no payload root.

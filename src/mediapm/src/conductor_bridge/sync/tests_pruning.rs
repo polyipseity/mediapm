@@ -18,12 +18,13 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
     // Pre-seed the tools dir with a conductor-keyed active dir and a
-    // stale dir that must be pruned. Retain-only only removes dirs that
-    // carry a `.lock` file, so the stale dir gets one.
+    // stale dir that must be pruned. Retain-only removes a dir only when it
+    // can take that dir's `lock`, so the stale dir carries one, the way a
+    // provisioned entry does.
     std::fs::create_dir_all(paths.tools_dir.join("yt-dlp@blake3_abc")).expect("create active dir");
     std::fs::create_dir_all(paths.tools_dir.join("stale_dir")).expect("create stale dir");
-    std::fs::write(paths.tools_dir.join("stale_dir").join(".lock"), b"")
-        .expect("create stale lock file");
+    std::fs::write(paths.tools_dir.join("stale_dir").join("lock"), b"")
+        .expect("create the stale dir's lock file");
 
     // Generated doc with an active `{name}@{hash}` entry.
     let mut content_map = BTreeMap::new();
@@ -338,11 +339,13 @@ async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
     });
 
     // The filesystem half of the seed. Retain-only removes a directory only
-    // when it can take that directory's lock, so the stale one carries a
-    // lock file the way a real provisioned entry does.
+    // when it can take that directory's `lock`, so the stale one carries the
+    // lock file under its current name, the way a provisioned entry does. A
+    // directory still holding the old `.lock` name is reclaimed through the
+    // legacy path instead, which would not exercise the lock at all.
     let stale_dir = paths.tools_dir.join("media-tagger@blake3_stale");
     std::fs::create_dir_all(&stale_dir).expect("create stale tool dir");
-    std::fs::write(stale_dir.join(".lock"), b"").expect("create stale lock file");
+    std::fs::write(stale_dir.join("lock"), b"").expect("create the stale dir's lock file");
 
     let report = reconcile_media_tagger_latest(&paths, &state, cache_root.path()).await;
 
