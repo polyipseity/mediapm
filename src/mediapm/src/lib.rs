@@ -869,13 +869,31 @@ fn is_mediapm_cli_executable(path: &std::path::Path) -> bool {
     path.file_stem().and_then(|stem| stem.to_str()) == Some("mediapm")
 }
 
+/// Returns the mediapm CLI in `dir`, if one is built there.
+///
+/// Probes the names the CLI is built under, `mediapm` then `mediapm.exe`, in
+/// that order. The `.exe` name is probed on every platform rather than under a
+/// Windows gate: a Windows build produces `mediapm.exe`, and `Path::is_file`
+/// performs no `PATHEXT` extension search, so an extension-less probe alone
+/// never finds it. Every candidate also has to pass
+/// [`is_mediapm_cli_executable`], so something else sitting under one of those
+/// names is not mistaken for the CLI.
+fn mediapm_cli_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    ["mediapm", "mediapm.exe"]
+        .into_iter()
+        .map(|name| dir.join(name))
+        .find(|candidate| is_mediapm_cli_executable(candidate) && candidate.is_file())
+}
+
 /// Resolves the mediapm CLI executable from an explicit override and the
 /// current executable.
 ///
 /// Precedence: a valid explicit override, the current executable when it is
-/// the CLI, `mediapm` beside the current executable, then `mediapm` in the
-/// parent directory (the `target/debug` layout a test or example binary
-/// lives under).
+/// the CLI, a CLI beside the current executable, then one in the parent
+/// directory (the `target/debug` layout a test or example binary lives under).
+/// Both neighbour positions probe the names the CLI is built under — `mediapm`
+/// and `mediapm.exe` — so the `target/debug` fallback also reaches a Windows
+/// build.
 ///
 /// Returns `Ok(None)` when nothing usable exists. Returns `Err` only when an
 /// explicit override was supplied and is not the mediapm CLI, because a
@@ -899,17 +917,12 @@ fn resolve_mediapm_executable_path_in(
         return Ok(Some(current_exe.to_path_buf()));
     }
 
-    if let Some(parent) = current_exe.parent() {
-        let sibling = parent.join("mediapm");
-        if sibling.is_file() {
-            return Ok(Some(sibling));
-        }
-        if let Some(target_dir) = parent.parent() {
-            let target_binary = target_dir.join("mediapm");
-            if target_binary.is_file() {
-                return Ok(Some(target_binary));
-            }
-        }
+    let current_dir = current_exe.parent();
+    if let Some(found) = current_dir
+        .and_then(mediapm_cli_in)
+        .or_else(|| current_dir.and_then(std::path::Path::parent).and_then(mediapm_cli_in))
+    {
+        return Ok(Some(found));
     }
 
     Ok(None)
@@ -1207,6 +1220,42 @@ mod tests {
         let deps_dir = target_dir.join("deps");
         std::fs::create_dir_all(&deps_dir).expect("create deps dir");
         let target_cli = target_dir.join("mediapm");
+        std::fs::write(&target_cli, b"").expect("write target dir cli stub");
+        let current = deps_dir.join("mod-abc");
+
+        let resolved =
+            resolve_mediapm_executable_path_in(None, &current).expect("resolution succeeds");
+
+        assert_eq!(resolved, Some(target_cli));
+    }
+
+    /// A Windows build names the CLI `mediapm.exe`, and `Path::is_file` searches
+    /// no `PATHEXT` extensions, so the `deps` neighbour probe has to ask for that
+    /// name explicitly.
+    #[test]
+    fn resolve_finds_a_windows_named_sibling_cli() {
+        let root = artifact_root();
+        let deps_dir = root.path().join("debug").join("deps");
+        std::fs::create_dir_all(&deps_dir).expect("create deps dir");
+        let sibling = deps_dir.join("mediapm.exe");
+        std::fs::write(&sibling, b"").expect("write deps sibling cli stub");
+        let current = deps_dir.join("mod-abc");
+
+        let resolved =
+            resolve_mediapm_executable_path_in(None, &current).expect("resolution succeeds");
+
+        assert_eq!(resolved, Some(sibling));
+    }
+
+    /// The same Windows name has to be found by the target-directory fallback,
+    /// otherwise a built CLI is reported as missing on Windows.
+    #[test]
+    fn resolve_finds_a_windows_named_target_dir_cli() {
+        let root = artifact_root();
+        let target_dir = root.path().join("debug");
+        let deps_dir = target_dir.join("deps");
+        std::fs::create_dir_all(&deps_dir).expect("create deps dir");
+        let target_cli = target_dir.join("mediapm.exe");
         std::fs::write(&target_cli, b"").expect("write target dir cli stub");
         let current = deps_dir.join("mod-abc");
 
