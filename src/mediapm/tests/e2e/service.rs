@@ -24,7 +24,7 @@ async fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
 }
 
 /// Adding a local source caches its ffprobe metadata under
-/// `<runtime>/cache/mediapm/metadata.cache.json` keyed by `ffprobe:{path}`.
+/// `<runtime>/cache/mediapm/metadata.json` keyed by `ffprobe:{path}`.
 #[tokio::test]
 async fn add_local_source_caches_metadata() -> Result<(), mediapm::MediaPmError> {
     // Skip when ffprobe is not installed (e.g., minimal CI images).
@@ -100,7 +100,7 @@ async fn add_local_source_caches_metadata() -> Result<(), mediapm::MediaPmError>
     drop(service);
 
     let cache_path =
-        root.path().join(".mediapm").join("cache").join("mediapm").join("metadata.cache.json");
+        root.path().join(".mediapm").join("cache").join("mediapm").join("metadata.json");
     assert!(cache_path.is_file(), "metadata cache must be written after add");
     let cache_content = std::fs::read_to_string(&cache_path).expect("read metadata cache");
     assert!(

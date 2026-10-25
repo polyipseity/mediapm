@@ -106,7 +106,7 @@ fn seed_ffprobe_cache(root: &Path, payload: &Path) {
         }
     });
     std::fs::write(
-        cache_dir.join("metadata.cache.json"),
+        cache_dir.join("metadata.json"),
         serde_json::to_vec(&entries).expect("encode metadata cache"),
     )
     .expect("write metadata cache");

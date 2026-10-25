@@ -392,7 +392,7 @@ pub async fn sync_hierarchy(
     // partial set would be safe anyway: an entry that is absent costs one
     // re-read, which is what a missing cache costs.
     if let Err(error) = shared.verdicts.flush() {
-        warn!("the content verdict cache was not written: {error}");
+        warn!("the materialization cache was not written: {error}");
     }
 
     let stale_managed_paths: Vec<String> = state

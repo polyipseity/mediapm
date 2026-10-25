@@ -49,8 +49,15 @@
 //!
 //! # Where it lives
 //!
-//! `<runtime>/cache/mediapm/content_verdicts.json`, beside the workspace
-//! metadata cache. It is a cache, so a person is free to delete it.
+//! `<runtime>/cache/mediapm/materialization.json`, beside the workspace
+//! metadata cache, and named for what it holds: the record of what this
+//! workspace's materialization already proved. It is a cache, so a person is
+//! free to delete it.
+//!
+//! A workspace written by an older build holds the same record one file name
+//! over, `content_verdicts.json`. [`VerdictCache::open`] reads that file when
+//! the current one is absent and removes it, so a rename costs no re-read and
+//! leaves no workspace holding two files that answer the same question.
 
 use std::collections::BTreeMap;
 use std::fs::Metadata;
@@ -118,9 +125,26 @@ fn current_cache_version() -> u32 {
     CACHE_VERSION
 }
 
+/// Name of the file this build reads and writes.
+const CACHE_FILE_NAME: &str = "materialization.json";
+
+/// Name the same file carried before it was named for its contents.
+///
+/// One build released it under this name, so a workspace may still hold one.
+const LEGACY_CACHE_FILE_NAME: &str = "content_verdicts.json";
+
 /// Where the verdicts for this workspace are kept.
 pub(super) fn cache_file_path(paths: &MediaPmPaths) -> PathBuf {
-    paths.workspace_mediapm_cache_dir().join("content_verdicts.json")
+    paths.workspace_mediapm_cache_dir().join(CACHE_FILE_NAME)
+}
+
+/// Where a workspace written by an older build kept the same record.
+///
+/// Exists so a test can seed the superseded file; production code reaches the
+/// name through [`VerdictCache::adopt_legacy_file`].
+#[cfg(test)]
+pub(super) fn legacy_cache_file_path(paths: &MediaPmPaths) -> PathBuf {
+    paths.workspace_mediapm_cache_dir().join(LEGACY_CACHE_FILE_NAME)
 }
 
 /// The file's modification time as whole nanoseconds since the unix epoch.
@@ -161,36 +185,64 @@ impl VerdictCache {
     /// which is what this cache saves when it is intact.
     pub(super) fn open(paths: &MediaPmPaths) -> Self {
         let file = cache_file_path(paths);
-        let remembered = Self::read_file(&file);
+        let remembered = match Self::read_file(&file) {
+            Some(remembered) => remembered,
+            None => Self::adopt_legacy_file(&file),
+        };
         Self { file, remembered, confirmed: Mutex::new(BTreeMap::new()) }
     }
 
-    /// Reads `file`, answering an empty map for anything it cannot use.
-    fn read_file(file: &Path) -> BTreeMap<String, Verdict> {
+    /// Reads `file`, answering `None` when it is not there and an empty map for
+    /// anything that is there but unusable.
+    ///
+    /// The two answers differ because a missing file may be one an older build
+    /// left under another name, while a file that is present and unreadable is
+    /// the record this build keeps.
+    fn read_file(file: &Path) -> Option<BTreeMap<String, Verdict>> {
         let bytes = match std::fs::read(file) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return BTreeMap::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
             Err(error) => {
-                warn!("ignoring unreadable content verdict cache '{}': {error}", file.display());
-                return BTreeMap::new();
+                warn!("ignoring unreadable materialization cache '{}': {error}", file.display());
+                return Some(BTreeMap::new());
             }
         };
-        match serde_json::from_slice::<CacheFile>(&bytes) {
-            Ok(parsed) if parsed.version == CACHE_VERSION => parsed.verdicts,
-            Ok(parsed) => {
-                warn!(
-                    "ignoring content verdict cache '{}': it is version {} and this build reads \
-                     version {CACHE_VERSION}",
-                    file.display(),
-                    parsed.version
-                );
-                BTreeMap::new()
-            }
+        let parsed = match serde_json::from_slice::<CacheFile>(&bytes) {
+            Ok(parsed) => parsed,
             Err(error) => {
-                warn!("ignoring malformed content verdict cache '{}': {error}", file.display());
-                BTreeMap::new()
+                warn!("ignoring malformed materialization cache '{}': {error}", file.display());
+                return Some(BTreeMap::new());
             }
+        };
+        if parsed.version != CACHE_VERSION {
+            warn!(
+                "ignoring materialization cache '{}': it is version {} and this build reads \
+                 version {CACHE_VERSION}",
+                file.display(),
+                parsed.version
+            );
+            return Some(BTreeMap::new());
         }
+        Some(parsed.verdicts)
+    }
+
+    /// Reads the record a workspace kept under the name this build no longer
+    /// writes, and removes that file.
+    ///
+    /// The name is the only thing that changed, so the verdicts beside it still
+    /// describe the library and carrying them over costs no re-read. The removal
+    /// is best-effort: a file that will not go is reported and the run continues,
+    /// because the file is a cache and keeping it costs one re-read on the next
+    /// run rather than a failed sync.
+    fn adopt_legacy_file(new_file: &Path) -> BTreeMap<String, Verdict> {
+        let legacy = new_file.with_file_name(LEGACY_CACHE_FILE_NAME);
+        let Some(remembered) = Self::read_file(&legacy) else {
+            return BTreeMap::new();
+        };
+        if let Err(error) = std::fs::remove_file(&legacy) {
+            warn!("could not remove the superseded cache '{}': {error}", legacy.display());
+        }
+        remembered
     }
 
     /// Whether a remembered verdict still describes `relative_path`.
@@ -267,7 +319,7 @@ impl VerdictCache {
         let directory = self.file.parent().unwrap_or(Path::new("."));
         if let Err(source) = std::fs::create_dir_all(directory) {
             return Err(MediaPmError::Io {
-                operation: "creating the content verdict cache directory".to_string(),
+                operation: "creating the materialization cache directory".to_string(),
                 path: directory.to_path_buf(),
                 source,
             });
@@ -276,7 +328,7 @@ impl VerdictCache {
             serde_json::to_vec_pretty(&CacheFile { version: CACHE_VERSION, verdicts: confirmed })
                 .map_err(|error| {
                 MediaPmError::Workflow(format!(
-                    "encoding the content verdict cache failed: {error}"
+                    "encoding the materialization cache failed: {error}"
                 ))
             })?;
 
@@ -284,22 +336,22 @@ impl VerdictCache {
         // mid-write leaves the previous verdicts rather than half of this run's.
         let mut staging =
             tempfile::NamedTempFile::new_in(directory).map_err(|source| MediaPmError::Io {
-                operation: "creating the content verdict cache staging file".to_string(),
+                operation: "creating the materialization cache staging file".to_string(),
                 path: directory.to_path_buf(),
                 source,
             })?;
         staging.write_all(&bytes).map_err(|source| MediaPmError::Io {
-            operation: "writing the content verdict cache staging file".to_string(),
+            operation: "writing the materialization cache staging file".to_string(),
             path: directory.to_path_buf(),
             source,
         })?;
         staging.as_file().sync_all().map_err(|source| MediaPmError::Io {
-            operation: "flushing the content verdict cache staging file".to_string(),
+            operation: "flushing the materialization cache staging file".to_string(),
             path: directory.to_path_buf(),
             source,
         })?;
         staging.persist(&self.file).map_err(|error| MediaPmError::Io {
-            operation: "renaming the content verdict cache into place".to_string(),
+            operation: "renaming the materialization cache into place".to_string(),
             path: self.file.clone(),
             source: error.error,
         })?;
@@ -374,6 +426,59 @@ mod tests {
                 cache.remembered
             );
         }
+    }
+
+    /// A workspace from an older build carries its verdicts across the rename
+    /// and is left holding one file, not two.
+    ///
+    /// The contents did not change with the name, so discarding the old file
+    /// would spend a full read of the library to relearn what it already says,
+    /// and keeping both would leave two files answering the same question with
+    /// no way to tell which one a run trusted.
+    #[test]
+    fn regression_a_legacy_verdict_file_is_adopted_and_removed() {
+        let (_workspace, paths) = empty_workspace();
+        let legacy = legacy_cache_file_path(&paths);
+        std::fs::create_dir_all(legacy.parent().expect("the cache path names a directory"))
+            .unwrap();
+        let seeded = serde_json::to_vec_pretty(&CacheFile {
+            version: CACHE_VERSION,
+            verdicts: BTreeMap::from([(
+                "song".to_string(),
+                Verdict { hash: "blake3:seeded".to_string(), len: 7, mtime_nanos: 7 },
+            )]),
+        })
+        .unwrap();
+        std::fs::write(&legacy, seeded).unwrap();
+
+        let cache = VerdictCache::open(&paths);
+
+        assert!(
+            !legacy.exists(),
+            "the superseded file has to go, or the workspace keeps two records of one library"
+        );
+        assert_eq!(
+            cache.remembered.get("song").map(|verdict| verdict.hash.as_str()),
+            Some("blake3:seeded"),
+            "the rename changed the file name and nothing else, so the verdicts it held still \
+             describe the library: {:?}",
+            cache.remembered
+        );
+
+        // The carried-over numbers are the ones the next run is answered from,
+        // which is what makes the adoption worth doing.
+        cache.confirm("song", &Hash::from_content(b"seven!"), 7, Some(7));
+        cache.flush().expect("flush");
+        assert!(
+            cache_file_path(&paths).is_file(),
+            "the run has to leave the record under the name this build reads"
+        );
+        let reopened = VerdictCache::open(&paths);
+        assert!(
+            reopened.is_current("song", &Hash::from_content(b"seven!"), 7, Some(7)),
+            "a verdict written by one run has to answer the next one: {:?}",
+            reopened.remembered
+        );
     }
 
     /// A file naming no version at all is read as this one, because a version

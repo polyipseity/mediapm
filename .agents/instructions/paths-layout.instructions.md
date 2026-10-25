@@ -40,7 +40,7 @@ These are `MediaPmPaths` methods, not struct fields — each derives from `runti
 | `workspace_cache_store_dir()`         | `{runtime_root}/cache/store/`          | Shared cache store (CAS)    | `paths.rs:116` |
 | `workspace_yt_dlp_cache_dir()`        | `{runtime_root}/cache/yt-dlp/`         | yt-dlp cache                | `paths.rs:122` |
 | `workspace_media_tagger_cache_dir()`  | `{runtime_root}/cache/media_tagger/`   | media-tagger cache          | `paths.rs:128` |
-| `workspace_mediapm_cache_dir()`       | `{runtime_root}/cache/mediapm/`        | MediaPM metadata cache      | `paths.rs:134` |
+| `workspace_mediapm_cache_dir()`       | `{runtime_root}/cache/mediapm/`        | MediaPM workspace caches    | `paths.rs:134` |
 
 ## `MediaPmPathOverrides` resolution rules
 
@@ -58,7 +58,9 @@ Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
   store/            # Shared CAS store (tool payloads)
   yt-dlp/           # yt-dlp download cache
   media_tagger/     # media-tagger cache
-  mediapm/          # MediaPM metadata cache
+  mediapm/          # workspace caches, each named for what it holds
+    metadata.json           # ffprobe results keyed ffprobe:<path>, 1-day TTL
+    materialization.json    # what a run proved about each managed path
 ```
 
 ## Key invariants
