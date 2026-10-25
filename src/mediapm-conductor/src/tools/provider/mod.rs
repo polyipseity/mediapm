@@ -3473,13 +3473,38 @@ mod tests {
 
     /// Windows twin of the execution test: the batch guard must leave status 1
     /// with an empty stdout and the variable named on stderr.
-    #[cfg(windows)]
+    ///
+    /// The generated batch text is asserted on every platform, so its shape is
+    /// compiled and checked wherever the suite runs rather than only on a
+    /// Windows host. The execution half is gated on runtime detection because
+    /// a `.cmd` batch file needs `cmd /C` to interpret it: on a POSIX host
+    /// there is no interpreter to run it with, so only the shape can be
+    /// asserted there.
     #[test]
     fn launcher_script_exits_without_the_variable_windows() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let path = dir.path().join("media-tagger-launcher.cmd");
         let script = generate_launcher_script("windows", "media-tagger", &["builtin".to_string()]);
+        let text = String::from_utf8_lossy(&script).into_owned();
+
+        assert!(
+            text.contains("if not defined MEDIAPM_EXECUTABLE"),
+            "batch script must guard on a defined variable, got: {text}"
+        );
+        assert!(
+            text.contains("exit /b 1"),
+            "batch guard must leave a non-zero exit status, got: {text}"
+        );
+        assert!(
+            text.contains("\"%MEDIAPM_EXECUTABLE%\" builtin media-tagger %*"),
+            "dispatch must stay on the batch dispatch line with the passthrough, got: {text}"
+        );
+
         std::fs::write(&path, script).expect("write launcher script");
+
+        if !cfg!(windows) {
+            return;
+        }
 
         let output = std::process::Command::new("cmd")
             .arg("/C")
@@ -3495,6 +3520,49 @@ mod tests {
             stderr.contains("MEDIAPM_EXECUTABLE"),
             "stderr must name the variable, got: {stderr}"
         );
+    }
+
+    /// Protects the seam the launcher guard exists for: with
+    /// `MEDIAPM_EXECUTABLE` set, the generated POSIX launcher must reach that
+    /// target with exactly the dispatch arguments followed by the caller's
+    /// own. The absence test covers only the guard's failure direction, so a
+    /// guard written with `:-` instead of `:?`, or an `exec` moved inside the
+    /// guard, would leave it green while the CLI never received its dispatch.
+    #[cfg(unix)]
+    #[test]
+    fn launcher_script_dispatches_to_the_executable_with_the_dispatch_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let launcher = dir.path().join("media-tagger-launcher");
+        let stub = dir.path().join("mediapm-stub");
+        let record = dir.path().join("recorded-args.txt");
+
+        std::fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MEDIAPM_ARG_RECORD\"\n")
+            .expect("write stub executable");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("mark stub executable");
+
+        let script = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        std::fs::write(&launcher, script).expect("write launcher script");
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
+            .expect("mark launcher script executable");
+
+        let output = std::process::Command::new(&launcher)
+            .env("MEDIAPM_EXECUTABLE", &stub)
+            .env("MEDIAPM_ARG_RECORD", &record)
+            .arg("--input")
+            .output()
+            .expect("run launcher script");
+
+        assert!(
+            output.status.success(),
+            "launcher must succeed with MEDIAPM_EXECUTABLE set, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let recorded = std::fs::read_to_string(&record).expect("read the recorded arguments");
+        let arguments: Vec<&str> = recorded.lines().collect();
+        assert_eq!(arguments, ["builtin", "media-tagger", "--input"]);
     }
 
     // ── extract helpers ───────────────────────────────────────────────
