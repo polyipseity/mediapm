@@ -3,6 +3,14 @@
 //! Stores blobs in a hash-derived directory layout.
 //! Atomic writes via write-to-temp, then rename.
 //! Full blobs and delta blobs live at independent paths (`.diff` suffix).
+//!
+//! An object file is immutable once it exists: a path derived from the content
+//! hash can only ever hold those bytes, and the hierarchy materializer hardlinks
+//! outputs straight from these paths, so replacing the inode would detach every
+//! link already made from it. The store enforces that on disk as well as by
+//! convention: every committed file carries a read-only mode, and every write
+//! path clears the attribute of a file it is about to replace or remove, because
+//! a read-only file cannot be replaced or unlinked on Windows.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -20,6 +28,40 @@ use crate::error::CasError;
 use crate::hash::Hash;
 use crate::io_gate::CasIoGate;
 use crate::verify::VerifyEvaluator;
+
+/// Returns `permissions` with every write bit cleared.
+///
+/// This is the mode a committed object carries. Clearing all three write bits
+/// rather than only the owner's leaves a blob that no user can rewrite without
+/// first clearing the attribute, which is exactly what an immutable object is.
+fn without_write_bits(mut permissions: std::fs::Permissions) -> std::fs::Permissions {
+    permissions.set_readonly(true);
+    permissions
+}
+
+/// Returns `permissions` with the owner's write bit set.
+///
+/// The attribute has to be cleared before an object is replaced or removed:
+/// Windows refuses both on a read-only file. Only the owner's bit is granted,
+/// so the mode a writable store file comes back with stays as restrictive as
+/// the umask made it.
+#[cfg(unix)]
+fn with_owner_write(mut permissions: std::fs::Permissions) -> std::fs::Permissions {
+    use std::os::unix::fs::PermissionsExt;
+
+    permissions.set_mode(permissions.mode() | 0o200);
+    permissions
+}
+
+/// Windows counterpart of the unix `with_owner_write`.
+///
+/// The read-only bit is a file attribute there rather than a mode bit, so
+/// clearing it is the whole operation.
+#[cfg(windows)]
+fn with_owner_write(mut permissions: std::fs::Permissions) -> std::fs::Permissions {
+    permissions.set_readonly(false);
+    permissions
+}
 
 /// Filesystem-backed [`BlobStore`] with hash-derived directory layout.
 ///
@@ -107,14 +149,65 @@ impl FileSystemBlobStore {
     ///
     /// Staging and the rename share one lease so the pair cannot be split by a
     /// gate close: a refused staging write never reaches the rename.
+    ///
+    /// The staged file is made read-only before it is renamed, so a committed
+    /// object is never observable as writable, and the file the rename replaces
+    /// has its attribute cleared first, because Windows cannot replace a
+    /// read-only target.
     async fn atomic_write(&self, path: &Path, data: Bytes) -> Result<(), CasError> {
         let tmp_path = path.with_extension("tmp");
         let final_path = path.to_path_buf();
         self.io_gate
             .run(move || {
                 std::fs::write(&tmp_path, &data)?;
+                let staged = std::fs::metadata(&tmp_path)?.permissions();
+                std::fs::set_permissions(&tmp_path, without_write_bits(staged))?;
+                match std::fs::metadata(&final_path) {
+                    Ok(replaced) => {
+                        std::fs::set_permissions(
+                            &final_path,
+                            with_owner_write(replaced.permissions()),
+                        )?;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
                 std::fs::rename(&tmp_path, &final_path)
             })
+            .await
+            .map_err(CasError::Io)
+    }
+
+    /// Ensures an existing object carries the read-only mode.
+    ///
+    /// Used by the skip path: an object written by a build that did not set the
+    /// attribute is writable, and rewriting its bytes would detach the hardlinks
+    /// made from it, so the permission is the only thing that changes.
+    async fn enforce_read_only(path: &Path) -> Result<(), CasError> {
+        let metadata = fs::metadata(path).await.map_err(CasError::Io)?;
+        if metadata.permissions().readonly() {
+            return Ok(());
+        }
+        fs::set_permissions(path, without_write_bits(metadata.permissions()))
+            .await
+            .map_err(CasError::Io)
+    }
+
+    /// Clears the read-only attribute so `path` can be replaced or removed.
+    ///
+    /// A missing file is success: the caller is about to unlink it, and the
+    /// unlink reports its own `NotFound` handling. A file that is already
+    /// writable is left untouched, so the common path costs one `stat`.
+    async fn clear_read_only(path: &Path) -> Result<(), CasError> {
+        let metadata = match fs::metadata(path).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(CasError::Io(error)),
+        };
+        if !metadata.permissions().readonly() {
+            return Ok(());
+        }
+        fs::set_permissions(path, with_owner_write(metadata.permissions()))
             .await
             .map_err(CasError::Io)
     }
@@ -190,7 +283,12 @@ impl BlobStore for FileSystemBlobStore {
         // different base, and nothing hardlinks them.
         let already_materialized = matches!(encoding, ObjectEncoding::Full)
             && fs::metadata(&path).await.is_ok_and(|meta| meta.is_file());
-        if !already_materialized {
+        if already_materialized {
+            // An object written by a build that did not set the attribute is
+            // writable. Its bytes are already correct, so only the mode
+            // changes: rewriting them would detach the hardlinks made from it.
+            Self::enforce_read_only(&path).await?;
+        } else {
             self.atomic_write(&path, data.clone()).await?;
         }
         // Seed mtime for verify-on-read tracking. Runs on the skip path too:
@@ -298,6 +396,7 @@ impl BlobStore for FileSystemBlobStore {
         // Verify content hash
         let computed_hash = Hash::from_bytes(*hasher.finalize().as_bytes());
         if computed_hash != hash {
+            Self::clear_read_only(&tmp_path).await?;
             let _ = fs::remove_file(&tmp_path).await;
             return Err(CasError::CorruptObject {
                 hash: Some(hash),
@@ -308,7 +407,12 @@ impl BlobStore for FileSystemBlobStore {
             });
         }
 
-        // Atomic rename
+        // Atomic rename, after the staged file takes the read-only mode a
+        // committed object carries and any file it replaces gives up its own.
+        // Neither step creates a directory entry, so neither needs a lease.
+        let staged = fs::metadata(&tmp_path).await.map_err(CasError::Io)?.permissions();
+        fs::set_permissions(&tmp_path, without_write_bits(staged)).await.map_err(CasError::Io)?;
+        Self::clear_read_only(&path).await?;
         fs::rename(&tmp_path, &path).await.map_err(CasError::Io)?;
         // Seed mtime for verify-on-read tracking.
         if let Ok(meta) = fs::metadata(&path).await {
@@ -334,10 +438,12 @@ impl BlobStore for FileSystemBlobStore {
         let delta_path = hash_to_delta_path(&self.root, hash);
 
         // Silently ignore NotFound on each path; propagate other errors.
+        Self::clear_read_only(&full_path).await?;
         match fs::remove_file(&full_path).await {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(CasError::Io(e)),
             _ => {}
         }
+        Self::clear_read_only(&delta_path).await?;
         match fs::remove_file(&delta_path).await {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(CasError::Io(e)),
             _ => {}
@@ -350,6 +456,7 @@ impl BlobStore for FileSystemBlobStore {
             ObjectEncoding::Full => hash_to_path(&self.root, &hash),
             ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
         };
+        Self::clear_read_only(&path).await?;
         match fs::remove_file(&path).await {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(CasError::Io(e)),
@@ -402,12 +509,17 @@ impl BlobStore for FileSystemBlobStore {
 
         let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
 
-        // Rename temp to final path.
+        // Rename temp to final path, after the staged file takes the read-only
+        // mode a committed object carries and any existing encoding gives up
+        // its own so the rename can replace it on Windows.
         let final_path = match encoding {
             ObjectEncoding::Full => hash_to_path(&self.root, &hash),
             ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
         };
         self.ensure_parent(&hash).await?;
+        let staged = fs::metadata(&tmp_path).await.map_err(CasError::Io)?.permissions();
+        fs::set_permissions(&tmp_path, without_write_bits(staged)).await.map_err(CasError::Io)?;
+        Self::clear_read_only(&final_path).await?;
         fs::rename(&tmp_path, &final_path).await.map_err(CasError::Io)?;
         // Seed mtime for verify-on-read tracking.
         if let Ok(meta) = fs::metadata(&final_path).await {
@@ -453,6 +565,7 @@ impl BlobStore for FileSystemBlobStore {
             )));
         }
         let path = self.aux_path(hash, name);
+        Self::clear_read_only(&path).await?;
         match fs::remove_file(&path).await {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(CasError::Io(e)),
@@ -513,6 +626,7 @@ mod tests {
 
         // Verify hash integrity on read.
         let corrupt_path = hash_to_path(dir.path(), &hash);
+        tamper(&corrupt_path);
         fs::write(&corrupt_path, b"corrupted data").await.unwrap();
         let result = store.read(&hash).await;
         assert!(
@@ -703,6 +817,7 @@ mod tests {
         let path = hash_to_path(dir.path(), &hash);
         // Ensure clocks tick so mtime is distinct.
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tamper(&path);
         fs::write(&path, b"corrupted content").await.unwrap();
 
         // Read should detect corruption.
@@ -756,6 +871,22 @@ mod tests {
         assert_eq!(store.read(&hash).await.unwrap(), data);
         // Read 2: elapsed >= 0 → stale immediately.
         assert_eq!(store.read(&hash).await.unwrap(), data);
+    }
+
+    /// Makes a committed object writable so a test can tamper with it.
+    ///
+    /// Every file the store commits is read-only, so a test that writes into
+    /// one has to clear the attribute first — exactly what a replacement write
+    /// does before its rename.
+    fn tamper(path: &Path) {
+        let permissions = std::fs::metadata(path).expect("object metadata").permissions();
+        std::fs::set_permissions(path, with_owner_write(permissions))
+            .expect("make object writable");
+    }
+
+    /// Reports whether a committed file carries no write bit.
+    fn is_read_only(path: &Path) -> bool {
+        std::fs::metadata(path).expect("object metadata").permissions().readonly()
     }
 
     /// Reports whether two paths resolve to the same filesystem object.
@@ -896,5 +1027,200 @@ mod tests {
 
         let delta_path = hash_to_delta_path(dir.path(), &hash);
         assert_eq!(std::fs::read(&delta_path).unwrap(), second.to_vec());
+    }
+
+    /// Every file the store commits is read-only, whichever path wrote it.
+    ///
+    /// Immutability is the store's own claim, not a side effect of the
+    /// materializer's chmod through a hardlinked output: a blob nothing links
+    /// to is read-only too, and so is a delta envelope and an auxiliary file.
+    #[tokio::test]
+    async fn strict_a_stored_blob_is_read_only() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .expect("create store");
+
+        let data = Bytes::from_static(b"immutable object mode");
+        let hash = Hash::from_content(&data);
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.expect("write full object");
+        assert!(
+            is_read_only(&hash_to_path(dir.path(), &hash)),
+            "a committed full object must be read-only"
+        );
+
+        let base = Hash::from_content(b"mode base");
+        store
+            .write(hash, ObjectEncoding::Delta { base_hash: base }, data)
+            .await
+            .expect("write delta envelope");
+        assert!(
+            is_read_only(&hash_to_delta_path(dir.path(), &hash)),
+            "a committed delta envelope must be read-only"
+        );
+
+        store
+            .write_aux(&hash, "materialized-path", Bytes::from_static(b"/tmp/output"))
+            .await
+            .expect("write aux file");
+        let aux = hash_to_path(dir.path(), &hash)
+            .parent()
+            .expect("object has a fan-out parent")
+            .join("materialized-path");
+        assert!(is_read_only(&aux), "a committed auxiliary file must be read-only");
+    }
+
+    /// A blob written by a build that never set the attribute is repaired by the
+    /// skip path, and repairing it must not replace the object: the inode is what
+    /// every hardlinked output depends on.
+    #[tokio::test]
+    async fn regression_an_existing_blob_is_made_read_only() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .expect("create store");
+
+        let data = Bytes::from_static(b"older build wrote this");
+        let hash = Hash::from_content(&data);
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.expect("write object");
+        let blob = hash_to_path(dir.path(), &hash);
+        let linked = dir.path().join("materialized-output.bin");
+        std::fs::hard_link(&blob, &linked).expect("hard link the object");
+
+        tamper(&blob);
+        assert!(!is_read_only(&blob), "the writable premise must hold");
+
+        // The object is already present, so this write takes the skip path.
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.expect("re-store object");
+
+        assert!(is_read_only(&blob), "the skip path must restore the read-only mode");
+        assert!(
+            is_same_file(&blob, &linked),
+            "restoring the mode must not replace the object, which would detach its hardlinks"
+        );
+        assert_eq!(store.read(&hash).await.expect("read object"), data);
+    }
+
+    /// A read-only object is still removable through every delete path.
+    ///
+    /// Windows refuses to unlink a read-only file, so this is the regression pin
+    /// for the store's delete paths on both platforms.
+    #[tokio::test]
+    async fn regression_a_read_only_blob_can_be_removed() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .expect("create store");
+
+        let base = Hash::from_content(b"removal base");
+        let data = Bytes::from_static(b"removable object");
+        let hash = Hash::from_content(&data);
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.expect("write full object");
+        store
+            .write(hash, ObjectEncoding::Delta { base_hash: base }, data)
+            .await
+            .expect("write delta object");
+        store
+            .write_aux(&hash, "materialized-path", Bytes::from_static(b"/tmp/output"))
+            .await
+            .expect("write aux file");
+
+        let blob = hash_to_path(dir.path(), &hash);
+        let delta = hash_to_delta_path(dir.path(), &hash);
+        assert!(is_read_only(&blob) && is_read_only(&delta), "both encodings are read-only");
+
+        store
+            .delete_encoding(hash, ObjectEncoding::Delta { base_hash: base })
+            .await
+            .expect("delete_encoding must remove a read-only delta");
+        assert!(!delta.exists(), "the delta encoding is gone");
+
+        store.delete(&hash).await.expect("delete must remove a read-only object");
+        assert!(!blob.exists(), "the full object is gone");
+
+        store
+            .delete_aux(&hash, "materialized-path")
+            .await
+            .expect("delete_aux must remove a read-only auxiliary file");
+        assert!(
+            !blob.parent().expect("fan-out parent").join("materialized-path").exists(),
+            "the auxiliary file is gone"
+        );
+    }
+
+    /// A re-encoded delta envelope is replaced successfully and the replacement
+    /// carries the same read-only mode.
+    #[tokio::test]
+    async fn strict_a_rewritten_delta_envelope_is_read_only() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .expect("create store");
+
+        let hash = Hash::from_content(b"re-encoded delta target");
+        let base = Hash::from_content(b"re-encoded delta base");
+        let first = Bytes::from_static(b"first envelope");
+        let second = Bytes::from_static(b"second envelope, longer");
+
+        store
+            .write(hash, ObjectEncoding::Delta { base_hash: base }, first)
+            .await
+            .expect("write first envelope");
+        store
+            .write(hash, ObjectEncoding::Delta { base_hash: base }, second.clone())
+            .await
+            .expect("replace the envelope");
+
+        let delta_path = hash_to_delta_path(dir.path(), &hash);
+        // Read the envelope directly: a delta envelope is a derived encoding, so
+        // its bytes need not hash to the key it is filed under and `read_delta`
+        // verifies exactly that relationship.
+        assert_eq!(std::fs::read(&delta_path).expect("read envelope"), second.to_vec());
+        assert!(is_read_only(&delta_path), "the replacement envelope must be read-only");
+    }
+
+    /// The two streaming commit paths take the same mode as the buffered one.
+    #[tokio::test]
+    async fn strict_a_streamed_blob_is_read_only() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .expect("create store");
+
+        let payload: &[u8] = b"streamed object mode";
+        let mut reader = payload;
+        let (hash, length) =
+            store.write_stream(ObjectEncoding::Full, &mut reader).await.expect("write from stream");
+        assert_eq!(length, payload.len() as u64);
+        assert!(
+            is_read_only(&hash_to_path(dir.path(), &hash)),
+            "a streamed object must be read-only"
+        );
+
+        let known = Hash::from_content(b"reader object mode");
+        let mut reader: &[u8] = b"reader object mode";
+        store
+            .write_from_reader(known, ObjectEncoding::Full, &mut reader, 18)
+            .await
+            .expect("write from reader");
+        assert!(
+            is_read_only(&hash_to_path(dir.path(), &known)),
+            "an object written from a reader must be read-only"
+        );
     }
 }
