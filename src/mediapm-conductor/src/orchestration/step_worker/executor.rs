@@ -22,7 +22,7 @@ use super::cache::probe_cache;
 use super::capture::{capture_outputs, implicit_stream_specs};
 use super::inputs::resolve_step_inputs;
 use super::process::{ExecutionResult, run_builtin, run_executable_process};
-use super::sandbox::{create_sandbox, materialize_content_map};
+use super::sandbox::{create_sandbox, prepare_tool_payload, resolve_executable_under_payload_root};
 use super::template::{TemplateContext, resolve_command_parts};
 use crate::instance_key::{derive_instance_key, deterministic_input_hashes_from_resolved_inputs};
 
@@ -55,8 +55,12 @@ async fn dispatch_tool_execution<C: CasApi + Send + Sync>(
             host_os: std::env::consts::OS,
             inputs: &resolved_inputs_map,
         };
-        let (resolved_parts, determinism) =
+        let (mut resolved_parts, determinism) =
             resolve_command_parts(&tool_spec.command_parts, &cmd_ctx).await?;
+        // `in_place` executes the tool where the provisioner put it, so the
+        // executable the document names relative to the sandbox is resolved
+        // against the payload root before anything runs.
+        resolve_executable_under_payload_root(&mut resolved_parts, tool_spec)?;
         let command_args = resolved_parts
             .iter()
             .zip(&determinism)
@@ -197,7 +201,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     }
 
     let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &instance_key).await?;
-    materialize_content_map(cas, &tool_spec.tool_content_map, &sandbox_dir).await?;
+    prepare_tool_payload(cas, tool_spec, &sandbox_dir).await?;
 
     let (execution_result, command_args) =
         dispatch_tool_execution(cas, tool_spec, &request, &resolved_inputs, &sandbox_dir).await?;
@@ -525,6 +529,8 @@ mod tests {
             execution_env_vars: BTreeMap::new(),
             outputs: tool_defaults,
             tool_content_map: BTreeMap::new(),
+            payload_root: String::new(),
+            payload_staging: crate::config::PayloadStaging::Copy,
             builtin_id: Some(tool_id.to_string()),
         };
         let request = StepExecutionRequest {

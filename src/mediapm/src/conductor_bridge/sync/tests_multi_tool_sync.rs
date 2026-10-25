@@ -438,8 +438,14 @@ async fn sync_parallel_fetch_is_deterministic() {
     .expect("run 2 failed");
 
     // --- Assert identical generated-doc bytes ---
-    let doc1 = std::fs::read(&paths1.conductor_generated_ncl).expect("read generated doc 1");
-    let doc2 = std::fs::read(&paths2.conductor_generated_ncl).expect("read generated doc 2");
+    //
+    // Apart from the workspace root: the document names the directory each tool
+    // payload was materialized into, and two workspaces hold the same document
+    // at different paths. Everything else still has to match byte for byte.
+    let doc1_raw = std::fs::read(&paths1.conductor_generated_ncl).expect("read generated doc 1");
+    let doc2_raw = std::fs::read(&paths2.conductor_generated_ncl).expect("read generated doc 2");
+    let doc1 = normalize_workspace_root(&doc1_raw, &paths1.root_dir);
+    let doc2 = normalize_workspace_root(&doc2_raw, &paths2.root_dir);
     assert_eq!(doc1, doc2, "generated-doc bytes differ between runs");
 
     // --- Assert identical bar-operation multisets ---
@@ -488,4 +494,20 @@ async fn sync_parallel_fetch_is_deterministic() {
     bars1.sort();
     bars2.sort();
     assert_eq!(bars1, bars2, "bar-operation multisets differ between runs");
+}
+
+/// Replaces a workspace root with a fixed token in a generated document.
+///
+/// The token assertion is what keeps the normalization honest: one that matched
+/// nothing would leave the comparison exactly as it was and hide the reason it
+/// exists.
+fn normalize_workspace_root(document: &[u8], root: &std::path::Path) -> String {
+    let text = String::from_utf8(document.to_vec()).expect("the generated document is UTF-8");
+    let root_text = root.to_string_lossy();
+    let normalized = text.replace(root_text.as_ref(), "<workspace>");
+    assert!(
+        normalized.contains("<workspace>"),
+        "the generated document has to name the workspace root it was written in",
+    );
+    normalized
 }

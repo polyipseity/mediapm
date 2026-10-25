@@ -18,28 +18,45 @@ use super::{LEGACY_LOCK_FILE_NAME, LOCK_FILE_NAME, METADATA_FILE_NAME, TTL_SECON
 /// active locks are removed; in-use entries are preserved even if they are not
 /// in the active set.
 ///
+/// A directory this sweep cannot remove is reported in the answer and the sweep
+/// carries on with the rest: one directory that will not go is a warning about
+/// that directory, not a reason to leave every other stale entry in place.
+/// Callers with a user-facing warning channel are expected to forward the answer
+/// there, because nothing else will ever remove those directories.
+///
 /// # Errors
-/// Returns [`ConductorError`] if directory listing or removal fails.
+/// Returns [`ConductorError`] when the tools root cannot be listed at all, since
+/// a sweep that cannot see its own entries has nothing to report per entry.
 #[expect(clippy::implicit_hasher, reason = "public API uses a concrete HashSet")]
 pub async fn retain_only_tool_dirs(
     tools_dir: PathBuf,
     active_tool_ids: HashSet<String>,
-) -> Result<(), ConductorError> {
+) -> Result<Vec<String>, ConductorError> {
     let active: HashSet<String> =
         active_tool_ids.into_iter().map(|id| sanitize_tool_id(&id)).collect();
-    tokio::task::spawn_blocking(move || do_retain_only(&tools_dir, &active)).await.map_err(
-        |join_err| ConductorError::Internal(format!("retain-only task panicked: {join_err}")),
-    )?
+    let warnings =
+        tokio::task::spawn_blocking(move || do_retain_only(&tools_dir, &active)).await.map_err(
+            |join_err| ConductorError::Internal(format!("retain-only task panicked: {join_err}")),
+        )??;
+    // Logged as well as returned: this sweep is called both from a sync a person
+    // is watching and from maintenance nobody waits for, and the log is the only
+    // record the second caller leaves. A caller with a user-facing channel
+    // forwards the answer instead of relying on the log.
+    for warning in &warnings {
+        tracing::warn!("{warning}");
+    }
+    Ok(warnings)
 }
 
 /// Removes all entry directories in `tools_dir` whose name is not in
-/// `active_sanitized`.
+/// `active_sanitized`, answering one warning per directory it could not remove.
 fn do_retain_only(
     tools_dir: &Path,
     active_sanitized: &HashSet<String>,
-) -> Result<(), ConductorError> {
+) -> Result<Vec<String>, ConductorError> {
+    let mut warnings = Vec::new();
     if !tools_dir.exists() {
-        return Ok(());
+        return Ok(warnings);
     }
     for entry in fs::read_dir(tools_dir).map_err(|source| ConductorError::Io {
         operation: "enumerating tool-content cache root for retain-only".to_string(),
@@ -65,8 +82,13 @@ fn do_retain_only(
         // A directory that predates the lock rename cannot be locked through
         // the current name, so it would be skipped on every sweep for as long
         // as it exists. It is not in the active set, so reclaim it.
-        if remove_legacy_lock_entry(&path)? {
-            continue;
+        match remove_legacy_lock_entry(&path) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(source) => {
+                warnings.push(removal_warning(&path, "under the legacy lock name", &source));
+                continue;
+            }
         }
 
         // Try to acquire an exclusive lock non-blockingly.  If the entry is
@@ -79,9 +101,21 @@ fn do_retain_only(
         if lock_file.try_lock().is_err() {
             continue;
         }
-        let _ = fs::remove_dir_all(&path);
+        if let Err(source) = fs::remove_dir_all(&path) {
+            warnings.push(removal_warning(&path, "an inactive provisioned entry", &source));
+        }
     }
-    Ok(())
+    Ok(warnings)
+}
+
+/// The warning a sweep reports for a directory it wanted gone and could not
+/// remove.
+///
+/// The path and the operating system's own account are both named: the path is
+/// what a reader has to delete by hand, and the error is what tells a permission
+/// problem from a directory another process still holds something in.
+fn removal_warning(path: &Path, what: &str, source: &std::io::Error) -> String {
+    format!("could not remove the tool payload directory '{}' ({what}): {source}", path.display())
 }
 
 /// Removes `entry_dir` when it carries the lock name this build no longer
@@ -93,29 +127,36 @@ fn do_retain_only(
 /// later sweep to skip again.
 ///
 /// # Errors
-/// Returns the I/O failure that stopped the removal. A directory that will not
-/// go is reported rather than swallowed: the sweep is the only thing that will
-/// ever remove it, so silence here means it stays for the life of the store.
-fn remove_legacy_lock_entry(entry_dir: &Path) -> Result<bool, ConductorError> {
+/// Returns the I/O failure that stopped the removal, for the caller to report.
+/// A directory that will not go is reported rather than swallowed: the sweep is
+/// the only thing that will ever remove it, so silence here means it stays for
+/// the life of the store. The caller reports it and carries on with the other
+/// entries, which is why this answers the failure instead of raising it.
+fn remove_legacy_lock_entry(entry_dir: &Path) -> Result<bool, std::io::Error> {
     if !entry_dir.join(LEGACY_LOCK_FILE_NAME).exists() {
         return Ok(false);
     }
     if entry_dir.join(LOCK_FILE_NAME).exists() {
         return Ok(false);
     }
-    fs::remove_dir_all(entry_dir).map_err(|source| ConductorError::Io {
-        operation: "removing a tool-content cache entry left under the legacy lock name"
-            .to_string(),
-        path: entry_dir.to_path_buf(),
-        source,
-    })?;
+    fs::remove_dir_all(entry_dir)?;
     Ok(true)
 }
 
-/// Removes provisioning entries that have not been used within `TTL_SECONDS`.
-pub(crate) fn prune_expired_entries(tools_dir: &Path, now: u64) -> Result<(), ConductorError> {
+/// Removes provisioning entries that have not been used within `TTL_SECONDS`,
+/// answering one warning per directory it could not remove.
+///
+/// The answer reaches a user only through the automatic sweep's log, because
+/// this runs where nobody is waiting on it; the alternative — dropping the
+/// failure — leaves a directory that every later sweep also fails to remove
+/// with nothing anywhere saying so.
+pub(crate) fn prune_expired_entries(
+    tools_dir: &Path,
+    now: u64,
+) -> Result<Vec<String>, ConductorError> {
+    let mut warnings = Vec::new();
     if !tools_dir.exists() {
-        return Ok(());
+        return Ok(warnings);
     }
 
     let cutoff = now.saturating_sub(TTL_SECONDS);
@@ -153,8 +194,17 @@ pub(crate) fn prune_expired_entries(tools_dir: &Path, now: u64) -> Result<(), Co
 
         // An expired entry from before the lock rename cannot be locked
         // through the current name and would otherwise never be reclaimed.
-        if remove_legacy_lock_entry(&path)? {
-            continue;
+        match remove_legacy_lock_entry(&path) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(source) => {
+                warnings.push(removal_warning(
+                    &path,
+                    "expired, under the legacy lock name",
+                    &source,
+                ));
+                continue;
+            }
         }
 
         // Try to acquire an exclusive lock non-blockingly.
@@ -167,10 +217,12 @@ pub(crate) fn prune_expired_entries(tools_dir: &Path, now: u64) -> Result<(), Co
             continue;
         }
 
-        let _ = fs::remove_dir_all(&path);
+        if let Err(source) = fs::remove_dir_all(&path) {
+            warnings.push(removal_warning(&path, "expired", &source));
+        }
     }
 
-    Ok(())
+    Ok(warnings)
 }
 
 #[cfg(test)]
@@ -256,6 +308,86 @@ mod tests {
             tools_dir.path().join("active").exists(),
             "retain removes what is not active; an active entry is rebuilt by its next materialize"
         );
+    }
+
+    /// Sets an entry directory's own mode, which is what decides whether this
+    /// account can list it.
+    ///
+    /// `0o300` is the mode that makes `remove_dir_all` fail while the entry's
+    /// lock file still opens: opening a child needs search permission, which the
+    /// mode keeps, and listing the directory needs read permission, which the
+    /// mode drops.
+    #[cfg(unix)]
+    fn set_entry_dir_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path).expect("entry directory metadata").permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions).expect("set entry directory mode");
+    }
+
+    /// A directory the sweep cannot remove is reported, and the sweep still
+    /// removes the other stale entries.
+    ///
+    /// Both halves matter. Swallowing the failure leaves a directory that no
+    /// later sweep reports either, so the store keeps it for the life of the
+    /// workspace with nothing saying why; aborting the pass instead leaves every
+    /// other stale entry behind because of one directory that would not go.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn regression_a_failed_tool_dir_removal_is_reported() {
+        let tools_dir = artifact_dir().expect("tools dir");
+        seed_entry(tools_dir.path(), "blocked", LOCK_FILE_NAME, 0);
+        seed_entry(tools_dir.path(), "removable", LOCK_FILE_NAME, 0);
+        seed_entry(tools_dir.path(), "kept", LOCK_FILE_NAME, 0);
+        let blocked = tools_dir.path().join("blocked");
+        set_entry_dir_mode(&blocked, 0o300);
+
+        let warnings = retain_only_tool_dirs(
+            tools_dir.path().to_path_buf(),
+            HashSet::from(["kept".to_string()]),
+        )
+        .await
+        .expect("a sweep that cannot remove one entry still finishes");
+
+        assert!(
+            !tools_dir.path().join("removable").exists(),
+            "one unremovable entry must not stop the sweep removing the others"
+        );
+        assert!(
+            tools_dir.path().join("kept").exists(),
+            "the retain set is decided before removal, so an active entry stays"
+        );
+
+        if blocked.exists() {
+            set_entry_dir_mode(&blocked, 0o700);
+            assert_eq!(
+                warnings.len(),
+                1,
+                "the entry that would not go has to be reported exactly once: {warnings:?}"
+            );
+            assert!(
+                warnings[0].contains("blocked"),
+                "the report has to name the directory to delete by hand: {warnings:?}"
+            );
+            assert!(
+                warnings[0].contains("could not remove"),
+                "the report has to say what failed: {warnings:?}"
+            );
+        } else {
+            // An account that ignores a directory's own permission bits — root
+            // on unix — removes the entry, so there is nothing to report. The
+            // other two assertions above still hold, and this branch is
+            // announced so a reader of the output is not told the reporting
+            // half ran when it did not.
+            eprintln!(
+                "note: this account ignores permission bits, so the reported-failure half of \
+                 regression_a_failed_tool_dir_removal_is_reported did not run"
+            );
+            assert!(
+                warnings.is_empty(),
+                "a sweep that removed every entry has nothing to report: {warnings:?}"
+            );
+        }
     }
 
     /// A retain pass leaves a payload alone while a live guard holds it, and

@@ -129,10 +129,10 @@ pub(crate) fn assemble_tool_spec(
         inherited_env_vars: Vec::new(),
         max_concurrent_calls,
         max_retries,
-        // A document states the strategy this build implements. Sync names no
-        // payload root yet, and `copy` is the behaviour every step has, so the
-        // document records the strategy that needs no root rather than one
-        // this build cannot honour.
+        // The sync stamps both fields once it has materialized the payload:
+        // it alone knows the directory the provisioner filled. A spec built
+        // here names no root, so `copy` is the strategy that needs none, and a
+        // tool the sync never materializes keeps it.
         payload_root: String::new(),
         payload_staging: PayloadStaging::Copy,
     };

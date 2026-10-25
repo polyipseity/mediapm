@@ -14,7 +14,9 @@ use mediapm_cas::Hash;
 use mediapm_utils::Timestamp;
 use serde::Serialize;
 
-use crate::config::{OutputCaptureSpec, ToolInputSpec, WorkflowSpec, WorkflowStepSpec};
+use crate::config::{
+    OutputCaptureSpec, PayloadStaging, ToolInputSpec, WorkflowSpec, WorkflowStepSpec,
+};
 pub(super) use crate::state::{ConductorState, ToolCallInstance};
 
 /// Finds a tool catalog entry by its `name` field (not by map key).
@@ -95,6 +97,18 @@ pub(crate) struct UnifiedToolSpec {
     pub outputs: BTreeMap<String, OutputCaptureSpec>,
     /// Per-tool content-map entries to materialize into the execution sandbox.
     pub tool_content_map: BTreeMap<String, String>,
+    /// Directory the document says the tool payload lives in, or empty when it
+    /// names none.
+    ///
+    /// `in_place` and `hard_link` read the payload from here; `copy` needs no
+    /// root because it writes the content map into the sandbox instead.
+    pub payload_root: String,
+    /// How a step obtains the payload this tool declares.
+    ///
+    /// The strategy is the document's decision, carried through unchanged, so a
+    /// step stages exactly what its tool declared rather than what the executor
+    /// would have guessed.
+    pub payload_staging: PayloadStaging,
     /// The versioned builtin identifier (e.g. `"echo@v1"`) for builtin tools,
     /// or `None` for executable tools.
     pub builtin_id: Option<String>,
@@ -222,6 +236,8 @@ mod tests {
                 execution_env_vars: BTreeMap::new(),
                 outputs: BTreeMap::new(),
                 tool_content_map: BTreeMap::new(),
+                payload_root: String::new(),
+                payload_staging: PayloadStaging::Copy,
                 builtin_id: None,
             },
         )])
@@ -259,6 +275,8 @@ mod tests {
             execution_env_vars: BTreeMap::new(),
             outputs: BTreeMap::new(),
             tool_content_map: BTreeMap::new(),
+            payload_root: String::new(),
+            payload_staging: PayloadStaging::Copy,
             builtin_id: None,
         };
         let stale = {

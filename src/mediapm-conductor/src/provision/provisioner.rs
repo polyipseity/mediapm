@@ -227,11 +227,15 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
     /// preserved even if they are not in the active set.
     ///
     /// # Errors
-    /// Returns [`ConductorError`] if filesystem operations fail during retention.
+    /// Returns [`ConductorError`] when the tools root cannot be enumerated.
+    ///
+    /// Answers one warning per directory the sweep could not remove, for the
+    /// caller to forward to whatever channel reports to a person — nothing else
+    /// will ever remove those directories.
     pub async fn retain_only(
         &self,
         active_tool_ids: &HashSet<String>,
-    ) -> Result<(), ConductorError> {
+    ) -> Result<Vec<String>, ConductorError> {
         retain_only_tool_dirs(self.tools_dir.clone(), active_tool_ids.clone()).await
     }
 
@@ -374,7 +378,10 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
 fn sweep_expired_entries(tools_dir: &Path, now: u64) -> Result<(), ConductorError> {
     let _ = fs::create_dir_all(tools_dir);
     remove_legacy_prune_marker(tools_dir);
-    prune_expired_entries(tools_dir, now)
+    for warning in prune_expired_entries(tools_dir, now)? {
+        tracing::warn!("{warning}");
+    }
+    Ok(())
 }
 
 /// Removes the cooldown stamp an older build wrote beside the tools root.

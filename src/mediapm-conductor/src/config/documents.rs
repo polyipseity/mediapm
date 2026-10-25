@@ -184,6 +184,11 @@ impl NickelDocument {
                     // instance it found.
                     outputs: spec.outputs.clone(),
                     tool_content_map: spec.runtime.content_map.clone(),
+                    // The staging decision travels with the payload it stages:
+                    // an `in_place` or `hard_link` step reads the provisioned
+                    // tree, so it needs the root the document recorded beside it.
+                    payload_root: spec.runtime.payload_root.clone(),
+                    payload_staging: spec.runtime.payload_staging,
                 };
                 (id, unified)
             })

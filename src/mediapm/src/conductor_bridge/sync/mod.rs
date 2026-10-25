@@ -24,12 +24,12 @@ use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::config::ExternalDataEntry;
-use mediapm_conductor::provision::{ProvisionCache, retain_only_tool_dirs};
-use mediapm_conductor::runtime_env::write_generated_dotenv;
+use mediapm_conductor::provision::{ProvisionCache, ProvisionedTool, retain_only_tool_dirs};
+use mediapm_conductor::runtime_env::{provisioned_payload_dir, write_generated_dotenv};
 use mediapm_conductor::state::OutputSaveMode;
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
-use mediapm_conductor::{NickelDocument, ToolRuntime, ToolSpec};
+use mediapm_conductor::{NickelDocument, PayloadStaging, ToolRuntime, ToolSpec};
 
 use crate::tools::dependency::DependencyTypes;
 use crate::tools::provider::RecheckPolicy;
@@ -773,14 +773,21 @@ async fn parse_available_content_map_hashes(
 }
 
 /// Materializes active managed tools into `tools_dir` via the conductor provision cache.
+///
+/// Returns one guard per materialized payload. The guard holds a shared lock on
+/// the entry directory, so a step that executes from that directory — which is
+/// what the `in_place` staging strategy does — keeps the payload it is running
+/// from while the run holds it. Dropping the guards early is what lets an expiry
+/// sweep or a retain pass remove a tree a live step is executing out of.
 async fn materialize_active_tool_runtimes(
     tools_dir: &Path,
     provision_cas: Arc<FileSystemCas>,
     generated_doc: &NickelDocument,
     tool_runtimes: &BTreeMap<String, ToolRuntime>,
-) -> Result<(), MediaPmError> {
+) -> Result<Vec<ProvisionedTool>, MediaPmError> {
     let provision_cache =
         ProvisionCache::new(tools_dir.to_path_buf(), Arc::clone(&provision_cas), None);
+    let mut guards: Vec<ProvisionedTool> = Vec::new();
     for conductor_tool_id in tool_runtimes.keys() {
         // `tool_runtimes` keys are conductor tool ids for managed tools, but bare
         // mediapm ids for builtins (e.g. `import` vs generated-doc `import@v1`).
@@ -801,10 +808,9 @@ async fn materialize_active_tool_runtimes(
         if content_map.is_empty() {
             continue;
         }
-        let guard = provision_cache.materialize(&materialize_key, &content_map).await?;
-        drop(guard);
+        guards.push(provision_cache.materialize(&materialize_key, &content_map).await?);
     }
-    Ok(())
+    Ok(guards)
 }
 
 /// Summary of one `mediapm tool sync` reconciliation pass.
@@ -1660,13 +1666,20 @@ pub(crate) async fn reconcile_desired_tools(
 
     // 4b. Materialize active tool payloads into tools_dir via the provision
     // cache so `.env.generated` paths and workflow execution share one layout.
-    materialize_active_tool_runtimes(
+    // The guards stay bound until this phase returns, so everything below —
+    // including the prune pass — runs while the payloads it names are locked.
+    let _payload_guards = materialize_active_tool_runtimes(
         &paths.tools_dir,
         Arc::clone(&workspace_cas),
         &generated_doc,
         &tool_runtimes,
     )
     .await?;
+
+    // 4c. Record where each payload actually landed and how a step stages it, so
+    // the document names the directory the provisioner filled instead of one a
+    // reader has to reconstruct.
+    stamp_payload_roots(paths, &mut generated_doc, &mut tool_runtimes);
 
     // 5. Write generated runtime env file from tool runtimes (keyed by
     //    conductor tool id — env names derive from the stripped mediapm id,
@@ -1690,7 +1703,13 @@ pub(crate) async fn reconcile_desired_tools(
     //    keys), never mediapm tool ids — a mediapm-id set would prune every
     //    provisioned directory.
     let active_conductor_ids: HashSet<String> = tool_runtimes.keys().cloned().collect();
-    retain_only_tool_dirs(paths.tools_dir.clone(), active_conductor_ids).await?;
+    // A directory that survives its own removal is still on disk, and the run
+    // that asked for it to go is the only place a reader can learn that, so the
+    // failure joins the sync warnings instead of ending the pass. The sweep
+    // continues past it either way.
+    report
+        .warnings
+        .extend(retain_only_tool_dirs(paths.tools_dir.clone(), active_conductor_ids).await?);
 
     if let Some(ref bar) = prn_bar {
         bar.advance(1);
@@ -1700,6 +1719,59 @@ pub(crate) async fn reconcile_desired_tools(
     report.pruned_tools = pruned_tools;
 
     Ok(report)
+}
+
+/// Records the provisioned payload directory and the staging strategy on every
+/// tool that has one.
+///
+/// The location belongs to the sync because the sync is what materializes the
+/// payload: writing it here means no reader has to reconstruct the layout from a
+/// tool id, and a payload that was already deployed on a previous run is named
+/// exactly as a freshly provisioned one is. A tool whose payload directory does
+/// not exist keeps the strategy its spec builder declared, and the executor
+/// refuses it by name rather than running whatever happens to be there.
+fn stamp_payload_roots(
+    paths: &MediaPmPaths,
+    generated_doc: &mut NickelDocument,
+    tool_runtimes: &mut BTreeMap<String, ToolRuntime>,
+) {
+    let keys: Vec<String> = tool_runtimes.keys().cloned().collect();
+    for conductor_tool_id in keys {
+        let payload_dir = provisioned_payload_dir(&paths.tools_dir, &conductor_tool_id);
+        if !payload_dir.is_dir() {
+            continue;
+        }
+        let Ok(payload_root) = payload_dir.into_os_string().into_string() else {
+            continue;
+        };
+        let Some(spec_key) = active_spec_key(generated_doc, &conductor_tool_id) else {
+            continue;
+        };
+        if let Some(spec) = generated_doc.tools.get_mut(&spec_key) {
+            if spec.runtime.content_map.is_empty() {
+                continue;
+            }
+            spec.runtime.payload_root.clone_from(&payload_root);
+            spec.runtime.payload_staging = PayloadStaging::InPlace;
+        }
+        if let Some(runtime) = tool_runtimes.get_mut(&conductor_tool_id) {
+            runtime.payload_root = payload_root;
+            runtime.payload_staging = PayloadStaging::InPlace;
+        }
+    }
+}
+
+/// Returns the generated-document key that holds a tool's active spec.
+///
+/// `tool_runtimes` keys managed tools by their conductor tool id and builtins by
+/// their bare id, while the document may keep stale pruned versions of the same
+/// name beside the active one. `find_active_tool_spec` is the same preference
+/// the materializer uses, so both name one spec.
+fn active_spec_key(generated_doc: &NickelDocument, conductor_tool_id: &str) -> Option<String> {
+    if generated_doc.tools.contains_key(conductor_tool_id) {
+        return Some(conductor_tool_id.to_string());
+    }
+    find_active_tool_spec(generated_doc, conductor_tool_id).map(|(key, _spec)| key.clone())
 }
 
 #[cfg(test)]
@@ -1721,10 +1793,11 @@ mod tests_multi_tool_sync;
 #[cfg(test)]
 mod tests_overall_bar;
 #[cfg(test)]
+mod tests_payload_roots;
+#[cfg(test)]
 mod tests_provision_concurrency;
 #[cfg(test)]
 mod tests_provisioning_entries;
-#[cfg(test)]
 mod tests_prune_bar;
 #[cfg(test)]
 mod tests_pruning;

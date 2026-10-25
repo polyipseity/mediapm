@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ToolRuntime;
 use crate::error::ConductorError;
+use crate::provision::PAYLOAD_DIR_NAME;
 use crate::provision::helpers::sanitize_tool_id;
 
 /// User-authored runtime dotenv file name under one conductor directory root.
@@ -272,6 +273,23 @@ fn render_dotenv_quoted_value(value: &str) -> String {
 /// # Errors
 ///
 /// Returns [`ConductorError`] when path resolution or file writes fail.
+/// Returns the directory a tool's payload is materialized into.
+///
+/// This is the layout `ProvisionCache::materialize` writes and the generated
+/// dotenv reads: `<tools_base_dir>/<sanitized conductor tool id>/payload`. One
+/// function answers it because a document that stages from a payload root has to
+/// name the same directory the provisioner filled.
+#[must_use]
+pub fn provisioned_payload_dir(tools_base_dir: &Path, conductor_tool_id: &str) -> PathBuf {
+    tools_base_dir.join(sanitize_tool_id(conductor_tool_id)).join(PAYLOAD_DIR_NAME)
+}
+
+/// Writes the generated dotenv for one conductor runtime root.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Io`] when a tool path cannot be made absolute or
+/// the file cannot be written.
 pub fn write_generated_dotenv(
     conductor_dir: &Path,
     tools_base_dir: &Path,
@@ -286,7 +304,7 @@ pub fn write_generated_dotenv(
         // Filesystem dir name must match `ProvisionCache::materialize`'s
         // `tools_dir.join(sanitize_tool_id(tool_id))` — the conductor tool id,
         // not the plain mediapm tool id.
-        let path_segment = sanitize_tool_id(tool_id);
+        let payload_dir = provisioned_payload_dir(tools_base_dir, tool_id);
         let mut emitted_dirs: BTreeSet<&str> = BTreeSet::new();
 
         for key in runtime.content_map.keys() {
@@ -305,7 +323,7 @@ pub fn write_generated_dotenv(
             let dir_env_name = format!("MEDIAPM_{}_{}_DIR", tool_id_upper, os.to_uppercase());
             if emitted_dirs.insert(os) {
                 let dir_key = format!("{os}/");
-                let dir_path = tools_base_dir.join(&path_segment).join("payload").join(&dir_key);
+                let dir_path = payload_dir.join(&dir_key);
                 let dir_value = std::path::absolute(&dir_path)
                     .map_err(|e| ConductorError::Io {
                         operation: "resolving absolute path for .env.generated dir entry".into(),
@@ -325,7 +343,7 @@ pub fn write_generated_dotenv(
             let rest = parts.next().unwrap_or("");
             if !rest.is_empty() && !rest.ends_with('/') {
                 let (env_name, _env_key) = content_key_to_env_name(&tool_id_upper, key);
-                let bin_path = tools_base_dir.join(&path_segment).join("payload").join(key);
+                let bin_path = payload_dir.join(key);
                 let env_value = std::path::absolute(&bin_path)
                     .map_err(|e| ConductorError::Io {
                         operation: "resolving absolute path for .env.generated binary entry".into(),

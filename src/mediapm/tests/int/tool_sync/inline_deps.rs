@@ -591,8 +591,29 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
     assert_eq!(summary1.removed_tools, summary2.removed_tools, "removed_tools differ");
     assert_eq!(summary1.warnings, summary2.warnings, "warnings differ");
 
-    // Generated doc bytes must be identical.
-    assert_eq!(doc1_bytes, doc2_bytes, "generated doc bytes differ between runs");
+    // Generated doc bytes must be identical once each document's workspace root
+    // is set aside: the document names the directory each payload was
+    // materialized into, and that path starts with the workspace root the run
+    // used. Everything the document says about the tools still has to match.
+    let doc1 = normalize_workspace_root(&doc1_bytes, &svc1.paths().root_dir);
+    let doc2 = normalize_workspace_root(&doc2_bytes, &svc2.paths().root_dir);
+    assert_eq!(doc1, doc2, "generated doc bytes differ between runs");
 
     Ok(())
+}
+
+/// Replaces a workspace root with a fixed token in a generated document.
+///
+/// The assertion that the token appears is what keeps this honest: a
+/// normalization that matched nothing would leave the comparison exactly as it
+/// was and hide the reason it was introduced.
+fn normalize_workspace_root(document: &[u8], root: &std::path::Path) -> String {
+    let text = String::from_utf8(document.to_vec()).expect("the generated document is UTF-8");
+    let root_text = root.to_string_lossy();
+    let normalized = text.replace(root_text.as_ref(), "<workspace>");
+    assert!(
+        normalized.contains("<workspace>"),
+        "the generated document has to name the workspace root it was written in",
+    );
+    normalized
 }

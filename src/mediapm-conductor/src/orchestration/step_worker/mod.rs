@@ -19,6 +19,8 @@ mod cache;
 mod capture;
 mod executor;
 mod inputs;
+#[cfg(test)]
+mod payload_staging;
 mod process;
 pub(crate) mod sandbox;
 pub(crate) mod template;

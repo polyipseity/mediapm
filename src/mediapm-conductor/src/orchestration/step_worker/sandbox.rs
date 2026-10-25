@@ -1,4 +1,24 @@
 //! Temporary sandbox directory management and tool content materialization.
+//!
+//! A step runs in a sandbox of its own under `{conductor_tmp_dir}/sandbox/`,
+//! and its working directory is that sandbox under every staging strategy:
+//! a tool that writes `downloads/x` writes it where the capture phase reads it.
+//! What changes between strategies is where the *tool* comes from — copied out
+//! of the CAS into the sandbox, linked into it from the provisioned tree, or
+//! left in the provisioned tree and executed there.
+//!
+//! A directory key in the content map names a ZIP, and the provisioner unpacks
+//! it once into the payload tree the entry owns. `in_place` and `hard_link`
+//! read that unpacked tree and unpack nothing of their own, so a workflow of
+//! sixteen steps over one tool extracts once; `copy` re-extracts the archive per
+//! step, which is the cost the other two exist to remove.
+//!
+//! A strategy that reads the payload tree checks it before the step runs rather
+//! than letting the command fail: `require_usable_payload_root` refuses an
+//! empty, relative or non-directory root, and refuses a root that lacks a
+//! content-map entry, naming the tool and the path. A missing root reported as
+//! "command not found" would send the reader to the tool instead of to the
+//! document that got it wrong.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -6,7 +26,10 @@ use std::path::{Path, PathBuf};
 use mediapm_cas::{CasApi, Hash};
 use mediapm_conductor_builtin_archive;
 
+use crate::config::PayloadStaging;
 use crate::error::ConductorError;
+use crate::orchestration::protocol::UnifiedToolSpec;
+use crate::provision::link_to_sandbox;
 
 /// Creates a temporary sandbox directory for step execution.
 pub(super) async fn create_sandbox(
@@ -97,6 +120,170 @@ pub(super) async fn materialize_content_map<C: CasApi + Send + Sync>(
         crate::provision::helpers::ensure_payload_tree_user_execute_bits(sandbox_dir)?;
     }
 
+    Ok(())
+}
+
+/// Makes the tool's payload available to a step under its declared strategy.
+///
+/// `copy` writes the content map into the sandbox, exactly as every step used
+/// to; the other two read the tree the provisioner already built, so the cost
+/// of staging is entries rather than bytes. The working directory stays the
+/// sandbox in all three cases: only the executable moves, and a tool that
+/// writes an output writes it where the capture phase looks for it.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Workflow`] naming the tool and the path when a
+/// strategy that needs a payload root cannot use the one the document recorded,
+/// or when a content-map entry the payload must hold is absent from it.
+/// Returns the copy, link, or CAS failure when the staging itself fails.
+pub(super) async fn prepare_tool_payload<C: CasApi + Send + Sync>(
+    cas: &C,
+    tool_spec: &UnifiedToolSpec,
+    sandbox_dir: &Path,
+) -> Result<(), ConductorError> {
+    match tool_spec.payload_staging {
+        PayloadStaging::Copy => {
+            materialize_content_map(cas, &tool_spec.tool_content_map, sandbox_dir).await
+        }
+        PayloadStaging::InPlace => {
+            require_usable_payload_root(tool_spec)?;
+            Ok(())
+        }
+        PayloadStaging::HardLink => {
+            let Some(payload_root) = require_usable_payload_root(tool_spec)? else {
+                return Ok(());
+            };
+            link_to_sandbox(&payload_root, sandbox_dir).map_err(|detail| {
+                ConductorError::Workflow(format!(
+                    "tool '{}' could not link its payload from '{}' into the step sandbox: {}",
+                    tool_spec.name,
+                    payload_root.display(),
+                    detail,
+                ))
+            })
+        }
+    }
+}
+
+/// Checks the payload root a strategy that reads one depends on, and answers it.
+///
+/// Answers `None` for a tool that declares no payload entries: there is nothing
+/// to stage, and a launcher or a builtin names its own executable. A tool that
+/// does declare entries gets the root the document recorded, checked before the
+/// step runs rather than after: a missing root that surfaced as "command not
+/// found" would send the reader to the tool instead of to the document.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Workflow`] when the root is empty, is not absolute,
+/// is not a directory, or when a payload entry the content map declares is
+/// missing from it.
+fn require_usable_payload_root(
+    tool_spec: &UnifiedToolSpec,
+) -> Result<Option<PathBuf>, ConductorError> {
+    if tool_spec.tool_content_map.is_empty() {
+        return Ok(None);
+    }
+    let strategy = tool_spec.payload_staging.as_str();
+    if tool_spec.payload_root.is_empty() {
+        return Err(ConductorError::Workflow(format!(
+            "tool '{}' stages its payload with '{strategy}' but the document records no \
+             payload_root",
+            tool_spec.name,
+        )));
+    }
+    let payload_root = PathBuf::from(&tool_spec.payload_root);
+    if !payload_root.is_absolute() {
+        return Err(ConductorError::Workflow(format!(
+            "tool '{}' stages its payload with '{strategy}' but its payload_root '{}' is not an \
+             absolute path",
+            tool_spec.name,
+            payload_root.display(),
+        )));
+    }
+    if !payload_root.is_dir() {
+        return Err(ConductorError::Workflow(format!(
+            "tool '{}' stages its payload with '{strategy}' but its payload_root '{}' is not a \
+             directory",
+            tool_spec.name,
+            payload_root.display(),
+        )));
+    }
+    for (key, value) in &tool_spec.tool_content_map {
+        if value.parse::<Hash>().is_err() {
+            continue;
+        }
+        let expected = payload_entry_path(&payload_root, key);
+        let present = if key.ends_with('/') || key.ends_with('\\') {
+            expected.is_dir()
+        } else {
+            expected.is_file()
+        };
+        if !present {
+            return Err(ConductorError::Workflow(format!(
+                "tool '{}' stages its payload from '{}', which does not hold the content-map \
+                 entry '{}' (expected at '{}')",
+                tool_spec.name,
+                payload_root.display(),
+                key,
+                expected.display(),
+            )));
+        }
+    }
+    Ok(Some(payload_root))
+}
+
+/// Resolves one content-map key inside a payload root.
+///
+/// A directory key ends in a separator and names the payload root itself when
+/// the key carries no directory component, which is the `./` form the content
+/// map uses for an archive that unpacks at the top of the tree.
+fn payload_entry_path(payload_root: &Path, key: &str) -> PathBuf {
+    let trimmed = key.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() || trimmed == "." {
+        return payload_root.to_path_buf();
+    }
+    payload_root.join(trimmed)
+}
+
+/// Resolves the executable of a command under the provisioned payload root.
+///
+/// Only the first part moves: it is the executable, and a document describes it
+/// as a payload-relative path (`linux/ffmpeg`, or `deps/ffmpeg/linux/ffmpeg` for
+/// an inlined companion) because the copy strategy once put it in the sandbox.
+/// Every other part is a flag, a resolved input path, or an output path, and all
+/// of those resolve against the sandbox.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Workflow`] when the joined path is not a file: a
+/// command part that names nothing inside the payload is a document defect, and
+/// running it anyway would report it as the tool's failure.
+pub(super) fn resolve_executable_under_payload_root(
+    command_parts: &mut [String],
+    tool_spec: &UnifiedToolSpec,
+) -> Result<(), ConductorError> {
+    if tool_spec.payload_staging != PayloadStaging::InPlace {
+        return Ok(());
+    }
+    let Some(first) = command_parts.first_mut() else {
+        return Ok(());
+    };
+    if tool_spec.tool_content_map.is_empty() || Path::new(first.as_str()).is_absolute() {
+        return Ok(());
+    }
+    let executable = Path::new(&tool_spec.payload_root).join(&*first);
+    if !executable.is_file() {
+        return Err(ConductorError::Workflow(format!(
+            "tool '{}' resolves its executable to '{}', which is not a file under its payload_root \
+             '{}'",
+            tool_spec.name,
+            executable.display(),
+            tool_spec.payload_root,
+        )));
+    }
+    *first = executable.to_string_lossy().into_owned();
     Ok(())
 }
 
