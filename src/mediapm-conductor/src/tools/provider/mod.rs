@@ -3522,12 +3522,12 @@ mod tests {
         );
     }
 
-    /// Protects the seam the launcher guard exists for: with
+    /// Protects the dispatch direction of the launcher seam: with
     /// `MEDIAPM_EXECUTABLE` set, the generated POSIX launcher must reach that
     /// target with exactly the dispatch arguments followed by the caller's
-    /// own. The absence test covers only the guard's failure direction, so a
-    /// guard written with `:-` instead of `:?`, or an `exec` moved inside the
-    /// guard, would leave it green while the CLI never received its dispatch.
+    /// own. No other test in this module runs a launcher with the variable
+    /// set, so the recorded arguments are the only assertion that the CLI
+    /// receives both halves.
     #[cfg(unix)]
     #[test]
     fn launcher_script_dispatches_to_the_executable_with_the_dispatch_arguments() {
