@@ -3246,6 +3246,12 @@ fn resolve_demo_output_paths(
 
 /// Runs the online demo end to end and returns the paths it wrote.
 ///
+/// Resolves and exports the mediapm CLI before touching the filesystem:
+/// managed-tool launchers dispatch through `MEDIAPM_EXECUTABLE`, so a host
+/// with no CLI, or one whose override names a different binary, must fail
+/// here rather than after the artifact root is removed and every managed tool
+/// has been downloaded.
+///
 /// Shuts the conductor the service owns down before returning:
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
 /// into the caller's removed directory.
@@ -3258,6 +3264,12 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .try_init();
+
+    // Preflight before the wipe: a target directory with no mediapm CLI fails
+    // here instead of after the artifact root is removed and the managed tools
+    // are downloaded.
+    let cli = mediapm::ensure_mediapm_executable()
+        .map_err(|error| format!("online demo preflight failed: {error}"))?;
 
     let (root, _fallback_artifact) = reset_artifact_root()?;
     let workspace_root = root.clone();
@@ -3275,8 +3287,9 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             .map_err(|error| format!("opening filesystem sync service: {error}"))?;
 
     eprintln!(
-        "[demo_online] starting sync (timeout={}s) in '{}'",
+        "[demo_online] starting sync (timeout={}s, cli='{}') in '{}'",
         sync_timeout.as_secs(),
+        cli.display(),
         workspace_root.display()
     );
 
@@ -3499,8 +3512,42 @@ async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
     Ok(DemoRunPaths { artifact_root: root, workspace_root, manifest_path })
 }
 
+/// Rejects arguments the demo does not accept.
+///
+/// The demo takes no arguments. A managed-tool launcher that dispatches into
+/// this binary passes `builtin media-tagger …`, and running a second demo
+/// from that dispatch is what turned a tagging step into a 300s timeout, so
+/// any argument is an error rather than something to ignore.
+///
+/// # Errors
+///
+/// Returns an error naming the first argument and `MEDIAPM_EXECUTABLE` when
+/// `args` is not empty. The check reads no process state, so a caller passes
+/// the arguments it received and a test passes the arguments it wants to
+/// assert on.
+fn reject_unexpected_arguments<I>(args: I) -> ExampleResult<()>
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    let Some(first) = args.into_iter().next() else {
+        return Ok(());
+    };
+    Err(format!(
+        "mediapm_demo_online takes no arguments, but was invoked with '{}'; a managed-tool launcher dispatched into the demo, so MEDIAPM_EXECUTABLE does not point at the mediapm CLI — set it, or run `cargo build --package mediapm`",
+        first.to_string_lossy()
+    )
+    .into())
+}
+
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
+    // Under `cargo test` the harness owns argv and the embedded test calls
+    // this function, so the check would fire on the harness's own flags. The
+    // helper is unit-tested directly instead.
+    if !cfg!(test) {
+        reject_unexpected_arguments(std::env::args_os().skip(1))?;
+    }
+
     let run_sync = example_isolation::parse_run_online_sync_override(
         std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok().as_deref(),
     )?;
@@ -3838,6 +3885,51 @@ mod tests {
         }
 
         assert!(result.is_err(), "unknown run-sync tokens must be rejected");
+    }
+
+    /// Ensures a managed-tool launcher that dispatches into the demo is refused by name.
+    ///
+    /// The launcher passes `builtin media-tagger …`, which an argv-ignoring demo would run as
+    /// a second demo. The error has to name the first argument and the variable whose value
+    /// caused the dispatch, because those two facts are what tell a reader which launcher to
+    /// repoint.
+    #[test]
+    fn rejects_the_launcher_dispatch_into_the_demo() {
+        let args = ["builtin", "media-tagger", "--input", "x"].map(std::ffi::OsString::from);
+
+        let error = super::reject_unexpected_arguments(args)
+            .expect_err("a launcher dispatch into the demo must be refused");
+
+        assert_eq!(
+            error.to_string(),
+            "mediapm_demo_online takes no arguments, but was invoked with 'builtin'; a managed-tool launcher dispatched into the demo, so MEDIAPM_EXECUTABLE does not point at the mediapm CLI — set it, or run `cargo build --package mediapm`",
+            "the refusal must name the argument it received, the variable that caused the dispatch, and the remedy"
+        );
+    }
+
+    /// Ensures the demo accepts the empty argument list it documents.
+    ///
+    /// An explicit `cargo run --example mediapm_demo_online` passes no arguments, so the check
+    /// must not turn the documented entry point into an error.
+    #[test]
+    fn accepts_no_arguments() {
+        super::reject_unexpected_arguments(std::iter::empty::<std::ffi::OsString>())
+            .expect("the demo documents an empty argument list");
+    }
+
+    /// Ensures any stray argument is refused, including one that looks like a flag.
+    ///
+    /// The demo has no help mode, so `--help` reaching it means a launcher used the demo as the
+    /// CLI; accepting it would reintroduce the dispatch this check exists to refuse.
+    #[test]
+    fn rejects_any_stray_argument() {
+        let error = super::reject_unexpected_arguments([std::ffi::OsString::from("--help")])
+            .expect_err("the demo has no help mode, so `--help` is a launcher dispatch");
+
+        assert!(
+            error.to_string().contains("'--help'"),
+            "the message must name the argument it refused: {error}"
+        );
     }
 
     /// Points example env vars at unique tempdirs for the guard's lifetime.
