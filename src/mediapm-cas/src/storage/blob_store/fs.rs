@@ -1313,7 +1313,8 @@ mod tests {
         std::fs::write(&staging_path, b"interrupted commit").expect("plant staging file");
         let mut staged = std::fs::metadata(&staging_path).expect("staging metadata").permissions();
         staged.set_readonly(true);
-        std::fs::set_permissions(&staging_path, staged).expect("make staging file read-only");
+        std::fs::set_permissions(&staging_path, staged.clone())
+            .expect("make staging file read-only");
         assert!(
             is_read_only(&staging_path),
             "the fixture has to be read-only, or the commit under test never meets one"
@@ -1323,6 +1324,36 @@ mod tests {
 
         assert_eq!(store.read(&hash).await.expect("read back"), data);
         assert!(is_read_only(&object_path), "the committed object must be read-only");
+
+        // The reader path stages into the same fixed name, so it needs the same
+        // clear: without it the second commit never reaches the rename.
+        std::fs::write(&staging_path, b"interrupted commit").expect("plant staging file again");
+        std::fs::set_permissions(&staging_path, staged.clone())
+            .expect("make staging file read-only again");
+        assert!(is_read_only(&staging_path), "the reader-path fixture has to be read-only too");
+        let other = Bytes::from_static(b"payload staged through a reader");
+        let other_hash = Hash::from_content(&other);
+        let other_object = hash_to_path(dir.path(), &other_hash);
+        std::fs::create_dir_all(other_object.parent().expect("hash path has a parent"))
+            .expect("create fan-out");
+        let other_staging = other_object.with_extension("tmp");
+        std::fs::write(&other_staging, b"interrupted commit").expect("plant reader staging file");
+        std::fs::set_permissions(&other_staging, staged)
+            .expect("make reader staging file read-only");
+
+        let mut reader = std::io::Cursor::new(other.to_vec());
+        store
+            .write_from_reader(
+                other_hash,
+                ObjectEncoding::Full,
+                &mut reader,
+                u64::try_from(other.len()).expect("test payload fits in u64"),
+            )
+            .await
+            .expect("the next reader commit");
+
+        assert_eq!(store.read(&other_hash).await.expect("read back"), other);
+        assert!(is_read_only(&other_object), "the reader-committed object must be read-only");
     }
 
     /// Deleting a hash must not make a hardlinked library file writable.
@@ -1336,7 +1367,7 @@ mod tests {
     /// assertion holds where the mode is per-inode and mutable independently.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_deleted_object_leaves_a_hardlinked_copy_read_only() {
+    async fn regression_a_deleted_object_leaves_the_hardlinked_copy_read_only() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let store = FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
             .await
