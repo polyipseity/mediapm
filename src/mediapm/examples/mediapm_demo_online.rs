@@ -4,9 +4,11 @@
 //! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on `YouTube` URL.
 //! The embedded test exercises `main()` in reduced (config-only) mode; the
 //! full-sync path (network + external tools) runs only on an explicit
-//! `cargo run -p mediapm --example mediapm_demo_online`, which reuses the
-//! real user-level tool download cache (`<os-cache-dir>/mediapm/cache`) and
-//! persists downloaded tools across runs.
+//! `cargo build -p mediapm` followed by `cargo run -p mediapm --example
+//! mediapm_demo_online`, which reuses the real user-level tool download cache
+//! (`<os-cache-dir>/mediapm/cache`) and persists downloaded tools across runs.
+//! The build step is required because the demo preflights the `mediapm` CLI,
+//! and `cargo run --example` builds only the example.
 //!
 //! # Expected post-sync hierarchy
 //!
@@ -105,6 +107,7 @@
 //! cargo test -p mediapm --example mediapm_demo_online main_is_exercised
 //! # Full-sync online path (network + external tools) — explicit run only;
 //! # reuses the real user-level tool download cache, persisting tools across runs.
+//! cargo build -p mediapm
 //! cargo run -p mediapm --example mediapm_demo_online
 //! ```
 

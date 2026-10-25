@@ -856,17 +856,20 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
     }
 }
 
-/// Returns true when the executable's file stem is exactly `mediapm`.
+/// Returns true when the executable's file name is exactly `mediapm` or
+/// `mediapm.exe`.
 ///
-/// The accepted names are exactly `mediapm` and `mediapm.exe`, so this reads
-/// the file stem rather than the file name. A `mediapm-*` name is not the CLI:
-/// `mediapm-conductor` shares the prefix and dispatches workflow steps, and it
-/// does not implement the `builtin` subcommands the managed-tool launcher
-/// scripts invoke, so accepting it hands every launcher-based tool a binary
-/// that cannot run them.
+/// The comparison reads the file name rather than the file stem, so
+/// `mediapm.sh`, `mediapm.bat` and every other single-extension spelling are
+/// rejected alongside `mediapm-*` names: `mediapm-conductor` shares the prefix
+/// and dispatches workflow steps, and it does not implement the `builtin`
+/// subcommands the managed-tool launcher scripts invoke, so accepting it hands
+/// every launcher-based tool a binary that cannot run them. The predicate
+/// never stats the path, so an explicit `MEDIAPM_EXECUTABLE` override is
+/// accepted on its name alone.
 #[must_use]
 fn is_mediapm_cli_executable(path: &std::path::Path) -> bool {
-    path.file_stem().and_then(|stem| stem.to_str()) == Some("mediapm")
+    matches!(path.file_name().and_then(|name| name.to_str()), Some("mediapm" | "mediapm.exe"))
 }
 
 /// Returns the mediapm CLI in `dir`, if one is built there.
@@ -1268,13 +1271,15 @@ mod tests {
     /// Windows ships the CLI as `mediapm.exe`, so the `.exe` suffix counts as
     /// the CLI without a platform gate.
     #[test]
-    fn resolve_accepts_a_windows_cli_file_stem() {
+    fn resolve_accepts_a_windows_cli_file_name() {
         assert!(is_mediapm_cli_executable(Path::new("mediapm.exe")));
     }
 
-    /// Only the CLI's own stem is accepted: `mediapm-conductor` and the example
-    /// binaries share the `mediapm-` prefix, and exporting one of them hands the
-    /// launcher a binary that does not implement its `builtin` subcommands.
+    /// Only the CLI's own names are accepted: `mediapm-conductor` and the
+    /// example binaries share the `mediapm-` prefix, and exporting one of them
+    /// hands the launcher a binary that does not implement its `builtin`
+    /// subcommands. A single-extension spelling is a different program too, so
+    /// `mediapm.bat` pins the file-name comparison against a file-stem one.
     #[test]
     fn is_mediapm_cli_executable_accepts_only_the_cli_name() {
         let accepted = [PathBuf::from("mediapm"), PathBuf::from("mediapm.exe")];
@@ -1282,6 +1287,7 @@ mod tests {
             PathBuf::from("mediapm-conductor"),
             PathBuf::from("mediapm-cas"),
             PathBuf::from("mediapm_demo_online"),
+            PathBuf::from("mediapm.bat"),
             PathBuf::from("mod-abc"),
         ];
 
