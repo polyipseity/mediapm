@@ -69,6 +69,23 @@ use v_latest::{
     RuntimeMaterializationConfigLatest, RuntimePathsConfigLatest, RuntimeVerificationConfigLatest,
 };
 
+/// The `mod.ncl` registry: `current_version`, `supported_versions`, and the
+/// `migrate_to` dispatch.
+pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
+/// The `v1.ncl` contract, which also owns the migration down from `v2`.
+pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
+/// The `v2.ncl` contract, which also owns the migration up from `v1`.
+pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
+
+/// Every contract source above, under the file name the registry imports it
+/// by.
+///
+/// This is what [`export_config_contracts`](crate::export_config_contracts)
+/// writes, so the export names no file that the evaluation path does not
+/// compile in.
+pub(crate) const CONTRACT_SOURCES: &[(&str, &str)] =
+    &[("mod.ncl", MOD_NCL_SOURCE), ("v1.ncl", V1_NCL_SOURCE), ("v2.ncl", V2_NCL_SOURCE)];
+
 /// Resolves a boundary runtime-storage value into the option-free model.
 ///
 /// This is the read-direction boundary entry point. Its parameter is named
@@ -334,10 +351,6 @@ fn apply_version_contract(
     contract_name: &str,
     source: &str,
 ) -> Result<Value, MediaPmError> {
-    const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
-    const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
-    const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
-
     let dir = mediapm_utils::temp::artifact_dir().map_err(|err| MediaPmError::Io {
         operation: "create mediapm schema validation temp dir".to_string(),
         path: std::env::temp_dir(),
@@ -447,10 +460,6 @@ pub fn validate_v2_document(source: &str) -> Result<Value, MediaPmError> {
 /// Returns [`MediaPmError`] when the temp workspace cannot be written or the
 /// wrapper cannot be evaluated.
 pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
-    const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
-    const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
-    const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
-
     let dir = mediapm_utils::temp::artifact_dir().map_err(|err| MediaPmError::Io {
         operation: "create mediapm registry validation temp dir".to_string(),
         path: std::env::temp_dir(),
@@ -673,7 +682,10 @@ mod tests {
             ("conductor_schema_dir", &paths.conductor_schema_dir),
             (
                 "mediapm_schema_dir",
-                paths.schema_export_dir.as_ref().expect("schema export is enabled by default"),
+                paths
+                    .schema_export_dir
+                    .as_ref()
+                    .expect("the mediapm contract export is enabled by default"),
             ),
             ("env_file", &paths.env_file),
             ("env_generated_file", &paths.env_generated_file),

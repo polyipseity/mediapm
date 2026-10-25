@@ -117,7 +117,6 @@ Subcommands:
   cas [args...]                  Passthrough to mediapm-cas CLI
   conductor [args...]            Passthrough to mediapm-conductor CLI
   global (path|init|tool-cache)
-  export-schemas
   completions <shell>
 ```
 
@@ -136,7 +135,9 @@ MediaPM creates `Conductor`, passes grouped runtime-storage paths so volatile wr
 | `conductor_schema_dir` | `<mediapm_dir>/schemas` (conductor default, `mediapm-conductor/src/defaults.rs:16`, joined in `mediapm-conductor/src/api.rs:55`) |
 | `conductor_tools_dir` | `<mediapm_dir>/tools` |
 
-Every row but `conductor_state_config` is the conductor's own default from `mediapm-conductor/src/defaults.rs`, because mediapm builds `RuntimeStoragePaths::new(&runtime_root).with_config_paths(...)` (`src/mediapm/src/service.rs:1059`, and `:1414` for the in-memory service) and never applies the conductor's `PathOverrides` — conductor code reads only `conductor_tmp_dir` off that struct (`mediapm-conductor/src/conductor_impl.rs:61`), and the conductor schema export mediapm performs writes to `MediaPmPaths.conductor_schema_dir` = `<mediapm_dir>/config/conductor/` (`src/mediapm/src/paths.rs:89`, read at `service.rs:783`, written by `export_mediapm_nickel_config_schemas` at `src/mediapm/src/lib.rs:573`), not to `<mediapm_dir>/schemas`.
+Every row but `conductor_state_config` is the conductor's own default from `mediapm-conductor/src/defaults.rs`, because mediapm builds `RuntimeStoragePaths::new(&runtime_root).with_config_paths(...)` (`src/mediapm/src/service.rs:1059`, and `:1414` for the in-memory service) and never applies the conductor's `PathOverrides` — conductor code reads only `conductor_tmp_dir` off that struct (`mediapm-conductor/src/conductor_impl.rs:61`), and the conductor contract export mediapm performs writes to `MediaPmPaths.conductor_schema_dir` = `<mediapm_dir>/config/conductor/` (`src/mediapm/src/paths.rs:89`, read at `service.rs:783`, written by `export_config_contracts` at `src/mediapm/src/lib.rs:283`), not to `<mediapm_dir>/schemas`.
+
+`.mediapm/config/mediapm/` and `.mediapm/config/conductor/` are contract exports, not schema exports: `refresh_runtime_configuration` writes the Nickel sources the runtime evaluates — `mod.ncl`, `v1.ncl`, `v2.ncl` for mediapm and `mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl` for the conductor — so a reader sees the contract the document was validated against, byte for byte. Neither directory holds a JSON schema, and nothing validates one: a schema change is made once in `versions/*.ncl` and reaches both directories unchanged. The mediapm half is optional (`schema_export_dir: None` skips it); the conductor half is always written.
 
 Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
 

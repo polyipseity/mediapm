@@ -48,7 +48,7 @@ use crate::tools::workflows::{MANAGED_WORKFLOW_PREFIX, reconcile_media_workflows
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
     SyncProgressOverrides, SyncSummary, ToolsSyncSummary, conductor_run_workflow_options,
-    ensure_mediapm_executable_env, export_mediapm_nickel_config_schemas, load_runtime_dotenv,
+    ensure_mediapm_executable_env, export_config_contracts, load_runtime_dotenv,
     local_source_default_steps, media_id_from_local_path, media_id_from_uri, merge_runtime_storage,
     normalize_source_uri, validate_source_uri,
 };
@@ -857,12 +857,12 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     }
 
     /// Refreshes the runtime configuration by loading dotenv files, creating
-    /// runtime env files, and exporting schemas.
+    /// runtime env files, and exporting the contract sources.
     ///
     /// # Errors
     ///
     /// Returns [`MediaPmError::Conductor`] if env file creation fails, or
-    /// [`MediaPmError::Io`] if schema export fails.
+    /// [`MediaPmError::Io`] if a contract source cannot be written.
     pub fn refresh_runtime_configuration(&self) -> Result<(), MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
 
@@ -872,8 +872,8 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         // Ensure conductor runtime env files exist.
         ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::Conductor)?;
 
-        // Export schemas.
-        export_mediapm_nickel_config_schemas(
+        // Export the contract sources this document is validated against.
+        export_config_contracts(
             effective_paths.schema_export_dir.as_deref(),
             &effective_paths.conductor_schema_dir,
         )?;

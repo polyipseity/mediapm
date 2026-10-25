@@ -28,7 +28,8 @@ pub struct MediaPmPathOverrides {
     pub env_file: Option<PathBuf>,
     /// Override for env generated file path.
     pub env_generated_file: Option<PathBuf>,
-    /// Override for mediapm schema export dir (`None` = disable export).
+    /// Override for the directory the `mediapm.ncl` contract sources are
+    /// exported to (`None` = skip the export).
     #[expect(
         clippy::option_option,
         reason = "triple-state config field (unset/disabled/path); nested Option encodes serde semantics"
@@ -51,7 +52,7 @@ pub struct MediaPmPaths {
     pub conductor_state_config: PathBuf,
     /// Conductor execution-sandbox temporary directory.
     pub conductor_tmp_dir: PathBuf,
-    /// Conductor schema export directory.
+    /// Conductor contract export directory.
     pub conductor_schema_dir: PathBuf,
     /// `mediapm` machine-managed state document (`state.json`).
     pub mediapm_state_json: PathBuf,
@@ -61,8 +62,9 @@ pub struct MediaPmPaths {
     pub env_generated_file: PathBuf,
     /// Runtime root for `mediapm`-owned state under the workspace.
     pub runtime_root: PathBuf,
-    /// Embedded Nickel schema export directory for `mediapm.ncl` contracts.
-    /// `None` means schema export is disabled.
+    /// Directory the Nickel contract sources for `mediapm.ncl` are exported
+    /// to: the `mod.ncl`, `v1.ncl`, and `v2.ncl` the runtime evaluates.
+    /// `None` means the export is skipped.
     pub schema_export_dir: Option<PathBuf>,
     /// Temporary staging directory used by atomic sync.
     pub mediapm_tmp_dir: PathBuf,

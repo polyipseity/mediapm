@@ -46,6 +46,25 @@ pub(crate) const V3_NCL_SOURCE: &str = include_str!("v3.ncl");
 /// Fixed embedded migration helper module.
 pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
 
+/// Every contract source this build evaluates, under the file name its
+/// registry imports it by.
+///
+/// A reader of an exported contract directory sees exactly the sources the
+/// runtime validates a document against, so no hand-maintained schema can
+/// describe a rule the process does not enforce. The list is the source of
+/// truth for that export: a version added below reaches it without a second
+/// edit, and [`SUPPORTED_VERSIONS`] stays the single statement of which
+/// versions exist.
+#[must_use]
+pub fn contract_sources() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("mod.ncl", MOD_NCL_SOURCE),
+        ("v1.ncl", V1_NCL_SOURCE),
+        ("v2.ncl", V2_NCL_SOURCE),
+        ("v3.ncl", V3_NCL_SOURCE),
+    ]
+}
+
 /// Every schema version this build reads, in order.
 ///
 /// The contract resolution below and the diagnostic it reports on an unknown

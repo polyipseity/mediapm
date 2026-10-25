@@ -21,11 +21,11 @@ The struct declares exactly 15 fields (`paths.rs:41-73`); the cache directories 
 | `conductor_generated_ncl` | `{root_dir}/mediapm.conductor.generated.ncl` | Conductor generated document                                                                                                              |
 | `conductor_state_config`  | `{runtime_root}/state.conductor.json`        | Conductor volatile state (`paths.rs:87`, `paths.rs:175`; not `.ncl`)                                                                     |
 | `conductor_tmp_dir`       | `$TMPDIR/mediapm-runtime-{16hex}/`           | Conductor sandbox tmp                                                                                                                     |
-| `conductor_schema_dir`    | `{runtime_root}/config/conductor/`           | Conductor schema exports                                                                                                                  |
+| `conductor_schema_dir`    | `{runtime_root}/config/conductor/`           | Conductor contract sources: `mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`                                                                      |
 | `mediapm_state_json`       | `{runtime_root}/state.json`                   | MediaPM machine state (JSON always-write)                                                                                                |
 | `env_file`                | `{runtime_root}/.env`                        | User-authored dotenv                                                                                                                      |
 | `env_generated_file`      | `{runtime_root}/.env.generated`              | Machine-generated dotenv                                                                                                                  |
-| `schema_export_dir`       | `Some({runtime_root}/config/mediapm/)`       | MediaPM schema exports (`None` = disabled)                                                                                                |
+| `schema_export_dir`       | `Some({runtime_root}/config/mediapm/)`       | MediaPM contract sources: `mod.ncl`, `v1.ncl`, `v2.ncl` (`None` = skipped)                                                                |
 | `mediapm_tmp_dir`         | `$TMPDIR/mediapm-runtime-{16hex}/`           | MediaPM staging tmp                                                                                                                       |
 | `hierarchy_root_dir`      | `{root_dir}`                                 | Materialized media library root                                                                                                           |
 | `tools_dir`               | `{runtime_root}/tools/`                      | Tool-content unpack directory; each entry is `<sanitize_tool_id(conductor_tool_id)>/` holding `lock` (the entry's advisory lock, with a header explaining itself), `metadata.json` and `payload/`, and `.env.generated` paths mirror that layout |
@@ -69,4 +69,5 @@ Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
 - The cache subdirectories are method outputs, so no `mediapm.ncl` override can relocate them.
 - `conductor_tmp_dir` and `mediapm_tmp_dir` use OS temp dir with a workspace-hashed `mediapm-runtime-{16hex}` name, not `runtime_root` (see `temp-directory-spec.instructions.md`).
 - Per-step conductor sandboxes live under `{conductor_tmp_dir}/sandbox/` and are removed after each `run_workflow` (see `temp-directory-spec.instructions.md`).
-- Schema export is optional — `schema_export_dir: None` disables it.
+- The contract export is optional — `schema_export_dir: None` skips the mediapm half, while the conductor's `conductor_schema_dir` is always written.
+- Both directories hold the Nickel sources the runtime evaluates, byte for byte, under the names their registry imports them by; neither holds a JSON schema. A contract change is made once in `versions/*.ncl` and reaches the directory unchanged on the next `refresh_runtime_configuration`.

@@ -540,297 +540,98 @@ fn regression_runtime_open_record_no_longer_accepted() {
 }
 
 // ---------------------------------------------------------------------------
-// S-C9: strict JSON schema export
+// S-C9: the export directory holds the contracts the runtime evaluates
 // ---------------------------------------------------------------------------
 
-/// Recursively asserts that a JSON schema node is strict: every fixed-shape
-/// object closes `additionalProperties` and declares `required`, map-typed
-/// objects carry a typed `additionalProperties` schema, enums are non-empty,
-/// and no stub (shape-less `"type": "object"`) nodes survive.
-fn assert_strict_schema_structure(root: &Value, node: &Value, path: &str) {
-    let Some(obj) = node.as_object() else {
-        return;
-    };
+/// Every file `export_config_contracts` writes is byte-identical to the Nickel
+/// source the runtime embeds, for both the mediapm registry and the
+/// conductor's.
+///
+/// The guarantee is that a reader of `.mediapm/config/` sees the contract a
+/// document was actually validated against. A regenerated, hand-edited, or
+/// separately authored schema would fail here even if it described the same
+/// rules, because the export's only job is to publish these exact bytes.
+#[test]
+fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
+    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir");
+    let export_dir = dir.path().join("mediapm");
+    let conductor_dir = dir.path().join("conductor");
+    mediapm::export_config_contracts(Some(&export_dir), &conductor_dir).expect("export contracts");
 
-    if let Some(enum_values) = obj.get("enum") {
+    let mediapm_expected = [
+        ("mod.ncl", include_str!("../../src/config/versions/mod.ncl")),
+        ("v1.ncl", include_str!("../../src/config/versions/v1.ncl")),
+        ("v2.ncl", include_str!("../../src/config/versions/v2.ncl")),
+    ];
+    for (name, source) in mediapm_expected {
+        let written = std::fs::read_to_string(export_dir.join(name))
+            .unwrap_or_else(|error| panic!("read exported {name}: {error}"));
+        assert_eq!(written, source, "exported mediapm {name} must be the evaluated source");
         assert!(
-            !enum_values.as_array().expect("enum must be an array").is_empty(),
-            "{path}: enum must be non-empty"
+            source.contains('{'),
+            "the embedded {name} must be a Nickel module, not an empty file"
         );
     }
 
-    if let Some(properties) = obj.get("properties") {
-        let props = properties.as_object().expect("properties must be an object");
-        if !props.is_empty() {
-            assert_eq!(
-                obj.get("additionalProperties"),
-                Some(&json!(false)),
-                "{path}: fixed-shape object must close additionalProperties"
+    let conductor_expected = [
+        ("mod.ncl", include_str!("../../../mediapm-conductor/src/config/versions/mod.ncl")),
+        ("v1.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v1.ncl")),
+        ("v2.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v2.ncl")),
+        ("v3.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v3.ncl")),
+    ];
+    for (name, source) in conductor_expected {
+        let written = std::fs::read_to_string(conductor_dir.join(name))
+            .unwrap_or_else(|error| panic!("read exported {name}: {error}"));
+        assert_eq!(written, source, "exported conductor {name} must be the evaluated source");
+        assert!(
+            source.contains('{'),
+            "the embedded {name} must be a Nickel module, not an empty file"
+        );
+    }
+
+    // The exported registry imports what sits beside it, so the set is
+    // evaluable on its own only when every version file came along.
+    let registry = std::fs::read_to_string(conductor_dir.join("mod.ncl")).expect("read mod.ncl");
+    for version in ["v1.ncl", "v2.ncl", "v3.ncl"] {
+        assert!(
+            registry.contains(&format!("\"{version}\"")),
+            "conductor mod.ncl must import {version}, so the export must carry it"
+        );
+    }
+}
+
+/// Nothing in the export directory is a JSON schema: the export publishes
+/// Nickel contract sources and no second, hand-maintained description of the
+/// same document survives beside them.
+#[test]
+fn regression_no_json_schema_is_exported() {
+    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir");
+    let export_dir = dir.path().join("mediapm");
+    let conductor_dir = dir.path().join("conductor");
+    mediapm::export_config_contracts(Some(&export_dir), &conductor_dir).expect("export contracts");
+
+    for directory in [&export_dir, &conductor_dir] {
+        let entries = std::fs::read_dir(directory).expect("read export dir");
+        for entry in entries {
+            let path = entry.expect("export dir entry").path();
+            let name = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .expect("exported file name is UTF-8")
+                .to_string();
+            let extension = path.extension().and_then(std::ffi::OsStr::to_str);
+            assert!(
+                extension.is_some_and(|extension| extension.eq_ignore_ascii_case("ncl")),
+                "every exported contract is a Nickel source, found {name}"
             );
             assert!(
-                obj.get("required").is_some(),
-                "{path}: fixed-shape object must declare required"
+                !name.contains(".json"),
+                "export must publish Nickel contract sources, found {name}"
             );
         }
-        for (key, subschema) in props {
-            assert_strict_schema_structure(root, subschema, &format!("{path}.{key}"));
-        }
-    }
-
-    if let Some(additional) = obj.get("additionalProperties")
-        && additional.is_object()
-    {
-        assert!(
-            !obj.contains_key("properties"),
-            "{path}: map-typed object must not also be fixed-shape"
-        );
-        assert_eq!(
-            obj.get("type"),
-            Some(&json!("object")),
-            "{path}: map-typed object must declare \"type\": \"object\""
-        );
-        assert_strict_schema_structure(root, additional, &format!("{path}.<map>"));
-    }
-
-    if let Some(any_of) = obj.get("anyOf") {
-        for (index, branch) in any_of.as_array().expect("anyOf must be an array").iter().enumerate()
-        {
-            assert_strict_schema_structure(root, branch, &format!("{path}.anyOf[{index}]"));
-        }
-    }
-
-    if let Some(items) = obj.get("items") {
-        assert_strict_schema_structure(root, items, &format!("{path}.items"));
-    }
-
-    if let Some(reference) = obj.get("$ref").and_then(Value::as_str) {
-        // Verify the target resolves, but do not recurse into it: `$ref`
-        // cycles are legal (e.g. `hierarchyNode.children.items` -> itself) and
-        // every definition is already walked independently from the root.
-        resolve_schema_ref(root, reference);
-    }
-
-    let has_shape = obj.contains_key("properties")
-        || obj.contains_key("anyOf")
-        || obj.contains_key("$ref")
-        || obj.contains_key("enum")
-        || obj.contains_key("const");
-    if !has_shape {
-        assert!(obj.get("type").is_some(), "{path}: node must declare a type (no stub objects)");
     }
 }
 
-fn resolve_schema_ref<'a>(root: &'a Value, reference: &str) -> &'a Value {
-    assert!(reference.starts_with("#/definitions/"), "unexpected $ref target: {reference}");
-    let key = reference.trim_start_matches("#/definitions/");
-    root.get("definitions")
-        .and_then(|defs| defs.get(key))
-        .unwrap_or_else(|| panic!("unresolvable $ref: {reference}"))
-}
-
-/// A minimal draft-07 validator supporting exactly the keyword surface the
-/// mediapm schema uses: `type`, `enum`, `const`, `properties`,
-/// `additionalProperties` (bool or schema), `required`, `items`, `anyOf`, and
-/// `$ref`.  Returns `Err` with a message on the first violation.
-#[expect(clippy::too_many_lines, reason = "mini-validator covers the full keyword surface")]
-fn validate_with_schema(
-    root: &Value,
-    schema: &Value,
-    value: &Value,
-    path: &str,
-) -> Result<(), String> {
-    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-        let target = resolve_schema_ref(root, reference);
-        return validate_with_schema(root, target, value, path);
-    }
-    if let Some(any_of) = schema.get("anyOf").and_then(Value::as_array) {
-        let mut errors = Vec::new();
-        let mut any_ok = false;
-        for (index, branch) in any_of.iter().enumerate() {
-            match validate_with_schema(root, branch, value, path) {
-                Ok(()) => {
-                    any_ok = true;
-                    break;
-                }
-                Err(message) => errors.push(format!("anyOf[{index}]: {message}")),
-            }
-        }
-        if !any_ok {
-            return Err(format!("{path}: no anyOf branch matched: {}", errors.join("; ")));
-        }
-        return Ok(());
-    }
-    if let Some(const_value) = schema.get("const")
-        && value != const_value
-    {
-        return Err(format!("{path}: expected const {const_value}, found {value}"));
-    }
-    if let Some(enum_values) = schema.get("enum").and_then(Value::as_array)
-        && !enum_values.iter().any(|candidate| candidate == value)
-    {
-        return Err(format!("{path}: value {value} not in enum {enum_values:?}"));
-    }
-    if let Some(type_name) = schema.get("type").and_then(Value::as_str) {
-        let matches = match type_name {
-            "object" => value.is_object(),
-            "array" => value.is_array(),
-            "string" => value.is_string(),
-            "boolean" => value.is_boolean(),
-            "integer" => value.is_i64() || value.is_u64(),
-            "number" => value.is_number(),
-            other => panic!("unsupported type keyword: {other}"),
-        };
-        if !matches {
-            return Err(format!("{path}: expected type {type_name}, found {value}"));
-        }
-    }
-    if let (Some(properties), Some(obj)) = (schema.get("properties"), value.as_object()) {
-        for (key, subschema) in properties.as_object().expect("properties must be an object") {
-            if let Some(field) = obj.get(key) {
-                validate_with_schema(root, subschema, field, &format!("{path}.{key}"))?;
-            }
-        }
-        if let Some(required) = schema.get("required").and_then(Value::as_array) {
-            for key in required {
-                let key = key.as_str().expect("required keys must be strings");
-                if !obj.contains_key(key) {
-                    return Err(format!("{path}: missing required field '{key}'"));
-                }
-            }
-        }
-        match schema.get("additionalProperties") {
-            Some(Value::Bool(false)) => {
-                let props = properties
-                    .as_object()
-                    .expect("additionalProperties: false requires fixed-shape properties");
-                for key in obj.keys() {
-                    if !props.contains_key(key) {
-                        return Err(format!(
-                            "{path}: unexpected property '{key}' (additionalProperties is false)"
-                        ));
-                    }
-                }
-            }
-            Some(additional_schema) if additional_schema.is_object() => {
-                let props = properties
-                    .as_object()
-                    .expect("map-typed additionalProperties requires properties");
-                for (key, field) in obj {
-                    if !props.contains_key(key) {
-                        validate_with_schema(
-                            root,
-                            additional_schema,
-                            field,
-                            &format!("{path}.{key}"),
-                        )?;
-                    }
-                }
-            }
-            _ => {}
-        }
-    } else if let Some(map_schema) = schema.get("additionalProperties")
-        && map_schema.is_object()
-        && let Some(obj) = value.as_object()
-    {
-        for (key, field) in obj {
-            validate_with_schema(root, map_schema, field, &format!("{path}.{key}"))?;
-        }
-    }
-    if let (Some(items), Some(array)) = (schema.get("items"), value.as_array()) {
-        for (index, element) in array.iter().enumerate() {
-            validate_with_schema(root, items, element, &format!("{path}[{index}]"))?;
-        }
-    }
-    Ok(())
-}
-
-/// S-C9: the exported `mediapm.schema.json` is strict draft-07.
-#[test]
-fn json_schema_export_is_strict() {
-    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir");
-    let export_dir = dir.path().join("schemas");
-    let conductor_dir = dir.path().join("conductor");
-    mediapm::export_mediapm_nickel_config_schemas(Some(&export_dir), &conductor_dir)
-        .expect("export schemas");
-
-    let schema_path = export_dir.join("mediapm.schema.json");
-    let schema_text = std::fs::read_to_string(&schema_path).expect("read mediapm schema");
-    let schema: Value = serde_json::from_str(&schema_text).expect("parse mediapm schema");
-
-    // Root shape: object, closed, with required fields.
-    assert_eq!(schema["type"], "object");
-    assert_eq!(schema["additionalProperties"], json!(false));
-    assert!(schema["required"].is_array(), "root must carry a required list");
-    let root_required: Vec<&str> = schema["required"]
-        .as_array()
-        .expect("required must be an array")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    for key in ["version", "media", "hierarchy", "tools", "runtime"] {
-        assert!(root_required.contains(&key), "root must require field '{key}'");
-    }
-    assert!(
-        schema["definitions"].as_object().expect("definitions").len() >= 10,
-        "schema must define the full closed-surface definitions set"
-    );
-
-    // Full recursive strictness walk (rejects any leftover stub objects).
-    assert_strict_schema_structure(&schema, &schema, "$");
-
-    // --- rejection samples validated by the mini-validator ---
-    let base: Value =
-        serde_json::from_str(r#"{"version":1,"media":{},"hierarchy":[],"tools":{},"runtime":{}}"#)
-            .expect("base document");
-
-    assert!(
-        validate_with_schema(&schema, &schema, &base, "$").is_ok(),
-        "empty-but-valid document must pass"
-    );
-
-    let mut unknown_root = base.clone();
-    unknown_root["bogus"] = json!(1);
-    assert!(
-        validate_with_schema(&schema, &schema, &unknown_root, "$").is_err(),
-        "unknown root field must be rejected"
-    );
-
-    let mut fractional_ttl = base.clone();
-    fractional_ttl["runtime"]["instance_ttl_seconds"] = json!(2.5);
-    assert!(
-        validate_with_schema(&schema, &schema, &fractional_ttl, "$").is_err(),
-        "fractional instance_ttl_seconds must be rejected by \"type\": \"integer\""
-    );
-
-    let mut bad_kind = base.clone();
-    bad_kind["hierarchy"] = json!([{ "kind": "video" }]);
-    assert!(
-        validate_with_schema(&schema, &schema, &bad_kind, "$").is_err(),
-        "unknown hierarchy kind must be rejected by enum"
-    );
-
-    let mut bad_media = base.clone();
-    bad_media["media"] = json!({ "m1": { "bogus": 1 } });
-    assert!(
-        validate_with_schema(&schema, &schema, &bad_media, "$").is_err(),
-        "unknown media field must be rejected by additionalProperties: false"
-    );
-
-    let mut missing_media = base.clone();
-    missing_media.as_object_mut().expect("base is object").remove("media");
-    assert!(
-        validate_with_schema(&schema, &schema, &missing_media, "$").is_err(),
-        "missing required field 'media' must be rejected"
-    );
-
-    // Conductor schema remains a plain object schema.
-    let conductor_path = conductor_dir.join("conductor.schema.json");
-    let conductor: Value = serde_json::from_str(
-        &std::fs::read_to_string(&conductor_path).expect("read conductor schema"),
-    )
-    .expect("parse conductor schema");
-    assert_eq!(conductor["type"], "object");
-}
 // ---------------------------------------------------------------------------
 // S-E1..S-E4: Rust serde strictness for mediapm config types
 // ---------------------------------------------------------------------------
