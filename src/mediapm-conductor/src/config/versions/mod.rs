@@ -46,6 +46,14 @@ pub(crate) const V3_NCL_SOURCE: &str = include_str!("v3.ncl");
 /// Fixed embedded migration helper module.
 pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
 
+/// Every schema version this build reads, in order.
+///
+/// The contract resolution below and the diagnostic it reports on an unknown
+/// version both read this list, so a version added to the arms alone cannot
+/// reach a document while staying out of the message that says which versions
+/// exist.
+pub(crate) const SUPPORTED_VERSIONS: &[u32] = &[1, 2, 3];
+
 /// Resolves one requested schema marker to the embedded Nickel contract file name.
 pub(super) fn resolve_version_contract(
     requested_version: u32,
@@ -55,10 +63,13 @@ pub(super) fn resolve_version_contract(
         1 => Ok("v1.ncl"),
         2 => Ok("v2.ncl"),
         3 => Ok("v3.ncl"),
-        _ => Err(ConductorError::Workflow(format!(
-            "unsupported {document_kind} schema version {requested_version}; expected one of 1, 2, {}",
-            v_latest::NICKEL_VERSION_LATEST
-        ))),
+        _ => {
+            let supported = SUPPORTED_VERSIONS.iter().map(u32::to_string).collect::<Vec<_>>();
+            Err(ConductorError::Workflow(format!(
+                "unsupported {document_kind} schema version {requested_version}; expected one of {}",
+                supported.join(", ")
+            )))
+        }
     }
 }
 

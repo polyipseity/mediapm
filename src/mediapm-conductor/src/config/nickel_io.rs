@@ -270,6 +270,24 @@ mod tests {
         },
     }"#;
 
+    /// A v3 document that names neither a staging strategy nor a payload root.
+    ///
+    /// The tool carries no content map, so the document stages nothing and the
+    /// cross-field rule has nothing to ask of it. Its `runtime` record is empty
+    /// rather than absent, so the two fields being missing is a statement about
+    /// the contract instead of about a record nothing wrote.
+    const V3_DOC_WITHOUT_STAGING: &str = r#"{
+        version = 3,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = {},
+            },
+        },
+    }"#;
+
     /// A v2 document that names the same tool with a payload.
     const V2_DOC_WITH_PAYLOAD: &str = r#"{
         version = 2,
@@ -311,9 +329,9 @@ mod tests {
         );
     }
 
-    /// A v3 document that names no staging decision is read as `in_place`.
+    /// A v3 document that names its staging decision keeps the name it chose.
     #[test]
-    fn a_v3_document_without_a_staging_decision_decodes_as_in_place() {
+    fn a_v3_document_naming_in_place_keeps_that_strategy() {
         let decoded = migrate_document_source_to_version::<Value>(
             V3_DOC_WITH_STAGING,
             3,
@@ -322,6 +340,27 @@ mod tests {
         .expect("v3 document must decode");
         assert_eq!(decoded["version"].as_f64(), Some(3.0), "the document keeps its version");
         assert_eq!(decoded["tools"]["t"]["runtime"]["payload_staging"], "in_place");
+    }
+
+    /// Both staging fields are optional in the contract, so a document that
+    /// names neither evaluates without them.
+    ///
+    /// This is the half the resolved types cannot show: the contract has to
+    /// accept the absence before the Rust default can apply to it. The tool
+    /// carries no content map, which is the case the cross-field rule exempts.
+    #[test]
+    fn a_v3_document_naming_no_staging_decision_evaluates_without_one() {
+        let decoded = migrate_document_source_to_version::<Value>(
+            V3_DOC_WITHOUT_STAGING,
+            3,
+            "configuration document",
+        )
+        .expect("a v3 document that stages nothing must decode");
+        let runtime = &decoded["tools"]["t"]["runtime"];
+        assert!(
+            runtime.get("payload_staging").is_none() && runtime.get("payload_root").is_none(),
+            "the contract must treat both fields as optional: {runtime}"
+        );
     }
     // Syntax-broken document: fails evaluation after the scratch workspace
     // exists, exercising the `?` error path that previously leaked the

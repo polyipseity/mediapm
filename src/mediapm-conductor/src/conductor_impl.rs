@@ -459,6 +459,10 @@ where
             outputs: BTreeMap::new(),
             runtime: crate::config::ToolRuntime {
                 content_map,
+                // A tool added through the API stages its payload by copying the
+                // content map, which is the strategy that needs no payload
+                // root: this method is given none.
+                payload_staging: crate::config::PayloadStaging::Copy,
                 ..crate::config::ToolRuntime::default()
             },
         };

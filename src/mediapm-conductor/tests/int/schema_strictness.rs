@@ -1,8 +1,9 @@
 //! Schema strictness guard module (R5).
 //!
-//! Re-asserts the strictness properties of the conductor Nickel schema
-//! (`v1.ncl` and `v2.ncl`) and the Rust decode pipeline. A future loosening
-//! of these contracts fails this suite even if it compiles.
+//! Re-asserts the strictness properties of the conductor Nickel schemas
+//! (`v1.ncl`, `v2.ncl` and the active `v3.ncl`) and the Rust decode and encode
+//! pipeline. A future loosening of these contracts fails this suite even if it
+//! compiles.
 //!
 //! Naming: `strict_*` = reject previously-accepted input; `regression_*` =
 //! input that was silently accepted/dropped before now errors.
@@ -11,17 +12,20 @@ use mediapm_conductor::NickelDocument;
 use mediapm_conductor::PayloadStaging;
 use mediapm_conductor::config::versions::{decode_document, encode_document, validate_v1_document};
 use mediapm_conductor::config::{
-    ConductorRuntimeConfig, OutputCaptureSpec, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowSpec,
-    WorkflowStepSpec,
+    ConductorRuntimeConfig, OutputCaptureSpec, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
+    WorkflowSpec, WorkflowStepSpec,
 };
 
 // ---------------------------------------------------------------------------
 // Error-extraction helpers (assertions stay at each call site)
 // ---------------------------------------------------------------------------
 
-/// Returns the formatted error from decoding a v2 document that must fail.
-fn v2_decode_error(doc: &str) -> String {
-    format!("{}", decode_document(doc.as_bytes()).expect_err("v2 document must be rejected"))
+/// Returns the formatted error from decoding a document that must fail.
+///
+/// The version in each fixture's source decides which contract runs; the
+/// helper makes no claim about it.
+fn decode_error(doc: &str) -> String {
+    format!("{}", decode_document(doc.as_bytes()).expect_err("document must be rejected"))
 }
 
 /// Returns the formatted error from validating a v1 document that must fail.
@@ -150,14 +154,14 @@ const REALISTIC_V1_DOC: &str = r#"{
 /// S-A1: unknown top-level fields are rejected (closed envelope, no `..`).
 #[test]
 fn strict_v2_rejects_unknown_top_level_field() {
-    let msg = v2_decode_error(UNKNOWN_TOP_LEVEL_FIELD_DOC);
+    let msg = decode_error(UNKNOWN_TOP_LEVEL_FIELD_DOC);
     assert!(msg.contains("bogus_field"), "error must name the unknown field: {msg}");
 }
 
 /// S-A3: `ExternalContentRefV2.hash` must be a non-empty string.
 #[test]
 fn strict_v2_rejects_empty_hash() {
-    let msg = v2_decode_error(EMPTY_HASH_DOC);
+    let msg = decode_error(EMPTY_HASH_DOC);
     assert!(
         msg.contains("hash") && msg.contains("contract"),
         "error must mention the hash contract: {msg}"
@@ -167,7 +171,7 @@ fn strict_v2_rejects_empty_hash() {
 /// S-A5: `platform_inherited_env_vars` is closed to windows/linux/macos.
 #[test]
 fn strict_v2_rejects_unknown_platform_key() {
-    let msg = v2_decode_error(UNKNOWN_PLATFORM_KEY_DOC);
+    let msg = decode_error(UNKNOWN_PLATFORM_KEY_DOC);
     assert!(
         msg.contains("other_os") || msg.contains("platform"),
         "error must mention the offending key or the platform contract: {msg}"
@@ -177,14 +181,14 @@ fn strict_v2_rejects_unknown_platform_key() {
 /// S-A4/S3: integer-guarded `max_retries` rejects fractional values.
 #[test]
 fn strict_v2_rejects_fractional_max_retries() {
-    let msg = v2_decode_error(FRACTIONAL_MAX_RETRIES_DOC);
+    let msg = decode_error(FRACTIONAL_MAX_RETRIES_DOC);
     assert!(msg.contains("contract"), "error must mention a contract violation: {msg}");
 }
 
 /// S-A4: `inherited_env_vars` entries must be non-empty strings.
 #[test]
 fn strict_v2_rejects_empty_env_var_name() {
-    let msg = v2_decode_error(EMPTY_ENV_VAR_NAME_DOC);
+    let msg = decode_error(EMPTY_ENV_VAR_NAME_DOC);
     assert!(msg.contains("contract"), "error must mention a contract violation: {msg}");
 }
 
@@ -234,7 +238,7 @@ fn parity_mod_ncl_exports_unversioned_aliases() {
 /// envelope open; they must now fail loudly.
 #[test]
 fn regression_v2_unknown_field_no_longer_silently_dropped() {
-    let msg = v2_decode_error(UNKNOWN_TOP_LEVEL_FIELD_DOC);
+    let msg = decode_error(UNKNOWN_TOP_LEVEL_FIELD_DOC);
     assert!(
         msg.contains("bogus_field"),
         "the unknown field must surface in the error, not be dropped: {msg}"
@@ -323,7 +327,7 @@ const V2_DOC_WITH_PAYLOAD: &str = r#"{
 /// the contract instead of reaching the step as an unrecognized string.
 #[test]
 fn strict_v3_rejects_an_unknown_staging_strategy() {
-    let msg = v2_decode_error(UNKNOWN_STAGING_DOC);
+    let msg = decode_error(UNKNOWN_STAGING_DOC);
     assert!(
         msg.contains("PayloadStagingV3") && msg.contains("payload_staging"),
         "the Nickel contract must reject the strategy and name the field: {msg}"
@@ -337,7 +341,7 @@ fn strict_a_payload_carrying_tool_needs_a_root_for_a_staging_strategy_that_uses_
     for (document, strategy) in
         [(IN_PLACE_WITHOUT_ROOT_DOC, "in_place"), (HARD_LINK_WITHOUT_ROOT_DOC, "hard_link")]
     {
-        let msg = v2_decode_error(document);
+        let msg = decode_error(document);
         assert!(
             msg.contains("payload_root") && msg.contains(strategy),
             "the rejection must name the root and the strategy ('{strategy}'): {msg}"
@@ -394,7 +398,26 @@ fn regression_a_v3_document_round_trips_byte_for_byte() {
     assert_eq!(runtime.payload_root, "/tmp/payloads/t");
 
     let first = encode_document(doc).expect("encode");
+    let text = String::from_utf8(first.clone()).expect("encoded document is UTF-8");
+    assert!(
+        text.contains("payload_staging = \"in_place\""),
+        "the encoder has to write the strategy it was given: {text}"
+    );
+    assert!(
+        text.contains("payload_root = \"/tmp/payloads/t\""),
+        "the encoder has to write the root it was given: {text}"
+    );
     let second = decode_document(&first).expect("decode the encoded document");
+    let reread = &second.tools["t"].runtime;
+    assert_eq!(
+        reread.payload_staging,
+        PayloadStaging::InPlace,
+        "the encoded document has to read back as the strategy it was encoded from"
+    );
+    assert_eq!(
+        reread.payload_root, "/tmp/payloads/t",
+        "the encoded document has to read back as the root it was encoded from"
+    );
     let third = encode_document(second).expect("re-encode");
     assert_eq!(first, third, "encode → decode → encode must be byte-stable");
 }
@@ -404,15 +427,109 @@ fn regression_a_v3_document_round_trips_byte_for_byte() {
 #[test]
 fn parity_v3_contract_and_rust_types_agree() {
     let contract = include_str!("../../src/config/versions/v3.ncl");
+    let rust: std::collections::BTreeSet<String> =
+        [PayloadStaging::InPlace, PayloadStaging::HardLink, PayloadStaging::Copy]
+            .iter()
+            .map(|staging| staging.as_str().to_string())
+            .collect();
+
+    // The contract's own set, read out of the staging predicate. Comparing sets
+    // rather than checking one direction is what catches a strategy added to the
+    // contract alone: it would validate a document this build cannot stage.
+    let contract_set = staging_names_in_contract(contract);
+    assert_eq!(
+        contract_set, rust,
+        "v3.ncl's staging set and the Rust enum must name the same strategies"
+    );
+
     for staging in [PayloadStaging::InPlace, PayloadStaging::HardLink, PayloadStaging::Copy] {
-        let name = staging.as_str();
-        assert!(
-            contract.contains(&format!("value == \"{name}\"")),
-            "v3.ncl must accept the '{name}' strategy"
-        );
         let json = serde_json::to_value(staging).expect("strategy serializes");
-        assert_eq!(json, serde_json::Value::String(name.to_string()));
+        assert_eq!(json, serde_json::Value::String(staging.as_str().to_string()));
     }
+}
+
+/// Returns the strategy names `v3.ncl`'s staging predicate accepts.
+///
+/// Reads the `value == "…"` literals out of the block that defines
+/// `PayloadStagingV3`, so a literal added there alone shows up as a difference
+/// rather than as a name nothing asserted.
+fn staging_names_in_contract(contract: &str) -> std::collections::BTreeSet<String> {
+    let (_, after_binding) = contract
+        .split_once("let PayloadStagingV3 =")
+        .expect("v3.ncl must define the staging predicate");
+    let (block, _) = after_binding.split_once("\nin\n").expect("the binding must end with `in`");
+    let mut names = std::collections::BTreeSet::new();
+    let mut rest = block;
+    while let Some((_, after)) = rest.split_once("value == \"") {
+        let (name, tail) = after.split_once('"').expect("the literal must be closed");
+        names.insert(name.to_string());
+        rest = tail;
+    }
+    assert!(!names.is_empty(), "the staging predicate names no strategy: {block}");
+    names
+}
+
+/// A document that names neither field reads as `in_place` with no root.
+///
+/// The contract accepting the absence and the Rust bridge applying the default
+/// are separate halves, and this is the second: a resolver that keyed off
+/// `Some`/`None` would leave the tool unstaged instead of defaulting it.
+#[test]
+fn regression_a_document_naming_no_staging_decision_decodes_as_in_place() {
+    let source = r#"{
+        version = 3,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = {},
+            },
+        },
+    }"#;
+    let doc = decode_document(source.as_bytes()).expect("a document staging nothing must decode");
+    let runtime = &doc.tools["t"].runtime;
+    assert_eq!(runtime.payload_staging, PayloadStaging::InPlace);
+    assert!(runtime.payload_root.is_empty(), "the document names no root");
+}
+
+/// The write path refuses what the read path would refuse.
+///
+/// `NickelDocument` and `ToolRuntime` are public with public fields, so a caller
+/// can build a document the loader would reject. Without this gate the only
+/// trace of the mismatch would be a generated document the next run discards and
+/// replaces with a full re-provision.
+#[test]
+fn strict_encoding_a_tool_that_stages_without_a_root_is_refused() {
+    let mut doc = NickelDocument::default();
+    doc.tools.insert(
+        "t".to_string(),
+        ToolSpec {
+            version: None,
+            name: "t".to_string(),
+            kind: ToolKindSpec::Executable {
+                command: vec!["true".to_string()],
+                env_vars: std::collections::BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            runtime: ToolRuntime {
+                // An inline value, not a hash, so the external-data invariant is
+                // satisfied and the staging rule is the one that fires.
+                content_map: std::collections::BTreeMap::from([(
+                    "tool".to_string(),
+                    "inline description".to_string(),
+                )]),
+                ..ToolRuntime::default()
+            },
+            ..ToolSpec::default()
+        },
+    );
+
+    let msg = format!("{}", encode_document(doc).expect_err("a rootless in-place tool must fail"));
+    assert!(
+        msg.contains("payload_root") && msg.contains("'t'"),
+        "the refusal must name the field and the tool: {msg}"
+    );
 }
 
 /// An absent strategy means `in_place`, which is what a document with a root

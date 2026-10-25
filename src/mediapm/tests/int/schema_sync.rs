@@ -333,12 +333,14 @@ fn parity_tree_scan_catches_dispatcher_outside_mod_rs() {
 // side against the other rather than against itself.
 // ---------------------------------------------------------------------------
 
-/// The conductor's schema v2 contract, read from the file the evaluator loads.
+/// The conductor's active schema contract, read from the file the evaluator loads.
 ///
 /// `include_str!` keeps this bound to the shipped file, so editing the contract
-/// fails these assertions instead of leaving them pinned to a copy.
-const CONDUCTOR_V2_NCL: &str =
-    include_str!("../../../mediapm-conductor/src/config/versions/v2.ncl");
+/// fails these assertions instead of leaving them pinned to a copy. Version 3 is
+/// the one the conductor validates and writes; the older contracts only serve
+/// migration.
+const CONDUCTOR_ACTIVE_NCL: &str =
+    include_str!("../../../mediapm-conductor/src/config/versions/v3.ncl");
 
 /// Builds a one-tool conductor document with the given declared version.
 ///
@@ -399,30 +401,30 @@ fn conductor_source_with_version_line(name: &str, version_line: &str) -> String 
 /// and missing on the other is drift the Rust side would hide.
 #[test]
 fn parity_conductor_tool_version_is_optional_and_non_empty_in_nickel() {
-    for contract in ["BuiltinToolSpecV2", "ExecutableToolSpecV2"] {
+    for contract in ["BuiltinToolSpecV3", "ExecutableToolSpecV3"] {
         assert!(
-            nickel_record_body(CONDUCTOR_V2_NCL, contract)
-                .is_some_and(|body| { body.contains("version | NonEmptyStringV2 | optional,") }),
-            "{contract} must declare `version | NonEmptyStringV2 | optional`"
+            nickel_record_body(CONDUCTOR_ACTIVE_NCL, contract)
+                .is_some_and(|body| { body.contains("version | NonEmptyStringV3 | optional,") }),
+            "{contract} must declare `version | NonEmptyStringV3 | optional`"
         );
     }
 
     // The field is optional and constrained by the same non-empty predicate the
-    // doc comment on `ToolSpecLatest::version` cites. If `NonEmptyStringV2` ever
+    // doc comment on `ToolSpecLatest::version` cites. If `NonEmptyStringV3` ever
     // stops rejecting the empty string, the claim that an empty version is not
     // representable is no longer backed by the contract.
-    // `NonEmptyStringV2` is a predicate binding rather than a record, so it needs
+    // `NonEmptyStringV3` is a predicate binding rather than a record, so it needs
     // its own lookup. A `None` here is a failure like it is in `nickel_record_body`,
     // because a missing binding means the constraint is gone.
-    let (_, after_binding) = CONDUCTOR_V2_NCL
-        .split_once("let NonEmptyStringV2 =")
-        .expect("conductor v2.ncl must define NonEmptyStringV2");
+    let (_, after_binding) = CONDUCTOR_ACTIVE_NCL
+        .split_once("let NonEmptyStringV3 =")
+        .expect("conductor v3.ncl must define NonEmptyStringV3");
     let (predicate, _) = after_binding
         .split_once("\nin\n")
-        .expect("NonEmptyStringV2 must be a top-level `let ... in` binding");
+        .expect("NonEmptyStringV3 must be a top-level `let ... in` binding");
     assert!(
-        predicate.contains("std.string.is_match \"^.+$\" value"),
-        "NonEmptyStringV2 must keep rejecting the empty string, which is what makes \
+        predicate.contains("value == \"\""),
+        "NonEmptyStringV3 must keep rejecting the empty string, which is what makes \
          `Some(\"\")` unrepresentable on the Rust side, got: {predicate}"
     );
 }

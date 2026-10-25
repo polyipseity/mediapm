@@ -2666,8 +2666,8 @@ mod tests {
     #[tokio::test]
     async fn relaxed_resolution_matches_versioned_yt_dlp_tool_call_id() {
         use mediapm_conductor::{
-            CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec,
-            ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+            CapturedOutput, OutputCaptureSpec, PayloadStaging, SaveMode, ToolCallInstance,
+            ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
         };
         use mediapm_utils::Timestamp;
 
@@ -2684,6 +2684,10 @@ mod tests {
                             "yt-dlp".to_string(),
                             Hash::from_content(b"yt-dlp-binary").to_string(),
                         )]),
+                        // The generated document this fixture stands for copies
+                        // its payload, which is the strategy that needs no root
+                        // and therefore survives an encode.
+                        payload_staging: PayloadStaging::Copy,
                         ..ToolRuntime::default()
                     },
                     ..ToolSpec::default()

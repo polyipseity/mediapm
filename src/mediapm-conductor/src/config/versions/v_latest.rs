@@ -26,7 +26,7 @@ use crate::config::{
 pub(crate) const NICKEL_VERSION_LATEST: u32 = 3;
 
 // ---------------------------------------------------------------------------
-// Persisted envelope types — these match the `v1.ncl` Nickel contract exactly
+// Persisted envelope types — these match the `v3.ncl` Nickel contract exactly
 // and are what `serde_json` deserializes after Nickel evaluation.
 // ---------------------------------------------------------------------------
 

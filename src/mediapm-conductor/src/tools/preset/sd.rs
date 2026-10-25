@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use crate::tools::helpers::build_os_conditional_selector;
 use crate::{
-    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
+    InputBinding, OutputCaptureSpec, PayloadStaging, SaveMode, ToolInputKind, ToolInputSpec,
+    ToolRuntime, ToolSpec,
 };
 
 /// Builds the [`ToolSpec`] and [`ToolRuntime`] for `sd`.
@@ -97,9 +98,19 @@ pub fn apply(
             content_map: content_map.clone(),
             max_retries: 0,
             max_concurrent_calls: 0,
+            // `sd` is invoked from the content map the caller hands it, so it
+            // needs no payload root and stages that map by copying it.
+            payload_staging: PayloadStaging::Copy,
             ..ToolRuntime::default()
         },
     };
 
-    (spec, ToolRuntime { content_map, ..ToolRuntime::default() })
+    (
+        spec,
+        ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..ToolRuntime::default()
+        },
+    )
 }

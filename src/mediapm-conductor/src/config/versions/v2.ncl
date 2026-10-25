@@ -1,8 +1,9 @@
 # ||| Schema version 2 — Unified conductor config document (v2).
 # |||
-# ||| This contract validates the Nickel envelope shape that Rust deserializes
-# ||| into `v_latest::NickelEnvelopeLatest`. Keep fields and their types in
-# ||| sync with the Rust side.
+# ||| This contract validates a version-2 document during migration: it is the
+# ||| target of `migrate_v3_to_v2` and the shape a version-2 source is read as
+# ||| before `migrate_v2_to_v3` runs. Rust reads version 3 through
+# ||| `v_latest::NickelEnvelopeLatest`, which this file does not describe.
 # |||
 # ||| Schema version 2 uses a single unified document model (replacing the old
 # ||| three-document user/machine/state split from v1).  Tools are tagged by kind
