@@ -949,19 +949,44 @@ fn url_serves_checksum(url: &str) -> bool {
 }
 
 /// Generates a launcher script that dispatches `$MEDIAPM_EXECUTABLE <argv...> {args...}`.
+///
+/// The launcher is the only place that knows `MEDIAPM_EXECUTABLE` is
+/// mandatory, so every emitted script tests the variable before it dispatches:
+/// a missing value otherwise surfaces as a step failure nowhere near its cause,
+/// either as an empty command or as whatever binary happened to hold the name.
+/// The message the guard prints names the build remedy, so the failure states
+/// its own fix. The variable must hold the `mediapm` CLI binary; any other
+/// value turns the step into a different program.
+///
+/// POSIX hosts (`os` other than `"windows"`) get a `#!/bin/sh` script whose
+/// second line is a `:?` guard and whose third line `exec`s the CLI with the
+/// dispatch arguments. Windows gets a CRLF batch script whose guard runs
+/// `if not defined` / `exit /b 1`. The dispatch arguments themselves are the
+/// same on both shapes and follow the guard unchanged.
+///
+/// The returned bytes are the script text verbatim; nothing here touches the
+/// filesystem or fails.
 #[cfg(feature = "tool-presets")]
 fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) -> Vec<u8> {
     let mut dispatch_argv = argv_prefix.to_vec();
     dispatch_argv.push(builtin_id.to_string());
     let dispatch = dispatch_argv.join(" ");
     match os {
-        "windows" => {
-            format!("@echo off\r\n\"%MEDIAPM_EXECUTABLE%\" {dispatch} %*\r\n").into_bytes()
-        }
-        _ => {
-            // Linux / macOS — POSIX shell with `exec`.
-            format!("#!/bin/sh\nexec \"${{MEDIAPM_EXECUTABLE}}\" {dispatch} \"$@\"\n").into_bytes()
-        }
+        "windows" => format!(concat!(
+            "@echo off\r\n",
+            "if not defined MEDIAPM_EXECUTABLE (\r\n",
+            "echo mediapm CLI executable is not set; build it with \"cargo build --package mediapm\" or set MEDIAPM_EXECUTABLE 1>&2\r\n",
+            "exit /b 1\r\n",
+            ")\r\n",
+            "\"%MEDIAPM_EXECUTABLE%\" {} %*\r\n",
+        ), dispatch)
+        .into_bytes(),
+        _ => format!(concat!(
+            "#!/bin/sh\n",
+            ": \"${{MEDIAPM_EXECUTABLE:?mediapm CLI executable is not set; build it with 'cargo build --package mediapm' or export MEDIAPM_EXECUTABLE}}\"\n",
+            "exec \"${{MEDIAPM_EXECUTABLE}}\" {} \"$@\"\n",
+        ), dispatch)
+        .into_bytes(),
     }
 }
 
@@ -3355,6 +3380,121 @@ mod tests {
         assert!(text.contains("exec"));
         assert!(text.contains("MEDIAPM_EXECUTABLE"));
         assert!(text.contains("echo@v1"));
+    }
+
+    /// Protects the guard every generated launcher carries: both OS shapes
+    /// must refuse an unset `MEDIAPM_EXECUTABLE` and name the build remedy, so
+    /// a missing CLI fails on the launcher's second line instead of dispatching
+    /// an empty command or an unrelated program.
+    #[test]
+    fn launcher_script_requires_the_executable_variable() {
+        let unix = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        let unix_text = String::from_utf8_lossy(&unix);
+        let guard_line = unix_text.lines().nth(1).expect("launcher script has a second line");
+        assert!(
+            guard_line.starts_with(": \"${MEDIAPM_EXECUTABLE:?"),
+            "second line must be the `:?` guard, got: {guard_line}"
+        );
+        assert!(
+            guard_line.contains("cargo build --package mediapm"),
+            "guard message must name the build remedy, got: {guard_line}"
+        );
+
+        let windows = generate_launcher_script("windows", "media-tagger", &["builtin".to_string()]);
+        let windows_text = String::from_utf8_lossy(&windows);
+        assert!(
+            windows_text.contains("if not defined MEDIAPM_EXECUTABLE"),
+            "batch script must guard on a defined variable, got: {windows_text}"
+        );
+        assert!(
+            windows_text.contains("exit /b 1"),
+            "batch guard must leave a non-zero exit status, got: {windows_text}"
+        );
+        assert!(
+            windows_text.contains("cargo build --package mediapm"),
+            "guard message must name the build remedy, got: {windows_text}"
+        );
+    }
+
+    /// Protects the ordering inside the POSIX script: the guard runs first, and
+    /// the dispatch arguments stay on the `exec` line, where the exec'd CLI
+    /// receives them.
+    #[test]
+    fn launcher_script_keeps_the_dispatch_behind_the_guard() {
+        let script = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        let text = String::from_utf8_lossy(&script);
+        let guard_index = text
+            .lines()
+            .position(|line| line.starts_with(": \"${MEDIAPM_EXECUTABLE:?"))
+            .expect("launcher script carries the guard line");
+        let exec_index = text
+            .lines()
+            .position(|line| line.starts_with("exec "))
+            .expect("launcher script carries the exec line");
+        assert!(
+            guard_index < exec_index,
+            "guard line {guard_index} must precede exec line {exec_index}"
+        );
+        let exec_line = text.lines().nth(exec_index).expect("exec line is indexed");
+        assert!(
+            exec_line.contains("builtin media-tagger"),
+            "dispatch must stay on the exec line, got: {exec_line}"
+        );
+    }
+
+    /// Protects the failure mode the guard exists for: running the generated
+    /// POSIX script with no `MEDIAPM_EXECUTABLE` must exit non-zero, write
+    /// nothing to stdout, and name the variable on stderr.
+    #[cfg(unix)]
+    #[test]
+    fn launcher_script_exits_without_the_variable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let path = dir.path().join("media-tagger-launcher");
+        let script = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        std::fs::write(&path, script).expect("write launcher script");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("mark launcher script executable");
+
+        let output = std::process::Command::new(&path)
+            .env_remove("MEDIAPM_EXECUTABLE")
+            .output()
+            .expect("run launcher script");
+
+        assert!(!output.status.success(), "launcher must fail without MEDIAPM_EXECUTABLE");
+        assert!(output.stdout.is_empty(), "launcher must not write to stdout");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("MEDIAPM_EXECUTABLE"),
+            "stderr must name the variable, got: {stderr}"
+        );
+    }
+
+    /// Windows twin of the execution test: the batch guard must leave status 1
+    /// with an empty stdout and the variable named on stderr.
+    #[cfg(windows)]
+    #[test]
+    fn launcher_script_exits_without_the_variable_windows() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let path = dir.path().join("media-tagger-launcher.cmd");
+        let script = generate_launcher_script("windows", "media-tagger", &["builtin".to_string()]);
+        std::fs::write(&path, script).expect("write launcher script");
+
+        let output = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg(&path)
+            .env_remove("MEDIAPM_EXECUTABLE")
+            .output()
+            .expect("run launcher script through cmd");
+
+        assert!(!output.status.success(), "launcher must fail without MEDIAPM_EXECUTABLE");
+        assert!(output.stdout.is_empty(), "launcher must not write to stdout");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("MEDIAPM_EXECUTABLE"),
+            "stderr must name the variable, got: {stderr}"
+        );
     }
 
     // ── extract helpers ───────────────────────────────────────────────
