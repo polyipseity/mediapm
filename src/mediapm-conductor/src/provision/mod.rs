@@ -10,7 +10,9 @@
 //!   carrying a header that says what it is. An entry extracted by an older
 //!   build carries the same lock under `.lock` instead; that name is never
 //!   taken again, and a directory still holding it is reclaimed rather than
-//!   kept (see `retain`).
+//!   kept (see `retain`). A directory that holds it *in use* is the exception:
+//!   an older build still locks that name while it runs the payload, so a held
+//!   `.lock` is reported and the directory kept.
 //!
 //! # Single-flight extraction
 //!
@@ -36,8 +38,12 @@
 //!   `payload/` exists.  The entry's `last_used_unix_seconds` is refreshed.
 //! - **Miss** — CAS bytes are fetched concurrently, extracted into a fresh
 //!   `payload/` tree, and `metadata.json` is written atomically.
-//! - **Expiry** — entries not used within 1 day are pruned on a best-effort
-//!   basis (never blocks workflow execution).
+//! - **Expiry** — entries not used within 1 day are pruned by the sweep that a
+//!   materialize triggers, at most once per `PRUNE_COOLDOWN_SECONDS` per tools
+//!   root. The walk runs on the blocking pool and the triggering materialize
+//!   awaits it. An entry left under the pre-rename lock name is reclaimed by the
+//!   retain sweep immediately and by this one once its TTL has passed, unless an
+//!   older build still holds that lock.
 
 pub(crate) mod extract;
 pub(crate) mod helpers;
@@ -97,6 +103,15 @@ and leaves the directory unprunable; remove the whole directory instead.
 
 /// On-disk metadata format version.
 pub(crate) const VERSION: u32 = 1;
+
+/// Serializes the tests that read or reset the process-wide sweep cooldown.
+///
+/// The cooldown is process state shared by every tools root, so any test that
+/// materializes a payload can consume another test's claim. Under nextest each
+/// test is its own process and this costs nothing; under a single-process
+/// `cargo test` run it is what keeps the sweep assertions from flaking.
+#[cfg(test)]
+pub(crate) static SWEEP_STATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Default maximum number of concurrent extraction tasks.
 pub(crate) const DEFAULT_MAX_CONCURRENT: usize = 8;

@@ -1,6 +1,6 @@
 //! Core provisioning engine.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -49,15 +49,21 @@ impl<C: std::fmt::Debug> std::fmt::Debug for ProvisionCache<C> {
     }
 }
 
-/// Instant of the last automatic prune sweep this process started.
+/// Instants of the last automatic prune sweep this process started, per tools
+/// root.
 ///
-/// The cooldown lives in the process that does the work. A file beside the
-/// tools root used to record it, which let a process inherit a stamp written by
-/// a process that had already swept, and left a file in the tree that read as
-/// residue.
-static LAST_AUTOMATIC_SWEEP: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
+/// The cooldown lives in the process that does the work. A file beside the tools
+/// root used to record it, which let a process inherit a stamp written by a
+/// process that had already swept, and left a file in the tree that read as
+/// residue. It is keyed by root rather than held as one instant because the
+/// marker it replaced was per root: a process driving two tools roots — two
+/// workspaces, or a test that builds a second cache — sweeps each of them on its
+/// own clock instead of refusing the second root's first sweep.
+static LAST_AUTOMATIC_SWEEP: LazyLock<Mutex<HashMap<PathBuf, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Claims the next automatic sweep, answering whether this call may run it.
+/// Claims the next automatic sweep of `tools_dir`, answering whether this call
+/// may run it.
 ///
 /// The claim is taken before the sweep starts, so two concurrent materializes
 /// cannot both sweep and the second one does not wait for the first. A claimed
@@ -65,47 +71,46 @@ static LAST_AUTOMATIC_SWEEP: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(||
 /// is the same bargain a timestamped file made: the work is bounded, the entry
 /// is pruned on a later pass, and no caller is made to wait on it.
 ///
-/// A fresh process answers `true` on its first call, because there is no
-/// earlier sweep to be inside the cooldown of.
-fn claim_automatic_sweep() -> bool {
-    with_last_sweep(|last| {
-        let now = Instant::now();
-        if let Some(previous) = *last
-            && now.duration_since(previous).as_secs() < PRUNE_COOLDOWN_SECONDS
-        {
-            return false;
-        }
-        *last = Some(now);
-        true
-    })
+/// A root this process has not swept yet answers `true` on its first call,
+/// because there is no earlier sweep of that root to be inside the cooldown of.
+fn claim_automatic_sweep(tools_dir: &Path) -> bool {
+    let mut all = lock_sweep_state();
+    let now = Instant::now();
+    if let Some(previous) = all.get(tools_dir)
+        && now.duration_since(*previous).as_secs() < PRUNE_COOLDOWN_SECONDS
+    {
+        return false;
+    }
+    all.insert(tools_dir.to_path_buf(), now);
+    true
 }
 
-/// Records that a sweep is starting, so the next automatic call waits out the
-/// cooldown instead of sweeping immediately after an explicit one.
-fn record_sweep() {
-    with_last_sweep(|last| *last = Some(Instant::now()));
+/// Records that a sweep of `tools_dir` is starting, so the next automatic call
+/// for that root waits out the cooldown instead of sweeping immediately after an
+/// explicit one.
+fn record_sweep(tools_dir: &Path) {
+    lock_sweep_state().insert(tools_dir.to_path_buf(), Instant::now());
 }
 
-/// Runs `f` on the last-sweep instant.
+/// Takes the lock on the per-root sweep instants.
 ///
-/// A poisoned lock yields the value it guards: the instant is a timestamp, and
-/// a panic in another thread leaves it as usable as it was before.
-fn with_last_sweep<T>(f: impl FnOnce(&mut Option<Instant>) -> T) -> T {
-    let mut last = match LAST_AUTOMATIC_SWEEP.lock() {
-        Ok(last) => last,
+/// A poisoned lock yields the map it guards: the values are timestamps, and a
+/// panic in another thread leaves them as usable as they were before.
+fn lock_sweep_state() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Instant>> {
+    match LAST_AUTOMATIC_SWEEP.lock() {
+        Ok(all) => all,
         Err(poisoned) => poisoned.into_inner(),
-    };
-    f(&mut last)
+    }
 }
 
-/// Forgets the last sweep, so the next automatic call behaves as a new
-/// process's first one.
+/// Forgets every recorded sweep, so the next automatic call for any root behaves
+/// as a process's first one.
 ///
 /// Test-only: the cooldown is process state, and a test is the only caller that
 /// needs to start from a process which has never swept.
 #[cfg(test)]
 fn reset_automatic_sweep() {
-    with_last_sweep(|last| *last = None);
+    lock_sweep_state().clear();
 }
 
 impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
@@ -243,13 +248,17 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
     // Private methods
     // -----------------------------------------------------------------------
 
-    /// Best-effort prune that never blocks workflow execution.
+    /// Best-effort prune, run on the blocking pool by the materialize that
+    /// triggers it.
     ///
-    /// One sweep per `PRUNE_COOLDOWN_SECONDS` in this process: the claim is
-    /// taken synchronously, and the sweep itself runs on the blocking pool
-    /// where no caller waits for it.
+    /// One sweep per `PRUNE_COOLDOWN_SECONDS` per tools root in this process:
+    /// the claim is taken synchronously, so a second concurrent materialize does
+    /// not also sweep. The walk itself runs on the blocking pool so it never
+    /// occupies a worker thread, and the materialize that claims the sweep does
+    /// await its completion — the alternative, leaving the join handle unawaited,
+    /// would let the walk outlive the cache it is walking.
     async fn try_maybe_prune(&self, now: u64) {
-        if !claim_automatic_sweep() {
+        if !claim_automatic_sweep(&self.tools_dir) {
             return;
         }
 
@@ -259,11 +268,12 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
 
     /// Prunes expired entries unconditionally (no cooldown check).
     ///
-    /// An explicit sweep restarts the cooldown, so the automatic passthrough
-    /// does not immediately repeat the work this call just did.
+    /// An explicit sweep restarts the cooldown for this tools root, so the
+    /// automatic passthrough does not immediately repeat the work this call just
+    /// did.
     async fn prune_internal(&self, now: u64) -> Result<(), ConductorError> {
         let tools_dir = self.tools_dir.clone();
-        record_sweep();
+        record_sweep(&self.tools_dir);
 
         tokio::task::spawn_blocking(move || sweep_expired_entries(&tools_dir, now)).await.map_err(
             |join_err| ConductorError::Internal(format!("prune task panicked: {join_err}")),
@@ -407,13 +417,8 @@ mod tests {
 
     use super::*;
     use crate::provision::LOCK_FILE_HEADER;
+    use crate::provision::SWEEP_STATE_LOCK;
     use crate::provision::helpers::link_to_sandbox_filtered;
-
-    /// Serializes the two tests that read and reset the process-wide sweep
-    /// state. Under nextest each test is its own process, so this only matters
-    /// for a `cargo test` run of this module, where a sibling's sweep would
-    /// consume the claim inside these tests' cooldown window.
-    static SWEEP_STATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// Builds a cache over a fresh tools root, with a payload in CAS.
     async fn cache_with_payload() -> (TempDir, ProvisionCache<mediapm_cas::InMemoryCas>) {
@@ -442,6 +447,7 @@ mod tests {
     /// and what deleting it costs.
     #[tokio::test]
     async fn a_provision_lock_names_itself() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
         let (tools_dir, cache) = cache_with_payload().await;
         let content_map = BTreeMap::new();
         let guard = cache.materialize("named-tool", &content_map).await.expect("materialize");
@@ -453,14 +459,15 @@ mod tests {
         drop(guard);
     }
 
-    /// A second extraction of the same entry does not rewrite the header.
+    /// A cache hit leaves the entry's lock file bytes alone.
     ///
-    /// The header is written when the lock file is created and never again, so
-    /// the file's bytes are stable: a rewrite would mean the entry is being
-    /// rebuilt, and a reader comparing what it found to what it expected would
-    /// see churn that did not happen.
+    /// The second materialize finds a valid entry and takes the shared lock
+    /// without writing, so text a person added to the file survives it. That is
+    /// what makes the header trustworthy: it is written when the file is
+    /// created, never as a side effect of reading the entry.
     #[tokio::test]
     async fn the_provision_lock_is_written_once() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
         let (tools_dir, cache) = cache_with_payload().await;
         let content_map = BTreeMap::new();
         let guard =
@@ -483,6 +490,47 @@ mod tests {
             second,
             edited.as_bytes(),
             "the lock header is written when the file is created, not on every open"
+        );
+    }
+
+    /// Re-extracting an entry writes the header again, because the extraction
+    /// removed the file that held it.
+    ///
+    /// A changed content map is the only thing that reaches the extraction path
+    /// with an entry already on disk, so it is what proves the header survives
+    /// the removal-and-rebuild cycle rather than only the first creation.
+    #[tokio::test]
+    async fn a_reextracted_entry_writes_the_header_again() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        let (tools_dir, cache) = cache_with_payload().await;
+        let mut first_map = BTreeMap::new();
+        first_map.insert(
+            "linux/tool".to_string(),
+            mediapm_cas::Hash::from_content(b"tool binary content"),
+        );
+        let guard = cache.materialize("rebuilt-tool", &first_map).await.expect("first materialize");
+        drop(guard);
+        let lock_path = tools_dir.path().join("rebuilt-tool").join(LOCK_FILE_NAME);
+
+        // A different map misses the cache and drives a fresh extraction over
+        // the entry that is already there.
+        let mut second_map = BTreeMap::new();
+        second_map.insert(
+            "linux/tool".to_string(),
+            mediapm_cas::Hash::from_content(b"tool binary content"),
+        );
+        second_map.insert(
+            "linux/extra".to_string(),
+            mediapm_cas::Hash::from_content(b"tool binary content"),
+        );
+        let guard =
+            cache.materialize("rebuilt-tool", &second_map).await.expect("second materialize");
+        let contents = std::fs::read_to_string(&lock_path).expect("read lock file");
+        drop(guard);
+
+        assert_eq!(
+            contents, LOCK_FILE_HEADER,
+            "the rebuilt entry's lock file has to carry the header again"
         );
     }
 
@@ -530,12 +578,41 @@ mod tests {
     async fn the_sweep_claim_holds_for_the_cooldown() {
         let _serialized = SWEEP_STATE_LOCK.lock().await;
         reset_automatic_sweep();
+        let root = Path::new("claim-root");
 
-        assert!(claim_automatic_sweep(), "the first claim of a process is granted");
-        assert!(!claim_automatic_sweep(), "a claim inside the cooldown is refused");
+        assert!(claim_automatic_sweep(root), "the first claim of a process is granted");
+        assert!(!claim_automatic_sweep(root), "a claim inside the cooldown is refused");
 
         reset_automatic_sweep();
-        assert!(claim_automatic_sweep(), "clearing the state grants the next claim");
+        assert!(claim_automatic_sweep(root), "clearing the state grants the next claim");
+    }
+
+    /// Each tools root has its own cooldown, so a second root in the same
+    /// process sweeps on its first materialize.
+    ///
+    /// The cooldown used to be recorded in a file beside the root, which made it
+    /// per root; holding one instant for the process would make a second root
+    /// inherit the first one's sweep and wait out its interval.
+    #[tokio::test]
+    async fn a_second_tools_root_sweeps_without_waiting() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        let (first_dir, first_cache) = cache_with_payload().await;
+        let (second_dir, second_cache) = cache_with_payload().await;
+        let content_map = BTreeMap::new();
+        seed_entry(first_dir.path(), "expired-first", 0);
+        seed_entry(second_dir.path(), "expired-second", 0);
+
+        reset_automatic_sweep();
+        let guard = first_cache.materialize("first", &content_map).await.expect("materialize");
+        drop(guard);
+        assert!(!first_dir.path().join("expired-first").exists(), "the first root sweeps");
+
+        let guard = second_cache.materialize("second", &content_map).await.expect("materialize");
+        drop(guard);
+        assert!(
+            !second_dir.path().join("expired-second").exists(),
+            "a second root does not inherit the first root's cooldown"
+        );
     }
 
     /// A tools root upgraded in place loses the stamp the older build wrote.
@@ -545,6 +622,7 @@ mod tests {
     /// stamp that will not go from failing the prune it precedes.
     #[tokio::test]
     async fn regression_a_legacy_prune_marker_is_removed() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
         let (tools_dir, cache) = cache_with_payload().await;
         let marker = tools_dir.path().join(LEGACY_PRUNE_MARKER_FILE_NAME);
         std::fs::write(&marker, b"0\n").expect("seed legacy stamp");
@@ -635,6 +713,8 @@ mod tests {
 
         // Create provision cache.
         let cache = ProvisionCache::new(tools_dir.path().to_path_buf(), cas, None);
+
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
 
         // Materialize the tool. This acquires a shared lock on the entry.
         let guard = cache.materialize("test-tool", &content_map).await.unwrap();

@@ -81,10 +81,16 @@ fn do_retain_only(
 
         // A directory that predates the lock rename cannot be locked through
         // the current name, so it would be skipped on every sweep for as long
-        // as it exists. It is not in the active set, so reclaim it.
+        // as it exists. It is not in the active set, so reclaim it — unless the
+        // build that wrote it still holds its lock, which is the one signal that
+        // says its payload may be executing right now.
         match remove_legacy_lock_entry(&path) {
-            Ok(true) => continue,
-            Ok(false) => {}
+            Ok(LegacyLockEntry::Absent) => {}
+            Ok(LegacyLockEntry::Removed) => continue,
+            Ok(LegacyLockEntry::InUse) => {
+                warnings.push(legacy_entry_in_use_warning(&path));
+                continue;
+            }
             Err(source) => {
                 warnings.push(removal_warning(&path, "under the legacy lock name", &source));
                 continue;
@@ -118,13 +124,34 @@ fn removal_warning(path: &Path, what: &str, source: &std::io::Error) -> String {
     format!("could not remove the tool payload directory '{}' ({what}): {source}", path.display())
 }
 
+/// What the sweep found when it looked at a directory for the pre-rename lock
+/// name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyLockEntry {
+    /// The directory carries the current lock name, or no lock name at all:
+    /// it is not this sweep's legacy case.
+    Absent,
+    /// The directory carried only the old lock name, nothing held that lock,
+    /// and the directory is gone.
+    Removed,
+    /// The directory carried only the old lock name and a process other than
+    /// this one holds it, so its payload may be executing right now.
+    InUse,
+}
+
 /// Removes `entry_dir` when it carries the lock name this build no longer
-/// writes, and answers whether it did.
+/// writes, and answers what it found.
 ///
-/// A directory with `.lock` and no `lock` was extracted by an older build.
-/// The rename means nothing can take its lock any more, so the sweep that
-/// reaches it can only skip it or remove it, and skipping leaves it for every
-/// later sweep to skip again.
+/// A directory with `.lock` and no `lock` was extracted by an older build. The
+/// rename means nothing can take its lock through the current name, so the
+/// sweep that reaches it can only skip it or remove it, and skipping leaves it
+/// for every later sweep to skip again.
+///
+/// Skipping is not the same as being unable to check, though: a build that
+/// predates the rename still holds a shared lock on `.lock` for as long as it
+/// uses the payload, and that lock is the one guard on this file that still
+/// works. So the lock is probed before the directory goes, and a held lock keeps
+/// it.
 ///
 /// # Errors
 /// Returns the I/O failure that stopped the removal, for the caller to report.
@@ -132,15 +159,49 @@ fn removal_warning(path: &Path, what: &str, source: &std::io::Error) -> String {
 /// the only thing that will ever remove it, so silence here means it stays for
 /// the life of the store. The caller reports it and carries on with the other
 /// entries, which is why this answers the failure instead of raising it.
-fn remove_legacy_lock_entry(entry_dir: &Path) -> Result<bool, std::io::Error> {
-    if !entry_dir.join(LEGACY_LOCK_FILE_NAME).exists() {
-        return Ok(false);
+fn remove_legacy_lock_entry(entry_dir: &Path) -> Result<LegacyLockEntry, std::io::Error> {
+    let legacy_lock_path = entry_dir.join(LEGACY_LOCK_FILE_NAME);
+    if !legacy_lock_path.exists() || entry_dir.join(LOCK_FILE_NAME).exists() {
+        return Ok(LegacyLockEntry::Absent);
     }
-    if entry_dir.join(LOCK_FILE_NAME).exists() {
-        return Ok(false);
+
+    // The probe takes an exclusive lock, so a shared lock held by an older build
+    // counts as held. The file is closed before the removal: Windows will not
+    // delete a directory that still has an open handle inside it.
+    {
+        match std::fs::OpenOptions::new().read(true).write(true).open(&legacy_lock_path) {
+            Ok(lock_file) => {
+                if lock_file.try_lock().is_err() {
+                    return Ok(LegacyLockEntry::InUse);
+                }
+            }
+            // The file was there when this function checked and is gone now: a
+            // concurrent sweep removed the directory, which is the outcome this
+            // call wanted anyway.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(LegacyLockEntry::Removed);
+            }
+            Err(source) => return Err(source),
+        }
     }
+
     fs::remove_dir_all(entry_dir)?;
-    Ok(true)
+    Ok(LegacyLockEntry::Removed)
+}
+
+/// The warning a sweep reports for a pre-rename entry another process holds.
+///
+/// The failure this names is not an I/O error: the directory is fine and the
+/// sweep simply must not touch it. A reader needs the path to delete by hand
+/// once nothing runs, and needs to know that the reason it survived is a live
+/// user rather than a permission problem.
+fn legacy_entry_in_use_warning(entry_dir: &Path) -> String {
+    format!(
+        "kept the tool payload directory '{}': it still carries the pre-rename lock '{}', which \
+         another process holds; remove it once no mediapm process runs",
+        entry_dir.display(),
+        LEGACY_LOCK_FILE_NAME
+    )
 }
 
 /// Removes provisioning entries that have not been used within `TTL_SECONDS`,
@@ -195,8 +256,12 @@ pub(crate) fn prune_expired_entries(
         // An expired entry from before the lock rename cannot be locked
         // through the current name and would otherwise never be reclaimed.
         match remove_legacy_lock_entry(&path) {
-            Ok(true) => continue,
-            Ok(false) => {}
+            Ok(LegacyLockEntry::Absent) => {}
+            Ok(LegacyLockEntry::Removed) => continue,
+            Ok(LegacyLockEntry::InUse) => {
+                warnings.push(legacy_entry_in_use_warning(&path));
+                continue;
+            }
             Err(source) => {
                 warnings.push(removal_warning(
                     &path,
@@ -287,6 +352,57 @@ mod tests {
 
         assert!(!tools_dir.path().join("expired").exists());
         assert!(tools_dir.path().join("fresh").exists());
+    }
+
+    /// A pre-rename entry whose old lock is still held is kept and reported.
+    ///
+    /// The lock under `.lock` is the one guard that still works on such a
+    /// directory: a build that predates the rename takes it for as long as it
+    /// uses the payload, so deleting the directory on a name test alone deletes
+    /// bytes that build may be executing. Once nothing holds it, the same sweep
+    /// reclaims the directory — the two halves are one test because the point is
+    /// that the check reads the lock, not that a directory is forever exempt.
+    #[tokio::test]
+    async fn regression_a_legacy_lock_directory_in_use_is_kept() {
+        let tools_dir = artifact_dir().expect("tools dir");
+        seed_entry(tools_dir.path(), "legacy-in-use", LEGACY_LOCK_FILE_NAME, 0);
+
+        let legacy_lock_path = tools_dir.path().join("legacy-in-use").join(LEGACY_LOCK_FILE_NAME);
+        // Shared, because that is how a build that predates the rename holds it
+        // while it executes the payload.
+        let held_by_older_build = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&legacy_lock_path)
+            .expect("open the legacy lock file as an older build would");
+        held_by_older_build.try_lock_shared().expect("an older build holds the shared lock");
+
+        let warnings = retain_only_tool_dirs(tools_dir.path().to_path_buf(), HashSet::new())
+            .await
+            .expect("retain");
+
+        assert!(
+            tools_dir.path().join("legacy-in-use").exists(),
+            "a pre-rename payload another process holds is not this sweep's to delete"
+        );
+        assert_eq!(warnings.len(), 1, "the kept directory has to be reported: {warnings:?}");
+        assert!(
+            warnings[0].contains("legacy-in-use"),
+            "the report has to name the directory: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("another process holds"),
+            "the report has to say why it was kept: {warnings:?}"
+        );
+
+        drop(held_by_older_build);
+        retain_only_tool_dirs(tools_dir.path().to_path_buf(), HashSet::new())
+            .await
+            .expect("retain");
+        assert!(
+            !tools_dir.path().join("legacy-in-use").exists(),
+            "once nothing holds the old lock, the sweep reclaims the directory"
+        );
     }
 
     /// The retain set is compared by sanitized name, so an active legacy
@@ -400,6 +516,7 @@ mod tests {
     /// read: without it, a prune during a run removes bytes a step is executing.
     #[tokio::test]
     async fn a_prune_never_removes_a_payload_in_use() {
+        let _serialized = crate::provision::SWEEP_STATE_LOCK.lock().await;
         let tools_dir = mediapm_utils::temp::artifact_dir().expect("tools dir");
         let cas = mediapm_cas::InMemoryCas::new();
         let hash = mediapm_cas::CasApi::put(&cas, bytes::Bytes::from_static(b"payload bytes"))

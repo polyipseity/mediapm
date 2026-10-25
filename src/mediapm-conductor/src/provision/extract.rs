@@ -209,7 +209,7 @@ pub(crate) fn extract_sync(
 
     // Phase 3: recreate the lock file (removed by remove_dir_all above) with
     // its header, then persist metadata atomically.
-    write_lock_header_if_empty(&paths.lock_path)?;
+    write_lock_header(&paths.lock_path)?;
 
     persist_cache_metadata(
         &paths.metadata_path,
@@ -249,36 +249,26 @@ pub(crate) fn extract_sync(
     Ok(ProvisionedTool { payload_dir: paths.payload_dir.clone(), _lock_file: shared_lock })
 }
 
-/// Creates the entry's lock file if it is not there, and writes its header
-/// when the file is empty.
+/// Creates the entry's lock file and writes its header.
 ///
-/// Empty is the only state the header replaces: the file carries no state of
-/// its own — the lock is the advisory lock on it — so text another process or
-/// a person put there is left alone. The write happens under the caller's
-/// exclusive lock, which is why an entry never ends up with two writers here.
-fn write_lock_header_if_empty(lock_path: &Path) -> Result<(), ConductorError> {
+/// The caller reaches this only after `remove_dir_all` of the entry directory,
+/// so the file is new: there is no earlier text here to preserve, and the header
+/// is the whole of what this file ever holds. The exclusive lock the caller holds
+/// is on the inode that removal orphaned, not on this one — this file is created
+/// unlocked and the caller takes its shared lock on it a few lines later — so the
+/// write is safe because the file is new, not because it is locked.
+fn write_lock_header(lock_path: &Path) -> Result<(), ConductorError> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
-        .truncate(false)
+        .truncate(true)
         .open(lock_path)
         .map_err(|source| ConductorError::Io {
             operation: "recreating tool-content cache lock file after extraction".to_string(),
             path: lock_path.to_path_buf(),
             source,
         })?;
-    let len = file
-        .metadata()
-        .map_err(|source| ConductorError::Io {
-            operation: "reading tool-content cache lock file length".to_string(),
-            path: lock_path.to_path_buf(),
-            source,
-        })?
-        .len();
-    if len > 0 {
-        return Ok(());
-    }
     file.write_all(LOCK_FILE_HEADER.as_bytes()).map_err(|source| ConductorError::Io {
         operation: "writing the tool-content cache lock header".to_string(),
         path: lock_path.to_path_buf(),

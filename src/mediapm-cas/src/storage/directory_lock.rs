@@ -84,14 +84,20 @@ impl DirectoryLockGuard {
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(&lock_path)
             .await?;
         // Fail-fast: no blocking .lock() or .lock_owned() — must return immediately on contention.
         file.try_lock().map_err(|_| CasError::LockContention { path: lock_path })?;
 
-        // The open truncates, so this write always leaves the header alone in
-        // the file: one opener's text never survives beside the next opener's.
+        // Only an opener that holds the lock may replace the bytes. Truncating
+        // before the lock is taken empties the file of the process that does
+        // hold it, and this opener then fails, so the holder's `lock` would read
+        // as residue for the rest of its life — the state the header exists to
+        // remove, produced by exactly the shared-store case that creates it. The
+        // cursor is still at the start of the file here, which is where the
+        // header goes.
+        file.set_len(0).await?;
         file.write_all(STORE_LOCK_HEADER.as_bytes()).await?;
         file.flush().await?;
 
@@ -149,6 +155,47 @@ mod tests {
         drop(guard);
         // Must succeed after first guard is dropped.
         let _guard2 = DirectoryLockGuard::lock(dir.path()).await.unwrap();
+    }
+
+    /// An open that fails to take the lock leaves the holder's header in place.
+    ///
+    /// Emptying the file before the lock is taken is invisible while one opener
+    /// at a time touches the store, and it is exactly the second opener of a
+    /// shared store that produces it: it truncates, it fails, and the process
+    /// that does hold the lock never writes the text back, so `lock` reads as
+    /// residue until the store is opened again.
+    #[tokio::test]
+    async fn a_contended_open_leaves_the_header_alone() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("store dir");
+        drop(DirectoryLockGuard::lock(dir.path()).await.expect("the first open writes the header"));
+
+        let lock_path = dir.path().join("lock");
+        // Take the flock the way another process would: without truncating, so
+        // the text the first opener wrote is the text this test reads back.
+        let other_process = tokio::fs::OpenOptions::new()
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .await
+            .expect("open the lock file as a second process would");
+        other_process.try_lock().expect("the second process takes the flock");
+
+        let error = DirectoryLockGuard::lock(dir.path())
+            .await
+            .expect_err("a lock file held by another process must refuse this open");
+        assert!(
+            matches!(&error, CasError::LockContention { .. }),
+            "expected LockContention, got {error:?}"
+        );
+
+        let contents =
+            tokio::fs::read_to_string(&lock_path).await.expect("read the lock file back");
+        assert_eq!(
+            contents, STORE_LOCK_HEADER,
+            "an open that cannot take the lock must not empty the holder's header"
+        );
+
+        drop(other_process);
     }
 
     /// Simulating cross-process contention by pre-locking the flock file:
