@@ -309,9 +309,9 @@ Guidance:
 - Execute external tools with stdin disconnected (`Stdio::null`) so accidental interactive prompts cannot block worker actors indefinitely.
 - Create an isolated temporary cwd only when a step actually needs to execute.
 - The temporary cwd is ad hoc execution scratch space, not a directory tied to tool identity or cached instances.
-- Under `payload_staging = "copy"`, materialize merged `tool_content_maps[tool_name]` into that cwd using relative paths only, with directory-form keys (`/` or `\\` suffix) unpacked as ZIP payloads, including `./` for sandbox-root unpack. Under `in_place` and `hard_link` the cwd holds no tool files: the step reads the provisioned tree instead.
+- Under `payload_staging = "copy"`, materialize merged `tool_content_maps[tool_name]` into that cwd using relative paths only, with directory-form keys (`/` or `\\` suffix) unpacked as ZIP payloads, including `./` for sandbox-root unpack. Under `in_place` the cwd holds no tool files: the step reads the provisioned tree. Under `hard_link` the payload tree is linked into the cwd.
 - Reject `content_map` collisions where separate entries would materialize the same file path; allow merges when paths are distinct.
-- Treat tool-relative paths as relative to what each one names: under `in_place`, `process.command[0]` resolves against `payload_root`, because it is the executable and the document names it payload-relative; every other command part, a `:file(...)`/`:folder(...)` template argument, and `capture.file.path` resolve against the cwd. The cwd stays the sandbox under every strategy, so a tool never writes an output into its own payload directory.
+- Treat tool-relative paths as relative to what each one names: under `in_place`, `process.command[0]` resolves against `payload_root`, because it is the executable and the document names it payload-relative; every other command part, a `:file(...)`/`:folder(...)` template argument, and `capture.file.path` resolve against the cwd. The one exception is an argument value that names a payload entry or a directory above one: under `in_place` `pre_qualify_payload_arguments` rewrites it to `payload_root/...`, including each member of a comma-separated list and either spelling of the separator, so a companion path a tool takes as an argument still resolves. The cwd stays the sandbox under every strategy, so a tool never writes an output into its own payload directory.
 - Reject absolute/traversal paths (`..`, rooted/prefixed paths); do not allow sandbox escape.
 - Keep output capture behavior explicit and per-output.
 - `capture.kind = "file"|"folder"` stays path-template based; `capture.kind = "file_regex"|"folder_regex"` evaluates regex against normalized sandbox-relative paths (`/` separators on all hosts).
@@ -339,7 +339,7 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **Bundled tool content**: inline dependency payload bytes into one managed tool record only for mediapm same-step companion dependencies (e.g. `yt-dlp`'s `ffmpeg`/`deno`). A dependency may carry both roles: inline for the same-step role, keep in its own record for the cross-step role. Inlined same-step bytes land under the reserved `deps/<mediapm_tool_id>/` prefix in the requester's content map and are direct-only/non-transitive (a dep's own `deps/` entries are never re-inlined). For **cross-step** dependencies, keep payload bytes in the dependency tool's own `tool_content_map`; never inline them into the requesting step tool. Never point one tool's runtime lookup at another tool's cache entry directory — each step reads only its own `payload/` tree.
 
-- **TTL**: cache entries expire after 24 hours of non-use. Last-used time is refreshed on every cache hit. `ProvisionCache::prune_expired` is called best-effort at the start of each `ProvisionCache::materialize` call; prune errors are logged and ignored.
+- **TTL**: cache entries expire after 24 hours of non-use. Last-used time is refreshed on every cache hit. A cooldown-gated auto-prune runs at `ProvisionCache::materialize` call time (see *Expiry pruning*); prune errors are logged and ignored.
 
 - **Expiry pruning**: `ProvisionCache::prune_expired` is the explicit public API; a cooldown-gated auto-prune also runs at `materialize` call time. The cooldown is process state, not a file: one sweep per `PRUNE_COOLDOWN_SECONDS` per tools root, claimed before the sweep starts so concurrent calls cannot both sweep, and a root not yet swept sweeps on its first materialize. The stamp an older build wrote at `<tools_dir>/.prune-last-used-unix-seconds` is removed by the first sweep that sees it, best-effort, because nothing in this build reads it.
 
@@ -414,7 +414,7 @@ Cross-crate data flow, shared invariants, and the full module-layer index are do
 - **Output capture**: step outputs are CAS blobs; each entry in `ToolCallInstance::outputs` records the hash and the capture spec that produced it.
 - **GC coordination**: the root set is surviving instance output hashes plus the unified document's external-data policy keys and tool content hashes (see Section G).
 - **Existence checks**: `CasExistenceBitmap` for batch cache probing across step outputs.
-- **Content map materialization**: under `copy`, `tools.<tool>.runtime.content_map` entries are resolved from CAS into step sandbox directories; under `in_place` and `hard_link` the step reads the provisioned tree at `runtime.payload_root` instead, and the content map is provenance rather than a staging instruction.
+- **Content map materialization**: under `copy`, `tools.<tool>.runtime.content_map` entries are resolved from CAS into step sandbox directories; under `in_place` the step reads the provisioned tree at `runtime.payload_root` instead, and the content map is provenance rather than a staging instruction; under `hard_link` the payload is linked into the sandbox, so the step runs from a copy that shares the payload's inodes.
 
 ### Conductor ↔ Builtins
 
@@ -714,9 +714,9 @@ Six scenarios where instance GC interacts with other subsystems:
 
 Three race scenarios in the tool content cache:
 
-1. **Concurrent materialize of same tool ID (cache miss)**: Two workers both miss the cache for the same tool ID simultaneously. The DashMap + `OnceCell` pattern ensures only one caller performs extraction; subsequent callers wait on the `OnceCell`. The exclusive `flock` during extraction prevents filesystem-level races.
+1. **Concurrent materialize of same tool ID (cache miss)**: Two workers both miss the cache for the same tool ID simultaneously. A `DashMap` of `Arc<Notify>` single-flights extraction: only one caller performs it, and subsequent callers wait on the same notification. The exclusive `flock` during extraction prevents filesystem-level races.
 
-2. **Cache eviction during active use (ENOENT/ENOTEMPTY)**: A prune or `retain_only` call removes a cache entry that a worker is actively using (holding a `ToolCacheEntry`). On every platform the sweeps take the entry's lock with a non-blocking `try_lock` and leave a directory whose lock is held alone, so a live entry survives a sweep instead of being deleted underneath its user. The probe closes before the removal, because Windows will not delete a directory with a live handle inside it, so the guard narrows the window rather than closing it.
+2. **Cache eviction during active use (ENOENT/ENOTEMPTY)**: A prune or `retain_only` call removes a cache entry that a worker is actively using (holding a `ToolCacheEntry`). On every platform the sweeps take the entry's lock with a non-blocking `try_lock` and leave a directory whose lock is held alone, so a live entry survives a sweep instead of being deleted underneath its user. The legacy-name probe closes its handle before the removal; the current-name sweeps hold their handle across `remove_dir_all`, so their window is wider. Either way the probe narrows the window; it does not close it.
 
 3. **macOS `flock` self-deadlock**: macOS `flock` implementation may block when the same process tries to acquire a second lock on the same file descriptor. The cache implementation uses separate file descriptors for shared (materialize) and exclusive (extraction) locks, avoiding this issue.
 
