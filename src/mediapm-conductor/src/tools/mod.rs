@@ -10,7 +10,12 @@
 //!   `archive`, `export`) registered in [`ALL_BUILTINS`] and discoverable
 //!   via [`registered_builtin_ids`]. A registration marked
 //!   [`BuiltinRegistration::test_only`] is a test double: it is compiled and
-//!   resolvable by name, and it never appears in a conductor document.
+//!   resolvable by name, and it never appears in a conductor document. The
+//!   compile gate on an entry and that flag answer different questions — the
+//!   gate decides whether a build contains the entry at all, the flag whether a
+//!   build that has it may write or keep it — so a `cfg(test)`-only entry would
+//!   be invisible to integration-test crates while a gate-only design leaks the
+//!   double into production documents.
 
 pub mod helpers;
 pub mod preset;
@@ -113,18 +118,28 @@ pub fn registered_builtin_ids() -> HashSet<String> {
     ALL_BUILTINS.iter().map(|e| e.builtin_id.to_string()).collect()
 }
 
+/// Iterates the builtin registrations a conductor document may carry.
+///
+/// Every site that needs the production set takes it here: the writer that
+/// registers builtins, the pass that applies their runtime defaults, the prune
+/// that keeps their entries, and [`registered_production_builtin_ids`]. Keeping
+/// the predicate here is what holds those sites in step: a copy of it elsewhere
+/// can be left behind when a site is added, and that is how a `test_only` double
+/// reaches a document.
+pub fn production_builtins() -> impl Iterator<Item = &'static BuiltinRegistration> {
+    ALL_BUILTINS.iter().filter(|entry| !entry.test_only)
+}
+
 /// Returns the builtin ids a conductor document may carry, in registry order.
 ///
-/// Conductor-document writers take their builtin list from here rather than
-/// restating it, so a builtin added to [`ALL_BUILTINS`] reaches every writer at
-/// once and a [`BuiltinRegistration::test_only`] double reaches none of them.
+/// Derived from [`production_builtins`], so a builtin added to [`ALL_BUILTINS`]
+/// appears here without a second edit and a [`BuiltinRegistration::test_only`]
+/// double never does. The writer that inserts builtin entries enumerates
+/// [`production_builtins`] directly; this is the flat list for callers that need
+/// ids rather than registrations.
 #[must_use]
 pub fn registered_production_builtin_ids() -> Vec<String> {
-    ALL_BUILTINS
-        .iter()
-        .filter(|entry| !entry.test_only)
-        .map(|entry| entry.builtin_id.to_string())
-        .collect()
+    production_builtins().map(|entry| entry.builtin_id.to_string()).collect()
 }
 
 #[cfg(test)]
@@ -144,10 +159,10 @@ mod tests {
     /// `flaky` double still offers writers only the five real builtins.
     #[test]
     fn production_ids_exclude_test_only_entries() {
-        let production = registered_production_builtin_ids();
+        let production: Vec<&str> = production_builtins().map(|entry| entry.builtin_id).collect();
         for entry in ALL_BUILTINS {
             assert_eq!(
-                production.iter().any(|id| id == entry.builtin_id),
+                production.contains(&entry.builtin_id),
                 !entry.test_only,
                 "{} production membership must follow its test_only flag",
                 entry.builtin_id

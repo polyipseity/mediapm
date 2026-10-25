@@ -156,11 +156,11 @@ fn registered_builtins_carry_no_version_derived_from_id_or_key() {
     register_missing_builtin_tools(&mut generated_doc);
 
     assert!(
-        mediapm_conductor::tools::ALL_BUILTINS.iter().any(|entry| !entry.test_only),
+        mediapm_conductor::tools::production_builtins().next().is_some(),
         "no builtins are registered, so this test would pass over an empty document"
     );
 
-    for builtin in mediapm_conductor::tools::ALL_BUILTINS.iter().filter(|entry| !entry.test_only) {
+    for builtin in mediapm_conductor::tools::production_builtins() {
         let spec = generated_doc
             .tools
             .get(builtin.builtin_id)
@@ -176,11 +176,8 @@ fn registered_builtins_carry_no_version_derived_from_id_or_key() {
     // else. A key of the shape `{name}@{content-hash}` would name a
     // payload, which is exactly the string a derivation would have
     // reached for.
-    let registered: Vec<&str> = mediapm_conductor::tools::ALL_BUILTINS
-        .iter()
-        .filter(|entry| !entry.test_only)
-        .map(|entry| entry.builtin_id)
-        .collect();
+    let registered: Vec<&str> =
+        mediapm_conductor::tools::production_builtins().map(|entry| entry.builtin_id).collect();
     for key in generated_doc.tools.keys() {
         assert!(
             registered.contains(&key.as_str()),
@@ -206,11 +203,8 @@ fn strict_a_generated_document_holds_only_production_builtins() {
     let mut generated_doc = NickelDocument::default();
     register_missing_builtin_tools(&mut generated_doc);
 
-    let expected: BTreeSet<&str> = mediapm_conductor::tools::ALL_BUILTINS
-        .iter()
-        .filter(|entry| !entry.test_only)
-        .map(|entry| entry.builtin_id)
-        .collect();
+    let expected: BTreeSet<&str> =
+        mediapm_conductor::tools::production_builtins().map(|entry| entry.builtin_id).collect();
     let actual: BTreeSet<&str> = generated_doc.tools.keys().map(String::as_str).collect();
 
     assert_eq!(actual, expected, "registration must write exactly the production builtin ids");

@@ -14,9 +14,11 @@ use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 
 /// Returns the builtin tool ids a generated document may carry.
 ///
-/// Derived from the conductor's builtin registry rather than restated here: a
-/// builtin added to the registry reaches this list without a second edit, and a
-/// registration marked `test_only` never does.
+/// Derived from the conductor's production builtin set rather than restated
+/// here: a builtin added to the registry reaches this list without a second
+/// edit, and a registration marked `test_only` never does. The document writer
+/// enumerates that set directly; this is the flat id list for callers that need
+/// only the ids.
 #[must_use]
 pub fn registered_builtin_ids() -> Vec<String> {
     mediapm_conductor::tools::registered_production_builtin_ids()
@@ -88,7 +90,7 @@ mod tests {
 
     /// Ensures `registered_builtin_ids` follows the registry's production
     /// entries: the five real builtins are present and the `flaky` double is
-    /// not, because this list is what a generated document is built from.
+    /// not, because a generated document may carry only production builtins.
     #[test]
     fn registered_builtin_ids_returns_expected_set() {
         let ids = registered_builtin_ids();

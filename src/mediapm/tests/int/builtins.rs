@@ -4,17 +4,14 @@ use mediapm::registered_builtin_ids;
 
 /// The ids mediapm offers are exactly the registry's production ids.
 ///
-/// The list used to be restated here and in `service_standalone`, and the two
-/// disagreed: the registry carried the `flaky` test double and mediapm's copy
-/// did not. Both sides now derive from the registry, and this test fails if
-/// either regains a literal — a restated list drifts the moment the registry
-/// gains an entry.
+/// The list is derived from the registry: a literal here would drift the moment
+/// the registry gains an entry, and the parity assertion turns that drift into a
+/// failure at the next test run instead of a document that silently omits a
+/// builtin.
 #[test]
 fn parity_builtin_id_lists_cannot_diverge() {
     let ids = registered_builtin_ids();
-    let expected: Vec<String> = mediapm_conductor::tools::ALL_BUILTINS
-        .iter()
-        .filter(|entry| !entry.test_only)
+    let expected: Vec<String> = mediapm_conductor::tools::production_builtins()
         .map(|entry| entry.builtin_id.to_string())
         .collect();
 

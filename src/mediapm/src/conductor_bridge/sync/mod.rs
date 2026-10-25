@@ -1557,15 +1557,20 @@ pub(crate) async fn reconcile_desired_tools(
     // entries mediapm did not produce this sync (hand-added manual entries).
     // Retain everything the provisioning pipeline manages — explicit tools
     // AND their companion dependencies (each gets its own entry from
-    // `entries`) plus conductor builtins — so stale versions of managed
-    // tools keep their emptied `content_map` (see the per-entry pruning
-    // above) and companion tools written this sync (or skipped from an
-    // earlier sync) survive. Anything else belongs in the user-owned
+    // `entries`) plus the production conductor builtins — so stale versions of
+    // managed tools keep their emptied `content_map` (see the per-entry pruning
+    // above) and companion tools written this sync (or skipped from an earlier
+    // sync) survive. Anything else belongs in the user-owned
     // `mediapm.conductor.ncl`, never here.
+    //
+    // The builtin set is the registry's production entries, the same set the
+    // writer registers: a registration marked `test_only` is a test double, so
+    // an entry an earlier build left behind in a generated document is pruned
+    // like any other entry this sync did not produce.
     let provisioned_names: HashSet<&str> =
         entries.iter().map(|entry| entry.tool_id.as_str()).collect();
     let builtin_names: HashSet<&str> =
-        mediapm_conductor::tools::ALL_BUILTINS.iter().map(|builtin| builtin.name).collect();
+        mediapm_conductor::tools::production_builtins().map(|builtin| builtin.name).collect();
 
     // [prn] Bar: count prune candidates (document rewrite + filesystem prune).
     // Total = number of entries the `retain` closure will remove, so the bar
