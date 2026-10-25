@@ -12,16 +12,14 @@ use crate::config::{MediaPmDocument, MediaRuntimeStorage, load_mediapm_document}
 use crate::error::MediaPmError;
 use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 
-/// Returns the set of builtin tool ids known to the conductor bridge.
+/// Returns the builtin tool ids a generated document may carry.
+///
+/// Derived from the conductor's builtin registry rather than restated here: a
+/// builtin added to the registry reaches this list without a second edit, and a
+/// registration marked `test_only` never does.
 #[must_use]
 pub fn registered_builtin_ids() -> Vec<String> {
-    vec![
-        "echo@v1".to_string(),
-        "fs@v1".to_string(),
-        "import@v1".to_string(),
-        "export@v1".to_string(),
-        "archive@v1".to_string(),
-    ]
+    mediapm_conductor::tools::registered_production_builtin_ids()
 }
 
 /// Ensures the mediapm document exists, loading it from disk or creating a
@@ -88,16 +86,19 @@ mod tests {
     use super::*;
     use crate::config::RuntimePathsConfig;
 
-    /// Ensures `registered_builtin_ids` returns expected builtins.
+    /// Ensures `registered_builtin_ids` follows the registry's production
+    /// entries: the five real builtins are present and the `flaky` double is
+    /// not, because this list is what a generated document is built from.
     #[test]
     fn registered_builtin_ids_returns_expected_set() {
         let ids = registered_builtin_ids();
-        assert!(ids.contains(&"echo@v1".to_string()));
-        assert!(ids.contains(&"fs@v1".to_string()));
-        assert!(ids.contains(&"import@v1".to_string()));
-        assert!(ids.contains(&"export@v1".to_string()));
-        assert!(ids.contains(&"archive@v1".to_string()));
-        assert_eq!(ids.len(), 5);
+        for expected in ["echo@v1", "fs@v1", "import@v1", "export@v1", "archive@v1"] {
+            assert!(ids.iter().any(|id| id == expected), "missing {expected}");
+        }
+        assert!(
+            !ids.iter().any(|id| id == "flaky@v1"),
+            "the flaky test double must never be offered to a document writer"
+        );
     }
 
     /// Ensures `resolve_effective_paths_for_root` works with overrides.

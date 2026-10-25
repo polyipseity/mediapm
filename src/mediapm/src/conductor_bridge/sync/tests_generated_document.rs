@@ -2,7 +2,7 @@
 
 use crate::output::ProgressScreen;
 use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 
@@ -146,19 +146,21 @@ fn fetched_none_registers_a_spec_without_a_version() {
 /// wrote. Either derivation lands here as a `Some`, and a content-hash
 /// suffix would show up as an `@` in the key.
 ///
-/// The loop is over `ALL_BUILTINS` rather than one named builtin, so a
-/// builtin added later is covered without editing this test.
+/// The loop is over the production entries of `ALL_BUILTINS` rather than one
+/// named builtin, so a builtin added later is covered without editing this
+/// test, and the `flaky` test double is excluded because registration excludes
+/// it.
 #[test]
 fn registered_builtins_carry_no_version_derived_from_id_or_key() {
     let mut generated_doc = NickelDocument::default();
     register_missing_builtin_tools(&mut generated_doc);
 
     assert!(
-        !mediapm_conductor::tools::ALL_BUILTINS.is_empty(),
+        mediapm_conductor::tools::ALL_BUILTINS.iter().any(|entry| !entry.test_only),
         "no builtins are registered, so this test would pass over an empty document"
     );
 
-    for builtin in mediapm_conductor::tools::ALL_BUILTINS {
+    for builtin in mediapm_conductor::tools::ALL_BUILTINS.iter().filter(|entry| !entry.test_only) {
         let spec = generated_doc
             .tools
             .get(builtin.builtin_id)
@@ -174,8 +176,11 @@ fn registered_builtins_carry_no_version_derived_from_id_or_key() {
     // else. A key of the shape `{name}@{content-hash}` would name a
     // payload, which is exactly the string a derivation would have
     // reached for.
-    let registered: Vec<&str> =
-        mediapm_conductor::tools::ALL_BUILTINS.iter().map(|b| b.builtin_id).collect();
+    let registered: Vec<&str> = mediapm_conductor::tools::ALL_BUILTINS
+        .iter()
+        .filter(|entry| !entry.test_only)
+        .map(|entry| entry.builtin_id)
+        .collect();
     for key in generated_doc.tools.keys() {
         assert!(
             registered.contains(&key.as_str()),
@@ -187,4 +192,49 @@ fn registered_builtins_carry_no_version_derived_from_id_or_key() {
             "{key} is registered under a key that is not its builtin id"
         );
     }
+}
+
+/// A generated document carries exactly the production builtins.
+///
+/// The registry also holds the `flaky` test double, and it is compiled into
+/// every `mediapm` build because the conductor's `tool-presets` feature turns on
+/// `progress`, which admits the entry. Registration is what decides whether it
+/// reaches a document. Naming the whole key set rather than only the double is
+/// deliberate: a second test-only entry cannot slip in beside it.
+#[test]
+fn strict_a_generated_document_holds_only_production_builtins() {
+    let mut generated_doc = NickelDocument::default();
+    register_missing_builtin_tools(&mut generated_doc);
+
+    let expected: BTreeSet<&str> = mediapm_conductor::tools::ALL_BUILTINS
+        .iter()
+        .filter(|entry| !entry.test_only)
+        .map(|entry| entry.builtin_id)
+        .collect();
+    let actual: BTreeSet<&str> = generated_doc.tools.keys().map(String::as_str).collect();
+
+    assert_eq!(actual, expected, "registration must write exactly the production builtin ids");
+    assert!(!actual.contains("flaky@v1"), "a test double must not reach a generated document");
+}
+
+/// The test double stays in the registry while staying out of documents.
+///
+/// Fails if someone drops the `test_only` flag (the entry then registers), and
+/// fails again if someone deletes the entry, because workflow tests would lose
+/// the only builtin that fails on demand.
+#[test]
+fn regression_flaky_builtin_is_never_registered() {
+    let flaky = mediapm_conductor::tools::ALL_BUILTINS
+        .iter()
+        .find(|entry| entry.builtin_id == "flaky@v1")
+        .expect("the flaky test double is part of the registry");
+    assert!(flaky.test_only, "flaky fails on demand for tests, so it must be marked test_only");
+
+    let mut generated_doc = NickelDocument::default();
+    register_missing_builtin_tools(&mut generated_doc);
+    apply_builtin_runtime_defaults(&mut generated_doc);
+    assert!(
+        !generated_doc.tools.contains_key("flaky@v1"),
+        "a test double in a user document ships a tool that fails on purpose"
+    );
 }

@@ -137,6 +137,8 @@ Conductor builtins bootstrap and provide cross-platform consistency. The officia
 - `export` (`kind=file|folder` filesystem materialization)
 - `archive` (pure ZIP-only pack/unpack/repack transforms)
 
+The registry in `src/mediapm-conductor/src/tools/mod.rs` is the single source for that set. A registration marked `test_only` names a test double — `flaky`, which fails a set number of its first invocations — and never appears in a conductor document: `register_missing_builtin_tools` filters it out, and `registered_production_builtin_ids()` is the list a document writer takes. The entry's compile gate and its `test_only` flag answer different questions: the gate decides whether a given build contains the entry at all (an integration-test crate compiles the library without `cfg(test)`, so a `cfg(test)`-only entry would be invisible to it), while the flag decides whether a build that has the entry may write it into a document.
+
 All other domain logic remains external tooling or mediapm workflow behavior.
 
 For portable string-manipulation tasks in workflows, prefer provisioning `sd` via the `tool-presets` feature (`mediapm_conductor::tools::preset::sd::apply()` / `provider::sd::resolve_tool_fetch()`) instead of platform-specific shell tools (`sed`, PowerShell regex one-offs, etc.).

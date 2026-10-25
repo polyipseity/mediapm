@@ -171,8 +171,11 @@ pub(crate) fn save_conductor_generated_document(
 }
 
 /// Registers missing builtin tool definitions into the generated document.
+///
+/// Entries marked `test_only` on their registration are skipped, so a test
+/// double the crate exposes for workflow tests cannot reach a user's document.
 pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
-    for builtin in tools::ALL_BUILTINS {
+    for builtin in tools::ALL_BUILTINS.iter().filter(|builtin| !builtin.test_only) {
         if !document.tools.contains_key(builtin.builtin_id) {
             document.tools.insert(
                 builtin.builtin_id.to_string(),
@@ -194,9 +197,12 @@ pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
 ///
 /// Applies default runtime configuration (impure flag) for each builtin
 /// whose [`ToolSpec`] already exists in the document but lacks runtime
-/// overrides.
+/// overrides. A registration marked `test_only` is skipped, so no pass in this
+/// module touches a test double.
 pub(crate) fn apply_builtin_runtime_defaults(document: &mut NickelDocument) {
-    for builtin in mediapm_conductor::tools::ALL_BUILTINS {
+    for builtin in
+        mediapm_conductor::tools::ALL_BUILTINS.iter().filter(|builtin| !builtin.test_only)
+    {
         if let Some(spec) = document.tools.get_mut(builtin.builtin_id) {
             // Set impure flag from builtin registration data.
             if builtin.is_impure && !spec.runtime.impure {
