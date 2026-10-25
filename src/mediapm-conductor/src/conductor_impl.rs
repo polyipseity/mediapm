@@ -562,9 +562,11 @@ where
 
     /// Exports configuration schemas to a directory.
     ///
-    /// Reads the embedded Nickel schema contract files (`mod.ncl`, `v1.ncl`,
-    /// `v2.ncl`) from the `versions` module and writes them to the output
-    /// directory, creating it if necessary.
+    /// Writes the embedded Nickel contract sources — the registry `mod.ncl` and
+    /// every version file it imports — into `output`, creating it if necessary.
+    ///
+    /// A reader of the directory therefore sees exactly the sources this build
+    /// evaluates a document against, and the directory evaluates on its own.
     ///
     /// # Errors
     ///
@@ -577,12 +579,10 @@ where
             source,
         })?;
 
-        let schemas: &[(&str, &str)] = &[
-            ("mod.ncl", versions::MOD_NCL_SOURCE),
-            ("v1.ncl", versions::V1_NCL_SOURCE),
-            ("v2.ncl", versions::V2_NCL_SOURCE),
-        ];
-        for (filename, source) in schemas {
+        // The registry imports its version files by name, so the export has to
+        // carry every one of them: a directory holding `mod.ncl` without a file
+        // it imports cannot be evaluated, which is the only reason to write it.
+        for (filename, source) in versions::contract_sources() {
             let dest = output.join(filename);
             std::fs::write(&dest, source).map_err(|source| ConductorError::Io {
                 operation: "writing schema file".to_string(),

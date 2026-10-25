@@ -291,3 +291,38 @@ pub(crate) fn decode_document_envelope(
 pub fn validate_v1_document(source: &str) -> Result<serde_json::Value, ConductorError> {
     migrate_document_source_to_version(source, 1, "configuration document")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every file the registry imports is one the export can publish.
+    ///
+    /// `mod.ncl` imports its version modules by name, so an export missing one
+    /// of them cannot be evaluated — the only reason to write a contract out.
+    /// The check reads the registry source, so a version added to the module
+    /// without a matching entry here fails rather than exporting a registry that
+    /// does not run.
+    #[test]
+    fn strict_the_registry_imports_only_files_the_export_carries() {
+        let published: std::collections::BTreeSet<&str> =
+            contract_sources().iter().map(|(name, _)| *name).collect();
+        let mut imports = 0;
+        for segment in MOD_NCL_SOURCE.split("import \"").skip(1) {
+            let Some(name) = segment.split('"').next() else {
+                continue;
+            };
+            imports += 1;
+            assert!(
+                published.contains(name),
+                "mod.ncl imports '{name}', which contract_sources() does not publish"
+            );
+        }
+        assert!(imports > 0, "mod.ncl must import at least one version module");
+        assert_eq!(
+            published.len(),
+            imports + 1,
+            "the export carries the registry and its imports, and nothing else: {published:?}"
+        );
+    }
+}
