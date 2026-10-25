@@ -3,7 +3,7 @@
 use crate::config::ToolRequirement;
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
-use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
 use std::collections::BTreeMap;
 
 use super::*;
@@ -21,7 +21,11 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
     let tool_spec = ToolSpec {
         name: "media-tagger".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
@@ -103,7 +107,11 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
     let tool_spec = ToolSpec {
         name: "yt-dlp".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
@@ -194,7 +202,11 @@ async fn regression_skip_path_registers_managed_tool() {
     let tool_spec = ToolSpec {
         name: "media-tagger".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut tools = BTreeMap::new();

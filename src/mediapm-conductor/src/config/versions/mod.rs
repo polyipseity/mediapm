@@ -38,8 +38,10 @@ use super::nickel_io::{evaluate_document_source, migrate_document_source_to_vers
 
 /// Source of the v1 Nickel contract (needed for backward migration validation).
 pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
-/// Source of the v2 Nickel contract.
+/// Source of the v2 Nickel contract (needed for migration down from v3).
 pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
+/// Source of the v3 Nickel contract.
+pub(crate) const V3_NCL_SOURCE: &str = include_str!("v3.ncl");
 
 /// Fixed embedded migration helper module.
 pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
@@ -52,8 +54,9 @@ pub(super) fn resolve_version_contract(
     match requested_version {
         1 => Ok("v1.ncl"),
         2 => Ok("v2.ncl"),
+        3 => Ok("v3.ncl"),
         _ => Err(ConductorError::Workflow(format!(
-            "unsupported {document_kind} schema version {requested_version}; expected 1 or {}",
+            "unsupported {document_kind} schema version {requested_version}; expected one of 1, 2, {}",
             v_latest::NICKEL_VERSION_LATEST
         ))),
     }
@@ -86,6 +89,7 @@ pub(crate) fn from_boundary(source: &str) -> Result<crate::config::NickelDocumen
         evaluate_document_source(source, "configuration document")?;
     let doc: crate::config::NickelDocument = envelope.into();
     doc.validate_external_data_invariant()?;
+    doc.validate_payload_staging_invariant()?;
     Ok(doc)
 }
 
@@ -166,8 +170,14 @@ pub(crate) fn restore_readable_fields(
 
 /// Encodes one configuration document to Nickel source bytes.
 ///
-/// The document is first validated (`content_map` ⊆ `external_data` invariant),
-/// converted to a latest-schema envelope, then rendered as Nickel source.
+/// The document is first validated (the `content_map` ⊆ `external_data`
+/// invariant and the payload-staging invariant), converted to a latest-schema
+/// envelope, then rendered as Nickel source.
+///
+/// Both invariants are enforced here as well as at load, because a build that
+/// writes a document it cannot read is worse than one that refuses to write it:
+/// the generated-document loader discards an unreadable file and regenerates,
+/// so the only trace of the mismatch would be a warning and a full re-provision.
 ///
 /// # Errors
 ///
@@ -179,6 +189,7 @@ pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8
     // save), preventing silent production of an invalid document that would
     // fail on the next decode.
     document.validate_external_data_invariant()?;
+    document.validate_payload_staging_invariant()?;
     let envelope = into_boundary(document);
     let bytes =
         mediapm_utils::nickel::render_document_as_nickel(&envelope, "configuration document")

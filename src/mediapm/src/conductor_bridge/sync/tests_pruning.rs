@@ -3,7 +3,7 @@
 use crate::config::ToolRequirement;
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
-use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
 use std::collections::BTreeMap;
 
 use super::*;
@@ -31,7 +31,11 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
     let tool_spec = ToolSpec {
         name: "yt-dlp".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
@@ -104,7 +108,11 @@ async fn reconcile_prunes_old_tool_version_clears_content_map() {
     let tool_spec = ToolSpec {
         name: "media-tagger".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
@@ -239,7 +247,11 @@ async fn reconcile_counts_a_name_matched_seed_as_an_update_not_an_addition() {
             ToolSpec {
                 name: "media-tagger".to_string(),
                 kind: ToolKindSpec::default(),
-                runtime: ToolRuntime { content_map: stale_content_map, ..Default::default() },
+                runtime: ToolRuntime {
+                    content_map: stale_content_map,
+                    payload_staging: PayloadStaging::Copy,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )]),
@@ -297,7 +309,11 @@ async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
             ToolSpec {
                 name: "media-tagger".to_string(),
                 kind: ToolKindSpec::default(),
-                runtime: ToolRuntime { content_map: stale_content_map, ..Default::default() },
+                runtime: ToolRuntime {
+                    content_map: stale_content_map,
+                    payload_staging: PayloadStaging::Copy,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )]),
@@ -392,7 +408,11 @@ async fn reconcile_drops_manual_entries_from_generated_doc() {
         version: None,
         name: "user_script".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut tools = BTreeMap::new();

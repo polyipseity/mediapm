@@ -265,6 +265,41 @@ impl OutputCaptureSpec {
     }
 }
 
+/// How a step obtains the payload of the tool it executes.
+///
+/// The payload itself is named by [`ToolRuntime::content_map`] and, once the
+/// document records it, by [`ToolRuntime::payload_root`]. This enum decides
+/// what a step does with that payload: run the command under the provisioned
+/// directory, link that directory into the step sandbox, or write a copy of the
+/// content map into the sandbox.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PayloadStaging {
+    /// Run the command under the provisioned payload directory, so nothing is
+    /// written into the step sandbox for the tool. Requires a payload root.
+    #[default]
+    InPlace,
+    /// Link the provisioned payload tree into the step sandbox, so the files
+    /// share the provisioned inodes. Requires a payload root.
+    HardLink,
+    /// Write a copy of the content map into the step sandbox, unpacking
+    /// archives as the content map declares. Needs no payload root.
+    Copy,
+}
+
+impl PayloadStaging {
+    /// Returns the strategy's persisted name, which is the name the Nickel
+    /// contract uses.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InPlace => "in_place",
+            Self::HardLink => "hard_link",
+            Self::Copy => "copy",
+        }
+    }
+}
+
 /// Runtime configuration for a tool (replaces the old separate `tool_configs`
 /// map in the V1 schema).
 ///
@@ -305,6 +340,21 @@ pub struct ToolRuntime {
     /// Maximum retry attempts for this tool after the first failed attempt.
     #[serde(default)]
     pub max_retries: usize,
+    /// Absolute path of the directory holding this tool's provisioned payload
+    /// tree.
+    ///
+    /// Empty means the document names none, which is only valid for a staging
+    /// strategy that does not read it. `mediapm sync` writes it once the
+    /// payload is materialized.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub payload_root: String,
+    /// How a step obtains the payload it executes from.
+    ///
+    /// The default is [`PayloadStaging::InPlace`], which needs a non-empty
+    /// [`Self::payload_root`]; a document that carries a content map and no
+    /// root fails validation at load rather than silently copying.
+    #[serde(default)]
+    pub payload_staging: PayloadStaging,
 }
 
 /// Platform-grouped inherited environment-variable names (S-D3).

@@ -8,7 +8,8 @@
 //! input that was silently accepted/dropped before now errors.
 
 use mediapm_conductor::NickelDocument;
-use mediapm_conductor::config::versions::{decode_document, validate_v1_document};
+use mediapm_conductor::PayloadStaging;
+use mediapm_conductor::config::versions::{decode_document, encode_document, validate_v1_document};
 use mediapm_conductor::config::{
     ConductorRuntimeConfig, OutputCaptureSpec, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowSpec,
     WorkflowStepSpec,
@@ -211,17 +212,21 @@ fn parity_v1_to_v2_migration_output_passes_tightened_envelope() {
     );
 }
 
-/// S-A7: `mod.ncl` exports unversioned registry aliases.
+/// S-A7: `mod.ncl` exports unversioned registry aliases for the latest schema.
 #[test]
 fn parity_mod_ncl_exports_unversioned_aliases() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(
-        mod_source.contains("validate_document = v2_migration.validate_document_v2"),
+        mod_source.contains("validate_document = v3_migration.validate_document_v3"),
         "mod.ncl must re-export validate_document (unversioned alias)"
     );
     assert!(
-        mod_source.contains("envelope_contract = v2_migration.envelope_contract_v2"),
+        mod_source.contains("envelope_contract = v3_migration.envelope_contract_v3"),
         "mod.ncl must re-export envelope_contract (unversioned alias)"
+    );
+    assert!(
+        mod_source.contains("supported_versions_val = [1, 2, 3]"),
+        "mod.ncl must name every version the build carries a contract for"
     );
 }
 
@@ -234,6 +239,189 @@ fn regression_v2_unknown_field_no_longer_silently_dropped() {
         msg.contains("bogus_field"),
         "the unknown field must surface in the error, not be dropped: {msg}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// v3 surface — the payload staging decision
+// ---------------------------------------------------------------------------
+
+/// A document naming a staging strategy that is not one of the three.
+const UNKNOWN_STAGING_DOC: &str = r#"{
+    version = 3,
+    tools = {
+        "t" = {
+            kind = "executable",
+            name = "t",
+            command = ["true"],
+            runtime = { payload_staging = "symlink" },
+        },
+    },
+}"#;
+
+/// A document that stages a payload in place and names no payload root.
+const IN_PLACE_WITHOUT_ROOT_DOC: &str = r#"{
+    version = 3,
+    tools = {
+        "t" = {
+            kind = "executable",
+            name = "t",
+            command = ["true"],
+            runtime = {
+                content_map = { "tool" = "inline description" },
+                payload_staging = "in_place",
+            },
+        },
+    },
+}"#;
+
+/// The same tool hard-linked, which also needs the root.
+const HARD_LINK_WITHOUT_ROOT_DOC: &str = r#"{
+    version = 3,
+    tools = {
+        "t" = {
+            kind = "executable",
+            name = "t",
+            command = ["true"],
+            runtime = {
+                content_map = { "tool" = "inline description" },
+                payload_staging = "hard_link",
+            },
+        },
+    },
+}"#;
+
+/// The same tool copied, which needs no root.
+const COPY_WITHOUT_ROOT_DOC: &str = r#"{
+    version = 3,
+    tools = {
+        "t" = {
+            kind = "executable",
+            name = "t",
+            command = ["true"],
+            runtime = {
+                content_map = { "tool" = "inline description" },
+                payload_staging = "copy",
+            },
+        },
+    },
+}"#;
+
+/// A v2 document whose tool carries a payload.
+const V2_DOC_WITH_PAYLOAD: &str = r#"{
+    version = 2,
+    tools = {
+        "t" = {
+            kind = "executable",
+            name = "t",
+            command = ["true"],
+            runtime = { content_map = { "tool" = "inline description" } },
+        },
+    },
+}"#;
+
+/// S3: the staging strategy is a closed set, so an unknown name is rejected by
+/// the contract instead of reaching the step as an unrecognized string.
+#[test]
+fn strict_v3_rejects_an_unknown_staging_strategy() {
+    let msg = v2_decode_error(UNKNOWN_STAGING_DOC);
+    assert!(
+        msg.contains("PayloadStagingV3") && msg.contains("payload_staging"),
+        "the Nickel contract must reject the strategy and name the field: {msg}"
+    );
+}
+
+/// The cross-field rule: a strategy that reads the payload root needs one, and
+/// the failure names the tool rather than downgrading to `copy`.
+#[test]
+fn strict_a_payload_carrying_tool_needs_a_root_for_a_staging_strategy_that_uses_one() {
+    for (document, strategy) in
+        [(IN_PLACE_WITHOUT_ROOT_DOC, "in_place"), (HARD_LINK_WITHOUT_ROOT_DOC, "hard_link")]
+    {
+        let msg = v2_decode_error(document);
+        assert!(
+            msg.contains("payload_root") && msg.contains(strategy),
+            "the rejection must name the root and the strategy ('{strategy}'): {msg}"
+        );
+        assert!(msg.contains("'t'"), "the rejection must name the tool that needs the root: {msg}");
+    }
+}
+
+/// The other half of the rule: `copy` needs no root, so the same document
+/// loads and keeps the strategy it named.
+#[test]
+fn regression_a_copy_staged_tool_needs_no_payload_root() {
+    let doc = decode_document(COPY_WITHOUT_ROOT_DOC.as_bytes())
+        .expect("a copy-staged tool needs no payload root");
+    let runtime = &doc.tools["t"].runtime;
+    assert_eq!(runtime.payload_staging, PayloadStaging::Copy);
+    assert!(runtime.payload_root.is_empty(), "no root was named");
+}
+
+/// Migration ruling: a v2 document keeps the behaviour it had, which is a copy.
+#[test]
+fn regression_a_v2_document_migrates_to_copy() {
+    let doc = decode_document(V2_DOC_WITH_PAYLOAD.as_bytes())
+        .expect("a v2 document with a payload must migrate");
+    let runtime = &doc.tools["t"].runtime;
+    assert_eq!(
+        runtime.payload_staging,
+        PayloadStaging::Copy,
+        "a v2 document copies its payload, so the migration records that strategy"
+    );
+    assert!(runtime.payload_root.is_empty(), "a v2 document names no payload root");
+}
+
+/// The v3 round trip preserves the staging decision and the root it reads.
+#[test]
+fn regression_a_v3_document_round_trips_byte_for_byte() {
+    let source = r#"{
+        version = 3,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = {
+                    payload_root = "/tmp/payloads/t",
+                    payload_staging = "in_place",
+                },
+            },
+        },
+    }"#;
+    let doc = decode_document(source.as_bytes()).expect("in-place document must decode");
+    let runtime = &doc.tools["t"].runtime;
+    assert_eq!(runtime.payload_staging, PayloadStaging::InPlace);
+    assert_eq!(runtime.payload_root, "/tmp/payloads/t");
+
+    let first = encode_document(doc).expect("encode");
+    let second = decode_document(&first).expect("decode the encoded document");
+    let third = encode_document(second).expect("re-encode");
+    assert_eq!(first, third, "encode → decode → encode must be byte-stable");
+}
+
+/// The Nickel names and the serde names are the same three strings, so a
+/// document written by one side is read by the other.
+#[test]
+fn parity_v3_contract_and_rust_types_agree() {
+    let contract = include_str!("../../src/config/versions/v3.ncl");
+    for staging in [PayloadStaging::InPlace, PayloadStaging::HardLink, PayloadStaging::Copy] {
+        let name = staging.as_str();
+        assert!(
+            contract.contains(&format!("value == \"{name}\"")),
+            "v3.ncl must accept the '{name}' strategy"
+        );
+        let json = serde_json::to_value(staging).expect("strategy serializes");
+        assert_eq!(json, serde_json::Value::String(name.to_string()));
+    }
+}
+
+/// An absent strategy means `in_place`, which is what a document with a root
+/// gets without stating one.
+#[test]
+fn parity_payload_staging_defaults_to_in_place() {
+    assert_eq!(PayloadStaging::default(), PayloadStaging::InPlace);
+    assert_eq!(ToolRuntime::default().payload_staging, PayloadStaging::InPlace);
+    assert!(ToolRuntime::default().payload_root.is_empty());
 }
 
 // ---------------------------------------------------------------------------

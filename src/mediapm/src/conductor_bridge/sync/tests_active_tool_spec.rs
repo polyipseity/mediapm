@@ -3,7 +3,7 @@
 use crate::config::ToolRequirement;
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
-use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
 use std::collections::BTreeMap;
 
 use super::*;
@@ -29,7 +29,11 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
     let active_spec = ToolSpec {
         name: "yt-dlp".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
@@ -116,7 +120,11 @@ fn find_active_tool_spec_prefers_non_empty_content_map() {
             version: None,
             name: "yt-dlp".to_string(),
             kind: ToolKindSpec::default(),
-            runtime: ToolRuntime { content_map, ..Default::default() },
+            runtime: ToolRuntime {
+                content_map,
+                payload_staging: PayloadStaging::Copy,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
@@ -172,7 +180,11 @@ fn find_active_tool_spec_none_when_name_missing() {
             version: None,
             name: "ffmpeg".to_string(),
             kind: ToolKindSpec::default(),
-            runtime: ToolRuntime { content_map, ..Default::default() },
+            runtime: ToolRuntime {
+                content_map,
+                payload_staging: PayloadStaging::Copy,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
@@ -192,7 +204,11 @@ fn find_active_tool_spec_skips_other_names() {
         ToolSpec {
             name: "ffmpeg".to_string(),
             kind: ToolKindSpec::default(),
-            runtime: ToolRuntime { content_map, ..Default::default() },
+            runtime: ToolRuntime {
+                content_map,
+                payload_staging: PayloadStaging::Copy,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );

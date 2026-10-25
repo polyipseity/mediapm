@@ -325,6 +325,7 @@ impl MergeState {
         // for all merge-relevant fields (save_mode and retry_impure).
         let doc: NickelDocument = self.merged.into();
         doc.validate_external_data_invariant()?;
+        doc.validate_payload_staging_invariant()?;
         Ok(doc)
     }
 }

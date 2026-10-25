@@ -435,7 +435,7 @@ fn parity_conductor_tool_version_is_optional_and_non_empty_in_nickel() {
 /// would fail the contract on the next read, so the encoder cannot emit either.
 /// `runtime` is serialized unconditionally and sorts after `version`, so the
 /// first `version` key in the emitted source is the tool's and the envelope's own
-/// `version = 2` comes last.
+/// `version = 3` comes last.
 #[test]
 fn parity_undeclared_tool_version_serializes_away() {
     let encoded = encode_to_string(document_with_declared_version("probe_tool", None));
@@ -447,7 +447,7 @@ fn parity_undeclared_tool_version_serializes_away() {
          version, got: {encoded}"
     );
     assert!(
-        encoded.contains("version = 2"),
+        encoded.contains("version = 3"),
         "the one version entry must be the envelope's schema marker, got: {encoded}"
     );
 
@@ -462,7 +462,7 @@ fn parity_undeclared_tool_version_serializes_away() {
 /// The contract rejects the two spellings of "no version" that Rust cannot carry.
 ///
 /// `| optional` in Nickel means a field may be omitted, not that it may hold
-/// `null`, and `NonEmptyStringV2` rejects `""`. This is the asymmetry the
+/// `null`, and `NonEmptyStringV3` rejects `""` and any non-string. This is the asymmetry the
 /// encoder has to respect: `None` is expressible as an omitted field alone, so a
 /// Rust `None` has exactly one valid encoding.
 #[test]

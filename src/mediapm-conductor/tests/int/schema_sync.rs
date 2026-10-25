@@ -110,6 +110,56 @@ fn v2_nickel_schema_structure() {
     assert!(schema.contains("let ToolSpecV2 = "), "v2.ncl must define ToolSpecV2 contract");
 }
 
+/// Validates that the V3 Nickel schema (`v3.ncl`) carries the payload staging
+/// decision with the same field names and the same closed set of strategy names
+/// the Rust types use.
+#[test]
+fn v3_nickel_schema_structure() {
+    let schema = include_str!("../../src/config/versions/v3.ncl");
+
+    // --- version marker is required, and it is the one v3 names (S-A2) ---
+    assert!(
+        schema.contains("version | VersionThreeV3,"),
+        "v3.ncl must make version required and mark it as 3"
+    );
+    assert!(schema.contains("fun value => value == 3"), "v3.ncl's version predicate must name 3");
+
+    // --- envelope MUST be closed (S-A1): no `..` open-record marker ---
+    assert!(
+        !schema.lines().any(|line| line.trim() == ".."),
+        "v3.ncl NickelDocumentV3 must be a closed record"
+    );
+
+    // --- the two staging fields exist on the tool runtime, both optional ---
+    assert!(
+        schema.contains("payload_root | String | optional"),
+        "v3.ncl ToolRuntimeV3.payload_root must be an optional string"
+    );
+    assert!(
+        schema.contains("payload_staging | PayloadStagingV3 | optional"),
+        "v3.ncl ToolRuntimeV3.payload_staging must use the closed PayloadStagingV3 contract"
+    );
+
+    // --- the strategy set is closed to the three names the Rust enum uses ---
+    for name in ["in_place", "hard_link", "copy"] {
+        assert!(
+            schema.contains(&format!("fun value => value == \"{name}\"")),
+            "v3.ncl PayloadStagingV3 must accept '{name}'"
+        );
+    }
+
+    // --- the registry exports the v3 surface and both migration hops ---
+    assert!(schema.contains("validate_document_v3"), "v3.ncl must export validate_document_v3");
+    assert!(schema.contains("envelope_contract_v3"), "v3.ncl must export envelope_contract_v3");
+    assert!(schema.contains("migrate_v2_to_v3"), "v3.ncl must own the v2 → v3 migration");
+
+    let v2 = include_str!("../../src/config/versions/v2.ncl");
+    assert!(
+        v2.contains("migrate_v3_to_v2"),
+        "v2.ncl must own the v3 → v2 migration, which drops the staging decision"
+    );
+}
+
 /// Validates that the V1 legacy Nickel schema (`v1.ncl`) contains the
 /// tightened legacy-surface contracts (S-B1..S-B5), keeps the documented
 /// `state_pointer` exception (S-B6), and preserves the canonical envelope

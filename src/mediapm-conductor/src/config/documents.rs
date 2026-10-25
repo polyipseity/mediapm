@@ -318,6 +318,50 @@ impl NickelDocument {
         }
     }
 
+    /// Validates that every tool whose payload staging reads a payload root
+    /// names one.
+    ///
+    /// A tool with a non-empty `content_map` and an empty `payload_root` cannot
+    /// be staged `in_place` or `hard_link`, because both strategies read that
+    /// directory. The check is on the document rather than on the step so the
+    /// failure names the tool at load, and it never downgrades the strategy: a
+    /// document that names neither a root nor `copy` is a document that never
+    /// decided how its payload reaches the step.
+    ///
+    /// `copy` needs no root, and a tool with no content map stages nothing, so
+    /// both load with an empty root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Workflow`] listing every tool whose strategy
+    /// needs the root it does not name.
+    pub(crate) fn validate_payload_staging_invariant(&self) -> Result<(), ConductorError> {
+        let mut unusable: Vec<String> = Vec::new();
+
+        for (tool_name, spec) in &self.tools {
+            let runtime = &spec.runtime;
+            let needs_root = matches!(
+                runtime.payload_staging,
+                crate::config::PayloadStaging::InPlace | crate::config::PayloadStaging::HardLink
+            );
+            if needs_root && !runtime.content_map.is_empty() && runtime.payload_root.is_empty() {
+                unusable.push(format!(
+                    "tool '{tool_name}' stages its payload by '{}' but names no payload_root",
+                    runtime.payload_staging.as_str()
+                ));
+            }
+        }
+
+        if unusable.is_empty() {
+            Ok(())
+        } else {
+            Err(ConductorError::Workflow(format!(
+                "document stages payloads without a payload root: {}",
+                unusable.join("; ")
+            )))
+        }
+    }
+
     /// Records every hash one input value names that `external_data` omits.
     ///
     /// `location` names the place in the document that carries the value, so a

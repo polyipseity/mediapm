@@ -1,7 +1,7 @@
 //! What the generated document records: external data, the no-payload arm, builtin registration.
 
 use crate::output::ProgressScreen;
-use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
@@ -21,7 +21,11 @@ fn external_data_rebuilt_independently_from_tool_specs() {
         version: None,
         name: "tool_a".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map: cm1, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map: cm1,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut cm2 = BTreeMap::new();
@@ -30,7 +34,11 @@ fn external_data_rebuilt_independently_from_tool_specs() {
         version: None,
         name: "tool_b".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map: cm2, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map: cm2,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
 

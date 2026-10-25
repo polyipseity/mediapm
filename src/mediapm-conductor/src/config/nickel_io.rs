@@ -33,6 +33,7 @@ use crate::error::ConductorError;
 use super::versions::MOD_NCL_SOURCE;
 use super::versions::V1_NCL_SOURCE;
 use super::versions::V2_NCL_SOURCE;
+use super::versions::V3_NCL_SOURCE;
 use super::versions::latest_version;
 use super::versions::resolve_version_contract;
 
@@ -168,12 +169,14 @@ where
     let mod_path = workspace.path().join("mod.ncl");
     let v1_path = workspace.path().join("v1.ncl");
     let v2_path = workspace.path().join("v2.ncl");
+    let v3_path = workspace.path().join("v3.ncl");
     let input_path = workspace.path().join("document_input.ncl");
     let wrapper_path = workspace.path().join("decode_document.ncl");
 
     write_nickel_file(&mod_path, MOD_NCL_SOURCE, "writing temporary Nickel migration helper")?;
     write_nickel_file(&v1_path, V1_NCL_SOURCE, "writing temporary Nickel v1.ncl helper")?;
     write_nickel_file(&v2_path, V2_NCL_SOURCE, "writing temporary Nickel v2.ncl helper")?;
+    write_nickel_file(&v3_path, V3_NCL_SOURCE, "writing temporary Nickel v3.ncl helper")?;
     write_nickel_file(&input_path, source, "writing temporary Nickel input document")?;
 
     let wrapper_source = format!(
@@ -250,6 +253,76 @@ mod tests {
     }
 
     const MINIMAL_V2_DOC: &str = "{ version = 2 }";
+
+    /// A v3 document that names the staging decision on one tool.
+    const V3_DOC_WITH_STAGING: &str = r#"{
+        version = 3,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = {
+                    payload_root = "/tmp/payloads/t",
+                    payload_staging = "in_place",
+                },
+            },
+        },
+    }"#;
+
+    /// A v2 document that names the same tool with a payload.
+    const V2_DOC_WITH_PAYLOAD: &str = r#"{
+        version = 2,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = { content_map = { "tool" = "inline description" } },
+            },
+        },
+    }"#;
+
+    /// The migration that enters v3 records the behaviour a v2 document had,
+    /// and the one that leaves v3 drops a decision v2 cannot express.
+    #[test]
+    fn migration_between_v2_and_v3_carries_the_staging_decision() {
+        let upgraded = migrate_document_source_to_version::<Value>(
+            V2_DOC_WITH_PAYLOAD,
+            3,
+            "configuration document",
+        )
+        .expect("v2 document must migrate to v3");
+        assert_eq!(upgraded["version"].as_f64(), Some(3.0), "the upgrade stamps v3");
+        assert_eq!(upgraded["tools"]["t"]["runtime"]["payload_staging"], "copy");
+        assert_eq!(upgraded["tools"]["t"]["runtime"]["payload_root"], "");
+
+        let downgraded = migrate_document_source_to_version::<Value>(
+            V3_DOC_WITH_STAGING,
+            2,
+            "configuration document",
+        )
+        .expect("v3 document must migrate back to v2");
+        assert_eq!(downgraded["version"].as_f64(), Some(2.0), "the downgrade stamps v2");
+        let runtime = &downgraded["tools"]["t"]["runtime"];
+        assert!(
+            runtime.get("payload_staging").is_none() && runtime.get("payload_root").is_none(),
+            "v2 cannot express the staging decision, so the downgrade drops it: {runtime}"
+        );
+    }
+
+    /// A v3 document that names no staging decision is read as `in_place`.
+    #[test]
+    fn a_v3_document_without_a_staging_decision_decodes_as_in_place() {
+        let decoded = migrate_document_source_to_version::<Value>(
+            V3_DOC_WITH_STAGING,
+            3,
+            "configuration document",
+        )
+        .expect("v3 document must decode");
+        assert_eq!(decoded["version"].as_f64(), Some(3.0), "the document keeps its version");
+        assert_eq!(decoded["tools"]["t"]["runtime"]["payload_staging"], "in_place");
+    }
     // Syntax-broken document: fails evaluation after the scratch workspace
     // exists, exercising the `?` error path that previously leaked the
     // workspace directory.

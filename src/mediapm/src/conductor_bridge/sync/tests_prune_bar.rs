@@ -2,7 +2,7 @@
 
 use crate::output::ProgressScreen;
 use crate::output::{DimensionSource, ProgressTerminal, TestDimensionSource};
-use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
 use mediapm_utils::progress::PrefixComponents;
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 use std::collections::BTreeMap;
@@ -25,7 +25,11 @@ async fn reconcile_desired_tools_registers_prune_bar_on_the_caller_screen() {
         version: None,
         name: "user_script".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let doc = NickelDocument {
@@ -105,7 +109,11 @@ async fn prune_bar_reaches_the_display() {
         version: None,
         name: "user_script".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let doc = NickelDocument {
@@ -252,7 +260,11 @@ async fn prune_bar_is_inert_on_a_disabled_screen() {
         version: None,
         name: "user_script".to_string(),
         kind: ToolKindSpec::default(),
-        runtime: ToolRuntime { content_map, ..Default::default() },
+        runtime: ToolRuntime {
+            content_map,
+            payload_staging: PayloadStaging::Copy,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let doc = NickelDocument {

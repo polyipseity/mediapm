@@ -18,12 +18,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    NickelDocument, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolKindSpec,
-    ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+    NickelDocument, OutputCaptureSpec, PayloadStaging, SaveMode, ToolInputKind, ToolInputSpec,
+    ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
 };
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
-pub(crate) const NICKEL_VERSION_LATEST: u32 = 2;
+pub(crate) const NICKEL_VERSION_LATEST: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Persisted envelope types — these match the `v1.ncl` Nickel contract exactly
@@ -208,6 +208,43 @@ impl From<super::super::InputBinding> for InputBindingLatest {
     }
 }
 
+/// Latest persisted payload staging strategy.
+///
+/// The names mirror the `PayloadStagingV3` contract in `v3.ncl`: `in_place`,
+/// `hard_link`, `copy`. An absent field means `in_place`, which is only valid
+/// for a tool that names its `payload_root`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PayloadStagingLatest {
+    /// Run the command under the provisioned payload directory.
+    #[default]
+    InPlace,
+    /// Link the provisioned payload tree into the step sandbox.
+    HardLink,
+    /// Write a copy of the content map into the step sandbox.
+    Copy,
+}
+
+impl From<PayloadStagingLatest> for PayloadStaging {
+    fn from(staging: PayloadStagingLatest) -> Self {
+        match staging {
+            PayloadStagingLatest::InPlace => PayloadStaging::InPlace,
+            PayloadStagingLatest::HardLink => PayloadStaging::HardLink,
+            PayloadStagingLatest::Copy => PayloadStaging::Copy,
+        }
+    }
+}
+
+impl From<PayloadStaging> for PayloadStagingLatest {
+    fn from(staging: PayloadStaging) -> Self {
+        match staging {
+            PayloadStaging::InPlace => PayloadStagingLatest::InPlace,
+            PayloadStaging::HardLink => PayloadStagingLatest::HardLink,
+            PayloadStaging::Copy => PayloadStagingLatest::Copy,
+        }
+    }
+}
+
 /// Latest persisted tool runtime config.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -227,6 +264,14 @@ pub(crate) struct ToolRuntimeLatest {
     /// Max retries.
     #[serde(default)]
     pub(crate) max_retries: usize,
+    /// Absolute path of the provisioned payload directory, when the document
+    /// names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) payload_root: Option<String>,
+    /// How a step obtains the payload it executes from, when the document
+    /// states it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) payload_staging: Option<PayloadStagingLatest>,
 }
 
 /// Platform environment configuration for the conductor runtime (boundary).
@@ -895,6 +940,8 @@ fn tool_runtime_from_latest(rt: ToolRuntimeLatest) -> ToolRuntime {
         inherited_env_vars: rt.inherited_env_vars,
         max_concurrent_calls: rt.max_concurrent_calls,
         max_retries: rt.max_retries,
+        payload_root: rt.payload_root.unwrap_or_default(),
+        payload_staging: rt.payload_staging.map_or(PayloadStaging::default(), PayloadStaging::from),
     }
 }
 
@@ -905,6 +952,8 @@ fn tool_runtime_to_latest(rt: ToolRuntime) -> ToolRuntimeLatest {
         inherited_env_vars: rt.inherited_env_vars,
         max_concurrent_calls: rt.max_concurrent_calls,
         max_retries: rt.max_retries,
+        payload_root: (!rt.payload_root.is_empty()).then_some(rt.payload_root),
+        payload_staging: Some(PayloadStagingLatest::from(rt.payload_staging)),
     }
 }
 
@@ -1154,6 +1203,7 @@ mod tests {
                             inherited_env_vars: Vec::new(),
                             max_concurrent_calls: 2,
                             max_retries: 1,
+                            ..ToolRuntime::default()
                         },
                     },
                 ),

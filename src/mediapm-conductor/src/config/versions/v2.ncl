@@ -16,6 +16,14 @@ let NonEmptyStringV2 =
   )
 in
 
+# ||| Removes a field when the record has one, and leaves it alone otherwise.
+# |||
+# ||| `std.record.remove` requires the field to exist, and a document is free to
+# ||| omit `tools` entirely.
+let drop_field = fun field record =>
+  if std.record.has_field field record then std.record.remove field record else record
+in
+
 # ||| Version marker for this schema.
 let VersionTwoV2 = std.contract.from_predicate (fun value => value == 2) in
 
@@ -374,6 +382,37 @@ let migrate_v1_to_v2_fn = fun data =>
   }
 in
 
+# ||| v3 → v2:  drop the payload staging decision, which v2 cannot express.
+# |||
+# ||| Lossy by construction: a v3 document that stages a payload in place or by
+# ||| hard link reacquires v2's copy behaviour on the way out.
+let migrate_v3_to_v2_fn = fun data =>
+  let stripped_runtime = fun runtime =>
+    std.record.remove "payload_root" (std.record.remove "payload_staging" runtime)
+  in
+  let tools_v2 =
+    if std.record.has_field "tools" data then
+      data.tools
+      |> std.record.map (fun key =>
+        fun spec =>
+          if std.record.has_field "runtime" spec then
+            # ||| `spec & { runtime = … }` merges the two records recursively,
+            # ||| which would carry the stripped fields back in from `spec`.
+            (std.record.remove "runtime" spec) & { runtime = stripped_runtime spec.runtime }
+          else
+            spec
+      )
+    else
+      {}
+  in
+  # ||| `tools` is removed from the base record for the same reason the runtime
+  # ||| is removed from each spec: `&` merges records recursively, so a field
+  # ||| present on both sides would be unioned with itself and the stripped
+  # ||| fields would come back.
+  (drop_field "tools" (drop_field "version" data))
+  & { version = 2, tools = tools_v2 }
+in
+
 {
   # ||| Validates one Nickel value as schema v2.
   validate_document_v2 = fun data => data | NickelDocumentV2,
@@ -383,4 +422,7 @@ in
 
   # ||| Migrates a v1 document to schema v2.
   migrate_v1_to_v2 = migrate_v1_to_v2_fn,
+
+  # ||| Migrates a v3 document back to schema v2, dropping the staging decision.
+  migrate_v3_to_v2 = migrate_v3_to_v2_fn,
 }
