@@ -27,7 +27,7 @@ mod local_source_staging;
 mod media_tagger_hermetic;
 mod online_sync_post_sync_dump;
 /// Nickel schema strictness tests (S-C1..S-C10) — validates the strict
-/// closed-contract surface of `v1.ncl`/`mod.ncl` and the exported JSON schema.
+/// closed-contract surface of `v1.ncl`/`mod.ncl` and the contract export.
 mod schema_strictness;
 /// Nickel schema sync-prevention tests — pins the live Nickel contract
 /// sources against the `MediaPmDocument` Rust runtime model they resolve to,
