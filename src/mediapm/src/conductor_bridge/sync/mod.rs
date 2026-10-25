@@ -140,10 +140,6 @@ enum EntryOutcome {
     Fetched {
         /// Tool identifier.
         tool_id: String,
-        /// Whether this is a builtin source-ingest tool.
-        is_builtin_code: bool,
-        /// Whether the tool already existed in the generated doc.
-        already_exists: bool,
         /// The fetched payload (`content_map` already inlined with direct
         /// same-step dep payloads by `provision_entry`).
         payload: FetchedToolPayload,
@@ -152,10 +148,10 @@ enum EntryOutcome {
     FetchedNone {
         /// Tool identifier.
         tool_id: String,
-        /// Whether this is a builtin source-ingest tool.
+        /// Whether this is a builtin source-ingest tool. A builtin is
+        /// registered by [`register_missing_builtin_tools`], so this arm never
+        /// writes the bare-id spec for one.
         is_builtin_code: bool,
-        /// Whether the tool already existed in the generated doc.
-        already_exists: bool,
         /// Composite canonical version (bare + same-step dep segments),
         /// computed in `provision_entry` from the gated dep versions so the
         /// apply pass never re-derives it from live state.
@@ -209,7 +205,6 @@ async fn provision_entry(
     let tool_id = &entry.tool_id;
     let tool_req = &entry.tool_requirement;
     let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
-    let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
     // First skip check: exact version match against persisted state.
     if tool_req.version_spec != ConfigVersionSpec::Latest
@@ -479,12 +474,7 @@ async fn provision_entry(
                 crate::tools::dependency::known_dependency_type,
             ));
 
-            Ok(EntryOutcome::Fetched {
-                tool_id: tool_id.clone(),
-                is_builtin_code,
-                already_exists,
-                payload,
-            })
+            Ok(EntryOutcome::Fetched { tool_id: tool_id.clone(), payload })
         }
         Ok(None) => {
             // No payload (builtin/launcher or no sources): publish an empty
@@ -493,7 +483,6 @@ async fn provision_entry(
             Ok(EntryOutcome::FetchedNone {
                 tool_id: tool_id.clone(),
                 is_builtin_code,
-                already_exists,
                 canonical_version: resolved_composite,
                 resolved_tag: resolved_tag_value,
                 resolved_version: resolved_version_value,
@@ -537,6 +526,60 @@ impl OverallProgress {
             self.bar.advance(1);
         }
     }
+}
+
+/// What a reconciled tool did to the record the previous run left behind.
+///
+/// The `mediapm tool sync` summary counts tools by this classification, so a
+/// script that keys off `updated` learns whether an artifact actually changed
+/// rather than whether the pass touched the tool's entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CountedChange {
+    /// No record for the tool existed before this pass.
+    Added,
+    /// A record existed and the tool's identity changed.
+    Updated,
+    /// A record existed and named the same identity, so nothing was deployed.
+    Unchanged,
+}
+
+/// Classifies a reconciled tool against the record the previous run left behind.
+///
+/// A tool's identity is its canonical version together with its content-map
+/// hash: the canonical version names the upstream artifact set a tool resolved
+/// to, and the hash names the bytes this workspace holds for it. An entry that
+/// matched both is the tool that was already deployed, so re-registering it
+/// writes the same artifact under a new timestamp and is not an update.
+///
+/// A tool with no content map — every builtin — carries an empty hash, so its
+/// identity is its canonical version alone, which is the mediapm build it
+/// shipped in.
+fn classify_tool_change(
+    prior: Option<&ToolRegistryEntry>,
+    new: &ToolRegistryEntry,
+) -> CountedChange {
+    let Some(prior) = prior else {
+        return CountedChange::Added;
+    };
+    if prior.canonical_version == new.canonical_version
+        && prior.content_map_hash == new.content_map_hash
+    {
+        CountedChange::Unchanged
+    } else {
+        CountedChange::Updated
+    }
+}
+
+/// The record the previous run left for a tool, if it left one.
+///
+/// The registry keeps every deployment of a tool, so the newest one is what the
+/// tool ran as: an older record describes an artifact this workspace may no
+/// longer hold.
+fn prior_tool_record<'a>(
+    live_state: &'a HashMap<String, Vec<ToolRegistryEntry>>,
+    tool_id: &str,
+) -> Option<&'a ToolRegistryEntry> {
+    live_state.get(tool_id)?.iter().max_by_key(|entry| entry.deployed_at)
 }
 
 /// Applies a single entry outcome to the shared mutable state.
@@ -587,7 +630,7 @@ fn apply_entry_outcome(
             report.tools_skipped += 1;
             progress.advance_once(entry_index);
         }
-        EntryOutcome::Fetched { tool_id, is_builtin_code, already_exists, mut payload } => {
+        EntryOutcome::Fetched { tool_id, mut payload } => {
             // Chain-member failures a later member covered: the tool
             // provisioned, but a source it declares does not serve. The sync
             // summary colours a non-empty warning list as a warning rather
@@ -616,26 +659,23 @@ fn apply_entry_outcome(
             // workflow row reads it back through the merged tool spec.
             spec.version = Some(payload.human_readable_version.clone());
 
-            if !already_exists && !is_builtin_code {
-                report.tools_added += 1;
-            } else {
-                report.tools_updated += 1;
-            }
-
-            let now = mediapm_utils::Timestamp::now();
-            report.tool_records.push(ToolRegistryEntry {
+            let record = ToolRegistryEntry {
                 tool_id: tool_id.clone(),
                 version: payload.human_readable_version,
                 canonical_version: payload.canonical_version,
                 content_map_hash: content_map_hash.clone(),
-                deployed_at: now,
+                deployed_at: mediapm_utils::Timestamp::now(),
                 resolved_tag: payload.resolved_tag,
                 resolved_version: payload.resolved_version,
                 resolved_vcs_hash: payload.resolved_vcs_hash,
-            });
-
-            let entry_for_live = report.tool_records.last().unwrap().clone();
-            live_state.entry(tool_id.clone()).or_default().push(entry_for_live);
+            };
+            match classify_tool_change(prior_tool_record(live_state, &tool_id), &record) {
+                CountedChange::Added => report.tools_added += 1,
+                CountedChange::Updated => report.tools_updated += 1,
+                CountedChange::Unchanged => report.tools_skipped += 1,
+            }
+            live_state.entry(tool_id.clone()).or_default().push(record.clone());
+            report.tool_records.push(record);
 
             let inherited = inherited_env_vars.get(tool_id.as_str()).cloned().unwrap_or_default();
             let mut full_runtime = runtime;
@@ -671,7 +711,6 @@ fn apply_entry_outcome(
         EntryOutcome::FetchedNone {
             tool_id,
             is_builtin_code,
-            already_exists,
             canonical_version,
             resolved_tag,
             resolved_version,
@@ -684,8 +723,7 @@ fn apply_entry_outcome(
             };
             tool_runtimes.insert(tool_id.clone(), runtime.clone());
 
-            let now = mediapm_utils::Timestamp::now();
-            report.tool_records.push(ToolRegistryEntry {
+            let record = ToolRegistryEntry {
                 tool_id: tool_id.clone(),
                 version: format!(
                     "{}+{}",
@@ -694,26 +732,25 @@ fn apply_entry_outcome(
                 ),
                 canonical_version,
                 content_map_hash: String::new(),
-                deployed_at: now,
+                deployed_at: mediapm_utils::Timestamp::now(),
                 resolved_tag,
                 resolved_version,
                 resolved_vcs_hash,
-            });
-
-            let entry_for_live = report.tool_records.last().unwrap().clone();
-            live_state.entry(tool_id.clone()).or_default().push(entry_for_live);
-
-            if !already_exists && !is_builtin_code {
-                report.tools_added += 1;
+            };
+            match classify_tool_change(prior_tool_record(live_state, &tool_id), &record) {
+                CountedChange::Added => report.tools_added += 1,
+                CountedChange::Updated => report.tools_updated += 1,
+                CountedChange::Unchanged => report.tools_skipped += 1,
             }
+            live_state.entry(tool_id.clone()).or_default().push(record.clone());
+            report.tool_records.push(record);
 
-            if is_builtin_code {
-                if already_exists {
-                    report.tools_updated += 1;
-                }
-            } else if generated_doc.tools.contains_key(&tool_id) {
-                report.tools_updated += 1;
-            } else {
+            // A tool that resolves without a payload still needs an executable
+            // spec the workflow row can name; a document that already holds one
+            // keeps it, because the counter answers a different question from
+            // the document's contents. A builtin is registered under its own
+            // keyed entry, so writing a bare-id spec here would shadow it.
+            if !is_builtin_code && !generated_doc.tools.contains_key(&tool_id) {
                 generated_doc.tools.insert(
                     tool_id.clone(),
                     mediapm_conductor::ToolSpec {
@@ -1840,3 +1877,5 @@ mod tests_pruning;
 mod tests_same_step_deps;
 #[cfg(test)]
 mod tests_skip_path;
+#[cfg(test)]
+mod tests_tool_change_counts;

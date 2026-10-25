@@ -739,16 +739,16 @@ async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> Exampl
 }
 
 /// Runs the tools-update precheck: writes a tools-only document, syncs tools, and compares the
-/// reported update count against the number of declared tools.
+/// reported deployment count against the number of declared tools.
 ///
-/// The demo declares only `import`, a builtin, so this verifies that a tools-only sync runs and
-/// reports the expected count. It does **not** exercise stale-version detection: `import` is
-/// counted as updated because `register_missing_builtin_tools` pre-inserts it, not because an older
-/// version was found. The demo previously seeded a stale generated-doc entry per tool to force
-/// re-provision; that seed was removed with the fetched-payload tools, since it could no longer
-/// reach a non-`import` tool. The demo no longer exercises stale-version re-provision, but the
-/// capability is not lost with it: `tests/int/tool_sync/composite.rs` covers stale canonical version
-/// to needs-sync in the default suite through the ungated `sync_logical_requires_sync_*` tests.
+/// The demo declares only `import`, a builtin, and reconciles into a workspace with no recorded
+/// tool entry, so the pass deploys it: `added_tools` equals the declared tool count and
+/// `updated_tools` is zero. A builtin is deployed rather than updated here because no prior entry
+/// exists to differ from, not because a higher version was found. Stale-version detection is
+/// covered where it can run hermetically: `tests/int/tool_sync/composite.rs` carries stale
+/// canonical version to needs-sync in the default suite through the ungated
+/// `sync_logical_requires_sync_*` tests, and `tests/int/tool_sync/counters.rs` pins what each
+/// counter means.
 async fn run_tools_update_precheck(
     service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
     workspace_root: &Path,
@@ -760,7 +760,7 @@ async fn run_tools_update_precheck(
         seed_tool_metadata_cache_for_demo_precheck(&cache_root).await?;
     }
 
-    let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
+    let expected_declared_tools = configure_document_for_tools_only_precheck(workspace_root)?;
     // The document is re-read from disk rather than taken from the service:
     // the precheck only needs the written `mediapm.ncl` contents, and
     // `sync_tools_with_tag_update_checks` re-reads the document itself.
@@ -769,14 +769,15 @@ async fn run_tools_update_precheck(
         return Err("tools-update precheck must start with empty media/hierarchy".into());
     }
 
-    // `import` is a builtin: it is reported as updated because builtins are registered up front,
-    // not because a stale version was detected. See this function's doc comment.
+    // The workspace records no tool entry, so every declared tool is deployed
+    // and none can be an update. See this function's doc comment.
     let summary = service.sync_tools_with_tag_update_checks(false, false).await?;
-    if summary.updated_tools != expected_updated_tools {
+    if summary.added_tools != expected_declared_tools || summary.updated_tools != 0 {
         return Err(format!(
-            "tools-update precheck expected {expected_updated_tools} updated tools but observed {} (added={}, skipped warnings={:?})",
-            summary.updated_tools,
+            "tools-update precheck expected {expected_declared_tools} added tools and no update but observed added={} updated={} (skipped {:?}, warnings {:?})",
             summary.added_tools,
+            summary.updated_tools,
+            summary.skipped_tools,
             summary.warnings,
         )
         .into());
@@ -1239,26 +1240,25 @@ mod tests {
         );
         assert_eq!(second.workflow_failed_steps, 0, "second sync must fail no step");
         assert_eq!(second.added_tools, 0, "second sync must register no new tool");
-        // Exactly one "updated": the `import` builtin re-registers on every
-        // sync because the second skip check requires a non-empty content-map
-        // hash and a no-payload builtin has none, so its provision — a local
-        // no-op that fetches nothing — is counted as an update. Pinning the
-        // count at exactly one keeps the claim strong: a payload tool that
-        // started churning would raise it and fail here.
+        // No update: the `import` builtin re-registers on every sync because
+        // the skip check requires a non-empty content-map hash and a no-payload
+        // builtin has none, so its provision — a local no-op that fetches
+        // nothing — reconciles to the entry already recorded. Counting by
+        // identity keeps the claim strong: a payload tool that started
+        // churning would raise this and fail here.
         assert_eq!(
-            second.updated_tools, 1,
-            "second sync must re-register only the no-payload import builtin; warnings: {:?}",
+            second.updated_tools, 0,
+            "second sync must report no change to the import builtin; warnings: {:?}",
             second.warnings
         );
         assert_eq!(second.pruned_tools, 0, "second sync must prune no tool");
         assert_eq!(second.removed_tools, 0, "second sync must remove no tool");
-        // Nothing skips: the only configured tool is the no-payload `import`
-        // builtin, whose skip path is structurally closed (empty content-map
-        // hash), so it re-registers instead — accounted for above as the one
-        // "updated".
+        // The re-registration lands in the skip counter instead: the builtin's
+        // canonical version and its empty content-map hash both match the
+        // recorded entry, so the pass deployed nothing new for it.
         assert_eq!(
-            second.skipped_tools, 0,
-            "second sync must skip no tool; the import builtin re-registers instead"
+            second.skipped_tools, 1,
+            "second sync must count the re-registered import builtin as skipped"
         );
 
         let generated_after = std::fs::read(&generated_ncl).expect("re-read generated doc");

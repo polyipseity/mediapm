@@ -56,10 +56,10 @@ The sync coordinator persists two distinct documents with different write polici
 
 | Field                      | Type                     | Purpose                                                                                                                        |
 | -------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| `tools_added`              | `usize`                  | Tools newly registered (not previously in generated doc)                                                                       |
-| `tools_updated`            | `usize`                  | Tools updated to match desired version                                                                                         |
+| `tools_added`              | `usize`                  | Tools the recorded registry holds no entry for, so the pass deploys them; a generated-doc key alone is not a record          |
+| `tools_updated`            | `usize`                  | Tools whose identity changed against the newest recorded entry: its canonical version or its content-map hash. A pass that reproduces a recorded entry counts it in `tools_skipped` instead |
 | `tools_removed`            | `usize`                  | Tools removed (no longer in desired set)                                                                                       |
-| `tools_skipped`            | `usize`                  | Tools skipped because their canonical version was already provisioned. Shown in the resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })`. |
+| `tools_skipped`            | `usize`                  | Tools the pass deployed nothing new for: either their canonical version was already provisioned (shown in the resolve bar with `set_suffix_components(SuffixComponents { custom: "skipped" })`), or the reconciled identity matched the newest recorded entry. A builtin has no content map, so its identity is the mediapm build it resolves to |
 | `pruned_tools`             | `usize`                  | Number of stale `"{name}@{old_hash}"` keys pruned from the generated doc                                                       |
 | `resolved_field_backfills` | `Vec<ToolRegistryEntry>` | Entries whose `resolved_*` provenance fields were backfilled in place during skip (see below)                                  |
 | `warnings`                 | `Vec<String>`            | Non-fatal notices only (backfills, hints); provisioning failures abort instead of warning |

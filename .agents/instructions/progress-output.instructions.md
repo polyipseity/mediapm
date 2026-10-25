@@ -319,6 +319,7 @@ A missing hierarchy path is one the run could not produce, so the library does n
 ```
 
 - Fields: `added`, `updated`, `pruned`, `removed` (all always shown).
+- `added` counts a tool the recorded registry has no entry for; `updated` counts a tool whose identity changed against the newest recorded entry, and identity is the canonical version plus the content-map hash. A pass that reproduces an entry already recorded — re-registering the no-payload `import` builtin, for instance — counts it in `skipped_tools`, which this line does not print, so `updated` answers "did the backing conductor tool change" rather than "did the pass touch it".
 - Warnings: one `print_warning` line per warning.
 
 **Screen B: workflow** (via `CliSyncObserver` in `output/observer.rs`):

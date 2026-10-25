@@ -195,10 +195,10 @@ async fn reconcile_prunes_old_tool_version_clears_content_map() {
 /// media-tagger is the fixture tool for the stale-seed tests because its
 /// provider is a builtin launcher: resolution needs neither network nor a
 /// seeded download cache, yet the launcher it generates is a real payload.
-/// The entry therefore reaches the `Fetched` outcome branch, which is the
-/// branch where `already_exists` decides `tools_added` against
-/// `tools_updated`. The no-payload branch makes a different decision, so a
-/// fixture that landed there would prove nothing about the name-match.
+/// The entry therefore reaches the `Fetched` outcome branch, which carries the
+/// name-match and the pruning this file is about. The no-payload branch takes a
+/// different route through the same pass, so a fixture that landed there would
+/// prove nothing about either.
 async fn reconcile_media_tagger_latest(
     paths: &MediaPmPaths,
     state: &MediaPmState,
@@ -230,16 +230,16 @@ async fn reconcile_media_tagger_latest(
     .into_report()
 }
 
-/// A generated-doc entry whose `name` is the bare logical tool id makes the
-/// pass an update, never an addition.
+/// Counting follows the recorded identity, never a key's presence.
 ///
-/// Both arms run the same fixture with one difference, the seeded entry, so
-/// the assertion has nothing to read but that difference. The unseeded arm
-/// is what makes the seeded one meaningful: a pass that ignored the
-/// name-match would report `(1, 0)` in both arms, and a pass that counted
-/// nothing at all would report `(0, 0)` in both.
+/// A generated-doc entry is what a previous pass wrote, not a record of what
+/// was deployed, so a pass that finds an entry and no registry record reports
+/// an addition. Both arms run the same fixture with one difference, that
+/// seeded entry, so the pair they report has nothing to read but it: a pass
+/// that classified by presence would report `(0, 1)` for the seeded arm and
+/// `(1, 0)` for the bare one.
 #[tokio::test]
-async fn reconcile_counts_a_name_matched_seed_as_an_update_not_an_addition() {
+async fn reconcile_counts_identity_not_generated_doc_presence() {
     let seeded_tmp = mediapm_utils::temp::artifact_dir().unwrap();
     let seeded_cache = mediapm_utils::temp::cache_dir().unwrap();
     let seeded_paths = MediaPmPaths::from_root(seeded_tmp.path());
@@ -274,15 +274,20 @@ async fn reconcile_counts_a_name_matched_seed_as_an_update_not_an_addition() {
         reconcile_media_tagger_latest(&bare_paths, &MediaPmState::default(), bare_cache.path())
             .await;
 
+    for (arm, report) in [("seeded", &seeded), ("bare", &bare)] {
+        assert_eq!(
+            (report.tools_added, report.tools_updated),
+            (1, 0),
+            "the {arm} arm has no record of the tool, so the pass adds it: {report:?}"
+        );
+        assert_eq!(
+            report.tools_skipped, 0,
+            "nothing in the {arm} arm matched a recorded identity: {report:?}"
+        );
+    }
     assert_eq!(
-        (seeded.tools_added, seeded.tools_updated),
-        (0, 1),
-        "a generated-doc spec named `media-tagger` is an update, never an addition: {seeded:?}"
-    );
-    assert_eq!(
-        (bare.tools_added, bare.tools_updated),
-        (1, 0),
-        "the same pass over an empty generated doc is an addition: {bare:?}"
+        seeded.pruned_tools, 2,
+        "the seeded arm still prunes the stale key it replaced: {seeded:?}"
     );
 }
 

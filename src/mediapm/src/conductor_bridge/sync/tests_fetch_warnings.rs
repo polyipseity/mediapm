@@ -45,8 +45,6 @@ fn report_after_fetched(warnings: Vec<String>) -> ToolSyncReport {
         &entry,
         EntryOutcome::Fetched {
             tool_id: "ffmpeg".to_string(),
-            is_builtin_code: false,
-            already_exists: false,
             payload: FetchedToolPayload {
                 content_map,
                 os_exec_paths,

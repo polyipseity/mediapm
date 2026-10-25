@@ -314,9 +314,10 @@ impl Error for DemoOnlineTimeoutError {}
 /// Recorded in [`DemoManifest::second_run`] so the artifact itself shows the
 /// re-run did no work: every conductor instance came from the content-derived
 /// instance cache, every library path was already recorded at the resolved
-/// hash, and every payload tool was already deployed. `updated_tools` counts
-/// only the no-payload `import` builtin, whose skip path is structurally
-/// closed (empty content-map hash), so it re-registers as an update.
+/// hash, and every payload tool was already deployed. `updated_tools` counts a
+/// tool whose identity changed, and the no-payload `import` builtin
+/// re-registers each pass with the same build and no content-map hash, so it
+/// reconciles to an unchanged entry and is counted as skipped instead.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct SecondRunTally {
     executed_instances: usize,
@@ -867,11 +868,11 @@ fn snapshot_materialized_files(
 /// no step failed or warned, and no tool was added, pruned, or removed.
 ///
 /// `updated_tools` is asserted equal to the first run's value rather than
-/// zero because the no-payload `import` builtin re-registers on every sync
-/// (its empty content map hash excludes it from the skip path), so the
-/// re-run's tool churn must match the first run's churn exactly — a payload
-/// tool that started churning would raise the second run's count above the
-/// first run's and fail here.
+/// zero-by-decree: both runs count zero, because the no-payload `import`
+/// builtin re-registers on every sync without changing its identity (no
+/// content-map hash, same build) and is counted as skipped. Comparing the two
+/// runs still catches churn — a payload tool that started churning would raise
+/// the second run's count above the first run's and fail here.
 fn assert_second_sync_did_no_work(
     first: &mediapm::SyncSummary,
     second: &mediapm::SyncSummary,
@@ -921,8 +922,8 @@ fn assert_second_sync_did_no_work(
     }
     if second.updated_tools != first.updated_tools {
         problems.push(format!(
-            "updated_tools={} (expected {}: the import builtin's re-registration churn must match \
-             the first run's; a payload tool churning would exceed it)",
+            "updated_tools={} (expected {}: both runs count a changed identity, and the import \
+             builtin re-registers without one; a payload tool churning would exceed the first run)",
             second.updated_tools, first.updated_tools
         ));
     }
@@ -4166,8 +4167,8 @@ mod tests {
             skipped_paths: 16,
             removed_paths: 0,
             added_tools: 0,
-            updated_tools: 1,
-            skipped_tools: 6,
+            updated_tools: 0,
+            skipped_tools: 7,
             pruned_tools: 0,
             warning_count: 0,
         };

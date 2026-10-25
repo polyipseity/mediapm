@@ -10,8 +10,9 @@
 //! conductor orchestration) belong in separate test modules.
 //!
 //! These tests focus on file-creation guarantees, document structure,
-//! idempotency, and pure-function logic — not on counter values
-//! (`added_tools`, `updated_tools`, etc.).
+//! idempotency, and pure-function logic. Counter values (`added_tools`,
+//! `updated_tools`, `skipped_tools`) are asserted only in `counters`, which is
+//! where the meaning of each counter is pinned.
 
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
@@ -25,6 +26,7 @@ use crate::common::service_with_cache;
 
 mod basics;
 mod composite;
+mod counters;
 mod inline_deps;
 mod requires_sync;
 mod resolved;

@@ -103,7 +103,6 @@ fn fetched_none_registers_a_spec_without_a_version() {
         EntryOutcome::FetchedNone {
             tool_id: "media-tagger".to_string(),
             is_builtin_code: false,
-            already_exists: false,
             canonical_version: "mediapm-0123456789ab".to_string(),
             resolved_tag: Some("v2024.01.01".to_string()),
             resolved_version: Some("2024.01.01".to_string()),
