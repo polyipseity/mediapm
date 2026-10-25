@@ -354,8 +354,9 @@ async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
 
     let report = reconcile_media_tagger_latest(&paths, &state, cache_root.path()).await;
 
-    // The name-match makes this an update, and the mismatched canonical
-    // version keeps it off both skip paths.
+    // The recorded canonical version differs from the one the provider
+    // resolves, so the identity changes and the entry is an update; the
+    // mismatch also keeps it off both skip paths.
     assert_eq!(
         report.tools_skipped, 0,
         "a canonical_version the provider cannot produce must reprovision: {report:?}"

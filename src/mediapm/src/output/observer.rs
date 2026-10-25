@@ -20,7 +20,11 @@ use crate::{
 /// [`SyncLibraryOptions`](crate::SyncLibraryOptions).
 pub struct CliSyncObserver;
 
-/// True when a tool sync changed the registry in any way.
+/// True when a tool sync deployed, pruned or removed a tool.
+///
+/// A pass that re-registers an unchanged tool appends a record, so the state
+/// file changes, but nothing about the deployed artifacts does: that case
+/// counts in `skipped_tools` and leaves this false.
 fn has_tool_changes(s: &ToolsSyncSummary) -> bool {
     s.added_tools > 0 || s.updated_tools > 0 || s.pruned_tools > 0 || s.removed_tools > 0
 }

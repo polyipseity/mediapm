@@ -130,15 +130,19 @@ pub struct SyncSummary {
     pub removed_paths: usize,
     /// Number of empty parent directories removed after stale path cleanup.
     pub removed_empty_dirs: usize,
-    /// Number of tools newly registered in conductor machine config.
+    /// Number of tools the recorded registry held no entry for, so the pass
+    /// deployed them into conductor machine config.
     pub added_tools: usize,
-    /// Number of tools updated/promoted in conductor machine config.
+    /// Number of tools whose canonical version or content-map hash differs from
+    /// the newest recorded entry, so the pass deployed a different artifact.
     pub updated_tools: usize,
     /// Number of tool entries pruned from the generated conductor document.
     pub pruned_tools: usize,
     /// Number of tools removed entirely.
     pub removed_tools: usize,
-    /// Number of tools skipped (already at the desired version).
+    /// Number of tools the pass deployed nothing new for: their canonical
+    /// version was already provisioned, or the reconciled identity matched the
+    /// newest recorded entry.
     pub skipped_tools: usize,
     /// Number of managed-workflow steps that failed across all workflows. Any
     /// count above zero makes the run an error: the media a failed step was to
@@ -191,16 +195,19 @@ pub struct MaterializationSyncSummary {
 /// registered, not what failed, so they cannot stand in for the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolsSyncSummary {
-    /// Number of tools newly registered.
+    /// Number of tools the recorded registry held no entry for.
     pub added_tools: usize,
-    /// Number of tools updated.
+    /// Number of tools whose canonical version or content-map hash differs from
+    /// the newest recorded entry.
     pub updated_tools: usize,
     /// Number of managed-tool entries whose `content_map` was cleared in the
     /// generated conductor config because a newer version superseded them.
     pub pruned_tools: usize,
     /// Number of tools removed entirely.
     pub removed_tools: usize,
-    /// Number of tools skipped (already at the desired version).
+    /// Number of tools the pass deployed nothing new for: their canonical
+    /// version was already provisioned, or the reconciled identity matched the
+    /// newest recorded entry.
     pub skipped_tools: usize,
     /// Tool-specific warnings, one per tool whose provisioning failed.
     ///

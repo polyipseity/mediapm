@@ -58,6 +58,11 @@ async fn regression_a_builtin_that_did_not_change_is_not_updated()
 /// The recorded canonical version stands for the build a builtin shipped in.
 /// A record naming a different one is a workspace whose tool does not match
 /// what this build provides, so the pass reproduces it and says so.
+///
+/// This pins the `Updated` branch's value, not the rule: a presence-based
+/// counter also reports an update for this shape. What discriminates the rule
+/// is `regression_a_builtin_that_did_not_change_is_not_updated`, whose unchanged
+/// record the old counter reported as `updated = 1`.
 #[tokio::test]
 async fn regression_a_builtin_build_change_is_an_update() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) = service_with_cache(runtime_with_import()).await?;

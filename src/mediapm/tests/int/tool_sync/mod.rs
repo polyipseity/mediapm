@@ -10,9 +10,9 @@
 //! conductor orchestration) belong in separate test modules.
 //!
 //! These tests focus on file-creation guarantees, document structure,
-//! idempotency, and pure-function logic. Counter values (`added_tools`,
-//! `updated_tools`, `skipped_tools`) are asserted only in `counters`, which is
-//! where the meaning of each counter is pinned.
+//! idempotency, and pure-function logic. The meaning of each counter is pinned
+//! in `counters`; other modules may assert a counter when it is the observable
+//! of their own behaviour.
 
 use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,

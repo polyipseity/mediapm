@@ -543,7 +543,9 @@ pub(crate) enum CountedChange {
     Unchanged,
 }
 
-/// Classifies a reconciled tool against the record the previous run left behind.
+/// Classifies a reconciled tool against the record the previous run left behind,
+/// or the one an earlier entry of the same pass pushed when a tool resolves
+/// twice.
 ///
 /// A tool's identity is its canonical version together with its content-map
 /// hash: the canonical version names the upstream artifact set a tool resolved
@@ -882,13 +884,17 @@ impl ToolSyncOutcome {
 /// Summary of one `mediapm tool sync` reconciliation pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ToolSyncReport {
-    /// Number of tools newly registered.
+    /// Number of tools the recorded registry held no entry for, so the pass
+    /// deployed them.
     pub(crate) tools_added: usize,
     /// Number of tools removed (no longer in desired set).
     pub(crate) tools_removed: usize,
-    /// Number of tools updated to match desired version.
+    /// Number of tools whose canonical version or content-map hash differs from
+    /// the newest recorded entry, so the pass deployed a different artifact.
     pub(crate) tools_updated: usize,
-    /// Number of tools skipped because their canonical version was already provisioned.
+    /// Number of tools the pass deployed nothing new for: their canonical
+    /// version was already provisioned, or the reconciled identity matched the
+    /// newest recorded entry.
     pub(crate) tools_skipped: usize,
     /// Number of tool entries removed from the generated conductor document
     /// during the wholesale rewrite (condition 3 of the two-file model):
