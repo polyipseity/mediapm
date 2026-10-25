@@ -129,7 +129,9 @@ impl MediaPmPaths {
         self.workspace_cache_dir().join("media_tagger")
     }
 
-    /// Returns the mediapm metadata cache root (`<runtime>/cache/mediapm`).
+    /// Returns the workspace cache root (`<runtime>/cache/mediapm`), which
+    /// holds `metadata.json` and, when the materializer has written one,
+    /// `materialization.json`.
     #[must_use]
     pub fn workspace_mediapm_cache_dir(&self) -> PathBuf {
         self.workspace_cache_dir().join("mediapm")

@@ -50,24 +50,36 @@ impl MetadataCache {
     /// Opens or creates a metadata cache at the given cache directory.
     ///
     /// If the cache file already exists, it is loaded into memory.
-    /// Missing or corrupt files start with an empty cache. The cache
-    /// directory is created on demand so [`flush`](Self::flush) can write
-    /// its temp file (a failure to create it leaves a memory-only cache;
-    /// `Drop` then skips persistence just as it does for any other write
-    /// failure).
+    /// Missing or corrupt files start with an empty cache, and a missing one
+    /// adopts the record an older build left under the superseded name, marks
+    /// the cache dirty so the adopted entries are written out, and removes the
+    /// old file. The cache directory is created on demand so
+    /// [`flush`](Self::flush) can write its temp file (a failure to create it
+    /// leaves a memory-only cache; `Drop` then skips persistence just as it does
+    /// for any other write failure).
+    ///
+    /// Opening has one side effect, then: it may adopt and delete a superseded
+    /// file. Both are best-effort, because a cache that cannot be written costs
+    /// one probe per key and nothing else.
     #[must_use]
     pub(crate) fn open(cache_dir: &Path) -> Self {
         let _ = fs::create_dir_all(cache_dir);
         let cache_path = cache_dir.join(CACHE_FILE_NAME);
-        let entries = if cache_path.exists() {
+        let current_exists = cache_path.exists();
+        let entries = if current_exists {
             load_cache_file(&cache_path).unwrap_or_default()
         } else {
             adopt_legacy_cache_file(cache_dir)
         };
+        retire_legacy_cache_file(cache_dir);
+        // Adopted entries are not in the file yet, so the open that adopted them
+        // owes a write even when the rest of the run changes nothing. A fresh
+        // workspace adopts nothing and owes nothing.
+        let owes_write = !current_exists && !entries.is_empty();
         let cache = MetadataCache {
             entries: Arc::new(Mutex::new(entries)),
             cache_path,
-            dirty: Arc::new(Mutex::new(false)),
+            dirty: Arc::new(Mutex::new(owes_write)),
         };
         cache.prune_expired();
         cache
@@ -180,26 +192,36 @@ fn load_cache_file(path: &Path) -> Result<BTreeMap<String, MetadataCacheEntry>, 
     serde_json::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// Loads the cache an older build left under the superseded name, and removes
-/// that file.
+/// Loads the cache an older build left under the superseded name.
 ///
 /// The name is the only thing that changed, so the entries beside it still
 /// describe the library and reading them costs nothing the caller would
-/// otherwise pay. The removal is best-effort: this cache is a convenience whose
-/// absence costs one probe, so a file that will not go is not a reason to fail
-/// the open, and the next run reads it again rather than losing what it holds.
+/// otherwise pay. The file itself is removed by [`retire_legacy_cache_file`],
+/// after the caller has marked the adopted entries as owed to the current file.
 fn adopt_legacy_cache_file(cache_dir: &Path) -> BTreeMap<String, MetadataCacheEntry> {
+    load_cache_file(&cache_dir.join(LEGACY_CACHE_FILE_NAME)).unwrap_or_default()
+}
+
+/// Removes the file a workspace kept under the superseded name, if it is still
+/// there.
+///
+/// This runs on every open rather than only on the open that adopted the file,
+/// so a removal that failed once is retried instead of leaving both files for
+/// the life of the workspace. The removal is best-effort: this cache is a
+/// convenience whose absence costs one probe, so a file that will not go is not
+/// a reason to fail the open.
+fn retire_legacy_cache_file(cache_dir: &Path) {
     let legacy = cache_dir.join(LEGACY_CACHE_FILE_NAME);
-    let Ok(entries) = load_cache_file(&legacy) else {
-        return BTreeMap::new();
-    };
-    if let Err(error) = fs::remove_file(&legacy) {
-        tracing::warn!(
-            "could not remove the superseded metadata cache '{}': {error}",
-            legacy.display()
-        );
+    match fs::remove_file(&legacy) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                "could not remove the superseded metadata cache '{}': {error}",
+                legacy.display()
+            );
+        }
     }
-    entries
 }
 
 #[cfg(test)]

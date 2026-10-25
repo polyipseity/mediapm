@@ -56,8 +56,10 @@
 //!
 //! A workspace written by an older build holds the same record one file name
 //! over, `content_verdicts.json`. [`VerdictCache::open`] reads that file when
-//! the current one is absent and removes it, so a rename costs no re-read and
-//! leaves no workspace holding two files that answer the same question.
+//! the current one is absent, writes what it read under the current name, and
+//! then removes the superseded file. A removal that fails is reported and tried
+//! again on the next open, so the two files cannot both survive a run that
+//! could write the new one.
 
 use std::collections::BTreeMap;
 use std::fs::Metadata;
@@ -181,14 +183,21 @@ impl VerdictCache {
     ///
     /// A missing file, an unreadable one, one that is not JSON, and one written
     /// by another format version all produce the same empty cache, with a note
-    /// for the two cases a person could act on. The cost is one read per output,
-    /// which is what this cache saves when it is intact.
+    /// for the two cases a person could act on. A missing file additionally
+    /// adopts the record an older build left under the superseded name, writes
+    /// it under the current name, and removes the old file; a removal that
+    /// fails is reported and retried on the next open.
+    ///
+    /// Opening has one side effect, then: it may create or replace the cache
+    /// file and delete the superseded one. Both are best-effort, because a cache
+    /// that cannot be written costs one read per output and nothing else.
     pub(super) fn open(paths: &MediaPmPaths) -> Self {
         let file = cache_file_path(paths);
         let remembered = match Self::read_file(&file) {
             Some(remembered) => remembered,
             None => Self::adopt_legacy_file(&file),
         };
+        Self::retire_legacy_file(&file);
         Self { file, remembered, confirmed: Mutex::new(BTreeMap::new()) }
     }
 
@@ -227,22 +236,44 @@ impl VerdictCache {
     }
 
     /// Reads the record a workspace kept under the name this build no longer
-    /// writes, and removes that file.
+    /// writes, and writes it under the current name before that file is removed.
     ///
     /// The name is the only thing that changed, so the verdicts beside it still
-    /// describe the library and carrying them over costs no re-read. The removal
-    /// is best-effort: a file that will not go is reported and the run continues,
-    /// because the file is a cache and keeping it costs one re-read on the next
-    /// run rather than a failed sync.
+    /// describe the library. Writing them out first is what makes the rename
+    /// durable: a run that only skips never calls [`Self::flush`], so a record
+    /// that lived only in memory would be gone with the file that carried it. A
+    /// write that fails is reported and the record is kept in memory for this
+    /// run, which is the same cost as a missing cache: one read per output.
     fn adopt_legacy_file(new_file: &Path) -> BTreeMap<String, Verdict> {
         let legacy = new_file.with_file_name(LEGACY_CACHE_FILE_NAME);
         let Some(remembered) = Self::read_file(&legacy) else {
             return BTreeMap::new();
         };
-        if let Err(error) = std::fs::remove_file(&legacy) {
-            warn!("could not remove the superseded cache '{}': {error}", legacy.display());
+        if let Err(error) = Self::write_file(new_file, &remembered) {
+            warn!(
+                "could not write the adopted materialization cache '{}': {error}",
+                new_file.display()
+            );
         }
         remembered
+    }
+
+    /// Removes the file a workspace kept under the superseded name, if it is
+    /// still there.
+    ///
+    /// This runs on every open rather than only on the open that adopted the
+    /// file, so a removal that failed once is retried instead of leaving both
+    /// files for the life of the workspace. A file that will not go is reported
+    /// and the run continues, because it is a cache.
+    fn retire_legacy_file(new_file: &Path) {
+        let legacy = new_file.with_file_name(LEGACY_CACHE_FILE_NAME);
+        match std::fs::remove_file(&legacy) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                warn!("could not remove the superseded cache '{}': {error}", legacy.display());
+            }
+        }
     }
 
     /// Whether a remembered verdict still describes `relative_path`.
@@ -316,7 +347,17 @@ impl VerdictCache {
             Ok(confirmed) => confirmed.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         };
-        let directory = self.file.parent().unwrap_or(Path::new("."));
+        Self::write_file(&self.file, &confirmed)
+    }
+
+    /// Writes `verdicts` to `file`, beside it and renamed over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O failure that stopped the write, or the encode failure
+    /// that stopped it earlier.
+    fn write_file(file: &Path, verdicts: &BTreeMap<String, Verdict>) -> Result<(), MediaPmError> {
+        let directory = file.parent().unwrap_or(Path::new("."));
         if let Err(source) = std::fs::create_dir_all(directory) {
             return Err(MediaPmError::Io {
                 operation: "creating the materialization cache directory".to_string(),
@@ -324,13 +365,13 @@ impl VerdictCache {
                 source,
             });
         }
-        let bytes =
-            serde_json::to_vec_pretty(&CacheFile { version: CACHE_VERSION, verdicts: confirmed })
-                .map_err(|error| {
-                MediaPmError::Workflow(format!(
-                    "encoding the materialization cache failed: {error}"
-                ))
-            })?;
+        let bytes = serde_json::to_vec_pretty(&CacheFile {
+            version: CACHE_VERSION,
+            verdicts: verdicts.clone(),
+        })
+        .map_err(|error| {
+            MediaPmError::Workflow(format!("encoding the materialization cache failed: {error}"))
+        })?;
 
         // Write beside the target and rename over it, so a run that is killed
         // mid-write leaves the previous verdicts rather than half of this run's.
@@ -350,9 +391,9 @@ impl VerdictCache {
             path: directory.to_path_buf(),
             source,
         })?;
-        staging.persist(&self.file).map_err(|error| MediaPmError::Io {
+        staging.persist(file).map_err(|error| MediaPmError::Io {
             operation: "renaming the materialization cache into place".to_string(),
-            path: self.file.clone(),
+            path: file.to_path_buf(),
             source: error.error,
         })?;
         Ok(())
@@ -465,19 +506,31 @@ mod tests {
             cache.remembered
         );
 
-        // The carried-over numbers are the ones the next run is answered from,
-        // which is what makes the adoption worth doing.
-        cache.confirm("song", &Hash::from_content(b"seven!"), 7, Some(7));
-        cache.flush().expect("flush");
+        // Opening writes the adopted record out before the old file goes, so a
+        // run that only skips is answered from the new name rather than from
+        // nothing: `is_current` answers from the file alone.
         assert!(
             cache_file_path(&paths).is_file(),
-            "the run has to leave the record under the name this build reads"
+            "opening has to write the adopted record under the new name, or a run that only \
+             skips loses it with the file that carried it"
         );
         let reopened = VerdictCache::open(&paths);
-        assert!(
-            reopened.is_current("song", &Hash::from_content(b"seven!"), 7, Some(7)),
-            "a verdict written by one run has to answer the next one: {:?}",
+        assert_eq!(
+            reopened.remembered.get("song").map(|verdict| verdict.hash.as_str()),
+            Some("blake3:seeded"),
+            "the adopted record has to answer the next run: {:?}",
             reopened.remembered
+        );
+
+        // A verdict this run confirms reaches the file through `flush`, which is
+        // the other half of the same guarantee.
+        cache.confirm("song", &Hash::from_content(b"seven!"), 7, Some(7));
+        cache.flush().expect("flush");
+        let after_flush = VerdictCache::open(&paths);
+        assert!(
+            after_flush.is_current("song", &Hash::from_content(b"seven!"), 7, Some(7)),
+            "a verdict written by one run has to answer the next one: {:?}",
+            after_flush.remembered
         );
     }
 
