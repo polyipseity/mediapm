@@ -28,7 +28,7 @@ The struct declares exactly 15 fields (`paths.rs:41-73`); the cache directories 
 | `schema_export_dir`       | `Some({runtime_root}/config/mediapm/)`       | MediaPM schema exports (`None` = disabled)                                                                                                |
 | `mediapm_tmp_dir`         | `$TMPDIR/mediapm-runtime-{16hex}/`           | MediaPM staging tmp                                                                                                                       |
 | `hierarchy_root_dir`      | `{root_dir}`                                 | Materialized media library root                                                                                                           |
-| `tools_dir`               | `{runtime_root}/tools/`                      | Tool-content unpack directory; subdirs are `<sanitize_tool_id(conductor_tool_id)>/payload/` and `.env.generated` paths mirror that layout |
+| `tools_dir`               | `{runtime_root}/tools/`                      | Tool-content unpack directory; each entry is `<sanitize_tool_id(conductor_tool_id)>/` holding `lock` (the entry's advisory lock, with a header explaining itself), `metadata.json` and `payload/`, and `.env.generated` paths mirror that layout |
 
 ## Cache directory methods
 

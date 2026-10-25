@@ -6,6 +6,11 @@
 //! - `metadata.json` — version, the full `content_map` (the validity key),
 //!   and `last_used_unix_seconds` for TTL-based expiry.
 //! - `payload/` — the fully-extracted, ready-to-execute tool content tree.
+//! - `lock` — the advisory lock that gates the fast path and the prune sweep,
+//!   carrying a header that says what it is. An entry extracted by an older
+//!   build carries the same lock under `.lock` instead; that name is never
+//!   taken again, and a directory still holding it is reclaimed rather than
+//!   kept (see `retain`).
 //!
 //! # Single-flight extraction
 //!
@@ -58,14 +63,37 @@ pub(crate) const TTL_SECONDS: u64 = 86_400;
 /// Minimum interval between automatic prune sweeps (5 minutes).
 pub(crate) const PRUNE_COOLDOWN_SECONDS: u64 = 300;
 
-/// Marker file that records the last-prune Unix timestamp in the tools root.
-pub(crate) const PRUNE_MARKER_FILE_NAME: &str = ".prune-last-used-unix-seconds";
+/// Marker file an older build kept in the tools root to record its last prune.
+///
+/// This build keeps the cooldown in process memory and only removes the file,
+/// so that a tools root upgraded in place loses it (see
+/// [`ProvisionCache::materialize`](provisioner::ProvisionCache::materialize)).
+pub(crate) const LEGACY_PRUNE_MARKER_FILE_NAME: &str = ".prune-last-used-unix-seconds";
 
 /// Per-entry metadata file name.
 pub(crate) const METADATA_FILE_NAME: &str = "metadata.json";
 
 /// Per-entry advisory-lock file name.
-pub(crate) const LOCK_FILE_NAME: &str = ".lock";
+///
+/// The lock is the file's advisory lock alone; the text beside it is for a
+/// person who finds the file and is never parsed.
+pub(crate) const LOCK_FILE_NAME: &str = "lock";
+
+/// Per-entry lock name an older build used, kept so a directory that still
+/// carries it can be recognized and reclaimed.
+pub(crate) const LEGACY_LOCK_FILE_NAME: &str = ".lock";
+
+/// The text an entry writes into its lock file when it creates one.
+///
+/// It answers the two questions a reader of `<tools_dir>/<id>/lock` has: what
+/// the file is, and whether deleting it is safe.
+pub(crate) const LOCK_FILE_HEADER: &str = "\
+mediapm provision-cache entry lock.
+This file is the lock for the tool payload in this directory.
+Deleting it while a mediapm process runs is unsafe.
+Deleting it while no mediapm process runs forces this tool to be extracted again
+and leaves the directory unprunable; remove the whole directory instead.
+";
 
 /// On-disk metadata format version.
 pub(crate) const VERSION: u32 = 1;

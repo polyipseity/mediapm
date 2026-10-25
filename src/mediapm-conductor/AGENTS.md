@@ -329,6 +329,8 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **Cache key**: the **mediapm conductor tool id** (the map key in the conductor document's `tools` map — sanitized to a filesystem-safe name via `sanitize_tool_id`. One cache entry per tool id: `<conductor_tools_dir>/<sanitize_tool_id(conductor_tool_id)>/`. In the mediapm integration the conductor tool id is `{mediapm_tool_id}@{content_map_hash}` for tools with a content map (e.g. `yt-dlp@blake3:abc` → dir `yt-dlp@blake3_abc`) and the bare `{mediapm_tool_id}` when the content map is empty. The two ids are distinct: the **mediapm tool id** (e.g. `yt-dlp`) identifies the tool in `mediapm.ncl`, dependency keys, and env var name stems; the **conductor tool id** is the conductor-document key and the provision-cache key. `.env.generated` payload paths mirror this layout: `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/<key>`.
 
+- **Entry artifacts**: an entry directory holds exactly three things. `lock` is the advisory lock the fast path and the prune sweep take, and it carries a few lines saying what it is and what deleting it costs; the text is documentation and is never parsed. `metadata.json` is the validity key. `payload/` is the extracted tree. An entry extracted before the lock was renamed carries `.lock` instead: nothing can lock through that name, so `retain_only_tool_dirs` and `prune_expired_entries` reclaim such a directory rather than skipping it on every sweep, and a materialize rebuilds an active one under the current name.
+
 - **RAII guard**: `ProvisionCache::materialize` returns a `ProvisionedTool` that holds a shared advisory lock on the entry until dropped. This prevents pruning while the entry is in use.
 
 - **Cache-hit check**: `<entry>/metadata.json` stores the complete `tool_content_map` (`BTreeMap<String, Hash>`) alongside a version sentinel and a last-used Unix timestamp. A cache hit requires the stored map to equal the current map exactly; any change in keys or hashes causes a miss and triggers full re-extraction.
@@ -339,7 +341,7 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **TTL**: cache entries expire after 24 hours of non-use. Last-used time is refreshed on every cache hit. `ProvisionCache::prune_expired` is called best-effort at the start of each `ProvisionCache::materialize` call; prune errors are logged and ignored.
 
-- **Expiry pruning**: `ProvisionCache::prune_expired` (formerly `prune`) is the explicit public API; a cooldown-gated auto-prune also runs at `materialize` call time.
+- **Expiry pruning**: `ProvisionCache::prune_expired` is the explicit public API; a cooldown-gated auto-prune also runs at `materialize` call time. The cooldown is process state, not a file: one sweep per `PRUNE_COOLDOWN_SECONDS` per process, claimed before the sweep starts so concurrent calls cannot both sweep, and a fresh process sweeps on its first materialize. The stamp an older build wrote at `<tools_dir>/.prune-last-used-unix-seconds` is removed by the first sweep that sees it, best-effort, because nothing in this build reads it.
 
 - **Sandbox materialization**: step workers hard-link (with copy fallback) files from `<entry>/payload/` into the per-step sandbox cwd via the free function `link_to_sandbox(payload_dir, sandbox_dir)` in `provision::helpers` (re-exported from `provision`).
 

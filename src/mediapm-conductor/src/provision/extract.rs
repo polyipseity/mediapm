@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,12 +11,12 @@ use mediapm_cas::{CasApi, Hash};
 
 use crate::error::ConductorError;
 
-use super::VERSION;
 use super::helpers::{
     classify_content_map_key, ensure_payload_tree_user_execute_bits, ensure_user_execute_bit,
     now_unix_seconds, persist_cache_metadata,
 };
 use super::types::{ContentMapKeyKind, Metadata, ProvisionedTool};
+use super::{LOCK_FILE_HEADER, VERSION};
 
 /// Writes all cache entries (files and directories) into the payload directory.
 fn write_cache_entries(
@@ -206,19 +207,9 @@ pub(crate) fn extract_sync(
     write_cache_entries(&paths.payload_dir, entries_with_bytes)?;
     ensure_payload_tree_user_execute_bits(&paths.payload_dir)?;
 
-    // Phase 3: recreate the lock file (removed by remove_dir_all above) and
-    // persist metadata atomically.
-    std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(true)
-        .open(&paths.lock_path)
-        .map_err(|source| ConductorError::Io {
-            operation: "recreating tool-content cache lock file after extraction".to_string(),
-            path: paths.lock_path.clone(),
-            source,
-        })?;
+    // Phase 3: recreate the lock file (removed by remove_dir_all above) with
+    // its header, then persist metadata atomically.
+    write_lock_header_if_empty(&paths.lock_path)?;
 
     persist_cache_metadata(
         &paths.metadata_path,
@@ -231,12 +222,14 @@ pub(crate) fn extract_sync(
     )?;
 
     // Acquire a shared lock on the new lock file while still holding the
-    // exclusive lock on the old inode (orphaned by remove_dir_all).
+    // exclusive lock on the old inode (orphaned by remove_dir_all). The open
+    // does not truncate: the header written above is what a reader of the file
+    // finds, and emptying it here would leave the file blank instead.
     let shared_lock = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
-        .truncate(true)
+        .truncate(false)
         .open(&paths.lock_path)
         .map_err(|source| ConductorError::Io {
             operation: "opening new tool-content cache lock file for shared lock".to_string(),
@@ -250,10 +243,47 @@ pub(crate) fn extract_sync(
     })?;
 
     // Drop the exclusive lock fd — the old inode is now orphaned and the new
-    // .lock file holds the shared lock via shared_lock.
+    // lock file holds the shared lock via shared_lock.
     drop(excl_file);
 
     Ok(ProvisionedTool { payload_dir: paths.payload_dir.clone(), _lock_file: shared_lock })
+}
+
+/// Creates the entry's lock file if it is not there, and writes its header
+/// when the file is empty.
+///
+/// Empty is the only state the header replaces: the file carries no state of
+/// its own — the lock is the advisory lock on it — so text another process or
+/// a person put there is left alone. The write happens under the caller's
+/// exclusive lock, which is why an entry never ends up with two writers here.
+fn write_lock_header_if_empty(lock_path: &Path) -> Result<(), ConductorError> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|source| ConductorError::Io {
+            operation: "recreating tool-content cache lock file after extraction".to_string(),
+            path: lock_path.to_path_buf(),
+            source,
+        })?;
+    let len = file
+        .metadata()
+        .map_err(|source| ConductorError::Io {
+            operation: "reading tool-content cache lock file length".to_string(),
+            path: lock_path.to_path_buf(),
+            source,
+        })?
+        .len();
+    if len > 0 {
+        return Ok(());
+    }
+    file.write_all(LOCK_FILE_HEADER.as_bytes()).map_err(|source| ConductorError::Io {
+        operation: "writing the tool-content cache lock header".to_string(),
+        path: lock_path.to_path_buf(),
+        source,
+    })
 }
 
 /// Checks whether another process completed extraction while we waited for

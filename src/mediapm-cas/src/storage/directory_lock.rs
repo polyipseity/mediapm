@@ -21,6 +21,7 @@ use std::sync::LazyLock;
 
 use dashmap::DashMap;
 use fs4::AsyncFileExt;
+use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::error::CasError;
@@ -31,6 +32,18 @@ use crate::error::CasError;
 /// Each entry is an `Arc<Mutex<()>>` so the mutex can be owned by the guard
 /// via `try_lock_owned` without borrowing from the [`DashMap`] entry.
 static DIR_LOCKS: LazyLock<DashMap<PathBuf, Arc<Mutex<()>>>> = LazyLock::new(DashMap::new);
+
+/// The text a store writes into its `lock` file once it holds the lock.
+///
+/// The file's bytes are documentation for whoever finds it: the lock itself is
+/// the advisory lock, and the header answers what the file is and whether
+/// deleting it is safe.
+const STORE_LOCK_HEADER: &str = "\
+mediapm CAS store directory lock.
+A process holding this lock has this store open.
+Deleting this file does not release a held lock, and it is recreated on the next open.
+Deleting it is safe only while no mediapm process has this store open.
+";
 
 /// An RAII guard that holds both an in-process mutex and an inter-process
 /// advisory file lock on a CAS directory.
@@ -68,7 +81,7 @@ impl DirectoryLockGuard {
 
         // Layer 2: inter-process flock (non-blocking — fail if held).
         let lock_path = dir.join("lock");
-        let file = tokio::fs::OpenOptions::new()
+        let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
@@ -76,6 +89,11 @@ impl DirectoryLockGuard {
             .await?;
         // Fail-fast: no blocking .lock() or .lock_owned() — must return immediately on contention.
         file.try_lock().map_err(|_| CasError::LockContention { path: lock_path })?;
+
+        // The open truncates, so this write always leaves the header alone in
+        // the file: one opener's text never survives beside the next opener's.
+        file.write_all(STORE_LOCK_HEADER.as_bytes()).await?;
+        file.flush().await?;
 
         Ok(Self { _file: file, _in_process_guard: in_process_guard })
     }
@@ -86,6 +104,21 @@ mod tests {
     use super::*;
     use fs4::AsyncFileExt;
     use std::time::Duration;
+
+    /// A store's lock file says what it is and when deleting it is safe.
+    ///
+    /// A zero-byte `lock` reads as residue, and the file is the one thing in
+    /// the store a person is likely to delete by hand.
+    #[tokio::test]
+    async fn a_store_lock_names_itself() {
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
+
+        let contents = tokio::fs::read_to_string(dir.path().join("lock")).await.unwrap();
+
+        assert_eq!(contents, STORE_LOCK_HEADER);
+        drop(guard);
+    }
 
     /// Acquiring, dropping, then re-acquiring the lock must succeed.
     /// This validates RAII drop semantics (both layers released).

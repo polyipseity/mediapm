@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 
 use dashmap::DashMap;
 use mediapm_cas::{CasApi, Hash};
@@ -19,8 +20,8 @@ use super::helpers::{
 use super::retain::{prune_expired_entries, retain_only_tool_dirs};
 use super::types::{CleanupGuard, Metadata, ProvisionedTool};
 use super::{
-    DEFAULT_MAX_CONCURRENT, LOCK_FILE_NAME, METADATA_FILE_NAME, PAYLOAD_DIR_NAME,
-    PRUNE_COOLDOWN_SECONDS, PRUNE_MARKER_FILE_NAME, VERSION,
+    DEFAULT_MAX_CONCURRENT, LEGACY_PRUNE_MARKER_FILE_NAME, LOCK_FILE_NAME, METADATA_FILE_NAME,
+    PAYLOAD_DIR_NAME, PRUNE_COOLDOWN_SECONDS, VERSION,
 };
 
 /// A persistent managed-tool provisioning cache with CAS-backed
@@ -46,6 +47,65 @@ impl<C: std::fmt::Debug> std::fmt::Debug for ProvisionCache<C> {
             .field("semaphore", &self.semaphore)
             .finish()
     }
+}
+
+/// Instant of the last automatic prune sweep this process started.
+///
+/// The cooldown lives in the process that does the work. A file beside the
+/// tools root used to record it, which let a process inherit a stamp written by
+/// a process that had already swept, and left a file in the tree that read as
+/// residue.
+static LAST_AUTOMATIC_SWEEP: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
+
+/// Claims the next automatic sweep, answering whether this call may run it.
+///
+/// The claim is taken before the sweep starts, so two concurrent materializes
+/// cannot both sweep and the second one does not wait for the first. A claimed
+/// sweep that then fails is not retried until the cooldown elapses again, which
+/// is the same bargain a timestamped file made: the work is bounded, the entry
+/// is pruned on a later pass, and no caller is made to wait on it.
+///
+/// A fresh process answers `true` on its first call, because there is no
+/// earlier sweep to be inside the cooldown of.
+fn claim_automatic_sweep() -> bool {
+    with_last_sweep(|last| {
+        let now = Instant::now();
+        if let Some(previous) = *last
+            && now.duration_since(previous).as_secs() < PRUNE_COOLDOWN_SECONDS
+        {
+            return false;
+        }
+        *last = Some(now);
+        true
+    })
+}
+
+/// Records that a sweep is starting, so the next automatic call waits out the
+/// cooldown instead of sweeping immediately after an explicit one.
+fn record_sweep() {
+    with_last_sweep(|last| *last = Some(Instant::now()));
+}
+
+/// Runs `f` on the last-sweep instant.
+///
+/// A poisoned lock yields the value it guards: the instant is a timestamp, and
+/// a panic in another thread leaves it as usable as it was before.
+fn with_last_sweep<T>(f: impl FnOnce(&mut Option<Instant>) -> T) -> T {
+    let mut last = match LAST_AUTOMATIC_SWEEP.lock() {
+        Ok(last) => last,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    f(&mut last)
+}
+
+/// Forgets the last sweep, so the next automatic call behaves as a new
+/// process's first one.
+///
+/// Test-only: the cooldown is process state, and a test is the only caller that
+/// needs to start from a process which has never swept.
+#[cfg(test)]
+fn reset_automatic_sweep() {
+    with_last_sweep(|last| *last = None);
 }
 
 impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
@@ -180,39 +240,30 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
     // -----------------------------------------------------------------------
 
     /// Best-effort prune that never blocks workflow execution.
+    ///
+    /// One sweep per `PRUNE_COOLDOWN_SECONDS` in this process: the claim is
+    /// taken synchronously, and the sweep itself runs on the blocking pool
+    /// where no caller waits for it.
     async fn try_maybe_prune(&self, now: u64) {
-        let marker_path = self.tools_dir.join(PRUNE_MARKER_FILE_NAME);
-
-        // Synchronous cooldown check (single file read — fast enough).
-        if let Ok(raw) = fs::read_to_string(&marker_path)
-            && let Ok(last) = raw.trim().parse::<u64>()
-            && now.saturating_sub(last) < PRUNE_COOLDOWN_SECONDS
-        {
+        if !claim_automatic_sweep() {
             return;
         }
 
-        // Spawn blocking for the full prune sweep.
         let tools_dir = self.tools_dir.clone();
-        let _ = tokio::task::spawn_blocking(move || -> Result<(), ConductorError> {
-            let _ = fs::create_dir_all(&tools_dir);
-            let _ = fs::write(&marker_path, format!("{now}\n"));
-            prune_expired_entries(&tools_dir, now)
-        })
-        .await;
+        let _ = tokio::task::spawn_blocking(move || sweep_expired_entries(&tools_dir, now)).await;
     }
 
     /// Prunes expired entries unconditionally (no cooldown check).
+    ///
+    /// An explicit sweep restarts the cooldown, so the automatic passthrough
+    /// does not immediately repeat the work this call just did.
     async fn prune_internal(&self, now: u64) -> Result<(), ConductorError> {
         let tools_dir = self.tools_dir.clone();
-        let marker_path = tools_dir.join(PRUNE_MARKER_FILE_NAME);
+        record_sweep();
 
-        tokio::task::spawn_blocking(move || -> Result<(), ConductorError> {
-            let _ = fs::create_dir_all(&tools_dir);
-            let _ = fs::write(&marker_path, format!("{now}\n"));
-            prune_expired_entries(&tools_dir, now)
-        })
-        .await
-        .map_err(|join_err| ConductorError::Internal(format!("prune task panicked: {join_err}")))?
+        tokio::task::spawn_blocking(move || sweep_expired_entries(&tools_dir, now)).await.map_err(
+            |join_err| ConductorError::Internal(format!("prune task panicked: {join_err}")),
+        )?
     }
 
     async fn do_extract(
@@ -311,11 +362,190 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
     }
 }
 
+/// Runs one expiry sweep over `tools_dir`, dropping the cooldown stamp an older
+/// build kept there and then pruning what has expired.
+///
+/// The stamp is removed rather than read: nothing in this build consults it, and
+/// a file whose only purpose was to be read by code that no longer exists is the
+/// residue the sweep is there to clear. The removal is best-effort because the
+/// sweep it precedes is the work a caller is waiting on, and a stamp that will
+/// not go is one directory entry rather than a failed prune; the next sweep
+/// tries it again.
+fn sweep_expired_entries(tools_dir: &Path, now: u64) -> Result<(), ConductorError> {
+    let _ = fs::create_dir_all(tools_dir);
+    remove_legacy_prune_marker(tools_dir);
+    prune_expired_entries(tools_dir, now)
+}
+
+/// Removes the cooldown stamp an older build wrote beside the tools root.
+fn remove_legacy_prune_marker(tools_dir: &Path) {
+    let marker = tools_dir.join(LEGACY_PRUNE_MARKER_FILE_NAME);
+    match fs::remove_file(&marker) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                "could not remove the superseded prune stamp '{}': {error}",
+                marker.display()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::provision::LOCK_FILE_HEADER;
     use crate::provision::helpers::link_to_sandbox_filtered;
+
+    /// Serializes the two tests that read and reset the process-wide sweep
+    /// state. Under nextest each test is its own process, so this only matters
+    /// for a `cargo test` run of this module, where a sibling's sweep would
+    /// consume the claim inside these tests' cooldown window.
+    static SWEEP_STATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Builds a cache over a fresh tools root, with a payload in CAS.
+    async fn cache_with_payload() -> (TempDir, ProvisionCache<mediapm_cas::InMemoryCas>) {
+        let tools_dir = mediapm_utils::temp::artifact_dir().expect("tools dir");
+        let cas = Arc::new(mediapm_cas::InMemoryCas::new());
+        cas.put(bytes::Bytes::from_static(b"tool binary content")).await.expect("cas put");
+        let cache = ProvisionCache::new(tools_dir.path().to_path_buf(), cas, None);
+        (tools_dir, cache)
+    }
+
+    /// Writes an entry directory whose metadata says when it was last used.
+    fn seed_entry(tools_dir: &std::path::Path, name: &str, last_used: u64) {
+        let entry = tools_dir.join(name);
+        std::fs::create_dir_all(entry.join(PAYLOAD_DIR_NAME)).expect("payload dir");
+        std::fs::write(entry.join(LOCK_FILE_NAME), b"").expect("lock file");
+        let metadata = format!(
+            "{{\"version\":{VERSION},\"content_map\":{{}},\"lastUsedUnixSeconds\":{last_used},\"execute_bits_verified\":true}}"
+        );
+        std::fs::write(entry.join(METADATA_FILE_NAME), metadata).expect("metadata");
+    }
+
+    /// An extracted entry leaves a lock file a person can identify.
+    ///
+    /// The file's bytes are documentation for whoever finds it in the tools
+    /// root: a blank `lock` reads as residue, and the header says what holds it
+    /// and what deleting it costs.
+    #[tokio::test]
+    async fn a_provision_lock_names_itself() {
+        let (tools_dir, cache) = cache_with_payload().await;
+        let content_map = BTreeMap::new();
+        let guard = cache.materialize("named-tool", &content_map).await.expect("materialize");
+        let lock_path = tools_dir.path().join("named-tool").join(LOCK_FILE_NAME);
+
+        let contents = std::fs::read_to_string(&lock_path).expect("read lock file");
+
+        assert_eq!(contents, LOCK_FILE_HEADER);
+        drop(guard);
+    }
+
+    /// A second extraction of the same entry does not rewrite the header.
+    ///
+    /// The header is written when the lock file is created and never again, so
+    /// the file's bytes are stable: a rewrite would mean the entry is being
+    /// rebuilt, and a reader comparing what it found to what it expected would
+    /// see churn that did not happen.
+    #[tokio::test]
+    async fn the_provision_lock_is_written_once() {
+        let (tools_dir, cache) = cache_with_payload().await;
+        let content_map = BTreeMap::new();
+        let guard =
+            cache.materialize("stable-tool", &content_map).await.expect("first materialize");
+        drop(guard);
+        let lock_path = tools_dir.path().join("stable-tool").join(LOCK_FILE_NAME);
+        let first = std::fs::read(&lock_path).expect("read lock file");
+        // A path the header cannot explain: if a later open rewrote the file,
+        // this text is what a rewrite would have to reproduce.
+        let edited = format!("{}\nsomething a person added\n", LOCK_FILE_HEADER.trim_end());
+        std::fs::write(&lock_path, &edited).expect("edit lock file");
+
+        let guard =
+            cache.materialize("stable-tool", &content_map).await.expect("second materialize");
+        let second = std::fs::read(&lock_path).expect("read lock file again");
+        drop(guard);
+
+        assert_eq!(first, LOCK_FILE_HEADER.as_bytes());
+        assert_eq!(
+            second,
+            edited.as_bytes(),
+            "the lock header is written when the file is created, not on every open"
+        );
+    }
+
+    /// The automatic sweep runs once per cooldown in a process, and a process
+    /// that has not swept yet does sweep.
+    ///
+    /// The cooldown lives in the process, so the first materialize of a run
+    /// reclaims what expired between runs, and the rest of the run does not pay
+    /// for a directory walk each time.
+    #[tokio::test]
+    async fn prune_cooldown_is_process_local() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        let (tools_dir, cache) = cache_with_payload().await;
+        let content_map = BTreeMap::new();
+        seed_entry(tools_dir.path(), "expired-first", 0);
+
+        reset_automatic_sweep();
+        let guard = cache.materialize("first-tool", &content_map).await.expect("materialize");
+        drop(guard);
+        assert!(
+            !tools_dir.path().join("expired-first").exists(),
+            "a process that has not swept yet has to sweep on its first materialize"
+        );
+
+        seed_entry(tools_dir.path(), "expired-second", 0);
+        let guard = cache.materialize("second-tool", &content_map).await.expect("materialize");
+        drop(guard);
+        assert!(
+            tools_dir.path().join("expired-second").exists(),
+            "a second materialize inside the cooldown must not sweep again"
+        );
+
+        reset_automatic_sweep();
+        let guard = cache.materialize("third-tool", &content_map).await.expect("materialize");
+        drop(guard);
+        assert!(
+            !tools_dir.path().join("expired-second").exists(),
+            "a fresh process state sweeps again"
+        );
+    }
+
+    /// The claim itself refuses a second sweep inside the cooldown and grants
+    /// one again once the process state is cleared.
+    #[tokio::test]
+    async fn the_sweep_claim_holds_for_the_cooldown() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        reset_automatic_sweep();
+
+        assert!(claim_automatic_sweep(), "the first claim of a process is granted");
+        assert!(!claim_automatic_sweep(), "a claim inside the cooldown is refused");
+
+        reset_automatic_sweep();
+        assert!(claim_automatic_sweep(), "clearing the state grants the next claim");
+    }
+
+    /// A tools root upgraded in place loses the stamp the older build wrote.
+    ///
+    /// The stamp is not read by this build, so leaving it would leave a file
+    /// whose only reader no longer exists. Best-effort removal is what keeps a
+    /// stamp that will not go from failing the prune it precedes.
+    #[tokio::test]
+    async fn regression_a_legacy_prune_marker_is_removed() {
+        let (tools_dir, cache) = cache_with_payload().await;
+        let marker = tools_dir.path().join(LEGACY_PRUNE_MARKER_FILE_NAME);
+        std::fs::write(&marker, b"0\n").expect("seed legacy stamp");
+
+        cache.prune_expired().await.expect("prune");
+
+        assert!(!marker.exists(), "the superseded prune stamp has to go with the sweep");
+    }
 
     #[test]
     fn link_to_sandbox_filtered_skips_foreign_platform_dirs() {
