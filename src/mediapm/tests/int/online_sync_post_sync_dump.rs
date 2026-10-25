@@ -123,9 +123,10 @@ async fn online_sync_post_sync_dump() {
         .collect();
 
     let hierarchy_root = paths.hierarchy_root_dir;
-    // The media root carries the canonical title the tagged variant resolves to: the online demo's
-    // name templates single-source from `${media.metadata.title}`, and media-tagger writes
-    // MusicBrainz's recording title, which has no artist prefix.
+    // The media root carries the artist followed by the canonical title the tagged variant
+    // resolves to: the online demo's name templates render `${media.metadata.artist} - ` and
+    // `${media.metadata.title}`, and media-tagger writes MusicBrainz's recording title, which
+    // carries no artist of its own.
     let media_folder =
         PathBuf::from(mediapm::demo_hierarchy_spec::online_demo_media_folder_relative());
     let sidecar_info = hierarchy_root.join(&media_folder).join("sidecars/info.json");

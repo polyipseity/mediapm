@@ -369,8 +369,13 @@ const THIN_ICE_TRACK: &str = "Music/Pink Floyd/The Wall/02 - The Thin Ice.m4a";
 /// before any clipping.
 const XTAL_TRACK: &str = "Music/Aphex Twin/Selected Ambient Works 85-92/02 - Xtal.m4a";
 
-/// Media folder entry the online demo materializes, as
-/// `demo_hierarchy_spec::online_demo_media_folder_relative()` spells it.
+/// Media folder entry the materialization scenarios render, shaped like the online demo's
+/// `demo_hierarchy_spec::online_demo_media_folder_relative()`.
+///
+/// The stem keeps the demo's media id and canonical title without the artist prefix the live demo
+/// now renders. These scenarios pin rendered column behaviour at fixed widths and their committed
+/// transcripts are captured against this spelling, so the stand-in stays short of the live name on
+/// purpose.
 ///
 /// The basename is forty-five columns, past the thirty-six the row's label slot
 /// gets at these widths, so the row is the one the elastic `entry_name` exists

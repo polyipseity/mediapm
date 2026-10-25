@@ -22,32 +22,37 @@ use mediapm::{
 
 const MKV_HEADER: &[u8] = &[0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00];
 
-const ONLINE_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "${media.metadata.title} [${media.id}]";
+const ONLINE_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 
-const ONLINE_UNTAGGED_MEDIA_FILE_NAME: &str =
-    "${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
+const ONLINE_UNTAGGED_MEDIA_FILE_NAME: &str = "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
 
 const ONLINE_TAGGED_MEDIA_FILE_NAME: &str =
-    "${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
 
-const ONLINE_EN_VTT_FILE_NAME: &str = "${media.metadata.title} [${media.id}].en.vtt";
+const ONLINE_EN_VTT_FILE_NAME: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt";
 
-const ONLINE_DESCRIPTION_FILE_NAME: &str = "${media.metadata.title} [${media.id}].description.txt";
+const ONLINE_DESCRIPTION_FILE_NAME: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt";
 
-const ONLINE_INFOJSON_FILE_NAME: &str = "${media.metadata.title} [${media.id}].info.json";
+const ONLINE_INFOJSON_FILE_NAME: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json";
 
 const ONLINE_THUMBNAIL_RENAME_REPLACEMENT: &str =
-    "${media.metadata.title} [${media.id}].thumbnail.$1";
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1";
 
-const ONLINE_LINK_RENAME_REPLACEMENT: &str = "${media.metadata.title} [${media.id}].link.$1";
+const ONLINE_LINK_RENAME_REPLACEMENT: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1";
 
 fn demo_metadata_literals() -> BTreeMap<String, MediaMetadataValue> {
     BTreeMap::from([
-        // The online demo's naming family single-sources from `${media.metadata.title}`, which
-        // resolves to the canonical MusicBrainz recording title once tagging has run. No separate
-        // artist entry: no template interpolates it, and the canonical title carries no artist.
-        // The upstream provider title, which does embed one, belongs to the pre-tagging artifact
-        // and to the yt-dlp-named sidecar links.
+        // The online demo's naming family renders `${media.metadata.artist} - ` followed by
+        // `${media.metadata.title}`, and the title is the canonical MusicBrainz recording title once
+        // tagging has run: the recording title carries no artist of its own, which is why both are
+        // separate entries. The upstream provider title, which embeds the artist a second time,
+        // belongs to the pre-tagging artifact and to the yt-dlp-named sidecar links.
+        ("artist".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_ARTIST.to_string())),
         ("title".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_TITLE.to_string())),
         ("video_ext".to_string(), MediaMetadataValue::Literal(".mkv".to_string())),
         ("id".to_string(), MediaMetadataValue::Literal("dQw4w9WgXcQ".to_string())),
@@ -110,10 +115,12 @@ fn assert_materialized_content_matches_seeds(
 ) -> Result<(), String> {
     let media_folder =
         hierarchy_root.join(mediapm::demo_hierarchy_spec::online_demo_media_folder_relative());
-    // Root names follow the media metadata title, which is the canonical MusicBrainz recording
-    // title: the hermetic seed stands in for what a tagged run resolves. The upstream provider
-    // title, which embeds the artist, names only the yt-dlp-named sidecar links below.
-    let canonical_title = DEMO_METADATA_TITLE;
+    // Root names render `${media.metadata.artist} - ${media.metadata.title}`, where the title is
+    // the canonical MusicBrainz recording title: the hermetic seed stands in for what a tagged run
+    // resolves. The upstream provider title, which embeds the artist a second time, names only the
+    // yt-dlp-named sidecar links below.
+    let canonical_stem = format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE}");
+    let canonical_title = canonical_stem.as_str();
     // Hierarchy templates use `${media.id}` which resolves to the full media ID
     // (e.g., `youtube.dQw4w9WgXcQ`), not the raw yt-dlp video ID.
     let media_id = ONLINE_DEMO_MEDIA_ID;

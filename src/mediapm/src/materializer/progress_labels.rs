@@ -300,11 +300,11 @@ mod tests {
     /// A truncated `entry_name` always ends in the file's extension.
     ///
     /// Regression pin for the demo naming fix: the materialized file basename
-    /// is a long single-source title (`<title> [<media-id>].mkv`, where the
-    /// title is the canonical recording title and carries no artist), and a
-    /// narrowing terminal must still
-    /// show its `.mkv` tail so the row names the format it writes. This is the
-    /// end-shown truncation the materialization screen depends on.
+    /// is a long single-source title (`${artist} - ${title} [${media-id}].mkv`), and a
+    /// narrowing terminal must still show its `.mkv` tail so the row names the format it
+    /// writes. The fixture below is upstream's own provider title, the longest spelling the
+    /// family takes; a truncated name is cut the same way whatever produced its stem. This is
+    /// the end-shown truncation the materialization screen depends on.
     #[test]
     fn truncated_entry_name_keeps_its_extension() {
         let label = MaterializationBarLabel {

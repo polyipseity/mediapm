@@ -1,5 +1,5 @@
 ---
-description: "Use when editing demo hierarchy golden fixtures, demo_hierarchy_spec helpers, mediapm_demo_online post-sync content assertions, or online hierarchy e2e seeds. Documents the two online link filename formats (yt-dlp sidecar vs mediapm root projection), the canonical-title naming family and its title provenance, which basenames are exact and which match the sidecar title by normalized prefix, the per-artifact tag split, and the content verification strategy (exact bytes in e2e, resilient structural checks in live demo)."
+description: "Use when editing demo hierarchy golden fixtures, demo_hierarchy_spec helpers, mediapm_demo_online post-sync content assertions, or online hierarchy e2e seeds. Documents the two online link filename formats (yt-dlp sidecar vs mediapm root projection), the artist-prefixed canonical naming family and where the artist comes from, which basenames are exact and which match the sidecar title by normalized prefix, the per-artifact tag split, and the content verification strategy (exact bytes in e2e, resilient structural checks in live demo)."
 name: "Demo Hierarchy Golden and Content Verification Contract"
 applyTo: "src/mediapm/src/demo_hierarchy_spec.rs,src/mediapm/tests/fixtures/demo_hierarchy_golden.json,src/mediapm/tests/int/demo_hierarchy_golden.rs,src/mediapm/tests/int/online_sync_post_sync_dump.rs,src/mediapm/tests/e2e/demo_online_hierarchy_materialization.rs,src/mediapm/examples/mediapm_demo_online.rs,src/mediapm/examples/support/materialization.rs"
 ---
@@ -13,15 +13,15 @@ The online demo (`mediapm_demo_online`) materializes a large hierarchy under `<a
 | Location | Format family | Title provenance | Bracket id | Example basename |
 | -------- | ------------- | ---------------- | ---------- | ---------------- |
 | `sidecars/links/` | yt-dlp output template (`%(title)s [%(id)s].{ext}` after materializer strip) | LIVE upstream provider title, which embeds the artist | Raw video id `dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url` |
-| Media folder root | mediapm hierarchy `rename_files` on links `MediaFolder` | Canonical metadata title: the MusicBrainz recording title, no artist | Media id `youtube.dQw4w9WgXcQ` | `Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url` |
+| Media folder root | mediapm hierarchy `rename_files` on links `MediaFolder` | Artist prefix from `${media.metadata.artist}` plus the canonical metadata title | Media id `youtube.dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url` |
 
-Sidecar links are yt-dlp-native (`tools/workflows/yt_dlp.rs`). Root projections are mediapm-config-owned (`${media.metadata.title} [${media.id}].link.$1`). Every name mediapm renders single-sources its stem from `${media.metadata.title}`, so the root projection template must not prepend `${media.metadata.artist}`: the canonical recording title carries no artist, and adding one breaks that single source and re-introduces the artist the upstream title already embedded. The materializer strips `downloads/` and `__mediapm__` from folder-variant ZIP members but does **not** rewrite yt-dlp basenames into root projection shape.
+Sidecar links are yt-dlp-native (`tools/workflows/yt_dlp.rs`). Root projections are mediapm-config-owned (`${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1`). Every name mediapm renders draws its title half from `${media.metadata.title}` and its artist half from `${media.metadata.artist}`: the canonical recording title carries no artist, so the artist has to be its own metadata entry, and a template that relies on the title to carry it would drop the artist from every root name. The materializer strips `downloads/` and `__mediapm__` from folder-variant ZIP members but does **not** rewrite yt-dlp basenames into root projection shape.
 
-## One naming family, two titles
+## One naming family, one title
 
-Every name mediapm renders — the media root folder, the video leaves, the root link projections — single-sources its stem from `${media.metadata.title}`, and `title` resolves to the tagged `video` variant first. media-tagger writes MusicBrainz's recording title, which carries no artist, so the canonical materialized name is `Never Gonna Give You Up [youtube.dQw4w9WgXcQ]`. Only the yt-dlp-named sidecar links keep the upstream title, because mediapm never renames those.
+Every name mediapm renders — the media root folder, the video leaves, the subtitle/description/info leaves, the thumbnail projections, the root link projections — renders `${media.metadata.artist} - ${media.metadata.title}`, and `title` resolves to the tagged `video` variant first. media-tagger writes MusicBrainz's recording title, so the canonical materialized name is `Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]`. Only the yt-dlp-named sidecar links keep the upstream title, which happens to embed the artist too but appends its own suffixes.
 
-A run that never reached the tagging steps resolves the upstream title instead and materializes an artist-prefixed tree. That run is a failed run: `assert_metadata_files_present` pins the media root against the canonical basename (`expected_demo_media_root_name`) and rejects any artist in it, and the tagging step's absence fails the workflow rather than downgrading the assertion.
+A run that never reached the tagging steps resolves the upstream title instead, which appends `(Official Video)` and `(4K Remaster)` after a second copy of the artist. That run is a failed run: `assert_metadata_files_present` compares the media root against the canonical basename (`expected_demo_media_root_name`), which no pre-tagging name can match, so the tagging step's absence fails the assertion rather than being absorbed.
 
 ## Assertions (which basenames are exact)
 
@@ -36,12 +36,13 @@ All three extensions (`url`, `webloc`, `desktop`) are required in both locations
 
 ## Reinforcement rules
 
-1. Do not conflate the two formats — sidecar bracket id is raw `dQw4w9WgXcQ` and its title is the upstream provider title; root projection bracket id is `youtube.dQw4w9WgXcQ` with `.link.` before the extension and its title is the canonical one.
+1. Do not conflate the two formats — sidecar bracket id is raw `dQw4w9WgXcQ` and its title is the upstream provider title; root projection bracket id is `youtube.dQw4w9WgXcQ` with `.link.` before the extension and its title is the artist-prefixed canonical one.
 2. Keep the live sidecar check on the family: the raw video id and the extension are exact, and the title half is matched by normalized prefix. Do not reduce it to a `*.link.*` glob or a suffix-only assert — the family is what tells a yt-dlp sidecar link apart from a root projection renamed into `sidecars/links/`.
 3. Do not add materializer logic to rename sidecar link basenames into root projection shape.
 4. Assert each artifact's tags separately: the untagged file carries upstream's own tags, the tagged file carries the canonical ones. A tag assertion that applies to both artifacts is wrong for one of them.
-5. When extending link coverage: update helpers in `demo_hierarchy_spec.rs`, golden JSON, `golden_fixture_link_paths_match_helpers`, then the live check — exact helper basenames in the hermetic tests, family-exact plus normalized-prefix title in the live demo.
-6. Do not modify hermetic golden fixtures (`tests/fixtures/demo_hierarchy_golden.json`, `demo_hierarchy_spec.rs`) casually — they are the offline contract for the materialized tree; update fixtures and the helper-linkage test in the same commit as a materialization change.
+5. A root template renders the artist and the title from their own metadata entries. Do not drop `${media.metadata.artist}` from a root name, and do not add it to a yt-dlp sidecar name — the sidecar family is upstream's, and mediapm never renames it.
+6. When extending link coverage: update helpers in `demo_hierarchy_spec.rs`, golden JSON, `golden_fixture_link_paths_match_helpers`, then the live check — exact helper basenames in the hermetic tests, family-exact plus normalized-prefix title in the live demo.
+7. Do not modify hermetic golden fixtures (`tests/fixtures/demo_hierarchy_golden.json`, `demo_hierarchy_spec.rs`) casually — they are the offline contract for the materialized tree; update fixtures and the helper-linkage test in the same commit as a materialization change.
 
 ## Content verification assertions
 

@@ -14,8 +14,9 @@
 //! Sidecar links under `sidecars/links/` use the **yt-dlp output basename** (`%(title)s [%(id)s].{ext}`),
 //! so their title is the upstream provider title, which embeds the artist.
 //! Root link projections use the **mediapm hierarchy rename** shape (`… [{media.id}].link.{ext}`),
-//! so their title is the media metadata title, which is the canonical `MusicBrainz` recording title
-//! and carries no artist.
+//! so their title is the media metadata title, rendered as the artist-prefixed canonical
+//! `MusicBrainz` recording title: the recording title itself carries no artist, so the artist is a
+//! separate metadata entry.
 //! Helpers encode both exact forms for golden JSON, e2e seeds, and live demo asserts — see
 //! `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
@@ -39,11 +40,10 @@ pub const OFFLINE_DEMO_PLAYLIST: &str = "local-demo.m3u8";
 /// Online demo playlist leaf under `playlists/`.
 pub const ONLINE_DEMO_PLAYLIST: &str = "rickroll.m3u8";
 
-/// Returns the Jellyfin-style media folder name the **offline** demo's template renders.
+/// Returns the Jellyfin-style media folder name a `"${artist} - ${title} [${id}]"` template renders.
 ///
-/// The offline demo declares `"${media.metadata.artist} - ${media.metadata.title} [${media.id}]"`,
-/// so its folder carries the artist explicitly. The online demo's templates name only
-/// `${media.metadata.title}`, which is why it needs [`online_demo_media_folder_relative`] instead.
+/// Both demos declare that template, so both folder names carry the artist explicitly. The online
+/// demo reaches the same shape through [`online_demo_media_folder_name`].
 #[must_use]
 pub fn demo_media_folder_name(artist: &str, title: &str, media_id: &str) -> String {
     format!("{artist} - {title} [{media_id}]")
@@ -60,13 +60,14 @@ pub fn offline_demo_media_folder_relative() -> String {
 
 /// Returns online demo media folder name under the library root.
 ///
-/// The online demo's naming family single-sources from `${media.metadata.title}`, which resolves to
-/// the canonical `MusicBrainz` recording title once tagging has run — no artist prefix. A run that
-/// never reached the tagging steps resolves the upstream provider title instead, which embeds the
-/// artist; that run is a failed run, so this canonical form is the one the golden records.
+/// The stem is the artist-prefixed canonical title: `${media.metadata.artist} - ${media.metadata.title}`.
+/// The canonical `MusicBrainz` recording title carries no artist, so the artist is a separate
+/// metadata entry rather than part of the title text. A run that never reached
+/// the tagging steps resolves the upstream provider title instead, which appends its own suffixes;
+/// that run is a failed run, so this canonical form is the one the golden records.
 #[must_use]
 pub fn online_demo_media_folder_name() -> String {
-    format!("{DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}]")
+    format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}]")
 }
 
 /// Returns online demo media folder relative path under hierarchy root.
@@ -114,12 +115,14 @@ pub fn online_demo_sidecar_link_filename(extension: &str) -> String {
 
 /// mediapm root link projection basename (`…[{media.id}].link.{ext}`).
 ///
-/// The title here is the **canonical** media metadata title, because mediapm renders this name
-/// through its own `rename_files` template; the `link` projections are therefore the one link
-/// family whose title differs from the sidecar family's.
+/// The stem is the artist-prefixed canonical title, because mediapm renders this name through its
+/// own `rename_files` template; the `link` projections are therefore the one link family whose
+/// title provenance differs from the sidecar family's.
 #[must_use]
 pub fn online_demo_root_link_filename(extension: &str) -> String {
-    format!("{DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].link.{extension}")
+    format!(
+        "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{ONLINE_DEMO_MEDIA_ID}].link.{extension}"
+    )
 }
 
 /// Golden-relative path for one online demo sidecar link file under `sidecars/links/`.
@@ -393,16 +396,54 @@ mod tests {
     fn online_demo_root_link_filenames_are_canonical() {
         assert_eq!(
             online_demo_root_link_filename("url"),
-            "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url"
+            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url"
         );
         assert_eq!(
             online_demo_root_link_filename("webloc"),
-            "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc"
+            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc"
         );
         assert_eq!(
             online_demo_root_link_filename("desktop"),
-            "Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop"
+            "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop"
         );
+    }
+
+    /// Pins the artist-prefixed naming family against the yt-dlp sidecar family.
+    ///
+    /// Every name mediapm renders starts with the artist and the bare canonical title; the family
+    /// yt-dlp names keeps the raw video id, because mediapm never renames those files. A drift in
+    /// either direction would let the golden tree describe one shape while the demo writes another.
+    #[test]
+    fn strict_online_demo_helpers_agree_on_the_artist_prefix() {
+        let prefix = format!("{DEMO_METADATA_ARTIST} - ");
+
+        let folder_name = online_demo_media_folder_name();
+        assert!(
+            folder_name.starts_with(&prefix),
+            "media folder '{folder_name}' must start with '{prefix}'"
+        );
+        assert!(folder_name.ends_with(&format!("[{ONLINE_DEMO_MEDIA_ID}]")));
+
+        for extension in ["url", "webloc", "desktop"] {
+            let root_link = online_demo_root_link_filename(extension);
+            assert!(
+                root_link.starts_with(&prefix),
+                "root link '{root_link}' must start with '{prefix}'"
+            );
+            assert!(root_link.ends_with(&format!("[{ONLINE_DEMO_MEDIA_ID}].link.{extension}")));
+        }
+
+        assert!(online_demo_yt_dlp_provider_title().starts_with(&prefix));
+        for extension in ["url", "webloc", "desktop"] {
+            let sidecar_link = online_demo_sidecar_link_filename(extension);
+            assert!(
+                sidecar_link.ends_with(&format!("[{ONLINE_DEMO_YT_DLP_VIDEO_ID}].{extension}")),
+                "sidecar link '{sidecar_link}' must keep the raw yt-dlp video id"
+            );
+        }
+
+        assert!(!folder_name.contains("(Official Video)"));
+        assert!(!folder_name.contains("(4K Remaster)"));
     }
 
     #[test]

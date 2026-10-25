@@ -17,8 +17,9 @@
 //! [`mediapm::demo_hierarchy_spec`]. Offline demo tree: see `mediapm_demo`.
 //!
 //! Shared constants: artist `Rick Astley`, title `Never Gonna Give You Up`, library root `music videos`.
-//! The title is the canonical `MusicBrainz` recording title, which the media root basename uses once
-//! tagging has run; upstream's own title embeds the artist and names the yt-dlp sidecar links.
+//! Every name mediapm renders carries the artist prefix and the canonical `MusicBrainz` recording
+//! title, which itself carries no artist; upstream's own title embeds both and names the yt-dlp
+//! sidecar links.
 //!
 //! **Media id:** `youtube.dQw4w9WgXcQ` · **Raw yt-dlp video id:** `dQw4w9WgXcQ`
 //!
@@ -27,7 +28,7 @@
 //! ```text
 //! media/
 //! ├── music videos/
-//! │   └── Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/
+//! │   └── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]/
 //! │       ├── sidecars/                                    [Folder]
 //! │       │   ├── subtitles/                             [MediaFolder → subtitles] NON-EMPTY
 //! │       │   ├── subtitles.en.vtt                         [Media → subtitles_en]
@@ -39,15 +40,15 @@
 //! │       │   ├── archive.txt                              [Media → archive]
 //! │       │   ├── description.txt                          [Media → description]
 //! │       │   └── info.json                                [Media → infojson]
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].untagged.mkv   # video_untagged
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].mkv            # video (tagged + replaygain)
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].en.vtt
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].description.txt
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].info.json
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].thumbnail.<ext>   # glob `*.thumbnail.*`
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url          # mediapm rename format
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc       # mediapm rename format
-//! │       ├── Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop      # mediapm rename format
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].untagged.mkv   # video_untagged
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].mkv            # video (tagged + replaygain)
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].en.vtt
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].description.txt
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].info.json
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].thumbnail.<ext>   # glob `*.thumbnail.*`
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url          # mediapm rename format
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.webloc       # mediapm rename format
+//! │       ├── Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.desktop      # mediapm rename format
 //! │       └── folder.<ext>                                    # glob `folder.*` (id `.thumbnails.folder`)
 //! └── playlists/
 //!     └── rickroll.m3u8                                      # playlist, 2 entries
@@ -58,7 +59,7 @@
 //! | Location | Format owner | Title provenance | Bracket id |
 //! | -------- | ------------ | ---------------- | ---------- |
 //! | `sidecars/links/` | yt-dlp `%(title)s [%(id)s].{ext}` | LIVE provider title, artist included | `dQw4w9WgXcQ` |
-//! | Media folder root | mediapm `rename_files` → `.link.$1` | Canonical metadata title, no artist | `youtube.dQw4w9WgXcQ` |
+//! | Media folder root | mediapm `rename_files` → `.link.$1` | Artist-prefixed canonical title | `youtube.dQw4w9WgXcQ` |
 //!
 //! Sidecar links under `sidecars/links/` carry the LIVE yt-dlp provider title read from
 //! `sidecars/info.json` (`title` key), so post-sync asserts never pin that text to a stand-in: they
@@ -67,9 +68,10 @@
 //! upstream's does.
 //!
 //! Media-root projections (subtitles, thumbnails, links) are named by mediapm's own templates, which
-//! single-source their stem from `${media.metadata.title}`. That resolves to the canonical
-//! `MusicBrainz` recording title once tagging has run, so a root name carries no artist prefix while a
-//! sidecar link basename does — the two families differ in provenance, not just in the bracket id.
+//! render `${media.metadata.artist} - ${media.metadata.title}`. The canonical `MusicBrainz`
+//! recording title carries no artist, so the artist comes from its own metadata entry; a root name
+//! therefore carries the artist prefix, and so does the sidecar link basename — the two families
+//! differ in provenance, not in whether the artist appears.
 //! Their title text is live metadata, so post-sync asserts resolve it from the materialized tree
 //! instead of pinning it; only the media root basename itself is pinned, by
 //! `expected_demo_media_root_name`.
@@ -84,10 +86,10 @@
 //!
 //! ```text
 //! music videos/                                           [Folder]
-//! └── ${title} [${id}]/                                   [Folder, id=youtube.dQw4w9WgXcQ.media_folder]
+//! └── ${artist} - ${title} [${id}]/                       [Folder, id=youtube.dQw4w9WgXcQ.media_folder]
 //!     ├── sidecars/                                       [Folder: subtitles/, thumbnails/, links/, flat sidecars]
-//!     ├── ${title} [${id}].untagged${video_ext}           [Media, variant=video_untagged]
-//!     ├── ${title} [${id}]${video_ext}                    [Media, variant=video]
+//!     ├── ${artist} - ${title} [${id}].untagged${video_ext}   [Media, variant=video_untagged]
+//!     ├── ${artist} - ${title} [${id}]${video_ext}            [Media, variant=video]
 //!     ├── (path="")                                         [MediaFolder thumbnails → .thumbnail.$1]
 //!     ├── (path="")                                         [MediaFolder links → .link.$1]
 //!     └── (path="")                                         [MediaFolder id `.thumbnails.folder` → folder.$1]
@@ -166,16 +168,16 @@ const DEMO_METADATA_ARTIST: &str = "Rick Astley";
 
 const DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT: &str = ".mkv";
 
-const DEMO_OUTPUT_FILE_NAME_BASE: &str = "${media.metadata.title} [${media.id}]";
+const DEMO_OUTPUT_FILE_NAME_BASE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 
 /// yt-dlp `--sub-langs` selector for the demo download step (shared by folder + scoped variants).
 const DEMO_SAFE_SUB_LANGS: &str = "en";
 
-const DEMO_UNTAGGED_MEDIA_FILE_NAME: &str =
-    "${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
+const DEMO_UNTAGGED_MEDIA_FILE_NAME: &str = "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
 
 const DEMO_TAGGED_MEDIA_FILE_NAME: &str =
-    "${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
 
 const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
     MaterializationMethod::Hardlink,
@@ -190,9 +192,11 @@ fn final_demo_output_variant() -> &'static str {
 
 const DEMO_LIBRARY_ROOT: &str = "music videos";
 
-const DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "${media.metadata.title} [${media.id}]";
+const DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 
-const DEMO_HIERARCHY_ROOT_TEMPLATE: &str = "music videos/${media.metadata.title} [${media.id}]";
+const DEMO_HIERARCHY_ROOT_TEMPLATE: &str =
+    "music videos/${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 
 /// Link extensions yt-dlp writes for one video, in the order the post-sync checks name them.
 const DEMO_LINK_EXTENSIONS: [&str; 3] = ["url", "webloc", "desktop"];
@@ -209,8 +213,16 @@ const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
     ("archive_sidecars", "archive", "sidecars/archive.txt"),
     ("description_sidecars", "description", "sidecars/description.txt"),
     ("infojson_sidecars", "infojson", "sidecars/info.json"),
-    ("description_media", "description", "${media.metadata.title} [${media.id}].description.txt"),
-    ("infojson_media", "infojson", "${media.metadata.title} [${media.id}].info.json"),
+    (
+        "description_media",
+        "description",
+        "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt",
+    ),
+    (
+        "infojson_media",
+        "infojson",
+        "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json",
+    ),
     (
         "subtitles_en_media",
         DEMO_ROOT_SELECTED_SUBTITLE_VARIANT,
@@ -220,7 +232,8 @@ const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
 
 const DEMO_ROOT_SELECTED_SUBTITLE_VARIANT: &str = "subtitles_en";
 
-const DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME: &str = "${media.metadata.title} [${media.id}].en.vtt";
+const DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt";
 
 const DEMO_SIDECAR_SELECTED_SUBTITLE_FILE_NAME: &str = "sidecars/subtitles.en.vtt";
 
@@ -510,20 +523,26 @@ fn emit_watchdog_notice(message: &str) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DemoResolvedMetadata {
-    /// Canonical metadata title, parsed back out of the materialized media root's own name.
+    /// Canonical metadata title, stripped of the artist prefix the materialized name carries.
     ///
-    /// The online demo's name templates single-source their stem from `${media.metadata.title}`,
-    /// so every root-level projection renders this title. It is the `MusicBrainz` recording title
-    /// once tagging has run and the upstream provider title otherwise, which is why
-    /// `assert_metadata_files_present` pins the media root against the canonical form.
+    /// The online demo's name templates render `${media.metadata.artist} - ${media.metadata.title}`,
+    /// so every root-level projection resolves this title behind that prefix. It is the
+    /// `MusicBrainz` recording title once tagging has run and the upstream provider title
+    /// otherwise, which is why `assert_metadata_files_present` pins the media root against the
+    /// canonical form.
     title: String,
+    /// Canonical artist prefix, parsed back out of the materialized media root's own name.
+    ///
+    /// The recording title carries no artist, so the artist is its own metadata entry and the
+    /// prefix is what puts it into the name.
+    artist: String,
     /// yt-dlp provider title (`info.json` `title` key).
     ///
     /// This is the LIVE basename stem for `sidecars/links/` files:
     /// `{provider_title} [{video_id}].{ext}`, and it embeds the artist because upstream's does.
     /// It is read from the infojson instead of a hardcoded stand-in so live yt-dlp title drift
     /// does not break the post-sync asserts. The root link projections do **not** use it: mediapm
-    /// renders those from `${media.metadata.title}`.
+    /// renders those from its own metadata entries.
     provider_title: String,
     video_id: String,
     media_id: String,
@@ -554,25 +573,32 @@ fn require_non_empty_json_string(
 #[must_use]
 fn resolve_demo_metadata_template(template: &str, metadata: &DemoResolvedMetadata) -> String {
     template
+        .replace("${media.metadata.artist}", &metadata.artist)
         .replace("${media.metadata.title}", &metadata.title)
         .replace("${media.metadata.video_id}", &metadata.video_id)
         .replace("${media.id}", &metadata.media_id)
         .replace("${media.metadata.video_ext}", &metadata.video_ext)
 }
 
-fn parse_jellyfin_root_folder_name(folder_name: &str) -> Option<(String, String)> {
-    let (title_segment, media_id_segment) = folder_name.rsplit_once(" [")?;
+/// Splits a materialized folder name into its artist, canonical title and media id.
+///
+/// The name mediapm renders is `<artist> - <title> [<media-id>]`. The artist prefix is required:
+/// a name without it did not come from the demo's templates, and refusing here keeps the failure
+/// at the shape check instead of letting a later equality pass on a wrong name.
+fn parse_jellyfin_root_folder_name(folder_name: &str) -> Option<(String, String, String)> {
+    let (stem, media_id_segment) = folder_name.rsplit_once(" [")?;
     let media_id = media_id_segment.strip_suffix(']')?.trim();
-    // The basename single-sources from `${media.metadata.title}`: the canonical MusicBrainz
-    // recording title once tagging has run, or the upstream provider title — which embeds the
-    // artist — in a run that never reached the tagging steps. The whole segment before
-    // ` [<media-id>]` is the title either way; never split it back apart on ` - `.
-    let title = title_segment.trim();
-    if title.is_empty() || media_id.is_empty() {
+    let stem = stem.trim();
+    if stem.is_empty() || media_id.is_empty() {
+        return None;
+    }
+    let artist_prefix = format!("{DEMO_METADATA_ARTIST} - ");
+    let title = stem.strip_prefix(&artist_prefix)?.trim();
+    if title.is_empty() {
         return None;
     }
 
-    Some((title.to_string(), media_id.to_string()))
+    Some((DEMO_METADATA_ARTIST.to_string(), title.to_string(), media_id.to_string()))
 }
 
 fn load_resolved_demo_metadata(interpolated_root: &Path) -> ExampleResult<DemoResolvedMetadata> {
@@ -587,18 +613,19 @@ fn load_resolved_demo_metadata(interpolated_root: &Path) -> ExampleResult<DemoRe
             )
         })?;
 
-    let (folder_title, media_id) =
-        parse_jellyfin_root_folder_name(folder_name).ok_or_else(|| {
+    let (artist, folder_title, media_id) = parse_jellyfin_root_folder_name(folder_name)
+        .ok_or_else(|| {
             format!(
-                "expected interpolated media root '{}' to match '<title> [<media-id>]'",
+                "expected interpolated media root '{}' to match '<artist> - <title> [<media-id>]'",
                 interpolated_root.display()
             )
         })?;
 
     Ok(DemoResolvedMetadata {
-        // The hierarchy filename template single-sources from `title`, so treat
-        // the interpolated folder title as source-of-truth.
+        // The hierarchy filename template renders the artist and the title from their own metadata
+        // entries, so treat the interpolated folder name as source-of-truth for both halves.
         title: folder_title,
+        artist,
         provider_title: require_non_empty_json_string(
             &payload,
             DEMO_METADATA_TITLE_KEY,
@@ -1231,7 +1258,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     MediaMetadataValue::Fallback(vec![
                         // The tagged `video` variant: yt-dlp produces it, media-tagger redefines it
                         // with MusicBrainz's recording title, and rsgain redefines it once more.
-                        // Every name template single-sources from this key, so the materialized
+                        // Every name template renders this key behind the artist-prefixed stem,
+                        // so the materialized
                         // tree carries the canonical title once tagging has run.
                         MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
                             variant: "video".to_string(),
@@ -1239,8 +1267,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                             transform: None,
                         }),
                         // A run that never reached the tagging steps resolves the upstream download
-                        // instead, whose title embeds the artist. That run fails its post-sync
-                        // assertion rather than silently materializing an artist-prefixed tree.
+                        // instead, whose title embeds the artist again and appends its own suffixes.
+                        // That run fails its post-sync
+                        // assertion rather than silently materializing an upstream-titled tree.
                         MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
                             variant: "infojson".to_string(),
                             metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
@@ -1396,7 +1425,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         variants: vec!["thumbnails".to_string()],
         rename_files: vec![HierarchyFolderRenameRule {
             pattern: "^.*\\.([^.]+)$".to_string(),
-            replacement: "${media.metadata.title} [${media.id}].thumbnail.$1".to_string(),
+            replacement:
+                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1"
+                    .to_string(),
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
@@ -1413,7 +1444,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         variants: vec!["links".to_string()],
         rename_files: vec![HierarchyFolderRenameRule {
             pattern: "^.*\\.([^.]+)$".to_string(),
-            replacement: "${media.metadata.title} [${media.id}].link.$1".to_string(),
+            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1"
+                .to_string(),
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
@@ -2001,9 +2033,10 @@ fn assert_flat_media_root_sidecar_families(
 ) -> ExampleResult<()> {
     // Root projections carry the media-id suffix (` [{media.id}].`) from the hierarchy
     // rename templates; the title text before it is live metadata and is NOT asserted.
-    let Some((_, expected_media_id)) = parse_jellyfin_root_folder_name(expected_output_base) else {
+    let Some((_, _, expected_media_id)) = parse_jellyfin_root_folder_name(expected_output_base)
+    else {
         return Err(format!(
-            "expected media output base '{expected_output_base}' to match '<title> [<media-id>]'"
+            "expected media output base '{expected_output_base}' to match '<artist> - <title> [<media-id>]'"
         )
         .into());
     };
@@ -2920,14 +2953,14 @@ fn assert_untagged_media_metadata(path: &Path, provider_title: &str) -> ExampleR
     Ok(())
 }
 
-/// Canonical media-root basename for the online demo: the `MusicBrainz` recording title.
+/// Canonical media-root basename for the online demo: the artist-prefixed recording title.
 ///
-/// The hierarchy templates single-source their basename stem from `${media.metadata.title}`,
-/// so this is the canonical form of every materialized name once tagging has run. Upstream's
-/// own title embeds the artist, which is why the same template renders an artist-prefixed name
-/// in a run that never reached the tagging steps.
+/// The hierarchy templates render `${media.metadata.artist} - ${media.metadata.title}`, and the
+/// title itself is the `MusicBrainz` recording title, which carries no artist. Upstream's own title
+/// embeds the artist and appends its own suffixes, which is why this pinned canonical form is the
+/// assertion that tagging ran rather than the presence or absence of an artist.
 fn expected_demo_media_root_name() -> String {
-    format!("{DEMO_EXPECTED_TITLE} [{DEMO_MEDIA_ID}]")
+    format!("{DEMO_METADATA_ARTIST} - {DEMO_EXPECTED_TITLE} [{DEMO_MEDIA_ID}]")
 }
 
 fn resolve_interpolated_demo_root(hierarchy_root: &Path) -> ExampleResult<PathBuf> {
@@ -3008,9 +3041,9 @@ fn assert_file_extension(
 
 /// Asserts the media root carries the canonical basename and that its sibling names derive from it.
 ///
-/// The canonical basename is the `MusicBrainz` recording title, which carries no artist, while
-/// upstream's title embeds one; an artist in this name is therefore the fingerprint of a run
-/// whose names came from the pre-tagging variant.
+/// The canonical basename is the artist followed by the `MusicBrainz` recording title. Upstream's
+/// title embeds the artist again and appends its own suffixes, so a parenthetical or a doubled
+/// artist in this name is the fingerprint of a run whose names came from the pre-tagging variant.
 fn assert_metadata_files_present(
     interpolated_root: &Path,
     resolved_metadata: &DemoResolvedMetadata,
@@ -3028,23 +3061,14 @@ fn assert_metadata_files_present(
         .into());
     }
 
-    // The canonical basename is the MusicBrainz recording title, which carries no
-    // artist; upstream's title embeds one. So an exact match against the canonical
-    // base is the assertion that tagging ran, and the artist check below guards
-    // `expected_demo_media_root_name` itself — it would fail if that helper ever
-    // grew an artist prefix, before the equality above could hide it.
-    // A run that never reached the tagging steps is a failed run, not a run whose
-    // names are allowed to differ.
+    // The canonical basename is the artist followed by the MusicBrainz recording title, and this
+    // equality is the assertion that tagging ran: a run that never reached the tagging steps
+    // resolves upstream's title, which appends `(Official Video)` and `(4K Remaster)` after a second
+    // copy of the artist, so its name matches this one in no part.
     let canonical_base = expected_demo_media_root_name();
     if resolved_output_base != canonical_base {
         return Err(format!(
-            "[metadata] materialized basename '{resolved_output_base}' must be the canonical title '{canonical_base}'"
-        )
-        .into());
-    }
-    if resolved_output_base.contains(DEMO_METADATA_ARTIST) {
-        return Err(format!(
-            "[metadata] materialized basename '{resolved_output_base}' must not carry '{DEMO_METADATA_ARTIST}': the canonical recording title has no artist prefix"
+            "[metadata] materialized basename '{resolved_output_base}' must be the canonical title '{canonical_base}': the tagged variant resolves MusicBrainz's recording title, while upstream's appends its own suffixes after a second copy of the artist"
         )
         .into());
     }
@@ -3754,21 +3778,24 @@ mod tests {
         assert_eq!(super::expected_demo_media_root_name(), basename);
     }
 
-    /// Ensures the canonical media-root basename is the bare recording title.
+    /// Ensures the canonical media-root basename carries the artist and the bare recording title.
     ///
     /// The materialized name follows the tagged `video` variant whenever tagging ran, and
-    /// media-tagger writes `MusicBrainz`'s recording title, which carries no artist. Upstream's
-    /// title embeds one, so an artist prefix in the expected name would mean the name followed
-    /// the pre-tagging variant instead.
+    /// media-tagger writes `MusicBrainz`'s recording title, which carries no artist of its own; the
+    /// artist comes from its own metadata entry. Upstream's title embeds the artist a second time
+    /// and appends its own suffixes, so the pinned form rejects both.
     #[test]
-    fn canonical_media_root_name_is_the_bare_recording_title() {
-        assert_eq!(
-            super::expected_demo_media_root_name(),
-            format!("{} [{}]", super::DEMO_EXPECTED_TITLE, super::DEMO_MEDIA_ID)
+    fn canonical_media_root_name_is_the_artist_prefixed_recording_title() {
+        let expected = format!(
+            "{} - {} [{}]",
+            super::DEMO_METADATA_ARTIST,
+            super::DEMO_EXPECTED_TITLE,
+            super::DEMO_MEDIA_ID
         );
+        assert_eq!(super::expected_demo_media_root_name(), expected);
         assert!(
-            !super::expected_demo_media_root_name().contains(super::DEMO_METADATA_ARTIST),
-            "the canonical name must not carry the artist"
+            !super::expected_demo_media_root_name().contains("(Official Video)"),
+            "the canonical name must not carry upstream's title suffix"
         );
     }
 

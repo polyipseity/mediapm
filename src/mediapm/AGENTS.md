@@ -263,6 +263,8 @@ See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cac
 
 Direct CAS→output-path writes; no staging commit. Materialized paths marked read-only after sync. Link fallback order configurable in `runtime.materialization_preference_order` (default: hardlink → symlink → reflink → copy). NFD filenames enforced at two stages: config-declared components are rejected when not NFD-normalized, resolved components (which carry interpolated metadata) are normalized instead. Reserved path chars rejected. ZIP extraction under `<mediapm_dir>/tmp/`.
 
+Name library files with `${media.metadata.artist} - ${media.metadata.title} [${media.id}]`: the canonical `MusicBrainz` recording title carries no artist, so the artist has to come from its own metadata entry, and a template that renders only `${media.metadata.title}` silently drops it.
+
 Skip rule: an entry is skipped only when `state.managed_files` records the hash this run resolved and the target still holds it. A variant carrying a `zip_member` binding stores the archive under that hash but writes one extracted member, so it compares against the member's own hash and length, and replacing a read-only target goes through the same remove-then-write path a store object uses.
 
 The rendered materialization progress screen (per-(entry,variant) file-count bars; rows carry media id / variant / basename with no phase tag) is documented in `.agents/instructions/progress-output.instructions.md` (Screen C).
@@ -287,7 +289,7 @@ Development: `cargo test-pkg mediapm` / `cargo build-pkg mediapm` / selective te
 
 **Temp isolation:** Examples-as-tests use `mediapm::example_isolation::IsolatedExampleRoots` and `MEDIAPM_EXAMPLE_*` env overrides; integration tests use `mediapm_utils::temp::artifact_dir()` plus `cache_dir()` for `cache_root_override`. See `.agents/instructions/example-temp-isolation.instructions.md` for role prefixes, cleanup lifecycle, and example env serialization (process-wide lock held by `IsolatedExampleRoots` / `lock_process_env()`).
 
-**Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. Content verification covers exact bytes in the e2e test and resilient structural checks (magic bytes, link format, ffprobe metadata) in the live demo. See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+**Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. Every mediapm-rendered name is `${media.metadata.artist} - ${media.metadata.title}`, so the shared helpers, golden JSON, and the live asserts all carry the artist prefix. Content verification covers exact bytes in the e2e test and resilient structural checks (magic bytes, link format, ffprobe metadata) in the live demo. See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
 Post-change: demo examples:
 

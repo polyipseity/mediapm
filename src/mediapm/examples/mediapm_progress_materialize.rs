@@ -143,9 +143,11 @@ mod tests {
     };
     use super::{height_was_asked_for, with_scenario_height};
 
-    /// Media folder entry as `demo_hierarchy_spec::online_demo_media_folder_relative()`
-    /// spells it, quoted rather than computed so the frame below stays a
-    /// transcript of a fixed name.
+    /// Media folder entry shaped like `demo_hierarchy_spec::online_demo_media_folder_relative()`,
+    /// quoted rather than computed so the frame below stays a transcript of a
+    /// fixed name. The stem keeps the demo's media id and title without the
+    /// artist prefix the live demo renders: the committed transcripts are
+    /// captured against this spelling.
     const WIDE_FOLDER_ENTRY: &str = "music videos/Never Gonna Give You Up [youtube.dQw4w9WgXcQ]";
 
     /// The materialization screen at every scenario and width a transcript
