@@ -23,10 +23,10 @@ Case-insensitive routing to per-tool `apply()` functions:
 
 Each preset builds:
 
-- `command`: template with `{tool_dir}` and `{os}` placeholders.
+- `command`: a list of template parts resolved at execution time by the `${…}` engine — `${context.os == ...}` for the per-OS selector the shared helper builds, plus `${inputs.<key>}` and `${env.<VAR>}` — with the first part naming the executable payload-relative (`linux/ffmpeg`, or `deps/ffmpeg/linux/ffmpeg` for an inlined same-step companion). There is no `{tool_dir}` or `{os}` placeholder: nothing in the workspace implements one.
 - `inputs`: declared input keys with types and defaults.
 - `outputs`: declared output variants with capture kind and file patterns.
-- `content_map`: sandbox-relative path → CAS hash entries from provisioning.
+- `content_map`: path → CAS hash entries from provisioning, relative to the tool's payload tree. Each staging strategy reads them from the same relative keys: `copy` writes them into the step sandbox, `in_place` and `hard_link` read them under `payload_root`.
 - `runtime`: impure flag (impure for side-effecting tools), concurrency limits, retry policy.
 
 ## Workflow step synthesis (`tools/workflows/`)

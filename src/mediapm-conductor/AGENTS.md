@@ -175,7 +175,7 @@ When editing tool/config schema behavior, preserve these invariants:
 11. Step-level `process` overrides are not part of the workflow-step contract.
 12. Outputs are explicit and capture-based (`stdout`/`stderr`/`process_code`/`file`/`folder`) at the tool definition.
 13. Step `outputs` are capture specs addressed by name: for a name the tool declares, the tool's selector and tolerance are authoritative and the step contributes only `save`; for a name only the step declares, the step's whole spec defines it.
-14. `tools.<tool>.runtime.content_map` is executable-only and sandbox-relative: keys ending with `/` or `\\` are destination directories whose mapped CAS bytes must be ZIP payloads to unpack there; keys without a trailing slash/backslash are destination files written directly; `./` (or `.\\`) means sandbox-root unpack; separate entries must not overwrite the same target file path; every referenced hash must be rooted in top-level `external_data`; absolute and escaping paths are invalid.
+14. `tools.<tool>.runtime.content_map` is executable-only and relative: keys ending with `/` or `\\` are destination directories whose mapped CAS bytes must be ZIP payloads to unpack there; keys without a trailing slash/backslash are destination files written directly; `./` (or `.\\`) means payload-root unpack; separate entries must not overwrite the same target file path; every referenced hash must be rooted in top-level `external_data`; absolute and escaping paths are invalid. One key is one relative path in both layouts: `copy` writes it into the step sandbox, while `in_place` and `hard_link` read it under `runtime.payload_root`, as `runtime.payload_staging` decides.
 15. `tools.<tool>.runtime.description` is optional human-facing metadata only; it must not affect instance identity, scheduler behavior, or cache keys.
 16. Workflow `name` and `description` are optional human-facing metadata only; workflow identity remains the workflow map key and runtime behavior/cache keys must not depend on those fields.
 17. Cache rematerialization checks are scoped to outputs referenced by `${step_output...}` step inputs; missing unreferenced outputs do not force rerun for otherwise cache-hit instances.
@@ -309,9 +309,9 @@ Guidance:
 - Execute external tools with stdin disconnected (`Stdio::null`) so accidental interactive prompts cannot block worker actors indefinitely.
 - Create an isolated temporary cwd only when a step actually needs to execute.
 - The temporary cwd is ad hoc execution scratch space, not a directory tied to tool identity or cached instances.
-- Materialize merged `tool_content_maps[tool_name]` into that cwd using relative paths only, with directory-form keys (`/` or `\\` suffix) unpacked as ZIP payloads, including `./` for sandbox-root unpack.
+- Under `payload_staging = "copy"`, materialize merged `tool_content_maps[tool_name]` into that cwd using relative paths only, with directory-form keys (`/` or `\\` suffix) unpacked as ZIP payloads, including `./` for sandbox-root unpack. Under `in_place` and `hard_link` the cwd holds no tool files: the step reads the provisioned tree instead.
 - Reject `content_map` collisions where separate entries would materialize the same file path; allow merges when paths are distinct.
-- Treat all tool-relative paths (`process.command[0]`, template `:file(...)`, and output `capture.file.path`) as relative to that cwd.
+- Treat tool-relative paths as relative to what each one names: under `in_place`, `process.command[0]` resolves against `payload_root`, because it is the executable and the document names it payload-relative; every other command part, a `:file(...)`/`:folder(...)` template argument, and `capture.file.path` resolve against the cwd. The cwd stays the sandbox under every strategy, so a tool never writes an output into its own payload directory.
 - Reject absolute/traversal paths (`..`, rooted/prefixed paths); do not allow sandbox escape.
 - Keep output capture behavior explicit and per-output.
 - `capture.kind = "file"|"folder"` stays path-template based; `capture.kind = "file_regex"|"folder_regex"` evaluates regex against normalized sandbox-relative paths (`/` separators on all hosts).
@@ -331,7 +331,7 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **Entry artifacts**: an entry directory holds exactly three things. `lock` is the advisory lock the fast path and the prune sweep take, and it carries a few lines saying what it is and what deleting it costs; the text is documentation and is never parsed. `metadata.json` is the validity key. `payload/` is the extracted tree. An entry extracted before the lock was renamed carries `.lock` instead: nothing can lock through that name, so `retain_only_tool_dirs` and `prune_expired_entries` reclaim such a directory rather than skipping it on every sweep, and a materialize rebuilds an active one under the current name.
 
-- **RAII guard**: `ProvisionCache::materialize` returns a `ProvisionedTool` that holds a shared advisory lock on the entry until dropped. This prevents pruning while the entry is in use.
+- **RAII guard**: `ProvisionCache::materialize` returns a `ProvisionedTool` that holds a shared advisory lock on the entry until dropped. The prune sweep skips any directory whose lock it cannot take, which is what keeps a payload a live run is using; mediapm's `reconcile_desired_tools` keeps its guards bound until after its own `retain_only_tool_dirs` sweep returns, so that sweep cannot delete a payload the same pass just materialized.
 
 - **Cache-hit check**: `<entry>/metadata.json` stores the complete `tool_content_map` (`BTreeMap<String, Hash>`) alongside a version sentinel and a last-used Unix timestamp. A cache hit requires the stored map to equal the current map exactly; any change in keys or hashes causes a miss and triggers full re-extraction.
 
@@ -343,7 +343,7 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 - **Expiry pruning**: `ProvisionCache::prune_expired` is the explicit public API; a cooldown-gated auto-prune also runs at `materialize` call time. The cooldown is process state, not a file: one sweep per `PRUNE_COOLDOWN_SECONDS` per process, claimed before the sweep starts so concurrent calls cannot both sweep, and a fresh process sweeps on its first materialize. The stamp an older build wrote at `<tools_dir>/.prune-last-used-unix-seconds` is removed by the first sweep that sees it, best-effort, because nothing in this build reads it.
 
-- **Sandbox materialization**: step workers hard-link (with copy fallback) files from `<entry>/payload/` into the per-step sandbox cwd via the free function `link_to_sandbox(payload_dir, sandbox_dir)` in `provision::helpers` (re-exported from `provision`).
+- **Sandbox materialization is per strategy, not unconditional**: `sandbox::prepare_tool_payload` runs before the command resolves. `in_place`, the default, stages nothing and the step executes the payload where the provisioner put it; `hard_link` calls the free function `link_to_sandbox(payload_dir, sandbox_dir)` in `provision::helpers` (re-exported from `provision`), which hard-links each file with a per-file copy fallback, copies a directory subtree, and skips a top-level directory that belongs to another platform; `copy` writes the content map out of the CAS into the sandbox. The cwd stays the sandbox in all three, so an output a tool writes lands where the capture phase reads it. A strategy that reads `payload_root` refuses an empty, relative or non-directory root, and refuses a root that lacks a content-map entry, naming the tool and the path before anything runs.
 
 - **Sync-time stale-content pruning**: when `reconcile_desired_tools` replaces an active tool with a newer version, the old tool's `content_map` is cleared from `machine.tools[*].runtime.content_map`, so conductor step-tool preservation cannot match stale content references against the old tool id. The old registry entry stays as a historical record but without content references it is never materialized.
 
@@ -414,7 +414,7 @@ Cross-crate data flow, shared invariants, and the full module-layer index are do
 - **Output capture**: step outputs are CAS blobs; each entry in `ToolCallInstance::outputs` records the hash and the capture spec that produced it.
 - **GC coordination**: the root set is surviving instance output hashes plus the unified document's external-data policy keys and tool content hashes (see Section G).
 - **Existence checks**: `CasExistenceBitmap` for batch cache probing across step outputs.
-- **Content map materialization**: `tools.<tool>.runtime.content_map` entries are resolved from CAS into step sandbox directories.
+- **Content map materialization**: under `copy`, `tools.<tool>.runtime.content_map` entries are resolved from CAS into step sandbox directories; under `in_place` and `hard_link` the step reads the provisioned tree at `runtime.payload_root` instead, and the content map is provenance rather than a staging instruction.
 
 ### Conductor ↔ Builtins
 
@@ -429,7 +429,7 @@ Cross-crate data flow, shared invariants, and the full module-layer index are do
 - **Workflow synthesis**: MediaPM synthesizes workflows from `mediapm.ncl` definitions and passes them to Conductor for execution via `ConductorApi`.
 - **Progress events**: Conductor emits `WorkflowStepEvent` through an optional channel; MediaPM renders progress bars from these events.
 - **Runtime storage paths**: MediaPM passes grouped runtime paths (`conductor_dir`, `conductor_state_config`, `cas_store_dir`, `conductor_tools_dir`) via `RunWorkflowOptions.runtime_storage_paths`.
-- **Tool provisioning**: MediaPM provisions managed tools and populates `machine.tools` with runtime fields; Conductor materializes content maps into step sandboxes.
+- **Tool provisioning**: MediaPM provisions managed tools, populates `machine.tools` with runtime fields including `payload_root` and `payload_staging`, and holds the provision guards across its own prune sweep; Conductor resolves the step's executable under that root (`in_place`), links the tree into the sandbox (`hard_link`), or materializes the content map into it (`copy`).
 - **State persistence**: MediaPM persists its own machine state (`.mediapm/state.json`) and Conductor persists its state file (`.mediapm/state.conductor.json` through `runtime.conductor_state_config`) independently; each is loaded by its owner with no cross-document consistency check.
 
 ## D. Orchestration State Decode Migration

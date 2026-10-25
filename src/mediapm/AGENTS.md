@@ -255,6 +255,12 @@ What the provider resolves is only the tool's own segment. The value persisted i
 
 Skip logic: when `reconcile_desired_tools` finds an entry in `state.managed_tools` whose composite `canonical_version` equals the freshly computed one and whose `content_map_hash` is non-empty, provisioning is skipped for that tool. The `Ok(None)` branch still populates `canonical_version` from the resolved value. `canonical_version` defaults to `""` via `#[serde(default)]` for backward-compat with old state files.
 
+### Tool payload staging
+
+`reconcile_desired_tools` materializes every active payload through `ProvisionCache::materialize` into `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload`, holds the returned guards until the reconcile returns, and then `stamp_payload_roots` records that directory in the generated document as `runtime.payload_root` with `runtime.payload_staging = "in_place"`, for every tool whose content map is non-empty and whose payload directory exists. The guards reach past the `retain_only_tool_dirs` sweep at the end of the same function, so the prune cannot delete a payload the pass just produced. A tool whose payload directory is absent is left with whatever its spec builder declared, and the step then refuses it by name instead of running whatever happens to be there.
+
+The root belongs in the document rather than in a `MEDIAPM_TOOLS_DIR`-style environment variable: a standalone `mediapm-conductor run` of the generated document has to work with none of mediapm's process environment, and an env-only carrier would leave the default strategy with nothing to resolve. The document is also what the conductor already resolves a step from, so one reader answers both questions.
+
 ## Cache Architecture (Three-Tier)
 
 See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cache specification (content, metadata, provision), TTL policies, and hard boundary rules.
