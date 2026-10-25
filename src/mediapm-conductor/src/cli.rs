@@ -468,7 +468,7 @@ async fn cmd_cas(args: Vec<String>) -> Result<(), ConductorError> {
 async fn cmd_export_schemas(output: PathBuf) -> Result<(), ConductorError> {
     let conductor = ensure_conductor().await?;
     conductor.export_schemas(&output)?;
-    println!("Schemas exported to '{}'", output.display());
+    println!("Contract sources exported to '{}'", output.display());
     Ok(())
 }
 

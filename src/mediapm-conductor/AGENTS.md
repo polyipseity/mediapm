@@ -61,12 +61,12 @@ Grouped runtime path defaults:
 - runtime root (`conductor_dir`): `.conductor`
 - state file path (`state_file_path`, mediapm passes it through `conductor_state_config`): `<conductor_dir>/state.json`
 - filesystem CAS store (`cas_store_dir`): `<conductor_dir>/store`
-- schema export directory: `<conductor_dir>/config/conductor`
+- contract export directory: `<conductor_dir>/config/conductor`
 - tool-content cache directory (`conductor_tools_dir`): `<conductor_dir>/tools`
 
-Schema export behavior contract:
+Contract export behavior contract:
 
-- both CLI workflow entrypoints and API workflow execution must export conductor schemas to `<conductor_dir>/config/conductor` before runtime execution continues.
+- both CLI workflow entrypoints and API workflow execution must export the conductor contract sources — `mod.ncl` and every version file its registry imports — to `<conductor_dir>/config/conductor` before runtime execution continues, so the directory evaluates on its own. `Conductor::export_schemas` and its `export-schemas` CLI verb keep their names; what they write is the Nickel the runtime evaluates, never a JSON schema.
 
 Document contract:
 
