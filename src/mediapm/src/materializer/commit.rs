@@ -102,7 +102,44 @@ pub(super) fn ensure_managed_path_readonly(path: &Path) -> Result<(), MediaPmErr
     Ok(())
 }
 
+/// Returns whether `path` is a regular file that shares its inode with another
+/// name, on the platforms that can answer.
+///
+/// A managed output materialized as a hardlink from the CAS store *is* the store
+/// object: clearing its write bit would make the stored blob writable, and the
+/// store's immutability guarantee is a property of that inode. Unlinking the
+/// library name needs write permission on the library directory and nothing from
+/// the file, so a shared inode is left exactly as the store set it.
+///
+/// Directories are excluded whatever their link count says: a directory's count
+/// includes its child directories' `..` entries, which has nothing to do with
+/// shared content, and a read-only managed directory still has to lose its own
+/// bit before it can be removed.
+///
+/// Windows cannot answer this: `std::os::windows::fs::MetadataExt::number_of_links`
+/// is still behind the unstable `windows_by_handle` feature, so the attribute is
+/// cleared there as it always was, because Windows refuses to unlink a read-only
+/// file.
+fn is_a_shared_regular_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.nlink() > 1)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Clears read-only bit recursively so stale managed paths can be removed.
+///
+/// usage note: a regular file shared with another name is skipped entirely (see
+/// [`is_a_shared_regular_file`]), because its mode belongs to the store object
+/// it shares an inode with.
 ///
 /// A symlink owns nothing that gates its own removal: unlinking one needs a
 /// writable parent directory, which [`clear_directory_writable`] clears, and
@@ -164,7 +201,7 @@ fn clear_path_readonly_recursively(path: &Path) -> Result<(), MediaPmError> {
             });
         }
     };
-    if permissions.readonly() {
+    if permissions.readonly() && !is_a_shared_regular_file(path) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -642,6 +679,46 @@ mod tests {
             std::fs::read(&dead_link).unwrap(),
             b"replacement",
             "the entry the dead link occupied must take the content of the next sync"
+        );
+    }
+
+    /// Remove a hardlinked managed output without making the store object writable.
+    ///
+    /// A hardlink shares the blob's inode, so a chmod through the library path
+    /// reaches the stored bytes. The removal has to leave the blob read-only:
+    /// that mode is the store's own immutability guarantee, and a sync that made
+    /// it writable once would let a later run edit a stored object in place,
+    /// detaching nothing and corrupting the content-addressed identity.
+    #[cfg(unix)]
+    #[test]
+    fn remove_hardlinked_output_leaves_the_blob_read_only() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let blob_path = dir.path().join("blob.bin");
+        std::fs::write(&blob_path, b"payload").unwrap();
+        ensure_managed_path_readonly(&blob_path).unwrap();
+
+        let library_dir = dir.path().join("library");
+        std::fs::create_dir(&library_dir).unwrap();
+        let output_path = library_dir.join("song.mkv");
+        std::fs::hard_link(&blob_path, &output_path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&blob_path).unwrap().nlink(),
+            2,
+            "the fixture has to be a real hardlink, or the skip under test never triggers"
+        );
+
+        remove_path(&output_path).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&output_path).is_err(),
+            "the library name has to be gone, so the removal really ran"
+        );
+        assert!(
+            std::fs::metadata(&blob_path).unwrap().permissions().readonly(),
+            "a shared inode belongs to the store: removing the library name must not make the \
+             stored blob writable"
         );
     }
 

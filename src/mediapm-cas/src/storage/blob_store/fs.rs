@@ -8,9 +8,16 @@
 //! hash can only ever hold those bytes, and the hierarchy materializer hardlinks
 //! outputs straight from these paths, so replacing the inode would detach every
 //! link already made from it. The store enforces that on disk as well as by
-//! convention: every committed file carries a read-only mode, and every write
-//! path clears the attribute of a file it is about to replace or remove, because
-//! a read-only file cannot be replaced or unlinked on Windows.
+//! convention: every committed file carries a read-only mode, a staged file has
+//! that attribute cleared before it is written, and — on Windows — every write
+//! path clears the attribute of a file it is about to replace or remove.
+//!
+//! POSIX needs no file-level clear: unlinking or renaming a child entry requires
+//! write permission on the containing directory, not on the file. Windows
+//! refuses both on a read-only file, so that platform clears it first, and
+//! `clear_read_only` is a documented no-op everywhere else. Clearing the bit on
+//! POSIX would also reach every hardlink of the same inode, which is how a
+//! delete through the store could make a materialized library file writable.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -152,13 +159,13 @@ impl FileSystemBlobStore {
     ///
     /// The staged file is made read-only before it is renamed, so a committed
     /// object is never observable as writable, and the file the rename replaces
-    /// has its attribute cleared first, because Windows cannot replace a
-    /// read-only target.
+    /// has its attribute cleared first on the platform that requires it.
     async fn atomic_write(&self, path: &Path, data: Bytes) -> Result<(), CasError> {
         let tmp_path = path.with_extension("tmp");
         let final_path = path.to_path_buf();
         self.io_gate
             .run(move || {
+                Self::clear_staging_read_only(&tmp_path)?;
                 std::fs::write(&tmp_path, &data)?;
                 let staged = std::fs::metadata(&tmp_path)?.permissions();
                 std::fs::set_permissions(&tmp_path, without_write_bits(staged))?;
@@ -193,23 +200,77 @@ impl FileSystemBlobStore {
             .map_err(CasError::Io)
     }
 
+    /// Clears the read-only attribute of a staging file before writing it.
+    ///
+    /// A commit stages under a fixed name, so a write that failed part-way — or
+    /// a process that died between making the staged file read-only and renaming
+    /// it — leaves a read-only file at that name. Opening it for write truncates
+    /// and fails with `EACCES` on POSIX and with a sharing violation on Windows,
+    /// which would wedge every later commit for the same hash behind an error
+    /// that names nothing useful. Clearing the attribute first is what makes the
+    /// fixed staging name reusable.
+    ///
+    /// Unlike [`Self::clear_read_only`], this runs on every platform: the file is
+    /// this operation's own scratch, not a committed object, so it has no
+    /// hardlink whose mode a clear could disturb.
+    fn clear_staging_read_only(path: &Path) -> io::Result<()> {
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if !metadata.permissions().readonly() {
+            return Ok(());
+        }
+        std::fs::set_permissions(path, with_owner_write(metadata.permissions()))
+    }
+
     /// Clears the read-only attribute so `path` can be replaced or removed.
     ///
     /// A missing file is success: the caller is about to unlink it, and the
     /// unlink reports its own `NotFound` handling. A file that is already
     /// writable is left untouched, so the common path costs one `stat`.
-    async fn clear_read_only(path: &Path) -> Result<(), CasError> {
-        let metadata = match fs::metadata(path).await {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(CasError::Io(error)),
-        };
-        if !metadata.permissions().readonly() {
-            return Ok(());
+    ///
+    /// Windows clears the attribute because it refuses to replace or unlink a
+    /// read-only file. POSIX needs only write permission on the containing
+    /// directory, so the clear is a no-op there, and that is what keeps a delete
+    /// through the store from reaching the mode of a hardlinked library file,
+    /// which shares the inode.
+    ///
+    /// The operation is one `stat` and at most one `set_permissions`, so it runs
+    /// inline rather than on the blocking pool: the callers are either already
+    /// inside a lease closure or about to issue an await of their own.
+    ///
+    /// The signature is fallible on every platform because the Windows body is,
+    /// and a platform-conditional return type would push the difference into
+    /// seven call sites.
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "the fallible signature is shared with the Windows body, where the attribute clear can fail"
+        )
+    )]
+    fn clear_read_only(path: &Path) -> Result<(), CasError> {
+        #[cfg(windows)]
+        {
+            let metadata = match std::fs::metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(CasError::Io(error)),
+            };
+            if !metadata.permissions().readonly() {
+                return Ok(());
+            }
+            std::fs::set_permissions(path, with_owner_write(metadata.permissions()))
+                .map_err(CasError::Io)
         }
-        fs::set_permissions(path, with_owner_write(metadata.permissions()))
-            .await
-            .map_err(CasError::Io)
+
+        #[cfg(not(windows))]
+        {
+            let _ = path;
+            Ok(())
+        }
     }
 
     /// Derive the auxiliary-file path for `hash` with the given `name`.
@@ -370,12 +431,17 @@ impl BlobStore for FileSystemBlobStore {
         let tmp_path = path.with_extension("tmp");
 
         // Write to temp file in 64 KiB chunks while incrementally hashing.
-        // Only file creation needs a lease: the writes below go through this
-        // open handle, so they cannot recreate a removed tree.
+        // Only creating the file needs a lease: the writes below go through
+        // this open handle, so they cannot recreate a removed tree. The staging
+        // name is fixed, so a leftover from an interrupted commit is cleared
+        // first or the create would fail on its read-only attribute.
         let tmp_path_for_create = tmp_path.clone();
         let created = self
             .io_gate
-            .run(move || std::fs::File::create(&tmp_path_for_create))
+            .run(move || {
+                Self::clear_staging_read_only(&tmp_path_for_create)?;
+                std::fs::File::create(&tmp_path_for_create)
+            })
             .await
             .map_err(CasError::Io)?;
         let mut tmp_file = fs::File::from_std(created);
@@ -396,7 +462,7 @@ impl BlobStore for FileSystemBlobStore {
         // Verify content hash
         let computed_hash = Hash::from_bytes(*hasher.finalize().as_bytes());
         if computed_hash != hash {
-            Self::clear_read_only(&tmp_path).await?;
+            Self::clear_read_only(&tmp_path)?;
             let _ = fs::remove_file(&tmp_path).await;
             return Err(CasError::CorruptObject {
                 hash: Some(hash),
@@ -412,7 +478,7 @@ impl BlobStore for FileSystemBlobStore {
         // Neither step creates a directory entry, so neither needs a lease.
         let staged = fs::metadata(&tmp_path).await.map_err(CasError::Io)?.permissions();
         fs::set_permissions(&tmp_path, without_write_bits(staged)).await.map_err(CasError::Io)?;
-        Self::clear_read_only(&path).await?;
+        Self::clear_read_only(&path)?;
         fs::rename(&tmp_path, &path).await.map_err(CasError::Io)?;
         // Seed mtime for verify-on-read tracking.
         if let Ok(meta) = fs::metadata(&path).await {
@@ -438,12 +504,12 @@ impl BlobStore for FileSystemBlobStore {
         let delta_path = hash_to_delta_path(&self.root, hash);
 
         // Silently ignore NotFound on each path; propagate other errors.
-        Self::clear_read_only(&full_path).await?;
+        Self::clear_read_only(&full_path)?;
         match fs::remove_file(&full_path).await {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(CasError::Io(e)),
             _ => {}
         }
-        Self::clear_read_only(&delta_path).await?;
+        Self::clear_read_only(&delta_path)?;
         match fs::remove_file(&delta_path).await {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(CasError::Io(e)),
             _ => {}
@@ -456,7 +522,7 @@ impl BlobStore for FileSystemBlobStore {
             ObjectEncoding::Full => hash_to_path(&self.root, &hash),
             ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
         };
-        Self::clear_read_only(&path).await?;
+        Self::clear_read_only(&path)?;
         match fs::remove_file(&path).await {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(CasError::Io(e)),
@@ -519,7 +585,7 @@ impl BlobStore for FileSystemBlobStore {
         self.ensure_parent(&hash).await?;
         let staged = fs::metadata(&tmp_path).await.map_err(CasError::Io)?.permissions();
         fs::set_permissions(&tmp_path, without_write_bits(staged)).await.map_err(CasError::Io)?;
-        Self::clear_read_only(&final_path).await?;
+        Self::clear_read_only(&final_path)?;
         fs::rename(&tmp_path, &final_path).await.map_err(CasError::Io)?;
         // Seed mtime for verify-on-read tracking.
         if let Ok(meta) = fs::metadata(&final_path).await {
@@ -565,7 +631,7 @@ impl BlobStore for FileSystemBlobStore {
             )));
         }
         let path = self.aux_path(hash, name);
-        Self::clear_read_only(&path).await?;
+        Self::clear_read_only(&path)?;
         match fs::remove_file(&path).await {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(CasError::Io(e)),
@@ -1221,6 +1287,76 @@ mod tests {
         assert!(
             is_read_only(&hash_to_path(dir.path(), &known)),
             "an object written from a reader must be read-only"
+        );
+    }
+
+    /// A leftover read-only staging file must not wedge the next commit.
+    ///
+    /// A commit stages under a fixed name and makes the staged file read-only
+    /// before renaming it. A write that fails in that window, or a process that
+    /// dies there, leaves a read-only file at the staging name, and opening it
+    /// for write truncates and fails: every later commit for the same hash would
+    /// fail with an error naming nothing useful. The commit clears the attribute
+    /// first, so the name stays reusable.
+    #[tokio::test]
+    async fn regression_a_read_only_staging_file_does_not_block_the_next_write() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
+            .await
+            .expect("blob store");
+        let data = Bytes::from_static(b"payload behind a wedged staging file");
+        let hash = Hash::from_content(&data);
+        let object_path = hash_to_path(dir.path(), &hash);
+        let staging_path = object_path.with_extension("tmp");
+        std::fs::create_dir_all(object_path.parent().expect("hash path has a parent"))
+            .expect("create fan-out");
+        std::fs::write(&staging_path, b"interrupted commit").expect("plant staging file");
+        let mut staged = std::fs::metadata(&staging_path).expect("staging metadata").permissions();
+        staged.set_readonly(true);
+        std::fs::set_permissions(&staging_path, staged).expect("make staging file read-only");
+        assert!(
+            is_read_only(&staging_path),
+            "the fixture has to be read-only, or the commit under test never meets one"
+        );
+
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.expect("the next commit");
+
+        assert_eq!(store.read(&hash).await.expect("read back"), data);
+        assert!(is_read_only(&object_path), "the committed object must be read-only");
+    }
+
+    /// Deleting a hash must not make a hardlinked library file writable.
+    ///
+    /// The delete path clears the read-only attribute only where the platform
+    /// requires it, and POSIX does not: `unlink` needs write permission on the
+    /// containing directory. Clearing it anyway would reach the inode a
+    /// materialized library file shares with the blob, so a store delete would
+    /// silently make the library writable. Windows shares the attribute across
+    /// hardlink names and cannot answer how many names an inode has, so this
+    /// assertion holds where the mode is per-inode and mutable independently.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deleted_object_leaves_a_hardlinked_copy_read_only() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
+            .await
+            .expect("blob store");
+        let data = Bytes::from_static(b"blob with a library hardlink");
+        let hash = Hash::from_content(&data);
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.expect("write object");
+        let object_path = hash_to_path(dir.path(), &hash);
+        let library_path = dir.path().join("library-song.mkv");
+        std::fs::hard_link(&object_path, &library_path).expect("hardlink object");
+
+        store.delete(&hash).await.expect("delete object");
+
+        assert!(
+            std::fs::symlink_metadata(&object_path).is_err(),
+            "the delete has to remove the store's name, or the assertion below proves nothing"
+        );
+        assert!(
+            is_read_only(&library_path),
+            "a store delete must not reach the mode of a file that shares the blob's inode"
         );
     }
 }
