@@ -30,7 +30,7 @@ Hermetic e2e and golden assertions must use **exact** basenames from `demo_hiera
 - Sidecar: `online_demo_sidecar_link_filename(ext)` → yt-dlp format
 - Root: `online_demo_root_link_filename(ext)` → mediapm projection format
 
-The live `mediapm_demo_online` post-sync check cannot pin the sidecar title, because that text is upstream's and upstream appends to it. It asserts the family exactly — the raw video id and the extension — and matches the title half by normalized prefix (`assert_sidecar_links_directory_matches_the_yt_dlp_family`). Its root-link check asserts the `[{media_id}].link.{ext}` suffix and leaves the title text unasserted, for the same reason. Only the media root basename is pinned exactly, by `expected_demo_media_root_name`, because its title is the canonical one.
+The live `mediapm_demo_online` post-sync check cannot pin the sidecar title, because that text is upstream's and upstream appends to it. It asserts the family exactly — the raw video id and the extension — and matches the title half by normalized prefix (`assert_sidecar_links_directory_matches_the_yt_dlp_family`). Its root-link check asserts the `[{media_id}].link.{ext}` suffix and leaves the title text unasserted, for the same reason. Only the media root basename is pinned exactly, by `expected_demo_media_root_name`, because its name is the canonical artist-prefixed one.
 
 All three extensions (`url`, `webloc`, `desktop`) are required in both locations. Do not replace explicit golden `required_files` with `*.link.*` globs.
 
@@ -65,9 +65,9 @@ Coverage matrix: `sdd-tdd-workflow.instructions.md` → "Demo online content ver
 ## Key symbols
 
 - `online_demo_yt_dlp_provider_title()` — `{artist} - {title}` stand-in for the upstream yt-dlp `%(title)s`
-- `online_demo_media_folder_relative()` — canonical media folder path (bare title)
+- `online_demo_media_folder_relative()` — canonical media folder path (artist-prefixed canonical title)
 - `online_demo_sidecar_link_filename(ext)` — yt-dlp-format basename under `sidecars/links/` (upstream title)
-- `online_demo_root_link_filename(ext)` — mediapm root projection basename (canonical title)
+- `online_demo_root_link_filename(ext)` — mediapm root projection basename (artist-prefixed canonical title)
 - `online_demo_sidecar_link_relative_path` / `online_demo_root_link_relative_path` — golden-relative paths
 - `golden_fixture_link_paths_match_helpers` — golden ↔ helper linkage test
 - `assert_untagged_format_tags()` / `assert_format_tags_structural()` — the per-artifact tag assertions

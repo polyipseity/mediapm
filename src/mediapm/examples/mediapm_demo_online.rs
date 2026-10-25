@@ -531,10 +531,12 @@ struct DemoResolvedMetadata {
     /// otherwise, which is why `assert_metadata_files_present` pins the media root against the
     /// canonical form.
     title: String,
-    /// Canonical artist prefix, parsed back out of the materialized media root's own name.
+    /// Canonical artist prefix, checked against the materialized media root's own name.
     ///
     /// The recording title carries no artist, so the artist is its own metadata entry and the
-    /// prefix is what puts it into the name.
+    /// prefix is what puts it into the name. `parse_jellyfin_root_folder_name` requires the name to
+    /// start with `{DEMO_METADATA_ARTIST} - ` and reports that constant; the prefix is validated,
+    /// not read back, because the demo pins the artist the tagging steps must have written.
     artist: String,
     /// yt-dlp provider title (`info.json` `title` key).
     ///
@@ -582,9 +584,11 @@ fn resolve_demo_metadata_template(template: &str, metadata: &DemoResolvedMetadat
 
 /// Splits a materialized folder name into its artist, canonical title and media id.
 ///
-/// The name mediapm renders is `<artist> - <title> [<media-id>]`. The artist prefix is required:
-/// a name without it did not come from the demo's templates, and refusing here keeps the failure
-/// at the shape check instead of letting a later equality pass on a wrong name.
+/// The name mediapm renders is `<artist> - <title> [<media-id>]`. The prefix is checked against
+/// `DEMO_METADATA_ARTIST` rather than read back — the demo pins the artist its tagging steps must
+/// have written — and only the title and the media id are parsed out. A name without the prefix
+/// did not come from the demo's templates, and refusing here keeps the failure at the shape check
+/// instead of letting a later equality pass on a wrong name.
 fn parse_jellyfin_root_folder_name(folder_name: &str) -> Option<(String, String, String)> {
     let (stem, media_id_segment) = folder_name.rsplit_once(" [")?;
     let media_id = media_id_segment.strip_suffix(']')?.trim();
@@ -3061,11 +3065,11 @@ fn assert_metadata_files_present(
         .into());
     }
 
-    // The canonical basename is the artist followed by the MusicBrainz recording title, and this
-    // equality is the assertion that tagging ran: a run that never reached the tagging steps
-    // resolves upstream's title, which appends `(Official Video)` and `(4K Remaster)` after a second
-    // copy of the artist, so its name matches this one in no part.
     let canonical_base = expected_demo_media_root_name();
+    // The comparison against `canonical_base` is the assertion that tagging ran: the canonical
+    // basename is the artist followed by the MusicBrainz recording title, while a run that never
+    // reached the tagging steps resolves upstream's title, which appends `(Official Video)` and
+    // `(4K Remaster)` after a second copy of the artist, so its name matches this one in no part.
     if resolved_output_base != canonical_base {
         return Err(format!(
             "[metadata] materialized basename '{resolved_output_base}' must be the canonical title '{canonical_base}': the tagged variant resolves MusicBrainz's recording title, while upstream's appends its own suffixes after a second copy of the artist"
@@ -4475,17 +4479,16 @@ mod tests {
     fn media_root_sidecars_require_dedicated_sidecars_folder() {
         let temp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let root = temp.path();
-        let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
+        // The stem carries the artist prefix the helper requires; the subject here is the missing
+        // `sidecars/` folder, not the title text.
+        let output_base = "Rick Astley - Title [youtube.dQw4w9WgXcQ]";
 
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
+        std::fs::write(root.join(format!("{output_base}.en.vtt")), b"WEBVTT")
             .expect("write subtitle");
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].thumbnail.jpg"), b"jpg")
+        std::fs::write(root.join(format!("{output_base}.thumbnail.jpg")), b"jpg")
             .expect("write thumbnail");
-        std::fs::write(
-            root.join("Artist - Title [youtube.dQw4w9WgXcQ].link.url"),
-            b"[InternetShortcut]",
-        )
-        .expect("write link");
+        std::fs::write(root.join(format!("{output_base}.link.url")), b"[InternetShortcut]")
+            .expect("write link");
 
         let error = super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect_err("missing sidecars folder should be rejected");
