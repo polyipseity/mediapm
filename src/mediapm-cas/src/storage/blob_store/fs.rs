@@ -21,10 +21,11 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -70,6 +71,28 @@ fn with_owner_write(mut permissions: std::fs::Permissions) -> std::fs::Permissio
     permissions
 }
 
+/// Holds one object's commit lock, and prunes the lock once it is the last.
+///
+/// A commit reaches the staging name of one object under this guard, so two
+/// commits of the same object cannot interleave; dropping it releases the object
+/// and drops the map entry when nothing else is waiting on it.
+struct CommitGuard<'a> {
+    /// Store whose commit map the entry belongs to.
+    store: &'a FileSystemBlobStore,
+    /// Target path the guard serializes.
+    key: PathBuf,
+    /// The lock itself, kept to prove it outlives the guard.
+    lock: Arc<tokio::sync::Mutex<()>>,
+    /// The held permit; dropping it releases the object.
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for CommitGuard<'_> {
+    fn drop(&mut self) {
+        self.store.release_commit_lock(&self.key, &self.lock);
+    }
+}
+
 /// Filesystem-backed [`BlobStore`] with hash-derived directory layout.
 ///
 /// Blobs live at `<root>/v1/blake3/ab/cd/<remaining>` (full) or with a
@@ -88,6 +111,24 @@ pub struct FileSystemBlobStore {
     /// Store-lifetime gate. Clones share it, so closing it through any handle
     /// covers the whole store.
     io_gate: Arc<CasIoGate>,
+    /// Serializes commits of one target, keyed by the path being written.
+    ///
+    /// A commit stages under a fixed name derived from its target path, so two
+    /// writers of one target cannot both be staging at once: the second would
+    /// truncate the first's bytes, or take the file the first then fails to
+    /// rename. Both happen in practice — a workflow imports an object while the
+    /// materializer asks the store to materialize the same one, and two metadata
+    /// entries in one fan-out directory flush the same snapshot — and neither is
+    /// visible as anything but a spurious `ENOENT` from a rename.
+    ///
+    /// Keying by path rather than by hash is what covers the auxiliary files as
+    /// well as the objects: a directory snapshot is one path shared by every hash
+    /// that lands in it.
+    ///
+    /// One process holds a store at a time (the store's own directory lock), so
+    /// serializing here is what makes the fixed staging name safe rather than
+    /// merely usually safe. Entries are removed once no commit holds them.
+    commit_locks: Arc<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl FileSystemBlobStore {
@@ -117,7 +158,12 @@ impl FileSystemBlobStore {
         io_gate: Arc<CasIoGate>,
     ) -> Result<Self, CasError> {
         fs::create_dir_all(&root).await.map_err(CasError::Io)?;
-        Ok(Self { root, verify_evaluator: VerifyEvaluator::new(&verify_strategies), io_gate })
+        Ok(Self {
+            root,
+            verify_evaluator: VerifyEvaluator::new(&verify_strategies),
+            io_gate,
+            commit_locks: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     /// Convenience: create a store with no integrity verification.
@@ -138,6 +184,36 @@ impl FileSystemBlobStore {
     /// Buffer size for streaming I/O.
     fn stream_buffer_size() -> usize {
         crate::defaults::OBJECT_STREAM_BUFFER_SIZE as usize
+    }
+
+    /// Hold one target's commit lock for the life of the returned guard.
+    ///
+    /// Taking the lock and releasing it in `Drop` is what lets every early return
+    /// of a commit stay correct without a release call at each one.
+    async fn lock_commit(&self, path: &Path) -> CommitGuard<'_> {
+        let key = path.to_path_buf();
+        let lock = {
+            let mut locks = self.commit_locks.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.entry(key.clone()).or_default().clone()
+        };
+        let guard = Arc::clone(&lock).lock_owned().await;
+        CommitGuard { store: self, key, lock, _guard: guard }
+    }
+
+    /// Drop a commit lock once no commit is waiting on it.
+    ///
+    /// A map entry per target written would grow with the store for the life of
+    /// the process, so the last holder prunes it. The check happens under the map
+    /// lock, so a writer that took its handle before the prune still holds a
+    /// strong count and keeps the entry alive.
+    fn release_commit_lock(&self, key: &Path, lock: &Arc<tokio::sync::Mutex<()>>) {
+        if Arc::strong_count(lock) > 1 {
+            return;
+        }
+        let mut locks = self.commit_locks.lock().unwrap_or_else(PoisonError::into_inner);
+        if locks.get(key).is_some_and(|entry| Arc::strong_count(entry) == 1) {
+            locks.remove(key);
+        }
     }
 
     /// Ensure the parent directory for a hash exists.
@@ -329,6 +405,8 @@ impl BlobStore for FileSystemBlobStore {
             ObjectEncoding::Full => hash_to_path(&self.root, &hash),
             ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
         };
+        // Two commits of one target share its staging name, so they take turns.
+        let _commit = self.lock_commit(&path).await;
         // A full-encoding object is immutable once it exists: the path is
         // derived from the hash, so an object already sitting there holds
         // exactly these bytes. Rewriting it would not repair anything — the
@@ -428,6 +506,10 @@ impl BlobStore for FileSystemBlobStore {
             ObjectEncoding::Full => hash_to_path(&self.root, &hash),
             ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
         };
+        // The staging name is the target's own, so streaming commits of one target
+        // take turns as well: two interleaved writers would each hash bytes the
+        // other partly wrote.
+        let _commit = self.lock_commit(&path).await;
         let tmp_path = path.with_extension("tmp");
 
         // Write to temp file in 64 KiB chunks while incrementally hashing.
@@ -611,6 +693,9 @@ impl BlobStore for FileSystemBlobStore {
                 .await
                 .map_err(CasError::Io)?;
         }
+        // Every hash in one fan-out directory writes the same snapshot file, so
+        // commits of it take turns rather than racing on one staging name.
+        let _commit = self.lock_commit(&path).await;
         self.atomic_write(&path, data).await
     }
 
@@ -1365,6 +1450,71 @@ mod tests {
     /// silently make the library writable. Windows shares the attribute across
     /// hardlink names and cannot answer how many names an inode has, so this
     /// assertion holds where the mode is per-inode and mutable independently.
+    /// Concurrent commits of one object all succeed and leave one object.
+    ///
+    /// Every commit stages under the same name, so writers that interleave lose
+    /// the object: one truncates another's staged bytes, or renames the file the
+    /// other was about to rename and leaves it with nothing to commit. The store
+    /// imports an object while the materializer asks for the same one, so this is
+    /// the ordinary path rather than a stress case.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_commits_of_one_object_do_not_collide() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = Arc::new(
+            FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
+                .await
+                .expect("blob store"),
+        );
+        let data = Bytes::from_static(b"an object many writers commit at once");
+        let hash = Hash::from_content(&data);
+
+        let mut writers = Vec::new();
+        for _ in 0..16 {
+            let store = Arc::clone(&store);
+            let data = data.clone();
+            writers.push(tokio::spawn(async move {
+                store.write(hash, ObjectEncoding::Full, data).await
+            }));
+        }
+        for writer in writers {
+            writer.await.expect("the writer task runs").expect("a writer commits the object");
+        }
+
+        assert_eq!(store.read(&hash).await.expect("read the committed object"), data);
+    }
+
+    /// Concurrent streaming commits of one object do not interleave their bytes.
+    ///
+    /// A streaming commit hashes what it wrote, so two writers sharing a staging
+    /// file would each verify bytes the other partly wrote and both would report a
+    /// hash mismatch for content that is correct.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_streaming_commits_of_one_object_do_not_collide() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = Arc::new(
+            FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
+                .await
+                .expect("blob store"),
+        );
+        let data = Bytes::from_static(b"a streamed object many writers commit at once");
+        let hash = Hash::from_content(&data);
+
+        let mut writers = Vec::new();
+        for _ in 0..8 {
+            let store = Arc::clone(&store);
+            let data = data.clone();
+            writers.push(tokio::spawn(async move {
+                let mut reader = std::io::Cursor::new(data);
+                store.write_from_reader(hash, ObjectEncoding::Full, &mut reader, 0).await
+            }));
+        }
+        for writer in writers {
+            writer.await.expect("the writer task runs").expect("a writer commits the object");
+        }
+
+        assert_eq!(store.read(&hash).await.expect("read the committed object"), data);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn regression_a_deleted_object_leaves_the_hardlinked_copy_read_only() {

@@ -208,6 +208,7 @@ impl MetadataStore for FileSystemMetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::ObjectEncoding;
     use crate::storage::blob_store::FileSystemBlobStore;
     use crate::storage::wal::InMemoryWal;
     use crate::storage::wal::WalEntry;
@@ -289,6 +290,55 @@ mod tests {
         let journal = InMemoryWal::new();
         index.rebuild_from_wal(&journal).await.unwrap();
         assert!(index.is_empty().await);
+    }
+
+    /// Concurrent writes of two entries in one fan-out directory both land.
+    ///
+    /// A fan-out directory holds one snapshot file, so two entries that share its
+    /// prefix write the same target. Without a commit lock the second writer
+    /// stages under the name the first is about to rename, and one of them loses
+    /// the file: the store reports `ENOENT` for a hash it just accepted. The
+    /// materializer and the workflow import hit this on the ordinary path, because
+    /// the object they share a directory with is flushed at the same time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_entries_in_one_directory_both_persist() {
+        let (blob, _dir) = test_blob_store().await;
+        let index = FileSystemMetadataStore::new(blob.clone());
+
+        // Two hashes whose fan-out directory is the same one, found rather than
+        // assumed so the test keeps colliding if the layout changes.
+        let mut first = None;
+        let mut pair = None;
+        for counter in 0u32.. {
+            let hash = Hash::from_content(format!("entry-{counter}").as_bytes());
+            match first {
+                None => first = Some(hash),
+                Some(seen) => {
+                    if hash.to_hex()[..4] == seen.to_hex()[..4] {
+                        pair = Some((seen, hash));
+                        break;
+                    }
+                }
+            }
+        }
+        let (left, right) = pair.expect("two hashes share a fan-out directory");
+
+        let entry = || MetadataEntry { len: 1, encoding: ObjectEncoding::Full };
+        let (left_entry, right_entry) = (entry(), entry());
+        let index = std::sync::Arc::new(index);
+        let (left_index, right_index) =
+            (std::sync::Arc::clone(&index), std::sync::Arc::clone(&index));
+        let (left_task, right_task) = tokio::join!(
+            tokio::spawn(async move { left_index.put(left, left_entry).await }),
+            tokio::spawn(async move { right_index.put(right, right_entry).await }),
+        );
+        left_task.expect("the writer task runs").expect("the first entry commits");
+        right_task.expect("the writer task runs").expect("the second entry commits");
+
+        let reloaded = FileSystemMetadataStore::new(blob);
+        reloaded.rebuild_from_wal(&InMemoryWal::new()).await.expect("reload the snapshots");
+        assert!(reloaded.get(&left).await.expect("read the first entry").is_some());
+        assert!(reloaded.get(&right).await.expect("read the second entry").is_some());
     }
 
     #[tokio::test]
