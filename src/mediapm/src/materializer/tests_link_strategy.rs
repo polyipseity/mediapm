@@ -106,6 +106,23 @@ fn single_entry_target(paths: &MediaPmPaths) -> PathBuf {
     paths.hierarchy_root_dir.join("song")
 }
 
+/// Runs one `sync_hierarchy` over the same fixture with the knob left unset.
+///
+/// An absent order is the shape a document has before it names one, and it is
+/// the shape a library gets by default, so what the default order does is
+/// worth its own run rather than being inferred from an explicit list that
+/// happens to spell the same four methods.
+async fn sync_with_default_order(
+    paths: &MediaPmPaths,
+    cas: &FileSystemCas,
+    hash: &mediapm_cas::Hash,
+) -> MaterializeReport {
+    let mut document = resolvable_media_document(&hash.to_string());
+    document.runtime.materialization.materialization_preference_order = None;
+    let mut state = MediaPmState::default();
+    run_sync(paths, &document, &mut state, cas, None, None).await
+}
+
 /// The document's order decides which method writes the output.
 ///
 /// The two runs differ only in the order they declare, so a shared inode under
@@ -267,7 +284,10 @@ async fn a_fallback_is_reported_with_the_path_and_the_method() {
 /// This is the claim the default order makes, and the claim a read-only output
 /// rests on: the bytes on disk are the store's bytes, not a copy of them. Link
 /// count is the second half, because a file that shares an inode with the
-/// object has at least two names, one of which is the object's.
+/// object has at least two names, one of which is the object's. The run leaves
+/// the order unset, so the method that answers is the default order's first
+/// one, and it asserts no notice: a notice here would mean the default order
+/// fell through on the layout every library starts with.
 #[tokio::test]
 async fn strict_a_materialized_hardlink_shares_the_cas_inode() {
     let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");
@@ -278,14 +298,13 @@ async fn strict_a_materialized_hardlink_shares_the_cas_inode() {
         .await
         .expect("the payload is stored");
 
-    let report = sync_with_order(
-        &paths,
-        &cas,
-        &hash,
-        &[MaterializationMethod::Hardlink, MaterializationMethod::Copy],
-    )
-    .await;
+    let report = sync_with_default_order(&paths, &cas, &hash).await;
     assert_eq!(report.materialized_paths, 1, "the run has to write the entry: {report:?}");
+    assert!(
+        report.notices.is_empty(),
+        "the default order hardlinks into a library beside its store, so nothing fell back: {:?}",
+        report.notices
+    );
 
     let object = cas.object_path_for_hash(hash).expect("the store's own path for the object");
     let target = single_entry_target(&paths);

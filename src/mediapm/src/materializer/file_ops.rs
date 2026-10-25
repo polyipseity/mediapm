@@ -436,9 +436,12 @@ pub(super) async fn materialize_file_from_cas_with_order(
         let source_path = if matches!(method, MaterializationMethod::Copy) {
             None
         } else {
-            if cas.ensure_blob_materialized(hash).await.is_err() {
+            if let Err(error) = cas.ensure_blob_materialized(hash).await {
+                // The cause is kept: a permission failure and a corrupt store
+                // both leave the strategy unusable, and a reader told only the
+                // method cannot tell which one to investigate.
                 failures.push(format!(
-                    "{}: CAS blob store path unavailable for '{hash}'",
+                    "{}: CAS blob store path unavailable for '{hash}': {error}",
                     materialization_method_label(*method)
                 ));
                 continue;

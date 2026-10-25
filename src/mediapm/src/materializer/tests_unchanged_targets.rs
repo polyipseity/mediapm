@@ -12,7 +12,7 @@ use super::tests_common::{
 };
 
 use super::*;
-use crate::config::MaterializationMethod;
+use crate::config::{MaterializationMethod, defaults};
 
 /// Media id of the single entry these tests re-sync.
 const MEDIA_ID: &str = "src1";
@@ -529,12 +529,7 @@ async fn an_untouched_output_skips_whatever_method_produced_it() {
         cas,
         flattened: Vec::new(),
         verify_materialization: false,
-        materialization_order: vec![
-            MaterializationMethod::Hardlink,
-            MaterializationMethod::Symlink,
-            MaterializationMethod::Reflink,
-            MaterializationMethod::Copy,
-        ],
+        materialization_order: defaults::default_materialization_preference_order(),
         notices: std::sync::Mutex::new(Vec::new()),
         recorded_hashes: outputs
             .iter()

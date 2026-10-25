@@ -54,10 +54,56 @@ pub struct RuntimePathsConfigLatest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuntimeMaterializationConfigLatest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_materialization_preference_order"
+    )]
     pub materialization_preference_order: Option<Vec<MaterializationMethod>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_materialization: Option<bool>,
+}
+
+/// Deserializes the boundary's optional materialization preference order.
+///
+/// `None` stays `None`, so an absent knob still means "the default order".
+/// A present list goes through the same rule the resolved type uses, because
+/// the document path reads this field and never the resolved one: an empty
+/// list would otherwise reach the materializer and leave every entry with no
+/// method to try.
+///
+/// # Errors
+///
+/// Returns a deserialization error when a present list is empty or repeats a
+/// method.
+fn deserialize_optional_materialization_preference_order<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<MaterializationMethod>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let methods = Option::<Vec<MaterializationMethod>>::deserialize(deserializer)?;
+
+    if let Some(methods) = &methods {
+        super::super::validate_materialization_preference_order(methods)
+            .map_err(serde::de::Error::custom)?;
+    }
+
+    Ok(methods)
+}
+
+/// Resolves the materialization preference order a boundary value names.
+///
+/// An unset boundary field means the default order; a present one is returned
+/// as written. This is the single place that rule lives, so the resolver below
+/// and [`super::resolve_materialization_preference_order`] cannot disagree.
+pub(crate) fn resolved_materialization_preference_order(
+    materialization: &RuntimeMaterializationConfigLatest,
+) -> Vec<MaterializationMethod> {
+    materialization
+        .materialization_preference_order
+        .clone()
+        .unwrap_or_else(defaults::default_materialization_preference_order)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -200,11 +246,9 @@ pub fn resolve_runtime_storage(
                 .unwrap_or_default(),
         },
         materialization: super::super::RuntimeMaterializationConfig {
-            materialization_preference_order: latest
-                .materialization
-                .materialization_preference_order
-                .clone()
-                .unwrap_or_else(defaults::default_materialization_preference_order),
+            materialization_preference_order: resolved_materialization_preference_order(
+                &latest.materialization,
+            ),
             verify_materialization: latest
                 .materialization
                 .verify_materialization

@@ -22,11 +22,13 @@
 //! itself lives here, in `document.rs`.
 //!
 //! This module is the ONLY bridge between that family and the resolved
-//! (option-free) types in `config/mod.rs`. Two unversioned entry points cross
-//! the boundary, and neither names a `*Latest` type where a caller outside
+//! (option-free) types in `config/mod.rs`. Three unversioned entry points
+//! cross the boundary, and none names a `*Latest` type where a caller outside
 //! `versions/` can see it:
 //!
 //! - [`resolve_runtime_storage`] — read direction, boundary to resolved.
+//! - [`resolve_materialization_preference_order`] — read direction for the one
+//!   knob a caller needs without resolving the whole storage model.
 //! - [`runtime_boundary`] — write direction, resolved intent to a boundary
 //!   value whose every knob is spelled out.
 //!
@@ -99,6 +101,21 @@ pub fn resolve_runtime_storage(
     base: &RuntimeBasePaths,
 ) -> MediaRuntimeStorage {
     v_latest::resolve_runtime_storage(latest, base)
+}
+
+/// Resolves the materialization preference order a document asks for.
+///
+/// This is a read-direction entry point for the one boundary knob the
+/// materializer needs on its own, so it can reach that value without naming
+/// the boundary type or restating the `None`-means-default rule that
+/// [`resolve_runtime_storage`] already owns.
+///
+/// Unset means [`defaults::default_materialization_preference_order`].
+#[must_use]
+pub fn resolve_materialization_preference_order(
+    latest: &MediaRuntimeStorageLatest,
+) -> Vec<super::MaterializationMethod> {
+    v_latest::resolved_materialization_preference_order(&latest.materialization)
 }
 
 /// The runtime knobs a document may deviate from the spelled-out defaults by.
@@ -473,7 +490,8 @@ mod tests {
 
     use super::v_latest::{MediaRuntimeStorageLatest, RuntimePathsConfigLatest};
     use super::{
-        RuntimeBoundaryDeviations, resolve_runtime_storage, runtime_boundary, spelled_path,
+        RuntimeBoundaryDeviations, resolve_materialization_preference_order,
+        resolve_runtime_storage, runtime_boundary, spelled_path,
     };
     use crate::config::{MediaRuntimeStorage, RuntimeBasePaths};
     use crate::paths::MediaPmPaths;
@@ -548,6 +566,77 @@ mod tests {
             resolved.paths.mediapm_dir,
             MediaRuntimeStorage::default().paths.mediapm_dir,
             "spelled-out paths must survive the round trip into the resolved model"
+        );
+    }
+
+    /// Verifies an empty preference order is refused where the document is
+    /// parsed, not where the materializer would run it.
+    ///
+    /// Both Nickel contracts accept `[]` as an array of the enum, so nothing
+    /// upstream of this check refuses it. A materializer that accepted it would
+    /// have no method to attempt and would fail every entry, which reads as a
+    /// broken library rather than as a broken document.
+    #[test]
+    fn strict_an_empty_materialization_preference_order_is_refused_at_the_boundary() {
+        let boundary = serde_json::json!({
+            "materialization": { "materialization_preference_order": [] }
+        });
+        let error = serde_json::from_value::<MediaRuntimeStorageLatest>(boundary)
+            .expect_err("an empty order names no method to attempt, so it cannot load");
+        assert!(
+            error.to_string().contains("non-empty"),
+            "the message has to say what is wrong with the list: {error}"
+        );
+    }
+
+    /// Verifies a repeated method is refused at the boundary.
+    ///
+    /// A duplicate claims a second attempt that the list cannot deliver, and
+    /// the second attempt would be the same call as the first.
+    #[test]
+    fn strict_a_duplicate_materialization_method_is_refused_at_the_boundary() {
+        let boundary = serde_json::json!({
+            "materialization": { "materialization_preference_order": ["copy", "copy"] }
+        });
+        let error = serde_json::from_value::<MediaRuntimeStorageLatest>(boundary)
+            .expect_err("a repeated method is not a second chance");
+        assert!(
+            error.to_string().contains("duplicate"),
+            "the message has to say the method repeats: {error}"
+        );
+    }
+
+    /// Verifies the materialization accessor resolves an unset knob to the
+    /// default order and leaves a stated one alone.
+    ///
+    /// The materializer reads this accessor instead of the boundary field, so
+    /// the `None`-means-default rule has to be the same rule
+    /// [`resolve_runtime_storage`] applies; a run that disagreed with the
+    /// resolved model would attempt a different order than the rest of the
+    /// crate believes it did.
+    #[test]
+    fn resolve_materialization_preference_order_matches_the_resolved_model() {
+        let unset = MediaRuntimeStorageLatest::default();
+        assert_eq!(
+            resolve_materialization_preference_order(&unset),
+            crate::config::defaults::default_materialization_preference_order()
+        );
+
+        let stated = resolve_runtime_storage(
+            &MediaRuntimeStorageLatest {
+                materialization: super::v_latest::RuntimeMaterializationConfigLatest {
+                    materialization_preference_order: Some(vec![
+                        crate::config::MaterializationMethod::Copy,
+                    ]),
+                    verify_materialization: None,
+                },
+                ..MediaRuntimeStorageLatest::default()
+            },
+            &RuntimeBasePaths { workspace_root: "/w".into(), mediapm_dir: "/m".into() },
+        );
+        assert_eq!(
+            stated.materialization.materialization_preference_order,
+            vec![crate::config::MaterializationMethod::Copy]
         );
     }
 

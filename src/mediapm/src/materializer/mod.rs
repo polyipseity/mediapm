@@ -29,9 +29,7 @@ use crate::config::hierarchy_types::{
     collect_playlist_media_index, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
 use crate::config::source_types::MediaSourceSpec;
-use crate::config::{
-    ManagedFileRecord, MaterializationMethod, MediaPmDocument, MediaPmState, defaults,
-};
+use crate::config::{ManagedFileRecord, MaterializationMethod, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
 use crate::output::progress::{ProgressBarApi, ProgressBarHandle, ProgressScreenApi};
 use crate::path_component::{SanitizePolicy, render_relative_path};
@@ -249,12 +247,8 @@ pub async fn sync_hierarchy(
     );
     metadata::resolve_flattened_entry_paths(&mut flattened, document, &lookup_context).await?;
     let validated = sanitize_and_validate_hierarchy_paths(flattened)?;
-    let materialization_order = document
-        .runtime
-        .materialization
-        .materialization_preference_order
-        .clone()
-        .unwrap_or_else(defaults::default_materialization_preference_order);
+    let materialization_order =
+        crate::config::versions::resolve_materialization_preference_order(&document.runtime);
     let shared = Arc::new(SyncSharedState {
         hierarchy_root: hierarchy_root.clone(),
         cas: cas.clone(),
@@ -367,7 +361,11 @@ pub async fn sync_hierarchy(
 
     // Whatever the entries reported about how they wrote, whether or not the
     // loop above stopped early: a notice describes work that already finished.
+    // Entry workers finish in whatever order the filesystem and the slot pool
+    // give them, so the drained vector is completion-ordered; sorting makes the
+    // printed lines a property of the library rather than of the schedule.
     report.notices = shared.drain_notices();
+    report.notices.sort();
 
     // A path left unwritten ends the row as an error, not as a neutral
     // success: its content was unavailable, so the library is not the shape

@@ -94,6 +94,36 @@ impl MaterializationMethod {
     }
 }
 
+/// Rejects a materialization preference order that states nothing.
+///
+/// An empty list has no method to try, so a run that honoured it would fail
+/// every entry, and a repeated method is a list that claims a second chance
+/// it does not have. Both are rejected here rather than at the call site so
+/// every deserializer of this knob states the same rule.
+///
+/// # Errors
+///
+/// Returns the message describing the first violation, suitable for
+/// `serde::de::Error::custom`.
+pub fn validate_materialization_preference_order(
+    methods: &[MaterializationMethod],
+) -> Result<(), String> {
+    if methods.is_empty() {
+        return Err("materialization_preference_order must be non-empty".to_string());
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    for method in methods {
+        if !seen.insert(method) {
+            return Err(format!(
+                "duplicate materialization method '{method:?}' in preference order"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Deserializes the materialization preference order.
 ///
 /// # Errors
@@ -136,18 +166,7 @@ where
 
     let methods = methods?;
 
-    if methods.is_empty() {
-        return Err(serde::de::Error::custom("materialization_preference_order must be non-empty"));
-    }
-
-    let mut seen = std::collections::BTreeSet::new();
-    for method in &methods {
-        if !seen.insert(method) {
-            return Err(serde::de::Error::custom(format!(
-                "duplicate materialization method '{method:?}' in preference order",
-            )));
-        }
-    }
+    validate_materialization_preference_order(&methods).map_err(serde::de::Error::custom)?;
 
     Ok(methods)
 }
