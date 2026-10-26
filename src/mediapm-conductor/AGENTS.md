@@ -137,7 +137,7 @@ Conductor builtins bootstrap and provide cross-platform consistency. The officia
 - `export` (`kind=file|folder` filesystem materialization)
 - `archive` (pure ZIP-only pack/unpack/repack transforms)
 
-The registry in `src/mediapm-conductor/src/tools/mod.rs` is the single source for that set. A registration marked `test_only` names a test double — `flaky`, which fails a set number of its first invocations — and never appears in a conductor document. Three production sites take the registry's `production_builtins()`: `register_missing_builtin_tools` enumerates it to write builtin entries, `apply_builtin_runtime_defaults` enumerates it to set their impure flag, and the prune in the sync coordinator retains builtin entries by name from it, so a double is neither written nor kept. `registered_production_builtin_ids()` is the flat id list derived from the same set. The entry's compile gate and its `test_only` flag answer different questions: the gate decides whether a given build contains the entry at all (an integration-test crate compiles the library without `cfg(test)`, so a `cfg(test)`-only entry would be invisible to it), while the flag decides whether a build that has the entry may write or keep it.
+The registry in `src/mediapm-conductor/src/tools/mod.rs` is the single source for that set. A registration marked `test_only` names a test double — `flaky`, which fails a set number of its first invocations, and `slow`, which records dispatch events and can hold until an awaited line appears — and never appears in a conductor document. Both doubles compile only under the `test-builtins` feature, which no production build enables: `progress` and `tool-presets` do not imply it, and `src/mediapm-conductor/tests/mod.rs` refuses to build the integration suite without it, so a filtered run cannot shrink silently. Three production sites take the registry's `production_builtins()`: `register_missing_builtin_tools` enumerates it to write builtin entries, `apply_builtin_runtime_defaults` enumerates it to set their impure flag, and the prune in the sync coordinator retains builtin entries by name from it, so a double is neither written nor kept. `registered_production_builtin_ids()` is the flat id list derived from the same set. The entry's compile gate and its `test_only` flag answer different questions: the gate decides whether a given build contains the entry at all (an integration-test crate compiles the library without `cfg(test)`, so a `cfg(test)`-only entry would be invisible to it), while the flag decides whether a build that has the entry may write or keep it.
 
 All other domain logic remains external tooling or mediapm workflow behavior.
 
@@ -782,15 +782,16 @@ Three race scenarios in the tool content cache:
 - **Persistent errors (command not found)**: no retry.
 - CAS errors propagate via `?` regardless of workflow purity; no auto-retry on CAS failure.
 
-### N.16 Cross-Crate: Tool ID Collision — Builtin vs Managed (§6.4)
+### N.16 Cross-Crate: Builtin IDs a Document May Name (§6.4)
 
-**Issue**: Builtin tools and managed tools share the same ID space.
+**Issue**: A `builtin` spec names an id its build cannot dispatch, and the failure surfaces only when a step first runs.
 
 **Contract**:
 
-- Builtin IDs are reserved: managed tools cannot use builtin IDs.
-- On machine config load, tool ID collisions are checked; managed tool IDs matching builtin IDs are rejected with an explicit error.
-- The reserved set is defined by `registered_builtin_ids()` in the conductor crate.
+- A `builtin` spec must name an id the build registers. `NickelDocument::validate_builtin_tool_ids` rejects any other at both load entry points — the single-document decode (`from_boundary`) and the multi-document merge (`merge_documents`) — and one error names every offending tool, so a document with two misses does not need two runs to fix.
+- The check asks `registered_builtin_ids()`, which answers what the build can dispatch: the five real builtins, plus the test doubles when `test-builtins` is on. A production build therefore rejects a document naming `flaky@v1` or `slow@v1` with no special case.
+- A tool key is not reserved. An executable spec may use any key, including one spelled like a builtin id; the only key rule is that the user and generated documents may not define the same key, which the merge rejects as `MergeConflict::DuplicateTool`.
+- The check is absent from `encode_document` deliberately: a generated document written by an earlier build may name a double, and the prune must be able to save the document that drops the entry.
 
 ### N.17 Cross-Crate: State Persistence Consistency (§6.5)
 
@@ -919,7 +920,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`conductor.g
 | § | Issue | Contract |
 | --- | --- | --- |
 | 6.2 | Builtin failure vs conductor error recovery | Validation errors → no retry. Transient errors → retry N times (`max_retries`). Persistent errors → no retry. CAS errors propagate via `?` regardless of purity. |
-| 6.4 | Tool ID collision (builtin vs managed) | Builtin IDs are reserved; managed tools cannot use them. Check on config load via `registered_builtin_ids()`. |
+| 6.4 | Builtin ids a document may name | A `builtin` spec must name an id the build registers; `validate_builtin_tool_ids` checks both load entry points and names every offender. A tool key is not reserved: an executable spec may spell one like a builtin id. |
 | 6.6 | Cache invalidation across tool versions | `retain_only()` removes old cache entries; `content_map` cleared on version change so stale references are not preserved. |
 | 6.7 | Instance key immutability | Instance key = `hash(tool_id + sorted_inputs + impure_timestamp)`. Immutable after first derivation. Changing tool_id or inputs produces a new key (no in-place mutation). |
 | 6.8 | NCL↔Rust schema sync | Typed envelope pattern with `#[serde(flatten)]` + `deny_unknown_fields`. Versioned schemas in `versions/vN.rs`. Migration bridges via manual serde conversion. |

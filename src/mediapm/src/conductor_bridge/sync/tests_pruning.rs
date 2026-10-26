@@ -466,16 +466,80 @@ async fn reconcile_drops_manual_entries_from_generated_doc() {
     );
 }
 
-/// A `test_only` builtin left in a generated document is pruned, and the prune
-/// count accounts for it.
+/// An entry no sync produces is pruned, and the prune count accounts for it.
 ///
 /// Registration cannot fix a document that already carries the entry: it inserts
 /// only when the key is absent, so an entry an earlier build wrote survives every
-/// later sync unless the prune drops it. The prune retains builtin entries by
-/// name, so a double's name in that retention set is what lets it survive. This
-/// is the regression pin for that retention set.
+/// later sync unless the prune drops it. The prune retains entries whose name is
+/// a production builtin's, so anything outside that set — a managed tool this
+/// sync no longer wants, or a helper someone added by hand — is dropped. This is
+/// the regression pin for that retention set.
 #[tokio::test]
-async fn regression_a_seeded_flaky_entry_is_pruned() {
+async fn regression_a_seeded_entry_no_sync_produces_is_pruned() {
+    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+    let paths = MediaPmPaths::from_root(tmp.path());
+
+    let seeded_spec = ToolSpec {
+        version: None,
+        name: "legacy-helper".to_string(),
+        kind: ToolKindSpec::Executable {
+            command: vec!["legacy-helper".to_string()],
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
+        runtime: ToolRuntime::default(),
+        ..Default::default()
+    };
+    let doc = NickelDocument {
+        tools: BTreeMap::from([("legacy-helper@v1".to_string(), seeded_spec)]),
+        ..Default::default()
+    };
+    save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+    let state = MediaPmState::default();
+    let workspace_cas = super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+    let result = reconcile_desired_tools(
+        workspace_cas,
+        &paths,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        RecheckPolicy::default(),
+        &state,
+        Some(cache_root.path()),
+        &ProgressScreen::disabled(),
+        None,
+    )
+    .await
+    .map(ToolSyncOutcome::into_report);
+
+    assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
+    let report = result.unwrap();
+    assert_eq!(
+        report.pruned_tools, 1,
+        "the seeded entry is the only one this sync does not produce, so it is the one prune"
+    );
+
+    let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
+    assert!(
+        !doc.tools.contains_key("legacy-helper@v1"),
+        "an entry no sync produces must not survive the generated-document rewrite"
+    );
+    assert!(
+        doc.tools.contains_key("echo@v1"),
+        "the production builtins are still registered, so the prune removed only the seeded entry"
+    );
+}
+
+/// A generated document naming an unregistered builtin is rebuilt, not pruned.
+///
+/// Load rejects a `builtin` spec whose id the build does not register, so a
+/// document an earlier build wrote around a test double cannot decode in this
+/// one. `load_conductor_generated_document` discards an undecodable generated
+/// document, and the sync rebuilds it from the registry instead. The prune count
+/// stays at zero because there was no loaded entry to remove.
+#[tokio::test]
+async fn regression_a_generated_document_naming_an_unregistered_builtin_is_rebuilt() {
     let tmp = mediapm_utils::temp::artifact_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
@@ -512,17 +576,17 @@ async fn regression_a_seeded_flaky_entry_is_pruned() {
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();
     assert_eq!(
-        report.pruned_tools, 1,
-        "the seeded test double is the only entry this sync does not produce, so it is the one prune"
+        report.pruned_tools, 0,
+        "this build cannot load the seeded document, so it was discarded and rebuilt rather than pruned"
     );
 
     let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
     assert!(
         !doc.tools.contains_key("flaky@v1"),
-        "a seeded test double must not survive the generated-document rewrite"
+        "a document naming an unregistered builtin must not survive the rewrite"
     );
     assert!(
         doc.tools.contains_key("echo@v1"),
-        "the production builtins are still registered, so the prune removed only the double"
+        "the rebuilt document carries the production builtins"
     );
 }
