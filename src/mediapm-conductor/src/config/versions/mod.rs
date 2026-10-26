@@ -347,13 +347,20 @@ mod tests {
         );
     }
 
-    /// Downgrading to v3 records on every tool the strategy it staged by.
+    /// Downgrading to v3 records on every tool the strategy it staged by, and
+    /// leaves the rest of the document runtime alone.
     ///
     /// v3 has nowhere to state a document-wide default, so a hop that merely
     /// dropped the field would leave every inheriting tool staging in place — a
     /// silent behaviour change for a document written against v4. The result
     /// also has to be a v3 document: this evaluates through the target
     /// contract, so a hop that produced a shape v3 rejects fails here.
+    ///
+    /// v4 differs from v3 by exactly one field, and it lives inside the document
+    /// runtime, so the hop has to remove that field rather than the record: v3
+    /// still declares `retry_impure` and the inherited environment names, and a
+    /// downgrade that dropped them would lose configuration neither document
+    /// asked to change.
     #[test]
     fn regression_downgrading_to_v3_materializes_the_document_default() {
         let source = r#"{
@@ -373,7 +380,13 @@ mod tests {
                     runtime = { payload_staging = "copy" },
                 },
             },
-            runtime = { payload_staging = "hard_link" },
+            runtime = {
+                retry_impure = true,
+                environment = {
+                    platform_inherited_env_vars = { linux = ["MEDIAPM_TEST_INHERITED"] },
+                },
+                payload_staging = "hard_link",
+            },
         }"#;
         let downgraded: serde_json::Value =
             crate::config::nickel_io::migrate_document_source_to_version(
@@ -397,6 +410,16 @@ mod tests {
             downgraded["runtime"].get("payload_staging").is_none(),
             "v3 has no document-level default, so the hop drops it: {}",
             downgraded["runtime"]
+        );
+        assert_eq!(
+            downgraded["runtime"]["retry_impure"].as_bool(),
+            Some(true),
+            "the hop drops one field of the document runtime, not the runtime: {downgraded}"
+        );
+        assert_eq!(
+            downgraded["runtime"]["environment"]["platform_inherited_env_vars"]["linux"][0],
+            "MEDIAPM_TEST_INHERITED",
+            "a name the document inherited must survive the downgrade: {downgraded}"
         );
     }
 

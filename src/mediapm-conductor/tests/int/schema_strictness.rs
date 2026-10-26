@@ -572,7 +572,7 @@ fn staging_names_in_contract(contract: &str, binding: &str) -> std::collections:
 /// tool's own field stays a choice — it inherits — and the strategy that applies
 /// is the document's.
 #[test]
-fn regression_a_document_naming_no_staging_decision_decodes_as_in_place() {
+fn regression_a_document_naming_no_staging_decision_decodes_as_inheriting_in_place() {
     let source = r#"{
         version = 4,
         tools = {
@@ -856,7 +856,7 @@ fn parity_a_document_default_equal_to_the_tool_value_is_written_once() {
 /// point, so a rewrite neither grows the file nor loses the strategy that
 /// applies.
 #[test]
-fn regression_a_generated_document_without_any_staging_decision_stays_byte_identical() {
+fn regression_a_generated_document_without_any_staging_decision_encodes_no_staging_field() {
     let source = r#"{
         version = 4,
         tools = {
@@ -889,9 +889,14 @@ fn regression_a_generated_document_without_any_staging_decision_stays_byte_ident
 /// A v4 document reaches the version-locked v1 validator through the down hops.
 ///
 /// The downgrade is not a runtime path — `validate_v1_document` is the
-/// version-locked check the legacy surface needs — but it is the only thing that
-/// exercises the v4 → v3 hop, and a hop that dropped the wrong field would leave
-/// the pair table claiming a conversion it cannot perform.
+/// version-locked check the legacy surface needs — but it is the only public
+/// door onto the v4 → v3 hop, and a hop that dropped the wrong field would
+/// leave the pair table claiming a conversion it cannot perform.
+///
+/// The document runtime is the field to watch: v4 differs from v3 by exactly
+/// one field inside it, so a hop that removes the record instead of that field
+/// silently loses `retry_impure` and the inherited environment names, which v1
+/// still carries as `runtime.retry_impure` and `runtime.inherited_env_vars`.
 #[test]
 fn parity_a_v4_document_migrates_down_to_v1_for_the_version_locked_validator() {
     let source = r#"{
@@ -899,7 +904,11 @@ fn parity_a_v4_document_migrates_down_to_v1_for_the_version_locked_validator() {
         tools = {
             "t" = { kind = "executable", name = "t", command = ["true"] },
         },
-        runtime = { retry_impure = true, payload_staging = "hard_link" },
+        runtime = {
+            retry_impure = true,
+            platform_inherited_env_vars = { linux = ["MEDIAPM_TEST_INHERITED"] },
+            payload_staging = "hard_link",
+        },
     }"#;
     let migrated = validate_v1_document(source).expect("a v4 document must migrate down to v1");
     // Nickel numbers export as floats, so the marker reads back as `1.0`.
@@ -911,6 +920,16 @@ fn parity_a_v4_document_migrates_down_to_v1_for_the_version_locked_validator() {
     assert!(
         !migrated.to_string().contains("payload_staging"),
         "the v4-only staging fields must not survive the downgrade: {migrated}"
+    );
+    assert_eq!(
+        migrated["runtime"]["retry_impure"],
+        serde_json::Value::Bool(true),
+        "the hop removes one field from the document runtime, not the runtime: {migrated}"
+    );
+    assert_eq!(
+        migrated["runtime"]["inherited_env_vars"]["linux"][0],
+        serde_json::Value::String("MEDIAPM_TEST_INHERITED".to_string()),
+        "an inherited environment name the document stated must reach v1: {migrated}"
     );
 }
 

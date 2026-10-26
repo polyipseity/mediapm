@@ -211,10 +211,12 @@ impl From<super::super::InputBinding> for InputBindingLatest {
 
 /// Latest persisted payload staging strategy.
 ///
-/// The names mirror the `PayloadStagingV4` contract in `v4.ncl`: `in_place`,
-/// `hard_link`, `copy`. A tool's absent field means the document's default,
-/// and a document that names no default means `in_place`, which is only valid
-/// for a tool that names its `payload_root`.
+/// This is the document-level default, and its names mirror the
+/// `PayloadStagingV4` contract in `v4.ncl`: `in_place`, `hard_link`, `copy`. An
+/// absent field means the document states no default, which resolves to
+/// `in_place` — a strategy that is only valid for a tool that names its
+/// `payload_root`. A tool's own field is a [`ConfigPayloadStagingLatest`], whose
+/// absent value means `inherit`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PayloadStagingLatest {

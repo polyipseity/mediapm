@@ -270,6 +270,11 @@ in
 # ||| it. A tool that already states a strategy keeps it, and `in_place` is left
 # ||| absent because that is what an absent field already means in v3: the
 # ||| downgrade changes the shape and never the behaviour.
+# |||
+# ||| The document runtime loses exactly the one field v4 added. v4 and v3 declare
+# ||| the same other runtime fields, so removing the record instead of the field
+# ||| would drop `retry_impure` and the inherited environment names that v3 (and
+# ||| every earlier version) still carry.
 let migrate_v4_to_v3_fn = fun data =>
   let document_default =
     if
@@ -315,13 +320,24 @@ let migrate_v4_to_v3_fn = fun data =>
     else
       {}
   in
-  let without_document_scope =
-    drop_field "tools" (drop_field "runtime" (drop_field "version" data))
+  # ||| The document runtime keeps every field v3 declares; only the default
+  # ||| leaves. It is attached after the base record has had `runtime` removed,
+  # ||| because `&` merges recursively and a runtime left on both sides would
+  # ||| carry the dropped field back in.
+  let document_scope =
+    let base = drop_field "tools" (drop_field "runtime" (drop_field "version" data)) in
+    let runtime_v3_document =
+      if std.record.has_field "runtime" data then
+        { runtime = drop_field "payload_staging" data.runtime }
+      else
+        {}
+    in
+    base & runtime_v3_document & { version = 3 }
   in
   if std.record.has_field "tools" data then
-    without_document_scope & { version = 3, tools = tools_v3 }
+    document_scope & { tools = tools_v3 }
   else
-    without_document_scope & { version = 3 }
+    document_scope
 in
 
 {

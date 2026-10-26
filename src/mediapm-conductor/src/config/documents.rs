@@ -484,7 +484,7 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::*;
-    use crate::config::{ToolRuntime, WorkflowStepSpec};
+    use crate::config::{ConfigPayloadStaging, ToolRuntime, WorkflowStepSpec};
 
     /// One workflow with a single step whose inputs are the given pairs.
     ///
@@ -1085,6 +1085,56 @@ mod tests {
             unified.tools["ffmpeg"].outputs.get("content"),
             Some(&content),
             "a tool's declared capture defaults must reach the unified spec",
+        );
+    }
+
+    /// A tool's staging choice is resolved where the executor reads it.
+    ///
+    /// `to_unified` is the only place a persisted `ConfigPayloadStaging` becomes
+    /// the concrete strategy a step runs with, and the unresolved choice cannot
+    /// cross that boundary. A tool that names no strategy takes the document's
+    /// default; a tool that names one keeps it, whatever the default is. The two
+    /// tools differ only in that field, so a resolution against the wrong
+    /// operand (the tool's own value where it inherits, or the default where it
+    /// states one) fails here rather than in a step that stages its payload the
+    /// wrong way.
+    #[test]
+    fn to_unified_resolves_an_inheriting_tool_against_the_document_default() {
+        let tool = |name: &str, staging: ConfigPayloadStaging| {
+            (
+                name.to_string(),
+                ToolSpec {
+                    version: None,
+                    kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+                    name: name.to_string(),
+                    runtime: ToolRuntime { payload_staging: staging, ..ToolRuntime::default() },
+                    ..ToolSpec::default()
+                },
+            )
+        };
+        let document = NickelDocument {
+            tools: BTreeMap::from([
+                tool("inheriting", ConfigPayloadStaging::Inherit),
+                tool("overriding", ConfigPayloadStaging::Copy),
+            ]),
+            runtime: ConductorRuntimeConfig {
+                payload_staging: PayloadStaging::HardLink,
+                ..ConductorRuntimeConfig::default()
+            },
+            ..NickelDocument::default()
+        };
+
+        let unified = document.to_unified();
+
+        assert_eq!(
+            unified.tools["inheriting"].payload_staging,
+            PayloadStaging::HardLink,
+            "a tool that states no strategy runs the document's default",
+        );
+        assert_eq!(
+            unified.tools["overriding"].payload_staging,
+            PayloadStaging::Copy,
+            "a tool that states a strategy keeps it, whatever the default is",
         );
     }
 
