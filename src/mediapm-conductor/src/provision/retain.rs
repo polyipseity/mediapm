@@ -233,6 +233,26 @@ fn remove_legacy_lock_entry(entry_dir: &Path) -> Result<LegacyLockEntry, std::io
     Ok(LegacyLockEntry::Removed)
 }
 
+/// The warning a sweep reports for an entry it keeps because its metadata was
+/// written by a different build.
+///
+/// The failure this names is not an I/O error: the entry is intact and the sweep
+/// simply cannot age it, because its age is recorded in a metadata shape this
+/// build does not read. A reader needs the path and both version numbers, since
+/// the mismatch is what says the entry belongs to another build.
+///
+/// This condition is permanent where the two arms above it are not: an entry
+/// another build wrote stays mismatched for as long as it exists, so the report
+/// repeats on every sweep that sees it rather than clearing once the fault does.
+fn mismatched_metadata_version_warning(entry_dir: &Path, found: u32) -> String {
+    format!(
+        "kept the tool payload directory '{}': its metadata names version {found} and this build \
+         writes version {VERSION}, so this sweep cannot age it; remove it once no build that wrote \
+         it needs it",
+        entry_dir.display()
+    )
+}
+
 /// The warning a sweep reports for a pre-rename entry another process holds.
 ///
 /// The failure this names is not an I/O error: the directory is fine and the
@@ -312,7 +332,13 @@ pub(crate) fn prune_expired_entries(
                 continue;
             }
         };
+        // An entry whose metadata names another version is one this build
+        // cannot age, so the sweep keeps it and says why. Keeping it in silence
+        // is what this arm did before: the sweep is the only thing that ever
+        // removes these directories, so an entry left by another build survived
+        // the life of the store while every sweep reported success.
         if metadata.version != VERSION {
+            warnings.push(mismatched_metadata_version_warning(&path, metadata.version));
             continue;
         }
         if metadata.last_used_unix_seconds > cutoff {
@@ -593,6 +619,52 @@ mod tests {
             warnings.iter().any(|warning| warning.contains("unparseable")
                 && warning.contains("metadata does not parse")),
             "the report has to name the entry and say the parse failed: {warnings:?}"
+        );
+    }
+
+    /// An entry whose metadata names another version is reported, not skipped.
+    ///
+    /// The entry cannot be aged by this build — its `version` is a shape this
+    /// build does not read — so the sweep must keep it. Keeping it without a word
+    /// leaves it for the life of the store with nothing anywhere saying why it
+    /// survived, which is the same silence the two arms above this one were
+    /// changed to end.
+    #[test]
+    fn regression_an_entry_from_another_metadata_version_is_reported_not_skipped() {
+        let tools_dir = artifact_dir().expect("tools dir");
+        seed_entry(tools_dir.path(), "newer", LOCK_FILE_NAME, 0);
+        let newer = tools_dir.path().join("newer");
+        // An expired age under a version this build does not write: the entry is
+        // past its TTL by the only field this build would read, and that field
+        // is not the one the entry was aged by.
+        let foreign = VERSION + 1;
+        fs::write(
+            newer.join(METADATA_FILE_NAME),
+            format!(
+                "{{\"version\":{foreign},\"content_map\":{{}},\"lastUsedUnixSeconds\":0,\"execute_bits_verified\":true}}"
+            ),
+        )
+        .expect("rewrite the seeded metadata under another version");
+
+        let warnings = prune_expired_entries(tools_dir.path(), TTL_SECONDS + 1).expect("prune");
+
+        assert!(newer.exists(), "an entry from another metadata version is not removed");
+        assert_eq!(warnings.len(), 1, "the retained entry has to be reported: {warnings:?}");
+        assert!(
+            warnings[0].contains("newer"),
+            "the report has to name the directory to delete by hand: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains(&format!("version {foreign}")),
+            "the report has to name the version the entry carries: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains(&format!("version {VERSION}")),
+            "the report has to name the version this build writes: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("cannot age"),
+            "the report has to say why the entry survived: {warnings:?}"
         );
     }
 
