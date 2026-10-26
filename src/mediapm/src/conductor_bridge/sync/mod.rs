@@ -29,7 +29,7 @@ use mediapm_conductor::runtime_env::{provisioned_payload_dir, write_generated_do
 use mediapm_conductor::state::OutputSaveMode;
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
-use mediapm_conductor::{NickelDocument, PayloadStaging, ToolRuntime, ToolSpec};
+use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolRuntime, ToolSpec};
 
 use crate::tools::dependency::DependencyTypes;
 use crate::tools::provider::RecheckPolicy;
@@ -1829,11 +1829,11 @@ fn stamp_payload_roots(
                 continue;
             }
             spec.runtime.payload_root.clone_from(&payload_root);
-            spec.runtime.payload_staging = PayloadStaging::InPlace;
+            spec.runtime.payload_staging = ConfigPayloadStaging::InPlace;
         }
         if let Some(runtime) = tool_runtimes.get_mut(&conductor_tool_id) {
             runtime.payload_root = payload_root;
-            runtime.payload_staging = PayloadStaging::InPlace;
+            runtime.payload_staging = ConfigPayloadStaging::InPlace;
         }
     }
 }

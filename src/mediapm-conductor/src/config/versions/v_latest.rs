@@ -18,8 +18,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    NickelDocument, OutputCaptureSpec, PayloadStaging, SaveMode, ToolInputKind, ToolInputSpec,
-    ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+    ConfigPayloadStaging, NickelDocument, OutputCaptureSpec, PayloadStaging, SaveMode,
+    ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
+    WorkflowStepSpec,
 };
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
@@ -246,6 +247,50 @@ impl From<PayloadStaging> for PayloadStagingLatest {
     }
 }
 
+/// Latest persisted per-tool staging choice.
+///
+/// The names mirror the `ConfigPayloadStagingV4` contract in `v4.ncl`: the three
+/// strategies `PayloadStagingV4` accepts, plus `inherit` for the document's
+/// default. An absent field means `inherit`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ConfigPayloadStagingLatest {
+    /// Take the document's default staging strategy.
+    #[default]
+    Inherit,
+    /// Run the command under the provisioned payload directory.
+    InPlace,
+    /// Link the provisioned payload tree into the step sandbox.
+    HardLink,
+    /// Write a copy of the content map into the step sandbox.
+    Copy,
+}
+
+/// Widens a resolved strategy into the choice space, for an encoder that has
+/// already resolved a tool's choice.
+impl From<PayloadStaging> for ConfigPayloadStagingLatest {
+    fn from(staging: PayloadStaging) -> Self {
+        match staging {
+            PayloadStaging::InPlace => ConfigPayloadStagingLatest::InPlace,
+            PayloadStaging::HardLink => ConfigPayloadStagingLatest::HardLink,
+            PayloadStaging::Copy => ConfigPayloadStagingLatest::Copy,
+        }
+    }
+}
+
+/// Narrows a persisted choice into the resolved type the runtime holds,
+/// keeping `inherit` as the choice it is until a document resolves it.
+impl From<ConfigPayloadStagingLatest> for ConfigPayloadStaging {
+    fn from(staging: ConfigPayloadStagingLatest) -> Self {
+        match staging {
+            ConfigPayloadStagingLatest::Inherit => ConfigPayloadStaging::Inherit,
+            ConfigPayloadStagingLatest::InPlace => ConfigPayloadStaging::InPlace,
+            ConfigPayloadStagingLatest::HardLink => ConfigPayloadStaging::HardLink,
+            ConfigPayloadStagingLatest::Copy => ConfigPayloadStaging::Copy,
+        }
+    }
+}
+
 /// Latest persisted tool runtime config.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -269,10 +314,10 @@ pub(crate) struct ToolRuntimeLatest {
     /// names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) payload_root: Option<String>,
-    /// How a step obtains the payload it executes from, when the document
-    /// states it.
+    /// How this tool asks for its payload to be staged, when the document
+    /// states it. `None` means `inherit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) payload_staging: Option<PayloadStagingLatest>,
+    pub(crate) payload_staging: Option<ConfigPayloadStagingLatest>,
 }
 
 /// Platform environment configuration for the conductor runtime (boundary).
@@ -780,12 +825,16 @@ impl From<NickelEnvelopeLatest> for NickelDocument {
 
 impl From<NickelDocument> for NickelEnvelopeLatest {
     fn from(doc: NickelDocument) -> Self {
+        // Read the default before moving the document: every tool's staging
+        // choice is resolved against it, and the encoder omits the choices that
+        // repeat it.
+        let document_default = doc.runtime.payload_staging;
         NickelEnvelopeLatest {
             version: NICKEL_VERSION_LATEST,
             tools: doc
                 .tools
                 .into_iter()
-                .map(|(name, spec)| (name, tool_spec_to_latest(spec)))
+                .map(|(name, spec)| (name, tool_spec_to_latest(spec, document_default)))
                 .collect(),
             workflows: doc.workflows.into_iter().map(workflow_spec_to_latest).collect(),
             external_data: doc
@@ -842,7 +891,10 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
             environment: RuntimePlatformEnvConfigLatest {
                 platform_inherited_env_vars: rt.environment.platform_inherited_env_vars,
             },
-            payload_staging: Some(PayloadStagingLatest::from(rt.payload_staging)),
+            // `in_place` is what an absent field means, so writing it would
+            // restate the default the contract already carries.
+            payload_staging: (rt.payload_staging != PayloadStaging::InPlace)
+                .then(|| PayloadStagingLatest::from(rt.payload_staging)),
         }
     }
 }
@@ -905,7 +957,11 @@ fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
     }
 }
 
-fn tool_spec_to_latest(spec: ToolSpec) -> ToolSpecLatest {
+/// Writes one tool spec into the latest envelope shape.
+///
+/// `document_default` reaches the runtime conversion, which omits a staging
+/// strategy the default already gives.
+fn tool_spec_to_latest(spec: ToolSpec, document_default: PayloadStaging) -> ToolSpecLatest {
     ToolSpecLatest {
         kind: match spec.kind {
             ToolKindSpec::Builtin { builtin_id } => ToolKindLatest::Builtin { builtin_id },
@@ -959,7 +1015,7 @@ fn tool_spec_to_latest(spec: ToolSpec) -> ToolSpecLatest {
                 )
             })
             .collect(),
-        runtime: tool_runtime_to_latest(spec.runtime),
+        runtime: tool_runtime_to_latest(spec.runtime, document_default),
     }
 }
 
@@ -971,11 +1027,30 @@ fn tool_runtime_from_latest(rt: ToolRuntimeLatest) -> ToolRuntime {
         max_concurrent_calls: rt.max_concurrent_calls,
         max_retries: rt.max_retries,
         payload_root: rt.payload_root.unwrap_or_default(),
-        payload_staging: rt.payload_staging.map_or(PayloadStaging::default(), PayloadStaging::from),
+        payload_staging: rt
+            .payload_staging
+            .map_or(ConfigPayloadStaging::Inherit, ConfigPayloadStaging::from),
     }
 }
 
-fn tool_runtime_to_latest(rt: ToolRuntime) -> ToolRuntimeLatest {
+/// Writes a tool's runtime, omitting a staging choice that repeats the
+/// document's default.
+///
+/// A generated document states the default once, on
+/// [`ConductorRuntimeConfigLatest`], and a tool's strategy only when it differs
+/// from that default, so a tool that inherits and a tool that asks for exactly
+/// what the default already gives it both serialize as absent. Decoding either
+/// absence yields `inherit`, which resolves back to the same strategy: the
+/// omission loses nothing and an encode → decode → encode round trip is a fixed
+/// point.
+///
+/// The document-level half of the rule, in the `From` impl below, is what keeps
+/// a user document loadable. mediapm merges the user's document over the
+/// generated one, the merge rejects a field set to two different values, and a
+/// generated document that stated `in_place` every time would collide with a
+/// user document that legally states `copy`.
+fn tool_runtime_to_latest(rt: ToolRuntime, document_default: PayloadStaging) -> ToolRuntimeLatest {
+    let resolved = rt.payload_staging.resolve(document_default);
     ToolRuntimeLatest {
         content_map: rt.content_map,
         impure: rt.impure,
@@ -983,7 +1058,8 @@ fn tool_runtime_to_latest(rt: ToolRuntime) -> ToolRuntimeLatest {
         max_concurrent_calls: rt.max_concurrent_calls,
         max_retries: rt.max_retries,
         payload_root: (!rt.payload_root.is_empty()).then_some(rt.payload_root),
-        payload_staging: Some(PayloadStagingLatest::from(rt.payload_staging)),
+        payload_staging: (resolved != document_default)
+            .then(|| ConfigPayloadStagingLatest::from(resolved)),
     }
 }
 

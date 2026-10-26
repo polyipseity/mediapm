@@ -19,7 +19,7 @@ use mediapm::{
 };
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{
-    NickelDocument, PayloadStaging, ToolKindSpec, ToolRuntime, ToolSpec, encode_document,
+    ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, encode_document,
 };
 
 use crate::common::service_with_cache;
@@ -180,7 +180,7 @@ async fn seeded_three_tool_skip_service() -> Result<
                     ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
                     ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
                 ]),
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()
@@ -197,7 +197,7 @@ async fn seeded_three_tool_skip_service() -> Result<
                     ("linux/ffmpeg".to_string(), "provisioned".to_string()),
                     ("linux/".to_string(), "provisioned".to_string()),
                 ]),
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()
@@ -214,7 +214,7 @@ async fn seeded_three_tool_skip_service() -> Result<
                     ("linux/deno".to_string(), "provisioned".to_string()),
                     ("linux/".to_string(), "provisioned".to_string()),
                 ]),
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()

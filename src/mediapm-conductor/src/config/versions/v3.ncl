@@ -263,21 +263,65 @@ let migrate_v2_to_v3_fn = fun data =>
   & { version = 3, tools = tools_v3 }
 in
 
-# ||| v4 → v3:  the document-level staging default is dropped.
+# ||| v4 → v3:  the document-level staging default is materialized onto every tool.
 # |||
-# ||| v3 keeps the staging decision on each tool, and the hop from v2 wrote one
-# ||| onto every tool, so a document the runtime wrote loses no per-tool
-# ||| decision here. A default that tools inherited would be lost, and no v3
-# ||| document can express one: the field arrives with v4.
+# ||| v3 keeps the staging decision on each tool and has no place for a
+# ||| document-wide one, so the hop writes the default onto a tool that inherited
+# ||| it. A tool that already states a strategy keeps it, and `in_place` is left
+# ||| absent because that is what an absent field already means in v3: the
+# ||| downgrade changes the shape and never the behaviour.
 let migrate_v4_to_v3_fn = fun data =>
-  if std.record.has_field "runtime" data then
-    # The document is rebuilt rather than merged, for the reason the hop into v3
-    # records: `&` merges records recursively, so a dropped field would come
-    # back from the side that still carries it.
-    (drop_field "runtime" (drop_field "version" data))
-    & { version = 3, runtime = drop_field "payload_staging" data.runtime }
+  let document_default =
+    if
+      std.record.has_field "runtime" data
+      && std.record.has_field "payload_staging" data.runtime
+    then
+      data.runtime.payload_staging
+    else
+      "in_place"
+  in
+  let runtime_v3 = fun runtime =>
+    let stated =
+      if std.record.has_field "payload_staging" runtime then
+        runtime.payload_staging
+      else
+        "inherit"
+    in
+    let effective = if stated == "inherit" then document_default else stated in
+    # `drop_field` rather than `std.record.remove`: a runtime record that never
+    # named a strategy has no field to remove, and removing an absent field
+    # fails evaluation.
+    let without_strategy = drop_field "payload_staging" runtime in
+    if effective == "in_place" then
+      without_strategy
+    else
+      without_strategy & { payload_staging = effective }
+  in
+  let tools_v3 =
+    if std.record.has_field "tools" data then
+      data.tools
+      |> std.record.map (fun key =>
+        fun spec =>
+          if std.record.has_field "runtime" spec then
+            # ||| The spec is rebuilt rather than merged, for the reason the hop
+            # ||| into v3 records: `&` merges records recursively, so a field
+            # ||| dropped on one side would come back from the other.
+            (std.record.remove "runtime" spec) & { runtime = runtime_v3 spec.runtime }
+          else if document_default == "in_place" then
+            spec
+          else
+            spec & { runtime = { payload_staging = document_default } }
+      )
+    else
+      {}
+  in
+  let without_document_scope =
+    drop_field "tools" (drop_field "runtime" (drop_field "version" data))
+  in
+  if std.record.has_field "tools" data then
+    without_document_scope & { version = 3, tools = tools_v3 }
   else
-    (drop_field "version" data) & { version = 3 }
+    without_document_scope & { version = 3 }
 in
 
 {
@@ -290,7 +334,7 @@ in
   # ||| Migrates a v2 document to schema v3.
   migrate_v2_to_v3 = migrate_v2_to_v3_fn,
 
-  # ||| Migrates a v4 document down to schema v3, dropping the document-level
-  # ||| staging default.
+  # ||| Migrates a v4 document down to schema v3, recording on every tool the
+  # ||| strategy it staged by under the document-level default.
   migrate_v4_to_v3 = migrate_v4_to_v3_fn,
 }

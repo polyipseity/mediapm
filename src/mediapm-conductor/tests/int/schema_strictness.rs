@@ -8,6 +8,7 @@
 //! Naming: `strict_*` = reject previously-accepted input; `regression_*` =
 //! input that was silently accepted/dropped before now errors.
 
+use mediapm_conductor::ConfigPayloadStaging;
 use mediapm_conductor::NickelDocument;
 use mediapm_conductor::PayloadStaging;
 use mediapm_conductor::config::versions::{decode_document, encode_document, validate_v1_document};
@@ -380,7 +381,7 @@ fn regression_a_copy_staged_tool_needs_no_payload_root() {
     let doc = decode_document(COPY_WITHOUT_ROOT_DOC.as_bytes())
         .expect("a copy-staged tool needs no payload root");
     let runtime = &doc.tools["t"].runtime;
-    assert_eq!(runtime.payload_staging, PayloadStaging::Copy);
+    assert_eq!(runtime.payload_staging, ConfigPayloadStaging::Copy);
     assert!(runtime.payload_root.is_empty(), "no root was named");
 }
 
@@ -392,13 +393,14 @@ fn regression_a_v2_document_migrates_to_copy() {
     let runtime = &doc.tools["t"].runtime;
     assert_eq!(
         runtime.payload_staging,
-        PayloadStaging::Copy,
+        ConfigPayloadStaging::Copy,
         "a v2 document copies its payload, so the migration records that strategy"
     );
     assert!(runtime.payload_root.is_empty(), "a v2 document names no payload root");
 }
 
-/// The v4 round trip preserves the staging decision and the root it reads.
+/// The v4 round trip preserves a strategy the default does not already give,
+/// and the root that strategy reads.
 #[test]
 fn regression_a_v4_document_round_trips_byte_for_byte() {
     let source = r#"{
@@ -410,22 +412,22 @@ fn regression_a_v4_document_round_trips_byte_for_byte() {
                 command = ["true"],
                 runtime = {
                     payload_root = "/tmp/payloads/t",
-                    payload_staging = "in_place",
+                    payload_staging = "hard_link",
                 },
             },
         },
     }"#;
-    let doc = decode_document(source.as_bytes()).expect("in-place document must decode");
+    let doc = decode_document(source.as_bytes()).expect("hard-link document must decode");
     let runtime = &doc.tools["t"].runtime;
-    assert_eq!(runtime.payload_staging, PayloadStaging::InPlace);
+    assert_eq!(runtime.payload_staging, ConfigPayloadStaging::HardLink);
     assert_eq!(runtime.payload_root, "/tmp/payloads/t");
 
     let first = encode_document(doc).expect("encode");
     let text = String::from_utf8(first.clone()).expect("encoded document is UTF-8");
     assert!(text.contains("version = 4"), "the encoder writes the active schema marker: {text}");
     assert!(
-        text.contains("payload_staging = \"in_place\""),
-        "the encoder has to write the strategy it was given: {text}"
+        text.contains("payload_staging = \"hard_link\""),
+        "the encoder has to write a strategy the default does not already give: {text}"
     );
     assert!(
         text.contains("payload_root = \"/tmp/payloads/t\""),
@@ -435,7 +437,7 @@ fn regression_a_v4_document_round_trips_byte_for_byte() {
     let reread = &second.tools["t"].runtime;
     assert_eq!(
         reread.payload_staging,
-        PayloadStaging::InPlace,
+        ConfigPayloadStaging::HardLink,
         "the encoded document has to read back as the strategy it was encoded from"
     );
     assert_eq!(
@@ -494,9 +496,51 @@ fn parity_v4_contract_and_rust_types_agree() {
     );
     assert_eq!(
         contract.matches("payload_staging | PayloadStagingV4 | optional,").count(),
-        2,
-        "the tool runtime and the conductor runtime must declare the same staging contract"
+        1,
+        "the conductor runtime holds the default, drawn from the strategy set alone"
     );
+    assert_eq!(
+        contract.matches("payload_staging | ConfigPayloadStagingV4 | optional,").count(),
+        1,
+        "the tool runtime holds a choice, which can inherit"
+    );
+
+    // A tool's contract is the strategy set plus `inherit`, and the serde names
+    // have to cover all four: a name the contract accepts and the bridge cannot
+    // read is a document this build refuses at the boundary.
+    let (_, after_choice) = contract
+        .split_once("let ConfigPayloadStagingV4 =")
+        .expect("v4.ncl must define ConfigPayloadStagingV4");
+    let (choice_block, _) =
+        after_choice.split_once("\nin\n").expect("ConfigPayloadStagingV4 must be a binding");
+    assert!(
+        choice_block.contains("value == \"inherit\"") && choice_block.contains("PayloadStagingV4"),
+        "a tool's contract must add 'inherit' to the strategy set: {choice_block}"
+    );
+    let rust_choices: std::collections::BTreeSet<String> = [
+        ConfigPayloadStaging::Inherit,
+        ConfigPayloadStaging::InPlace,
+        ConfigPayloadStaging::HardLink,
+        ConfigPayloadStaging::Copy,
+    ]
+    .iter()
+    .map(|staging| staging.as_str().to_string())
+    .collect();
+    let mut expected = rust;
+    expected.insert("inherit".to_string());
+    assert_eq!(
+        rust_choices, expected,
+        "the choice enum and the tool contract must name the same four options"
+    );
+    for staging in [
+        ConfigPayloadStaging::Inherit,
+        ConfigPayloadStaging::InPlace,
+        ConfigPayloadStaging::HardLink,
+        ConfigPayloadStaging::Copy,
+    ] {
+        let json = serde_json::to_value(staging).expect("choice serializes");
+        assert_eq!(json, serde_json::Value::String(staging.as_str().to_string()));
+    }
 }
 
 /// Returns the strategy names a contract's staging predicate accepts.
@@ -524,7 +568,9 @@ fn staging_names_in_contract(contract: &str, binding: &str) -> std::collections:
 ///
 /// The contract accepting the absence and the Rust bridge applying the default
 /// are separate halves, and this is the second: a resolver that keyed off
-/// `Some`/`None` would leave the tool unstaged instead of defaulting it.
+/// `Some`/`None` would leave the tool unstaged instead of defaulting it. The
+/// tool's own field stays a choice — it inherits — and the strategy that applies
+/// is the document's.
 #[test]
 fn regression_a_document_naming_no_staging_decision_decodes_as_in_place() {
     let source = r#"{
@@ -540,12 +586,17 @@ fn regression_a_document_naming_no_staging_decision_decodes_as_in_place() {
     }"#;
     let doc = decode_document(source.as_bytes()).expect("a document staging nothing must decode");
     let runtime = &doc.tools["t"].runtime;
-    assert_eq!(runtime.payload_staging, PayloadStaging::InPlace);
+    assert_eq!(runtime.payload_staging, ConfigPayloadStaging::Inherit);
     assert!(runtime.payload_root.is_empty(), "the document names no root");
     assert_eq!(
         doc.runtime.payload_staging,
         PayloadStaging::InPlace,
         "a document naming no default stages in place",
+    );
+    assert_eq!(
+        runtime.payload_staging.resolve(doc.runtime.payload_staging),
+        PayloadStaging::InPlace,
+        "a tool that names nothing stages the way an absent default stages",
     );
 }
 
@@ -567,8 +618,13 @@ fn parity_the_document_level_staging_default_round_trips() {
     assert_eq!(doc.runtime.payload_staging, PayloadStaging::HardLink);
     assert_eq!(
         doc.tools["t"].runtime.payload_staging,
-        PayloadStaging::InPlace,
-        "the tool names no strategy of its own, so its own field still resolves in place",
+        ConfigPayloadStaging::Inherit,
+        "the tool names no strategy of its own, so it inherits",
+    );
+    assert_eq!(
+        doc.tools["t"].runtime.payload_staging.resolve(doc.runtime.payload_staging),
+        PayloadStaging::HardLink,
+        "the strategy that applies is the document's",
     );
 
     let encoded = encode_document(doc).expect("encode");
@@ -577,12 +633,254 @@ fn parity_the_document_level_staging_default_round_trips() {
         text.contains("payload_staging = \"hard_link\""),
         "the encoder has to write the default it was given: {text}"
     );
+    assert!(
+        !text.contains("payload_staging = \"inherit\""),
+        "the encoder writes the resolved strategy, never the choice it came from: {text}"
+    );
 
     let reread = decode_document(&encoded).expect("decode the encoded document");
     assert_eq!(
         reread.runtime.payload_staging,
         PayloadStaging::HardLink,
         "the encoded document has to read back as the default it was encoded from",
+    );
+    assert_eq!(
+        reread.tools["t"].runtime.payload_staging.resolve(reread.runtime.payload_staging),
+        PayloadStaging::HardLink,
+        "the encoded document has to read back as the strategy that applied",
+    );
+    let reencoded = encode_document(reread).expect("re-encode");
+    assert_eq!(encoded, reencoded, "encode → decode → encode must be byte-stable");
+}
+
+/// The matrix the feature exists for: a tool that states a strategy keeps it, a
+/// tool that names none takes the document's default, and a document that names
+/// neither stages in place.
+#[test]
+fn parity_a_tool_strategy_wins_over_the_document_default() {
+    let with_default = r#"{
+        version = 4,
+        tools = {
+            "inherits" = { kind = "executable", name = "inherits", command = ["true"] },
+            "overrides" = {
+                kind = "executable",
+                name = "overrides",
+                command = ["true"],
+                runtime = { payload_staging = "copy" },
+            },
+        },
+        runtime = { payload_staging = "hard_link" },
+    }"#;
+    let doc = decode_document(with_default.as_bytes()).expect("a document default must decode");
+    assert_eq!(
+        doc.tools["inherits"].runtime.payload_staging.resolve(doc.runtime.payload_staging),
+        PayloadStaging::HardLink,
+        "a tool that names no strategy takes the document default"
+    );
+    assert_eq!(
+        doc.tools["overrides"].runtime.payload_staging.resolve(doc.runtime.payload_staging),
+        PayloadStaging::Copy,
+        "a tool that names a strategy keeps it against the default"
+    );
+
+    let without_default = r#"{
+        version = 4,
+        tools = {
+            "inherits" = { kind = "executable", name = "inherits", command = ["true"] },
+        },
+    }"#;
+    let doc = decode_document(without_default.as_bytes())
+        .expect("a document naming no default must decode");
+    assert_eq!(
+        doc.tools["inherits"].runtime.payload_staging.resolve(doc.runtime.payload_staging),
+        PayloadStaging::InPlace,
+        "a document that names neither stages in place"
+    );
+}
+
+/// A document-level `inherit` is not a strategy, so the contract refuses it.
+///
+/// The default is what a tool inherits *from*: a default that inherits in turn
+/// would have nothing to resolve against.
+#[test]
+fn strict_a_document_level_inherit_is_rejected() {
+    let msg = decode_error(r#"{ version = 4, runtime = { payload_staging = "inherit" } }"#);
+    assert!(
+        msg.contains("payload_staging") && msg.contains("PayloadStagingV4"),
+        "the document-level field must accept only the three strategies: {msg}"
+    );
+}
+
+/// One unknown name is refused at both levels, by the contract that owns each.
+#[test]
+fn strict_an_unknown_staging_name_is_rejected_at_both_levels() {
+    let tool_level = decode_error(
+        r#"{
+        version = 4,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = { payload_staging = "symlink" },
+            },
+        },
+    }"#,
+    );
+    assert!(
+        tool_level.contains("payload_staging") && tool_level.contains("symlink"),
+        "a tool's unknown strategy must be refused and the field named: {tool_level}"
+    );
+
+    let document_level =
+        decode_error(r#"{ version = 4, runtime = { payload_staging = "symlink" } }"#);
+    assert!(
+        document_level.contains("payload_staging")
+            && document_level.contains("PayloadStagingV4")
+            && document_level.contains("symlink"),
+        "the document's unknown default must be refused by the strategy contract: {document_level}"
+    );
+}
+
+/// A tool with a payload that inherits `in_place` still needs the root it reads.
+///
+/// The rule judges the strategy that applies, so a tool cannot escape it by
+/// stating nothing: an absent per-tool value resolves to the default, and the
+/// default here stages in place.
+#[test]
+fn strict_an_inherited_in_place_tool_still_needs_its_payload_root() {
+    let msg = decode_error(
+        r#"{
+        version = 4,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = { content_map = { "tool" = "inline description" } },
+            },
+        },
+    }"#,
+    );
+    assert!(
+        msg.contains("payload_root") && msg.contains("in_place") && msg.contains("'t'"),
+        "the refusal must name the root, the strategy that applies and the tool: {msg}"
+    );
+    assert!(
+        msg.contains("document default"),
+        "the message must say where the strategy came from, so the fix lands in the right place: {msg}"
+    );
+}
+
+/// The other half: a payload-carrying tool that inherits `copy` needs no root.
+#[test]
+fn regression_a_tool_inheriting_copy_needs_no_payload_root() {
+    let doc = decode_document(
+        r#"{
+        version = 4,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = { content_map = { "tool" = "inline description" } },
+            },
+        },
+        runtime = { payload_staging = "copy" },
+    }"#
+        .as_bytes(),
+    )
+    .expect("a tool inheriting copy needs no payload root");
+    assert_eq!(
+        doc.tools["t"].runtime.payload_staging.resolve(doc.runtime.payload_staging),
+        PayloadStaging::Copy,
+        "the strategy that applies is the document's, which needs no root"
+    );
+}
+
+/// A tool that repeats the document's default is written once, not twice.
+///
+/// The generated document states the default on the document and a tool's
+/// strategy only when it differs, which is what leaves a user document that
+/// states the same field free of a collision when mediapm merges it over.
+#[test]
+fn parity_a_document_default_equal_to_the_tool_value_is_written_once() {
+    let source = r#"{
+        version = 4,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = {
+                    payload_root = "/tmp/payloads/t",
+                    payload_staging = "hard_link",
+                },
+            },
+        },
+        runtime = { payload_staging = "hard_link" },
+    }"#;
+    let doc = decode_document(source.as_bytes()).expect("a repeating strategy must decode");
+    let encoded = encode_document(doc).expect("encode");
+    let text = String::from_utf8(encoded.clone()).expect("encoded document is UTF-8");
+    assert_eq!(
+        text.matches("payload_staging = \"hard_link\"").count(),
+        1,
+        "the default is written once, on the document: {text}"
+    );
+    assert!(
+        text.contains("payload_root = \"/tmp/payloads/t\""),
+        "the root the strategy reads still has to be written: {text}"
+    );
+
+    let reread = decode_document(&encoded).expect("decode the encoded document");
+    assert_eq!(
+        reread.tools["t"].runtime.payload_staging.resolve(reread.runtime.payload_staging),
+        PayloadStaging::HardLink,
+        "the strategy that applies survives the omission"
+    );
+    assert_eq!(
+        reread.tools["t"].runtime.payload_staging,
+        ConfigPayloadStaging::Inherit,
+        "the tool reads back as inheriting, because the default gives it the same strategy"
+    );
+    let reencoded = encode_document(reread).expect("re-encode");
+    assert_eq!(encoded, reencoded, "encode → decode → encode must be byte-stable");
+}
+
+/// A document that decided nothing about staging writes no staging field.
+///
+/// Two properties, and both matter. The emitted Nickel names no strategy at
+/// all, so a generated document makes no statement a user document could
+/// collide with when mediapm merges the two. And the round trip is a fixed
+/// point, so a rewrite neither grows the file nor loses the strategy that
+/// applies.
+#[test]
+fn regression_a_generated_document_without_any_staging_decision_stays_byte_identical() {
+    let source = r#"{
+        version = 4,
+        tools = {
+            "t" = {
+                kind = "executable",
+                name = "t",
+                command = ["true"],
+                runtime = { payload_root = "/tmp/payloads/t" },
+            },
+        },
+    }"#;
+    let doc = decode_document(source.as_bytes()).expect("an in-place document must decode");
+    let encoded = encode_document(doc).expect("encode");
+    let text = String::from_utf8(encoded.clone()).expect("encoded document is UTF-8");
+    assert!(
+        !text.contains("payload_staging"),
+        "a value that matches an absent field is not written: {text}"
+    );
+
+    let reread = decode_document(&encoded).expect("decode the encoded document");
+    assert_eq!(
+        reread.tools["t"].runtime.payload_staging.resolve(reread.runtime.payload_staging),
+        PayloadStaging::InPlace,
+        "the strategy that applies is the one the document staged by"
     );
     let reencoded = encode_document(reread).expect("re-encode");
     assert_eq!(encoded, reencoded, "encode → decode → encode must be byte-stable");
@@ -655,12 +953,21 @@ fn strict_encoding_a_tool_that_stages_without_a_root_is_refused() {
     );
 }
 
-/// An absent strategy means `in_place`, which is what a document with a root
-/// gets without stating one.
+/// An absent strategy means `inherit`, and an absent default means `in_place`,
+/// so a document that states neither stages in place.
 #[test]
 fn parity_payload_staging_defaults_to_in_place() {
     assert_eq!(PayloadStaging::default(), PayloadStaging::InPlace);
-    assert_eq!(ToolRuntime::default().payload_staging, PayloadStaging::InPlace);
+    assert_eq!(
+        ToolRuntime::default().payload_staging,
+        ConfigPayloadStaging::Inherit,
+        "a tool that states nothing inherits instead of naming a strategy"
+    );
+    assert_eq!(
+        ToolRuntime::default().payload_staging.resolve(PayloadStaging::InPlace),
+        PayloadStaging::InPlace,
+        "and inheriting an absent default still stages in place"
+    );
     assert!(ToolRuntime::default().payload_root.is_empty());
 }
 

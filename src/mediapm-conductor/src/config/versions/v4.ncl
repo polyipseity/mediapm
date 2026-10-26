@@ -65,11 +65,27 @@ in
 # ||| `in_place` runs the command under the provisioned payload directory,
 # ||| `hard_link` links that tree into the step sandbox, and `copy` writes a
 # ||| copy of the content map into the sandbox.
+# |||
+# ||| This is the set the document-level default is drawn from: a default has
+# ||| nothing to inherit from, so the contract keeps `inherit` out of it.
 let PayloadStagingV4 =
   std.contract.any_of [
     std.contract.from_predicate (fun value => value == "in_place"),
     std.contract.from_predicate (fun value => value == "hard_link"),
     std.contract.from_predicate (fun value => value == "copy"),
+  ]
+in
+
+# ||| A tool's staging choice: a strategy, or `inherit` for the document's
+# ||| default.
+# |||
+# ||| Absent means `inherit`, and the runtime resolves the choice against
+# ||| `ConductorRuntimeConfigV4.payload_staging` before any step runs, so
+# ||| `inherit` never reaches an executor.
+let ConfigPayloadStagingV4 =
+  std.contract.any_of [
+    std.contract.from_predicate (fun value => value == "inherit"),
+    PayloadStagingV4,
   ]
 in
 
@@ -113,9 +129,10 @@ let ToolRuntimeV4 = {
   # ||| Absolute path of the directory holding this tool's provisioned payload
   # ||| tree. Absent means the document names none.
   payload_root | String | optional,
-  # ||| How a step obtains the payload it executes from. Absent means
-  # ||| `in_place`, which needs `payload_root`.
-  payload_staging | PayloadStagingV4 | optional,
+  # ||| How this tool asks for its payload to be staged. Absent means
+  # ||| `inherit`, which takes the document's default; `in_place` and
+  # ||| `hard_link` need `payload_root`.
+  payload_staging | ConfigPayloadStagingV4 | optional,
 }
 in
 

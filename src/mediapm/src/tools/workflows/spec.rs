@@ -9,8 +9,8 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, PayloadStaging, ToolInputSpec, ToolKindSpec, ToolRuntime,
-    ToolSpec,
+    ConfigPayloadStaging, InputBinding, OutputCaptureSpec, ToolInputSpec, ToolKindSpec,
+    ToolRuntime, ToolSpec,
 };
 
 /// Describes how one option input is rendered as CLI tokens.
@@ -134,7 +134,7 @@ pub(crate) fn assemble_tool_spec(
         // here names no root, so `copy` is the strategy that needs none, and a
         // tool the sync never materializes keeps it.
         payload_root: String::new(),
-        payload_staging: PayloadStaging::Copy,
+        payload_staging: ConfigPayloadStaging::Copy,
     };
 
     let spec = ToolSpec {

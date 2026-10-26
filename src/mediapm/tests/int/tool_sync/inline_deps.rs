@@ -9,7 +9,7 @@ use mediapm::{
     MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
 };
 use mediapm_conductor::{
-    NickelDocument, PayloadStaging, ToolKindSpec, ToolRuntime, ToolSpec, encode_document,
+    ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, encode_document,
 };
 
 // ---------------------------------------------------------------------------
@@ -366,7 +366,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
                     ("linux/yt-dlp".to_string(), "provisioned".to_string()),
                     ("deps/deno/linux/".to_string(), "provisioned".to_string()),
                 ]),
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()

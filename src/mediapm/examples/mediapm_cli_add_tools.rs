@@ -15,7 +15,7 @@ use mediapm::{
 };
 use mediapm_cas::Hash;
 use mediapm_conductor::{
-    NickelDocument, OutputSaveMode, PayloadStaging, ToolKindSpec, ToolRuntime, ToolSpec,
+    ConfigPayloadStaging, NickelDocument, OutputSaveMode, ToolKindSpec, ToolRuntime, ToolSpec,
     config::ExternalDataEntry, decode_document, encode_document,
 };
 use serde::{Deserialize, Serialize};
@@ -182,7 +182,7 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
                     )]),
                     // The fabricated payload lives in CAS and no provisioned
                     // directory names it, so the document stages it by copy.
-                    payload_staging: PayloadStaging::Copy,
+                    payload_staging: ConfigPayloadStaging::Copy,
                     ..ToolRuntime::default()
                 },
                 ..ToolSpec::default()

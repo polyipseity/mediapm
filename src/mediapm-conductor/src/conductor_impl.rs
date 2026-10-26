@@ -462,7 +462,7 @@ where
                 // A tool added through the API stages its payload by copying the
                 // content map, which is the strategy that needs no payload
                 // root: this method is given none.
-                payload_staging: crate::config::PayloadStaging::Copy,
+                payload_staging: crate::config::ConfigPayloadStaging::Copy,
                 ..crate::config::ToolRuntime::default()
             },
         };

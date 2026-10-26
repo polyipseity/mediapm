@@ -308,6 +308,57 @@ impl PayloadStaging {
     }
 }
 
+/// How a document asks for a tool's payload to be staged.
+///
+/// This is the *choice* a document states; [`PayloadStaging`] is the *resolved*
+/// strategy a step executes. [`Self::Inherit`] means the tool takes the
+/// document's default — [`ConductorRuntimeConfig::payload_staging`] — and the
+/// other three state a strategy outright. The distinction cannot outlive the
+/// document boundary: [`Self::resolve`] turns a choice into a concrete
+/// [`PayloadStaging`] while the document is read, so nothing downstream of the
+/// document — a step worker in particular — can hold an unresolved strategy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigPayloadStaging {
+    /// Take the document's default staging strategy.
+    #[default]
+    Inherit,
+    /// Run the command under the provisioned payload directory.
+    InPlace,
+    /// Link the provisioned payload tree into the step sandbox.
+    HardLink,
+    /// Write a copy of the content map into the step sandbox.
+    Copy,
+}
+
+impl ConfigPayloadStaging {
+    /// Returns the choice's persisted name, which is the name the Nickel
+    /// contract uses.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::InPlace => "in_place",
+            Self::HardLink => "hard_link",
+            Self::Copy => "copy",
+        }
+    }
+
+    /// Resolves this choice against the default the document states.
+    ///
+    /// [`Self::Inherit`] answers the default and every other variant answers
+    /// itself, so the result is always a strategy the executor can run.
+    #[must_use]
+    pub const fn resolve(self, document_default: PayloadStaging) -> PayloadStaging {
+        match self {
+            Self::Inherit => document_default,
+            Self::InPlace => PayloadStaging::InPlace,
+            Self::HardLink => PayloadStaging::HardLink,
+            Self::Copy => PayloadStaging::Copy,
+        }
+    }
+}
+
 /// Runtime configuration for a tool (replaces the old separate `tool_configs`
 /// map in the V1 schema).
 ///
@@ -356,13 +407,16 @@ pub struct ToolRuntime {
     /// payload is materialized.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub payload_root: String,
-    /// How a step obtains the payload it executes from.
+    /// How this tool asks for its payload to be staged.
     ///
-    /// The default is [`PayloadStaging::InPlace`], which needs a non-empty
-    /// [`Self::payload_root`]; a document that carries a content map and no
-    /// root fails validation at load rather than silently copying.
+    /// The default is [`ConfigPayloadStaging::Inherit`], which takes
+    /// [`ConductorRuntimeConfig::payload_staging`]; a document that states no
+    /// default there stages in place. `in_place` and `hard_link` both need a
+    /// non-empty [`Self::payload_root`], and a document that carries a content
+    /// map, asks for one of them, and names no root fails validation at load
+    /// rather than silently copying.
     #[serde(default)]
-    pub payload_staging: PayloadStaging,
+    pub payload_staging: ConfigPayloadStaging,
 }
 
 /// Platform-grouped inherited environment-variable names (S-D3).

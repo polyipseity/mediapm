@@ -2,7 +2,7 @@
 
 use crate::output::ProgressScreen;
 use crate::output::{DimensionSource, ProgressTerminal, TestDimensionSource};
-use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolSpec};
 use mediapm_utils::progress::PrefixComponents;
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 use std::collections::BTreeMap;
@@ -27,7 +27,7 @@ async fn reconcile_desired_tools_registers_prune_bar_on_the_caller_screen() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()
@@ -112,7 +112,7 @@ async fn prune_bar_reaches_the_display() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()
@@ -264,7 +264,7 @@ async fn prune_bar_is_inert_on_a_disabled_screen() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()

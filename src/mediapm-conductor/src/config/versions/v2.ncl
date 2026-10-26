@@ -389,7 +389,9 @@ in
 # ||| hard link reacquires v2's copy behaviour on the way out.
 let migrate_v3_to_v2_fn = fun data =>
   let stripped_runtime = fun runtime =>
-    std.record.remove "payload_root" (std.record.remove "payload_staging" runtime)
+    # Both fields are optional in v3, so a document may name either one without
+    # the other; `drop_field` removes what is there and leaves the rest.
+    drop_field "payload_root" (drop_field "payload_staging" runtime)
   in
   let tools_v2 =
     if std.record.has_field "tools" data then

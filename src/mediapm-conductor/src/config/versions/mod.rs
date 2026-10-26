@@ -211,6 +211,14 @@ pub(crate) fn restore_readable_fields(
 /// invariant and the payload-staging invariant), converted to a latest-schema
 /// envelope, then rendered as Nickel source.
 ///
+/// The document-level staging default is written only when it differs from
+/// `in_place`, the value an absent field already means, and a per-tool strategy
+/// equal to the default is omitted. That is what keeps a user document
+/// loadable: mediapm merges the user's document over the generated one, the
+/// merge rejects a field set to two different values, and a generated default
+/// the generator invented would collide with a user document that states
+/// `copy`.
+///
 /// Those two invariants are enforced here as well as at load, because a build
 /// that writes a document it cannot read is worse than one that refuses to
 /// write it: the generated-document loader discards an unreadable file and
@@ -336,6 +344,86 @@ mod tests {
             published.len(),
             imports + 1,
             "the export carries the registry and its imports, and nothing else: {published:?}"
+        );
+    }
+
+    /// Downgrading to v3 records on every tool the strategy it staged by.
+    ///
+    /// v3 has nowhere to state a document-wide default, so a hop that merely
+    /// dropped the field would leave every inheriting tool staging in place — a
+    /// silent behaviour change for a document written against v4. The result
+    /// also has to be a v3 document: this evaluates through the target
+    /// contract, so a hop that produced a shape v3 rejects fails here.
+    #[test]
+    fn regression_downgrading_to_v3_materializes_the_document_default() {
+        let source = r#"{
+            version = 4,
+            tools = {
+                "bare" = { kind = "executable", name = "bare", command = ["true"] },
+                "empty_runtime" = {
+                    kind = "executable",
+                    name = "empty_runtime",
+                    command = ["true"],
+                    runtime = {},
+                },
+                "states" = {
+                    kind = "executable",
+                    name = "states",
+                    command = ["true"],
+                    runtime = { payload_staging = "copy" },
+                },
+            },
+            runtime = { payload_staging = "hard_link" },
+        }"#;
+        let downgraded: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                source,
+                3,
+                "configuration document",
+            )
+            .expect("a v4 document must migrate down to v3");
+        assert_eq!(downgraded["version"].as_f64(), Some(3.0), "the hop stamps v3");
+        for tool in ["bare", "empty_runtime"] {
+            assert_eq!(
+                downgraded["tools"][tool]["runtime"]["payload_staging"], "hard_link",
+                "a tool that inherited the default must carry it under v3: {downgraded}"
+            );
+        }
+        assert_eq!(
+            downgraded["tools"]["states"]["runtime"]["payload_staging"], "copy",
+            "a tool that stated a strategy keeps it: {downgraded}"
+        );
+        assert!(
+            downgraded["runtime"].get("payload_staging").is_none(),
+            "v3 has no document-level default, so the hop drops it: {}",
+            downgraded["runtime"]
+        );
+    }
+
+    /// The same hop leaves `in_place` absent, because that is what v3 already
+    /// means by an absent field.
+    #[test]
+    fn regression_downgrading_to_v3_leaves_in_place_absent() {
+        let source = r#"{
+            version = 4,
+            tools = {
+                "t" = { kind = "executable", name = "t", command = ["true"] },
+            },
+        }"#;
+        let downgraded: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                source,
+                3,
+                "configuration document",
+            )
+            .expect("a v4 document must migrate down to v3");
+        assert!(
+            downgraded["tools"]["t"].get("payload_staging").is_none()
+                && downgraded["tools"]["t"]
+                    .get("runtime")
+                    .and_then(|runtime| runtime.get("payload_staging"))
+                    .is_none(),
+            "in_place is what v3 means by absent, so the hop writes nothing: {downgraded}"
         );
     }
 }

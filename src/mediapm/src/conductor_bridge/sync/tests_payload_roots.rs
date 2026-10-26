@@ -7,7 +7,7 @@
 //! rather than trusted.
 
 use mediapm_conductor::{
-    NickelDocument, PayloadStaging, ToolKindSpec, ToolRuntime, ToolSpec,
+    ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec,
     runtime_env::provisioned_payload_dir,
 };
 use std::collections::BTreeMap;
@@ -21,7 +21,11 @@ fn paths_under(root: &std::path::Path) -> MediaPmPaths {
 
 /// Builds a generated document holding one tool spec with a non-empty content
 /// map, keyed by `key`.
-fn document_with_tool(key: &str, staging: PayloadStaging, payload_root: &str) -> NickelDocument {
+fn document_with_tool(
+    key: &str,
+    staging: ConfigPayloadStaging,
+    payload_root: &str,
+) -> NickelDocument {
     let mut document = NickelDocument::default();
     document.tools.insert(
         key.to_string(),
@@ -60,12 +64,12 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
     let payload_dir = provisioned_payload_dir(&paths.tools_dir, conductor_tool_id);
     std::fs::create_dir_all(&payload_dir).expect("provisioned payload dir");
 
-    let mut document = document_with_tool(conductor_tool_id, PayloadStaging::Copy, "");
+    let mut document = document_with_tool(conductor_tool_id, ConfigPayloadStaging::Copy, "");
     let mut runtimes = BTreeMap::from([(
         conductor_tool_id.to_string(),
         ToolRuntime {
             content_map: document.tools[conductor_tool_id].runtime.content_map.clone(),
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
     )]);
@@ -82,14 +86,14 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
     );
     assert_eq!(
         document.tools[conductor_tool_id].runtime.payload_staging,
-        PayloadStaging::InPlace,
+        ConfigPayloadStaging::InPlace,
         "a provisioned directory is executed from, not copied out of it"
     );
     assert_eq!(
         runtimes[conductor_tool_id].payload_root, expected,
         "the runtime map drives provisioning and the generated dotenv, so it has to name the same root"
     );
-    assert_eq!(runtimes[conductor_tool_id].payload_staging, PayloadStaging::InPlace);
+    assert_eq!(runtimes[conductor_tool_id].payload_staging, ConfigPayloadStaging::InPlace);
 }
 
 /// A tool whose payload directory is absent keeps what its spec builder
@@ -104,12 +108,12 @@ fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
     let paths = paths_under(root.path());
     let conductor_tool_id = "scripted@blake3:def";
 
-    let mut document = document_with_tool(conductor_tool_id, PayloadStaging::Copy, "");
+    let mut document = document_with_tool(conductor_tool_id, ConfigPayloadStaging::Copy, "");
     let mut runtimes = BTreeMap::from([(
         conductor_tool_id.to_string(),
         ToolRuntime {
             content_map: document.tools[conductor_tool_id].runtime.content_map.clone(),
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
     )]);
@@ -120,8 +124,11 @@ fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
         document.tools[conductor_tool_id].runtime.payload_root, "",
         "nothing stamps a root for a payload that was not provisioned"
     );
-    assert_eq!(document.tools[conductor_tool_id].runtime.payload_staging, PayloadStaging::Copy);
-    assert_eq!(runtimes[conductor_tool_id].payload_staging, PayloadStaging::Copy);
+    assert_eq!(
+        document.tools[conductor_tool_id].runtime.payload_staging,
+        ConfigPayloadStaging::Copy
+    );
+    assert_eq!(runtimes[conductor_tool_id].payload_staging, ConfigPayloadStaging::Copy);
 }
 
 /// A payload a run holds stays on disk through a retain pass that keeps nothing.
@@ -146,12 +153,16 @@ async fn regression_a_payload_survives_a_retain_pass_while_the_run_holds_it() {
     let conductor_tool_id = format!("scripted@{hash}");
 
     let content_map = BTreeMap::from([("linux/scripted".to_string(), hash.to_string())]);
-    let mut document = document_with_tool(&conductor_tool_id, PayloadStaging::InPlace, "");
+    let mut document = document_with_tool(&conductor_tool_id, ConfigPayloadStaging::InPlace, "");
     document.tools.get_mut(&conductor_tool_id).expect("the spec").runtime.content_map =
         content_map.clone();
     let runtimes = BTreeMap::from([(
         conductor_tool_id.clone(),
-        ToolRuntime { content_map, payload_staging: PayloadStaging::InPlace, ..Default::default() },
+        ToolRuntime {
+            content_map,
+            payload_staging: ConfigPayloadStaging::InPlace,
+            ..Default::default()
+        },
     )]);
 
     let guards = materialize_active_tool_runtimes(&paths.tools_dir, cas, &document, &runtimes)
@@ -190,11 +201,11 @@ fn a_tool_without_a_content_map_is_not_stamped() {
     let payload_dir = provisioned_payload_dir(&paths.tools_dir, conductor_tool_id);
     std::fs::create_dir_all(&payload_dir).expect("provisioned payload dir");
 
-    let mut document = document_with_tool(conductor_tool_id, PayloadStaging::Copy, "");
+    let mut document = document_with_tool(conductor_tool_id, ConfigPayloadStaging::Copy, "");
     document.tools.get_mut(conductor_tool_id).expect("the spec").runtime.content_map.clear();
     let mut runtimes = BTreeMap::from([(
         conductor_tool_id.to_string(),
-        ToolRuntime { payload_staging: PayloadStaging::Copy, ..Default::default() },
+        ToolRuntime { payload_staging: ConfigPayloadStaging::Copy, ..Default::default() },
     )]);
 
     stamp_payload_roots(&paths, &mut document, &mut runtimes);

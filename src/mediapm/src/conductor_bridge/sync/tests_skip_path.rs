@@ -3,7 +3,7 @@
 use crate::config::ToolRequirement;
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
-use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolSpec};
 use std::collections::BTreeMap;
 
 use super::*;
@@ -23,7 +23,7 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()
@@ -110,7 +110,7 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()
@@ -206,7 +206,7 @@ async fn regression_skip_path_registers_managed_tool() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()

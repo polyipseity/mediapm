@@ -21,7 +21,7 @@ use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ConductorRuntimeConfig, InputBinding, ToolKindSpec, ToolSpec, WorkflowSpec,
+    ConductorRuntimeConfig, InputBinding, PayloadStaging, ToolKindSpec, ToolSpec, WorkflowSpec,
     default_runtime_inherited_env_vars,
 };
 use crate::error::ConductorError;
@@ -186,9 +186,11 @@ impl NickelDocument {
                     tool_content_map: spec.runtime.content_map.clone(),
                     // The staging decision travels with the payload it stages:
                     // an `in_place` or `hard_link` step reads the provisioned
-                    // tree, so it needs the root the document recorded beside it.
+                    // tree, so it needs the root the document recorded beside
+                    // it. The choice is resolved here, so a tool that inherits
+                    // reaches the worker with the document's strategy.
                     payload_root: spec.runtime.payload_root.clone(),
-                    payload_staging: spec.runtime.payload_staging,
+                    payload_staging: self.effective_payload_staging(spec),
                 };
                 (id, unified)
             })
@@ -323,36 +325,60 @@ impl NickelDocument {
         }
     }
 
+    /// Resolves the strategy a tool's payload is staged by.
+    ///
+    /// A tool that states a strategy gets it; a tool that inherits takes
+    /// [`ConductorRuntimeConfig::payload_staging`](super::ConductorRuntimeConfig::payload_staging),
+    /// which is `in_place` when the document states no default. Every consumer
+    /// of a tool's staging goes through this function, so the document's
+    /// default and a tool's own choice cannot disagree about what a step does.
+    #[must_use]
+    pub(crate) fn effective_payload_staging(&self, spec: &ToolSpec) -> PayloadStaging {
+        spec.runtime.payload_staging.resolve(self.runtime.payload_staging)
+    }
+
     /// Validates that every tool whose payload staging reads a payload root
     /// names one.
     ///
     /// A tool with a non-empty `content_map` and an empty `payload_root` cannot
     /// be staged `in_place` or `hard_link`, because both strategies read that
-    /// directory. The check is on the document rather than on the step so the
-    /// failure names the tool at load, and it never downgrades the strategy: a
-    /// document that names neither a root nor `copy` is a document that never
-    /// decided how its payload reaches the step.
+    /// directory. The invariant judges the strategy that applies: the tool's own
+    /// value when it states one, and the document default otherwise. A strategy
+    /// that needs a payload root therefore still demands one, whichever level
+    /// named it — a tool that inherits `in_place` from the document is asked for
+    /// the root, and a tool that inherits `copy` is not. The failure names the
+    /// tool at load, and it never downgrades the strategy: a document that names
+    /// neither a root nor a strategy that works without one never decided how
+    /// its payload reaches the step.
     ///
     /// `copy` needs no root, and a tool with no content map stages nothing, so
     /// both load with an empty root.
     ///
     /// # Errors
     ///
-    /// Returns [`ConductorError::Workflow`] listing every tool whose strategy
-    /// needs the root it does not name.
+    /// Returns [`ConductorError::Workflow`] listing every tool whose resolved
+    /// strategy needs the root it does not name.
     pub(crate) fn validate_payload_staging_invariant(&self) -> Result<(), ConductorError> {
         let mut unusable: Vec<String> = Vec::new();
 
         for (tool_name, spec) in &self.tools {
             let runtime = &spec.runtime;
+            let staging = self.effective_payload_staging(spec);
             let needs_root = matches!(
-                runtime.payload_staging,
+                staging,
                 crate::config::PayloadStaging::InPlace | crate::config::PayloadStaging::HardLink
             );
             if needs_root && !runtime.content_map.is_empty() && runtime.payload_root.is_empty() {
+                // Naming where the strategy came from tells the two shapes
+                // apart: a tool that states it needs the field itself, and a
+                // tool that inherits needs the document's default changed.
+                let origin = match runtime.payload_staging {
+                    crate::config::ConfigPayloadStaging::Inherit => " (the document default)",
+                    _ => "",
+                };
                 unusable.push(format!(
-                    "tool '{tool_name}' stages its payload by '{}' but names no payload_root",
-                    runtime.payload_staging.as_str()
+                    "tool '{tool_name}' stages its payload by '{}'{origin} but names no payload_root",
+                    staging.as_str()
                 ));
             }
         }

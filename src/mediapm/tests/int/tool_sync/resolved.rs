@@ -3,7 +3,7 @@ use mediapm::{
 };
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{
-    NickelDocument, PayloadStaging, ToolKindSpec, ToolRuntime, ToolSpec, encode_document,
+    ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, encode_document,
 };
 
 use crate::common::stub_upstream::{STUB_COMMIT_SHA, STUB_YT_DLP_TAG, mock_all_managed_tools};
@@ -282,7 +282,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
                     "macos/media-tagger".to_string(),
                     "provisioned".to_string(),
                 )]),
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()
@@ -392,7 +392,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
                     ("linux/ffmpeg".to_string(), "provisioned".to_string()),
                     ("linux/".to_string(), "provisioned".to_string()),
                 ]),
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()

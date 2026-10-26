@@ -3,7 +3,7 @@
 use crate::config::ToolRequirement;
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
-use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolSpec};
 use std::collections::BTreeMap;
 
 use super::*;
@@ -31,7 +31,7 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()
@@ -123,7 +123,7 @@ fn find_active_tool_spec_prefers_non_empty_content_map() {
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
                 content_map,
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()
@@ -183,7 +183,7 @@ fn find_active_tool_spec_none_when_name_missing() {
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
                 content_map,
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()
@@ -207,7 +207,7 @@ fn find_active_tool_spec_skips_other_names() {
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
                 content_map,
-                payload_staging: PayloadStaging::Copy,
+                payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
             ..Default::default()

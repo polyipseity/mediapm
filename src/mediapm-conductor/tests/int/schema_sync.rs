@@ -193,13 +193,24 @@ fn v4_nickel_schema_structure() {
     );
 
     // --- the per-tool decision stays, both fields still optional ---
+    //
+    // Read out of the tool runtime's own block: the same field name appears on
+    // the conductor runtime above, so a whole-file search would stay green if
+    // this record lost the field.
+    let tool_runtime = schema
+        .split("let ToolRuntimeV4 = {")
+        .nth(1)
+        .expect("v4.ncl must define ToolRuntimeV4")
+        .split("}\nin")
+        .next()
+        .expect("ToolRuntimeV4 must be a record");
     assert!(
-        schema.contains("payload_root | String | optional"),
-        "v4.ncl ToolRuntimeV4.payload_root must stay an optional string"
+        tool_runtime.contains("payload_root | String | optional"),
+        "v4.ncl ToolRuntimeV4.payload_root must stay an optional string: {tool_runtime}"
     );
     assert!(
-        schema.contains("payload_staging | PayloadStagingV4 | optional,"),
-        "v4.ncl ToolRuntimeV4.payload_staging must stay the closed PayloadStagingV4 contract"
+        tool_runtime.contains("payload_staging | ConfigPayloadStagingV4 | optional,"),
+        "v4.ncl ToolRuntimeV4.payload_staging must be the choice contract, so a tool can inherit: {tool_runtime}"
     );
     for name in ["in_place", "hard_link", "copy"] {
         assert!(
@@ -207,6 +218,19 @@ fn v4_nickel_schema_structure() {
             "v4.ncl PayloadStagingV4 must accept '{name}'"
         );
     }
+
+    // --- a tool's contract adds `inherit`, and the default's does not ---
+    let tool_choice = schema
+        .split("let ConfigPayloadStagingV4 =")
+        .nth(1)
+        .expect("v4.ncl must define ConfigPayloadStagingV4")
+        .split("\nin\n")
+        .next()
+        .expect("ConfigPayloadStagingV4 must be a binding");
+    assert!(
+        tool_choice.contains("value == \"inherit\"") && tool_choice.contains("PayloadStagingV4"),
+        "a tool's contract must add 'inherit' to the strategy set: {tool_choice}"
+    );
 
     // --- it exports its own surface and owns the v3 → v4 hop ---
     assert!(schema.contains("validate_document_v4"), "v4.ncl must export validate_document_v4");

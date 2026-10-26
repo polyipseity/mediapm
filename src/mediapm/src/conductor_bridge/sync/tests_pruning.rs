@@ -3,7 +3,7 @@
 use crate::config::ToolRequirement;
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
-use mediapm_conductor::{NickelDocument, PayloadStaging, ToolKindSpec, ToolSpec};
+use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolSpec};
 use std::collections::BTreeMap;
 
 use super::*;
@@ -34,7 +34,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()
@@ -112,7 +112,7 @@ async fn reconcile_prunes_old_tool_version_clears_content_map() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()
@@ -253,7 +253,7 @@ async fn reconcile_counts_identity_not_generated_doc_presence() {
                 kind: ToolKindSpec::default(),
                 runtime: ToolRuntime {
                     content_map: stale_content_map,
-                    payload_staging: PayloadStaging::Copy,
+                    payload_staging: ConfigPayloadStaging::Copy,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -320,7 +320,7 @@ async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
                 kind: ToolKindSpec::default(),
                 runtime: ToolRuntime {
                     content_map: stale_content_map,
-                    payload_staging: PayloadStaging::Copy,
+                    payload_staging: ConfigPayloadStaging::Copy,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -422,7 +422,7 @@ async fn reconcile_drops_manual_entries_from_generated_doc() {
         kind: ToolKindSpec::default(),
         runtime: ToolRuntime {
             content_map,
-            payload_staging: PayloadStaging::Copy,
+            payload_staging: ConfigPayloadStaging::Copy,
             ..Default::default()
         },
         ..Default::default()

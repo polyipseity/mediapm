@@ -41,9 +41,9 @@ pub use conductor_impl::Conductor;
 pub use config::documents::NickelDocument;
 pub use config::versions::{decode_document, encode_document};
 pub use config::{
-    ExternalDataEntry, InputBinding, OutputCaptureSpec, OutputPolicy, PayloadStaging, SaveMode,
-    ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
-    WorkflowStepSpec, default_runtime_inherited_env_vars,
+    ConfigPayloadStaging, ExternalDataEntry, InputBinding, OutputCaptureSpec, OutputPolicy,
+    PayloadStaging, SaveMode, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
+    WorkflowSpec, WorkflowStepSpec, default_runtime_inherited_env_vars,
 };
 pub use error::ConductorError;
 pub use instance_key::{
