@@ -367,6 +367,45 @@ impl NickelDocument {
         }
     }
 
+    /// Validates that every `builtin` tool spec names an id this build
+    /// registers.
+    ///
+    /// The registry answers what this build can dispatch, so the check is
+    /// build-dependent by design: a build that compiles the test doubles
+    /// resolves them, and a build that does not rejects a document naming one.
+    /// Running it when the document loads makes an unavailable builtin fail the
+    /// run that reads the document, not the step that first needs it.
+    ///
+    /// A tool key is not reserved: an executable spec may be keyed with any
+    /// string, including one spelled like a builtin id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Workflow`] listing every tool whose builtin id
+    /// this build does not register.
+    pub(crate) fn validate_builtin_tool_ids(&self) -> Result<(), ConductorError> {
+        let registered = crate::tools::registered_builtin_ids();
+        let mut unknown: Vec<String> = Vec::new();
+
+        for (tool_name, spec) in &self.tools {
+            let ToolKindSpec::Builtin { builtin_id } = &spec.kind else {
+                continue;
+            };
+            if !registered.contains(builtin_id) {
+                unknown.push(format!("tool '{tool_name}' names builtin '{builtin_id}'"));
+            }
+        }
+
+        if unknown.is_empty() {
+            Ok(())
+        } else {
+            Err(ConductorError::Workflow(format!(
+                "document names builtin ids this build does not register: {}",
+                unknown.join("; ")
+            )))
+        }
+    }
+
     /// Records every hash one input value names that `external_data` omits.
     ///
     /// `location` names the place in the document that carries the value, so a
@@ -1068,5 +1107,108 @@ mod tests {
             Some("autobuild-2025-07-15+1759500000_N-127260-g7bc3576910")
         );
         assert_eq!(unified.tools["echo"].version, None);
+    }
+
+    /// One document carrying the given tool specs, keyed as given.
+    fn document_with_tools(tools: BTreeMap<String, ToolSpec>) -> NickelDocument {
+        NickelDocument { tools, ..NickelDocument::default() }
+    }
+
+    /// A `builtin` spec naming `builtin_id`, under the tool name `name`.
+    fn builtin_spec(name: &str, builtin_id: &str) -> ToolSpec {
+        ToolSpec {
+            version: None,
+            kind: ToolKindSpec::Builtin { builtin_id: builtin_id.to_string() },
+            name: name.to_string(),
+            ..ToolSpec::default()
+        }
+    }
+
+    /// An `executable` spec whose command is its own name.
+    fn executable_spec(name: &str) -> ToolSpec {
+        ToolSpec {
+            version: None,
+            kind: ToolKindSpec::Executable {
+                command: vec![name.to_string()],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            name: name.to_string(),
+            ..ToolSpec::default()
+        }
+    }
+
+    /// Verifies a `builtin` spec naming an id this build does not register is
+    /// rejected, naming both the tool and the id so the document is fixable
+    /// from the message.
+    #[test]
+    fn strict_a_builtin_spec_naming_an_unregistered_id_is_rejected() {
+        let doc = document_with_tools(BTreeMap::from([(
+            "ghost".to_string(),
+            builtin_spec("ghost", "ghost@v1"),
+        )]));
+
+        let error = doc.validate_builtin_tool_ids().expect_err("ghost@v1 is not registered");
+        let message = error.to_string();
+        assert!(message.contains("tool 'ghost'"), "{message}");
+        assert!(message.contains("ghost@v1"), "{message}");
+    }
+
+    /// Verifies one error names every offending tool, so a document with two
+    /// misses does not need two runs to fix.
+    #[test]
+    fn strict_every_unregistered_builtin_is_reported_not_just_the_first() {
+        let doc = document_with_tools(BTreeMap::from([
+            ("first".to_string(), builtin_spec("first", "absent@v1")),
+            ("second".to_string(), builtin_spec("second", "missing@v2")),
+        ]));
+
+        let error = doc.validate_builtin_tool_ids().expect_err("neither id is registered");
+        let message = error.to_string();
+        assert!(message.contains("absent@v1"), "{message}");
+        assert!(message.contains("missing@v2"), "{message}");
+    }
+
+    /// Verifies a tool key is not reserved: an executable spec keyed with a
+    /// builtin id is a tool named that way, not a builtin collision.
+    #[test]
+    fn strict_an_executable_spec_may_take_a_builtin_id_as_its_key() {
+        let doc = document_with_tools(BTreeMap::from([(
+            "echo@v1".to_string(),
+            executable_spec("echo@v1"),
+        )]));
+
+        assert!(
+            doc.validate_builtin_tool_ids().is_ok(),
+            "a tool key carries no reserved meaning, so an executable may spell one like a builtin id"
+        );
+    }
+
+    /// Verifies every real builtin loads, which is the positive half of the
+    /// check: the five ids this build always registers.
+    #[test]
+    fn strict_the_five_production_builtins_load() {
+        let ids = ["archive@v1", "echo@v1", "export@v1", "fs@v1", "import@v1"];
+        let tools = ids.iter().map(|id| ((*id).to_string(), builtin_spec(id, id))).collect();
+        let doc = document_with_tools(tools);
+
+        assert!(doc.validate_builtin_tool_ids().is_ok(), "the five real builtins are registered");
+    }
+
+    /// Verifies the check is build-dependent by design: a build carrying the
+    /// `test-builtins` feature registers the doubles, so a document a
+    /// production build rejects loads here.
+    #[cfg(feature = "test-builtins")]
+    #[test]
+    fn strict_a_test_build_resolves_the_doubles() {
+        let doc = document_with_tools(BTreeMap::from([(
+            "flaky".to_string(),
+            builtin_spec("flaky", "flaky@v1"),
+        )]));
+
+        assert!(
+            doc.validate_builtin_tool_ids().is_ok(),
+            "a test build registers flaky@v1, so the same document a production build rejects loads here"
+        );
     }
 }

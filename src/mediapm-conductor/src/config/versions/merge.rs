@@ -326,6 +326,7 @@ impl MergeState {
         let doc: NickelDocument = self.merged.into();
         doc.validate_external_data_invariant()?;
         doc.validate_payload_staging_invariant()?;
+        doc.validate_builtin_tool_ids()?;
         Ok(doc)
     }
 }

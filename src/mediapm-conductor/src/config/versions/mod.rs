@@ -120,6 +120,7 @@ pub(crate) fn from_boundary(source: &str) -> Result<crate::config::NickelDocumen
     let doc: crate::config::NickelDocument = envelope.into();
     doc.validate_external_data_invariant()?;
     doc.validate_payload_staging_invariant()?;
+    doc.validate_builtin_tool_ids()?;
     Ok(doc)
 }
 
@@ -220,6 +221,10 @@ pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8
     // fail on the next decode.
     document.validate_external_data_invariant()?;
     document.validate_payload_staging_invariant()?;
+    // The builtin-id check runs on load and not here. A generated document
+    // written by a build that carried a test double may name a builtin this
+    // build does not register, and the prune has to be able to save the
+    // document that drops the entry before the next load reads the file.
     let envelope = into_boundary(document);
     let bytes =
         mediapm_utils::nickel::render_document_as_nickel(&envelope, "configuration document")
