@@ -8,14 +8,15 @@
 //!   [`provider`].
 //! - **Builtins** — always-compiled crates (`echo`, `fs`, `import`,
 //!   `archive`, `export`) registered in [`ALL_BUILTINS`] and discoverable
-//!   via [`registered_builtin_ids`]. A registration marked
-//!   [`BuiltinRegistration::test_only`] is a test double: it is compiled and
-//!   resolvable by name, and it never appears in a conductor document. The
-//!   compile gate on an entry and that flag answer different questions — the
+//!   via [`registered_builtin_ids`]. A registration gated on the
+//!   `test-builtins` feature is a test double: a build that turns that feature
+//!   on compiles it and resolves it by name, and it never appears in a
+//!   conductor document. The compile gate on an entry and the
+//!   [`BuiltinRegistration::test_only`] flag answer different questions — the
 //!   gate decides whether a build contains the entry at all, the flag whether a
 //!   build that has it may write or keep it — so a `cfg(test)`-only entry would
-//!   be invisible to integration-test crates while a gate-only design leaks the
-//!   double into production documents.
+//!   be invisible to integration-test crates while a gate production builds
+//!   also enable would leak the double into shipped binaries.
 
 pub mod helpers;
 pub mod preset;
@@ -42,14 +43,14 @@ pub struct BuiltinRegistration {
     pub is_impure: bool,
     /// Whether this entry is a test double rather than a production builtin.
     ///
-    /// A test-only entry is compiled into the crate so workflow tests can
-    /// dispatch to it by name, and registration skips it so it never reaches a
-    /// user's document. The compile gate that admits an entry and this flag
-    /// answer different questions: the gate decides whether the entry exists in
-    /// a given build at all (integration-test crates compile the library
-    /// without `cfg(test)`, so a `cfg(test)`-only entry would be invisible to
-    /// them), while the flag decides whether a build that has the entry may
-    /// write it into a document.
+    /// A test-only entry is compiled into the crate under the `test-builtins`
+    /// feature so workflow tests can dispatch to it by name, and registration
+    /// skips it so it never reaches a user's document. The compile gate that
+    /// admits an entry and this flag answer different questions: the gate
+    /// decides whether the entry exists in a given build at all
+    /// (integration-test crates compile the library without `cfg(test)`, so a
+    /// `cfg(test)`-only entry would be invisible to them), while the flag
+    /// decides whether a build that has the entry may write it into a document.
     pub test_only: bool,
     /// Human-readable one-line description.
     pub summary: &'static str,
@@ -97,7 +98,7 @@ pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
         test_only: false,
         summary: "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
     },
-    #[cfg(any(test, feature = "progress"))]
+    #[cfg(any(test, feature = "test-builtins"))]
     BuiltinRegistration {
         id: "builtins.flaky@v1",
         name: "flaky",
@@ -105,6 +106,15 @@ pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
         is_impure: false,
         test_only: true,
         summary: "test-only builtin that fails its first N invocations then succeeds",
+    },
+    #[cfg(any(test, feature = "test-builtins"))]
+    BuiltinRegistration {
+        id: "builtins.slow@v1",
+        name: "slow",
+        builtin_id: "slow@v1",
+        is_impure: false,
+        test_only: true,
+        summary: "test-only builtin that records dispatch events and can hold until an awaited line appears",
     },
 ];
 
@@ -155,8 +165,8 @@ mod tests {
         assert_eq!(ids.len(), ALL_BUILTINS.len());
     }
 
-    /// Production membership follows the flag, so a build that carries the
-    /// `flaky` double still offers writers only the five real builtins.
+    /// Production membership follows the flag, so a build that carries a
+    /// double still offers writers only the real builtins.
     #[test]
     fn production_ids_exclude_test_only_entries() {
         let production: Vec<&str> = production_builtins().map(|entry| entry.builtin_id).collect();
@@ -168,9 +178,39 @@ mod tests {
                 entry.builtin_id
             );
         }
-        assert!(
-            ALL_BUILTINS.iter().any(|entry| entry.test_only),
-            "the registry carries the flaky double, so this test would prove nothing without it"
+    }
+
+    /// Verifies the document-facing registry is exactly the five real builtins
+    /// in every build, whatever doubles this one carries.
+    #[test]
+    fn strict_the_production_registry_holds_exactly_the_five_real_builtins() {
+        assert_eq!(
+            registered_production_builtin_ids(),
+            vec![
+                "archive@v1".to_string(),
+                "echo@v1".to_string(),
+                "export@v1".to_string(),
+                "fs@v1".to_string(),
+                "import@v1".to_string(),
+            ],
         );
+    }
+
+    /// Verifies a test build carries both doubles and can resolve them by
+    /// name, which is what the conductor integration suites dispatch to.
+    #[cfg(feature = "test-builtins")]
+    #[test]
+    fn a_test_build_resolves_both_doubles_by_name() {
+        let doubles: Vec<&str> = ALL_BUILTINS
+            .iter()
+            .filter(|entry| entry.test_only)
+            .map(|entry| entry.builtin_id)
+            .collect();
+        assert_eq!(doubles, vec!["flaky@v1", "slow@v1"]);
+        let ids = registered_builtin_ids();
+        assert_eq!(ids.len(), 7, "five real builtins plus two doubles: {ids:?}");
+        for id in ["flaky@v1", "slow@v1"] {
+            assert!(ids.contains(id), "a test build must resolve {id} by name");
+        }
     }
 }

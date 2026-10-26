@@ -3,6 +3,14 @@
 //! `int` covers contract-focused integration behavior, `e2e` contains
 //! multi-step workflows.
 
+// The integration suites dispatch to the `flaky@v1` and `slow@v1` test
+// doubles, which exist only under `test-builtins`. A build without the feature
+// must fail here instead of running a silently smaller suite.
+#[cfg(not(feature = "test-builtins"))]
+compile_error!(
+    "the conductor integration suite needs the `test-builtins` feature: run `cargo test-pkg mediapm-conductor`"
+);
+
 use std::collections::BTreeMap;
 
 use mediapm_cas::InMemoryCas;

@@ -13,28 +13,28 @@ use crate::error::ConductorError;
 
 /// Test-only builtin that fails its first `failures` invocations (keyed by
 /// `key`) then succeeds. Used to exercise retry-to-success paths.
-#[cfg(any(test, feature = "progress"))]
+#[cfg(any(test, feature = "test-builtins"))]
 const FLAKY_BUILTIN_ID: &str = "flaky@v1";
 
 /// Test-only builtin that records `start`/`finish` events to a log file and
 /// optionally holds until the log contains an awaited line. Used by the
 /// ready-queue scheduler tests to observe dispatch order as schedule facts
 /// rather than timing guesses.
-#[cfg(any(test, feature = "progress"))]
+#[cfg(any(test, feature = "test-builtins"))]
 const SLOW_BUILTIN_ID: &str = "slow@v1";
 
 /// Poll interval while a `slow@v1` invocation holds for an awaited line.
-#[cfg(any(test, feature = "progress"))]
+#[cfg(any(test, feature = "test-builtins"))]
 const SLOW_HOLD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// Fallback cap (milliseconds) on a `slow@v1` hold when the step declares
 /// no `hold_timeout_ms` input. Bounds the wait so a run whose schedule never
 /// produces the awaited line fails instead of hanging.
-#[cfg(any(test, feature = "progress"))]
+#[cfg(any(test, feature = "test-builtins"))]
 const SLOW_HOLD_TIMEOUT_DEFAULT_MS: u64 = 5_000;
 
 /// Per-key attempt counter for [`FLAKY_BUILTIN_ID`].
-#[cfg(any(test, feature = "progress"))]
+#[cfg(any(test, feature = "test-builtins"))]
 static FLAKY_ATTEMPTS: std::sync::Mutex<std::collections::BTreeMap<String, usize>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
@@ -281,7 +281,7 @@ pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
             })?;
             Ok(ExecutionResult { stdout, stderr: Vec::new(), exit_code: 0 })
         }
-        #[cfg(any(test, feature = "progress"))]
+        #[cfg(any(test, feature = "test-builtins"))]
         n if n == FLAKY_BUILTIN_ID => {
             let failures: usize = args.get("failures").and_then(|s| s.parse().ok()).unwrap_or(0);
             let key = args.get("key").cloned().unwrap_or_else(|| "default".to_string());
@@ -303,7 +303,7 @@ pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
             .map_err(|e| ConductorError::Workflow(format!("flaky serialization failed: {e}")))?;
             Ok(ExecutionResult { stdout, stderr: Vec::new(), exit_code: 0 })
         }
-        #[cfg(any(test, feature = "progress"))]
+        #[cfg(any(test, feature = "test-builtins"))]
         n if n == SLOW_BUILTIN_ID => run_slow_builtin(args).await,
         name => Err(ConductorError::Workflow(format!(
             "builtin tool '{name}' has no execute implementation"
@@ -327,7 +327,7 @@ pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
 /// Returns [`ConductorError::Workflow`] when `log` or `label` is missing or
 /// empty, when the log file cannot be opened or written, or when the hold
 /// times out waiting for the awaited line.
-#[cfg(any(test, feature = "progress"))]
+#[cfg(any(test, feature = "test-builtins"))]
 async fn run_slow_builtin(
     args: &BTreeMap<String, String>,
 ) -> Result<ExecutionResult, ConductorError> {

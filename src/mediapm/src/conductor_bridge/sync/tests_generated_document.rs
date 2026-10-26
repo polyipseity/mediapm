@@ -200,11 +200,11 @@ fn registered_builtins_carry_no_version_derived_from_id_or_key() {
 
 /// A generated document carries exactly the production builtins.
 ///
-/// The registry also holds the `flaky` test double, and it is compiled into
-/// every `mediapm` build because the conductor's `tool-presets` feature turns on
-/// `progress`, which admits the entry. Registration is what decides whether it
-/// reaches a document. Naming the whole key set rather than only the double is
-/// deliberate: a second test-only entry cannot slip in beside it.
+/// The registry can also hold test doubles, which the conductor compiles in
+/// only under its `test-builtins` feature; no `mediapm` build turns that on.
+/// Registration is what decides whether a double reaches a document. Naming the
+/// whole key set rather than only a double is deliberate: a second test-only
+/// entry cannot slip in beside it.
 #[test]
 fn strict_a_generated_document_holds_only_production_builtins() {
     let mut generated_doc = NickelDocument::default();
@@ -218,24 +218,22 @@ fn strict_a_generated_document_holds_only_production_builtins() {
     assert!(!actual.contains("flaky@v1"), "a test double must not reach a generated document");
 }
 
-/// The test double stays in the registry while staying out of documents.
+/// A test-only entry never reaches a generated document.
 ///
-/// Fails if someone drops the `test_only` flag (the entry then registers), and
-/// fails again if someone deletes the entry, because workflow tests would lose
-/// the only builtin that fails on demand.
+/// The doubles exist only under the conductor's `test-builtins` feature, which
+/// no `mediapm` build enables, so this loop is vacuous here and says what must
+/// hold wherever the entries do exist. The conductor's own suite pins their
+/// presence, so the guard cannot pass by deleting them.
 #[test]
-fn regression_flaky_builtin_is_never_registered() {
-    let flaky = mediapm_conductor::tools::ALL_BUILTINS
-        .iter()
-        .find(|entry| entry.builtin_id == "flaky@v1")
-        .expect("the flaky test double is part of the registry");
-    assert!(flaky.test_only, "flaky fails on demand for tests, so it must be marked test_only");
-
+fn regression_a_test_only_builtin_entry_never_reaches_a_generated_document() {
     let mut generated_doc = NickelDocument::default();
     register_missing_builtin_tools(&mut generated_doc);
     apply_builtin_runtime_defaults(&mut generated_doc);
-    assert!(
-        !generated_doc.tools.contains_key("flaky@v1"),
-        "a test double in a user document ships a tool that fails on purpose"
-    );
+    for entry in mediapm_conductor::tools::ALL_BUILTINS.iter().filter(|entry| entry.test_only) {
+        assert!(
+            !generated_doc.tools.contains_key(entry.builtin_id),
+            "{} is a test double, so a generated document must never carry it",
+            entry.builtin_id
+        );
+    }
 }

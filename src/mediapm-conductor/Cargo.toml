@@ -26,6 +26,10 @@ proptest = []
 # crate that links the conductor can turn it on by name, and so the feature
 # matrix covers the combination.
 test-seams = []
+# Test-only builtins. Declared so a test target can turn the doubles on by
+# name, and so the feature matrix covers the combination. No production build
+# enables it, and neither `progress` nor `tool-presets` implies it.
+test-builtins = []
 tool-presets = ["dep:flate2", "dep:tar", "dep:xz2", "dep:sha2", "progress"]
 
 [lints]
