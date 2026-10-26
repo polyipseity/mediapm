@@ -63,7 +63,7 @@ pub struct MediaPmPaths {
     /// Runtime root for `mediapm`-owned state under the workspace.
     pub runtime_root: PathBuf,
     /// Directory the Nickel contract sources for `mediapm.ncl` are exported
-    /// to: the `mod.ncl`, `v1.ncl`, and `v2.ncl` the runtime evaluates.
+    /// to: the `mod.ncl`, `v1.ncl`, `v2.ncl`, and `v3.ncl` the runtime evaluates.
     /// `None` means the export is skipped.
     pub schema_export_dir: Option<PathBuf>,
     /// Materialized media library root.

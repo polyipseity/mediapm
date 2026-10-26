@@ -25,7 +25,7 @@ The struct declares exactly 14 fields (`paths.rs:41-72`); the cache directories 
 | `mediapm_state_json`       | `{runtime_root}/state.json`                   | MediaPM machine state (JSON always-write)                                                                                                |
 | `env_file`                | `{runtime_root}/.env`                        | User-authored dotenv                                                                                                                      |
 | `env_generated_file`      | `{runtime_root}/.env.generated`              | Machine-generated dotenv                                                                                                                  |
-| `schema_export_dir`       | `Some({runtime_root}/config/mediapm/)`       | MediaPM contract sources: `mod.ncl`, `v1.ncl`, `v2.ncl` (`None` = skipped)                                                                |
+| `schema_export_dir`       | `Some({runtime_root}/config/mediapm/)`       | MediaPM contract sources: `mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl` (`None` = skipped)                                                                |
 | `hierarchy_root_dir`      | `{root_dir}`                                 | Materialized media library root                                                                                                           |
 | `tools_dir`               | `{runtime_root}/tools/`                      | Tool-content unpack directory; each entry is `<sanitize_tool_id(conductor_tool_id)>/` holding `lock` (the entry's advisory lock, with a header explaining itself), `metadata.json` and `payload/`, and `.env.generated` paths mirror that layout |
 
