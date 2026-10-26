@@ -128,14 +128,14 @@ pub(super) enum MergeConflict {
 ///   `Unsaved`); absent `save` is implicit `Saved` and never beats an
 ///   explicit value. Descriptions are never merged and always stay `None` in
 ///   the merged result.
-/// - **Runtime** — per-field merge of `retry_impure` and
-///   `platform_inherited_env_vars` where an explicit value wins over an
-///   implicit (absent) one; two explicit CONFLICTING values error
-///   ([`MergeConflict::ConflictingRuntime`]).
+/// - **Runtime** — per-field merge of `retry_impure`,
+///   `platform_inherited_env_vars` and `payload_staging` where an explicit
+///   value wins over an implicit (absent) one; two explicit CONFLICTING values
+///   error ([`MergeConflict::ConflictingRuntime`]).
 ///
-/// Boundary defaults (`save_mode = Saved`, `retry_impure = false`) are
-/// applied once at the end, so the returned document is definite for all
-/// merge-relevant fields.
+/// Boundary defaults (`save_mode = Saved`, `retry_impure = false`,
+/// `payload_staging = in_place`) are applied once at the end, so the returned
+/// document is definite for all merge-relevant fields.
 ///
 /// # Errors
 ///
@@ -162,6 +162,8 @@ struct MergeState {
     runtime_retry_source: Option<PathBuf>,
     /// Path of the first document that explicitly set platform env vars.
     runtime_platform_source: Option<PathBuf>,
+    /// Path of the first document that explicitly set the staging default.
+    runtime_staging_source: Option<PathBuf>,
     /// Conflicts accumulated while merging.
     conflicts: Vec<MergeConflict>,
 }
@@ -180,6 +182,7 @@ impl MergeState {
             workflow_sources: BTreeMap::new(),
             runtime_retry_source: None,
             runtime_platform_source: None,
+            runtime_staging_source: None,
             conflicts: Vec::new(),
         }
     }
@@ -290,6 +293,22 @@ impl MergeState {
                 }
             }
         }
+        match (self.runtime_staging_source.as_ref(), rt.payload_staging) {
+            (Some(first_path), Some(value))
+                if self.merged.runtime.payload_staging != Some(value) =>
+            {
+                self.conflicts.push(MergeConflict::ConflictingRuntime {
+                    field: "payload_staging",
+                    first_path: first_path.clone(),
+                    second_path: source.path.clone(),
+                });
+            }
+            (None, Some(value)) => {
+                self.runtime_staging_source = Some(source.path.clone());
+                self.merged.runtime.payload_staging = Some(value);
+            }
+            _ => {}
+        }
     }
 
     /// Applies boundary defaults once and returns the merged live document.
@@ -324,7 +343,8 @@ impl MergeState {
             )));
         }
         // Defaults applied once at the end: the merged document is definite
-        // for all merge-relevant fields (save_mode and retry_impure).
+        // for all merge-relevant fields (save_mode, retry_impure, and the
+        // staging default).
         let doc: NickelDocument = self.merged.into();
         doc.validate_external_data_invariant()?;
         doc.validate_payload_staging_invariant()?;
@@ -376,11 +396,13 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::*;
+    use crate::config::PayloadStaging;
     use crate::config::PlatformInheritedEnvVars;
     use crate::config::versions::v_latest::{
         ConductorRuntimeConfigLatest, ExternalDataEntryLatest, NICKEL_VERSION_LATEST,
-        NickelEnvelopeLatest, OutputPolicyLatest, RuntimePlatformEnvConfigLatest, ToolKindLatest,
-        ToolRuntimeLatest, ToolSpecLatest, WorkflowSpecLatest, WorkflowStepSpecLatest,
+        NickelEnvelopeLatest, OutputPolicyLatest, PayloadStagingLatest,
+        RuntimePlatformEnvConfigLatest, ToolKindLatest, ToolRuntimeLatest, ToolSpecLatest,
+        WorkflowSpecLatest, WorkflowStepSpecLatest,
     };
 
     /// Verifies `merge_documents` with an empty list returns a default document.
@@ -406,6 +428,7 @@ mod tests {
             runtime: ConductorRuntimeConfigLatest {
                 environment: RuntimePlatformEnvConfigLatest::default(),
                 retry_impure: Some(true),
+                payload_staging: None,
             },
         };
         let mut env_platform = env_retry.clone();
@@ -417,6 +440,7 @@ mod tests {
                 },
             },
             retry_impure: None,
+            payload_staging: None,
         };
 
         let doc = merge_documents(&[
@@ -429,6 +453,47 @@ mod tests {
         assert!(
             doc.runtime.environment.platform_inherited_env_vars.macos.contains(&"PATH".to_string()),
             "platform env vars must survive merge"
+        );
+    }
+
+    /// Documents that the document-level staging default merges field-wise: a
+    /// document that states one wins over one that states none, and two
+    /// documents stating different defaults conflict rather than the first
+    /// silently standing.
+    ///
+    /// Both halves matter. Without the first, a user document could never set
+    /// the default its library needs; without the second, two libraries naming
+    /// different strategies would merge into one that stages the other's way.
+    #[test]
+    fn merge_runtime_staging_default_is_explicit_over_implicit_and_conflicts_on_a_difference() {
+        let staged = |staging: PayloadStagingLatest| {
+            let mut document = envelope();
+            document.runtime.payload_staging = Some(staging);
+            document
+        };
+
+        let merged = merge_documents(&[
+            source("implicit.ncl", envelope()),
+            source("explicit.ncl", staged(PayloadStagingLatest::HardLink)),
+        ])
+        .expect("an explicit default next to an absent one merges");
+        assert_eq!(
+            merged.runtime.payload_staging,
+            PayloadStaging::HardLink,
+            "the document that states a default must beat the one that states none",
+        );
+
+        let err = merge_documents(&[
+            source("copy.ncl", staged(PayloadStagingLatest::Copy)),
+            source("hard.ncl", staged(PayloadStagingLatest::HardLink)),
+        ])
+        .expect_err("two different defaults must conflict");
+        let message = format!("{err}");
+        assert!(
+            message.contains("payload_staging")
+                && message.contains("copy.ncl")
+                && message.contains("hard.ncl"),
+            "the conflict must name the field and both documents: {message}",
         );
     }
 

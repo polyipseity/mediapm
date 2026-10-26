@@ -1,7 +1,7 @@
 //! Schema strictness guard module (R5).
 //!
 //! Re-asserts the strictness properties of the conductor Nickel schemas
-//! (`v1.ncl`, `v2.ncl` and the active `v3.ncl`) and the Rust decode and encode
+//! (`v1.ncl`, `v2.ncl`, `v3.ncl` and the active `v4.ncl`) and the Rust decode and encode
 //! pipeline. A future loosening of these contracts fails this suite even if it
 //! compiles.
 //!
@@ -221,15 +221,15 @@ fn parity_v1_to_v2_migration_output_passes_tightened_envelope() {
 fn parity_mod_ncl_exports_unversioned_aliases() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(
-        mod_source.contains("validate_document = v3_migration.validate_document_v3"),
+        mod_source.contains("validate_document = v4_migration.validate_document_v4"),
         "mod.ncl must re-export validate_document (unversioned alias)"
     );
     assert!(
-        mod_source.contains("envelope_contract = v3_migration.envelope_contract_v3"),
+        mod_source.contains("envelope_contract = v4_migration.envelope_contract_v4"),
         "mod.ncl must re-export envelope_contract (unversioned alias)"
     );
     assert!(
-        mod_source.contains("supported_versions_val = [1, 2, 3]"),
+        mod_source.contains("supported_versions_val = [1, 2, 3, 4]"),
         "mod.ncl must name every version the build carries a contract for"
     );
 }
@@ -325,12 +325,35 @@ const V2_DOC_WITH_PAYLOAD: &str = r#"{
 
 /// S3: the staging strategy is a closed set, so an unknown name is rejected by
 /// the contract instead of reaching the step as an unrecognized string.
+///
+/// The document is a v3 one, so it is validated after the migration to the
+/// active contract: the rejection names that contract, not the one the source
+/// was written against.
 #[test]
 fn strict_v3_rejects_an_unknown_staging_strategy() {
     let msg = decode_error(UNKNOWN_STAGING_DOC);
     assert!(
-        msg.contains("PayloadStagingV3") && msg.contains("payload_staging"),
-        "the Nickel contract must reject the strategy and name the field: {msg}"
+        msg.contains("PayloadStagingV4") && msg.contains("payload_staging"),
+        "the active contract must reject a migrated v3 document's strategy and name the field: {msg}"
+    );
+}
+
+/// A document whose conductor runtime names a staging default outside the
+/// closed set.
+const UNKNOWN_DOCUMENT_STAGING_DOC: &str = r#"{
+    version = 4,
+    runtime = { payload_staging = "symlink" },
+}"#;
+
+/// S3: the document-level default is the same closed set, so a name the runtime
+/// cannot stage is refused when the document loads rather than when the first
+/// tool that inherits it runs.
+#[test]
+fn strict_v4_rejects_an_unknown_document_level_staging_strategy() {
+    let msg = decode_error(UNKNOWN_DOCUMENT_STAGING_DOC);
+    assert!(
+        msg.contains("PayloadStagingV4") && msg.contains("payload_staging"),
+        "the Nickel contract must reject the default and name the field: {msg}"
     );
 }
 
@@ -375,11 +398,11 @@ fn regression_a_v2_document_migrates_to_copy() {
     assert!(runtime.payload_root.is_empty(), "a v2 document names no payload root");
 }
 
-/// The v3 round trip preserves the staging decision and the root it reads.
+/// The v4 round trip preserves the staging decision and the root it reads.
 #[test]
-fn regression_a_v3_document_round_trips_byte_for_byte() {
+fn regression_a_v4_document_round_trips_byte_for_byte() {
     let source = r#"{
-        version = 3,
+        version = 4,
         tools = {
             "t" = {
                 kind = "executable",
@@ -399,6 +422,7 @@ fn regression_a_v3_document_round_trips_byte_for_byte() {
 
     let first = encode_document(doc).expect("encode");
     let text = String::from_utf8(first.clone()).expect("encoded document is UTF-8");
+    assert!(text.contains("version = 4"), "the encoder writes the active schema marker: {text}");
     assert!(
         text.contains("payload_staging = \"in_place\""),
         "the encoder has to write the strategy it was given: {text}"
@@ -436,7 +460,7 @@ fn parity_v3_contract_and_rust_types_agree() {
     // The contract's own set, read out of the staging predicate. Comparing sets
     // rather than checking one direction is what catches a strategy added to the
     // contract alone: it would validate a document this build cannot stage.
-    let contract_set = staging_names_in_contract(contract);
+    let contract_set = staging_names_in_contract(contract, "PayloadStagingV3");
     assert_eq!(
         contract_set, rust,
         "v3.ncl's staging set and the Rust enum must name the same strategies"
@@ -448,15 +472,42 @@ fn parity_v3_contract_and_rust_types_agree() {
     }
 }
 
-/// Returns the strategy names `v3.ncl`'s staging predicate accepts.
+/// The active contract's staging names and the serde names are the same three
+/// strings, and both places that carry the decision use one contract.
 ///
-/// Reads the `value == "…"` literals out of the block that defines
-/// `PayloadStagingV3`, so a literal added there alone shows up as a difference
-/// rather than as a name nothing asserted.
-fn staging_names_in_contract(contract: &str) -> std::collections::BTreeSet<String> {
+/// The v3 half of this pair stays beside it: a v3 document still migrates
+/// forward through that contract, and a strategy renamed in the active one
+/// alone would validate a document the runtime cannot stage.
+#[test]
+fn parity_v4_contract_and_rust_types_agree() {
+    let contract = include_str!("../../src/config/versions/v4.ncl");
+    let rust: std::collections::BTreeSet<String> =
+        [PayloadStaging::InPlace, PayloadStaging::HardLink, PayloadStaging::Copy]
+            .iter()
+            .map(|staging| staging.as_str().to_string())
+            .collect();
+
+    assert_eq!(
+        staging_names_in_contract(contract, "PayloadStagingV4"),
+        rust,
+        "v4.ncl's staging set and the Rust enum must name the same strategies"
+    );
+    assert_eq!(
+        contract.matches("payload_staging | PayloadStagingV4 | optional,").count(),
+        2,
+        "the tool runtime and the conductor runtime must declare the same staging contract"
+    );
+}
+
+/// Returns the strategy names a contract's staging predicate accepts.
+///
+/// Reads the `value == "…"` literals out of the block that defines `binding`,
+/// so a literal added there alone shows up as a difference rather than as a
+/// name nothing asserted.
+fn staging_names_in_contract(contract: &str, binding: &str) -> std::collections::BTreeSet<String> {
     let (_, after_binding) = contract
-        .split_once("let PayloadStagingV3 =")
-        .expect("v3.ncl must define the staging predicate");
+        .split_once(&format!("let {binding} ="))
+        .expect("the contract must define the staging predicate");
     let (block, _) = after_binding.split_once("\nin\n").expect("the binding must end with `in`");
     let mut names = std::collections::BTreeSet::new();
     let mut rest = block;
@@ -477,7 +528,7 @@ fn staging_names_in_contract(contract: &str) -> std::collections::BTreeSet<Strin
 #[test]
 fn regression_a_document_naming_no_staging_decision_decodes_as_in_place() {
     let source = r#"{
-        version = 3,
+        version = 4,
         tools = {
             "t" = {
                 kind = "executable",
@@ -491,6 +542,78 @@ fn regression_a_document_naming_no_staging_decision_decodes_as_in_place() {
     let runtime = &doc.tools["t"].runtime;
     assert_eq!(runtime.payload_staging, PayloadStaging::InPlace);
     assert!(runtime.payload_root.is_empty(), "the document names no root");
+    assert_eq!(
+        doc.runtime.payload_staging,
+        PayloadStaging::InPlace,
+        "a document naming no default stages in place",
+    );
+}
+
+/// The document-level default survives a write and a read.
+///
+/// The field is the library's choice of how payloads are staged, and nothing
+/// else in the document repeats it, so losing it on the write path would leave
+/// every tool staging in place with no record of what the library asked for.
+#[test]
+fn parity_the_document_level_staging_default_round_trips() {
+    let source = r#"{
+        version = 4,
+        tools = {
+            "t" = { kind = "executable", name = "t", command = ["true"] },
+        },
+        runtime = { payload_staging = "hard_link" },
+    }"#;
+    let doc = decode_document(source.as_bytes()).expect("a document-level default must decode");
+    assert_eq!(doc.runtime.payload_staging, PayloadStaging::HardLink);
+    assert_eq!(
+        doc.tools["t"].runtime.payload_staging,
+        PayloadStaging::InPlace,
+        "the tool names no strategy of its own, so its own field still resolves in place",
+    );
+
+    let encoded = encode_document(doc).expect("encode");
+    let text = String::from_utf8(encoded.clone()).expect("encoded document is UTF-8");
+    assert!(
+        text.contains("payload_staging = \"hard_link\""),
+        "the encoder has to write the default it was given: {text}"
+    );
+
+    let reread = decode_document(&encoded).expect("decode the encoded document");
+    assert_eq!(
+        reread.runtime.payload_staging,
+        PayloadStaging::HardLink,
+        "the encoded document has to read back as the default it was encoded from",
+    );
+    let reencoded = encode_document(reread).expect("re-encode");
+    assert_eq!(encoded, reencoded, "encode → decode → encode must be byte-stable");
+}
+
+/// A v4 document reaches the version-locked v1 validator through the down hops.
+///
+/// The downgrade is not a runtime path — `validate_v1_document` is the
+/// version-locked check the legacy surface needs — but it is the only thing that
+/// exercises the v4 → v3 hop, and a hop that dropped the wrong field would leave
+/// the pair table claiming a conversion it cannot perform.
+#[test]
+fn parity_a_v4_document_migrates_down_to_v1_for_the_version_locked_validator() {
+    let source = r#"{
+        version = 4,
+        tools = {
+            "t" = { kind = "executable", name = "t", command = ["true"] },
+        },
+        runtime = { retry_impure = true, payload_staging = "hard_link" },
+    }"#;
+    let migrated = validate_v1_document(source).expect("a v4 document must migrate down to v1");
+    // Nickel numbers export as floats, so the marker reads back as `1.0`.
+    assert_eq!(
+        migrated["version"].as_f64(),
+        Some(1.0),
+        "the validator sees a v1 document: {migrated}"
+    );
+    assert!(
+        !migrated.to_string().contains("payload_staging"),
+        "the v4-only staging fields must not survive the downgrade: {migrated}"
+    );
 }
 
 /// The write path refuses what the read path would refuse.

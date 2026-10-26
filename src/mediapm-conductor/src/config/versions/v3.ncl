@@ -263,6 +263,23 @@ let migrate_v2_to_v3_fn = fun data =>
   & { version = 3, tools = tools_v3 }
 in
 
+# ||| v4 → v3:  the document-level staging default is dropped.
+# |||
+# ||| v3 keeps the staging decision on each tool, and the hop from v2 wrote one
+# ||| onto every tool, so a document the runtime wrote loses no per-tool
+# ||| decision here. A default that tools inherited would be lost, and no v3
+# ||| document can express one: the field arrives with v4.
+let migrate_v4_to_v3_fn = fun data =>
+  if std.record.has_field "runtime" data then
+    # The document is rebuilt rather than merged, for the reason the hop into v3
+    # records: `&` merges records recursively, so a dropped field would come
+    # back from the side that still carries it.
+    (drop_field "runtime" (drop_field "version" data))
+    & { version = 3, runtime = drop_field "payload_staging" data.runtime }
+  else
+    (drop_field "version" data) & { version = 3 }
+in
+
 {
   # ||| Validates one Nickel value as schema v3.
   validate_document_v3 = fun data => data | NickelDocumentV3,
@@ -272,4 +289,8 @@ in
 
   # ||| Migrates a v2 document to schema v3.
   migrate_v2_to_v3 = migrate_v2_to_v3_fn,
+
+  # ||| Migrates a v4 document down to schema v3, dropping the document-level
+  # ||| staging default.
+  migrate_v4_to_v3 = migrate_v4_to_v3_fn,
 }

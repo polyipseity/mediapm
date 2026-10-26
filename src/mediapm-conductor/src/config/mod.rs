@@ -466,6 +466,14 @@ pub struct ConductorRuntimeConfig {
     /// Absent in config resolves to `false` at the boundary.
     #[serde(default)]
     pub retry_impure: bool,
+    /// How a step stages the payload of a tool that names no strategy of its
+    /// own.
+    ///
+    /// This is the document-level default, not a per-tool decision: a tool's
+    /// own [`ToolRuntime::payload_staging`] wins where it states one. Absent
+    /// resolves to [`PayloadStaging::InPlace`] at the boundary.
+    #[serde(default)]
+    pub payload_staging: PayloadStaging,
 }
 
 impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
@@ -492,6 +500,7 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
                 let mut environment = RuntimePlatformEnvConfig::default();
                 let mut retry_impure = false;
                 let mut seen_retry_impure = false;
+                let mut payload_staging = PayloadStaging::default();
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -508,17 +517,25 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
                             retry_impure = map.next_value()?;
                             seen_retry_impure = true;
                         }
+                        "payload_staging" => {
+                            payload_staging = map.next_value()?;
+                        }
                         other => {
                             return Err(A::Error::unknown_field(
                                 other,
-                                &["environment", "platform_inherited_env_vars", "retry_impure"],
+                                &[
+                                    "environment",
+                                    "payload_staging",
+                                    "platform_inherited_env_vars",
+                                    "retry_impure",
+                                ],
                             ));
                         }
                     }
                 }
 
                 let _ = seen_retry_impure;
-                Ok(ConductorRuntimeConfig { environment, retry_impure })
+                Ok(ConductorRuntimeConfig { environment, retry_impure, payload_staging })
             }
         }
 

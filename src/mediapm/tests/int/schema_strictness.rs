@@ -578,6 +578,7 @@ fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
         ("v1.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v1.ncl")),
         ("v2.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v2.ncl")),
         ("v3.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v3.ncl")),
+        ("v4.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v4.ncl")),
     ];
     for (name, source) in conductor_expected {
         let written = std::fs::read_to_string(conductor_dir.join(name))
@@ -592,7 +593,7 @@ fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
     // The exported registry imports what sits beside it, so the set is
     // evaluable on its own only when every version file came along.
     let registry = std::fs::read_to_string(conductor_dir.join("mod.ncl")).expect("read mod.ncl");
-    for version in ["v1.ncl", "v2.ncl", "v3.ncl"] {
+    for version in ["v1.ncl", "v2.ncl", "v3.ncl", "v4.ncl"] {
         assert!(
             registry.contains(&format!("\"{version}\"")),
             "conductor mod.ncl must import {version}, so the export must carry it"

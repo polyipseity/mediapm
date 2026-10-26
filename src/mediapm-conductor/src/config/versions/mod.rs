@@ -40,8 +40,10 @@ use super::nickel_io::{evaluate_document_source, migrate_document_source_to_vers
 pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
 /// Source of the v2 Nickel contract (needed for migration down from v3).
 pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
-/// Source of the v3 Nickel contract.
+/// Source of the v3 Nickel contract (needed for migration down from v4).
 pub(crate) const V3_NCL_SOURCE: &str = include_str!("v3.ncl");
+/// Source of the v4 Nickel contract.
+pub(crate) const V4_NCL_SOURCE: &str = include_str!("v4.ncl");
 
 /// Fixed embedded migration helper module.
 pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
@@ -62,6 +64,7 @@ pub fn contract_sources() -> &'static [(&'static str, &'static str)] {
         ("v1.ncl", V1_NCL_SOURCE),
         ("v2.ncl", V2_NCL_SOURCE),
         ("v3.ncl", V3_NCL_SOURCE),
+        ("v4.ncl", V4_NCL_SOURCE),
     ]
 }
 
@@ -71,7 +74,7 @@ pub fn contract_sources() -> &'static [(&'static str, &'static str)] {
 /// version both read this list, so a version added to the arms alone cannot
 /// reach a document while staying out of the message that says which versions
 /// exist.
-pub(crate) const SUPPORTED_VERSIONS: &[u32] = &[1, 2, 3];
+pub(crate) const SUPPORTED_VERSIONS: &[u32] = &[1, 2, 3, 4];
 
 /// Resolves one requested schema marker to the embedded Nickel contract file name.
 pub(super) fn resolve_version_contract(
@@ -82,6 +85,7 @@ pub(super) fn resolve_version_contract(
         1 => Ok("v1.ncl"),
         2 => Ok("v2.ncl"),
         3 => Ok("v3.ncl"),
+        4 => Ok("v4.ncl"),
         _ => {
             let supported = SUPPORTED_VERSIONS.iter().map(u32::to_string).collect::<Vec<_>>();
             Err(ConductorError::Workflow(format!(

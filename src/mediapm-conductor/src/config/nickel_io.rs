@@ -34,6 +34,7 @@ use super::versions::MOD_NCL_SOURCE;
 use super::versions::V1_NCL_SOURCE;
 use super::versions::V2_NCL_SOURCE;
 use super::versions::V3_NCL_SOURCE;
+use super::versions::V4_NCL_SOURCE;
 use super::versions::latest_version;
 use super::versions::resolve_version_contract;
 
@@ -170,6 +171,7 @@ where
     let v1_path = workspace.path().join("v1.ncl");
     let v2_path = workspace.path().join("v2.ncl");
     let v3_path = workspace.path().join("v3.ncl");
+    let v4_path = workspace.path().join("v4.ncl");
     let input_path = workspace.path().join("document_input.ncl");
     let wrapper_path = workspace.path().join("decode_document.ncl");
 
@@ -177,6 +179,7 @@ where
     write_nickel_file(&v1_path, V1_NCL_SOURCE, "writing temporary Nickel v1.ncl helper")?;
     write_nickel_file(&v2_path, V2_NCL_SOURCE, "writing temporary Nickel v2.ncl helper")?;
     write_nickel_file(&v3_path, V3_NCL_SOURCE, "writing temporary Nickel v3.ncl helper")?;
+    write_nickel_file(&v4_path, V4_NCL_SOURCE, "writing temporary Nickel v4.ncl helper")?;
     write_nickel_file(&input_path, source, "writing temporary Nickel input document")?;
 
     let wrapper_source = format!(

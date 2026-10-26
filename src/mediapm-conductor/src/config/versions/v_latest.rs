@@ -23,10 +23,10 @@ use crate::config::{
 };
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
-pub(crate) const NICKEL_VERSION_LATEST: u32 = 3;
+pub(crate) const NICKEL_VERSION_LATEST: u32 = 4;
 
 // ---------------------------------------------------------------------------
-// Persisted envelope types — these match the `v3.ncl` Nickel contract exactly
+// Persisted envelope types — these match the `v4.ncl` Nickel contract exactly
 // and are what `serde_json` deserializes after Nickel evaluation.
 // ---------------------------------------------------------------------------
 
@@ -210,8 +210,9 @@ impl From<super::super::InputBinding> for InputBindingLatest {
 
 /// Latest persisted payload staging strategy.
 ///
-/// The names mirror the `PayloadStagingV3` contract in `v3.ncl`: `in_place`,
-/// `hard_link`, `copy`. An absent field means `in_place`, which is only valid
+/// The names mirror the `PayloadStagingV4` contract in `v4.ncl`: `in_place`,
+/// `hard_link`, `copy`. A tool's absent field means the document's default,
+/// and a document that names no default means `in_place`, which is only valid
 /// for a tool that names its `payload_root`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -293,6 +294,11 @@ pub(crate) struct ConductorRuntimeConfigLatest {
     /// Whether impure tool calls may be retried automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) retry_impure: Option<bool>,
+    /// How a step stages the payload of a tool that names no strategy of its
+    /// own. `None` means the document states no default, which resolves to
+    /// `in_place`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) payload_staging: Option<PayloadStagingLatest>,
 }
 
 impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
@@ -318,6 +324,7 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
             {
                 let mut environment = RuntimePlatformEnvConfigLatest::default();
                 let mut retry_impure = None;
+                let mut payload_staging = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -333,16 +340,34 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
                         "retry_impure" => {
                             retry_impure = map.next_value()?;
                         }
+                        "payload_staging" => {
+                            // A Nickel string reaches an enum field as a
+                            // string, which serde's enum reader refuses (it
+                            // expects `'Tag` or a single-key record), so the
+                            // value goes through JSON first — the same
+                            // intermediate the tool spec uses for the field
+                            // on its own runtime.
+                            let raw: serde_json::Value = map.next_value()?;
+                            payload_staging =
+                                Some(serde_json::from_value(raw).map_err(|error| {
+                                    A::Error::custom(format!("invalid payload_staging: {error}"))
+                                })?);
+                        }
                         other => {
                             return Err(A::Error::unknown_field(
                                 other,
-                                &["environment", "platform_inherited_env_vars", "retry_impure"],
+                                &[
+                                    "environment",
+                                    "payload_staging",
+                                    "platform_inherited_env_vars",
+                                    "retry_impure",
+                                ],
                             ));
                         }
                     }
                 }
 
-                Ok(ConductorRuntimeConfigLatest { environment, retry_impure })
+                Ok(ConductorRuntimeConfigLatest { environment, retry_impure, payload_staging })
             }
         }
 
@@ -802,6 +827,10 @@ impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig
             environment: super::super::RuntimePlatformEnvConfig {
                 platform_inherited_env_vars: rt.environment.platform_inherited_env_vars,
             },
+            // `None` (absent in config) resolves to `in_place` at the boundary.
+            payload_staging: rt
+                .payload_staging
+                .map_or(PayloadStaging::default(), PayloadStaging::from),
         }
     }
 }
@@ -813,6 +842,7 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
             environment: RuntimePlatformEnvConfigLatest {
                 platform_inherited_env_vars: rt.environment.platform_inherited_env_vars,
             },
+            payload_staging: Some(PayloadStagingLatest::from(rt.payload_staging)),
         }
     }
 }
@@ -1325,16 +1355,23 @@ mod tests {
     }
 
     /// Documents that a boundary `ConductorRuntimeConfigLatest` with
-    /// `retry_impure: None` resolves to `false` and an empty platform env
-    /// config through the `From` impl (no `Option` leaks into the resolved type).
+    /// `retry_impure: None` and `payload_staging: None` resolves to `false`,
+    /// an empty platform env config, and `in_place` through the `From` impl
+    /// (no `Option` leaks into the resolved type).
     #[test]
     fn conductor_runtime_config_from_latest_none_retry_impure_false() {
         let latest = ConductorRuntimeConfigLatest {
             environment: RuntimePlatformEnvConfigLatest::default(),
             retry_impure: None,
+            payload_staging: None,
         };
         let cfg: crate::config::ConductorRuntimeConfig = latest.into();
         assert!(!cfg.retry_impure);
+        assert_eq!(
+            cfg.payload_staging,
+            PayloadStaging::InPlace,
+            "a document naming no default stages in place",
+        );
         assert!(cfg.environment.platform_inherited_env_vars.windows.is_empty());
         assert!(cfg.environment.platform_inherited_env_vars.linux.is_empty());
         assert!(cfg.environment.platform_inherited_env_vars.macos.is_empty());

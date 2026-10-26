@@ -160,6 +160,66 @@ fn v3_nickel_schema_structure() {
     );
 }
 
+/// Validates that the V4 Nickel schema (`v4.ncl`) carries the document-level
+/// staging default and keeps the per-tool decision v3 introduced.
+#[test]
+fn v4_nickel_schema_structure() {
+    let schema = include_str!("../../src/config/versions/v4.ncl");
+
+    // --- version marker is required, and it is the one v4 names (S-A2) ---
+    assert!(
+        schema.contains("version | VersionFourV4,"),
+        "v4.ncl must make version required and mark it as 4"
+    );
+    assert!(schema.contains("fun value => value == 4"), "v4.ncl's version predicate must name 4");
+
+    // --- envelope MUST be closed (S-A1): no `..` open-record marker ---
+    assert!(
+        !schema.lines().any(|line| line.trim() == ".."),
+        "v4.ncl NickelDocumentV4 must be a closed record"
+    );
+
+    // --- the default a tool inherits sits on the conductor runtime ---
+    let runtime_config = schema
+        .split("let ConductorRuntimeConfigV4 = {")
+        .nth(1)
+        .expect("v4.ncl must define ConductorRuntimeConfigV4")
+        .split("}\nin")
+        .next()
+        .expect("ConductorRuntimeConfigV4 must be a record");
+    assert!(
+        runtime_config.contains("payload_staging | PayloadStagingV4 | optional,"),
+        "v4.ncl ConductorRuntimeConfigV4.payload_staging must be an optional default"
+    );
+
+    // --- the per-tool decision stays, both fields still optional ---
+    assert!(
+        schema.contains("payload_root | String | optional"),
+        "v4.ncl ToolRuntimeV4.payload_root must stay an optional string"
+    );
+    assert!(
+        schema.contains("payload_staging | PayloadStagingV4 | optional,"),
+        "v4.ncl ToolRuntimeV4.payload_staging must stay the closed PayloadStagingV4 contract"
+    );
+    for name in ["in_place", "hard_link", "copy"] {
+        assert!(
+            schema.contains(&format!("fun value => value == \"{name}\"")),
+            "v4.ncl PayloadStagingV4 must accept '{name}'"
+        );
+    }
+
+    // --- it exports its own surface and owns the v3 → v4 hop ---
+    assert!(schema.contains("validate_document_v4"), "v4.ncl must export validate_document_v4");
+    assert!(schema.contains("envelope_contract_v4"), "v4.ncl must export envelope_contract_v4");
+    assert!(schema.contains("migrate_v3_to_v4"), "v4.ncl must own the v3 → v4 migration");
+
+    let v3 = include_str!("../../src/config/versions/v3.ncl");
+    assert!(
+        v3.contains("migrate_v4_to_v3"),
+        "v3.ncl must own the v4 → v3 migration, which drops the document-level default"
+    );
+}
+
 /// Validates that the V1 legacy Nickel schema (`v1.ncl`) contains the
 /// tightened legacy-surface contracts (S-B1..S-B5), keeps the documented
 /// `state_pointer` exception (S-B6), and preserves the canonical envelope

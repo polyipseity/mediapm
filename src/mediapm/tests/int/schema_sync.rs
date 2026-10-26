@@ -336,11 +336,11 @@ fn parity_tree_scan_catches_dispatcher_outside_mod_rs() {
 /// The conductor's active schema contract, read from the file the evaluator loads.
 ///
 /// `include_str!` keeps this bound to the shipped file, so editing the contract
-/// fails these assertions instead of leaving them pinned to a copy. Version 3 is
+/// fails these assertions instead of leaving them pinned to a copy. Version 4 is
 /// the one the conductor validates and writes; the older contracts only serve
 /// migration.
 const CONDUCTOR_ACTIVE_NCL: &str =
-    include_str!("../../../mediapm-conductor/src/config/versions/v3.ncl");
+    include_str!("../../../mediapm-conductor/src/config/versions/v4.ncl");
 
 /// Builds a one-tool conductor document with the given declared version.
 ///
@@ -401,30 +401,30 @@ fn conductor_source_with_version_line(name: &str, version_line: &str) -> String 
 /// and missing on the other is drift the Rust side would hide.
 #[test]
 fn parity_conductor_tool_version_is_optional_and_non_empty_in_nickel() {
-    for contract in ["BuiltinToolSpecV3", "ExecutableToolSpecV3"] {
+    for contract in ["BuiltinToolSpecV4", "ExecutableToolSpecV4"] {
         assert!(
             nickel_record_body(CONDUCTOR_ACTIVE_NCL, contract)
-                .is_some_and(|body| { body.contains("version | NonEmptyStringV3 | optional,") }),
-            "{contract} must declare `version | NonEmptyStringV3 | optional`"
+                .is_some_and(|body| { body.contains("version | NonEmptyStringV4 | optional,") }),
+            "{contract} must declare `version | NonEmptyStringV4 | optional`"
         );
     }
 
     // The field is optional and constrained by the same non-empty predicate the
-    // doc comment on `ToolSpecLatest::version` cites. If `NonEmptyStringV3` ever
+    // doc comment on `ToolSpecLatest::version` cites. If `NonEmptyStringV4` ever
     // stops rejecting the empty string, the claim that an empty version is not
     // representable is no longer backed by the contract.
-    // `NonEmptyStringV3` is a predicate binding rather than a record, so it needs
+    // `NonEmptyStringV4` is a predicate binding rather than a record, so it needs
     // its own lookup. A `None` here is a failure like it is in `nickel_record_body`,
     // because a missing binding means the constraint is gone.
     let (_, after_binding) = CONDUCTOR_ACTIVE_NCL
-        .split_once("let NonEmptyStringV3 =")
-        .expect("conductor v3.ncl must define NonEmptyStringV3");
+        .split_once("let NonEmptyStringV4 =")
+        .expect("conductor v4.ncl must define NonEmptyStringV4");
     let (predicate, _) = after_binding
         .split_once("\nin\n")
-        .expect("NonEmptyStringV3 must be a top-level `let ... in` binding");
+        .expect("NonEmptyStringV4 must be a top-level `let ... in` binding");
     assert!(
         predicate.contains("value == \"\""),
-        "NonEmptyStringV3 must keep rejecting the empty string, which is what makes \
+        "NonEmptyStringV4 must keep rejecting the empty string, which is what makes \
          `Some(\"\")` unrepresentable on the Rust side, got: {predicate}"
     );
 }
@@ -437,7 +437,7 @@ fn parity_conductor_tool_version_is_optional_and_non_empty_in_nickel() {
 /// would fail the contract on the next read, so the encoder cannot emit either.
 /// `runtime` is serialized unconditionally and sorts after `version`, so the
 /// first `version` key in the emitted source is the tool's and the envelope's own
-/// `version = 3` comes last.
+/// `version = 4` comes last.
 #[test]
 fn parity_undeclared_tool_version_serializes_away() {
     let encoded = encode_to_string(document_with_declared_version("probe_tool", None));
@@ -449,7 +449,7 @@ fn parity_undeclared_tool_version_serializes_away() {
          version, got: {encoded}"
     );
     assert!(
-        encoded.contains("version = 3"),
+        encoded.contains("version = 4"),
         "the one version entry must be the envelope's schema marker, got: {encoded}"
     );
 
@@ -464,7 +464,7 @@ fn parity_undeclared_tool_version_serializes_away() {
 /// The contract rejects the two spellings of "no version" that Rust cannot carry.
 ///
 /// `| optional` in Nickel means a field may be omitted, not that it may hold
-/// `null`, and `NonEmptyStringV3` rejects `""` and any non-string. This is the asymmetry the
+/// `null`, and `NonEmptyStringV4` rejects `""` and any non-string. This is the asymmetry the
 /// encoder has to respect: `None` is expressible as an omitted field alone, so a
 /// Rust `None` has exactly one valid encoding.
 #[test]
