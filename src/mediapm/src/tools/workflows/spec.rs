@@ -129,12 +129,15 @@ pub(crate) fn assemble_tool_spec(
         inherited_env_vars: Vec::new(),
         max_concurrent_calls,
         max_retries,
-        // The sync stamps both fields once it has materialized the payload:
-        // it alone knows the directory the provisioner filled. A spec built
-        // here names no root, so `copy` is the strategy that needs none, and a
-        // tool the sync never materializes keeps it.
+        // The sync stamps both fields once it has materialized the payload: it
+        // alone knows the directory the provisioner filled and the strategy the
+        // library asked for. A spec built here therefore names no root and no
+        // strategy, which means a tool the sync never materializes inherits the
+        // library default — and a document asking for a strategy that needs a
+        // root the tool does not have fails at load, naming the tool, instead of
+        // silently copying.
         payload_root: String::new(),
-        payload_staging: ConfigPayloadStaging::Copy,
+        payload_staging: ConfigPayloadStaging::Inherit,
     };
 
     let spec = ToolSpec {

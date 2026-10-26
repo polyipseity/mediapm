@@ -73,6 +73,7 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
         &paths,
         &desired_tools,
         &BTreeMap::new(),
+        PayloadStaging::InPlace,
         RecheckPolicy::default(),
         &state,
         Some(cache_root.path()),

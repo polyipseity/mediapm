@@ -6,9 +6,11 @@
 //! the only producer, and an entry left behind by an earlier build is replaced
 //! rather than trusted.
 
+use mediapm_cas::Hash;
+use mediapm_conductor::state::OutputSaveMode;
 use mediapm_conductor::{
-    ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec,
-    runtime_env::provisioned_payload_dir,
+    ConfigPayloadStaging, ExternalDataEntry, NickelDocument, PayloadStaging, ToolKindSpec,
+    ToolRuntime, ToolSpec, decode_document, encode_document, runtime_env::provisioned_payload_dir,
 };
 use std::collections::BTreeMap;
 
@@ -73,8 +75,9 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
             ..Default::default()
         },
     )]);
+    let choices = BTreeMap::from([("scripted".to_string(), ConfigPayloadStaging::InPlace)]);
 
-    stamp_payload_roots(&paths, &mut document, &mut runtimes);
+    stamp_payload_roots(&paths, &mut document, &mut runtimes, &choices, PayloadStaging::InPlace);
 
     let expected = payload_dir
         .to_str()
@@ -87,7 +90,7 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
     assert_eq!(
         document.tools[conductor_tool_id].runtime.payload_staging,
         ConfigPayloadStaging::InPlace,
-        "a provisioned directory is executed from, not copied out of it"
+        "the tool stated a strategy, so the stamp carries that strategy rather than overriding it"
     );
     assert_eq!(
         runtimes[conductor_tool_id].payload_root, expected,
@@ -118,7 +121,13 @@ fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
         },
     )]);
 
-    stamp_payload_roots(&paths, &mut document, &mut runtimes);
+    stamp_payload_roots(
+        &paths,
+        &mut document,
+        &mut runtimes,
+        &BTreeMap::new(),
+        PayloadStaging::InPlace,
+    );
 
     assert_eq!(
         document.tools[conductor_tool_id].runtime.payload_root, "",
@@ -208,11 +217,227 @@ fn a_tool_without_a_content_map_is_not_stamped() {
         ToolRuntime { payload_staging: ConfigPayloadStaging::Copy, ..Default::default() },
     )]);
 
-    stamp_payload_roots(&paths, &mut document, &mut runtimes);
+    stamp_payload_roots(
+        &paths,
+        &mut document,
+        &mut runtimes,
+        &BTreeMap::new(),
+        PayloadStaging::InPlace,
+    );
 
     assert_eq!(
         document.tools[conductor_tool_id].runtime.payload_root, "",
         "a tool with no payload has no payload root"
     );
     assert_eq!(runtimes[conductor_tool_id].payload_root, "");
+}
+
+/// Encodes a document and hands back its source.
+///
+/// The source is what a reader loads and what a reviewer diffs, so the
+/// assertions inspect it rather than the in-memory value it came from.
+fn encode_source(document: NickelDocument) -> String {
+    let bytes = encode_document(document).expect("the document encodes");
+    String::from_utf8(bytes).expect("a Nickel document is UTF-8")
+}
+
+/// Declares every hash a document's tool content maps name, so the document
+/// passes the external-data invariant and can be encoded.
+fn declare_content_map_hashes(document: &mut NickelDocument) {
+    let hashes: Vec<Hash> = document
+        .tools
+        .values()
+        .flat_map(|spec| spec.runtime.content_map.values())
+        .filter_map(|value| value.parse::<Hash>().ok())
+        .collect();
+    for hash in hashes {
+        document.external_data.insert(
+            hash,
+            ExternalDataEntry { description: None, save_mode: OutputSaveMode::Saved },
+        );
+    }
+}
+
+/// Builds a generated document whose runtime states `document_default` and
+/// whose tools state the staging and payload root each entry names.
+///
+/// A strategy that executes a tool out of the provisioned tree is refused
+/// without a root, so the entries that ask for one carry a root the way a
+/// stamped document does.
+fn staged_document(
+    document_default: PayloadStaging,
+    tools: &[(&str, ConfigPayloadStaging, u8, &str)],
+) -> NickelDocument {
+    let mut document = NickelDocument::default();
+    document.runtime.payload_staging = document_default;
+    for (key, staging, hash_byte, payload_root) in tools {
+        let content_map = BTreeMap::from([(
+            format!("{key}/bin"),
+            format!("blake3:{}", blake3::Hash::from([*hash_byte; 32]).to_hex()),
+        )]);
+        document.tools.insert(
+            (*key).to_string(),
+            ToolSpec {
+                version: None,
+                name: key.split('@').next().unwrap_or(key).to_string(),
+                kind: ToolKindSpec::default(),
+                runtime: ToolRuntime {
+                    content_map,
+                    payload_staging: *staging,
+                    payload_root: (*payload_root).to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+    }
+    declare_content_map_hashes(&mut document);
+    document
+}
+
+/// A library that asks for `hard_link` gets `hard_link`, once the sync's stamp
+/// and the encoder have both had their say.
+///
+/// The sync used to overwrite the strategy with `in_place` on every tool it
+/// stamped, which made this request unrepresentable: the document could say it,
+/// and nothing could execute it. The document default is where the request
+/// lands, so the tool line stays absent and the emitted document states one
+/// strategy for the whole library.
+#[test]
+fn regression_a_hard_link_request_survives_a_sync() {
+    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let paths = paths_under(root.path());
+    let conductor_tool_id = "scripted@blake3:hard";
+    let payload_dir = provisioned_payload_dir(&paths.tools_dir, conductor_tool_id);
+    std::fs::create_dir_all(&payload_dir).expect("provisioned payload dir");
+
+    let mut document = document_with_tool(conductor_tool_id, ConfigPayloadStaging::Inherit, "");
+    declare_content_map_hashes(&mut document);
+    let mut runtimes = BTreeMap::from([(
+        conductor_tool_id.to_string(),
+        ToolRuntime {
+            content_map: document.tools[conductor_tool_id].runtime.content_map.clone(),
+            payload_staging: ConfigPayloadStaging::Inherit,
+            ..Default::default()
+        },
+    )]);
+    let choices = BTreeMap::from([("scripted".to_string(), ConfigPayloadStaging::HardLink)]);
+
+    stamp_payload_roots(&paths, &mut document, &mut runtimes, &choices, PayloadStaging::HardLink);
+
+    assert_eq!(
+        document.runtime.payload_staging,
+        PayloadStaging::HardLink,
+        "the library records its request once, at the document level"
+    );
+    assert_eq!(
+        runtimes[conductor_tool_id].payload_staging,
+        ConfigPayloadStaging::HardLink,
+        "the runtime map the sync itself reads carries the same choice"
+    );
+
+    let encoded = encode_source(document);
+    assert_eq!(
+        encoded.matches("payload_staging").count(),
+        1,
+        "the default is written once and the tool that repeats it is omitted:\n{encoded}"
+    );
+    let decoded = decode_document(encoded.as_bytes()).expect("the emitted document loads");
+    assert_eq!(decoded.runtime.payload_staging, PayloadStaging::HardLink);
+    assert_eq!(
+        decoded.tools[conductor_tool_id].runtime.payload_staging,
+        ConfigPayloadStaging::Inherit,
+        "an omitted tool line loads as the choice to inherit the document default"
+    );
+}
+
+/// An override is written where it differs and nowhere else.
+///
+/// The generated document is merged with the user's, and two explicit
+/// conflicting values fail that merge, so a value the user never asked for is
+/// not merely noise: it decides whether a `copy` request can load at all.
+#[test]
+fn regression_an_override_is_written_once_in_the_emitted_document() {
+    let document = staged_document(
+        PayloadStaging::Copy,
+        &[
+            ("chosen@blake3:aa", ConfigPayloadStaging::InPlace, 1, "/provisioned/chosen"),
+            ("inheriting@blake3:bb", ConfigPayloadStaging::Inherit, 2, ""),
+        ],
+    );
+
+    let encoded = encode_source(document);
+    assert_eq!(
+        encoded.matches("payload_staging").count(),
+        2,
+        "the document default plus the one tool that differs:\n{encoded}"
+    );
+
+    let decoded = decode_document(encoded.as_bytes()).expect("the emitted document loads");
+    assert_eq!(decoded.runtime.payload_staging, PayloadStaging::Copy);
+    assert_eq!(
+        decoded.tools["chosen@blake3:aa"].runtime.payload_staging,
+        ConfigPayloadStaging::InPlace
+    );
+    assert_eq!(
+        decoded.tools["inheriting@blake3:bb"].runtime.payload_staging,
+        ConfigPayloadStaging::Inherit
+    );
+}
+
+/// A library that never decided stages nothing into the emitted document.
+///
+/// `in_place` is both the absent document default and the meaning of an absent
+/// tool line, so writing either would state a decision the library never made.
+#[test]
+fn regression_a_document_with_no_staging_decision_emits_no_staging_field() {
+    let document = staged_document(
+        PayloadStaging::InPlace,
+        &[("plain@blake3:cc", ConfigPayloadStaging::Inherit, 3, "/provisioned/plain")],
+    );
+
+    let encoded = encode_source(document);
+    assert_eq!(
+        encoded.matches("payload_staging").count(),
+        0,
+        "no level states a strategy, so no level is written:\n{encoded}"
+    );
+
+    let decoded = decode_document(encoded.as_bytes()).expect("the emitted document loads");
+    assert_eq!(decoded.runtime.payload_staging, PayloadStaging::InPlace);
+    assert_eq!(
+        decoded.tools["plain@blake3:cc"].runtime.payload_staging,
+        ConfigPayloadStaging::Inherit
+    );
+}
+
+/// A `copy`-staged tool needs no payload root, and one that would need it is
+/// refused when the document loads.
+///
+/// This is the loadability half of the omission rule: copying writes the content
+/// map into the step sandbox, so a directory the provisioner filled is not
+/// required, and a document that asks to copy must not be rejected for lacking
+/// one.
+#[test]
+fn strict_a_copy_staged_tool_needs_no_payload_root() {
+    let copying = staged_document(
+        PayloadStaging::Copy,
+        &[("copied@blake3:dd", ConfigPayloadStaging::Inherit, 4, "")],
+    );
+    let encoded = encode_source(copying);
+    let decoded = decode_document(encoded.as_bytes())
+        .expect("a copy-staged tool names no payload root and still loads");
+    assert_eq!(decoded.runtime.payload_staging, PayloadStaging::Copy);
+
+    let mut places = staged_document(
+        PayloadStaging::InPlace,
+        &[("placed@blake3:ee", ConfigPayloadStaging::Inherit, 5, "")],
+    );
+    places.runtime.payload_staging = PayloadStaging::InPlace;
+    let error = encode_document(places)
+        .expect_err("in_place without a payload root is a document that never decided");
+    assert!(
+        format!("{error}").contains("payload_root"),
+        "the refusal names the field a reader has to fill: {error}"
+    );
 }

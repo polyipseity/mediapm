@@ -1025,6 +1025,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             effective_paths,
             &desired_tools,
             &inherited_env_vars,
+            runtime_storage.materialization.payload_staging,
             recheck_policy,
             &state,
             runtime_storage.cache_root_override.as_deref(),

@@ -29,7 +29,9 @@ use mediapm_conductor::runtime_env::{provisioned_payload_dir, write_generated_do
 use mediapm_conductor::state::OutputSaveMode;
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::tools::spec::spec_matches_entry;
-use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolRuntime, ToolSpec};
+use mediapm_conductor::{
+    ConfigPayloadStaging, NickelDocument, PayloadStaging, ToolRuntime, ToolSpec,
+};
 
 use crate::tools::dependency::DependencyTypes;
 use crate::tools::provider::RecheckPolicy;
@@ -1390,6 +1392,10 @@ pub(crate) async fn open_workspace_cas_store(
 ///   supplied it becomes the phase's own progress bar and the phase sets its
 ///   total; when absent the phase registers a child bar on `progress_group`
 ///   instead (the shape the in-file tests' recording screens drive).
+/// - `library_payload_staging`: the strategy the library states for a payload no
+///   tool overrides. The phase records it on the generated document and never
+///   overrides it with a strategy of its own; the per-tool choices come from
+///   `desired_tools`.
 ///
 /// The caller joins the screen afterwards: this phase keeps it live for the
 /// whole call, including the `[prn]` prune bar it registers after the
@@ -1410,13 +1416,14 @@ pub(crate) async fn open_workspace_cas_store(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "reconciliation entrypoint; all 9 parameters are distinct required inputs"
+    reason = "reconciliation entrypoint; all 10 parameters are distinct required inputs"
 )]
 pub(crate) async fn reconcile_desired_tools(
     workspace_cas: Arc<FileSystemCas>,
     paths: &MediaPmPaths,
     desired_tools: &BTreeMap<String, serde_json::Value>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
+    library_payload_staging: PayloadStaging,
     recheck_policy: RecheckPolicy,
     state: &MediaPmState,
     cache_root_override: Option<&Path>,
@@ -1433,6 +1440,19 @@ pub(crate) async fn reconcile_desired_tools(
         }
         crate::tools::dependency::validate_tool_requirement_fields(tool_id, tool_value)?;
     }
+
+    // The staging each tool asks for, keyed by mediapm tool id. A requirement
+    // that does not decode is left out here rather than failing the sync: the
+    // provisioning loop reports that failure with the real cause, and this map
+    // only decides which staging line the generated document states.
+    let tool_staging_choices: BTreeMap<String, ConfigPayloadStaging> = desired_tools
+        .iter()
+        .filter_map(|(tool_id, value)| {
+            serde_json::from_value::<ToolRequirement>(value.clone())
+                .ok()
+                .map(|requirement| (tool_id.clone(), requirement.payload_staging))
+        })
+        .collect();
 
     // 1. Load or create generated document.
     let mut generated_doc = load_conductor_generated_document(paths)?;
@@ -1756,7 +1776,13 @@ pub(crate) async fn reconcile_desired_tools(
     // 4c. Record where each payload actually landed and how a step stages it, so
     // the document names the directory the provisioner filled instead of one a
     // reader has to reconstruct.
-    stamp_payload_roots(paths, &mut generated_doc, &mut tool_runtimes);
+    stamp_payload_roots(
+        paths,
+        &mut generated_doc,
+        &mut tool_runtimes,
+        &tool_staging_choices,
+        library_payload_staging,
+    );
 
     // 5. Write generated runtime env file from tool runtimes (keyed by
     //    conductor tool id — env names derive from the stripped mediapm id,
@@ -1798,20 +1824,30 @@ pub(crate) async fn reconcile_desired_tools(
     Ok(ToolSyncOutcome { report, payload_guards })
 }
 
-/// Records the provisioned payload directory and the staging strategy on every
-/// tool that has one.
+/// Records the provisioned payload directory and the staging choice on the
+/// generated document.
 ///
 /// The location belongs to the sync because the sync is what materializes the
 /// payload: writing it here means no reader has to reconstruct the layout from a
 /// tool id, and a payload that was already deployed on a previous run is named
 /// exactly as a freshly provisioned one is. A tool whose payload directory does
-/// not exist keeps the strategy its spec builder declared, and the executor
-/// refuses it by name rather than running whatever happens to be there.
+/// not exist keeps no root, and the executor refuses it by name rather than
+/// running whatever happens to be there.
+///
+/// The staging strategy is the library's to choose, not the sync's: the document
+/// records the library default once, each tool records the choice its
+/// requirement stated, and a tool that stated none records `inherit` so the
+/// default applies. Writing `in_place` here instead would override every
+/// document that asks for another strategy, which is what made `hard_link`
+/// unreachable from this crate.
 fn stamp_payload_roots(
     paths: &MediaPmPaths,
     generated_doc: &mut NickelDocument,
     tool_runtimes: &mut BTreeMap<String, ToolRuntime>,
+    tool_staging_choices: &BTreeMap<String, ConfigPayloadStaging>,
+    library_payload_staging: PayloadStaging,
 ) {
+    generated_doc.runtime.payload_staging = library_payload_staging;
     let keys: Vec<String> = tool_runtimes.keys().cloned().collect();
     for conductor_tool_id in keys {
         let payload_dir = provisioned_payload_dir(&paths.tools_dir, &conductor_tool_id);
@@ -1824,16 +1860,22 @@ fn stamp_payload_roots(
         let Some(spec_key) = active_spec_key(generated_doc, &conductor_tool_id) else {
             continue;
         };
+        // `tool_runtimes` is keyed by conductor tool id (`{name}@{hash}`, or the
+        // bare name for a no-payload tool) while a requirement is keyed by the
+        // mediapm tool id, which is that key without the hash.
+        let bare_id = conductor_tool_id.split('@').next().unwrap_or(&conductor_tool_id);
+        let staging =
+            tool_staging_choices.get(bare_id).copied().unwrap_or(ConfigPayloadStaging::Inherit);
         if let Some(spec) = generated_doc.tools.get_mut(&spec_key) {
             if spec.runtime.content_map.is_empty() {
                 continue;
             }
             spec.runtime.payload_root.clone_from(&payload_root);
-            spec.runtime.payload_staging = ConfigPayloadStaging::InPlace;
+            spec.runtime.payload_staging = staging;
         }
         if let Some(runtime) = tool_runtimes.get_mut(&conductor_tool_id) {
             runtime.payload_root = payload_root;
-            runtime.payload_staging = ConfigPayloadStaging::InPlace;
+            runtime.payload_staging = staging;
         }
     }
 }
