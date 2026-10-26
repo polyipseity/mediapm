@@ -351,19 +351,61 @@ fn regression_a_hard_link_request_survives_a_sync() {
     );
 }
 
-/// An override is written where it differs and nowhere else.
+/// An override is written where it differs and nowhere else, through the stamp.
 ///
 /// The generated document is merged with the user's, and two explicit
 /// conflicting values fail that merge, so a value the user never asked for is
-/// not merely noise: it decides whether a `copy` request can load at all.
+/// not merely noise: it decides whether a `copy` request can load at all. The
+/// stamp has two halves — the library default it records once, and the per-tool
+/// choice it looks up — and this test drives both, so a stamp that wrote the
+/// default onto every tool it visited would fail here even though the document
+/// and the choice happen to agree in every other test.
 #[test]
 fn regression_an_override_is_written_once_in_the_emitted_document() {
-    let document = staged_document(
-        PayloadStaging::Copy,
-        &[
-            ("chosen@blake3:aa", ConfigPayloadStaging::InPlace, 1, "/provisioned/chosen"),
-            ("inheriting@blake3:bb", ConfigPayloadStaging::Inherit, 2, ""),
-        ],
+    let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
+    let paths = paths_under(root.path());
+    let overriding = "chosen@blake3:aa";
+    let inheriting = "inheriting@blake3:bb";
+    // Only the overriding tool gets a payload directory: the stamp fires per
+    // tool, and a tool without one keeps no root at all.
+    let payload_dir = provisioned_payload_dir(&paths.tools_dir, overriding);
+    std::fs::create_dir_all(&payload_dir).expect("provisioned payload dir");
+
+    let mut document = document_with_tool(overriding, ConfigPayloadStaging::Inherit, "");
+    let second = document_with_tool(inheriting, ConfigPayloadStaging::Inherit, "");
+    document.tools.extend(second.tools);
+    declare_content_map_hashes(&mut document);
+
+    let mut runtimes: BTreeMap<String, ToolRuntime> = [overriding, inheriting]
+        .into_iter()
+        .map(|id| {
+            let content_map = document.tools[id].runtime.content_map.clone();
+            (
+                id.to_string(),
+                ToolRuntime {
+                    content_map,
+                    payload_staging: ConfigPayloadStaging::Inherit,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    let choices = BTreeMap::from([
+        ("chosen".to_string(), ConfigPayloadStaging::InPlace),
+        ("inheriting".to_string(), ConfigPayloadStaging::Inherit),
+    ]);
+
+    stamp_payload_roots(&paths, &mut document, &mut runtimes, &choices, PayloadStaging::Copy);
+
+    assert_eq!(
+        runtimes[overriding].payload_staging,
+        ConfigPayloadStaging::InPlace,
+        "the runtime map carries the choice the tool's requirement stated"
+    );
+    assert_eq!(
+        runtimes[inheriting].payload_staging,
+        ConfigPayloadStaging::Inherit,
+        "a tool that stated nothing keeps saying nothing, so the document default decides"
     );
 
     let encoded = encode_source(document);
@@ -375,20 +417,17 @@ fn regression_an_override_is_written_once_in_the_emitted_document() {
 
     let decoded = decode_document(encoded.as_bytes()).expect("the emitted document loads");
     assert_eq!(decoded.runtime.payload_staging, PayloadStaging::Copy);
-    assert_eq!(
-        decoded.tools["chosen@blake3:aa"].runtime.payload_staging,
-        ConfigPayloadStaging::InPlace
-    );
-    assert_eq!(
-        decoded.tools["inheriting@blake3:bb"].runtime.payload_staging,
-        ConfigPayloadStaging::Inherit
-    );
+    assert_eq!(decoded.tools[overriding].runtime.payload_staging, ConfigPayloadStaging::InPlace);
+    assert_eq!(decoded.tools[inheriting].runtime.payload_staging, ConfigPayloadStaging::Inherit);
 }
 
 /// A library that never decided stages nothing into the emitted document.
 ///
 /// `in_place` is both the absent document default and the meaning of an absent
 /// tool line, so writing either would state a decision the library never made.
+/// This pins the encoder's omission rule; it builds the document directly and
+/// does not exercise the sync's stamp, whose own omission is pinned by
+/// [`regression_an_override_is_written_once_in_the_emitted_document`].
 #[test]
 fn regression_a_document_with_no_staging_decision_emits_no_staging_field() {
     let document = staged_document(
@@ -417,7 +456,9 @@ fn regression_a_document_with_no_staging_decision_emits_no_staging_field() {
 /// This is the loadability half of the omission rule: copying writes the content
 /// map into the step sandbox, so a directory the provisioner filled is not
 /// required, and a document that asks to copy must not be rejected for lacking
-/// one.
+/// one. It pins the load-time invariant, not the sync: the documents below are
+/// built directly, and what the stamp writes is pinned by
+/// [`regression_an_override_is_written_once_in_the_emitted_document`].
 #[test]
 fn strict_a_copy_staged_tool_needs_no_payload_root() {
     let copying = staged_document(
@@ -429,11 +470,10 @@ fn strict_a_copy_staged_tool_needs_no_payload_root() {
         .expect("a copy-staged tool names no payload root and still loads");
     assert_eq!(decoded.runtime.payload_staging, PayloadStaging::Copy);
 
-    let mut places = staged_document(
+    let places = staged_document(
         PayloadStaging::InPlace,
         &[("placed@blake3:ee", ConfigPayloadStaging::Inherit, 5, "")],
     );
-    places.runtime.payload_staging = PayloadStaging::InPlace;
     let error = encode_document(places)
         .expect_err("in_place without a payload root is a document that never decided");
     assert!(

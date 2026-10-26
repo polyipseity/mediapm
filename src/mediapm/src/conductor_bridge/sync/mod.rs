@@ -1441,10 +1441,11 @@ pub(crate) async fn reconcile_desired_tools(
         crate::tools::dependency::validate_tool_requirement_fields(tool_id, tool_value)?;
     }
 
-    // The staging each tool asks for, keyed by mediapm tool id. A requirement
-    // that does not decode is left out here rather than failing the sync: the
-    // provisioning loop reports that failure with the real cause, and this map
-    // only decides which staging line the generated document states.
+    // The staging each tool asks for, keyed by mediapm tool id. The values come
+    // from the same requirements `build_provisioning_entries` decodes, and that
+    // call rejects a requirement it cannot decode before this point in the
+    // sync, so the `.ok()` below cannot drop a live choice: every requirement
+    // that reaches here has already decoded once.
     let tool_staging_choices: BTreeMap<String, ConfigPayloadStaging> = desired_tools
         .iter()
         .filter_map(|(tool_id, value)| {
@@ -1863,7 +1864,8 @@ fn stamp_payload_roots(
         // `tool_runtimes` is keyed by conductor tool id (`{name}@{hash}`, or the
         // bare name for a no-payload tool) while a requirement is keyed by the
         // mediapm tool id, which is that key without the hash.
-        let bare_id = conductor_tool_id.split('@').next().unwrap_or(&conductor_tool_id);
+        let bare_id =
+            conductor_tool_id.split_once('@').map_or(conductor_tool_id.as_str(), |(bare, _)| bare);
         let staging =
             tool_staging_choices.get(bare_id).copied().unwrap_or(ConfigPayloadStaging::Inherit);
         if let Some(spec) = generated_doc.tools.get_mut(&spec_key) {
