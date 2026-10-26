@@ -82,12 +82,20 @@ fn flaky_step(
     }
 }
 
-/// Creates a `ToolSpec` with a `builtin_id` that is not registered in the
-/// step worker — the worker will return an error during dispatch.
+/// Creates a `ToolSpec` whose command cannot be executed — the worker fails
+/// the step during dispatch rather than at document load.
+///
+/// The failure is deliberately a spawn failure, not an unresolvable builtin id:
+/// a `builtin` spec must name an id the build registers, so a document carrying
+/// an invented id is rejected when it loads and never reaches a worker.
 fn broken_tool(name: &str) -> mediapm_conductor::ToolSpec {
     mediapm_conductor::ToolSpec {
         version: None,
-        kind: ToolKindSpec::Builtin { builtin_id: "nonexistent-builtin@v1".to_string() },
+        kind: ToolKindSpec::Executable {
+            command: vec!["mediapm-tool-that-does-not-exist".to_string()],
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
         name: name.into(),
         inputs: BTreeMap::new(),
         default_inputs: BTreeMap::new(),
