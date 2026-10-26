@@ -3080,7 +3080,14 @@ fn assert_metadata_files_present(
     // `(4K Remaster)` after a second copy of the artist, so its name matches this one in no part.
     if resolved_output_base != canonical_base {
         return Err(format!(
-            "[metadata] materialized basename '{resolved_output_base}' must be the canonical title '{canonical_base}': the tagged variant resolves MusicBrainz's recording title, while upstream's appends its own suffixes after a second copy of the artist"
+            "[metadata] materialized basename '{resolved_output_base}' must be the canonical title \
+             '{canonical_base}'\n\
+             the root name is `<artist> - <title>`: the artist is media-tagger's MusicBrainz \
+             credit, and the title is media-tagger's recording title once tagging has run\n\
+             this name carries yt-dlp's `info.json` title instead, which already embeds the artist \
+             and appends '(Official Video)' and '(4K Remaster)', so the tagging stage did not land\n\
+             a `media-tagger` step that failed upstream (MusicBrainz or AcoustID) and one that \
+             never ran produce the same name; check the workflow summary's failed-step count above"
         )
         .into());
     }
