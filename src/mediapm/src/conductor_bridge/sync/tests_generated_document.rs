@@ -215,17 +215,26 @@ fn strict_a_generated_document_holds_only_production_builtins() {
     let actual: BTreeSet<&str> = generated_doc.tools.keys().map(String::as_str).collect();
 
     assert_eq!(actual, expected, "registration must write exactly the production builtin ids");
-    assert!(!actual.contains("flaky@v1"), "a test double must not reach a generated document");
 }
 
 /// A test-only entry never reaches a generated document.
 ///
-/// The doubles exist only under the conductor's `test-builtins` feature, which
-/// no `mediapm` build enables, so this loop is vacuous here and says what must
-/// hold wherever the entries do exist. The conductor's own suite pins their
-/// presence, so the guard cannot pass by deleting them.
+/// The test pins both halves of the constraint. The first assertion is about
+/// this build: `mediapm` requests the conductor without `default-features` and
+/// with `tool-presets` alone, so no double is compiled in here, and enabling
+/// `test-builtins` for this crate would fail the test rather than quietly widen
+/// what a generated document may carry. The loop is the second half, and it
+/// says what must hold wherever a double does exist: registration writes
+/// production builtins only, so a build that carries a double still keeps it
+/// out of a user's document.
 #[test]
 fn regression_a_test_only_builtin_entry_never_reaches_a_generated_document() {
+    assert_eq!(
+        mediapm_conductor::tools::ALL_BUILTINS.iter().filter(|entry| entry.test_only).count(),
+        0,
+        "no mediapm build may enable the conductor's `test-builtins` feature",
+    );
+
     let mut generated_doc = NickelDocument::default();
     register_missing_builtin_tools(&mut generated_doc);
     apply_builtin_runtime_defaults(&mut generated_doc);

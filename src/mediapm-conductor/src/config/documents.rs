@@ -373,8 +373,12 @@ impl NickelDocument {
     /// The registry answers what this build can dispatch, so the check is
     /// build-dependent by design: a build that compiles the test doubles
     /// resolves them, and a build that does not rejects a document naming one.
-    /// Running it when the document loads makes an unavailable builtin fail the
-    /// run that reads the document, not the step that first needs it.
+    /// Running it when the document loads makes an unavailable builtin fail
+    /// before any step that needs it runs, and the two loaders turn that
+    /// failure into different outcomes: a user document fails the run that
+    /// reads it, while a `mediapm` generated document is discarded and
+    /// regenerated from the registry, which is why `encode_document` leaves the
+    /// check out.
     ///
     /// A tool key is not reserved: an executable spec may be keyed with any
     /// string, including one spelled like a builtin id.

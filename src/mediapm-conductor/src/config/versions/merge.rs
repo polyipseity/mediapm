@@ -139,7 +139,9 @@ pub(super) enum MergeConflict {
 ///
 /// # Errors
 ///
-/// Returns `ConductorError::Workflow` containing all merge conflicts found.
+/// Returns `ConductorError::Workflow` containing all merge conflicts found, and
+/// one naming every `builtin` spec whose id this build does not register: the
+/// merged document goes through the same load check a single source does.
 pub(super) fn merge_documents(docs: &[SourceDocument]) -> Result<NickelDocument, ConductorError> {
     let mut state = MergeState::new();
     for source in docs {
@@ -528,6 +530,29 @@ mod tests {
         assert!(msg.contains("merge conflicts"), "error should mention merge conflicts: {msg}");
         assert!(msg.contains("tool 'echo'"), "error should mention tool name: {msg}");
         assert!(msg.contains("defined in"), "error should mention duplicate tool: {msg}");
+    }
+
+    /// Verifies `merge_documents` rejects a merged document whose `builtin`
+    /// spec names an id this build does not register.
+    ///
+    /// A user document can spell any id, so the merge is the second place an
+    /// unavailable builtin has to stop: without this check the run would fail
+    /// at the step that first dispatches it. The message names both the tool
+    /// and the id, so the document is fixable from what the error prints.
+    #[test]
+    fn strict_a_merge_rejects_an_unregistered_builtin_id() {
+        let mut env1 = envelope();
+        env1.tools.insert("echo".to_string(), builtin_tool("echo"));
+        let mut ghost = builtin_tool("ghost");
+        ghost.kind = ToolKindLatest::Builtin { builtin_id: "ghost@v1".into() };
+        let mut env2 = envelope();
+        env2.tools.insert("ghost".to_string(), ghost);
+
+        let err = merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)])
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("ghost@v1"), "the error must name the unregistered id: {msg}");
+        assert!(msg.contains("tool 'ghost'"), "the error must name the offending tool: {msg}");
     }
 
     /// Verifies `merge_documents` merges identical workflow re-declarations

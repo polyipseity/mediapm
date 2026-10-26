@@ -9,8 +9,8 @@
 //! - **Builtins** — always-compiled crates (`echo`, `fs`, `import`,
 //!   `archive`, `export`) registered in [`ALL_BUILTINS`] and discoverable
 //!   via [`registered_builtin_ids`]. A registration gated on the
-//!   `test-builtins` feature is a test double: a build that turns that feature
-//!   on compiles it and resolves it by name, and it never appears in a
+//!   `test-builtins` feature or on `cfg(test)` is a test double: a build that
+//!   carries the entry resolves it by name, and it never appears in a
 //!   conductor document. The compile gate on an entry and the
 //!   [`BuiltinRegistration::test_only`] flag answer different questions — the
 //!   gate decides whether a build contains the entry at all, the flag whether a
@@ -44,10 +44,11 @@ pub struct BuiltinRegistration {
     /// Whether this entry is a test double rather than a production builtin.
     ///
     /// A test-only entry is compiled into the crate under the `test-builtins`
-    /// feature so workflow tests can dispatch to it by name, and registration
-    /// skips it so it never reaches a user's document. The compile gate that
-    /// admits an entry and this flag answer different questions: the gate
-    /// decides whether the entry exists in a given build at all
+    /// feature or in a test build, so workflow tests can dispatch to it by
+    /// name, and registration skips it so it never reaches a user's document.
+    /// The compile gate that admits an entry and this flag answer different
+    /// questions: the gate decides whether the entry exists in a given build at
+    /// all
     /// (integration-test crates compile the library without `cfg(test)`, so a
     /// `cfg(test)`-only entry would be invisible to them), while the flag
     /// decides whether a build that has the entry may write it into a document.
@@ -57,6 +58,10 @@ pub struct BuiltinRegistration {
 }
 
 /// All builtin tools registered in this crate.
+///
+/// Two entries are test doubles behind a compile gate, so the slice's length
+/// depends on the build: five in a production build, seven in one that carries
+/// `test-builtins` or is a test build.
 pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
     BuiltinRegistration {
         id: mediapm_conductor_builtin_archive::TOOL_ID,

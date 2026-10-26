@@ -113,7 +113,9 @@ pub(super) fn resolve_version_contract(
 /// Returns [`ConductorError::Serialization`] when the source is not valid
 /// UTF-8 or Nickel evaluation/migration fails, and
 /// [`ConductorError::Workflow`] when the resolved document violates the
-/// `content_map` subset `external_data` invariant.
+/// `content_map` subset `external_data` invariant, stages a payload by a
+/// strategy that needs the root it does not name, or gives a `builtin` spec an
+/// id this build does not register.
 pub(crate) fn from_boundary(source: &str) -> Result<crate::config::NickelDocument, ConductorError> {
     let envelope: v_latest::NickelEnvelopeLatest =
         evaluate_document_source(source, "configuration document")?;
@@ -205,10 +207,12 @@ pub(crate) fn restore_readable_fields(
 /// invariant and the payload-staging invariant), converted to a latest-schema
 /// envelope, then rendered as Nickel source.
 ///
-/// Both invariants are enforced here as well as at load, because a build that
-/// writes a document it cannot read is worse than one that refuses to write it:
-/// the generated-document loader discards an unreadable file and regenerates,
-/// so the only trace of the mismatch would be a warning and a full re-provision.
+/// Those two invariants are enforced here as well as at load, because a build
+/// that writes a document it cannot read is worse than one that refuses to
+/// write it: the generated-document loader discards an unreadable file and
+/// regenerates, so the only trace of the mismatch would be a warning and a full
+/// re-provision. The builtin-id check is the deliberate exception, and the code
+/// below records why.
 ///
 /// # Errors
 ///

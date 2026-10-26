@@ -22,9 +22,9 @@
 //! NOT visible, and the always-captured `process_code` output lets probes
 //! target non-echo producers too.
 //!
-//! Tests are gated on `#[cfg(feature = "progress")]` for parity with the
-//! `slow@v1` builtin, which (like `flaky@v1`) is compiled in under
-//! `any(test, feature = "progress")`.
+//! Tests need no feature of their own: the doubles they dispatch to
+//! (`slow@v1` and `flaky@v1`) come from the `test-builtins` feature, and the
+//! integration harness refuses to build without it.
 //!
 //! Retry release is observed structurally, not through the event log: the
 //! retry tests use the `flaky@v1` builtin (fails its first N invocations

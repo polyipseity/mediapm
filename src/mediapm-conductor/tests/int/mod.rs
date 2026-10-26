@@ -64,13 +64,13 @@ mod http_decoupling;
 /// pre-created worker-slot bar per pool member that is relabelled with
 /// `SetTruncation` on every dispatch, plus `Advance` and
 /// `FinishSuccess`/`FinishWarning`.
+#[cfg(feature = "progress")]
 mod workflow_progress;
 
 /// Ready-queue scheduler: dependency-counter dispatch over a free worker
 /// pool, with no level barrier. Ordering is observed through the test-only
-/// `slow@v1` builtin, so the module shares the progress-feature gate that
-/// compiles that builtin in for integration tests.
-#[cfg(feature = "progress")]
+/// `slow@v1` builtin, which the harness's `test-builtins` requirement makes
+/// available, so this module needs no gate of its own.
 mod workflow_scheduler;
 
 /// Client-defined bar-label truncation: worker bars drop progress tally,
