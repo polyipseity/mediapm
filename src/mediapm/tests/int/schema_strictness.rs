@@ -9,9 +9,10 @@
 use serde_json::{Value, json};
 
 use mediapm::{
-    MediaPmDocument, MediaRuntimeStorage, MediaStep, OutputVariantValue, ToolRegistryEntry,
-    VerifyStrategy, apply_v1_contract, apply_v2_contract, evaluate_mod_ncl_expression,
-    validate_v1_document, validate_v2_document,
+    ConfigPayloadStaging, MediaPmDocument, MediaRuntimeStorage, MediaStep, OutputVariantValue,
+    PayloadStaging, ToolRegistryEntry, VerifyStrategy, apply_v1_contract, apply_v2_contract,
+    apply_v3_contract, evaluate_mod_ncl_expression, validate_v1_document, validate_v2_document,
+    validate_v3_document,
 };
 
 /// Realistic v1 document exercising every closed contract surface.
@@ -58,6 +59,14 @@ fn expect_rejected_v2(contract: &str, source: &str) {
     assert!(
         result.is_err(),
         "expected v2 contract '{contract}' to reject source, but it validated successfully: {result:?}"
+    );
+}
+
+fn expect_rejected_v3(contract: &str, source: &str) {
+    let result = apply_v3_contract(contract, source);
+    assert!(
+        result.is_err(),
+        "expected v3 contract '{contract}' to reject source, but it validated successfully: {result:?}"
     );
 }
 
@@ -260,8 +269,8 @@ fn parity_mod_ncl_exports_registry_surface() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(mod_source.contains("current_version = "), "mod.ncl must export current_version");
     assert!(
-        mod_source.contains("supported_versions = [1, 2]"),
-        "mod.ncl must export supported_versions = [1, 2]"
+        mod_source.contains("supported_versions = [1, 2, 3]"),
+        "mod.ncl must export supported_versions = [1, 2, 3]"
     );
     assert!(mod_source.contains("migrate_to = migrate_to_fn"), "mod.ncl must export migrate_to");
     assert!(
@@ -269,12 +278,12 @@ fn parity_mod_ncl_exports_registry_surface() {
         "mod.ncl must export SupportedVersion"
     );
     assert!(
-        mod_source.contains("validate_document = v2_migration.validate_document_v2"),
-        "mod.ncl must re-export validate_document (unversioned alias)"
+        mod_source.contains("validate_document = v3_migration.validate_document_v3"),
+        "mod.ncl must re-export validate_document (unversioned alias into the active version)"
     );
     assert!(
-        mod_source.contains("envelope_contract = v2_migration.envelope_contract_v2"),
-        "mod.ncl must re-export envelope_contract (unversioned alias)"
+        mod_source.contains("envelope_contract = v3_migration.envelope_contract_v3"),
+        "mod.ncl must re-export envelope_contract (unversioned alias into the active version)"
     );
     assert!(
         mod_source.contains("std.number.is_integer"),
@@ -394,6 +403,116 @@ fn strict_v2_rejects_unknown_top_level_field() {
 }
 
 // ---------------------------------------------------------------------------
+// V3: payload staging surface
+// ---------------------------------------------------------------------------
+
+/// The v3 module exports the version-locked validator and envelope contract,
+/// plus the edge INTO v3.
+#[test]
+fn parity_v3_ncl_exports_validator_and_envelope() {
+    let schema = include_str!("../../src/config/versions/v3.ncl");
+    assert!(
+        schema.contains("validate_document_v3 = fun document => document | _media_pm_document_v3"),
+        "v3.ncl must export validate_document_v3"
+    );
+    assert!(
+        schema.contains("envelope_contract_v3 = _media_pm_document_v3"),
+        "v3.ncl must export envelope_contract_v3"
+    );
+    assert!(
+        schema.contains("migrate_v2_to_v3 = migrate_v2_to_v3_fn"),
+        "v3.ncl must export the migration INTO v3"
+    );
+}
+
+/// STRICT VERSION SEPARATION: the v3 module defines no `*V1`/`*V2` contract
+/// name, and a contract that only the older modules export does not resolve
+/// through the v3 module.
+#[test]
+fn strict_v3_no_v1_or_v2_names() {
+    let schema = include_str!("../../src/config/versions/v3.ncl");
+    for older_name in [
+        "MediaPmDocumentV1",
+        "MediaRuntimeStorageV1",
+        "ToolRequirementV1",
+        "MediaPmDocumentV2",
+        "MediaRuntimeStorageV2",
+        "RuntimeMaterializationConfigV2",
+    ] {
+        assert!(
+            !schema.contains(older_name),
+            "v3.ncl must not define or reference {older_name} (strict version separation)"
+        );
+    }
+    expect_rejected_v3("MediaRuntimeStorageV2", r"{ instance_ttl_seconds = 3600 }");
+}
+
+/// The library-wide default must be one of the three concrete strategies:
+/// `"inherit"` names "whatever the library chose", so it has nothing to
+/// resolve to when the library itself is choosing.
+#[test]
+fn strict_v3_rejects_inherit_as_library_default() {
+    expect_rejected_v3(
+        "validate_document_v3",
+        r#"{ version = 3, runtime = { materialization = { payload_staging = "inherit" } } }"#,
+    );
+}
+
+/// A materialization method is not a staging strategy: `symlink` names how a
+/// staged payload is linked into the library, not how it reaches the step, so
+/// the library-level field must reject it.
+#[test]
+fn strict_v3_rejects_materialization_method_as_library_default() {
+    expect_rejected_v3(
+        "validate_document_v3",
+        r#"{ version = 3, runtime = { materialization = { payload_staging = "symlink" } } }"#,
+    );
+}
+
+/// A per-tool choice accepts `"inherit"` and the three concrete strategies and
+/// nothing else.
+#[test]
+fn strict_v3_rejects_unknown_per_tool_staging_strategy() {
+    expect_rejected_v3(
+        "validate_document_v3",
+        r#"{ version = 3, tools = { ffmpeg = { payload_staging = "symlink" } } }"#,
+    );
+    expect_rejected_v3(
+        "validate_document_v3",
+        r#"{ version = 3, tools = { ffmpeg = { payload_staging = "latest" } } }"#,
+    );
+}
+
+/// The closed v3 envelope rejects unknown top-level fields.
+#[test]
+fn strict_v3_rejects_unknown_top_level_field() {
+    expect_rejected_v3("validate_document_v3", r"{ version = 3, bogus = 1 }");
+}
+
+/// Every strategy a document may name is accepted, at both levels, and the
+/// validated value comes back as written.
+#[test]
+fn strict_v3_accepts_every_staging_spelling() {
+    for per_tool in ["inherit", "in_place", "hard_link", "copy"] {
+        let document = format!(
+            r#"{{ version = 3, tools = {{ ffmpeg = {{ payload_staging = "{per_tool}" }} }} }}"#
+        );
+        let value = validate_v3_document(&document)
+            .unwrap_or_else(|err| panic!("per-tool '{per_tool}' must validate: {err:?}"));
+        assert_eq!(value["tools"]["ffmpeg"]["payload_staging"], per_tool);
+    }
+
+    for library in ["in_place", "hard_link", "copy"] {
+        let document = format!(
+            r#"{{ version = 3, runtime = {{ materialization = {{ payload_staging = "{library}" }} }} }}"#
+        );
+        let value = validate_v3_document(&document)
+            .unwrap_or_else(|err| panic!("library '{library}' must validate: {err:?}"));
+        assert_eq!(value["runtime"]["materialization"]["payload_staging"], library);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Parity: the strict surface must not over-reject
 // ---------------------------------------------------------------------------
 
@@ -442,6 +561,47 @@ fn parity_v2_ncl_evaluates_cleanly() {
     assert_eq!(
         obj["runtime"]["materialization"]["materialization_preference_order"][0],
         "hardlink"
+    );
+}
+
+/// The realistic v2 document, moved up to v3 with a staging choice at both
+/// levels.
+///
+/// Derived from the v2 literal rather than restated, so the two stay one
+/// document: a field added to the shared surface is exercised at v3 too.
+fn realistic_v3_doc() -> String {
+    REALISTIC_V2_DOC
+        .replacen("version = 2,", "version = 3,", 1)
+        .replacen(
+            "runtime = {",
+            "runtime = {\n    materialization = { payload_staging = \"hard_link\" },",
+            1,
+        )
+        .replacen("tools = {", "tools = {\n    sd = { payload_staging = \"copy\" },", 1)
+}
+
+/// R2: the realistic document still validates at v3 (no over-rejection), the
+/// staging fields survive validation, and the result decodes into the Rust
+/// document model with the choices intact.
+#[test]
+fn parity_v3_ncl_evaluates_cleanly() {
+    let source = realistic_v3_doc();
+    let value = validate_v3_document(&source).expect("realistic v3 document must validate");
+    let obj = value.as_object().expect("validated document must be an object");
+    assert_eq!(obj["version"].as_f64(), Some(3.0));
+    assert_eq!(obj["runtime"]["materialization"]["payload_staging"], "hard_link");
+    assert_eq!(obj["tools"]["sd"]["payload_staging"], "copy");
+    assert_eq!(
+        obj["runtime"]["materialization"]["materialization_preference_order"][0],
+        "hardlink"
+    );
+
+    let doc: MediaPmDocument = serde_json::from_value(value).expect("validated v3 must decode");
+    assert_eq!(doc.effective_payload_staging(&doc.tools["sd"]), PayloadStaging::Copy);
+    assert_eq!(
+        doc.effective_payload_staging(&doc.tools["ffmpeg"]),
+        PayloadStaging::HardLink,
+        "a tool that states no choice takes the library-wide default"
     );
 }
 
@@ -499,6 +659,181 @@ fn parity_v2_to_v1_migration_bumps_version() {
     let doc: MediaPmDocument = serde_json::from_value(value)
         .expect("migrated v1 output must decode into the strict MediaPmDocument model");
     assert_eq!(doc.version, 1);
+}
+
+/// R3: a v2 document migrates up to v3 with the version marker stated and
+/// nothing else moved; V3 adds only optional fields, so the hop has nothing to
+/// rewrite.
+#[test]
+fn parity_v2_to_v3_migration_keeps_staging_fields() {
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 3 {
+      version = 2,
+      tools = {
+        ffmpeg = { payload_staging = "copy" },
+        rsgain = {},
+      },
+      runtime = { materialization = { payload_staging = "hard_link" } },
+    })"#,
+    )
+    .expect("v2 -> v3 migration must evaluate");
+    let obj = value.as_object().expect("migrated document must be an object");
+    assert_eq!(obj["version"].as_f64(), Some(3.0));
+    assert_eq!(obj["tools"]["ffmpeg"]["payload_staging"], "copy");
+    assert_eq!(obj["runtime"]["materialization"]["payload_staging"], "hard_link");
+}
+
+/// R3: a v3 document migrates down to v2 with both staging fields dropped —
+/// v2 has no surface for them — while every other field survives, and the
+/// resulting document resolves to the pre-staging behaviour.
+#[test]
+fn parity_v3_to_v2_migration_drops_staging_fields() {
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 2 {
+      version = 3,
+      tools = {
+        ffmpeg = { payload_staging = "copy", recheck_seconds = 3600 },
+        rsgain = {},
+      },
+      runtime = {
+        materialization = { payload_staging = "hard_link", verify_materialization = false },
+        lifecycle = { instance_ttl_seconds = 604800 },
+      },
+    })"#,
+    )
+    .expect("v3 -> v2 migration must evaluate");
+    let obj = value.as_object().expect("migrated document must be an object");
+    assert_eq!(obj["version"].as_f64(), Some(2.0));
+    assert!(
+        !obj["tools"]["ffmpeg"]
+            .as_object()
+            .is_some_and(|tool| tool.contains_key("payload_staging")),
+        "v2 has no per-tool staging surface, so the field must not survive"
+    );
+    assert!(
+        !obj["runtime"]["materialization"]
+            .as_object()
+            .is_some_and(|materialization| materialization.contains_key("payload_staging")),
+        "v2 has no library-wide staging default, so the field must not survive"
+    );
+    assert_eq!(obj["tools"]["ffmpeg"]["recheck_seconds"].as_f64(), Some(3600.0));
+    assert_eq!(obj["runtime"]["materialization"]["verify_materialization"], false);
+    assert_eq!(obj["runtime"]["lifecycle"]["instance_ttl_seconds"].as_f64(), Some(604_800.0));
+
+    let doc: MediaPmDocument =
+        serde_json::from_value(value).expect("migrated v2 output must decode");
+    assert_eq!(doc.effective_payload_staging(&doc.tools["ffmpeg"]), PayloadStaging::InPlace);
+}
+
+/// R3: v1 migrates to v3 by composing the two hops, so the legacy `state`
+/// payload still disappears and a staging field the v1 document could not have
+/// written does not appear.
+#[test]
+fn parity_v1_to_v3_migration_composes_through_v2() {
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 3 {
+      version = 1,
+      media = { m1 = { title = "Hello", steps = [ { tool = "ffmpeg" } ] } },
+      tools = {},
+      runtime = {},
+      state = { version = 3, managed_files = {} },
+    })"#,
+    )
+    .expect("v1 -> v3 migration must evaluate");
+    let obj = value.as_object().expect("migrated document must be an object");
+    assert_eq!(obj["version"].as_f64(), Some(3.0));
+    assert!(!obj.contains_key("state"), "the legacy state payload must not survive the ladder");
+    assert_eq!(obj["media"]["m1"]["title"], "Hello");
+
+    let doc: MediaPmDocument =
+        serde_json::from_value(value).expect("migrated v3 output must decode");
+    assert_eq!(doc.version, 3);
+}
+
+/// R3: v3 migrates down to v1 by composing the two hops, dropping both staging
+/// fields and leaving the v1 surface untouched.
+#[test]
+fn parity_v3_to_v1_migration_composes_through_v2() {
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 1 {
+      version = 3,
+      tools = { ffmpeg = { payload_staging = "copy" } },
+      runtime = { materialization = { payload_staging = "hard_link" } },
+    })"#,
+    )
+    .expect("v3 -> v1 migration must evaluate");
+    let text = serde_json::to_string(&value).expect("migrated document must serialize");
+    assert_eq!(value["version"].as_f64(), Some(1.0));
+    assert!(
+        !text.contains("payload_staging"),
+        "no staging field may survive on the v1 surface, got {text}"
+    );
+}
+
+/// Resolves every combination of per-tool choice and library-wide default.
+///
+/// The matrix is the whole contract of the two fields: a tool that names a
+/// strategy keeps it whatever the library says, `"inherit"` and an absent field
+/// both take the library default, and an absent library default means
+/// `in_place`.
+#[test]
+fn parity_effective_payload_staging_matrix() {
+    fn document(library: Option<&str>, tool: Option<&str>) -> MediaPmDocument {
+        let mut runtime = serde_json::Map::new();
+        if let Some(library) = library {
+            runtime.insert("materialization".to_string(), json!({ "payload_staging": library }));
+        }
+        let mut requirement = serde_json::Map::new();
+        if let Some(tool) = tool {
+            requirement.insert("payload_staging".to_string(), json!(tool));
+        }
+        serde_json::from_value(json!({
+            "version": 3,
+            "tools": { "ffmpeg": requirement },
+            "runtime": runtime,
+        }))
+        .expect("the matrix document must decode into the document model")
+    }
+
+    let cases = [
+        (None, None, PayloadStaging::InPlace),
+        (None, Some("inherit"), PayloadStaging::InPlace),
+        (None, Some("copy"), PayloadStaging::Copy),
+        (Some("hard_link"), None, PayloadStaging::HardLink),
+        (Some("hard_link"), Some("inherit"), PayloadStaging::HardLink),
+        (Some("hard_link"), Some("copy"), PayloadStaging::Copy),
+        (Some("copy"), Some("in_place"), PayloadStaging::InPlace),
+    ];
+    for (library, tool, expected) in cases {
+        let doc = document(library, tool);
+        assert_eq!(
+            doc.effective_payload_staging(&doc.tools["ffmpeg"]),
+            expected,
+            "library={library:?} tool={tool:?} must resolve to {expected:?}"
+        );
+    }
+}
+
+/// The resolved library default is the same value the runtime model carries, so
+/// the two entry points into the same document cannot disagree.
+#[test]
+fn parity_effective_payload_staging_matches_resolved_runtime() {
+    let doc: MediaPmDocument = serde_json::from_value(json!({
+        "version": 3,
+        "tools": {},
+        "runtime": { "materialization": { "payload_staging": "hard_link" } },
+    }))
+    .expect("the document must decode");
+    let resolved = mediapm::config::versions::resolve_runtime_storage(
+        &doc.runtime,
+        &mediapm::config::RuntimeBasePaths {
+            workspace_root: "/w".into(),
+            mediapm_dir: "/m".into(),
+        },
+    );
+    assert_eq!(resolved.materialization.payload_staging, PayloadStaging::HardLink);
+    let tool = mediapm::ToolRequirement::default();
+    assert_eq!(doc.effective_payload_staging(&tool), PayloadStaging::HardLink);
 }
 
 /// S-C1..S-C3: a realistic document exercising the full closed surface still
@@ -562,6 +897,7 @@ fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
         ("mod.ncl", include_str!("../../src/config/versions/mod.ncl")),
         ("v1.ncl", include_str!("../../src/config/versions/v1.ncl")),
         ("v2.ncl", include_str!("../../src/config/versions/v2.ncl")),
+        ("v3.ncl", include_str!("../../src/config/versions/v3.ncl")),
     ];
     for (name, source) in mediapm_expected {
         let written = std::fs::read_to_string(export_dir.join(name))
@@ -673,6 +1009,54 @@ fn strict_media_runtime_rejects_unknown_field() {
         }),
         "bogus_field",
     );
+}
+
+/// S-E: a per-tool staging strategy the enum does not know fails at load
+/// instead of falling back to a strategy the document never named.
+///
+/// `symlink` is a materialization method, so this also pins that the two
+/// vocabularies stay apart on the Rust side.
+#[test]
+fn strict_tool_staging_rejects_unknown_name() {
+    serde_reject::<MediaPmDocument>(
+        json!({ "version": 3, "tools": { "ffmpeg": { "payload_staging": "symlink" } } }),
+        "unknown variant `symlink`",
+    );
+}
+
+/// S-E: the library-wide default rejects `"inherit"` on the Rust side too,
+/// because there is no outer choice for it to inherit from.
+#[test]
+fn strict_library_staging_rejects_inherit() {
+    serde_reject::<MediaPmDocument>(
+        json!({
+            "version": 3,
+            "runtime": { "materialization": { "payload_staging": "inherit" } },
+        }),
+        "unknown variant `inherit`",
+    );
+}
+
+/// A tool that inherits writes no staging field, so saving a document does not
+/// restate the default on every requirement; a tool that chose writes its
+/// choice.
+#[test]
+fn parity_tool_staging_serializes_only_when_chosen() {
+    let inherited = serde_json::to_value(mediapm::ToolRequirement::default())
+        .expect("a default requirement must serialize");
+    assert!(
+        !inherited
+            .as_object()
+            .is_some_and(|requirement| requirement.contains_key("payload_staging")),
+        "an inheriting tool must not write a staging field, got {inherited}"
+    );
+
+    let chosen = mediapm::ToolRequirement {
+        payload_staging: ConfigPayloadStaging::Copy,
+        ..mediapm::ToolRequirement::default()
+    };
+    let value = serde_json::to_value(&chosen).expect("a chosen requirement must serialize");
+    assert_eq!(value["payload_staging"], "copy");
 }
 
 /// S-E2: free-form `output_variants` values must be rejected.  Before the

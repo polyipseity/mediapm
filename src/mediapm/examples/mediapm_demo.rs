@@ -65,8 +65,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm::config::versions::{RuntimeBoundaryDeviations, runtime_boundary};
 use mediapm::{
-    AddInsertPosition, ConfigVersionSpec, HierarchyNode, HierarchyNodeKind, HierarchyPath,
-    MaterializationMethod, MediaMetadataValue, MediaPmService, MediaRuntimeStorage,
+    AddInsertPosition, ConfigPayloadStaging, ConfigVersionSpec, HierarchyNode, HierarchyNodeKind,
+    HierarchyPath, MaterializationMethod, MediaMetadataValue, MediaPmService, MediaRuntimeStorage,
     MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue, PlaylistFormat, PlaylistItemRef,
     SanitizeNamesConfig, ToolRequirement, TransformInputValue, YtDlpOutputKind,
     YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
@@ -662,6 +662,7 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
             recheck_seconds: 0,
             max_input_slots: 16,
             max_output_slots: 4,
+            payload_staging: ConfigPayloadStaging::Inherit,
         },
     )])
 }

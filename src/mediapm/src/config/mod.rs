@@ -66,6 +66,19 @@ use mediapm_conductor::tools::provider::ConfigVersionSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Payload staging choice carried by a tool requirement.
+///
+/// Re-exported because [`ToolRequirement::payload_staging`] is part of the
+/// document model, so a caller that builds or inspects a requirement has to be
+/// able to name the type without reaching into the conductor crate.
+pub use mediapm_conductor::ConfigPayloadStaging;
+/// Payload staging strategy a choice resolves to.
+///
+/// Re-exported beside [`ConfigPayloadStaging`]: both appear on the document
+/// surface ([`RuntimeMaterializationConfig::payload_staging`] and
+/// [`ToolRequirement::payload_staging`]).
+pub use mediapm_conductor::PayloadStaging;
+
 /// Supported file materialization methods in preference order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -242,6 +255,12 @@ pub struct RuntimeMaterializationConfig {
     pub materialization_preference_order: Vec<MaterializationMethod>,
     #[serde(default = "defaults::default_verify_materialization")]
     pub verify_materialization: bool,
+    /// Strategy a tool takes when it names none.
+    ///
+    /// This is the library-wide default every `inherit` tool resolves to, and
+    /// `in_place` when the document states nothing.
+    #[serde(default = "defaults::default_payload_staging")]
+    pub payload_staging: PayloadStaging,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -394,6 +413,13 @@ pub struct ToolRequirement {
         skip_serializing_if = "defaults::is_default_ffmpeg_max_output_slots"
     )]
     pub max_output_slots: u32,
+    /// How this tool's payload is staged, or `Inherit` for the library-wide
+    /// default in [`RuntimeMaterializationConfig::payload_staging`].
+    ///
+    /// Omitted from serialization when inherited, so a document states only the
+    /// tools that chose differently.
+    #[serde(default, skip_serializing_if = "defaults::is_inherit_config_payload_staging")]
+    pub payload_staging: ConfigPayloadStaging,
 }
 
 impl Default for ToolRequirement {
@@ -404,6 +430,7 @@ impl Default for ToolRequirement {
             recheck_seconds: 0,
             max_input_slots: defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS,
             max_output_slots: defaults::DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS,
+            payload_staging: ConfigPayloadStaging::Inherit,
         }
     }
 }

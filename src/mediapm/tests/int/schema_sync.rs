@@ -1,11 +1,12 @@
-//! Nickel schema sync-prevention tests for the mediapm schema (`v1.ncl`, `v2.ncl`).
+//! Nickel schema sync-prevention tests for the mediapm schema (`v1.ncl`,
+//! `v2.ncl`, `v3.ncl`).
 //!
 //! These tests pin the shape the live `mediapm.ncl` decoder actually depends
 //! on, from both sides of the boundary:
 //!
 //! - the Rust runtime model `MediaPmDocument` (the type every `mediapm.ncl`
 //!   resolves to), and
-//! - the `v1.ncl` / `v2.ncl` contract sources themselves.
+//! - the `v1.ncl` / `v2.ncl` / `v3.ncl` contract sources themselves.
 //!
 //! The versioned contracts and every migration live in Nickel, not Rust (see
 //! `src/config/versions/mod.rs` for why). `parity_rust_side_owns_no_migration_dispatcher`
@@ -124,6 +125,20 @@ fn parity_mediapm_document_serialization_invariants() {
             "tools must NOT be inside runtime in MediaPmDocument (tools moved to top level)"
         );
     }
+
+    // --- MUST write the active version, and MUST NOT write a staging choice
+    // the document never made ---
+    assert_eq!(
+        obj["version"],
+        serde_json::json!(3),
+        "a default document is written at the active schema version"
+    );
+    assert!(
+        !obj["runtime"]["materialization"]
+            .as_object()
+            .is_some_and(|materialization| materialization.contains_key("payload_staging")),
+        "a document that chose no staging strategy writes none, so absence keeps meaning `in_place`"
+    );
 }
 
 /// Validates that the V1 Nickel schema (`v1.ncl`) contains the expected
@@ -233,6 +248,75 @@ fn parity_v2_nickel_schema_structure() {
     );
 }
 
+/// Pins the V3 contract's shape against the Rust document model it decodes to.
+///
+/// V3 is the version the runtime writes, so this test guards the active
+/// surface: a field added to `ToolRequirement` or to the runtime materialization
+/// record without a matching contract would validate in the export and fail in
+/// the decoder, and a contract field with no Rust carrier would do the reverse.
+#[test]
+fn parity_v3_nickel_schema_structure() {
+    let schema = include_str!("../../src/config/versions/v3.ncl");
+
+    // --- MUST define ToolRequirementV3 contract ---
+    assert!(
+        schema.contains("let ToolRequirementV3 = {"),
+        "v3.ncl must define ToolRequirementV3 contract for the top-level tools field"
+    );
+    assert!(
+        nickel_record_body(schema, "ToolRequirementV3").is_some_and(
+            |body| body.contains("payload_staging | ConfigPayloadStagingV3 | optional,")
+        ),
+        "ToolRequirementV3 must carry the per-tool staging choice as an optional field"
+    );
+
+    // --- MUST scope the per-tool staging field to ToolRequirementV3 ---
+    assert!(
+        nickel_record_body(schema, "ToolRequirementV3").is_some_and(
+            |body| body.contains("version_spec\n    | ConfigVersionSpecV3\n    | optional,")
+        ),
+        "ToolRequirementV3 must have version_spec field typed ConfigVersionSpecV3"
+    );
+
+    // --- MUST declare the library-wide staging default on the materialization record ---
+    assert!(
+        nickel_record_body(schema, "RuntimeMaterializationConfigV3")
+            .is_some_and(|body| body.contains("payload_staging | PayloadStagingV3 | optional,")),
+        "RuntimeMaterializationConfigV3 must carry the library-wide staging default"
+    );
+
+    // --- MUST keep the two staging vocabularies apart ---
+    assert!(
+        schema.contains("let PayloadStagingV3 = EnumV3 [\"in_place\", \"hard_link\", \"copy\"]"),
+        "PayloadStagingV3 must be exactly the three concrete strategies"
+    );
+    assert!(
+        schema.contains("let ConfigPayloadStagingV3 = std.contract.any_of ["),
+        "ConfigPayloadStagingV3 must be the tool-level choice that accepts \"inherit\""
+    );
+
+    // --- MUST have top-level tools with ToolRequirementV3 ---
+    assert!(
+        schema.contains("tools | { _ : ToolRequirementV3 } | default = {}"),
+        "v3.ncl must declare top-level tools using ToolRequirementV3"
+    );
+
+    // --- MUST NOT have a state field (dropped in v2; state is state.json) ---
+    assert!(
+        !schema.contains("state |"),
+        "v3.ncl must NOT have a state field (state is managed via state.json)"
+    );
+    assert!(!schema.contains("conductor |"), "v3.ncl must NOT have any conductor field");
+
+    // --- STRICT VERSION SEPARATION: the file is self-contained under *V3 ---
+    for other_version in ["V1 =", "V2 ="] {
+        assert!(
+            !schema.contains(other_version),
+            "v3.ncl must NOT define a `*{other_version}` contract name (strict version separation)"
+        );
+    }
+}
+
 /// Pins that the versioned contracts and the migrations live in Nickel, and
 /// that no Rust-side dispatcher mirrors them.
 ///
@@ -246,6 +330,7 @@ fn parity_v2_nickel_schema_structure() {
 fn parity_rust_side_owns_no_migration_dispatcher() {
     let v1_ncl = include_str!("../../src/config/versions/v1.ncl");
     let v2_ncl = include_str!("../../src/config/versions/v2.ncl");
+    let v3_ncl = include_str!("../../src/config/versions/v3.ncl");
     let registry_ncl = include_str!("../../src/config/versions/mod.ncl");
 
     // The Nickel registry must remain the dispatcher: it owns the supported
@@ -257,6 +342,17 @@ fn parity_rust_side_owns_no_migration_dispatcher() {
     );
     assert!(v2_ncl.contains("migrate_v1_to_v2"), "v2.ncl must own the migration INTO v2");
     assert!(v1_ncl.contains("migrate_v2_to_v1"), "v1.ncl must own the migration INTO v1");
+    assert!(v3_ncl.contains("migrate_v2_to_v3"), "v3.ncl must own the migration INTO v3");
+    assert!(
+        v2_ncl.contains("migrate_v3_to_v2"),
+        "v2.ncl must own the migration down from v3, because those are the fields v2 has no room for"
+    );
+    for edge in ["migrate_v1_to_v2", "migrate_v3_to_v2", "migrate_v2_to_v3", "migrate_v2_to_v1"] {
+        assert!(
+            registry_ncl.contains(edge),
+            "mod.ncl must reach {edge}: the registry dispatches every edge and implements none"
+        );
+    }
 
     // The Rust side must carry no version-dispatch surface anywhere in the
     // versions tree. The `Debug` form of the `Option` names the offending

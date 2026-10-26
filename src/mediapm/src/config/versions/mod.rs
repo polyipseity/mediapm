@@ -3,11 +3,12 @@
 //! ## Where the version ladder lives
 //!
 //! The migration ladder for `mediapm.ncl` is **Nickel**, not Rust. The
-//! versioned contracts are `v1.ncl` and `v2.ncl`; `mod.ncl` is the registry
-//! that owns `current_version`, `supported_versions`, and the `migrate_to`
-//! dispatch. Each version file owns the migration *into* itself
-//! (`v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`)
-//! and `mod.ncl` only dispatches.
+//! versioned contracts are `v1.ncl`, `v2.ncl` and `v3.ncl`; `mod.ncl` is the
+//! registry that owns `current_version`, `supported_versions`, and the
+//! `migrate_to` dispatch. Each version file owns the migration *into* itself
+//! (`v2.ncl` exports `migrate_v1_to_v2` and `migrate_v3_to_v2`, `v3.ncl`
+//! exports `migrate_v2_to_v3`, `v1.ncl` exports `migrate_v2_to_v1`) and
+//! `mod.ncl` only dispatches.
 //!
 //! This module exposes the Rust-side surface of that Nickel ladder: it writes
 //! the embedded `.ncl` sources into a scratch workspace, evaluates a contract
@@ -74,8 +75,12 @@ use v_latest::{
 pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
 /// The `v1.ncl` contract, which also owns the migration down from `v2`.
 pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
-/// The `v2.ncl` contract, which also owns the migration up from `v1`.
+/// The `v2.ncl` contract, which owns the migration up from `v1` and down
+/// from `v3`.
 pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
+/// The `v3.ncl` contract, the active version, which owns the migration up
+/// from `v2`.
+pub(crate) const V3_NCL_SOURCE: &str = include_str!("v3.ncl");
 
 /// Every contract source above, under the file name the registry imports it
 /// by.
@@ -83,8 +88,12 @@ pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
 /// This is what [`export_config_contracts`](crate::export_config_contracts)
 /// writes, so the export names no file that the evaluation path does not
 /// compile in.
-pub(crate) const CONTRACT_SOURCES: &[(&str, &str)] =
-    &[("mod.ncl", MOD_NCL_SOURCE), ("v1.ncl", V1_NCL_SOURCE), ("v2.ncl", V2_NCL_SOURCE)];
+pub(crate) const CONTRACT_SOURCES: &[(&str, &str)] = &[
+    ("mod.ncl", MOD_NCL_SOURCE),
+    ("v1.ncl", V1_NCL_SOURCE),
+    ("v2.ncl", V2_NCL_SOURCE),
+    ("v3.ncl", V3_NCL_SOURCE),
+];
 
 /// Resolves a boundary runtime-storage value into the option-free model.
 ///
@@ -265,7 +274,10 @@ fn spelled_path(knob: &str) -> String {
 /// Every knob absent from `deviations` is written out explicitly — the scalar
 /// ones from [`defaults`], the path ones from
 /// `spelled_path_layout` — so the produced document documents the whole
-/// runtime surface rather than only the interesting parts.
+/// runtime surface rather than only the interesting parts. The one exception is
+/// the staging default, which is left absent because absent already means
+/// `in_place`: spelling it out would restate the default rather than record a
+/// decision.
 #[must_use]
 pub fn runtime_boundary(deviations: RuntimeBoundaryDeviations) -> MediaRuntimeStorageLatest {
     let RuntimeBoundaryDeviations {
@@ -303,6 +315,7 @@ pub fn runtime_boundary(deviations: RuntimeBoundaryDeviations) -> MediaRuntimeSt
                 defaults::default_materialization_preference_order(),
             ),
             verify_materialization: Some(defaults::default_verify_materialization()),
+            payload_staging: None,
         },
         verification: RuntimeVerificationConfigLatest {
             verify_on_read: Some(defaults::default_verify_on_read()),
@@ -358,6 +371,7 @@ fn apply_version_contract(
     })?;
     let v1_path = dir.path().join("v1.ncl");
     let v2_path = dir.path().join("v2.ncl");
+    let v3_path = dir.path().join("v3.ncl");
     let mod_path = dir.path().join("mod.ncl");
     let input_path = dir.path().join("document_input.ncl");
     let wrapper_path = dir.path().join("apply_contract.ncl");
@@ -366,11 +380,16 @@ fn apply_version_contract(
         path: v1_path.clone(),
         source: err,
     })?;
-    // `mod.ncl` imports both version files; keep every temp workspace
-    // self-contained so any wrapper can import any of the three modules.
+    // `mod.ncl` imports every version file; keep each temp workspace
+    // self-contained so any wrapper can import any of the modules.
     std::fs::write(&v2_path, V2_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded v2.ncl".to_string(),
         path: v2_path.clone(),
+        source: err,
+    })?;
+    std::fs::write(&v3_path, V3_NCL_SOURCE).map_err(|err| MediaPmError::Io {
+        operation: "write embedded v3.ncl".to_string(),
+        path: v3_path.clone(),
         source: err,
     })?;
     std::fs::write(&mod_path, MOD_NCL_SOURCE).map_err(|err| MediaPmError::Io {
@@ -452,8 +471,29 @@ pub fn validate_v2_document(source: &str) -> Result<Value, MediaPmError> {
     apply_v2_contract("validate_document_v2", source)
 }
 
+/// Applies one V3 schema contract to a document source.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the document source fails contract
+/// validation or cannot be evaluated.
+pub fn apply_v3_contract(contract_name: &str, source: &str) -> Result<Value, MediaPmError> {
+    apply_version_contract("v3", contract_name, source)
+}
+
+/// Validates one V3 mediapm document source against the embedded `v3.ncl`
+/// `MediaPmDocumentV3` contract.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the document source fails contract
+/// validation or cannot be evaluated.
+pub fn validate_v3_document(source: &str) -> Result<Value, MediaPmError> {
+    apply_v3_contract("validate_document_v3", source)
+}
+
 /// Evaluates one expression in the scope of the embedded `mod.ncl` registry
-/// module (importing `mod.ncl`, `v1.ncl`, and `v2.ncl`).
+/// module (importing `mod.ncl`, `v1.ncl`, `v2.ncl`, and `v3.ncl`).
 ///
 /// # Errors
 ///
@@ -468,6 +508,7 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
     let mod_path = dir.path().join("mod.ncl");
     let v1_path = dir.path().join("v1.ncl");
     let v2_path = dir.path().join("v2.ncl");
+    let v3_path = dir.path().join("v3.ncl");
     let wrapper_path = dir.path().join("evaluate_expr.ncl");
     std::fs::write(&mod_path, MOD_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded mod.ncl".to_string(),
@@ -482,6 +523,11 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
     std::fs::write(&v2_path, V2_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded v2.ncl".to_string(),
         path: v2_path.clone(),
+        source: err,
+    })?;
+    std::fs::write(&v3_path, V3_NCL_SOURCE).map_err(|err| MediaPmError::Io {
+        operation: "write embedded v3.ncl".to_string(),
+        path: v3_path.clone(),
         source: err,
     })?;
     std::fs::write(&wrapper_path, format!("let shared = import \"mod.ncl\" in\n{expr}\n"))
@@ -638,6 +684,7 @@ mod tests {
                         crate::config::MaterializationMethod::Copy,
                     ]),
                     verify_materialization: None,
+                    payload_staging: None,
                 },
                 ..MediaRuntimeStorageLatest::default()
             },

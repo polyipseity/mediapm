@@ -1,9 +1,9 @@
 //! The unified `mediapm.ncl` document model.
 //!
 //! [`MediaPmDocument`] is the single type every `mediapm.ncl` on disk decodes
-//! into, for every schema version: the Nickel ladder in `v1.ncl`/`v2.ncl`
-//! migrates a document *up* to the active version first, and only then does
-//! this type see it. It therefore carries a version marker and a
+//! into, for every schema version: the Nickel ladder in
+//! `v1.ncl`–`v3.ncl` migrates a document *up* to the active version first, and
+//! only then does this type see it. It therefore carries a version marker and a
 //! `runtime` field holding the active `*Latest` boundary value, which is why it
 //! lives here rather than in `config/mod.rs`: naming that boundary type is
 //! exactly what `config/mod.rs` is forbidden to do.
@@ -31,7 +31,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::v_latest::MediaRuntimeStorageLatest;
+use mediapm_conductor::{ConfigPayloadStaging, PayloadStaging};
+
+use super::v_latest::{MediaRuntimeStorageLatest, resolved_library_payload_staging};
 use crate::config::{
     ConfigVersionSpec, MediaPmState, ToolRequirement, defaults, hierarchy_types, source_types,
 };
@@ -88,10 +90,25 @@ impl MediaPmDocument {
             let trimmed = source.artist.trim().to_string();
             source.artist = trimmed;
         }
-        // Remove tool entries that are Latest with no explicit dependencies.
+        // Remove tool entries that state nothing: a bare `latest` version with no
+        // dependencies and no staging choice carries no requirement.
         self.tools.retain(|_, tool_req| {
-            tool_req.version_spec != ConfigVersionSpec::Latest || !tool_req.dependencies.is_empty()
+            tool_req.version_spec != ConfigVersionSpec::Latest
+                || !tool_req.dependencies.is_empty()
+                || tool_req.payload_staging != ConfigPayloadStaging::Inherit
         });
+    }
+
+    /// Resolves the staging strategy one tool requirement runs with.
+    ///
+    /// A tool that names a strategy keeps it; one that says `inherit` takes the
+    /// library-wide default, and a document that names neither runs `in_place`.
+    /// Both absences are resolved here rather than at the consumer, so the
+    /// materializer never has to know what an unset field meant.
+    #[must_use]
+    pub fn effective_payload_staging(&self, tool: &ToolRequirement) -> PayloadStaging {
+        tool.payload_staging
+            .resolve(resolved_library_payload_staging(&self.runtime.materialization))
     }
 }
 #[cfg(test)]
@@ -143,6 +160,7 @@ mod tests {
             recheck_seconds: 0,
             max_input_slots: 16,
             max_output_slots: 4,
+            payload_staging: ConfigPayloadStaging::Inherit,
         };
         let with_deps = ToolRequirement {
             dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]),

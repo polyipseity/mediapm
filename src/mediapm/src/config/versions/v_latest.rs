@@ -1,4 +1,4 @@
-//! V2 boundary (latest) runtime storage types and resolver.
+//! V3 boundary (latest) runtime storage types and resolver.
 //!
 //! This module holds the `*Latest` boundary structs for runtime storage
 //! overrides and the resolver that maps a boundary value into the resolved
@@ -10,18 +10,20 @@
 //! ## DO NOT REMOVE: versions policy guard
 //!
 //! - This file is the only Rust carrier of the active schema's wire shape. The
-//!   versioned *contracts* and every migration are in `v2.ncl`; this file must
-//!   never grow a second migration implementation.
+//!   versioned *contracts* and every migration are in `v1.ncl`–`v3.ncl`; this
+//!   file must never grow a second migration implementation.
 //! - `MediaRuntimeStorage::from_boundary` is the one place the boundary family
 //!   is resolved into the option-free resolved model; it lives in
 //!   `config/mod.rs` and delegates here.
-//! - Do not add fields here that `v2.ncl` does not also declare. A field the
+//! - Do not add fields here that `v3.ncl` does not also declare. A field the
 //!   Nickel contract rejects and the Rust boundary accepts is a document that
 //!   validates in one pipeline and fails in the other.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+
+use mediapm_conductor::PayloadStaging;
 
 use super::super::{
     MaterializationMethod, MediaRuntimeStorage, RuntimeBasePaths, SanitizeNamesConfig,
@@ -62,6 +64,13 @@ pub struct RuntimeMaterializationConfigLatest {
     pub materialization_preference_order: Option<Vec<MaterializationMethod>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_materialization: Option<bool>,
+    /// Strategy a tool takes when it names none.
+    ///
+    /// `None` means the document did not choose, and the library-wide default
+    /// applies; a present value is the library-wide choice a `"inherit"` tool
+    /// resolves to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_staging: Option<PayloadStaging>,
 }
 
 /// Deserializes the boundary's optional materialization preference order.
@@ -92,6 +101,18 @@ where
     Ok(methods)
 }
 
+/// Resolves the library-wide staging strategy a boundary value names.
+///
+/// An unset boundary field means the default strategy, which is `in_place`.
+/// This is the single place that rule lives, so the resolver below and
+/// [`super::MediaPmDocument::effective_payload_staging`] cannot disagree about
+/// what a document that chose nothing actually asked for.
+pub(crate) fn resolved_library_payload_staging(
+    materialization: &RuntimeMaterializationConfigLatest,
+) -> PayloadStaging {
+    materialization.payload_staging.unwrap_or_else(defaults::default_payload_staging)
+}
+
 /// Resolves the materialization preference order a boundary value names.
 ///
 /// An unset boundary field means the default order; a present one is returned
@@ -109,7 +130,7 @@ pub(crate) fn resolved_materialization_preference_order(
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[expect(
     clippy::struct_field_names,
-    reason = "the three field names are the v2.ncl contract's `verify_on_read` keys; renaming them to satisfy the lint would break schema/Rust parity, and the shared prefix is what makes them read as one group"
+    reason = "the three field names are the schema contract's `verify_on_read` keys; renaming them to satisfy the lint would break schema/Rust parity, and the shared prefix is what makes them read as one group"
 )]
 pub struct RuntimeVerificationConfigLatest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -253,6 +274,7 @@ pub fn resolve_runtime_storage(
                 .materialization
                 .verify_materialization
                 .unwrap_or_else(defaults::default_verify_materialization),
+            payload_staging: resolved_library_payload_staging(&latest.materialization),
         },
         verification: super::super::RuntimeVerificationConfig {
             verify_on_read: latest

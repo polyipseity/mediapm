@@ -51,21 +51,21 @@ use url::Url;
 
 pub use conductor_bridge::sync::find_active_tool_spec;
 pub use config::versions::{
-    apply_v1_contract, apply_v2_contract, evaluate_mod_ncl_expression, validate_v1_document,
-    validate_v2_document,
+    apply_v1_contract, apply_v2_contract, apply_v3_contract, evaluate_mod_ncl_expression,
+    validate_v1_document, validate_v2_document, validate_v3_document,
 };
 pub use config::{
-    GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule,
-    HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord, MaterializationMethod,
-    MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate,
-    MediaMetadataVariantBinding, MediaPmDocument, MediaPmState, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind, OutputSaveConfig,
-    OutputVariantValue, PlatformInheritedEnvVars, PlaylistEntryPathMode, PlaylistFormat,
-    PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, TransformInputValue,
-    VerifyStrategy, YtDlpOutputKind, YtDlpOutputVariantConfig, flatten_hierarchy_value,
-    load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
-    nest_hierarchy_value, regex_variant_selector, save_mediapm_document,
-    save_mediapm_state_document,
+    ConfigPayloadStaging, GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind,
+    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, ManagedFileRecord,
+    MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
+    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmState,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
+    OutputSaveConfig, OutputVariantValue, PayloadStaging, PlatformInheritedEnvVars,
+    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry,
+    ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
+    YtDlpOutputVariantConfig, flatten_hierarchy_value, load_mediapm_document,
+    load_mediapm_state_document, merge_mediapm_document_with_state, nest_hierarchy_value,
+    regex_variant_selector, save_mediapm_document, save_mediapm_state_document,
 };
 pub use error::MediaPmError;
 pub use global::{
@@ -276,9 +276,9 @@ pub fn load_runtime_dotenv(env_file: &Path, env_generated_file: &Path) {
 /// the directories a reader opens.
 ///
 /// `schema_export_dir` receives this crate's registry and version contracts
-/// (`mod.ncl`, `v1.ncl`, `v2.ncl`) and `conductor_schema_dir` receives the
-/// conductor's (`mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl`). The bytes written are
-/// the ones the runtime evaluates, embedded at compile time, so an exported
+/// (`mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`) and `conductor_schema_dir` receives
+/// the conductor's (`mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl`). The bytes
+/// written are the ones the runtime evaluates, embedded at compile time, so an exported
 /// contract cannot describe a rule the process does not enforce and a schema
 /// change reaches the export directory unchanged.
 ///
@@ -450,6 +450,7 @@ pub fn merge_runtime_storage(
                 .materialization_preference_order
                 .clone(),
             verify_materialization: override_value.materialization.verify_materialization,
+            payload_staging: override_value.materialization.payload_staging,
         },
         verification: config::RuntimeVerificationConfig {
             verify_on_read: override_value.verification.verify_on_read.clone(),

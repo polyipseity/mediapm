@@ -344,6 +344,47 @@ let migrate_v1_to_v2_fn = fun data =>
   std.record.remove "version" stripped & { version = 2 }
 in
 
+# ||| Removes `name` when it is there.
+# |||
+# ||| `std.record.remove` fails on an absent field, and the fields a hop removes
+# ||| here are optional, so a document that names neither must still migrate.
+let drop_field = fun name record =>
+  if std.record.has_field name record then std.record.remove name record else record
+in
+
+# ||| Migration edge DOWN to V2, owned here like every edge into this version.
+# |||
+# ||| V2 has no staging surface at all, so the hop drops both fields V3 added: the
+# ||| library-wide default under `runtime.materialization` and the per-tool choice
+# ||| under `tools.<id>`.  A record that never carried one is left alone, and every
+# ||| other field survives unchanged.
+let migrate_v3_to_v2_fn = fun data =>
+  let runtime_v2 =
+    if std.record.has_field "runtime" data then
+      if std.record.has_field "materialization" data.runtime then
+        (drop_field "materialization" data.runtime)
+        & {
+          materialization =
+            drop_field "payload_staging" data.runtime.materialization,
+        }
+      else
+        data.runtime
+    else
+      {}
+  in
+  let tools_v2 =
+    if std.record.has_field "tools" data then
+      data.tools
+      |> std.record.map (fun _key => fun spec => drop_field "payload_staging" spec)
+    else
+      {}
+  in
+  (drop_field "tools" (drop_field "runtime" (drop_field "version" data)))
+  & (if std.record.has_field "runtime" data then { runtime = runtime_v2 } else {})
+  & (if std.record.has_field "tools" data then { tools = tools_v2 } else {})
+  & { version = 2 }
+in
+
 {
   # ||| Validates one V2 mediapm document, filling in defaults.
   validate_document_v2 = fun document => document | _media_pm_document_v2,
@@ -352,6 +393,9 @@ in
   # ||| Migrates one V1 document to V2 (strips the legacy `state` field and
   # ||| bumps the version marker).
   migrate_v1_to_v2 = migrate_v1_to_v2_fn,
+  # ||| Migrates one V3 document down to V2 (drops the per-tool staging choice
+  # ||| and the library-wide staging default).
+  migrate_v3_to_v2 = migrate_v3_to_v2_fn,
   MediaPmDocumentV2 = _media_pm_document_v2,
   ConfigVersionSpecV2 = _config_version_spec_v2,
   VersionSpecV2 = _version_spec_v2,

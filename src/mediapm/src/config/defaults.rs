@@ -4,12 +4,14 @@
 //! throughout the config layer. Boundary callers may also reference them
 //! directly when constructing config objects outside deserialization.
 
+use mediapm_conductor::{ConfigPayloadStaging, PayloadStaging};
+
 use super::MaterializationMethod;
 use super::VerifyStrategy;
 use super::hierarchy_types::SanitizeNamesConfig;
 
 /// Current persisted schema marker for `mediapm.ncl`.
-pub const MEDIAPM_DOCUMENT_VERSION: u32 = 2;
+pub const MEDIAPM_DOCUMENT_VERSION: u32 = 3;
 
 /// Serde default function for `version` field.
 #[must_use]
@@ -164,6 +166,27 @@ pub fn default_verify_materialization() -> bool {
 #[must_use]
 pub fn default_retry_impure() -> bool {
     DEFAULT_RETRY_IMPURE
+}
+
+/// Default payload staging strategy: run the command under the provisioned
+/// payload directory, so nothing is written into the step sandbox.
+///
+/// `in_place` is the strategy every document that predates the field ran with,
+/// so a document that states nothing keeps behaving exactly as it did.
+#[must_use]
+pub fn default_payload_staging() -> PayloadStaging {
+    PayloadStaging::InPlace
+}
+
+/// Serde `skip_serializing_if` predicate: true when a tool takes the
+/// library-wide staging default.
+///
+/// A tool that names no choice says nothing about staging, so writing
+/// `payload_staging = "inherit"` into every requirement would make a document
+/// restate the default on every tool that never asked.
+#[must_use]
+pub fn is_inherit_config_payload_staging(value: &ConfigPayloadStaging) -> bool {
+    *value == ConfigPayloadStaging::Inherit
 }
 
 /// Default version spec for managed tools — "latest".

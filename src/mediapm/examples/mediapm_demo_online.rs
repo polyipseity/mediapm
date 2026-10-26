@@ -129,8 +129,8 @@ use mediapm::demo_hierarchy_spec::{
     ONLINE_DEMO_YOUTUBE_URL, ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_valid_image_magic_bytes,
 };
 use mediapm::{
-    ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule, HierarchyNode,
-    HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
+    ConfigPayloadStaging, ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule,
+    HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
     MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmService,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
     OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry,
@@ -1053,6 +1053,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                payload_staging: ConfigPayloadStaging::Inherit,
             },
         ),
         (
@@ -1063,6 +1064,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                payload_staging: ConfigPayloadStaging::Inherit,
             },
         ),
         (
@@ -1073,6 +1075,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                payload_staging: ConfigPayloadStaging::Inherit,
             },
         ),
         (
@@ -1086,6 +1089,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                payload_staging: ConfigPayloadStaging::Inherit,
             },
         ),
         (
@@ -1096,6 +1100,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                payload_staging: ConfigPayloadStaging::Inherit,
             },
         ),
         (
@@ -1106,6 +1111,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                payload_staging: ConfigPayloadStaging::Inherit,
             },
         ),
         (
@@ -1116,6 +1122,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 recheck_seconds: 0,
                 max_input_slots: 16,
                 max_output_slots: 4,
+                payload_staging: ConfigPayloadStaging::Inherit,
             },
         ),
     ]);
