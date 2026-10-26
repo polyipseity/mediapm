@@ -178,6 +178,17 @@ pub fn default_payload_staging() -> PayloadStaging {
     PayloadStaging::InPlace
 }
 
+/// Serde default function returning the per-tool staging choice: inherit the
+/// library-wide default.
+///
+/// A tool requirement that names no strategy takes the one the library names,
+/// so `inherit` is the only default that does not decide something the document
+/// did not.
+#[must_use]
+pub fn default_config_payload_staging() -> ConfigPayloadStaging {
+    ConfigPayloadStaging::Inherit
+}
+
 /// Serde `skip_serializing_if` predicate: true when a tool takes the
 /// library-wide staging default.
 ///

@@ -274,10 +274,11 @@ fn spelled_path(knob: &str) -> String {
 /// Every knob absent from `deviations` is written out explicitly — the scalar
 /// ones from [`defaults`], the path ones from
 /// `spelled_path_layout` — so the produced document documents the whole
-/// runtime surface rather than only the interesting parts. The one exception is
-/// the staging default, which is left absent because absent already means
-/// `in_place`: spelling it out would restate the default rather than record a
-/// decision.
+/// runtime surface rather than only the interesting parts. Two knobs are left
+/// absent instead: the staging default, because absent already means `in_place`
+/// and spelling it out would restate the default rather than record a decision,
+/// and `path_sanitization`, because the boundary carries no deviation for it and
+/// an absent record means the names are not rewritten.
 #[must_use]
 pub fn runtime_boundary(deviations: RuntimeBoundaryDeviations) -> MediaRuntimeStorageLatest {
     let RuntimeBoundaryDeviations {
@@ -768,6 +769,14 @@ mod tests {
         assert!(boundary.lifecycle.instance_ttl_seconds.is_some());
         assert!(boundary.environment.profiler_enabled.is_some());
         assert!(boundary.retry_impure.is_some());
+        assert!(
+            boundary.materialization.payload_staging.is_none(),
+            "the staging default stays absent: absent already means `in_place`"
+        );
+        assert!(
+            boundary.path_sanitization.is_none(),
+            "the boundary deviation carries no sanitization setting"
+        );
     }
 
     /// Verifies the three-state `mediapm_state_config` deviation keeps its

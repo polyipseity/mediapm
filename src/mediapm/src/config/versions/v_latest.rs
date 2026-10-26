@@ -30,7 +30,15 @@ use super::super::{
     ToolRequirement, VerifyStrategy, defaults,
 };
 
+// The runtime records below and their parent are closed, like every persisted
+// boundary shape. `load_mediapm_document` evaluates the Nickel source and
+// deserializes the result without applying `v3.ncl`, so this boundary is the
+// only place a misspelt key can be rejected: a `materialization` record read
+// through a tolerant struct would drop the typo and leave the document running
+// the default the user meant to override.
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimePathsConfigLatest {
     #[serde(default)]
     pub mediapm_dir: Option<String>,
@@ -55,6 +63,7 @@ pub struct RuntimePathsConfigLatest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeMaterializationConfigLatest {
     #[serde(
         default,
@@ -128,6 +137,7 @@ pub(crate) fn resolved_materialization_preference_order(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 #[expect(
     clippy::struct_field_names,
     reason = "the three field names are the schema contract's `verify_on_read` keys; renaming them to satisfy the lint would break schema/Rust parity, and the shared prefix is what makes them read as one group"
@@ -142,18 +152,21 @@ pub struct RuntimeVerificationConfigLatest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeCachingConfigLatest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconstructed_cache_ttl_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeLifecycleConfigLatest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ttl_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeEnvironmentConfigLatest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_env_vars: Option<BTreeMap<String, Vec<String>>>,

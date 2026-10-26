@@ -489,6 +489,26 @@ fn strict_v3_rejects_unknown_top_level_field() {
     expect_rejected_v3("validate_document_v3", r"{ version = 3, bogus = 1 }");
 }
 
+/// The runtime boundary rejects a misspelt knob even when no contract runs.
+///
+/// Production loads `mediapm.ncl` by evaluating it to JSON and deserializing the
+/// result, without applying `v3.ncl`; a tolerant boundary type would drop a
+/// misspelt `payload_staging` and leave the document staging the way it did
+/// before the user asked otherwise.
+#[test]
+fn strict_runtime_boundary_rejects_a_misspelt_staging_key() {
+    let value = json!({
+        "version": 3,
+        "runtime": { "materialization": { "payload_stagingg": "copy" } },
+    });
+    let error = serde_json::from_value::<MediaPmDocument>(value)
+        .expect_err("a misspelt staging key must not decode");
+    assert!(
+        error.to_string().contains("payload_stagingg"),
+        "the error must name the offending key: {error}"
+    );
+}
+
 /// Every strategy a document may name is accepted, at both levels, and the
 /// validated value comes back as written.
 #[test]
@@ -573,8 +593,8 @@ fn realistic_v3_doc() -> String {
     REALISTIC_V2_DOC
         .replacen("version = 2,", "version = 3,", 1)
         .replacen(
-            "runtime = {",
-            "runtime = {\n    materialization = { payload_staging = \"hard_link\" },",
+            "materialization = { materialization_preference_order = [\"hardlink\", \"symlink\"] },",
+            "materialization = {\n      materialization_preference_order = [\"hardlink\", \"symlink\"],\n      payload_staging = \"hard_link\",\n    },",
             1,
         )
         .replacen("tools = {", "tools = {\n    sd = { payload_staging = \"copy\" },", 1)
@@ -698,6 +718,7 @@ fn parity_v3_to_v2_migration_drops_staging_fields() {
       runtime = {
         materialization = { payload_staging = "hard_link", verify_materialization = false },
         lifecycle = { instance_ttl_seconds = 604800 },
+        tools = { deno = { payload_staging = "hard_link", recheck_seconds = 60 } },
       },
     })"#,
     )
@@ -716,6 +737,13 @@ fn parity_v3_to_v2_migration_drops_staging_fields() {
             .is_some_and(|materialization| materialization.contains_key("payload_staging")),
         "v2 has no library-wide staging default, so the field must not survive"
     );
+    assert!(
+        !obj["runtime"]["tools"]["deno"]
+            .as_object()
+            .is_some_and(|tool| tool.contains_key("payload_staging")),
+        "runtime.tools is the per-tool requirement's second home, so a choice written there must not survive into v2 either"
+    );
+    assert_eq!(obj["runtime"]["tools"]["deno"]["recheck_seconds"].as_f64(), Some(60.0));
     assert_eq!(obj["tools"]["ffmpeg"]["recheck_seconds"].as_f64(), Some(3600.0));
     assert_eq!(obj["runtime"]["materialization"]["verify_materialization"], false);
     assert_eq!(obj["runtime"]["lifecycle"]["instance_ttl_seconds"].as_f64(), Some(604_800.0));

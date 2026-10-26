@@ -418,7 +418,10 @@ pub struct ToolRequirement {
     ///
     /// Omitted from serialization when inherited, so a document states only the
     /// tools that chose differently.
-    #[serde(default, skip_serializing_if = "defaults::is_inherit_config_payload_staging")]
+    #[serde(
+        default = "defaults::default_config_payload_staging",
+        skip_serializing_if = "defaults::is_inherit_config_payload_staging"
+    )]
     pub payload_staging: ConfigPayloadStaging,
 }
 
@@ -430,7 +433,7 @@ impl Default for ToolRequirement {
             recheck_seconds: 0,
             max_input_slots: defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS,
             max_output_slots: defaults::DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS,
-            payload_staging: ConfigPayloadStaging::Inherit,
+            payload_staging: defaults::default_config_payload_staging(),
         }
     }
 }

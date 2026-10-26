@@ -20,7 +20,8 @@
 #
 # `MediaPmState` is intentionally absent: state is managed separately via
 # `state.json` and is not part of the V3 config surface.  The V1→V2 hop strips
-# the legacy `state` field and the V2→V3 hop adds the two staging fields; see
+# the legacy `state` field, and the V2→V3 hop only bumps the version marker,
+# because both staging fields are optional and admit themselves; see
 # `migrate_v2_to_v3` and `v2.ncl`'s `migrate_v1_to_v2`.
 #
 # V3 adds two fields, both optional and both staging decisions: a tool names
@@ -311,8 +312,10 @@ let RuntimeEnvironmentConfigV3 = {
 in
 
 # ||| Runtime storage (mirrors `MediaRuntimeStorage`).  Closed: no open `..`
-# tail.  `tools` and `cache_root_override` are `#[serde(skip)]` in Rust and
-# are intentionally absent here.
+# tail.  `tools` is read but never serialized by the boundary type (it holds
+# requirements the document states at the top level), which is why the contract
+# admits it; `cache_root_override` is not part of the document at all and is
+# absent here.
 let MediaRuntimeStorageV3 = {
   paths | RuntimePathsConfigV3 | default = {},
   materialization | RuntimeMaterializationConfigV3 | default = {},

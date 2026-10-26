@@ -1,4 +1,4 @@
-# V2 document schema contracts for mediapm Nickel config (active version).
+# V2 document schema contracts for mediapm Nickel config.
 #
 # STRICT closed-contract surface (S-C1..S-C7 shape): every record is closed
 # (unknown fields are rejected at evaluation time instead of being silently
@@ -359,23 +359,39 @@ in
 # ||| under `tools.<id>`.  A record that never carried one is left alone, and every
 # ||| other field survives unchanged.
 let migrate_v3_to_v2_fn = fun data =>
+  # ||| Drops the per-tool staging choice from one requirement record. The field
+  # ||| is optional in v3, so a record that never named one has nothing to drop.
+  let strip_tool_staging = fun spec => drop_field "payload_staging" spec in
   let runtime_v2 =
     if std.record.has_field "runtime" data then
-      if std.record.has_field "materialization" data.runtime then
-        (drop_field "materialization" data.runtime)
+      let without_document_default =
+        if std.record.has_field "materialization" data.runtime then
+          (drop_field "materialization" data.runtime)
+          & {
+            materialization =
+              drop_field "payload_staging" data.runtime.materialization,
+          }
+        else
+          data.runtime
+      in
+      # `runtime.tools` is a second home for tool requirements, which v3 admits
+      # and the boundary type reads; a v2 document has no such field, so the
+      # choices inside it must go with the ones at the document top level.
+      if std.record.has_field "tools" without_document_default then
+        (drop_field "tools" without_document_default)
         & {
-          materialization =
-            drop_field "payload_staging" data.runtime.materialization,
+          tools =
+            without_document_default.tools
+            |> std.record.map (fun _key => strip_tool_staging),
         }
       else
-        data.runtime
+        without_document_default
     else
       {}
   in
   let tools_v2 =
     if std.record.has_field "tools" data then
-      data.tools
-      |> std.record.map (fun _key => fun spec => drop_field "payload_staging" spec)
+      data.tools |> std.record.map (fun _key => strip_tool_staging)
     else
       {}
   in

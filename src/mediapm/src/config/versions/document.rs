@@ -147,13 +147,14 @@ mod tests {
     }
 
     /// Verifies `normalize` drops a bare-`latest` tool entry but keeps one
-    /// that declares dependencies.
+    /// that declares a requirement.
     ///
-    /// A tool requirement with no version and no dependencies carries no
-    /// information, so keeping it would pin an entry that says nothing; one
-    /// that declares dependencies says something and must survive.
+    /// A tool requirement with no version, no dependencies and no staging choice
+    /// carries no information, so keeping it would pin an entry that says
+    /// nothing; one that declares a dependency or a staging choice says
+    /// something and must survive.
     #[test]
-    fn normalize_drops_bare_latest_tools_but_keeps_declared_dependencies() {
+    fn normalize_drops_bare_latest_tools_but_keeps_declared_requirements() {
         let bare = ToolRequirement {
             version_spec: ConfigVersionSpec::Latest,
             dependencies: BTreeMap::new(),
@@ -166,10 +167,13 @@ mod tests {
             dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]),
             ..bare.clone()
         };
+        let with_staging =
+            ToolRequirement { payload_staging: ConfigPayloadStaging::Copy, ..bare.clone() };
         let mut document = MediaPmDocument {
             tools: BTreeMap::from([
                 ("bare".to_string(), bare),
                 ("with_deps".to_string(), with_deps),
+                ("with_staging".to_string(), with_staging),
             ]),
             ..MediaPmDocument::default()
         };
@@ -177,5 +181,9 @@ mod tests {
 
         assert!(!document.tools.contains_key("bare"), "a bare latest entry carries no information");
         assert!(document.tools.contains_key("with_deps"), "a declared dependency must survive");
+        assert!(
+            document.tools.contains_key("with_staging"),
+            "a tool that chose a staging strategy says something the library default cannot"
+        );
     }
 }
