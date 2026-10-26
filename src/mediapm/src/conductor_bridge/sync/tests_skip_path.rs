@@ -498,7 +498,7 @@ async fn regression_a_record_describing_another_build_is_not_skipped() {
     let (_tmp, _cache, paths, report) =
         reconcile_media_tagger(records, crate::global::MEDIAPM_GIT_HASH, spec_content_map).await;
 
-    assert_eq!(report.tools_skipped, 0, "a spec holding another build must not satisfy the pin",);
+    assert_eq!(report.tools_skipped, 0, "a spec holding another build must not satisfy the pin");
     assert_document_and_record_agree(&paths, &report);
 }
 
