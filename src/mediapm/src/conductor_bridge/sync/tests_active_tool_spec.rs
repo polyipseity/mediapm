@@ -42,8 +42,9 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
+    let conductor_tool_id = format!("yt-dlp@{recorded_hash}");
     tools.insert("yt-dlp".to_string(), stale_spec);
-    tools.insert("yt-dlp@blake3:abc".to_string(), active_spec);
+    tools.insert(conductor_tool_id.clone(), active_spec);
     let doc = NickelDocument { tools, ..Default::default() };
     save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
@@ -98,7 +99,7 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
         "env file should have MEDIAPM_YT_DLP_LINUX\n--- content:\n{content}",
     );
     assert!(
-        content.contains("/yt-dlp@blake3_abc/payload/linux/yt-dlp"),
+        content.contains(&format!("/{}/payload/linux/yt-dlp", conductor_tool_id.replace(':', "_"))),
         "skip path must prefer the entry with a content map\n--- content:\n{content}",
     );
 }

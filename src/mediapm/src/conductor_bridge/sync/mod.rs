@@ -368,36 +368,42 @@ async fn provision_entry(
             resolved_composite.clone_from(&expected_composite);
 
             // Second skip check: composite match against live_state.
-            let should_skip = live_state.get(tool_id.as_str()).is_some_and(|entries| {
-                entries.iter().any(|e| {
-                    !e.content_map_hash.is_empty() && e.canonical_version == expected_composite
-                })
+            //
+            // Both arms justify a skip the same way, so this one repeats the
+            // first arm's identity condition: the spec it would activate has to
+            // carry the content map the matched record was written for. Without
+            // it, a pass reports the resolved build as skipped while the
+            // document keeps another one, and the record it writes states a
+            // canonical version beside a content hash from a different build.
+            //
+            // A mismatch falls through to the fetch, which rewrites the spec the
+            // record disagreed with, for the same reason the first arm does: a
+            // record the deployed build no longer describes is a state
+            // re-provisioning repairs rather than an error.
+            //
+            // The newest record that carries that composite is the one compared,
+            // the same newest-deployment rule the first arm reads.
+            let composite_record = live_state.get(tool_id.as_str()).and_then(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        !entry.content_map_hash.is_empty()
+                            && entry.canonical_version == expected_composite
+                    })
+                    .max_by_key(|entry| entry.deployed_at)
             });
-            let content_map_available = find_active_tool_spec(generated_doc, tool_id)
-                .map(|(_, spec)| spec.runtime.content_map.clone())
-                .is_some_and(|content_map| !content_map.is_empty());
 
-            if should_skip
-                && content_map_available
-                && match find_active_tool_spec(generated_doc, tool_id) {
-                    Some((_, spec)) => {
-                        workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map)
-                            .await
-                    }
-                    None => false,
-                }
+            if let Some(record) = composite_record
+                && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
+                && !spec.runtime.content_map.is_empty()
+                && content_map_hash(&spec.runtime.content_map) == record.content_map_hash
+                && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map)
+                    .await
             {
                 // Build the skip outcome.
                 let human_readable_version = metadata.human_readable_version.clone();
-                let key_and_spec = find_active_tool_spec(generated_doc, tool_id);
-                let (key, spec_runtime, own_map) = match key_and_spec {
-                    Some((key, spec)) => (
-                        key,
-                        spec.runtime.clone(),
-                        strip_inlined_deps_keys(&spec.runtime.content_map),
-                    ),
-                    None => unreachable!("content_map_available checked above"),
-                };
+                let spec_runtime = spec.runtime.clone();
+                let own_map = strip_inlined_deps_keys(&spec.runtime.content_map);
                 let backfill = ToolRegistryEntry {
                     tool_id: tool_id.clone(),
                     version: human_readable_version.clone(),
@@ -412,7 +418,11 @@ async fn provision_entry(
                     tool_id: tool_id.clone(),
                     version: human_readable_version,
                     canonical_version: expected_composite,
-                    content_map_hash: content_map_hash(&spec_runtime.content_map),
+                    // The matched record's value, not a recomputation: the
+                    // condition above just established that the two agree, and
+                    // stating the identity this arm matched keeps a record from
+                    // describing two builds at once.
+                    content_map_hash: record.content_map_hash.clone(),
                     deployed_at: mediapm_utils::Timestamp::default(),
                     resolved_tag: metadata.resolved_tag,
                     resolved_version: metadata.resolved_version,

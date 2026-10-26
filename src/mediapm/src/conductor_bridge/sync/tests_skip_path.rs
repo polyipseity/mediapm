@@ -18,6 +18,9 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
     let mut content_map = BTreeMap::new();
     content_map.insert("linux/media-tagger".to_string(), "blake3:abc123".to_string());
     content_map.insert("macos/media-tagger".to_string(), "blake3:def456".to_string());
+    // The record states the hash of the map the document holds: a skip only
+    // fires when the deployed spec is the build the record describes.
+    let recorded_hash = content_map_hash(&content_map);
     let tool_spec = ToolSpec {
         name: "media-tagger".to_string(),
         kind: ToolKindSpec::default(),
@@ -39,7 +42,7 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
         tool_id: "media-tagger".to_string(),
         version: format!("{}+{}", env!("CARGO_PKG_VERSION"), crate::global::MEDIAPM_GIT_HASH),
         canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
-        content_map_hash: "blake3:abc".to_string(),
+        content_map_hash: recorded_hash,
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
@@ -121,7 +124,8 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
-    tools.insert("yt-dlp@blake3:abc".to_string(), tool_spec);
+    let conductor_tool_id = format!("yt-dlp@{recorded_hash}");
+    tools.insert(conductor_tool_id.clone(), tool_spec);
     let doc = NickelDocument { tools, ..Default::default() };
     save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
@@ -179,7 +183,10 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
         "env file should have MEDIAPM_YT_DLP_LINUX\n--- content:\n{content}",
     );
     assert!(
-        content.contains("/yt-dlp@blake3_abc/payload/linux/yt-dlp"),
+        content.contains(&format!(
+            "/{}/payload/linux/yt-dlp",
+            sanitized_conductor_id(&conductor_tool_id)
+        )),
         "env path must use the sanitized conductor tool id\n--- content:\n{content}",
     );
     assert!(
@@ -207,6 +214,9 @@ async fn regression_skip_path_registers_managed_tool() {
     // CAS bytes.
     let mut content_map = BTreeMap::new();
     content_map.insert("linux/media-tagger".to_string(), "provisioned".to_string());
+    // The document key and the record's hash are one identity: a skip fires
+    // when the map the document holds is the one the record was written for.
+    let recorded_hash = content_map_hash(&content_map);
     let tool_spec = ToolSpec {
         name: "media-tagger".to_string(),
         kind: ToolKindSpec::default(),
@@ -218,7 +228,7 @@ async fn regression_skip_path_registers_managed_tool() {
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
-    tools.insert("media-tagger@blake3:mt1".to_string(), tool_spec);
+    tools.insert(format!("media-tagger@{recorded_hash}"), tool_spec);
     let doc = NickelDocument { tools, ..Default::default() };
     save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
@@ -230,7 +240,7 @@ async fn regression_skip_path_registers_managed_tool() {
         tool_id: "media-tagger".to_string(),
         version: format!("{}+{}", env!("CARGO_PKG_VERSION"), crate::global::MEDIAPM_GIT_HASH),
         canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
-        content_map_hash: "blake3:mt1".to_string(),
+        content_map_hash: recorded_hash,
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: None,
@@ -274,21 +284,38 @@ async fn regression_skip_path_registers_managed_tool() {
     );
 }
 
-/// Seeds a generated document holding one `media-tagger` spec (whose provider
-/// resolves without network access) and runs the sync against the given
-/// persisted records and exact pin.
+/// Runs one `media-tagger` reconcile pass and hands back what it wrote.
 ///
-/// The document's spec is the build the newest record is supposed to describe
-/// unless a test overrides it, so a test can make the record and the spec agree
-/// or disagree by construction.
+/// `media-tagger` is the fixture tool because its provider is a builtin
+/// launcher: a resolve needs neither network nor a seeded download cache, yet
+/// the launcher it generates is a real payload, so the pass reaches the fetch
+/// branch instead of the no-payload one.
+///
+/// The document is filed under `{name}@{hash}` the way a real pass files it, and
+/// `pinned_vcs_hash` is the field the user pins, because `vcs_hash` is what this
+/// provider fills for its build: its `resolved_version` is the bare crate
+/// version and its `resolved_vcs_hash` the mediapm git hash. A test makes the
+/// record and the document agree or disagree by construction — the document
+/// holds `spec_content_map`, and each record states the hash of the map it
+/// describes.
+///
+/// The temporaries come back beside the paths: `TempDir` removes its tree when
+/// it drops, so a caller that kept only the paths would read a directory that no
+/// longer exists.
 async fn reconcile_media_tagger(
     records: Vec<ToolRegistryEntry>,
-    pinned_version: &str,
+    pinned_vcs_hash: &str,
     spec_content_map: BTreeMap<String, String>,
-) -> Result<ToolSyncReport, crate::error::MediaPmError> {
-    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
-    let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+) -> (tempfile::TempDir, tempfile::TempDir, MediaPmPaths, ToolSyncReport) {
+    let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let paths = MediaPmPaths::from_root(tmp.path());
+    let spec_hash = content_map_hash(&spec_content_map);
+    let conductor_tool_id = if spec_hash.is_empty() {
+        "media-tagger".to_string()
+    } else {
+        format!("media-tagger@{spec_hash}")
+    };
     let spec = ToolSpec {
         name: "media-tagger".to_string(),
         kind: ToolKindSpec::default(),
@@ -299,9 +326,8 @@ async fn reconcile_media_tagger(
         },
         ..Default::default()
     };
-    let mut tools = BTreeMap::new();
-    tools.insert("media-tagger".to_string(), spec);
-    let doc = NickelDocument { tools, ..Default::default() };
+    let doc =
+        NickelDocument { tools: BTreeMap::from([(conductor_tool_id, spec)]), ..Default::default() };
     save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
     let mut state = MediaPmState::default();
@@ -310,8 +336,8 @@ async fn reconcile_media_tagger(
     let req = ToolRequirement {
         version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Exact(
             VersionSpecFields {
-                version: Some(pinned_version.to_string()),
-                vcs_hash: None,
+                version: None,
+                vcs_hash: Some(pinned_vcs_hash.to_string()),
                 tag: None,
             },
         ),
@@ -321,7 +347,7 @@ async fn reconcile_media_tagger(
     desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
 
     let workspace_cas = super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
-    reconcile_desired_tools(
+    let report = reconcile_desired_tools(
         workspace_cas,
         &paths,
         &desired_tools,
@@ -334,35 +360,84 @@ async fn reconcile_media_tagger(
         None,
     )
     .await
-    .map(ToolSyncOutcome::into_report)
+    .expect("the sync provisions media-tagger hermetically")
+    .into_report();
+    (tmp, cache_root, paths, report)
 }
 
-/// The version string `media-tagger` resolves to without network access: the
-/// crate version plus the mediapm build hash, which is what its provider reports
-/// as both the human-readable and the exact-match version.
+/// The per-entry directory name a conductor tool id maps to.
+///
+/// `mediapm_conductor::provision::helpers::sanitize_tool_id` is the production
+/// rule and is crate-private, so this mirror names the directory a fixture
+/// seeds. It covers the separators these ids contain (`blake3:`); a rule change
+/// fails the directory assertions that read it rather than letting them pass
+/// against a stale name.
+fn sanitized_conductor_id(conductor_tool_id: &str) -> String {
+    conductor_tool_id.replace(':', "_")
+}
+
+/// The human-readable version `media-tagger` reports: the crate version plus the
+/// mediapm build hash.
 fn media_tagger_version() -> String {
     format!("{}+{}", env!("CARGO_PKG_VERSION"), crate::global::MEDIAPM_GIT_HASH)
 }
 
-/// One persisted record for `media-tagger` describing a build.
+/// One persisted record for `media-tagger` describing the build `content_map_hash`
+/// belongs to.
+///
+/// The provenance fields are the ones the provider writes: `resolved_version` is
+/// the bare crate version and `resolved_vcs_hash` the mediapm git hash, while the
+/// `+{hash}` form lives in the informational `version` field that no skip
+/// compares.
 fn media_tagger_record(
     content_map_hash: String,
-    resolved_version: &str,
+    canonical_version: &str,
     deployed_at_nanos: u64,
 ) -> ToolRegistryEntry {
     ToolRegistryEntry {
         tool_id: "media-tagger".to_string(),
-        version: resolved_version.to_string(),
-        // Deliberately not the canonical version the provider resolves to: were
-        // it equal, the post-resolve skip would fire and a run that took the
-        // first skip check would be indistinguishable from one that did not.
-        canonical_version: "stale-canonical".to_string(),
+        version: media_tagger_version(),
+        canonical_version: canonical_version.to_string(),
         content_map_hash,
         deployed_at: mediapm_utils::Timestamp::from_unix_nanos(deployed_at_nanos),
         resolved_tag: None,
-        resolved_version: Some(resolved_version.to_string()),
-        resolved_vcs_hash: None,
+        resolved_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        resolved_vcs_hash: Some(crate::global::MEDIAPM_GIT_HASH.to_string()),
     }
+}
+
+/// Asserts the document the pass wrote and the record it pushed describe one
+/// build.
+///
+/// A document key, a record's `content_map_hash` and the active spec's map are
+/// one identity; a pass that writes one without the other leaves a tool whose
+/// identity depends on which half a reader consults, which is what the skip
+/// checks exist to prevent.
+fn assert_document_and_record_agree(paths: &MediaPmPaths, report: &ToolSyncReport) {
+    let doc = load_conductor_generated_document(paths).expect("load the generated document");
+    let (key, spec) = find_active_tool_spec(&doc, "media-tagger")
+        .expect("the freshly provisioned tool is active");
+    let recorded = report
+        .tool_records
+        .iter()
+        .find(|entry| entry.tool_id == "media-tagger")
+        .expect("the pass records the tool it provisioned");
+    let document_hash = content_map_hash(&spec.runtime.content_map);
+    let expected_key = if document_hash.is_empty() {
+        "media-tagger".to_string()
+    } else {
+        format!("media-tagger@{document_hash}")
+    };
+    assert_eq!(
+        document_hash, recorded.content_map_hash,
+        "the document's active spec and the record must state one identity",
+    );
+    assert_eq!(key, &expected_key, "the active entry is keyed by the identity the record states");
+    assert_eq!(
+        recorded.canonical_version,
+        crate::global::MEDIAPM_GIT_HASH,
+        "the run records the build the pin asked for",
+    );
 }
 
 /// Regression: an exact pin is matched against the **newest** record for the
@@ -370,8 +445,8 @@ fn media_tagger_record(
 ///
 /// The registry keeps every deployment, in insertion order, so a record for an
 /// older build can precede the newest one. Matching the pin against that older
-/// record while activating the document's spec (the newest build) reports a
-/// skip for a build the user did not ask for.
+/// record while activating the document's spec (the build the older record
+/// agrees with) reports a skip for a build that is not the one deployed.
 #[tokio::test]
 async fn regression_a_pinned_tool_matches_the_newest_record_not_the_first() {
     // The document holds the build the older record describes, so every
@@ -382,26 +457,26 @@ async fn regression_a_pinned_tool_matches_the_newest_record_not_the_first() {
     spec_content_map.insert("linux/media-tagger".to_string(), "blake3:old".to_string());
     let spec_hash = content_map_hash(&spec_content_map);
 
-    let older_pin = media_tagger_version();
-    // Insertion order is what the defect read: the matching (older) record
-    // first, the newest build second.
+    // The two canonical versions differ because the loader collapses records
+    // that share `(tool_id, canonical_version)`, and neither is the version the
+    // provider resolves, which keeps the post-resolve skip out of this test.
     let records = vec![
-        media_tagger_record(spec_hash, &older_pin, 1_000_000_000),
-        media_tagger_record("blake3:newer".to_string(), "2099.01.01", 2_000_000_000),
+        media_tagger_record(spec_hash, "canonical-of-the-documented-build", 1_000_000_000),
+        media_tagger_record(
+            "blake3:newer".to_string(),
+            "canonical-of-the-newest-build",
+            2_000_000_000,
+        ),
     ];
 
-    let report = reconcile_media_tagger(records, &older_pin, spec_content_map)
-        .await
-        .expect("the sync provisions media-tagger hermetically");
+    let (_tmp, _cache, paths, report) =
+        reconcile_media_tagger(records, crate::global::MEDIAPM_GIT_HASH, spec_content_map).await;
 
     assert_eq!(
         report.tools_skipped, 0,
-        "the pin matches the older record, so the newest build must not be reported as skipped",
+        "the newest record describes another build than the document holds, so the pin is not satisfied",
     );
-    assert!(
-        report.tool_records.iter().any(|entry| entry.tool_id == "media-tagger"),
-        "the pass must provision the pinned build instead of skipping",
-    );
+    assert_document_and_record_agree(&paths, &report);
 }
 
 /// Regression: a record whose content map the active spec no longer holds
@@ -414,16 +489,47 @@ async fn regression_a_record_describing_another_build_is_not_skipped() {
     let mut spec_content_map = BTreeMap::new();
     spec_content_map.insert("linux/media-tagger".to_string(), "blake3:new".to_string());
 
-    let pinned = media_tagger_version();
-    let records = vec![media_tagger_record("blake3:stale".to_string(), &pinned, 1_000_000_000)];
+    let records = vec![media_tagger_record(
+        "blake3:stale".to_string(),
+        "canonical-of-another-build",
+        1_000_000_000,
+    )];
 
-    let report = reconcile_media_tagger(records, &pinned, spec_content_map)
-        .await
-        .expect("the sync provisions media-tagger hermetically");
+    let (_tmp, _cache, paths, report) =
+        reconcile_media_tagger(records, crate::global::MEDIAPM_GIT_HASH, spec_content_map).await;
 
-    assert_eq!(report.tools_skipped, 0, "a spec holding another build must not satisfy the pin");
-    assert!(
-        report.tool_records.iter().any(|entry| entry.tool_id == "media-tagger"),
-        "the pass must provision the pinned build instead of skipping",
+    assert_eq!(report.tools_skipped, 0, "a spec holding another build must not satisfy the pin",);
+    assert_document_and_record_agree(&paths, &report);
+}
+
+/// Regression: the skip decided **after** the resolve must also require the
+/// document to hold the build its record describes.
+///
+/// The state's record names the version the provider resolves, so the
+/// post-resolve check sees a composite match; its content hash describes a build
+/// the document does not hold. Skipping on the version alone activates the
+/// document's own spec while recording the resolved version, so the record it
+/// writes names two builds at once and the run reports a build the workspace
+/// does not hold as skipped.
+#[tokio::test]
+async fn regression_a_post_resolve_skip_requires_the_document_to_hold_the_recorded_build() {
+    let mut spec_content_map = BTreeMap::new();
+    spec_content_map.insert("linux/media-tagger".to_string(), "blake3:documented".to_string());
+    let mut recorded_map = BTreeMap::new();
+    recorded_map.insert("linux/media-tagger".to_string(), "blake3:recorded".to_string());
+
+    let records = vec![media_tagger_record(
+        content_map_hash(&recorded_map),
+        crate::global::MEDIAPM_GIT_HASH,
+        1_000_000_000,
+    )];
+
+    let (_tmp, _cache, paths, report) =
+        reconcile_media_tagger(records, crate::global::MEDIAPM_GIT_HASH, spec_content_map).await;
+
+    assert_eq!(
+        report.tools_skipped, 0,
+        "the record's content hash describes a build the document does not hold, so the resolve does not license a skip",
     );
+    assert_document_and_record_agree(&paths, &report);
 }

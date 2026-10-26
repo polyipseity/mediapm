@@ -21,18 +21,25 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
     // stale dir that must be pruned. Retain-only removes a dir only when it
     // can take that dir's `lock`, so the stale dir carries one, the way a
     // provisioned entry does.
-    std::fs::create_dir_all(paths.tools_dir.join("yt-dlp@blake3_abc")).expect("create active dir");
     std::fs::create_dir_all(paths.tools_dir.join("stale_dir")).expect("create stale dir");
     std::fs::write(paths.tools_dir.join("stale_dir").join("lock"), b"")
         .expect("create the stale dir's lock file");
 
-    // Generated doc with an active `{name}@{hash}` entry.
+    // Generated doc with an active `{name}@{hash}` entry. The key and the record's
+    // hash are one identity, and the provisioned directory is named after the
+    // sanitized key, so both are derived from the map the document holds.
     let mut content_map = BTreeMap::new();
     content_map.insert("linux/yt-dlp".to_string(), "blake3:abc".to_string());
     // The record must carry the hash of the map this document holds: the skip
     // path refuses a record whose content map the active spec no longer
     // describes, and this fixture exists to exercise the skip plus the prune.
     let recorded_hash = super::content_map_hash(&content_map);
+    let conductor_tool_id = format!("yt-dlp@{recorded_hash}");
+    // `mediapm_conductor::provision::helpers::sanitize_tool_id` is the rule that
+    // names the entry directory and is crate-private; the separators these ids
+    // contain are what it rewrites.
+    let provisioned_dir = conductor_tool_id.replace(':', "_");
+    std::fs::create_dir_all(paths.tools_dir.join(&provisioned_dir)).expect("create active dir");
     let tool_spec = ToolSpec {
         name: "yt-dlp".to_string(),
         kind: ToolKindSpec::default(),
@@ -44,7 +51,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
         ..Default::default()
     };
     let mut tools = BTreeMap::new();
-    tools.insert("yt-dlp@blake3:abc".to_string(), tool_spec);
+    tools.insert(conductor_tool_id, tool_spec);
     let doc = NickelDocument { tools, ..Default::default() };
     save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
 
@@ -93,7 +100,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
 
     // The conductor-keyed dir survives; the stale dir is pruned.
     assert!(
-        paths.tools_dir.join("yt-dlp@blake3_abc").exists(),
+        paths.tools_dir.join(&provisioned_dir).exists(),
         "active conductor-keyed dir must survive retain-only",
     );
     assert!(
