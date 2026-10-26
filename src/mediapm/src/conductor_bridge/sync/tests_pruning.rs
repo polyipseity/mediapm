@@ -35,11 +35,13 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
     // describes, and this fixture exists to exercise the skip plus the prune.
     let recorded_hash = super::content_map_hash(&content_map);
     let conductor_tool_id = format!("yt-dlp@{recorded_hash}");
-    // `mediapm_conductor::provision::helpers::sanitize_tool_id` is the rule that
-    // names the entry directory and is crate-private; the separators these ids
-    // contain are what it rewrites.
-    let provisioned_dir = conductor_tool_id.replace(':', "_");
-    std::fs::create_dir_all(paths.tools_dir.join(&provisioned_dir)).expect("create active dir");
+    // `provisioned_payload_dir` is the rule that names the entry directory, so
+    // this fixture creates the directory the product would.
+    let provisioned_payload = mediapm_conductor::runtime_env::provisioned_payload_dir(
+        &paths.tools_dir,
+        &conductor_tool_id,
+    );
+    std::fs::create_dir_all(&provisioned_payload).expect("create active dir");
     let tool_spec = ToolSpec {
         name: "yt-dlp".to_string(),
         kind: ToolKindSpec::default(),
@@ -99,10 +101,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
     // The conductor-keyed dir survives; the stale dir is pruned.
-    assert!(
-        paths.tools_dir.join(&provisioned_dir).exists(),
-        "active conductor-keyed dir must survive retain-only",
-    );
+    assert!(provisioned_payload.exists(), "active conductor-keyed dir must survive retain-only",);
     assert!(
         !paths.tools_dir.join("stale_dir").exists(),
         "non-active dir must be pruned by retain-only",

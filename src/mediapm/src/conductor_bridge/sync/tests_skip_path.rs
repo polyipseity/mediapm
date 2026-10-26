@@ -183,10 +183,7 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
         "env file should have MEDIAPM_YT_DLP_LINUX\n--- content:\n{content}",
     );
     assert!(
-        content.contains(&format!(
-            "/{}/payload/linux/yt-dlp",
-            sanitized_conductor_id(&conductor_tool_id)
-        )),
+        content.contains(&expected_payload_binary(&paths, &conductor_tool_id, "linux/yt-dlp")),
         "env path must use the sanitized conductor tool id\n--- content:\n{content}",
     );
     assert!(
@@ -365,15 +362,16 @@ async fn reconcile_media_tagger(
     (tmp, cache_root, paths, report)
 }
 
-/// The per-entry directory name a conductor tool id maps to.
+/// The absolute path a conductor tool id's payload entry is materialized at.
 ///
-/// `mediapm_conductor::provision::helpers::sanitize_tool_id` is the production
-/// rule and is crate-private, so this mirror names the directory a fixture
-/// seeds. It covers the separators these ids contain (`blake3:`); a rule change
-/// fails the directory assertions that read it rather than letting them pass
-/// against a stale name.
-fn sanitized_conductor_id(conductor_tool_id: &str) -> String {
-    conductor_tool_id.replace(':', "_")
+/// `provisioned_payload_dir` is the production rule for that layout — the one
+/// `ProvisionCache::materialize` writes and the generated dotenv reads — so a
+/// fixture that names the directory reads the rule instead of re-spelling it.
+fn expected_payload_binary(paths: &MediaPmPaths, conductor_tool_id: &str, key: &str) -> String {
+    mediapm_conductor::runtime_env::provisioned_payload_dir(&paths.tools_dir, conductor_tool_id)
+        .join(key)
+        .display()
+        .to_string()
 }
 
 /// The human-readable version `media-tagger` reports: the crate version plus the
@@ -530,6 +528,47 @@ async fn regression_a_post_resolve_skip_requires_the_document_to_hold_the_record
     assert_eq!(
         report.tools_skipped, 0,
         "the record's content hash describes a build the document does not hold, so the resolve does not license a skip",
+    );
+    assert_document_and_record_agree(&paths, &report);
+}
+
+/// Regression: the post-resolve skip reads the newest record for the tool, not
+/// the newest record that happens to carry the resolved composite.
+///
+/// State keeps every deployment. When the newest one has moved on, an older
+/// record can still carry the composite this pass resolved and the content map
+/// the document holds; selecting by composite match alone therefore reaches that
+/// older record and skips, which reports a build the newest deployment does not
+/// describe. Both arms read the newest deployment, so both refuse here and the
+/// pass re-provisions.
+#[tokio::test]
+async fn regression_a_post_resolve_skip_reads_the_newest_deployment() {
+    let mut spec_content_map = BTreeMap::new();
+    spec_content_map.insert("linux/media-tagger".to_string(), "blake3:documented".to_string());
+
+    // The older record is the one every condition agrees with: its composite is
+    // the version the provider resolves and its content hash is the document's.
+    // The newest record has moved to another build, which is what tells the pass
+    // the tool is no longer the build the older record describes.
+    let records = vec![
+        media_tagger_record(
+            content_map_hash(&spec_content_map),
+            crate::global::MEDIAPM_GIT_HASH,
+            1_000_000_000,
+        ),
+        media_tagger_record(
+            "blake3:newest".to_string(),
+            "canonical-of-an-earlier-build",
+            2_000_000_000,
+        ),
+    ];
+
+    let (_tmp, _cache, paths, report) =
+        reconcile_media_tagger(records, crate::global::MEDIAPM_GIT_HASH, spec_content_map).await;
+
+    assert_eq!(
+        report.tools_skipped, 0,
+        "the newest deployment is another build, so neither record licenses a skip",
     );
     assert_document_and_record_agree(&paths, &report);
 }

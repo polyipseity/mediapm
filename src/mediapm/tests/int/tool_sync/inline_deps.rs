@@ -313,20 +313,20 @@ async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::M
 /// a deno version upstream no longer serves reprovisions the requester instead
 /// of skipping it.
 ///
-/// The composite skip is gated on three conditions in `sync/mod.rs`: the
-/// recorded composite must match the freshly computed one, an active
-/// generated-doc spec must exist for the tool, and that spec's content map
-/// must be available in the workspace CAS. The fixture satisfies the last two
-/// and fails the first, so the skip is reachable and is rejected on the
-/// composite alone — which is the property under test. Without the seeded
-/// document the skip could never fire, and the assertions below would hold for
-/// any fresh sync, so the seeded document is part of the fixture rather than
-/// decoration.
+/// The composite skip is gated on conditions in `sync/mod.rs`: the newest record
+/// for the tool must carry the freshly computed composite and a non-empty
+/// content-map hash, an active generated-doc spec must exist for the tool, that
+/// spec's content map must hash to the record's, and the map must be available
+/// in the workspace CAS. The fixture fails the composite half, so the skip is
+/// reachable and is rejected on the composite alone — which is the property
+/// under test. Without the seeded document the skip could never fire, and the
+/// assertions below would hold for any fresh sync, so the seeded document is
+/// part of the fixture rather than decoration.
 ///
 /// The seeded state:
 /// - yt-dlp's entry carries the OLD composite
 ///   `{STUB_COMMIT_SHA};deno:{STALE_DENO_VERSION}` with a non-empty
-///   placeholder hash, so `should_skip` is false.
+///   placeholder hash, so the composite skip does not fire.
 /// - deno's entry carries an EMPTY `content_map_hash` and is inert in this
 ///   path: a sync takes a dependency's version from the pool's published
 ///   `gates.dep_version` (`provision_entry` in `sync/mod.rs`), not from

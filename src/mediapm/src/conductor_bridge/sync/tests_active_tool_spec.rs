@@ -99,7 +99,15 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
         "env file should have MEDIAPM_YT_DLP_LINUX\n--- content:\n{content}",
     );
     assert!(
-        content.contains(&format!("/{}/payload/linux/yt-dlp", conductor_tool_id.replace(':', "_"))),
+        content.contains(
+            &mediapm_conductor::runtime_env::provisioned_payload_dir(
+                &paths.tools_dir,
+                &conductor_tool_id,
+            )
+            .join("linux/yt-dlp")
+            .display()
+            .to_string()
+        ),
         "skip path must prefer the entry with a content map\n--- content:\n{content}",
     );
 }

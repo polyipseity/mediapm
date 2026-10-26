@@ -283,12 +283,34 @@ pub(crate) fn prune_expired_entries(
             continue;
         }
 
+        // An entry whose age cannot be read is not one this sweep may remove:
+        // it cannot prove the entry is expired, so it keeps it and says why —
+        // the same reason the lock branches below warn instead of skipping.
+        // A directory mid-extraction is the one case this reports too, and its
+        // own lock is what stops the removal, so the report names a directory
+        // that will be reclaimed by the sweep after that extraction finishes.
         let metadata_path = path.join(METADATA_FILE_NAME);
-        let Ok(raw) = fs::read_to_string(&metadata_path) else {
-            continue;
+        let raw = match fs::read_to_string(&metadata_path) {
+            Ok(raw) => raw,
+            Err(source) => {
+                warnings.push(removal_warning(&path, "metadata could not be read", &source));
+                continue;
+            }
         };
-        let Ok(metadata) = serde_json::from_str::<Metadata>(&raw) else {
-            continue;
+        let metadata = match serde_json::from_str::<Metadata>(&raw) {
+            Ok(metadata) => metadata,
+            // The parse failure is a `serde_json` error, and the warning helper
+            // speaks in I/O failures; carrying it as one keeps every warning
+            // this sweep emits in a single shape, and `InvalidData` is what the
+            // failure is.
+            Err(source) => {
+                warnings.push(removal_warning(
+                    &path,
+                    "metadata does not parse",
+                    &std::io::Error::new(std::io::ErrorKind::InvalidData, source),
+                ));
+                continue;
+            }
         };
         if metadata.version != VERSION {
             continue;
@@ -527,6 +549,50 @@ mod tests {
         assert!(
             warnings[0].contains("could not remove"),
             "the report has to say what failed: {warnings:?}"
+        );
+    }
+
+    /// An entry whose metadata cannot be read or parsed is reported, not
+    /// skipped.
+    ///
+    /// An entry's age lives in its metadata, so a sweep that cannot read it
+    /// cannot prove the entry is expired and must keep it. Keeping it in silence
+    /// is the failure this pins: the sweep is the only thing that ever removes
+    /// these directories, so a directory it can never age survives the life of
+    /// the store while every sweep reports success.
+    #[test]
+    fn regression_an_entry_with_unparseable_metadata_is_reported_not_skipped() {
+        let tools_dir = artifact_dir().expect("tools dir");
+        seed_entry(tools_dir.path(), "unreadable", LOCK_FILE_NAME, 0);
+        seed_entry(tools_dir.path(), "unparseable", LOCK_FILE_NAME, 0);
+        let unreadable = tools_dir.path().join("unreadable");
+        let unparseable = tools_dir.path().join("unparseable");
+        // A directory where the metadata file belongs cannot be read as text,
+        // and the truncated file is valid I/O of the wrong content.
+        fs::remove_file(unreadable.join(METADATA_FILE_NAME)).expect("remove the seeded metadata");
+        fs::create_dir(unreadable.join(METADATA_FILE_NAME))
+            .expect("seed a directory named metadata");
+        fs::write(unparseable.join(METADATA_FILE_NAME), b"{\"version\":")
+            .expect("truncate metadata");
+
+        let warnings = prune_expired_entries(tools_dir.path(), TTL_SECONDS + 1).expect("prune");
+
+        assert!(unreadable.exists(), "an entry whose metadata cannot be read is not removed");
+        assert!(unparseable.exists(), "an entry whose metadata does not parse is not removed");
+        assert_eq!(
+            warnings.len(),
+            2,
+            "each entry the sweep could not age has to be reported: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|warning| warning.contains("unreadable")
+                && warning.contains("metadata could not be read")),
+            "the report has to name the entry and say the read failed: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|warning| warning.contains("unparseable")
+                && warning.contains("metadata does not parse")),
+            "the report has to name the entry and say the parse failed: {warnings:?}"
         );
     }
 

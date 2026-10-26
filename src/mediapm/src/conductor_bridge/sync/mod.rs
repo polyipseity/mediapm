@@ -369,31 +369,28 @@ async fn provision_entry(
 
             // Second skip check: composite match against live_state.
             //
-            // Both arms justify a skip the same way, so this one repeats the
-            // first arm's identity condition: the spec it would activate has to
-            // carry the content map the matched record was written for. Without
-            // it, a pass reports the resolved build as skipped while the
+            // Both arms justify a skip the same way, so this one reads the same
+            // record the first arm reads — the newest deployment of this id —
+            // and requires it to carry the composite this pass resolved *and*
+            // the content map the document holds. Without the identity
+            // condition, a pass reports the resolved build as skipped while the
             // document keeps another one, and the record it writes states a
             // canonical version beside a content hash from a different build.
+            //
+            // Selecting the newest *composite-matching* record instead would
+            // reach a different answer: when the newest deployment has moved on,
+            // an older record can still match, and skipping for it reports a
+            // build that deployment does not describe.
             //
             // A mismatch falls through to the fetch, which rewrites the spec the
             // record disagreed with, for the same reason the first arm does: a
             // record the deployed build no longer describes is a state
             // re-provisioning repairs rather than an error.
-            //
-            // The newest record that carries that composite is the one compared,
-            // the same newest-deployment rule the first arm reads.
-            let composite_record = live_state.get(tool_id.as_str()).and_then(|entries| {
-                entries
-                    .iter()
-                    .filter(|entry| {
-                        !entry.content_map_hash.is_empty()
-                            && entry.canonical_version == expected_composite
-                    })
-                    .max_by_key(|entry| entry.deployed_at)
-            });
+            let newest_record = prior_tool_record(live_state, tool_id);
 
-            if let Some(record) = composite_record
+            if let Some(record) = newest_record
+                && !record.content_map_hash.is_empty()
+                && record.canonical_version == expected_composite
                 && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
                 && !spec.runtime.content_map.is_empty()
                 && content_map_hash(&spec.runtime.content_map) == record.content_map_hash
