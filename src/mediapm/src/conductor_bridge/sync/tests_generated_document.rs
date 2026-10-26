@@ -229,15 +229,21 @@ fn strict_a_generated_document_holds_only_production_builtins() {
 /// out of a user's document.
 #[test]
 fn regression_a_test_only_builtin_entry_never_reaches_a_generated_document() {
-    assert_eq!(
-        mediapm_conductor::tools::ALL_BUILTINS.iter().filter(|entry| entry.test_only).count(),
-        0,
-        "no mediapm build may enable the conductor's `test-builtins` feature",
-    );
+    // The assertion is a relation between the document and the production set,
+    // not a count: a workspace build with `--all-features` unifies the
+    // conductor's `test-builtins` feature into this link, so a test that demands
+    // an empty test-double set cannot run in the sweep that matters most.
+    let production_count = mediapm_conductor::tools::production_builtins().count();
+    assert!(production_count > 0, "the production set is never empty");
 
     let mut generated_doc = NickelDocument::default();
     register_missing_builtin_tools(&mut generated_doc);
     apply_builtin_runtime_defaults(&mut generated_doc);
+    assert_eq!(
+        generated_doc.tools.len(),
+        production_count,
+        "a generated document carries exactly the production builtins, whatever this build registers"
+    );
     for entry in mediapm_conductor::tools::ALL_BUILTINS.iter().filter(|entry| entry.test_only) {
         assert!(
             !generated_doc.tools.contains_key(entry.builtin_id),

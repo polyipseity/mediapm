@@ -1306,3 +1306,20 @@ A document states how a tool's payload is staged. The conductor documents at sch
 | A tool that stated nothing records `inherit`, so the default applies rather than a value the sync invented | `regression_an_override_is_written_once_in_the_emitted_document` (drives the stamp with a choice that differs from the default) | [covered] |
 | A `copy`-staged tool needs no payload root while the same document staging `in_place` is refused by name, and a document that decided nothing emits no staging field at all | `strict_a_copy_staged_tool_needs_no_payload_root`, `regression_a_document_with_no_staging_decision_emits_no_staging_field` (same file) | [covered] |
 | A tool the sync never provisioned keeps no root and no invented strategy | `a_tool_without_a_provisioned_directory_keeps_its_declared_strategy`, `a_tool_without_a_content_map_is_not_stamped` (same file) | [covered] |
+
+## Skip decisions, the sweep, and load-time normalization (2026-10-26)
+
+A skip is a claim that the document already holds the build a state record describes. Both arms that can make it now justify it the same way, the sweep reports what it cannot remove instead of dropping it, and a loaded document arrives trimmed.
+
+| Spec item | Test(s) | Status |
+| --- | --- | --- |
+| A record describing another build is not reported as skipped, so the pass re-provisions instead of activating a spec the record does not describe | `regression_a_record_describing_another_build_is_not_skipped` (unit, `src/mediapm/src/conductor_bridge/sync/tests_skip_path.rs`) | [covered] |
+| The record a skip is justified by is the newest deployment of that id, the rule the file applies to live state, not the first record the registry happens to hold | `regression_a_pinned_tool_matches_the_newest_record_not_the_first` (same file) | [covered] |
+| The arm after resolve applies the same identity condition, so a document holding a newer build is not skipped for a pin that resolved to an older one | `regression_a_post_resolve_skip_requires_the_document_to_hold_the_recorded_build` (same file) | [covered] |
+| Both tests read the rewritten document back and assert the active spec is the build the record describes | the two tests above, each ending in a `find_active_tool_spec` lookup | [covered] |
+| The content-map identity has one computation, shared by the record writer, both skip arms and a generated document's `{name}@{hash}` key | `content_map_hash` (`src/mediapm/src/conductor_bridge/sync/mod.rs`, exported at the crate root); fixtures at `sync/tests_*.rs` and `tests/int/tool_sync/*` derive their keys from it instead of stating literals | [covered] |
+| An entry whose current lock name will not open is reported rather than skipped in silence, because the sweep is the only thing that removes it | `regression_an_unopenable_lock_is_reported_not_skipped` (unit, `src/mediapm-conductor/src/provision/retain.rs`) | [covered] |
+| An exclusive probe excludes a second holder, which is the premise the pre-rename removal rests on | `strict_a_held_legacy_lock_still_blocks_a_second_probe` (same file, unix) | [covered] |
+| A probe held across the removal itself is not observable without a test-only seam; the platform difference (Windows must drop first) is documented instead | recorded as by-design in `.superpowers/sdd/payload-staging/task-9-report.md` | [by-design] |
+| An elapsed cooldown stamp is dropped on the next claim, so the map is bounded by the roots inside a cooldown | `regression_an_elapsed_cooldown_stamp_is_pruned_on_a_claim` (unit, `src/mediapm-conductor/src/provision/provisioner.rs`) | [covered] |
+| A loaded document arrives with its text fields trimmed and keeps a tool entry that states nothing, because that entry requests the tool | `regression_a_loaded_document_arrives_trimmed` (unit, `src/mediapm/tests/int/schema_strictness.rs`) | [covered] |

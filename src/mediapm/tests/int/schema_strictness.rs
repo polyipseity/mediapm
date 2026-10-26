@@ -1195,6 +1195,45 @@ fn strict_verify_strategy_accepts_known_names() {
     );
 }
 
+/// A loaded document arrives trimmed, so padding cannot reach the hierarchy as
+/// part of a materialized path.
+///
+/// The trimmed values become metadata substitutions and literal path components:
+/// a title with surrounding spaces would name a directory whose name disagrees
+/// with the one a later read derives.
+#[test]
+fn regression_a_loaded_document_arrives_trimmed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let paths = mediapm::MediaPmPaths::from_root(dir.path());
+    let document = MediaPmDocument {
+        media: std::collections::BTreeMap::from([(
+            "m1".to_string(),
+            mediapm::MediaSourceSpec {
+                title: "  the title  ".to_string(),
+                description: "\n a description \t".to_string(),
+                artist: " the artist ".to_string(),
+                ..Default::default()
+            },
+        )]),
+        tools: std::collections::BTreeMap::from([(
+            "ffmpeg".to_string(),
+            mediapm::ToolRequirement::default(),
+        )]),
+        ..MediaPmDocument::default()
+    };
+    mediapm::save_mediapm_document(&paths.mediapm_ncl, &document).expect("save");
+
+    let loaded = mediapm::load_mediapm_document(&paths.mediapm_ncl).expect("load");
+
+    assert_eq!(loaded.media["m1"].title, "the title");
+    assert_eq!(loaded.media["m1"].description, "a description");
+    assert_eq!(loaded.media["m1"].artist, "the artist");
+    assert!(
+        loaded.tools.contains_key("ffmpeg"),
+        "a tool entry survives whatever it says: a bare entry requests that tool at its latest version"
+    );
+}
+
 /// S-E4: typed numeric fields reject fractional values at the serde boundary
 /// (serde number-from-float validation on `u64` fields).
 #[test]

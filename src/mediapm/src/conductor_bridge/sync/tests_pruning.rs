@@ -562,13 +562,13 @@ async fn regression_a_generated_document_naming_an_unregistered_builtin_is_rebui
 
     let seeded_spec = ToolSpec {
         version: None,
-        name: "flaky".to_string(),
-        kind: ToolKindSpec::Builtin { builtin_id: "flaky@v1".to_string() },
+        name: "ghost".to_string(),
+        kind: ToolKindSpec::Builtin { builtin_id: "ghost@v1".to_string() },
         runtime: ToolRuntime::default(),
         ..Default::default()
     };
     let doc = NickelDocument {
-        tools: BTreeMap::from([("flaky@v1".to_string(), seeded_spec)]),
+        tools: BTreeMap::from([("ghost@v1".to_string(), seeded_spec)]),
         ..Default::default()
     };
     save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
@@ -599,7 +599,7 @@ async fn regression_a_generated_document_naming_an_unregistered_builtin_is_rebui
 
     let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
     assert!(
-        !doc.tools.contains_key("flaky@v1"),
+        !doc.tools.contains_key("ghost@v1"),
         "a document naming an unregistered builtin must not survive the rewrite"
     );
     assert!(
