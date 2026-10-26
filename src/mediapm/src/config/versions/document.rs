@@ -31,12 +31,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use mediapm_conductor::{ConfigPayloadStaging, PayloadStaging};
+use mediapm_conductor::PayloadStaging;
 
 use super::v_latest::{MediaRuntimeStorageLatest, resolved_library_payload_staging};
-use crate::config::{
-    ConfigVersionSpec, MediaPmState, ToolRequirement, defaults, hierarchy_types, source_types,
-};
+use crate::config::{MediaPmState, ToolRequirement, defaults, hierarchy_types, source_types};
 
 /// Top-level mediapm document deserialized from `mediapm.ncl`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,7 +78,15 @@ impl Default for MediaPmDocument {
 }
 
 impl MediaPmDocument {
-    /// Normalizes string fields (trimming whitespace).
+    /// Trims the user-visible text fields.
+    ///
+    /// Load calls this before the document reaches the hierarchy, where these
+    /// values become metadata substitutions and literal path components: padding
+    /// that survived load time would be part of the materialized path.
+    ///
+    /// A tool entry survives whatever it says. A bare `latest` entry is a request
+    /// for that tool at its latest version, which is what `tool add` writes, so
+    /// dropping it would silently remove the user's tool.
     pub fn normalize(&mut self) {
         for source in self.media.values_mut() {
             let trimmed = source.description.trim().to_string();
@@ -90,13 +96,6 @@ impl MediaPmDocument {
             let trimmed = source.artist.trim().to_string();
             source.artist = trimmed;
         }
-        // Remove tool entries that state nothing: a bare `latest` version with no
-        // dependencies and no staging choice carries no requirement.
-        self.tools.retain(|_, tool_req| {
-            tool_req.version_spec != ConfigVersionSpec::Latest
-                || !tool_req.dependencies.is_empty()
-                || tool_req.payload_staging != ConfigPayloadStaging::Inherit
-        });
     }
 
     /// Resolves the staging strategy one tool requirement runs with.
@@ -144,46 +143,5 @@ mod tests {
         assert_eq!(source.description, "a description");
         assert_eq!(source.title, "the title");
         assert_eq!(source.artist, "the artist");
-    }
-
-    /// Verifies `normalize` drops a bare-`latest` tool entry but keeps one
-    /// that declares a requirement.
-    ///
-    /// A tool requirement with no version, no dependencies and no staging choice
-    /// carries no information, so keeping it would pin an entry that says
-    /// nothing; one that declares a dependency or a staging choice says
-    /// something and must survive.
-    #[test]
-    fn normalize_drops_bare_latest_tools_but_keeps_declared_requirements() {
-        let bare = ToolRequirement {
-            version_spec: ConfigVersionSpec::Latest,
-            dependencies: BTreeMap::new(),
-            recheck_seconds: 0,
-            max_input_slots: 16,
-            max_output_slots: 4,
-            payload_staging: ConfigPayloadStaging::Inherit,
-        };
-        let with_deps = ToolRequirement {
-            dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]),
-            ..bare.clone()
-        };
-        let with_staging =
-            ToolRequirement { payload_staging: ConfigPayloadStaging::Copy, ..bare.clone() };
-        let mut document = MediaPmDocument {
-            tools: BTreeMap::from([
-                ("bare".to_string(), bare),
-                ("with_deps".to_string(), with_deps),
-                ("with_staging".to_string(), with_staging),
-            ]),
-            ..MediaPmDocument::default()
-        };
-        document.normalize();
-
-        assert!(!document.tools.contains_key("bare"), "a bare latest entry carries no information");
-        assert!(document.tools.contains_key("with_deps"), "a declared dependency must survive");
-        assert!(
-            document.tools.contains_key("with_staging"),
-            "a tool that chose a staging strategy says something the library default cannot"
-        );
     }
 }

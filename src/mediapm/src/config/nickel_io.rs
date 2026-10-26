@@ -91,11 +91,21 @@ fn load_json_document<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T
 
 /// Loads and parses a `mediapm.ncl` file.
 ///
+/// The document is normalized on the way in, so a padded title or description
+/// reaches the hierarchy already trimmed: those values become metadata
+/// substitutions and literal path components, and whitespace that survived load
+/// time would be part of the materialized path. A tool entry that states nothing
+/// is dropped here for the same reason it is dropped when a document is encoded:
+/// it carries no requirement.
+///
 /// # Errors
 ///
 /// Returns an error when the document cannot be loaded or parsed.
 pub fn load_mediapm_document(path: &Path) -> Result<crate::config::MediaPmDocument, MediaPmError> {
-    load_json_document(path, "mediapm document")
+    let mut document: crate::config::MediaPmDocument =
+        load_json_document(path, "mediapm document")?;
+    document.normalize();
+    Ok(document)
 }
 
 /// Serializes and writes a `mediapm.ncl` document as proper Nickel source.
