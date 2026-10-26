@@ -101,7 +101,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
 
     // The conductor-keyed dir survives; the stale dir is pruned.
-    assert!(provisioned_payload.exists(), "active conductor-keyed dir must survive retain-only",);
+    assert!(provisioned_payload.exists(), "active conductor-keyed dir must survive retain-only");
     assert!(
         !paths.tools_dir.join("stale_dir").exists(),
         "non-active dir must be pruned by retain-only",
