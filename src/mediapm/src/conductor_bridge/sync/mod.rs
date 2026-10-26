@@ -185,7 +185,7 @@ enum EntryOutcome {
 /// provisioning.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the parameters are the distinct collaborators the pass reads (persisted state, generated document, live tool state, workspace CAS, tool cache, progress screen, recheck policy, per-edge gates/publisher and dep-index map); gathering them into a struct would relocate the list without narrowing any borrow"
+    reason = "the parameters are the distinct collaborators the pass reads (the generated document, live tool state, workspace CAS, tool cache, progress screen, recheck policy, per-edge gates/publisher and dep-index map); gathering them into a struct would relocate the list without narrowing any borrow"
 )]
 #[expect(
     clippy::too_many_lines,
@@ -193,7 +193,6 @@ enum EntryOutcome {
 )]
 async fn provision_entry(
     entry: &ProvisionEntry,
-    state: &MediaPmState,
     generated_doc: &NickelDocument,
     live_state: &HashMap<String, Vec<ToolRegistryEntry>>,
     workspace_cas: &FileSystemCas,
@@ -209,9 +208,24 @@ async fn provision_entry(
     let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
 
     // First skip check: exact version match against persisted state.
+    //
+    // Two conditions beyond the version match, because a match is only a skip
+    // when the deployed spec *is* the build the record describes:
+    //
+    // - the record is the newest deployment of this id, the same rule
+    //   `prior_tool_record` applies, rather than the first record that happens
+    //   to name it (the registry keeps every deployment);
+    // - the spec `find_active_tool_spec` would activate carries the content map
+    //   that record was written for. Its preference is the materializer's, not
+    //   this record's, so a document holding another build must not be reported
+    //   as skipped.
+    //
+    // A mismatch falls through to the resolve path instead of failing: a pin the
+    // deployed build no longer satisfies is a normal state that re-provisioning
+    // repairs, and the rewrite below replaces the spec it disagreed with.
     if tool_req.version_spec != ConfigVersionSpec::Latest
         && tool_req.version_spec != ConfigVersionSpec::Inherit
-        && let Some(entry) = state.managed_tools.iter().find(|e| e.tool_id == *tool_id)
+        && let Some(persisted) = prior_tool_record(live_state, tool_id)
     {
         let resolved_spec = match &tool_req.version_spec {
             ConfigVersionSpec::Exact(fields) => VersionSpec::Exact(fields.clone()),
@@ -219,10 +233,11 @@ async fn provision_entry(
         };
         if spec_matches_entry(
             &resolved_spec,
-            entry.resolved_tag.as_deref(),
-            entry.resolved_version.as_deref(),
-            entry.resolved_vcs_hash.as_deref(),
+            persisted.resolved_tag.as_deref(),
+            persisted.resolved_version.as_deref(),
+            persisted.resolved_vcs_hash.as_deref(),
         ) && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
+            && content_map_hash(&spec.runtime.content_map) == persisted.content_map_hash
             && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map).await
         {
             let own_map = strip_inlined_deps_keys(&spec.runtime.content_map);
@@ -230,7 +245,8 @@ async fn provision_entry(
             // dependents: publish its persisted bare version and its
             // reconstructed (pre-inline) own map so a same-step dependent's
             // composite and inlining can proceed without re-provisioning it.
-            publisher.publish_version(own_version_segment(&entry.canonical_version).to_string());
+            publisher
+                .publish_version(own_version_segment(&persisted.canonical_version).to_string());
             publisher.publish_own_map(own_map);
             return Ok(EntryOutcome::Skipped {
                 key: key.clone(),
@@ -396,15 +412,7 @@ async fn provision_entry(
                     tool_id: tool_id.clone(),
                     version: human_readable_version,
                     canonical_version: expected_composite,
-                    content_map_hash: {
-                        let json = serde_json::to_string(&spec_runtime.content_map)
-                            .expect("content_map serializes to JSON");
-                        if spec_runtime.content_map.is_empty() {
-                            String::new()
-                        } else {
-                            format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
-                        }
-                    },
+                    content_map_hash: content_map_hash(&spec_runtime.content_map),
                     deployed_at: mediapm_utils::Timestamp::default(),
                     resolved_tag: metadata.resolved_tag,
                     resolved_version: metadata.resolved_version,
@@ -586,6 +594,32 @@ fn prior_tool_record<'a>(
     live_state.get(tool_id)?.iter().max_by_key(|entry| entry.deployed_at)
 }
 
+/// Content-addressed identity of a tool payload's content map.
+///
+/// The record's [`ToolRegistryEntry::content_map_hash`] and a generated
+/// document's `{name}@{hash}` key are both this value, so the comparison that
+/// decides whether a persisted record still describes the deployed spec reads
+/// the one function that computes it. An empty map answers the empty string: a
+/// tool that stages nothing has no content identity, and the document keys it
+/// by its bare name.
+///
+/// Exposed because a caller that seeds a [`ToolRegistryEntry`] for a document it
+/// also holds has to state the same identity the sync would record, and the
+/// alternative is a second spelling of this computation in the caller.
+///
+/// # Panics
+///
+/// Panics when the map cannot be serialized to JSON, which a
+/// `BTreeMap<String, String>` never does.
+#[must_use]
+pub fn content_map_hash(content_map: &BTreeMap<String, String>) -> String {
+    if content_map.is_empty() {
+        return String::new();
+    }
+    let json = serde_json::to_string(content_map).expect("content_map serializes to JSON");
+    format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
+}
+
 /// Applies a single entry outcome to the shared mutable state.
 ///
 /// This is the ordered-merge half of the provisioning design: outcomes are
@@ -642,13 +676,7 @@ fn apply_entry_outcome(
             report.warnings.append(&mut payload.warnings);
             // Compute content-addressed hash. The payload's content map was
             // already inlined with same-step dep payloads by `provision_entry`.
-            let content_map_hash: String = if payload.content_map.is_empty() {
-                String::new()
-            } else {
-                let json = serde_json::to_string(&payload.content_map)
-                    .expect("content_map serializes to JSON");
-                format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
-            };
+            let map_hash: String = content_map_hash(&payload.content_map);
 
             let ffmpeg_limits =
                 resolve_ffmpeg_slot_limits(tool_req.max_input_slots, tool_req.max_output_slots);
@@ -667,7 +695,7 @@ fn apply_entry_outcome(
                 tool_id: tool_id.clone(),
                 version: payload.human_readable_version,
                 canonical_version: payload.canonical_version,
-                content_map_hash: content_map_hash.clone(),
+                content_map_hash: map_hash.clone(),
                 deployed_at: mediapm_utils::Timestamp::now(),
                 resolved_tag: payload.resolved_tag,
                 resolved_version: payload.resolved_version,
@@ -685,11 +713,8 @@ fn apply_entry_outcome(
             let mut full_runtime = runtime;
             full_runtime.inherited_env_vars = inherited;
 
-            let tool_key = if content_map_hash.is_empty() {
-                tool_id.clone()
-            } else {
-                format!("{tool_id}@{content_map_hash}")
-            };
+            let tool_key =
+                if map_hash.is_empty() { tool_id.clone() } else { format!("{tool_id}@{map_hash}") };
 
             // Prune old version keys.
             let prefix = format!("{tool_id}@");
@@ -1582,7 +1607,6 @@ pub(crate) async fn reconcile_desired_tools(
     // Pre-bind immutable views of the shared collaborators so the pool closure
     // captures plain `&` references (the mutable borrows are released once the
     // pool's closure/future are dropped, before the sequential apply below).
-    let state_view: &MediaPmState = state;
     let gen_view: &NickelDocument = &generated_doc;
     let live_view: &HashMap<String, Vec<ToolRegistryEntry>> = &live_state;
     let cas_view: &FileSystemCas = workspace_cas.as_ref();
@@ -1592,7 +1616,6 @@ pub(crate) async fn reconcile_desired_tools(
     let pool_result = pool::run_pool(jobs, concurrency, |job, gates, mut publisher| async move {
         let outcome = provision_entry(
             &job.input,
-            state_view,
             gen_view,
             live_view,
             cas_view,

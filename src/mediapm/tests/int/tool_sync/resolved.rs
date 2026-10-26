@@ -249,6 +249,15 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
     );
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
+    // The map the seeded document holds, and therefore the identity the record
+    // must carry: a skip only fires when the record describes the build the
+    // active spec states.
+    let content_map = std::collections::BTreeMap::from([(
+        "macos/media-tagger".to_string(),
+        "provisioned".to_string(),
+    )]);
+    let recorded_hash = mediapm::content_map_hash(&content_map);
+
     // Seed state.json with matching resolved fields.
     let state_path = service.paths().mediapm_state_json.clone();
     std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
@@ -258,7 +267,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
         tool_id: "media-tagger".to_string(),
         version: "seeded-version".to_string(),
         canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
-        content_map_hash: "blake3:abc".to_string(),
+        content_map_hash: recorded_hash.clone(),
         deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -272,16 +281,13 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
     // values (non-hash) pass the CAS availability check.
     let mut doc = NickelDocument::default();
     doc.tools.insert(
-        "media-tagger@blake3:abc".to_string(),
+        format!("media-tagger@{recorded_hash}"),
         ToolSpec {
             version: None,
             name: "media-tagger".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
-                content_map: std::collections::BTreeMap::from([(
-                    "macos/media-tagger".to_string(),
-                    "provisioned".to_string(),
-                )]),
+                content_map,
                 payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
@@ -359,6 +365,14 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
     );
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
+    // The seeded document's payload map, and the identity the record must carry
+    // to describe it.
+    let content_map = BTreeMap::from([
+        ("linux/ffmpeg".to_string(), "provisioned".to_string()),
+        ("linux/".to_string(), "provisioned".to_string()),
+    ]);
+    let recorded_hash = mediapm::content_map_hash(&content_map);
+
     // Seed state.json with a matching ffmpeg entry (exact version "7.1").
     let state_path = service.paths().mediapm_state_json.clone();
     std::fs::create_dir_all(state_path.parent().expect("state parent dir"))
@@ -368,7 +382,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
         tool_id: "ffmpeg".to_string(),
         version: "seeded-version".to_string(),
         canonical_version: "ffmpeg-v7.1".to_string(),
-        content_map_hash: "blake3:abc123".to_string(),
+        content_map_hash: recorded_hash.clone(),
         deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("7.1".to_string()),
@@ -382,16 +396,13 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
     // values that do not parse as `Hash`).
     let mut doc = NickelDocument::default();
     doc.tools.insert(
-        "ffmpeg@blake3:abc123".to_string(),
+        format!("ffmpeg@{recorded_hash}"),
         ToolSpec {
             version: None,
             name: "ffmpeg".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/ffmpeg".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                ]),
+                content_map,
                 payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
@@ -415,8 +426,9 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
         .lines()
         .find(|line| line.starts_with("MEDIAPM_FFMPEG_LINUX="))
         .unwrap_or_else(|| panic!("missing MEDIAPM_FFMPEG_LINUX in env file:\n{content}"));
+    let sanitized = recorded_hash.replace(':', "_");
     assert!(
-        binary_line.contains("/ffmpeg@blake3_abc123/payload/linux/ffmpeg"),
+        binary_line.contains(&format!("/ffmpeg@{sanitized}/payload/linux/ffmpeg")),
         "binary env path must use the sanitized conductor tool id: {binary_line}"
     );
 
@@ -426,7 +438,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
         .find(|line| line.starts_with("MEDIAPM_FFMPEG_LINUX_DIR="))
         .unwrap_or_else(|| panic!("missing MEDIAPM_FFMPEG_LINUX_DIR in env file:\n{content}"));
     assert!(
-        dir_line.contains("/ffmpeg@blake3_abc123/payload/linux/"),
+        dir_line.contains(&format!("/ffmpeg@{sanitized}/payload/linux/")),
         "dir env path must use the sanitized conductor tool id: {dir_line}"
     );
 

@@ -29,6 +29,10 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
     // Generated doc with an active `{name}@{hash}` entry.
     let mut content_map = BTreeMap::new();
     content_map.insert("linux/yt-dlp".to_string(), "blake3:abc".to_string());
+    // The record must carry the hash of the map this document holds: the skip
+    // path refuses a record whose content map the active spec no longer
+    // describes, and this fixture exists to exercise the skip plus the prune.
+    let recorded_hash = super::content_map_hash(&content_map);
     let tool_spec = ToolSpec {
         name: "yt-dlp".to_string(),
         kind: ToolKindSpec::default(),
@@ -49,7 +53,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
         tool_id: "yt-dlp".to_string(),
         version: "seeded-version".to_string(),
         canonical_version: "yt-dlp-2024.01.01".to_string(),
-        content_map_hash: "blake3:abc".to_string(),
+        content_map_hash: recorded_hash,
         deployed_at: mediapm_utils::Timestamp::default(),
         resolved_tag: None,
         resolved_version: Some("2024.01.01".to_string()),

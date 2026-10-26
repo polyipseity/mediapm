@@ -108,8 +108,9 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
         "stored composite must stay non-transitive and unchanged"
     );
     assert_eq!(
-        entry.content_map_hash, "blake3:abc123",
-        "content_map_hash must be preserved on skip"
+        entry.content_map_hash,
+        mediapm::content_map_hash(content_map),
+        "the record must keep describing the map the document holds"
     );
     Ok(())
 }

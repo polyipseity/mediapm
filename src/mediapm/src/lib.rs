@@ -49,7 +49,7 @@ use std::sync::Arc;
 
 use url::Url;
 
-pub use conductor_bridge::sync::find_active_tool_spec;
+pub use conductor_bridge::sync::{content_map_hash, find_active_tool_spec};
 pub use config::versions::{
     apply_v1_contract, apply_v2_contract, apply_v3_contract, evaluate_mod_ncl_expression,
     validate_v1_document, validate_v2_document, validate_v3_document,

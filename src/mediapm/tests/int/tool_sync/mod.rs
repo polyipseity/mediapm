@@ -119,6 +119,28 @@ async fn seeded_three_tool_skip_service() -> Result<
     );
     let (service, root, cache_root) = service_with_cache(runtime).await?;
 
+    // The three payload maps the seeded document holds. A record describes the
+    // build the document states only when it carries that map's hash, so the
+    // fixture derives both from one value instead of pairing a document with an
+    // identity that was never computed.
+    let yt_dlp_map = BTreeMap::from([
+        ("linux/yt-dlp".to_string(), "provisioned".to_string()),
+        ("linux/".to_string(), "provisioned".to_string()),
+        ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
+        ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
+    ]);
+    let ffmpeg_map = BTreeMap::from([
+        ("linux/ffmpeg".to_string(), "provisioned".to_string()),
+        ("linux/".to_string(), "provisioned".to_string()),
+    ]);
+    let deno_map = BTreeMap::from([
+        ("linux/deno".to_string(), "provisioned".to_string()),
+        ("linux/".to_string(), "provisioned".to_string()),
+    ]);
+    let yt_dlp_hash = mediapm::content_map_hash(&yt_dlp_map);
+    let ffmpeg_hash = mediapm::content_map_hash(&ffmpeg_map);
+    let deno_hash = mediapm::content_map_hash(&deno_map);
+
     // Seed state.json with matching entries for all three tools so the
     // spec-based skip fires without network.
     let state_path = service.paths().mediapm_state_json.clone();
@@ -132,7 +154,7 @@ async fn seeded_three_tool_skip_service() -> Result<
         // version segment (sorted by dep_id); composite-bearing dep entries
         // never nest into the requester's composite.
         canonical_version: "yt-dlp-v2024.01.01;deno:deno-v1.46.0;ffmpeg:ffmpeg-v7.1".to_string(),
-        content_map_hash: "blake3:abc123".to_string(),
+        content_map_hash: yt_dlp_hash.clone(),
         deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v2024.01.01".to_string()),
@@ -142,7 +164,7 @@ async fn seeded_three_tool_skip_service() -> Result<
         tool_id: "ffmpeg".to_string(),
         version: "seeded-version".to_string(),
         canonical_version: "ffmpeg-v7.1".to_string(),
-        content_map_hash: "blake3:ffmpeg1".to_string(),
+        content_map_hash: ffmpeg_hash.clone(),
         deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v7.1".to_string()),
@@ -152,7 +174,7 @@ async fn seeded_three_tool_skip_service() -> Result<
         tool_id: "deno".to_string(),
         version: "seeded-version".to_string(),
         canonical_version: "deno-v1.46.0".to_string(),
-        content_map_hash: "blake3:deno1".to_string(),
+        content_map_hash: deno_hash.clone(),
         deployed_at: mediapm_utils::Timestamp::from_unix_secs(42),
         resolved_tag: None,
         resolved_version: Some("v1.46.0".to_string()),
@@ -168,18 +190,13 @@ async fn seeded_three_tool_skip_service() -> Result<
     // skips them, and they pass the CAS availability check).
     let mut doc = NickelDocument::default();
     doc.tools.insert(
-        "yt-dlp@blake3:abc123".to_string(),
+        format!("yt-dlp@{yt_dlp_hash}"),
         ToolSpec {
             version: None,
             name: "yt-dlp".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/yt-dlp".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                    ("deps/ffmpeg/linux/ffmpeg".to_string(), "provisioned".to_string()),
-                    ("deps/deno/linux/deno".to_string(), "provisioned".to_string()),
-                ]),
+                content_map: yt_dlp_map,
                 payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
@@ -187,16 +204,13 @@ async fn seeded_three_tool_skip_service() -> Result<
         },
     );
     doc.tools.insert(
-        "ffmpeg@blake3:ffmpeg1".to_string(),
+        format!("ffmpeg@{ffmpeg_hash}"),
         ToolSpec {
             version: None,
             name: "ffmpeg".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/ffmpeg".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                ]),
+                content_map: ffmpeg_map,
                 payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
@@ -204,16 +218,13 @@ async fn seeded_three_tool_skip_service() -> Result<
         },
     );
     doc.tools.insert(
-        "deno@blake3:deno1".to_string(),
+        format!("deno@{deno_hash}"),
         ToolSpec {
             version: None,
             name: "deno".to_string(),
             kind: ToolKindSpec::default(),
             runtime: ToolRuntime {
-                content_map: BTreeMap::from([
-                    ("linux/deno".to_string(), "provisioned".to_string()),
-                    ("linux/".to_string(), "provisioned".to_string()),
-                ]),
+                content_map: deno_map,
                 payload_staging: ConfigPayloadStaging::Copy,
                 ..Default::default()
             },
