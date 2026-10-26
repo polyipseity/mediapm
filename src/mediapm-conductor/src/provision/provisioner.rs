@@ -73,12 +73,24 @@ static LAST_AUTOMATIC_SWEEP: LazyLock<Mutex<HashMap<PathBuf, Instant>>> =
 ///
 /// A root this process has not swept yet answers `true` on its first call,
 /// because there is no earlier sweep of that root to be inside the cooldown of.
+///
+/// Claiming also drops every stamp whose cooldown has elapsed: such a root is
+/// indistinguishable from one this process has never swept, since the caller's
+/// next claim for it is granted and restamps it either way. Without the drop the
+/// map keeps one entry per tools root for the life of the process.
 fn claim_automatic_sweep(tools_dir: &Path) -> bool {
+    claim_automatic_sweep_at(tools_dir, Instant::now())
+}
+
+/// [`claim_automatic_sweep`] against a supplied instant.
+///
+/// The instant is a parameter so the cooldown can be exercised without waiting
+/// it out and without reading the monotonic clock backwards: a test advances the
+/// clock it passes, while the process never does.
+fn claim_automatic_sweep_at(tools_dir: &Path, now: Instant) -> bool {
     let mut all = lock_sweep_state();
-    let now = Instant::now();
-    if let Some(previous) = all.get(tools_dir)
-        && now.duration_since(*previous).as_secs() < PRUNE_COOLDOWN_SECONDS
-    {
+    all.retain(|_, previous| now.duration_since(*previous).as_secs() < PRUNE_COOLDOWN_SECONDS);
+    if all.contains_key(tools_dir) {
         return false;
     }
     all.insert(tools_dir.to_path_buf(), now);
@@ -585,6 +597,77 @@ mod tests {
 
         reset_automatic_sweep();
         assert!(claim_automatic_sweep(root), "clearing the state grants the next claim");
+    }
+
+    /// A stamp whose cooldown has elapsed is dropped when the next claim runs.
+    ///
+    /// The map is process state, so a stamp that is never dropped outlives the
+    /// root it names: a long run that provisions against many workspaces keeps
+    /// one entry per root until the process exits. The clock is supplied rather
+    /// than read, so the test advances it by the cooldown instead of waiting and
+    /// instead of asking the monotonic clock for an instant before it started.
+    #[tokio::test]
+    async fn regression_an_elapsed_cooldown_stamp_is_pruned_on_a_claim() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        reset_automatic_sweep();
+        let base = Instant::now();
+        {
+            let mut all = lock_sweep_state();
+            all.insert(PathBuf::from("stale-root-a"), base);
+            all.insert(PathBuf::from("stale-root-b"), base);
+        }
+        let after_the_cooldown = base
+            .checked_add(std::time::Duration::from_secs(PRUNE_COOLDOWN_SECONDS + 1))
+            .expect("an instant a few minutes from now is representable");
+
+        assert!(
+            claim_automatic_sweep_at(Path::new("claimed-root"), after_the_cooldown),
+            "a root this process has not swept yet is claimed"
+        );
+
+        let stamps: Vec<PathBuf> = lock_sweep_state().keys().cloned().collect();
+        assert!(
+            !stamps.contains(&PathBuf::from("stale-root-a")),
+            "a stamp past its cooldown has to go: {stamps:?}"
+        );
+        assert!(
+            !stamps.contains(&PathBuf::from("stale-root-b")),
+            "a stamp past its cooldown has to go: {stamps:?}"
+        );
+        assert!(
+            stamps.contains(&PathBuf::from("claimed-root")),
+            "the claiming root is stamped with the instant it was judged against: {stamps:?}"
+        );
+        assert_eq!(stamps.len(), 1, "only roots inside a cooldown are left: {stamps:?}");
+    }
+
+    /// A stamp inside its cooldown survives a claim for another root.
+    ///
+    /// Pruning and refusing are the same comparison read two ways, so the
+    /// boundary has to be asserted from both sides: a prune that also dropped
+    /// live stamps would let a second sweep start inside the cooldown it exists
+    /// to prevent.
+    #[tokio::test]
+    async fn a_live_cooldown_stamp_survives_a_claim_for_another_root() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        reset_automatic_sweep();
+        let base = Instant::now();
+        lock_sweep_state().insert(PathBuf::from("live-root"), base);
+        let inside_the_cooldown = base
+            .checked_add(std::time::Duration::from_secs(PRUNE_COOLDOWN_SECONDS - 1))
+            .expect("an instant a few minutes from now is representable");
+
+        assert!(claim_automatic_sweep_at(Path::new("another-root"), inside_the_cooldown));
+
+        let stamps: Vec<PathBuf> = lock_sweep_state().keys().cloned().collect();
+        assert!(
+            stamps.contains(&PathBuf::from("live-root")),
+            "a stamp inside its cooldown is still inside it: {stamps:?}"
+        );
+        assert!(
+            !claim_automatic_sweep_at(Path::new("live-root"), inside_the_cooldown),
+            "and the root it belongs to is still refused"
+        );
     }
 
     /// Each tools root has its own cooldown, so a second root in the same

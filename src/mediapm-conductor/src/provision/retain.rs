@@ -97,18 +97,8 @@ fn do_retain_only(
             }
         }
 
-        // Try to acquire an exclusive lock non-blockingly.  If the entry is
-        // in use, skip it.
-        let lock_path = path.join(LOCK_FILE_NAME);
-        let Ok(lock_file) = std::fs::OpenOptions::new().read(true).write(true).open(&lock_path)
-        else {
-            continue;
-        };
-        if lock_file.try_lock().is_err() {
-            continue;
-        }
-        if let Err(source) = fs::remove_dir_all(&path) {
-            warnings.push(removal_warning(&path, "an inactive provisioned entry", &source));
+        if let Some(warning) = remove_current_lock_entry(&path, "an inactive provisioned entry") {
+            warnings.push(warning);
         }
     }
     Ok(warnings)
@@ -122,6 +112,48 @@ fn do_retain_only(
 /// problem from a directory another process still holds something in.
 fn removal_warning(path: &Path, what: &str, source: &std::io::Error) -> String {
     format!("could not remove the tool payload directory '{}' ({what}): {source}", path.display())
+}
+
+/// Removes `entry_dir` under the lock name this build writes, answering the
+/// warning the sweep owes a reader when it could not.
+///
+/// `None` covers the two outcomes that are not failures: the directory is gone,
+/// and another process holds its lock, which is what the lock is for and what a
+/// later sweep reclaims once that process finishes.
+///
+/// A `lock` that cannot be opened at all, and a lock call that fails for a
+/// reason other than contention, are both failures this sweep has to report. The
+/// sweep is the only thing that removes these directories, so silence leaves one
+/// for the life of the store with nothing saying why it survived, while the
+/// pre-rename branch beside it already warns about the same kind of leftover.
+fn remove_current_lock_entry(entry_dir: &Path, what: &str) -> Option<String> {
+    let lock_path = entry_dir.join(LOCK_FILE_NAME);
+    let lock_file = match std::fs::OpenOptions::new().read(true).write(true).open(&lock_path) {
+        Ok(lock_file) => lock_file,
+        Err(source) => return Some(removal_warning(entry_dir, what, &source)),
+    };
+
+    // The probe takes an exclusive lock non-blockingly, so a live user of the
+    // payload keeps its directory: that user holds the lock for as long as it
+    // reads the bytes.
+    match lock_file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return None,
+        // Not contention: the operating system refused the lock itself, which is
+        // a fact about this entry rather than about another process.
+        Err(std::fs::TryLockError::Error(source)) => {
+            return Some(removal_warning(entry_dir, what, &source));
+        }
+    }
+
+    // Windows cannot remove a directory that still has an open handle inside it,
+    // so the probe goes first there; elsewhere the binding outlives the removal
+    // and a would-be user cannot take the lock in the gap between check and
+    // delete.
+    #[cfg(windows)]
+    drop(lock_file);
+
+    fs::remove_dir_all(entry_dir).err().map(|source| removal_warning(entry_dir, what, &source))
 }
 
 /// What the sweep found when it looked at a directory for the pre-rename lock
@@ -153,6 +185,13 @@ enum LegacyLockEntry {
 /// works. So the lock is probed before the directory goes, and a held lock keeps
 /// it.
 ///
+/// The probe is also held for as long as the removal takes, so that build cannot
+/// take the lock in the gap between the check and the delete and start executing
+/// bytes that are going away. Windows is the exception, because a directory that
+/// still has an open handle inside it cannot be removed at all; there the probe
+/// is released first, and the check above is the strongest signal the platform
+/// offers.
+///
 /// # Errors
 /// Returns the I/O failure that stopped the removal, for the caller to report.
 /// A directory that will not go is reported rather than swallowed: the sweep is
@@ -165,26 +204,31 @@ fn remove_legacy_lock_entry(entry_dir: &Path) -> Result<LegacyLockEntry, std::io
         return Ok(LegacyLockEntry::Absent);
     }
 
-    // The probe takes an exclusive lock, so a shared lock held by an older build
-    // counts as held. The file is closed before the removal: Windows will not
-    // delete a directory that still has an open handle inside it.
+    let lock_file = match std::fs::OpenOptions::new().read(true).write(true).open(&legacy_lock_path)
     {
-        match std::fs::OpenOptions::new().read(true).write(true).open(&legacy_lock_path) {
-            Ok(lock_file) => {
-                if lock_file.try_lock().is_err() {
-                    return Ok(LegacyLockEntry::InUse);
-                }
-            }
-            // The file was there when this function checked and is gone now: a
-            // concurrent sweep removed the directory, which is the outcome this
-            // call wanted anyway.
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(LegacyLockEntry::Removed);
-            }
-            Err(source) => return Err(source),
+        Ok(lock_file) => lock_file,
+        // The file was there when this function checked and is gone now: a
+        // concurrent sweep removed the directory, which is the outcome this
+        // call wanted anyway.
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LegacyLockEntry::Removed);
         }
+        Err(source) => return Err(source),
+    };
+
+    // The probe takes an exclusive lock, so a shared lock held by an older build
+    // counts as held.
+    match lock_file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(LegacyLockEntry::InUse),
+        Err(std::fs::TryLockError::Error(source)) => return Err(source),
     }
 
+    #[cfg(windows)]
+    drop(lock_file);
+
+    // Everywhere else the binding's lifetime is the removal's: it is not dropped
+    // above, so the lock is still held while the directory goes.
     fs::remove_dir_all(entry_dir)?;
     Ok(LegacyLockEntry::Removed)
 }
@@ -272,18 +316,8 @@ pub(crate) fn prune_expired_entries(
             }
         }
 
-        // Try to acquire an exclusive lock non-blockingly.
-        let lock_path = path.join(LOCK_FILE_NAME);
-        let Ok(lock_file) = std::fs::OpenOptions::new().read(true).write(true).open(&lock_path)
-        else {
-            continue;
-        };
-        if lock_file.try_lock().is_err() {
-            continue;
-        }
-
-        if let Err(source) = fs::remove_dir_all(&path) {
-            warnings.push(removal_warning(&path, "expired", &source));
+        if let Some(warning) = remove_current_lock_entry(&path, "expired") {
+            warnings.push(warning);
         }
     }
 
@@ -423,6 +457,76 @@ mod tests {
         assert!(
             tools_dir.path().join("active").exists(),
             "retain removes what is not active; an active entry is rebuilt by its next materialize"
+        );
+    }
+
+    /// A held probe is exclusive, so a second one has to be refused for as long
+    /// as the first is alive.
+    ///
+    /// This pins the operating-system behaviour the removal relies on: the sweep
+    /// holds the probe across `remove_dir_all` so a build that predates the lock
+    /// rename cannot take the lock in the gap between the check and the delete
+    /// and start executing bytes that are going away. The assertion is on the
+    /// second probe rather than on the removal because the removal is synchronous
+    /// and offers no window a test can observe from outside; if the lock did not
+    /// exclude a second holder, the held probe would guard nothing.
+    #[cfg(unix)]
+    #[test]
+    fn strict_a_held_legacy_lock_still_blocks_a_second_probe() {
+        let tools_dir = artifact_dir().expect("tools dir");
+        seed_entry(tools_dir.path(), "legacy", LEGACY_LOCK_FILE_NAME, 0);
+        let legacy_lock_path = tools_dir.path().join("legacy").join(LEGACY_LOCK_FILE_NAME);
+
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&legacy_lock_path)
+            .expect("open the legacy lock as the sweep does");
+        held.try_lock().expect("the sweep's own probe takes the exclusive lock");
+
+        let second = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&legacy_lock_path)
+            .expect("open a second handle on the same file");
+        assert!(
+            matches!(second.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+            "a second exclusive probe has to be refused while the first guard is alive"
+        );
+
+        drop(held);
+        second.try_lock().expect("once the first guard is gone the second probe takes the lock");
+    }
+
+    /// A `lock` that cannot be opened is reported, not skipped.
+    ///
+    /// The pre-rename branch beside it already warns about a leftover it cannot
+    /// take; this branch used to `continue` in silence, so an entry whose `lock`
+    /// had been replaced or damaged survived every sweep with nothing anywhere
+    /// saying why — the sweep is the only thing that ever removes these
+    /// directories.
+    #[test]
+    fn regression_an_unopenable_lock_is_reported_not_skipped() {
+        let tools_dir = artifact_dir().expect("tools dir");
+        seed_entry(tools_dir.path(), "unopenable", LOCK_FILE_NAME, 0);
+        let entry = tools_dir.path().join("unopenable");
+        // A directory where the lock file belongs cannot be opened for writing,
+        // which is the shape of a store something damaged rather than one another
+        // process holds.
+        fs::remove_file(entry.join(LOCK_FILE_NAME)).expect("remove the seeded lock");
+        fs::create_dir(entry.join(LOCK_FILE_NAME)).expect("seed a directory named lock");
+
+        let warnings = prune_expired_entries(tools_dir.path(), TTL_SECONDS + 1).expect("prune");
+
+        assert!(entry.exists(), "an entry whose lock cannot be opened is not removed");
+        assert_eq!(warnings.len(), 1, "the unopenable entry has to be reported: {warnings:?}");
+        assert!(
+            warnings[0].contains("unopenable"),
+            "the report has to name the directory to delete by hand: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("could not remove"),
+            "the report has to say what failed: {warnings:?}"
         );
     }
 
