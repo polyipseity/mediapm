@@ -174,3 +174,41 @@ async fn a_declared_hash_input_is_the_same_work_on_a_second_run() {
     );
     tc.shutdown().await;
 }
+
+/// A declared hash the store cannot serve fails the step instead of running it.
+///
+/// The document and the store can disagree: a document names a hash the store
+/// does not hold once the bytes were reclaimed or never staged. The failure has
+/// to happen at resolution, because the command's `:file(...)` selector would
+/// otherwise hand the tool a file holding nothing, and a tool reading empty
+/// input produces output that looks like a successful run over empty media.
+///
+/// No instance is recorded for a step that failed at input resolution, so the
+/// next run retries it rather than reusing an execution that never happened.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_declared_hash_the_store_does_not_hold_fails_the_step() {
+    let tc = TestConductor::new();
+    let absent = Hash::from_bytes([0x5a; 32]);
+    write_declared_input_workflow(&tc, absent);
+
+    let summary = tc
+        .conductor()
+        .run_workflow("default", RunWorkflowOptions::default())
+        .await
+        .expect("a failing step settles into a summary, not a run error");
+
+    assert_eq!(
+        (summary.executed_steps, summary.cached_steps, summary.failed_steps),
+        (0, 0, 1),
+        "the step fails before it runs: {summary:?}",
+    );
+
+    let state = tc.conductor().get_state().expect("the state must be readable");
+    assert!(
+        state.tool_call_instances.is_empty(),
+        "an execution that never started records no instance to reuse: {:?}",
+        state.tool_call_instances.keys().collect::<Vec<_>>(),
+    );
+    tc.shutdown().await;
+}

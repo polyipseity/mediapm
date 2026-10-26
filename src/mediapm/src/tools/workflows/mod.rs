@@ -1081,6 +1081,46 @@ mod tests {
         assert_eq!(step.outputs.get("primary").map(|output| output.save), Some(SaveMode::False));
     }
 
+    /// A variant the source declares is bound by the hash the document roots.
+    ///
+    /// A `variant_hashes` entry says the bytes are already in the store, so a
+    /// step consuming that variant binds `${external_data.<hash>}` rather than a
+    /// step output — and the same hash has to be declared in `external_data`,
+    /// because the conductor's collection pass reclaims every object nothing
+    /// names. The binding and the declaration are asserted together: a binding
+    /// without the declaration loses the bytes on the first sweep, and a
+    /// declaration without the binding reads bytes nothing consumes.
+    #[test]
+    fn a_declared_variant_reaches_a_step_as_its_stored_hash() {
+        let document = media_document(
+            "staged-a",
+            media_source(
+                "",
+                vec![("media", AAA_HASH)],
+                vec![media_step(
+                    MediaStepTool::Ffmpeg,
+                    vec!["media"],
+                    vec![("normalized", ffmpeg_output_variant(0))],
+                    vec![],
+                )],
+            ),
+        );
+        let generated_doc = tools_document(&["ffmpeg"]);
+        let plan = build_plan(&document, &generated_doc).expect("plan");
+        let step = &plan.workflows[&managed_workflow_name("staged-a")].steps[0];
+
+        assert_eq!(
+            step.inputs.get(&ffmpeg::ffmpeg_input_content_name(0)).map(String::as_str),
+            Some(format!("${{external_data.{AAA_HASH}}}").as_str()),
+            "the step binds the stored hash rather than a step output",
+        );
+        assert!(
+            plan.external_data.contains_key(&AAA_HASH.parse().expect("fixture hash parses")),
+            "the hash the binding names is declared, or collection reclaims it",
+        );
+        assert!(step.depends_on.is_empty(), "stored bytes have no producing step to wait for");
+    }
+
     #[test]
     fn yt_dlp_artifact_variant_maps_output_policy_to_artifact_capture() {
         let document = media_document(

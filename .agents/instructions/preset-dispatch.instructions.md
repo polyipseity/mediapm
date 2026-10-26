@@ -59,6 +59,7 @@ Edges are **direct-only and non-transitive**: a dependency's own dependencies ne
 
 - Unknown tool name → **panics** with `"unknown managed tool: {tool_name}"` (programming error, not user error).
 - `apply_preset` is called only after successful provisioning — content_map and os_exec_paths are always populated for known managed tools.
+- A step input variant binds one of exactly two references: `${step_output.<step_id>.<output>}` when a step produced it, or `${external_data.<hash>}` when the source declared it in `variant_hashes`, and the second kind must also declare that hash in `plan.external_data` — the conductor resolves such an input to the hash itself and its `:file(...)` selector fetches the bytes at command time, while a binding whose hash the document does not declare loses those bytes to the collection pass.
 - `runtime.impure` must be `true` for side-effecting tools (yt-dlp: network fetches, media-tagger: network lookups).
 - Concurrency defaults: 1 active concurrent call; retry: 1 outer retry for network-dependent tools.
 - `DependencyTypes` is defined in `src/mediapm/src/tools/dependency.rs` (internal, no serde derives, not user-configurable).
