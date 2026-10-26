@@ -1203,7 +1203,7 @@ fn strict_verify_strategy_accepts_known_names() {
 /// with the one a later read derives.
 #[test]
 fn regression_a_loaded_document_arrives_trimmed() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir");
     let paths = mediapm::MediaPmPaths::from_root(dir.path());
     let document = MediaPmDocument {
         media: std::collections::BTreeMap::from([(
