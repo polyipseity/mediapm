@@ -277,7 +277,7 @@ pub fn load_runtime_dotenv(env_file: &Path, env_generated_file: &Path) {
 ///
 /// `schema_export_dir` receives this crate's registry and version contracts
 /// (`mod.ncl`, `v1.ncl`, `v2.ncl`) and `conductor_schema_dir` receives the
-/// conductor's (`mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`). The bytes written are
+/// conductor's (`mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl`). The bytes written are
 /// the ones the runtime evaluates, embedded at compile time, so an exported
 /// contract cannot describe a rule the process does not enforce and a schema
 /// change reaches the export directory unchanged.
