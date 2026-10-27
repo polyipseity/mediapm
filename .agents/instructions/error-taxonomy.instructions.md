@@ -24,7 +24,7 @@ Centralizes crate-level error variants so submodules share one contract, preserv
 
 - `Io` errors always carry a human-readable `operation` label and the `path`.
 - `ConductorDocument` errors carry `operation`, `path`, and a `detail` string.
-- `ConfigValidation` is the only variant that carries a structured code: `code` is the catalog code from `error-codes.instructions.md` (one of `MPM-E001`–`MPM-E004`, `MPM-E009`; see `MediaPmError::code` at `error.rs:81`), and `context`/`detail`/`suggestion` are all required so the rendered message names what was validated, what went wrong, and the fix. Every other variant derives its code from `MediaPmError::code`; do not hardcode a code string at a construction site.
+- `ConfigValidation` is the only variant that carries a structured code: `code` is the catalog code from `error-codes.instructions.md` (one of `MPM-E001`–`MPM-E004`, `MPM-E009`, `MPM-E010`; see `MediaPmError::code` at `error.rs:81`), and `context`/`detail`/`suggestion` are all required so the rendered message names what was validated, what went wrong, and the fix. Every other variant derives its code from `MediaPmError::code`; do not hardcode a code string at a construction site.
 - Map conductor errors via the `Conductor` variant (`?` or `map_err`); wrap in `Workflow` only when extra context is needed.
 
 ## Error propagation

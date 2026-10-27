@@ -48,7 +48,10 @@ use self::playlist::{
     PlaylistEntryPathMode, RenderedPlaylistEntry, generate_playlist_bytes,
     resolve_playlist_target_relative_path,
 };
-use self::resolve::{resolve_hierarchy_source, resolve_variant_hash, resolve_variant_source_bytes};
+use self::resolve::{
+    VariantResolveFailure, resolve_hierarchy_source, resolve_variant_hash,
+    resolve_variant_source_bytes,
+};
 use self::zip_reader::extract_zip_member_bytes;
 
 /// Per-workflow required step output names (`step_id -> output_name[]`).
@@ -681,7 +684,9 @@ async fn prepare_hierarchy_entry(
             // The selector resolves here rather than at bar creation, so this
             // is the first point the row can name the variant it writes.
             entry_bar.set_variant(&effective_variant);
-            let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
+            let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup)
+                .await
+                .map_err(|error| with_library_target(error, &relative_path))?;
 
             if let Some(hash) = hash {
                 // A variant bound to a ZIP member writes one member extracted
@@ -890,6 +895,24 @@ fn finish_entry_row(
             row.finish("F");
             row.finish_error();
         }
+    }
+}
+
+/// Names the library path an entry was writing when a variant failed to
+/// resolve.
+///
+/// The resolver reports what it knows — the hash, the media and the variant —
+/// and the entry knows the one path in the library those bytes were headed for.
+/// Appending it keeps the failure about a file the reader can go and look at
+/// without teaching the resolver presentation data it does not otherwise use.
+/// Resolution failures are workflow messages, so any other error already names
+/// its own subject and passes through untouched.
+fn with_library_target(error: MediaPmError, relative_path: &str) -> MediaPmError {
+    match error {
+        MediaPmError::Workflow(detail) => {
+            MediaPmError::Workflow(format!("{detail}; library target '{relative_path}'"))
+        }
+        other => other,
     }
 }
 
@@ -1417,12 +1440,20 @@ async fn materialize_media_folder_entry(
         .await
         {
             Ok(payload) => payload,
-            Err(error) => {
+            // Nothing produced this variant yet: the folder is short a file the
+            // workflow may still write, which is the counted miss this arm has
+            // always reported.
+            Err(VariantResolveFailure::NotProduced(error)) => {
                 shared.missing_reason(format!(
                     "media '{media_id}' variant '{variant_name}' resolution failed: {error}"
                 ));
                 unwritten_variant = true;
                 continue;
+            }
+            // Bytes the store lost are not something a later run repairs by
+            // itself, and the recording already promised them.
+            Err(VariantResolveFailure::Fatal(error)) => {
+                return Err(with_library_target(error, relative_path));
             }
         };
         if let Some(notice) = payload.notice {
@@ -2133,6 +2164,8 @@ mod tests_entry_rows;
 mod tests_folder_members;
 #[cfg(test)]
 mod tests_link_strategy;
+#[cfg(test)]
+mod tests_lost_objects;
 #[cfg(test)]
 mod tests_overall_row_finish;
 #[cfg(test)]

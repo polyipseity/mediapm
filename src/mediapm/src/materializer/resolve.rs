@@ -50,10 +50,17 @@ pub(super) async fn resolve_variant_hash(
     source: &MediaSourceSpec,
     lookup: &MaterializationLookupContext,
 ) -> Result<Option<Hash>, MediaPmError> {
-    if let Some(local_hash) = resolve_local_variant_hash(media_id, variant_name, source)?
-        && cas_hash_is_readable(&lookup.cas, local_hash).await
-    {
-        return Ok(Some(local_hash));
+    // A hash this variant resolves to whose bytes the store no longer holds. It
+    // is recorded rather than raised immediately because the other source of a
+    // hash may still answer for the variant, which is the ordinary stale-seed
+    // case; it is raised at the end, when nothing did.
+    let mut lost: Option<Hash> = None;
+
+    if let Some(local_hash) = resolve_local_variant_hash(media_id, variant_name, source)? {
+        if cas_hash_is_readable(&lookup.cas, local_hash).await {
+            return Ok(Some(local_hash));
+        }
+        lost = Some(local_hash);
     }
 
     if let Some(state) = lookup.conductor_state.as_ref()
@@ -67,14 +74,36 @@ pub(super) async fn resolve_variant_hash(
             lookup.ffmpeg_slot_limits.max_input_slots,
             lookup.ffmpeg_slot_limits.max_output_slots,
         )?;
-        if binding.is_none_or(|binding| binding.zip_member.is_none())
-            && cas_hash_is_readable(&lookup.cas, workflow_hash).await
-        {
+        let readable = cas_hash_is_readable(&lookup.cas, workflow_hash).await;
+        if binding.is_none_or(|binding| binding.zip_member.is_none()) && readable {
             return Ok(Some(workflow_hash));
+        }
+        // Only an unreadable workflow hash is a lost object. A readable one
+        // whose binding names a ZIP member falls through on purpose: the member
+        // is extracted by the caller, which asked for the pack's hash and not
+        // for these bytes.
+        if !readable {
+            lost = Some(workflow_hash);
         }
     }
 
-    Ok(None)
+    match lost {
+        Some(hash) => Err(missing_object_error(media_id, variant_name, hash)),
+        None => Ok(None),
+    }
+}
+
+/// Reports a variant whose resolved hash names bytes the store does not hold.
+///
+/// The distinction this message carries is the one the caller acts on: a variant
+/// no producer has supplied is a workflow that has not run, while a hash that
+/// resolved and then could not be read means the document and the recorded state
+/// both promise bytes the library cannot hold. Only the second is this error.
+fn missing_object_error(media_id: &str, variant: &str, hash: Hash) -> MediaPmError {
+    MediaPmError::Workflow(format!(
+        "media '{media_id}' variant '{variant}' resolved to CAS object {hash}, and the store does \
+         not hold it"
+    ))
 }
 
 fn is_zip_content(data: &[u8]) -> bool {
@@ -134,86 +163,119 @@ pub(crate) async fn backfill_source_variant_hashes_from_workflow_outputs(
     Ok(())
 }
 
+/// Why a variant did not resolve to bytes.
+///
+/// The two kinds are the caller's decision, and they are why this is a type
+/// rather than one error: a variant nothing has produced is a workflow that has
+/// not run, which the materializer reports as a missing path, while bytes the
+/// store lost are the run's failure.
+#[derive(Debug)]
+pub(super) enum VariantResolveFailure {
+    /// No producer supplied this variant yet.
+    NotProduced(MediaPmError),
+    /// A hash resolved and the bytes behind it are unavailable or unusable.
+    Fatal(MediaPmError),
+}
+
 /// Resolves variant bytes with optional fallback notice and source hash.
 ///
-/// Two outcomes are deliberately not errors. A conductor-state lookup that yields
-/// nothing, or bytes that cannot be read or are not the ZIP archive the caller
-/// asked for, falls through to the source's own variant hashes. That fallback is
-/// why the enclosing block falls through instead of returning early.
+/// Three outcomes are deliberately not failures. A conductor-state lookup that
+/// yields nothing falls through to the source's own variant hashes, as do bytes
+/// that are not the ZIP archive the caller asked for. That fallback is why the
+/// conductor-state block falls through instead of returning early. A variant
+/// whose resolved hash cannot be read is *not* one of them: see
+/// [`VariantResolveFailure`].
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError::Workflow`] when a ZIP member the binding names cannot
-/// be extracted. The failure is reported rather than answered with the pack:
-/// returning the archive as the variant's content would be a wrong success, and a
-/// caller cannot tell that apart from the right answer.
+/// Returns [`VariantResolveFailure::NotProduced`] when nothing names bytes for
+/// this variant, and [`VariantResolveFailure::Fatal`] when a hash resolved but
+/// the store cannot supply it, when the declared hash does not parse, or when a
+/// ZIP member the binding names cannot be extracted. The member failure is
+/// reported rather than answered with the pack: returning the archive as the
+/// variant's content would be a wrong success, and a caller cannot tell that
+/// apart from the right answer.
 pub(super) async fn resolve_variant_source_bytes(
     lookup: &MaterializationLookupContext,
     media_id: &str,
     source: &MediaSourceSpec,
     variant: &str,
     full_zip_archive: bool,
-) -> Result<VariantSourceBytes, MediaPmError> {
-    if let Some(state) = lookup.conductor_state.as_ref()
-        && let Some((workflow_hash, fallback_notice)) =
-            resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
-                .await?
-        && let Ok(bytes) = lookup.cas.get(workflow_hash).await
-        && (!full_zip_archive || is_zip_content(bytes.as_ref()))
-    {
-        let binding_result = resolve_media_variant_output_binding_with_limits(
-            source,
-            variant,
-            lookup.ffmpeg_slot_limits.max_input_slots,
-            lookup.ffmpeg_slot_limits.max_output_slots,
-        );
-        let materialized_result = binding_result.and_then(|binding| {
-            if let Some(binding) = binding {
-                if !full_zip_archive && let Some(zip_member) = binding.zip_member.as_deref() {
-                    extract_zip_member_bytes(bytes.as_ref(), zip_member)
-                        .map(|member_bytes| (member_bytes, None))
-                        .map_err(|error| {
-                            MediaPmError::Workflow(format!(
-                                "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
-                            ))
-                        })
-                } else {
-                    Ok((bytes.as_ref().to_vec(), Some(workflow_hash)))
-                }
-            } else {
-                Ok((bytes.as_ref().to_vec(), Some(workflow_hash)))
-            }
-        });
+) -> Result<VariantSourceBytes, VariantResolveFailure> {
+    use VariantResolveFailure::{Fatal, NotProduced};
 
-        let (materialized_bytes, source_hash) = materialized_result?;
-        return Ok(VariantSourceBytes {
-            bytes: materialized_bytes,
-            notice: fallback_notice,
-            source_hash,
-        });
+    let workflow_resolution = match lookup.conductor_state.as_ref() {
+        Some(state) => {
+            resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
+                .await
+                .map_err(Fatal)?
+        }
+        None => None,
+    };
+
+    if let Some((workflow_hash, fallback_notice)) = workflow_resolution {
+        match lookup.cas.get(workflow_hash).await {
+            // Bytes that are not the archive the caller asked for fall through
+            // to the source's own hashes: the caller asked for specific
+            // content, and this hash names content of another shape.
+            Ok(bytes) if !full_zip_archive || is_zip_content(bytes.as_ref()) => {
+                let binding = resolve_media_variant_output_binding_with_limits(
+                    source,
+                    variant,
+                    lookup.ffmpeg_slot_limits.max_input_slots,
+                    lookup.ffmpeg_slot_limits.max_output_slots,
+                )
+                .map_err(Fatal)?;
+                // A caller asking for the whole archive never extracts: it
+                // asked for these exact bytes and got them.
+                let zip_member = binding
+                    .as_ref()
+                    .filter(|_| !full_zip_archive)
+                    .and_then(|binding| binding.zip_member.as_deref());
+                let (materialized_bytes, source_hash) = match zip_member {
+                    Some(zip_member) => {
+                        let member_bytes =
+                            extract_zip_member_bytes(bytes.as_ref(), zip_member).map_err(
+                                |error| {
+                                    Fatal(MediaPmError::Workflow(format!(
+                                        "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
+                                    )))
+                                },
+                            )?;
+                        (member_bytes, None)
+                    }
+                    None => (bytes.as_ref().to_vec(), Some(workflow_hash)),
+                };
+
+                return Ok(VariantSourceBytes {
+                    bytes: materialized_bytes,
+                    notice: fallback_notice,
+                    source_hash,
+                });
+            }
+            Ok(_) => {}
+            Err(_) => return Err(Fatal(missing_object_error(media_id, variant, workflow_hash))),
+        }
     }
 
     if source.variant_hashes.is_empty() {
-        return Err(MediaPmError::Workflow(format!(
+        return Err(NotProduced(MediaPmError::Workflow(format!(
             "media '{media_id}' variant '{variant}' has no local variant hashes and no workflow output hash resolved from conductor state"
-        )));
+        ))));
     }
 
-    let hash_string = source
-        .variant_hashes
-        .get(variant)
-        .or_else(|| source.variant_hashes.get("default"))
-        .ok_or_else(|| {
-            MediaPmError::Workflow(format!(
-                "media '{media_id}' does not define hash pointer for variant '{variant}'"
-            ))
-        })?
-        .clone();
+    let Some(hash_string) =
+        source.variant_hashes.get(variant).or_else(|| source.variant_hashes.get("default"))
+    else {
+        return Err(NotProduced(MediaPmError::Workflow(format!(
+            "media '{media_id}' does not define hash pointer for variant '{variant}'"
+        ))));
+    };
 
     let hash = hash_string.parse::<Hash>().map_err(|_| {
-        MediaPmError::Workflow(format!(
+        Fatal(MediaPmError::Workflow(format!(
             "media '{media_id}' variant '{variant}' has invalid CAS hash '{hash_string}'"
-        ))
+        )))
     })?;
 
     match lookup.cas.get(hash).await {
@@ -231,9 +293,7 @@ pub(super) async fn resolve_variant_source_bytes(
                 source_hash: Some(hash),
             })
         }
-        Err(source) => Err(MediaPmError::Workflow(format!(
-            "CAS hash '{hash}' for media '{media_id}' variant '{variant}' is missing from CAS: {source}"
-        ))),
+        Err(_) => Err(Fatal(missing_object_error(media_id, variant, hash))),
     }
 }
 
@@ -2996,7 +3056,13 @@ mod tests {
                  is the defect this test exists for",
                 payload.bytes.len()
             ),
-            Err(error) => error,
+            // The pack was found and read, so the failure is the extraction
+            // itself rather than a variant nothing produced.
+            Err(VariantResolveFailure::Fatal(error)) => error,
+            Err(VariantResolveFailure::NotProduced(error)) => panic!(
+                "the pack and its member are both in the fixture, so nothing here is unproduced: \
+                 {error}"
+            ),
         };
         assert!(
             matches!(&error, MediaPmError::Workflow(_)),

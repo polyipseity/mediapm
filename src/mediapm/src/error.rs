@@ -18,6 +18,7 @@
 //! | MPM-E003 | Circular inherit | A dependency and its target both use "inherit" | Set an explicit version for the target |
 //! | MPM-E004 | Config parse failure | A config value failed to deserialize | Check the expected shape and available fields |
 //! | MPM-E009 | Managed namespace conflict | The user conductor document declares a tool key or workflow name inside a namespace reserved for mediapm-managed entries | Remove or rename the conflicting entry; mediapm owns the managed namespace |
+//! | MPM-E010 | Unsaved materialized variant | A variant the hierarchy materializes is declared with `save = false`, so the library would hold a file whose bytes nothing keeps | Keep it (`save = "full"`, `true` or `"auto"`), or drop the hierarchy entry that selects it |
 //! | MPM-W001 | Silenced serde error | A ToolRequirement deserialization silently dropped during provisioning entry building (`build_provisioning_entries` global-reqs collection) | Add structured warning to emitted diagnostics |
 
 use std::path::PathBuf;

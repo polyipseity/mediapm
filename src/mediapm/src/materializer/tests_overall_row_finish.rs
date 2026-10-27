@@ -196,23 +196,23 @@ async fn the_overall_row_finishes_error_when_a_folder_variant_path_is_a_director
     );
 }
 
-/// A folder variant whose bytes cannot be resolved counts as missing, and
-/// ends the overall row as an error.
+/// A folder variant whose hash names bytes the store lost fails the run.
 ///
-/// `resolve_variant_source_bytes` errors when the variant names a hash the
-/// store does not hold. The arm records a notice, moves on to the next
-/// variant, and used to leave the folder on its success outcome on the way
-/// out, so a run that wrote none of the folder reported it as materialized
-/// and finished green.
+/// The declaration and the state agree that the variant exists, so the library
+/// is supposed to hold it; only the bytes are gone. Counting that as a path the
+/// workflow has not produced yet would report the same thing as a run that has
+/// simply not happened, which is why the arm raises instead. Both rows still
+/// finish as errors, so the screen says the same thing as the returned
+/// [`MediaPmError`].
 #[tokio::test]
-async fn the_overall_row_finishes_error_when_a_folder_variant_cannot_be_resolved() {
+async fn the_run_fails_when_a_folder_variant_names_bytes_the_store_lost() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let absent = Hash::from_content(b"never-stored-in-this-cas");
 
     let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
-    let report = sync_hierarchy(
+    let result = sync_hierarchy(
         &paths,
         &folder_only_document(&absent.to_string()),
         &mut MediaPmState::default(),
@@ -223,35 +223,31 @@ async fn the_overall_row_finishes_error_when_a_folder_variant_cannot_be_resolved
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
     )
-    .await
-    .expect("one unresolvable variant leaves a report to read; it is not a failed run");
+    .await;
 
-    assert_eq!(
-        report.missing_paths, 1,
-        "the folder wrote nothing, so the library is short of the entry the document asked for; \
-         got {report:?}"
+    let error = result.expect_err(
+        "a variant that resolved to a hash the store does not hold is a lost object, not a path \
+         the workflow has not written yet",
     );
-    assert_eq!(
-        report.materialized_paths, 0,
-        "a folder that wrote nothing is not a materialized path; got {report:?}"
-    );
-    assert_eq!(
-        report.skipped_paths, 0,
-        "the variant resolved to no bytes at all, which is not an already-correct output; got \
-         {report:?}"
-    );
+    let message = error.to_string();
+    for expected in [absent.to_string(), FOLDER_VARIANT.to_string()] {
+        assert!(
+            message.contains(&expected),
+            "the failure must name '{expected}' so the lost object can be found: {message}"
+        );
+    }
     assert_eq!(
         entry_finishes(&recording),
-        vec![ProgressOp::FinishWarning],
-        "the folder row must carry the warning, the way a media entry with no content does; \
+        vec![ProgressOp::FinishError],
+        "the folder row raised, so it must finish as an error rather than as a warning; \
          got {ops:?}",
         ops = recording.ops()
     );
     assert_eq!(
         overall_finish(&recording, &overall),
         Some(ProgressOp::FinishError),
-        "a folder left short a variant has not materialized the library, so the overall row must \
-         end as an error; got {ops:?}",
+        "a run that could not write the folder has not materialized the library, so the overall \
+         row must end as an error; got {ops:?}",
         ops = recording.recorded()
     );
 }

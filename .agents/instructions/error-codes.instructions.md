@@ -21,6 +21,7 @@ Crate-prefixed error codes across the workspace. Format: `<CRATE-PREFIX>-<TYPE><
 | MPM-E007 | I/O error | Filesystem operation failed | Check filesystem permissions, disk space, and paths |
 | MPM-E008 | Conductor document error | Conductor document loading or validation failed | Check the conductor-generated NCL document |
 | MPM-E009 | Managed namespace conflict | User conductor document declares a tool key or workflow name in the mediapm-managed namespace | Remove or rename the conflicting entry; mediapm owns the managed namespace |
+| MPM-E010 | Unsaved materialized variant | A variant the hierarchy materializes is declared with `save = false` | Keep it (`save = "full"`, `true` or `"auto"`), or drop the hierarchy entry that selects it |
 | MPM-W001 | Silenced serde error | `ToolRequirement` deserialization failed and was logged instead of blocking | Inspect logs; the affected tool entry may be incomplete |
 
 ## CAS — mediapm-cas

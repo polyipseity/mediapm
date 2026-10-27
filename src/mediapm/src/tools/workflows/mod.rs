@@ -31,7 +31,9 @@ use mediapm_conductor::{
 use crate::conductor_bridge::documents::save_conductor_generated_document;
 use crate::conductor_bridge::sync::find_active_tool_spec;
 pub(crate) use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
-use crate::config::hierarchy_types::{hierarchy_consumed_variants, validate_media_ids};
+use crate::config::hierarchy_types::{
+    hierarchy_consumed_variants, hierarchy_entry_paths_for_variant, validate_media_ids,
+};
 use crate::config::output_types::{ResolvedStepVariantFlow, resolve_step_variant_flow};
 use crate::config::source_types::step_option_scalar;
 use crate::config::{
@@ -693,6 +695,65 @@ pub(crate) struct MediaWorkflowPlan {
     pub(crate) external_data: BTreeMap<Hash, ExternalDataEntry>,
 }
 
+/// Refuses a document that declares a variant the hierarchy materializes
+/// unsaved.
+///
+/// `auto` cannot produce this shape: the resolver keeps a materialized variant
+/// whole. Only a hand-written policy reaches it, and honoring it would ask the
+/// library for a file whose bytes nothing keeps, so the declaration is refused
+/// where the two facts first meet rather than discovered by a missing path after
+/// the workflow ran.
+///
+/// The check is deliberately narrow. `true` and `"full"` both keep the file
+/// whole, and an unsaved variant nothing materializes retains nothing anyone
+/// needs, so only an explicit `false` on a consumed variant is the
+/// contradiction.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] with code `MPM-E010`, naming the
+/// media, the step, the variant and the hierarchy entry whose selector consumes
+/// it.
+fn reject_unsaved_materialized_variants(
+    document: &MediaPmDocument,
+    consumed: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<(), MediaPmError> {
+    for (media_id, source) in &document.media {
+        let Some(materialized) = consumed.get(media_id) else {
+            continue;
+        };
+        for (step_index, step) in source.steps.iter().enumerate() {
+            for (variant_name, variant) in &step.output_variants {
+                if variant.declared_save() != OutputSaveConfig::Bool(false)
+                    || !materialized.contains(variant_name)
+                {
+                    continue;
+                }
+                let entry_paths =
+                    hierarchy_entry_paths_for_variant(document, media_id, variant_name)?;
+                return Err(MediaPmError::ConfigValidation {
+                    code: "MPM-E010",
+                    context: format!(
+                        "media '{media_id}' variant '{variant_name}' (step {step_index})"
+                    ),
+                    detail: format!(
+                        "the hierarchy materializes this variant at '{}', so marking it unsaved asks \
+                         the library for a file whose bytes nothing keeps",
+                        entry_paths.join("', '")
+                    ),
+                    suggestion: format!(
+                        "keep the bytes by declaring save = \"full\", true or \"auto\" for variant \
+                         '{variant_name}' of media '{media_id}', or drop the hierarchy entry that \
+                         selects it"
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Builds the full managed workflow/external-data plan from `mediapm` config
 /// with explicit ffmpeg slot limits.
 ///
@@ -720,6 +781,10 @@ fn build_media_workflow_plan_with_limits(
     // One pass for the whole document: the answer is per media, but the walk
     // over the hierarchy is not, so asking per step would repeat it.
     let consumed = hierarchy_consumed_variants(document)?;
+
+    // The same index answers the other question the save policy raises: a
+    // variant the library holds may not also be declared unsaved.
+    reject_unsaved_materialized_variants(document, &consumed)?;
 
     for (media_id, source) in &document.media {
         // A media with no hierarchy entry materializes nothing, so an absent key
@@ -2069,6 +2134,105 @@ mod tests {
             first_step.outputs.get("primary_1").map(|output| output.save),
             Some(SaveMode::Full),
             "an explicit full is kept whole even where auto would not retain it"
+        );
+    }
+
+    /// A variant the hierarchy materializes may not be declared unsaved.
+    ///
+    /// `auto` resolves such a variant to `"full"`, so only a hand-written
+    /// policy reaches this shape, and honoring it asks the library to hold a
+    /// file whose bytes nothing keeps. The rejection names the media, the
+    /// variant and the hierarchy entry whose selector consumes it, because a
+    /// document with many entries otherwise says nothing about which one is
+    /// contradictory.
+    #[test]
+    fn a_materialized_variant_marked_unsaved_is_rejected() {
+        let mut folder = media_folder_node("keep-media", &["keep"]);
+        folder.path = HierarchyPath::from("library/keep");
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                "keep-media".to_string(),
+                media_source(
+                    "",
+                    vec![("default", AAA_HASH)],
+                    vec![media_step(
+                        MediaStepTool::Ffmpeg,
+                        vec!["default"],
+                        vec![
+                            ("keep", ffmpeg_variant_with_policy(0, Some(json!(false)))),
+                            ("scratch", ffmpeg_variant_with_policy(1, Some(json!(false)))),
+                        ],
+                        vec![],
+                    )],
+                ),
+            )]),
+            hierarchy: vec![folder],
+            ..MediaPmDocument::default()
+        };
+
+        let error = build_plan(&document, &tools_document(&["ffmpeg"]))
+            .expect_err("a materialized variant declared unsaved contradicts the hierarchy");
+
+        assert_eq!(
+            error.code(),
+            "MPM-E010",
+            "the rejection is a config validation with its own catalog code"
+        );
+        let text = error.to_string();
+        for expected in ["keep-media", "keep", "library/keep"] {
+            assert!(
+                text.contains(expected),
+                "the rejection must name '{expected}' so the document can be fixed; got: {text}"
+            );
+        }
+    }
+
+    /// The rejection is about the contradiction, not about the keyword.
+    ///
+    /// A materialized variant declared `"full"` keeps the library whole, and a
+    /// variant nothing materializes may be unsaved: neither is a conflict, so
+    /// both must build.
+    #[test]
+    fn a_materialized_variant_marked_full_is_accepted() {
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                "keep-media".to_string(),
+                media_source(
+                    "",
+                    vec![("default", AAA_HASH)],
+                    vec![media_step(
+                        MediaStepTool::Ffmpeg,
+                        vec!["default"],
+                        vec![
+                            ("keep", ffmpeg_variant_with_policy(0, Some(json!("full")))),
+                            ("scratch", ffmpeg_variant_with_policy(1, Some(json!(false)))),
+                        ],
+                        vec![],
+                    )],
+                ),
+            )]),
+            hierarchy: vec![media_folder_node("keep-media", &["keep"])],
+            ..MediaPmDocument::default()
+        };
+
+        let plan = build_plan(&document, &tools_document(&["ffmpeg"]))
+            .expect("a kept variant and an unsaved variant nothing materializes are both legal");
+        let workflow = &plan.workflows[&managed_workflow_name("keep-media")];
+        let step = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == "step-0-ffmpeg")
+            .expect("the media step synthesizes one ffmpeg call");
+
+        assert_eq!(
+            step.outputs.get("primary").map(|output| output.save),
+            Some(SaveMode::Full),
+            "the accepted declaration reaches the capture spec as written"
+        );
+        assert_eq!(
+            step.outputs.get("primary_1").map(|output| output.save),
+            Some(SaveMode::False),
+            "an unsaved variant the hierarchy does not materialize stays unsaved"
         );
     }
 

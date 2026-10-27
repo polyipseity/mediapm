@@ -225,6 +225,22 @@ pub enum OutputVariantValue {
     Generic(GenericOutputVariantConfig),
 }
 
+impl OutputVariantValue {
+    /// The save policy this variant declares, whichever tool shape carries it.
+    ///
+    /// Both shapes spell the field the same way, so a reader that has to ask
+    /// every declared variant the same question — refusing the ones the
+    /// hierarchy materializes yet nothing keeps — asks it here rather than
+    /// matching the shapes itself.
+    #[must_use]
+    pub fn declared_save(&self) -> OutputSaveConfig {
+        match self {
+            Self::YtDlp(config) => config.save,
+            Self::Generic(config) => config.save,
+        }
+    }
+}
+
 /// Simplified output variant policy used by workflow persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputVariantPolicyConfig {

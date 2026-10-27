@@ -713,8 +713,70 @@ pub fn flatten_hierarchy_nodes_for_runtime(
 pub fn hierarchy_consumed_variants(
     document: &MediaPmDocument,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, MediaPmError> {
-    let flattened = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
     let mut consumed = BTreeMap::<String, BTreeSet<String>>::new();
+
+    for variant in consumed_variants(document)? {
+        consumed.entry(variant.media_id).or_default().insert(variant.variant);
+    }
+
+    Ok(consumed)
+}
+
+/// Names the hierarchy entries whose selectors materialize one variant of one
+/// media.
+///
+/// The answer exists for the diagnostic that refuses an unsaved materialized
+/// variant: a document with many entries has to say which one the declaration
+/// contradicts. It reads the same walk [`hierarchy_consumed_variants`] folds, so
+/// the two cannot disagree about which entries consume a variant, and it is
+/// called only to render a failure, which is why it pays for its own walk
+/// instead of carrying entry paths through every caller.
+///
+/// # Errors
+///
+/// Returns the same failures as [`hierarchy_consumed_variants`]: a hierarchy
+/// that does not flatten, and a selector that resolves to nothing while no
+/// `default` variant exists.
+pub(crate) fn hierarchy_entry_paths_for_variant(
+    document: &MediaPmDocument,
+    media_id: &str,
+    variant: &str,
+) -> Result<Vec<String>, MediaPmError> {
+    Ok(consumed_variants(document)?
+        .into_iter()
+        .filter(|consumed| consumed.media_id == media_id && consumed.variant == variant)
+        .map(|consumed| consumed.entry_path)
+        .collect())
+}
+
+/// One variant a hierarchy entry materializes, with the entry that asks for it.
+///
+/// The pair is the walk's own unit rather than the folded set, because two
+/// callers ask the walk different questions — which variants a media
+/// materializes, and which entries materialize one variant — and a second walk
+/// would be a second answer to the entry-kind rules below.
+struct ConsumedVariant {
+    /// Media id the entry binds.
+    media_id: String,
+    /// Variant name one of the entry's selectors resolves to.
+    variant: String,
+    /// Path of the entry, as a diagnostic names it.
+    entry_path: String,
+}
+
+/// Walks the hierarchy once and reports every (entry, variant) pair it
+/// materializes.
+///
+/// The walk is the single description of which entry kind consumes what: see
+/// [`hierarchy_consumed_variants`] for the rule behind each kind.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when flattening rejects the hierarchy, and
+/// when a selector resolves to nothing while no `default` variant exists.
+fn consumed_variants(document: &MediaPmDocument) -> Result<Vec<ConsumedVariant>, MediaPmError> {
+    let flattened = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
+    let mut consumed = Vec::<ConsumedVariant>::new();
 
     for entry in &flattened {
         let Some(source) = document.media.get(&entry.entry.media_id) else {
@@ -739,9 +801,11 @@ pub fn hierarchy_consumed_variants(
             HierarchyEntryKind::Playlist => continue,
         };
 
-        if !selected.is_empty() {
-            consumed.entry(media_id.to_string()).or_default().extend(selected);
-        }
+        consumed.extend(selected.into_iter().map(|variant| ConsumedVariant {
+            media_id: media_id.to_string(),
+            variant,
+            entry_path: entry.path_str(),
+        }));
     }
 
     Ok(consumed)
