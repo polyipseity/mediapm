@@ -48,10 +48,7 @@ use self::playlist::{
     PlaylistEntryPathMode, RenderedPlaylistEntry, generate_playlist_bytes,
     resolve_playlist_target_relative_path,
 };
-use self::resolve::{
-    collect_media_source_available_variants, resolve_hierarchy_source, resolve_variant_hash,
-    resolve_variant_source_bytes,
-};
+use self::resolve::{resolve_hierarchy_source, resolve_variant_hash, resolve_variant_source_bytes};
 use self::zip_reader::extract_zip_member_bytes;
 
 /// Per-workflow required step output names (`step_id -> output_name[]`).
@@ -671,15 +668,13 @@ async fn prepare_hierarchy_entry(
             let variant_name =
                 entry.entry.variants.first().cloned().unwrap_or_else(|| "default".to_string());
 
-            let variant_selector = expand_variant_selectors(
-                &entry.entry.variants,
-                &collect_media_source_available_variants(source),
-            )
-            .map_err(|e| {
-                MediaPmError::Workflow(format!(
-                    "media '{media_id}': variant selector expansion failed: {e}"
-                ))
-            })?;
+            let variant_selector =
+                expand_variant_selectors(&entry.entry.variants, &source.available_variants())
+                    .map_err(|e| {
+                        MediaPmError::Workflow(format!(
+                            "media '{media_id}': variant selector expansion failed: {e}"
+                        ))
+                    })?;
 
             let effective_variant = variant_selector.first().cloned().unwrap_or(variant_name);
 
@@ -1343,7 +1338,7 @@ async fn materialize_media_folder_entry(
     progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     // Resolve variant selectors.
-    let available = collect_media_source_available_variants(source);
+    let available = source.available_variants();
     let selected_variants = if entry.entry.variants.is_empty() {
         // No selectors means every available variant.
         available.iter().cloned().collect::<Vec<_>>()

@@ -3,7 +3,7 @@
 //! These types model the `media.<id>` entries in `mediapm.ncl` plus the
 //! per-step tool taxonomy.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::hierarchy_types::{deserialize_variant_selector_list, serialize_variant_selector_list};
 use super::output_types::OutputVariantValue;
@@ -87,6 +87,28 @@ pub struct MediaSourceSpec {
     /// Ordered media-processing steps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<MediaStep>,
+}
+
+impl MediaSourceSpec {
+    /// Collects all available variant names for this media source.
+    ///
+    /// A variant is available when the source seeds it or when any of its steps
+    /// declares it as an output. The save policy asks the same question when it
+    /// decides which variants the library holds, so it reads this method rather
+    /// than a second spelling of the rule.
+    #[must_use]
+    pub(crate) fn available_variants(&self) -> BTreeSet<String> {
+        let mut variants = BTreeSet::new();
+        for variant_name in self.variant_hashes.keys() {
+            variants.insert(variant_name.clone());
+        }
+        for step in &self.steps {
+            for variant_name in step.output_variants.keys() {
+                variants.insert(variant_name.clone());
+            }
+        }
+        variants
+    }
 }
 
 /// One ordered media-processing step.

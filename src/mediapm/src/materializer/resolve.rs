@@ -39,23 +39,6 @@ pub(super) fn resolve_hierarchy_source<'a>(
     })
 }
 
-/// Collects all available variant names for one media source.
-#[must_use]
-pub(super) fn collect_media_source_available_variants(
-    source: &MediaSourceSpec,
-) -> BTreeSet<String> {
-    let mut variants = BTreeSet::new();
-    for variant_name in source.variant_hashes.keys() {
-        variants.insert(variant_name.clone());
-    }
-    for step in &source.steps {
-        for variant_name in step.output_variants.keys() {
-            variants.insert(variant_name.clone());
-        }
-    }
-    variants
-}
-
 async fn cas_hash_is_readable(cas: &FileSystemCas, hash: Hash) -> bool {
     cas.get(hash).await.is_ok()
 }

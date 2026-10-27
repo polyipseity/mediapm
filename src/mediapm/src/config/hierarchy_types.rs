@@ -678,6 +678,90 @@ pub fn flatten_hierarchy_nodes_for_runtime(
     Ok(flattened)
 }
 
+/// Reports which output variants each media's hierarchy entries materialize.
+///
+/// The index answers one question: for each media the document declares, which
+/// of its variants does the library hold a materialized file for. A save policy
+/// resolved to `auto` treats that set as materialized, and an explicit unsaved
+/// declaration is refused on it, so the set has to match what the materializer
+/// writes rather than what a user might expect a selector to mean.
+///
+/// The two entry kinds differ, and the difference is the materializer's:
+///
+/// - a `media` entry writes one file and names one variant: flattening requires
+///   the node's `variant`, so its selector list holds exactly one selector and
+///   expansion yields the one variant it materializes (`materializer/mod.rs`,
+///   the `Media` arm);
+/// - a `media_folder` entry writes one file per resolved variant, and its empty
+///   selector list means every available variant (`materializer/mod.rs`, the
+///   `MediaFolder` arm);
+/// - a `playlist` entry writes no media blob at all: it renders its references
+///   into one text file, so it consumes nothing here. The media it names are
+///   materialized by their own entries, which this walk visits separately.
+///
+/// A media id no entry names is absent from the map rather than present with an
+/// empty set. An entry naming a media the document does not declare is skipped:
+/// the sync refuses such a document before it materializes anything, so
+/// repeating the check here would report a failure twice and in two places.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when flattening rejects the hierarchy, and
+/// when a selector resolves to nothing while no `default` variant exists. The
+/// selector error names the media and the entry path, so a document with many
+/// entries says which one is wrong.
+pub fn hierarchy_consumed_variants(
+    document: &MediaPmDocument,
+) -> Result<BTreeMap<String, BTreeSet<String>>, MediaPmError> {
+    let flattened = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
+    let mut consumed = BTreeMap::<String, BTreeSet<String>>::new();
+
+    for entry in &flattened {
+        let Some(source) = document.media.get(&entry.entry.media_id) else {
+            continue;
+        };
+        let available = source.available_variants();
+        let media_id = entry.entry.media_id.as_str();
+
+        let selected = match entry.entry.kind {
+            HierarchyEntryKind::Media => {
+                expand_variant_selectors(&entry.entry.variants, &available)
+                    .map_err(|error| selector_expansion_error(media_id, entry, &error))?
+            }
+            HierarchyEntryKind::MediaFolder => {
+                if entry.entry.variants.is_empty() {
+                    available.into_iter().collect()
+                } else {
+                    expand_variant_selectors(&entry.entry.variants, &available)
+                        .map_err(|error| selector_expansion_error(media_id, entry, &error))?
+                }
+            }
+            HierarchyEntryKind::Playlist => continue,
+        };
+
+        if !selected.is_empty() {
+            consumed.entry(media_id.to_string()).or_default().extend(selected);
+        }
+    }
+
+    Ok(consumed)
+}
+
+/// Renders a selector-expansion failure with the media and entry it came from.
+///
+/// The expansion helper reports only the selector rule that failed, which is
+/// precise and says nothing about which of a document's many entries owns it.
+fn selector_expansion_error(
+    media_id: &str,
+    entry: &FlattenedHierarchyEntry,
+    error: &str,
+) -> MediaPmError {
+    MediaPmError::Workflow(format!(
+        "media '{media_id}': variant selector expansion failed at hierarchy entry '{}': {error}",
+        entry.path_str()
+    ))
+}
+
 /// Recursive helper for hierarchy flattening.
 fn flatten_hierarchy_nodes_inner(
     nodes: &[HierarchyNode],
@@ -1010,6 +1094,8 @@ pub(crate) fn collect_playlist_media_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::source_types::MediaSourceSpec;
+    use crate::config::versions::MediaRuntimeStorageLatest;
 
     /// Splits a `/`-separated path into the declared component text a flattened
     /// entry carries before the materializer parses it.
@@ -1043,6 +1129,130 @@ mod tests {
             sanitize_names: Some(SanitizeNamesConfig::Inherit),
             children: Vec::new(),
         }
+    }
+
+    /// Builds a document holding one media whose available variants are the
+    /// seeded `variant_hashes` keys, around the given hierarchy.
+    ///
+    /// The struct literal is used rather than a JSON decode because
+    /// `MediaPmDocument` carries no `Default`; the fields the consumed-variant
+    /// question never reads are left empty instead of being spelled through a
+    /// full contract-valid document.
+    fn document_with(seeded_variants: &[&str], hierarchy: Vec<HierarchyNode>) -> MediaPmDocument {
+        let source = MediaSourceSpec {
+            variant_hashes: seeded_variants
+                .iter()
+                .map(|variant| ((*variant).to_string(), "hash".to_string()))
+                .collect(),
+            ..MediaSourceSpec::default()
+        };
+
+        MediaPmDocument {
+            version: crate::config::defaults::MEDIAPM_DOCUMENT_VERSION,
+            media: BTreeMap::from([("m".to_string(), source)]),
+            hierarchy,
+            tools: BTreeMap::new(),
+            runtime: MediaRuntimeStorageLatest::default(),
+            state: None,
+        }
+    }
+
+    /// The index unions what every entry of a media materializes: an explicit
+    /// selector and a folder that names none (which materializes every
+    /// available variant) together cover both variants, so a save policy
+    /// resolved from this index sees the whole materialized set.
+    #[test]
+    fn hierarchy_consumed_variants_unions_selectors_per_media() {
+        let hierarchy = vec![
+            HierarchyNode {
+                kind: HierarchyNodeKind::MediaFolder,
+                path: HierarchyPath::simple("selected"),
+                media_id: Some("m".into()),
+                variants: vec!["a".into()],
+                ..base_node()
+            },
+            HierarchyNode {
+                kind: HierarchyNodeKind::MediaFolder,
+                path: HierarchyPath::simple("everything"),
+                media_id: Some("m".into()),
+                ..base_node()
+            },
+        ];
+
+        let consumed = hierarchy_consumed_variants(&document_with(&["a", "b"], hierarchy))
+            .expect("the selectors name available variants");
+
+        assert_eq!(
+            consumed,
+            BTreeMap::from([("m".to_string(), BTreeSet::from(["a".to_string(), "b".to_string()]))]),
+            "the explicit selector and the empty-selector expansion must union"
+        );
+    }
+
+    /// A `media` entry writes one file, so it consumes one variant even when
+    /// more are available. The rule is the materializer's, and a save policy
+    /// that treated the whole available set as materialized would claim the
+    /// library holds files this entry never writes.
+    #[test]
+    fn hierarchy_consumed_variants_takes_one_variant_for_a_media_entry() {
+        let hierarchy = vec![HierarchyNode {
+            kind: HierarchyNodeKind::Media,
+            path: HierarchyPath::simple("single"),
+            media_id: Some("m".into()),
+            variant: Some("a".into()),
+            ..base_node()
+        }];
+
+        let consumed = hierarchy_consumed_variants(&document_with(&["a", "b"], hierarchy))
+            .expect("the variant names an available variant");
+
+        assert_eq!(
+            consumed,
+            BTreeMap::from([("m".to_string(), BTreeSet::from(["a".to_string()]))]),
+            "a media entry materializes only the variant it names"
+        );
+    }
+
+    /// A playlist entry renders its references into one text file and
+    /// materializes no media blob, so it contributes nothing to the index even
+    /// though it names a media: the media's own entry is what writes its files.
+    #[test]
+    fn hierarchy_consumed_variants_ignores_a_playlist_entry() {
+        let hierarchy = vec![HierarchyNode {
+            kind: HierarchyNodeKind::Playlist,
+            path: HierarchyPath::simple("list.m3u8"),
+            media_id: Some("m".into()),
+            ..base_node()
+        }];
+
+        let consumed = hierarchy_consumed_variants(&document_with(&["a"], hierarchy))
+            .expect("a playlist entry is not an error");
+
+        assert!(consumed.is_empty(), "a playlist consumes no media blob, got {consumed:?}");
+    }
+
+    /// A selector that does not compile keeps its media context, so a user is
+    /// told which media's hierarchy entry is wrong rather than only that some
+    /// regex failed.
+    #[test]
+    fn hierarchy_consumed_variants_rejects_an_invalid_selector() {
+        let hierarchy = vec![HierarchyNode {
+            kind: HierarchyNodeKind::MediaFolder,
+            path: HierarchyPath::simple("folder"),
+            media_id: Some("m".into()),
+            variants: vec![regex_variant_selector("(")],
+            ..base_node()
+        }];
+
+        let error = hierarchy_consumed_variants(&document_with(&["a"], hierarchy))
+            .expect_err("an uncompilable regex selector must be rejected")
+            .to_string();
+
+        assert!(error.contains("media 'm'"), "the error must name the media: {error}");
+        assert!(
+            error.contains("regex variant selector"),
+            "the error must name the selector rule: {error}"
+        );
     }
 
     #[test]
