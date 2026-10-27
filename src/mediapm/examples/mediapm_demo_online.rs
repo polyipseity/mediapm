@@ -3341,7 +3341,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
 
     let options = mediapm::SyncLibraryOptions {
         verify_materialization: true,
-        observer: Some(std::sync::Arc::new(mediapm::output::observer::CliSyncObserver)),
+        observer: Some(mediapm::output::observer::cli_observer()),
         ..Default::default()
     };
     let summary = sync_service
@@ -3349,20 +3349,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         .await
         .map_err(|error| format!("online demo sync failed: {error}"))?;
 
-    eprintln!(
-        "[demo_online] sync complete; rendering conductor timing profile (workflow scope only)..."
-    );
-    if !summary.warnings.is_empty() {
-        eprintln!("[demo_online] sync warnings ({count}):", count = summary.warnings.len());
-        for warning in &summary.warnings {
-            eprintln!("[demo_online]   - {warning}");
-        }
-    }
-    eprintln!(
-        "[demo_online] sync summary: executed_instances={} cached_instances={} materialized_paths={}",
-        summary.executed_instances, summary.cached_instances, summary.materialized_paths
-    );
-    // (profile timing intentionally omitted: no print_profile_timing API in new conductor)
+    mediapm::output::print_sync_summary(&summary);
 
     eprintln!("[demo_online] running post-sync verification and artifact summary...");
     let machine = load_machine(&sync_service.paths().conductor_generated_ncl)?;
@@ -3401,10 +3388,14 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     // shows the guarantee rather than claiming it. The materialized file set
     // is snapshotted before and after, so a re-materialization (even one that
     // rewrote identical bytes) fails the run.
+    eprintln!();
+    eprintln!("re-running sync: it must do nothing");
+    eprintln!();
     let materialized_before = snapshot_materialized_files(&hierarchy_root)?;
     let second_options = mediapm::SyncLibraryOptions {
         verify_materialization: true,
         no_progress: true,
+        observer: Some(mediapm::output::observer::cli_observer()),
         ..Default::default()
     };
     let second = sync_service
@@ -3425,17 +3416,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         warning_count: second.warnings.len(),
     };
     assert_second_sync_did_no_work(&summary, &second, &materialized_before, &materialized_after)?;
-    eprintln!(
-        "[demo_online] second sync idempotent: executed={executed} cached={cached} \
-         materialized={materialized} skipped={skipped} updated_tools={updated} \
-         (no-payload import builtin) warnings={warnings}",
-        executed = second_run.executed_instances,
-        cached = second_run.cached_instances,
-        materialized = second_run.materialized_paths,
-        skipped = second_run.skipped_paths,
-        updated = second_run.updated_tools,
-        warnings = second_run.warning_count,
-    );
+    mediapm::output::print_sync_summary(&second);
 
     let store_size_bytes = summarize_store_size(sync_service.conductor().cas(), &cas_root).await?;
     let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
