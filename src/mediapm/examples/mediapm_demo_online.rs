@@ -133,9 +133,10 @@ use mediapm::{
     HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
     MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmService,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
-    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry,
-    ToolRequirement, TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
-    example_isolation, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    OutputSaveConfig, OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
+    ToolRegistryEntry, ToolRequirement, TransformInputValue, YtDlpOutputKind,
+    YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
+    load_mediapm_state_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -1136,6 +1137,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "video".to_string(),
                     OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                         kind: YtDlpOutputKind::Primary,
+                        // Materialized as the tagged media leaf.
+                        save: OutputSaveConfig::Full,
                         ..Default::default()
                     }),
                 ),
@@ -1143,6 +1146,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "subtitles".to_string(),
                     OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                         kind: YtDlpOutputKind::Subtitles,
+                        // Materialized under `sidecars/subtitles/`.
+                        save: OutputSaveConfig::Full,
                         ..Default::default()
                     }),
                 ),
@@ -1156,6 +1161,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                         // `langs` value only scopes capture/materialization so the
                         // media root can project one selected subtitle.
                         langs: "en".to_string(),
+                        // Materialized under `sidecars/` and at the media root.
+                        save: OutputSaveConfig::Full,
                         ..Default::default()
                     }),
                 ),
@@ -1163,6 +1170,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "thumbnails".to_string(),
                     OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                         kind: YtDlpOutputKind::Thumbnails,
+                        // Materialized under `sidecars/thumbnails/`.
+                        save: OutputSaveConfig::Full,
                         ..Default::default()
                     }),
                 ),
@@ -1170,6 +1179,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "description".to_string(),
                     OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                         kind: YtDlpOutputKind::Description,
+                        // Materialized under `sidecars/` and at the media root.
+                        save: OutputSaveConfig::Full,
                         ..Default::default()
                     }),
                 ),
@@ -1177,6 +1188,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "infojson".to_string(),
                     OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                         kind: YtDlpOutputKind::Infojson,
+                        // Materialized under `sidecars/` and at the media root.
+                        save: OutputSaveConfig::Full,
                         ..Default::default()
                     }),
                 ),
@@ -1184,6 +1197,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "links".to_string(),
                     OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                         kind: YtDlpOutputKind::Links,
+                        // Materialized under `sidecars/links/`.
+                        save: OutputSaveConfig::Full,
                         ..Default::default()
                     }),
                 ),
@@ -1191,6 +1206,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "archive".to_string(),
                     OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                         kind: YtDlpOutputKind::Archive,
+                        // Materialized under `sidecars/archive.txt`.
+                        save: OutputSaveConfig::Full,
                         ..Default::default()
                     }),
                 ),
@@ -1218,6 +1235,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 OutputVariantValue::Generic(GenericOutputVariantConfig {
                     kind: "primary".to_string(),
                     extension: "mkv".to_string(),
+                    // Materialized as the untagged media leaf.
+                    save: OutputSaveConfig::Full,
                     ..Default::default()
                 }),
             )]),
@@ -1230,6 +1249,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 "video".to_string(),
                 OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                     kind: YtDlpOutputKind::Primary,
+                    // Materialized as the tagged media leaf.
+                    save: OutputSaveConfig::Full,
                     ..Default::default()
                 }),
             )]),
@@ -1251,6 +1272,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 OutputVariantValue::Generic(GenericOutputVariantConfig {
                     kind: "output_content".to_string(),
                     extension: "mkv".to_string(),
+                    // Materialized as the tagged media leaf, redefined by this step.
+                    save: OutputSaveConfig::Full,
                     ..Default::default()
                 }),
             )]),
@@ -4055,6 +4078,32 @@ mod tests {
                 None => std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV),
             }
         }
+    }
+
+    /// Proves the online demo states the save policy its own hierarchy asks
+    /// for, variant by variant.
+    ///
+    /// The document is built by the example's own builder and read back from
+    /// `mediapm.ncl`, so an omitted `save` comes back as `Auto` and fails. The
+    /// variant count is pinned so a step that stops declaring an output cannot
+    /// pass by shrinking the walk.
+    #[test]
+    fn the_online_demo_saves_what_the_hierarchy_materializes() {
+        let _isolated = IsolatedExampleRoots::with_cache();
+        let workspace_root = super::artifact_root();
+        let tool_ids = super::configure_document_for_online_demo(&workspace_root)
+            .expect("configure the online demo document");
+        assert_eq!(tool_ids.len(), 6, "the online demo configures six tool requirements");
+
+        let document = mediapm::load_mediapm_document(&workspace_root.join("mediapm.ncl"))
+            .expect("reload the online demo document");
+        let checked =
+            mediapm::demo_hierarchy_spec::assert_demo_saves_what_the_hierarchy_materializes(
+                &document,
+            )
+            .expect("the online demo states what it saves");
+
+        assert_eq!(checked, 11, "the online demo declares eleven step output variants");
     }
 
     #[test]

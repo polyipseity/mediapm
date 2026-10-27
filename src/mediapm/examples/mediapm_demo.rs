@@ -67,9 +67,9 @@ use mediapm::config::versions::{RuntimeBoundaryDeviations, runtime_boundary};
 use mediapm::{
     AddInsertPosition, ConfigPayloadStaging, ConfigVersionSpec, HierarchyNode, HierarchyNodeKind,
     HierarchyPath, MaterializationMethod, MediaMetadataValue, MediaPmService, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue, PlaylistFormat, PlaylistItemRef,
-    SanitizeNamesConfig, ToolRequirement, TransformInputValue, YtDlpOutputKind,
-    YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
+    MediaSourceSpec, MediaStep, MediaStepTool, OutputSaveConfig, OutputVariantValue,
+    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement, TransformInputValue,
+    YtDlpOutputKind, YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
     load_mediapm_state_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -503,6 +503,8 @@ fn configure_document_for_local_tool_chain(
             "video_untagged".to_string(),
             OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                 kind: YtDlpOutputKind::Primary,
+                // Materialized as the demo's untagged media leaf.
+                save: OutputSaveConfig::Full,
                 ..Default::default()
             }),
         )]),
@@ -1152,6 +1154,40 @@ mod tests {
                 && demo_config.contains("${media.metadata.video_ext_untagged}"),
             "demo hierarchy output should use Jellyfin-style media-id layout with metadata-driven extensions"
         );
+    }
+
+    /// Proves the offline demo states the save policy its own hierarchy asks
+    /// for, rather than relying on the default `auto` resolves.
+    ///
+    /// The check reads `mediapm.ncl` back from disk, so a variant that omits
+    /// `save` comes back as `Auto` and fails: the point is that a reader of the
+    /// demo sees what it keeps without tracing the resolver through the
+    /// hierarchy. The variant count is pinned too, so a step that stops
+    /// declaring its output fails here instead of passing an empty walk.
+    #[test]
+    fn the_offline_demo_saves_what_the_hierarchy_materializes() {
+        let _isolated = IsolatedExampleRoots::with_cache();
+        let workspace_root = super::artifact_root();
+        std::fs::create_dir_all(&workspace_root).expect("create demo artifact root");
+        super::save_mediapm_document(
+            &workspace_root.join("mediapm.ncl"),
+            &mediapm::MediaPmDocument::default(),
+        )
+        .expect("seed the demo document");
+
+        let source_hash = mediapm_cas::Hash::from_content(super::SAMPLE_AV_MP4_BYTES).to_string();
+        super::configure_document_for_local_tool_chain(&workspace_root, &source_hash)
+            .expect("configure the offline demo document");
+
+        let document = mediapm::load_mediapm_document(&workspace_root.join("mediapm.ncl"))
+            .expect("reload the offline demo document");
+        let checked =
+            mediapm::demo_hierarchy_spec::assert_demo_saves_what_the_hierarchy_materializes(
+                &document,
+            )
+            .expect("the offline demo states what it saves");
+
+        assert_eq!(checked, 1, "the offline demo declares the import step's single output variant");
     }
 
     /// Proves the offline demo is idempotent: an immediate second sync does

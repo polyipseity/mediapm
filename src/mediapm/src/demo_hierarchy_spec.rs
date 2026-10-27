@@ -20,10 +20,14 @@
 //! Helpers encode both exact forms for golden JSON, e2e seeds, and live demo asserts — see
 //! `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use serde::Deserialize;
+
+use crate::config::hierarchy_types::hierarchy_consumed_variants;
+use crate::config::{MediaPmDocument, OutputSaveConfig};
 
 /// Shared demo metadata used to resolve hierarchy folder names.
 pub const DEMO_METADATA_ARTIST: &str = "Rick Astley";
@@ -39,6 +43,81 @@ pub const ONLINE_DEMO_MEDIA_ID: &str = "youtube.dQw4w9WgXcQ";
 pub const OFFLINE_DEMO_PLAYLIST: &str = "local-demo.m3u8";
 /// Online demo playlist leaf under `playlists/`.
 pub const ONLINE_DEMO_PLAYLIST: &str = "rickroll.m3u8";
+
+/// Checks that every step output variant a demo document declares states the
+/// save policy its own hierarchy asks for.
+///
+/// A demo document demonstrates as much as it configures: the save policy
+/// decides what the conductor keeps, and a reader has to see that decision
+/// without tracing `auto` through the hierarchy. So every declared variant names
+/// its mode, and a variant the hierarchy materializes names
+/// [`OutputSaveConfig::Full`], because the library links to that object and
+/// `Full` keeps the blob whole instead of storing it as a delta.
+///
+/// A variant the hierarchy does *not* materialize is a retention decision this
+/// check refuses to guess at: the demo would then be relying on the collector to
+/// reclaim bytes once the producing instance is superseded, which is worth
+/// demonstrating only on purpose. Such a variant fails the check rather than
+/// being accepted, so demonstrating one takes a deliberate change here, not a
+/// declaration a demo makes on its own.
+///
+/// The document is read from disk after the demo wrote it, so the check sees the
+/// document a user gets rather than the value the builder held: an omitted
+/// `save` comes back as [`OutputSaveConfig::Auto`], which is what makes
+/// "declares nothing" a failure rather than a default.
+///
+/// # Errors
+///
+/// Returns a message naming the media, the step index and the variant when a
+/// variant relies on the default policy, is not materialized by the demo's
+/// hierarchy, or does not resolve to `Full`; and when the document declares no
+/// step output variant at all, because an empty walk would otherwise pass.
+pub fn assert_demo_saves_what_the_hierarchy_materializes(
+    document: &MediaPmDocument,
+) -> Result<usize, String> {
+    let materialized = hierarchy_consumed_variants(document)
+        .map_err(|error| format!("demo document hierarchy does not resolve: {error}"))?;
+    let empty = BTreeSet::new();
+    let mut checked = 0_usize;
+
+    for (media_id, source) in &document.media {
+        let consumed = materialized.get(media_id).unwrap_or(&empty);
+        for (step_index, step) in source.steps.iter().enumerate() {
+            for (variant_name, variant) in &step.output_variants {
+                let declared = variant.declared_save();
+                if declared == OutputSaveConfig::Auto {
+                    return Err(format!(
+                        "media '{media_id}' variant '{variant_name}' (step {step_index}) relies on \
+                         the default save policy; state the mode the demo keeps"
+                    ));
+                }
+                if !consumed.contains(variant_name) {
+                    return Err(format!(
+                        "media '{media_id}' variant '{variant_name}' (step {step_index}) is not \
+                         materialized by the demo hierarchy, so its retention is a deliberate \
+                         choice this check does not make; decide the mode before the demo \
+                         declares it"
+                    ));
+                }
+                if declared != OutputSaveConfig::Full {
+                    return Err(format!(
+                        "media '{media_id}' variant '{variant_name}' (step {step_index}) is \
+                         materialized by the demo hierarchy and declares {declared:?}; a \
+                         materialized variant is Full"
+                    ));
+                }
+                checked += 1;
+            }
+        }
+    }
+
+    if checked == 0 {
+        return Err("demo document declares no step output variant, so this check proved nothing"
+            .to_string());
+    }
+
+    Ok(checked)
+}
 
 /// Returns the Jellyfin-style media folder name a `"${artist} - ${title} [${id}]"` template renders.
 ///
