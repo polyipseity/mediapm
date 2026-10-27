@@ -29,6 +29,7 @@
 //! - Do not directly re-export `versions::vX` structs/types from this module.
 //!   Expose unversioned APIs here and keep versioned internals encapsulated.
 
+mod keep_full_v1;
 mod v1;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,6 +76,27 @@ pub(crate) const SNAPSHOT_VERSION: u32 = 1;
 /// Reading a version outside this set would mean applying a parser to bytes it
 /// was never written for, so the loader rejects it rather than guessing.
 pub(crate) const SUPPORTED_SNAPSHOT_VERSIONS: &[u32] = &[1];
+
+/// The per-directory keep-full marker filename this build writes.
+///
+/// A second, independent ladder beside the snapshot one: the marker answers a
+/// different question (which objects must stay full encodings) and its file is
+/// read and written on its own schedule, so a bump of one ladder does not bump
+/// the other. They share a rung count today because both start at one.
+///
+/// It is a side file rather than a field on the snapshot for one reason: the
+/// snapshot's version lives in its filename, so a field added there would make a
+/// store written by a newer build unreadable to an older one. A file an older
+/// build does not look for is invisible to it.
+pub(crate) const LATEST_KEEP_FULL_FORMAT: &str = "keep-full-v1.json";
+
+/// Every keep-full marker filename this build can read, newest first.
+///
+/// [`rebuild_from_wal`](super::FileSystemMetadataStore) scans exactly these, so
+/// a marker file whose name is not listed here is ignored rather than guessed
+/// at: an unknown version is a build that knows more than this one, not
+/// corruption.
+pub(crate) const KEEP_FULL_FORMAT_NAMES: &[&str] = &[LATEST_KEEP_FULL_FORMAT];
 
 /// The single error every unknown-version path funnels through.
 ///
@@ -189,6 +211,41 @@ pub(crate) fn save_to_vec(
         // build could parse, so halting is the correct response.
         other => panic!("unsupported metadata snapshot version {other}"),
     }
+}
+
+/// Parses one keep-full marker file from its raw bytes and its filename.
+///
+/// The filename is the version marker here as well, and the dispatch is the
+/// opposite of the snapshot loader's on one point: a name this build does not
+/// recognise is not an error, because [`KEEP_FULL_FORMAT_NAMES`] is what the
+/// caller scans. This function therefore only ever sees a name it knows.
+///
+/// # Errors
+///
+/// Returns [`CasError::InvalidArgument`] for a name outside
+/// [`KEEP_FULL_FORMAT_NAMES`], and [`CasError::CorruptObject`] when the bytes do
+/// not parse. A corrupt marker file is an error rather than an empty set: it
+/// records what the optimizer may not do to bytes that already exist, and a
+/// silent rebuild would lose that protection.
+pub(crate) fn load_keep_full_from_bytes(
+    name: &str,
+    data: &[u8],
+) -> Result<BTreeSet<Hash>, CasError> {
+    if !KEEP_FULL_FORMAT_NAMES.contains(&name) {
+        return Err(CasError::InvalidArgument(format!(
+            "unknown keep-full marker filename {name:?} (known: {KEEP_FULL_FORMAT_NAMES:?})"
+        )));
+    }
+    keep_full_v1::parse_v1_keep_full(data)
+}
+
+/// Serializes one directory's keep-full markers in the current format.
+///
+/// # Errors
+///
+/// Returns [`CasError::Io`] when the JSON cannot be encoded.
+pub(crate) fn save_keep_full_to_vec(marked: &BTreeSet<Hash>) -> Result<Vec<u8>, CasError> {
+    keep_full_v1::serialize_v1_keep_full(marked)
 }
 
 #[cfg(test)]

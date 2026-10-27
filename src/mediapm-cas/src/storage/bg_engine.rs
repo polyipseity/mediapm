@@ -370,6 +370,14 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             if self.is_cancelled() {
                 break;
             }
+            // A keep-full marker is the CAS half of mediapm's `save = "full"`:
+            // the object may be another object's base, but its own bytes are
+            // never rewritten as a delta. Nothing in production creates deltas
+            // today, so this guard is what a future delta producer has to
+            // honour rather than something a current producer already trips.
+            if self.metadata.is_keep_full(target).await? {
+                continue;
+            }
             let bases = self.metadata.get_constraint(target).await?;
             if !bases.is_empty() {
                 // Effective bases: intersection of stored bases with live

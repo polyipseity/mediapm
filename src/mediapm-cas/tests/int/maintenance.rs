@@ -429,6 +429,70 @@ async fn delta_cache_repeated_reads_work() {
     assert_eq!(stats.cached_bytes, 4096);
 }
 
+/// A target marked keep-full is never rewritten to a delta encoding, and its
+/// bytes still read back whole.
+///
+/// The marker is the CAS half of mediapm's `save = "full"`: the mode promises
+/// the artifact is never stored as a delta against another blob. Nothing in
+/// production creates deltas today, so this test is where the promise is
+/// exercised: it constrains the target exactly as a delta producer would and
+/// proves the optimizer declines.
+#[tokio::test]
+async fn a_keep_full_target_is_never_delta_encoded() {
+    let cas = new_in_memory_cas();
+
+    let (base_content, target_content) = similar_content_pair(b'A', b"KEPT");
+    let base_hash = cas.put(base_content).await.unwrap();
+    let target_hash = cas.put(target_content.clone()).await.unwrap();
+
+    // The constraint is what the optimizer would act on, so a marker that does
+    // not override it is not a guard at all.
+    cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
+    cas.mark_keep_full(target_hash).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let meta = cas.stat(target_hash).await.unwrap();
+    assert_eq!(
+        meta.encoding,
+        ObjectEncoding::Full,
+        "a keep-full target stays a full object even when a live base is constrained",
+    );
+    let retrieved = cas.get(target_hash).await.unwrap();
+    assert_eq!(retrieved, target_content, "the kept bytes still read back whole");
+}
+
+/// A keep-full object still serves as another object's delta base.
+///
+/// This is the other half of `save = "full"`: the mode decides how the object
+/// itself is stored, not whether its bytes may be used to reconstruct a sibling.
+#[tokio::test]
+async fn a_keep_full_target_still_serves_as_a_delta_base() {
+    let cas = new_in_memory_cas();
+
+    let (base_content, target_content) = similar_content_pair(b'B', b"THIRD");
+    let base_hash = cas.put(base_content).await.unwrap();
+    let target_hash = cas.put(target_content.clone()).await.unwrap();
+
+    cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
+    cas.mark_keep_full(base_hash).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let target_meta = cas.stat(target_hash).await.unwrap();
+    assert_eq!(
+        target_meta.encoding,
+        ObjectEncoding::Delta { base_hash },
+        "a marked base is still selectable as the base of a delta",
+    );
+    let base_meta = cas.stat(base_hash).await.unwrap();
+    assert_eq!(
+        base_meta.encoding,
+        ObjectEncoding::Full,
+        "the marked object keeps its own full encoding"
+    );
+    let retrieved = cas.get(target_hash).await.unwrap();
+    assert_eq!(retrieved, target_content, "the delta reconstructs the third object");
+}
+
 /// Base and target content that differ only in `marker`, so the VCDIFF
 /// delta is meaningfully smaller than the full content.
 fn similar_content_pair(fill: u8, marker: &[u8]) -> (Bytes, Bytes) {

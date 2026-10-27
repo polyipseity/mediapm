@@ -217,6 +217,10 @@ impl ConstraintApi for ConfiguredCas {
         forward!(self.set_constraint(target, bases).await)
     }
 
+    async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError> {
+        forward!(self.mark_keep_full(target).await)
+    }
+
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
         forward!(self.get_constraint(target).await)
     }

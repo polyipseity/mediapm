@@ -4,7 +4,7 @@
 //! in-memory layer of [`FileSystemMetadataStore`](super::fs::FileSystemMetadataStore).
 
 use async_trait::async_trait;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -22,7 +22,8 @@ use super::{MetadataEntry, MetadataStore};
 /// state — essential for concurrent access patterns.
 ///
 /// Constraint data is stored in a separate [`DashMap`] from object metadata.
-/// See [`MetadataStore::get_constraint`] — returns empty set (no `Option`).
+/// See [`MetadataStore::get_constraint`] — returns empty set (no `Option`), and
+/// keep-full markers in a [`DashSet`] of their own.
 ///
 /// # Bases-preservation invariant
 ///
@@ -42,6 +43,11 @@ pub struct InMemoryMetadataStore {
     data: Arc<DashMap<Hash, MetadataEntry>>,
     /// Constraint data (target → bases), independent of metadata.
     constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>,
+    /// Hashes whose bytes must keep their own full encoding.
+    ///
+    /// A plain set rather than a map: the marker carries no payload, and its
+    /// presence is the whole fact.
+    keep_full: Arc<DashSet<Hash>>,
     /// Reverse index: base hash → dependents (hashes with Delta { `base_hash` }).
     dependents: Arc<DashMap<Hash, Vec<Hash>>>,
 }
@@ -90,6 +96,9 @@ impl MetadataStore for InMemoryMetadataStore {
         self.data.remove(hash);
         // Also clean up any associated constraint.
         self.constraints.remove(hash);
+        // A marker about bytes the store no longer holds would outlive its
+        // subject, so it goes with the object.
+        self.keep_full.remove(hash);
         Ok(())
     }
 
@@ -119,6 +128,7 @@ impl MetadataStore for InMemoryMetadataStore {
     }
 
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError> {
+        self.keep_full.retain(|hash| live.contains(hash));
         self.constraints.retain(|target, bases| {
             // Remove entire entry if the target is gone.
             if !live.contains(target) {
@@ -129,6 +139,19 @@ impl MetadataStore for InMemoryMetadataStore {
             true
         });
         Ok(())
+    }
+
+    async fn mark_keep_full(&self, hash: Hash) -> Result<(), CasError> {
+        self.keep_full.insert(hash);
+        Ok(())
+    }
+
+    async fn is_keep_full(&self, hash: &Hash) -> Result<bool, CasError> {
+        Ok(self.keep_full.contains(hash))
+    }
+
+    async fn list_keep_full(&self) -> Result<Vec<Hash>, CasError> {
+        Ok(self.keep_full.iter().map(|hash| *hash).collect())
     }
 
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
@@ -336,5 +359,27 @@ mod tests {
         assert_eq!(entry.encoding, ObjectEncoding::Full);
         let bases = index.get_constraint(&hash).await.unwrap();
         assert_eq!(bases, BTreeSet::from([base]));
+    }
+
+    /// A keep-full marker is set, read back, and dropped with its object.
+    ///
+    /// The marker describes one object's storage, so keeping it after the
+    /// object is gone would leave the store carrying facts about nothing and
+    /// would grow without bound over a long-lived process.
+    #[tokio::test]
+    async fn a_deleted_object_loses_its_keep_full_marker() {
+        let index = InMemoryMetadataStore::new();
+        let kept = Hash::from_content(b"kept");
+        let plain = Hash::from_content(b"plain");
+
+        index.put(kept, MetadataEntry { len: 4, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.put(plain, MetadataEntry { len: 5, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.mark_keep_full(kept).await.unwrap();
+
+        assert!(index.is_keep_full(&kept).await.unwrap(), "the marker is recorded");
+        assert!(!index.is_keep_full(&plain).await.unwrap(), "an unmarked object is not marked");
+
+        index.delete(&kept).await.unwrap();
+        assert!(!index.is_keep_full(&kept).await.unwrap(), "the marker goes with the object");
     }
 }

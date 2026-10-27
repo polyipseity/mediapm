@@ -68,14 +68,16 @@ Returned only when a delta chain exceeds `MAX_DELTA_CHAIN_DEPTH = 5`. `get()` de
 
 ```rust
 #[async_trait]
-pub trait ConstraintApi: Send + Sync { async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>; async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError>; async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
+pub trait ConstraintApi: Send + Sync { async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>; async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError>; async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>; async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError>;
 }
 ```
 
-Constraints are **non-binding hints** — the system never blocks on completeness or accuracy.
+Constraints are **non-binding hints** — the system never blocks on completeness or accuracy — with one exception: `mark_keep_full` is obeyed, because it states how an object's own bytes must be stored rather than guessing at what might compress well.
 Stored in a separate constraint map (in-memory `DashMap<Hash, BTreeSet<Hash>>`, rebuilt from WAL), independent of object metadata. `get_constraint` returns an empty set when no constraint exists (no `Option`). There is no `effective_bases` method — callers that need live filtering must compose `get_constraint` with their own `live` set intersection.
 
 Empty-content sentinel exception: constraints on `Hash::empty()` are always empty. `set_constraint`, `get_constraint`, and `patch_constraint` all succeed but have no effect (always return or leave empty sets).
+
+`mark_keep_full` is the one constraint-family call that changes what the store does to an object's bytes: a marked target is never rewritten as a delta against another blob, while remaining selectable as another object's delta base. It is the CAS half of mediapm's `save = "full"`. The marker is stored in the metadata store (durable in the filesystem store's `keep-full-v1.json` side file, dropped with the object), and the optimizer reads it before it looks for a base. Nothing in this workspace produces delta encodings today — `CasApi::put` always writes `ObjectEncoding::Full` and the optimizer is the only delta writer — so the marker's effect is exercised by its own tests and is the contract a future delta producer must honour.
 
 ```rust
 pub struct ConstraintPatch { pub add_bases: BTreeSet<Hash>, pub remove_bases: BTreeSet<Hash>, pub clear: bool,   // clear existing bases before applying adds/removes
@@ -114,7 +116,7 @@ cas.put(bytes).await?;
 ```
 
 Newtype around `CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>`.
-WAL + blob store + metadata constraints persisted on disk; blob metadata in-memory (rebuilt from WAL on open). Metadata (entries + constraints) are saved per fan-out directory alongside blob files as versioned aux files (`metadata-v1.json`, see `FileSystemBlobStore` aux-file API).
+WAL + blob store + metadata constraints persisted on disk; blob metadata in-memory (rebuilt from WAL on open). Metadata (entries + constraints) are saved per fan-out directory alongside blob files as versioned aux files (`metadata-v1.json`, see `FileSystemBlobStore` aux-file API), and keep-full markers in a second per-directory file (`keep-full-v1.json`) with its own version ladder, so a build that does not know the marker format still reads the snapshot.
 
 Override of `FileSystemCas::object_path_for_hash` returns `Option<PathBuf>` (returns `None` for in-memory stores, `Some(path)` for filesystem stores).
 
@@ -243,8 +245,8 @@ Pluggable payload backend.
 
 Object metadata index. Both implementations share the same trait.
 
-- **`InMemoryMetadataStore`**: `Arc<DashMap<Hash, MetadataEntry>>` for payload metadata (`MetadataEntry { len, encoding }`). Constraint data is stored in a separate map: `constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>`.
-- **`FileSystemMetadataStore`**: Wraps `InMemoryMetadataStore` with persistent per-directory snapshots. On mutation (`put`/`delete`/`set_constraint`/`prune_targets`), flushes only the affected fan-out directory's entries + constraints as a versioned JSON file (`metadata-v1.json`) via the blob store aux-file API. On `rebuild_from_wal`, replays WAL then overlays persisted state from all known aux filenames, enabling transparent format migration.
+- **`InMemoryMetadataStore`**: `Arc<DashMap<Hash, MetadataEntry>>` for payload metadata (`MetadataEntry { len, encoding }`). Constraint data is stored in a separate map: `constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>`. Keep-full markers are a third store, `keep_full: Arc<DashSet<Hash>>`.
+- **`FileSystemMetadataStore`**: Wraps `InMemoryMetadataStore` with persistent per-directory snapshots. On mutation (`put`/`delete`/`set_constraint`/`mark_keep_full`/`prune_targets`), flushes only the affected fan-out directory's entries + constraints as a versioned JSON file (`metadata-v1.json`) via the blob store aux-file API, and its keep-full markers as `keep-full-v1.json` in the same directory. On `rebuild_from_wal`, replays WAL then overlays persisted state from all known aux filenames of both ladders, enabling transparent format migration.
 
 **Constraint separation**: Object metadata (`put`/`get`/`delete`) and constraint data (`set_constraint`/`get_constraint`) are stored in independent maps. Put entries from WAL replay do not touch the constraint map; only `Constraint` WAL entries populate it. This removes `Option` from constraint representation.
 
@@ -255,6 +257,8 @@ Object metadata index. Both implementations share the same trait.
 ```
 
 `entries` field uses `#[serde(default)]` for compatibility with snapshots without entry persistence.
+
+The keep-full marker file is a second V1 ladder in the same module, `{ "hashes": ["hash_hex", ...] }`. It is a separate file rather than a field here because this snapshot's version lives in its filename: a field added to it would make a store written by a newer build unreadable to an older one, while a marker file an older build never looks for is invisible to it. Only the names listed in `KEEP_FULL_FORMAT_NAMES` are scanned, so a `keep-full-v9.json` is ignored rather than guessed at; a corrupt file of a name this build does read is an error, because a lost marker changes what the optimizer may do to bytes that already exist.
 
 Async wrappers use `tokio::task::spawn_blocking`; sync `load()`/`save()` functions are shared by both implementations.
 
@@ -371,6 +375,8 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 - No `effective_bases` method — callers compute live intersection themselves.
 - Self-referencing constraint (target == base) is rejected at set/patch time.
 - Constraint data is stored independently from object metadata (separate `DashMap`). Put/delete/stat operations do not affect constraint state.
+- A keep-full marker is dropped with its object, so the marker file cannot outlive the bytes it describes; `prune_targets` drops markers whose hash is no longer live, and `MetadataStore::delete` drops the marker in the same step that removes the entry.
+- A keep-full marker is not a WAL entry: the filesystem store persists it directly (side file), and an in-memory store is ephemeral by definition. A store that loses a marker re-encodes the object on its next maintenance pass, which is exactly the state a store without a delta producer is in.
 
 ### 8.8 Write-through vs write-back compile-time policy
 

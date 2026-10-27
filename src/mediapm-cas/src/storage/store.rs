@@ -236,6 +236,20 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
         Ok(())
     }
 
+    async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError> {
+        // The empty-content sentinel is already stored as a full object and is
+        // indelible, so a marker on it would describe nothing.
+        if target == Hash::empty() {
+            return Ok(());
+        }
+        // No WAL entry: the marker is durable through the metadata store's own
+        // persistence (the filesystem store writes it to a side file), and a
+        // replayed WAL entry would only restate it. A store that loses the
+        // marker re-encodes the object on its next maintenance pass, which is
+        // the state a store without a delta producer is in anyway.
+        self.metadata.mark_keep_full(target).await
+    }
+
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
         // Sentinel always has empty constraints.
         if target == Hash::empty() {
@@ -361,6 +375,10 @@ where
 {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.deref().set_constraint(target, bases).await
+    }
+
+    async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError> {
+        self.deref().mark_keep_full(target).await
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {

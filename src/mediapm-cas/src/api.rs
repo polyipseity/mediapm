@@ -141,11 +141,16 @@ pub trait CasApi: Send + Sync {
     ) -> Result<(), CasError>;
 }
 
-/// Manages compression-hint constraints (target → base hashes).
+/// Manages compression-hint constraints (target → base hashes) and keep-full
+/// markers.
 ///
 /// Constraints are **non-binding hints**: setting one records the intent
 /// that `target` may compress well against `bases`. The system never blocks
 /// on constraint satisfaction.
+///
+/// [`ConstraintApi::mark_keep_full`] is the one member the system obeys: it is
+/// an instruction about how an object's own bytes are stored, not a hint about
+/// what might compress well.
 #[async_trait]
 pub trait ConstraintApi: Send + Sync {
     /// Record that `target` may compress well against `bases`.
@@ -157,6 +162,15 @@ pub trait ConstraintApi: Send + Sync {
 
     /// Atomically modify the bases for `target`.
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
+
+    /// Record that `target` must never be stored as a delta against another
+    /// blob.
+    ///
+    /// This is the CAS half of mediapm's `save = "full"`: the object keeps its
+    /// own full encoding, and it may still serve as another object's delta base.
+    /// The marker is durable (it survives a reopen of the store) and is dropped
+    /// with the object it describes.
+    async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError>;
 }
 
 /// Describes an atomic modification to a constraint's base set.

@@ -10,6 +10,7 @@
 //! `serialize_v1_snapshot`) and the V1 → current migration hook
 //! (`migrate_v1_to_current`) that a future `v2.rs` would replace.
 //!
+//!
 //! ## DO NOT REMOVE: versions policy guard
 //!
 //! - This file must never import unversioned structs from outside `versions/`.

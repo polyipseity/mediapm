@@ -1,7 +1,7 @@
 //! Metadata trait and types for the CAS storage layer.
 //!
-//! Provides the [`MetadataStore`] trait (entry + constraint operations) and the
-//! [`MetadataEntry`] type. Implementations:
+//! Provides the [`MetadataStore`] trait (entry, constraint and keep-full marker
+//! operations) and the [`MetadataEntry`] type. Implementations:
 //!
 //! - `InMemoryMetadataStore` — ephemeral, all data in `DashMap`s
 //! - `FileSystemMetadataStore` — in-memory with persisted snapshot file
@@ -41,7 +41,8 @@ impl MetadataEntry {
     }
 }
 
-/// Unified metadata store — payload metadata + constraint hints.
+/// Unified metadata store — payload metadata, constraint hints and keep-full
+/// markers.
 ///
 /// Object metadata (payload size, encoding) is stored via
 /// [`MetadataStore::put`]/[`MetadataStore::get`]/[`MetadataStore::delete`]
@@ -50,9 +51,13 @@ impl MetadataEntry {
 /// [`MetadataStore::set_constraint`]/[`MetadataStore::get_constraint`] —
 /// see §8.6 in AGENTS.md.
 ///
+/// Keep-full markers are stored beside those two, through
+/// [`MetadataStore::mark_keep_full`]: a marked object keeps its own full encoding
+/// and may still serve as another object's delta base.
+///
 /// In-memory implementations are reconstructed from journal replay on startup.
-/// The internal `FileSystemMetadataStore` additionally persists constraints to
-/// disk so they survive WAL trim and process restart.
+/// The internal `FileSystemMetadataStore` additionally persists constraints and
+/// keep-full markers to disk so they survive WAL trim and process restart.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
     /// Store metadata for a hash (replaces existing entry).
@@ -90,6 +95,31 @@ pub trait MetadataStore: Send + Sync {
 
     /// Remove constraints whose target or any base is not in `live`.
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError>;
+
+    // Keep-full markers
+
+    /// Record that `hash` must keep its own full encoding.
+    ///
+    /// The marker is the CAS half of mediapm's `save = "full"`. It is durable
+    /// (the filesystem store writes it to a side file a build that does not know
+    /// the format ignores) and it is dropped with the object it describes, so a
+    /// long-lived store does not accumulate facts about bytes it no longer
+    /// holds.
+    ///
+    /// Marking a hash this store holds no entry for is accepted: the marker is a
+    /// statement about how those bytes must be stored, and the store records it
+    /// beside the object rather than refusing an order the caller had already
+    /// ordered by content.
+    async fn mark_keep_full(&self, hash: Hash) -> Result<(), CasError>;
+
+    /// Report whether `hash` was marked keep-full.
+    async fn is_keep_full(&self, hash: &Hash) -> Result<bool, CasError>;
+
+    /// List every marked hash.
+    ///
+    /// The filesystem store uses this to write one directory's markers, and the
+    /// maintenance sweep uses it to drop markers whose object is gone.
+    async fn list_keep_full(&self) -> Result<Vec<Hash>, CasError>;
 
     /// List hashes that depend on `hash` as their delta base.
     ///
