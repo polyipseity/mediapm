@@ -181,7 +181,7 @@ pub(crate) fn yt_dlp_variant_capture_and_save(
         YtDlpOutputKind::Links => format!("folder_regex:{YT_DLP_LINK_ARTIFACTS_REGEX}"),
     };
     let save = match config.save {
-        OutputSaveConfig::Bool(true) => mediapm_conductor::SaveMode::True,
+        OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => mediapm_conductor::SaveMode::True,
         OutputSaveConfig::Bool(false) => mediapm_conductor::SaveMode::False,
         OutputSaveConfig::Full => mediapm_conductor::SaveMode::Full,
     };

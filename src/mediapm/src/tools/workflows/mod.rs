@@ -59,7 +59,7 @@ pub(crate) const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
 #[must_use]
 pub(crate) fn conductor_output_save_mode(config: OutputSaveConfig) -> OutputSaveMode {
     match config {
-        OutputSaveConfig::Bool(true) => OutputSaveMode::Saved,
+        OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => OutputSaveMode::Saved,
         OutputSaveConfig::Bool(false) => OutputSaveMode::Unsaved,
         OutputSaveConfig::Full => OutputSaveMode::Full,
     }
@@ -155,7 +155,7 @@ fn generic_variant_capture_and_save(config: &GenericOutputVariantConfig) -> (Str
         _ => format!("file:{}", config.kind),
     };
     let save = match config.save {
-        OutputSaveConfig::Bool(true) => SaveMode::True,
+        OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => SaveMode::True,
         OutputSaveConfig::Bool(false) => SaveMode::False,
         OutputSaveConfig::Full => SaveMode::Full,
     };
@@ -376,12 +376,12 @@ fn import_step_output_capture(
     })?;
     let save = match value {
         OutputVariantValue::Generic(g) => match g.save {
-            OutputSaveConfig::Bool(true) => SaveMode::True,
+            OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => SaveMode::True,
             OutputSaveConfig::Bool(false) => SaveMode::False,
             OutputSaveConfig::Full => SaveMode::Full,
         },
         OutputVariantValue::YtDlp(y) => match y.save {
-            OutputSaveConfig::Bool(true) => SaveMode::True,
+            OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => SaveMode::True,
             OutputSaveConfig::Bool(false) => SaveMode::False,
             OutputSaveConfig::Full => SaveMode::Full,
         },

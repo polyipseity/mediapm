@@ -9,10 +9,10 @@
 use serde_json::{Value, json};
 
 use mediapm::{
-    ConfigPayloadStaging, MediaPmDocument, MediaRuntimeStorage, MediaStep, OutputVariantValue,
-    PayloadStaging, ToolRegistryEntry, VerifyStrategy, apply_v1_contract, apply_v2_contract,
-    apply_v3_contract, evaluate_mod_ncl_expression, validate_v1_document, validate_v2_document,
-    validate_v3_document,
+    ConfigPayloadStaging, MediaPmDocument, MediaRuntimeStorage, MediaStep, OutputSaveConfig,
+    OutputVariantValue, PayloadStaging, ToolRegistryEntry, VerifyStrategy, apply_v1_contract,
+    apply_v2_contract, apply_v3_contract, evaluate_mod_ncl_expression, validate_v1_document,
+    validate_v2_document, validate_v3_document,
 };
 
 /// Realistic v1 document exercising every closed contract surface.
@@ -1243,5 +1243,52 @@ fn strict_runtime_rejects_fractional_denominator() {
             "verification": { "verify_on_read_sample_denominator": 1.5 },
         }),
         "invalid type",
+    );
+}
+
+/// S-E5: the `save` policy's wire shape is a boolean, the literal `"full"` or
+/// the literal `"auto"`, and every other value is rejected.
+///
+/// `"auto"` is the default, so a variant that leaves `save` alone serializes
+/// without the field while an explicit policy writes it. The literal `"full"`
+/// decodes and round-trips, so the Nickel contract and the Rust decode accept
+/// the same three shapes and a document cannot validate on one side and fail
+/// on the other.
+#[test]
+fn strict_output_save_accepts_auto_and_rejects_anything_else() {
+    let decode = |value: Value| serde_json::from_value::<OutputSaveConfig>(value);
+
+    assert_eq!(decode(json!("auto")).expect("auto must decode"), OutputSaveConfig::Auto);
+    assert_eq!(decode(json!("full")).expect("full must decode"), OutputSaveConfig::Full);
+    assert_eq!(decode(json!(true)).expect("true must decode"), OutputSaveConfig::Bool(true));
+    assert_eq!(decode(json!(false)).expect("false must decode"), OutputSaveConfig::Bool(false));
+
+    for rejected in [json!("everything"), json!(1), json!(null)] {
+        assert!(decode(rejected.clone()).is_err(), "save must reject {rejected}");
+    }
+
+    assert_eq!(OutputSaveConfig::default(), OutputSaveConfig::Auto, "auto is the default policy");
+
+    let implicit =
+        mediapm::GenericOutputVariantConfig { kind: "primary".to_string(), ..Default::default() };
+    let value = serde_json::to_value(&implicit).expect("a default variant must serialize");
+    assert!(
+        !value.as_object().is_some_and(|variant| variant.contains_key("save")),
+        "the default policy must be omitted, got {value}"
+    );
+
+    let explicit = mediapm::GenericOutputVariantConfig {
+        save: OutputSaveConfig::Bool(true),
+        ..implicit.clone()
+    };
+    assert_eq!(
+        serde_json::to_value(&explicit).expect("an explicit variant must serialize")["save"],
+        json!(true)
+    );
+
+    let full = mediapm::GenericOutputVariantConfig { save: OutputSaveConfig::Full, ..implicit };
+    assert_eq!(
+        serde_json::to_value(&full).expect("a full variant must serialize")["save"],
+        json!("full")
     );
 }

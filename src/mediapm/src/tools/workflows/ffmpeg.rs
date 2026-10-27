@@ -137,7 +137,7 @@ pub(crate) fn synthesize_ffmpeg_step(
         );
 
         let save = match config.save {
-            OutputSaveConfig::Bool(true) => SaveMode::True,
+            OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => SaveMode::True,
             OutputSaveConfig::Bool(false) => SaveMode::False,
             OutputSaveConfig::Full => SaveMode::Full,
         };

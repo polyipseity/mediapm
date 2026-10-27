@@ -10,27 +10,95 @@ use serde_json::Value;
 use super::source_types::MediaStep;
 
 /// Output persistence policy for one output variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+///
+/// The wire shape is a boolean, the literal `"full"`, or the literal
+/// `"auto"`. `"auto"` is the default, so it is the value serialization omits:
+/// it asks mediapm to resolve the policy for the variant, while an explicit
+/// value states the decision.
+///
+/// Both halves of the serde surface are written out below rather than derived.
+/// A unit variant inside an untagged enum matches no string and serializes as
+/// `null`, so a derived implementation would accept neither literal and write
+/// neither one, while the Nickel contract accepts both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutputSaveConfig {
     /// Boolean toggle (`true` / `false`).
     Bool(bool),
-    /// Full persistence (all materialized outputs kept, not pruned).
-    #[serde(rename = "full")]
+    /// Full persistence: the blob is kept whole instead of being stored as a
+    /// delta against another blob, so it stays a complete artifact.
     Full,
+    /// Persist when mediapm's own rules say to (the default).
+    ///
+    /// A policy that has not been resolved behaves as `true`; mediapm's
+    /// synthesis resolves it against the hierarchy, the step position and the
+    /// step's purity.
+    #[default]
+    Auto,
 }
 
-impl Default for OutputSaveConfig {
-    fn default() -> Self {
-        Self::Bool(true)
+impl Serialize for OutputSaveConfig {
+    /// Writes a boolean, `"full"` or `"auto"`, so a document keeps the shape
+    /// the user wrote.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Bool(flag) => serializer.serialize_bool(*flag),
+            Self::Full => serializer.serialize_str("full"),
+            Self::Auto => serializer.serialize_str("auto"),
+        }
     }
 }
 
-/// Returns true when `save` holds the default `Bool(true)` persistence policy.
+impl<'de> Deserialize<'de> for OutputSaveConfig {
+    /// Decodes a boolean, `"full"` or `"auto"`.
+    ///
+    /// Any other value is an error rather than a fallback to the default, so a
+    /// misspelt policy fails where it is written.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// Visitor accepting the four wire shapes of one save policy.
+        struct SavePolicyVisitor;
+
+        impl serde::de::Visitor<'_> for SavePolicyVisitor {
+            type Value = OutputSaveConfig;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a boolean, \"full\" or \"auto\"")
+            }
+
+            fn visit_bool<E>(self, flag: bool) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(OutputSaveConfig::Bool(flag))
+            }
+
+            fn visit_str<E>(self, name: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match name {
+                    "full" => Ok(OutputSaveConfig::Full),
+                    "auto" => Ok(OutputSaveConfig::Auto),
+                    other => Err(E::invalid_value(serde::de::Unexpected::Str(other), &self)),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(SavePolicyVisitor)
+    }
+}
+
+/// Returns true when `save` holds the default `Auto` persistence policy, which
+/// is the value serialization omits.
 #[must_use]
 #[expect(clippy::trivially_copy_pass_by_ref)]
 fn is_default_save(save: &OutputSaveConfig) -> bool {
-    *save == OutputSaveConfig::Bool(true)
+    *save == OutputSaveConfig::Auto
 }
 
 /// Returns true when `idx` holds the default zero index.
@@ -169,7 +237,9 @@ pub struct OutputVariantPolicyConfig {
 impl From<&GenericOutputVariantConfig> for OutputVariantPolicyConfig {
     fn from(config: &GenericOutputVariantConfig) -> Self {
         match config.save {
-            OutputSaveConfig::Bool(true) => Self { save: true, keep_all: false },
+            OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => {
+                Self { save: true, keep_all: false }
+            }
             OutputSaveConfig::Bool(false) => Self { save: false, keep_all: false },
             OutputSaveConfig::Full => Self { save: true, keep_all: true },
         }
@@ -179,7 +249,9 @@ impl From<&GenericOutputVariantConfig> for OutputVariantPolicyConfig {
 impl From<&YtDlpOutputVariantConfig> for OutputVariantPolicyConfig {
     fn from(config: &YtDlpOutputVariantConfig) -> Self {
         match config.save {
-            OutputSaveConfig::Bool(true) => Self { save: true, keep_all: false },
+            OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => {
+                Self { save: true, keep_all: false }
+            }
             OutputSaveConfig::Bool(false) => Self { save: false, keep_all: false },
             OutputSaveConfig::Full => Self { save: true, keep_all: true },
         }

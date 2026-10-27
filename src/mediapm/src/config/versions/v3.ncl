@@ -62,11 +62,12 @@ let SanitizeNamesConfigV3 = std.contract.any_of [
 ]
 in
 
-# ||| Output save config (mirrors `OutputSaveConfig`: bool or the literal
-# "full").
+# ||| Output save config (mirrors `OutputSaveConfig`: a bool, or the literal
+# "full" or "auto").
 let OutputSaveConfigV3 = std.contract.any_of [
   Bool,
   std.contract.from_predicate (fun value => value == "full"),
+  std.contract.from_predicate (fun value => value == "auto"),
 ]
 in
 
@@ -158,7 +159,7 @@ in
 # ||| Generic output variant (mirrors `GenericOutputVariantConfig`).
 let GenericOutputVariantConfigV3 = {
   kind | String,
-  save | OutputSaveConfigV3 | default = true,
+  save | OutputSaveConfigV3 | default = "auto",
   capture_kind | OutputCaptureKindV3 | optional,
   zip_member | String | optional,
   idx | IntegerNumberV3 | optional,
@@ -184,7 +185,7 @@ in
 # ||| yt-dlp output variant (mirrors `YtDlpOutputVariantConfig`).
 let YtDlpOutputVariantConfigV3 = {
   kind | YtDlpOutputKindV3,
-  save | OutputSaveConfigV3 | default = true,
+  save | OutputSaveConfigV3 | default = "auto",
   capture_kind | OutputCaptureKindV3 | optional,
   langs | String | optional,
   thumbnail_ids | String | optional,
