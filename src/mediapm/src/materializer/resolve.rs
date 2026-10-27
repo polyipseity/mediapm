@@ -862,7 +862,7 @@ fn instance_matches_expected_output_names(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use mediapm_cas::FileSystemCas;
     use mediapm_cas::Hash;
@@ -2057,19 +2057,45 @@ mod tests {
         );
     }
 
-    /// Rewrites the recorded `instance_key`s in `tests/fixtures/demo_conductor_state.json`
-    /// so the fixture stays a valid record of the conductor run it captured.
+    /// Environment variable that turns the fixture assertion into a rewrite.
+    ///
+    /// Enabled tokens are `1`, `true`, `yes`, and `on` — the set the online-demo
+    /// gates use — so any other value leaves the test asserting rather than
+    /// writing, and a typo cannot silently change a checked-in record.
+    const UPDATE_FIXTURES_ENV: &str = "MEDIAPM_UPDATE_FIXTURES";
+
+    /// Whether this run was asked to rewrite a checked-in fixture.
+    ///
+    /// Read per call and never cached, so the variable reaches the test from the
+    /// command line rather than from whatever the process started with.
+    #[must_use]
+    fn fixture_rewrite_requested() -> bool {
+        std::env::var(UPDATE_FIXTURES_ENV).is_ok_and(|value| {
+            matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+        })
+    }
+
+    /// Asserts that the `instance_key`s recorded in
+    /// `tests/fixtures/demo_conductor_state.json` are the keys the current
+    /// derivation produces, and rewrites them when asked.
     ///
     /// The fixture is a checked-in record of a real run: each
     /// `tool_call_instances` key was derived from that run's input material, so
     /// any change to the instance-key derivation makes every recorded key
     /// unreachable and the demo materialization tests stop matching instances.
-    /// Run this whenever the instance-key material changes:
+    /// The test therefore runs in every suite and compares, and it writes only
+    /// when `MEDIAPM_UPDATE_FIXTURES` carries an enabled token:
     ///
     /// ```text
-    /// RUSTC_WRAPPER= cargo test -p mediapm --lib \
-    ///   regenerate_demo_conductor_state_fixture_keys -- --ignored --nocapture
+    /// RUSTC_WRAPPER= MEDIAPM_UPDATE_FIXTURES=1 cargo test -p mediapm --lib \
+    ///   demo_conductor_state_fixture_matches_its_derivation -- --nocapture
     /// ```
+    ///
+    /// Asserting by default is what keeps a derivation change from landing as an
+    /// ignored test nobody runs: the suite names the stale key and the variable
+    /// that rewrites it. `the_demo_fixture_is_in_the_current_wire_shape` holds
+    /// the companion half — that the file also matches what `encode_state_json`
+    /// produces — so this test reads the same fixture without comparing bytes.
     ///
     /// The rewrite replaces the recorded `instance_key` in the fixture's JSON
     /// text — the `tool_call_instances` map key, that entry's `instance_key`
@@ -2098,11 +2124,6 @@ mod tests {
     /// step of this workflow passes the planner and then fails the coverage check
     /// below, which names the key and the tool.
     ///
-    /// **Validation.** The regenerated text is decoded in memory before it can
-    /// replace the checked-in record: it must hold exactly the keys the current
-    /// derivation produces, and every instance must carry a non-empty `step_ids`
-    /// set naming the steps that claim it.
-    ///
     /// **Resolution path.** The new keys are derived from the materializer's live
     /// resolution (`merge_step_inputs_with_tool_defaults`,
     /// `resolve_expected_input_hashes`, `build_instance_key_resolved_value_bytes`)
@@ -2114,38 +2135,34 @@ mod tests {
     ///
     /// **Write.** The decoded state is re-encoded through `encode_state_json`
     /// before it is written, so the checked-in record always lands in the
-    /// current wire shape: a fixture that arrives in an older shape is migrated
-    /// once and never again, and the encoder stops being dead weight in the
-    /// suite. The bytes go to a sibling temporary file in the fixture's own
-    /// directory (`demo_conductor_state.json.regenerated`) and are then renamed
-    /// over the fixture, so a partial write can never be observed in a
-    /// checked-in record; the sibling path keeps the rename on one filesystem,
-    /// hence atomic. A failed rename leaves that temporary file behind — this is
-    /// a manual maintenance tool, so the leftover is reported to the operator
-    /// rather than hidden: re-running the test truncates and reuses it.
+    /// current wire shape. The bytes go to a sibling temporary file in the
+    /// fixture's own directory (`demo_conductor_state.json.regenerated`) and are
+    /// then renamed over the fixture, so a partial write can never be observed
+    /// in a checked-in record; the sibling path keeps the rename on one
+    /// filesystem, hence atomic. A failed rename leaves that temporary file
+    /// behind — the rewrite is an operator action, so the leftover is reported
+    /// rather than hidden: re-running truncates and reuses it.
     #[tokio::test]
-    #[ignore = "fixture maintenance: rewrites demo_conductor_state.json; run manually after an instance-key derivation change"]
-    async fn regenerate_demo_conductor_state_fixture_keys() {
+    async fn demo_conductor_state_fixture_matches_its_derivation() {
         let path = fixture_path("demo_conductor_state.json");
         let generated = load_generated_doc();
         let state = load_conductor_state();
-        let workflow = generated
-            .workflows
-            .iter()
-            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
-            .expect("demo workflow");
+        let workflow = load_demo_workflow(&generated);
 
-        // The fixture's keys are stale by definition when this runs, so the
+        // The fixture's keys are stale once the derivation moves, so the
         // production step-output resolver — which matches instances by key —
         // finds nothing at all; the plan below pairs through recorded provenance
         // and reconstructs the recorded run's step outputs from that instead.
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
-        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, workflow)
+        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
             .await
             .expect("plan demo instance key rewrites");
 
-        // Prove every instance pairs before touching the file.
+        // Pairing holds in both modes, and it is what a rewrite must prove
+        // before it may touch the file: every stored instance is claimed by some
+        // step's recorded provenance, and every instance names the steps that
+        // claim it.
         for (stored_key, instance) in &state.tool_call_instances {
             assert!(
                 rewrites.contains_key(stored_key),
@@ -2154,14 +2171,80 @@ mod tests {
                 stored_key.to_hex(),
                 instance.tool_call_id,
             );
+            assert!(
+                !instance.step_ids.is_empty(),
+                "instance {} records no step, so no step can pair with it",
+                stored_key.to_hex(),
+            );
+        }
+        for (stored_key, rewrite) in &rewrites {
+            let instance = state
+                .tool_call_instances
+                .get(stored_key)
+                .expect("a planned rewrite names a recorded instance");
+            for step_id in &rewrite.claiming_steps {
+                assert!(
+                    instance.step_ids.contains(step_id),
+                    "instance {} must name step '{step_id}' as a step it served",
+                    stored_key.to_hex(),
+                );
+            }
         }
 
-        let original_bytes = std::fs::read(&path).expect("read demo conductor state fixture");
+        let drifted: Vec<String> = rewrites
+            .iter()
+            .filter(|(stored_key, rewrite)| rewrite.current_key != **stored_key)
+            .map(|(stored_key, rewrite)| {
+                format!(
+                    "{} (steps {:?}) derives {}",
+                    stored_key.to_hex(),
+                    rewrite.claiming_steps,
+                    rewrite.current_key.to_hex(),
+                )
+            })
+            .collect();
+
+        if !fixture_rewrite_requested() {
+            assert!(
+                drifted.is_empty(),
+                "{} records {} stale instance key(s): {}; \
+                 set {UPDATE_FIXTURES_ENV}=1 to rewrite them",
+                path.display(),
+                drifted.len(),
+                drifted.join(", "),
+            );
+            return;
+        }
+
+        rewrite_demo_conductor_state_fixture(&path, &state, &rewrites);
+    }
+
+    /// Rewrites the fixture's recorded keys to the keys the current derivation
+    /// produces.
+    ///
+    /// The caller proves every instance pairs with some step's recorded
+    /// provenance before calling this, so a fixture the planner cannot pair is
+    /// never touched. The replacement works on the file's JSON text — the
+    /// `tool_call_instances` map key, that entry's `instance_key` field, and the
+    /// matching `aux.instances` key carry the same string — and the edited text
+    /// is decoded and re-encoded through `encode_state_json` before it is
+    /// written, so the fixture always lands in the current wire shape. The bytes
+    /// go to a sibling temporary file in the fixture's own directory and are
+    /// then renamed over it, so a partial write is never observable in a
+    /// checked-in record; the sibling path keeps the rename on one filesystem,
+    /// hence atomic. A rewrite that would change no byte leaves the file alone
+    /// and says so.
+    fn rewrite_demo_conductor_state_fixture(
+        path: &Path,
+        state: &ConductorState,
+        rewrites: &BTreeMap<Hash, DemoInstanceKeyRewrite>,
+    ) {
+        let original_bytes = std::fs::read(path).expect("read demo conductor state fixture");
         let mut text = String::from_utf8(original_bytes.clone())
             .expect("demo conductor state fixture is utf-8");
 
         let mut changed = Vec::new();
-        for (stored_key, rewrite) in &rewrites {
+        for (stored_key, rewrite) in rewrites {
             if rewrite.current_key == *stored_key {
                 println!(
                     "steps {:?}: {} already current",
@@ -2183,7 +2266,7 @@ mod tests {
 
         // Validate the regenerated text before it can replace a checked-in
         // record: no stale key may survive, and every instance must carry the
-        // provenance the pairing above relies on.
+        // provenance the caller's pairing check relies on.
         for (stored_key, current_key) in &changed {
             assert!(
                 !text.contains(stored_key.to_string().as_str()),
@@ -2234,7 +2317,7 @@ mod tests {
         // keeps the rename on one filesystem (hence atomic).
         let temporary_path = path.with_extension("json.regenerated");
         std::fs::write(&temporary_path, &encoded).expect("write regenerated demo conductor state");
-        std::fs::rename(&temporary_path, &path)
+        std::fs::rename(&temporary_path, path)
             .expect("move regenerated demo conductor state over the fixture");
         if changed.is_empty() {
             println!("normalized the fixture to the current wire shape");
@@ -2250,7 +2333,8 @@ mod tests {
     /// fixture-backed test and a shape change could land unnoticed. Re-encoding
     /// the stored bytes and comparing them holds that invariant directly: the
     /// file is either canonical or this test names the drift, and
-    /// `regenerate_demo_conductor_state_fixture_keys` is the tool that fixes it.
+    /// `demo_conductor_state_fixture_matches_its_derivation` with
+    /// `MEDIAPM_UPDATE_FIXTURES=1` is what rewrites it.
     #[test]
     fn the_demo_fixture_is_in_the_current_wire_shape() {
         let path = fixture_path("demo_conductor_state.json");
@@ -2262,7 +2346,9 @@ mod tests {
         assert_eq!(
             String::from_utf8(encoded).expect("encoded state is utf-8"),
             String::from_utf8(bytes).expect("fixture is utf-8"),
-            "the checked-in demo state fixture must already be in the current wire shape; run              `regenerate_demo_conductor_state_fixture_keys` to rewrite it",
+            "the checked-in demo state fixture must already be in the current wire shape; run \
+             `MEDIAPM_UPDATE_FIXTURES=1 cargo test -p mediapm --lib \
+             demo_conductor_state_fixture_matches_its_derivation -- --nocapture` to rewrite it",
         );
     }
 
