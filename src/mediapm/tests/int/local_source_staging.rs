@@ -89,8 +89,9 @@ async fn a_local_source_is_staged_before_its_hash_is_written() {
 ///
 /// The cache is keyed by `ffprobe:<path>` and read before the probe runs, so
 /// a seeded entry makes the metadata stage hermetic instead of depending on a
-/// tool the test host may not have. The file must be written before the
-/// service opens the cache.
+/// tool the test host may not have. The file must be written in the cache's own
+/// shape, version included, or the cache treats it as holding nothing, and must
+/// exist before the service opens the cache.
 fn seed_ffprobe_cache(root: &Path, payload: &Path) {
     let cache_dir = root.join(".mediapm").join("cache").join("mediapm");
     std::fs::create_dir_all(&cache_dir).expect("create metadata cache dir");
@@ -105,9 +106,10 @@ fn seed_ffprobe_cache(root: &Path, payload: &Path) {
             "lastAccessUnixSeconds": now,
         }
     });
+    let cache_file = serde_json::json!({ "version": 1, "entries": entries });
     std::fs::write(
         cache_dir.join("metadata.json"),
-        serde_json::to_vec(&entries).expect("encode metadata cache"),
+        serde_json::to_vec(&cache_file).expect("encode metadata cache"),
     )
     .expect("write metadata cache");
 }

@@ -62,6 +62,8 @@ Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
     materialization.json    # what a run proved about each managed path
 ```
 
+Both files carry an integer `version` beside their entries and name no other top-level key. A file that names no version, names one this build does not read, or does not parse is treated as holding nothing and is rebuilt by the next write: the cost is one probe per key for `metadata.json` and one file read per managed path for `materialization.json`. Neither file is migrated, and each is named for what it holds rather than for the shape it carries.
+
 ## Key invariants
 
 - `tools_dir` always lives under `runtime_root`, never under workspace root directly.

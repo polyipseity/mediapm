@@ -15,11 +15,15 @@ use serde_json::Value;
 /// Default TTL for cached metadata entries (1 day in seconds).
 const METADATA_CACHE_ENTRY_TTL_SECONDS: u64 = 86_400;
 
+/// Format version this build reads and writes.
+///
+/// A file carrying any other version, or none at all, is treated as carrying no
+/// entries. That costs one probe per key, which is what a missing cache costs,
+/// and it keeps numbers a different build wrote from being read as these ones.
+const CACHE_VERSION: u32 = 1;
+
 /// Name of the file this cache reads and writes.
 const CACHE_FILE_NAME: &str = "metadata.json";
-
-/// Name the same file carried before it was named for its contents.
-const LEGACY_CACHE_FILE_NAME: &str = "metadata.cache.json";
 
 /// One entry in the metadata cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +33,24 @@ struct MetadataCacheEntry {
     /// Unix epoch seconds of the last access time.
     #[serde(rename = "lastAccessUnixSeconds")]
     last_access_unix_seconds: u64,
+}
+
+/// The cache file as it sits on disk.
+///
+/// Unknown fields are ignored rather than rejected: this is a cache, not a
+/// boundary type, and a field a later version adds must not turn a whole file
+/// into a parse error.
+#[derive(Debug, Serialize, Deserialize)]
+struct CacheFile {
+    /// Format version the file was written with.
+    ///
+    /// Required rather than defaulted: a file that names no version carries
+    /// nothing this build can read, and a default would adopt it instead.
+    version: u32,
+    /// Entries by cache key, defaulted so a file carrying only a version reads
+    /// as carrying none.
+    #[serde(default)]
+    entries: BTreeMap<String, MetadataCacheEntry>,
 }
 
 /// A persistent metadata cache backed by a JSON file on disk.
@@ -49,37 +71,23 @@ pub(crate) struct MetadataCache {
 impl MetadataCache {
     /// Opens or creates a metadata cache at the given cache directory.
     ///
-    /// If the cache file already exists, it is loaded into memory.
-    /// Missing or corrupt files start with an empty cache, and a missing one
-    /// adopts the record an older build left under the superseded name, marks
-    /// the cache dirty so the adopted entries are written out, and removes the
-    /// old file. The cache directory is created on demand so
-    /// [`flush`](Self::flush) can write its temp file (a failure to create it
-    /// leaves a memory-only cache; `Drop` then skips persistence just as it does
-    /// for any other write failure).
+    /// If the cache file exists and names this build's format version, it is
+    /// loaded into memory. Missing files, files naming no version, files naming
+    /// another version, and files that fail to parse all start with an empty
+    /// cache, which the next write replaces in the current shape. The cache
+    /// directory is created on demand so [`flush`](Self::flush) can write its
+    /// temp file (a failure to create it leaves a memory-only cache; `Drop` then
+    /// skips persistence just as it does for any other write failure).
     ///
-    /// Opening has one side effect, then: it may adopt and delete a superseded
-    /// file. Both are best-effort, because a cache that cannot be written costs
-    /// one probe per key and nothing else.
+    /// Opening has no side effect on the disk: it reads, or it does not.
     #[must_use]
     pub(crate) fn open(cache_dir: &Path) -> Self {
         let _ = fs::create_dir_all(cache_dir);
         let cache_path = cache_dir.join(CACHE_FILE_NAME);
-        let current_exists = cache_path.exists();
-        let entries = if current_exists {
-            load_cache_file(&cache_path).unwrap_or_default()
-        } else {
-            adopt_legacy_cache_file(cache_dir)
-        };
-        retire_legacy_cache_file(cache_dir);
-        // Adopted entries are not in the file yet, so the open that adopted them
-        // owes a write even when the rest of the run changes nothing. A fresh
-        // workspace adopts nothing and owes nothing.
-        let owes_write = !current_exists && !entries.is_empty();
         let cache = MetadataCache {
-            entries: Arc::new(Mutex::new(entries)),
+            entries: Arc::new(Mutex::new(load_cache_file(&cache_path))),
             cache_path,
-            dirty: Arc::new(Mutex::new(owes_write)),
+            dirty: Arc::new(Mutex::new(false)),
         };
         cache.prune_expired();
         cache
@@ -132,7 +140,8 @@ impl MetadataCache {
         }
 
         let entries = self.entries.lock().unwrap();
-        let json_bytes = serde_json::to_vec_pretty(&*entries)?;
+        let file = CacheFile { version: CACHE_VERSION, entries: entries.clone() };
+        let json_bytes = serde_json::to_vec_pretty(&file)?;
         // Atomic write: tempfile + rename
         let tmp_path = self.cache_path.with_extension("tmp");
         {
@@ -186,42 +195,40 @@ fn unix_seconds_now() -> u64 {
     mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
-/// Loads a JSON cache file directly.
-fn load_cache_file(path: &Path) -> Result<BTreeMap<String, MetadataCacheEntry>, io::Error> {
-    let content = fs::read_to_string(path)?;
-    serde_json::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-}
-
-/// Loads the cache an older build left under the superseded name.
+/// Loads the cache file, answering an empty map for anything this build cannot
+/// read.
 ///
-/// The name is the only thing that changed, so the entries beside it still
-/// describe the library and reading them costs nothing the caller would
-/// otherwise pay. The file itself is removed by [`retire_legacy_cache_file`],
-/// after the caller has marked the adopted entries as owed to the current file.
-fn adopt_legacy_cache_file(cache_dir: &Path) -> BTreeMap<String, MetadataCacheEntry> {
-    load_cache_file(&cache_dir.join(LEGACY_CACHE_FILE_NAME)).unwrap_or_default()
-}
-
-/// Removes the file a workspace kept under the superseded name, if it is still
-/// there.
-///
-/// This runs on every open rather than only on the open that adopted the file,
-/// so a removal that failed once is retried instead of leaving both files for
-/// the life of the workspace. The removal is best-effort: this cache is a
-/// convenience whose absence costs one probe, so a file that will not go is not
-/// a reason to fail the open.
-fn retire_legacy_cache_file(cache_dir: &Path) {
-    let legacy = cache_dir.join(LEGACY_CACHE_FILE_NAME);
-    match fs::remove_file(&legacy) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+/// A missing file, a file that is not the documented shape, and a file naming
+/// another format version all answer the same way, because the caller has one
+/// recovery: run the probe again and write the answer in the current shape. A
+/// warning separates the cases that leave a file behind unread, so a shape that
+/// keeps arriving stays visible in the logs.
+fn load_cache_file(path: &Path) -> BTreeMap<String, MetadataCacheEntry> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return BTreeMap::new(),
         Err(error) => {
-            tracing::warn!(
-                "could not remove the superseded metadata cache '{}': {error}",
-                legacy.display()
-            );
+            tracing::warn!("ignoring unreadable metadata cache '{}': {error}", path.display());
+            return BTreeMap::new();
         }
+    };
+    let file = match serde_json::from_str::<CacheFile>(&content) {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!("ignoring malformed metadata cache '{}': {error}", path.display());
+            return BTreeMap::new();
+        }
+    };
+    if file.version != CACHE_VERSION {
+        tracing::warn!(
+            "ignoring metadata cache '{}': it is version {} and this build reads version \
+             {CACHE_VERSION}",
+            path.display(),
+            file.version
+        );
+        return BTreeMap::new();
     }
+    file.entries
 }
 
 #[cfg(test)]
@@ -250,6 +257,9 @@ mod tests {
 
     /// Ensures opening a cache prunes entries whose last access time is
     /// older than the TTL, while keeping fresh entries.
+    ///
+    /// The seed goes through the encoder rather than a hand-written map, so the
+    /// test reads a file in the shape production writes.
     #[test]
     fn metadata_cache_prune_expired_removes_expired() {
         let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
@@ -272,8 +282,12 @@ mod tests {
                 },
             ),
         ]);
-        fs::write(&cache_path, serde_json::to_string_pretty(&seeded).expect("encode seeded cache"))
-            .expect("write seeded cache");
+        let seeded_file = CacheFile { version: CACHE_VERSION, entries: seeded };
+        fs::write(
+            &cache_path,
+            serde_json::to_string_pretty(&seeded_file).expect("encode seeded cache"),
+        )
+        .expect("write seeded cache");
 
         let cache = MetadataCache::open(dir.path());
         assert_eq!(cache.entry_count(), 1, "expired entry must be pruned at open");
@@ -340,16 +354,52 @@ mod tests {
         assert_eq!(retrieved, Some(value));
     }
 
-    /// A workspace from an older build keeps its entries across the rename and
-    /// is left holding one file, not two.
-    ///
-    /// The entries describe the library rather than the file name, so
-    /// discarding them would spend one probe per key to relearn what the file
-    /// already says, while keeping both would leave two files a run could read.
+    /// The cache file names the shape it carries, so a reader can tell which
+    /// build wrote it before trusting a number in it.
     #[test]
-    fn regression_a_legacy_metadata_cache_file_is_adopted_and_removed() {
+    fn metadata_cache_file_carries_its_version() {
         let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
-        let legacy_path = dir.path().join(LEGACY_CACHE_FILE_NAME);
+        {
+            let cache = MetadataCache::open(dir.path());
+            cache.set(
+                "ffprobe:/library/song.mkv".to_string(),
+                serde_json::json!({"format": "matroska"}),
+            );
+            cache.flush().expect("flush");
+        }
+
+        let text = fs::read_to_string(dir.path().join(CACHE_FILE_NAME)).expect("read cache file");
+        let parsed: Value = serde_json::from_str(&text).expect("cache file is json");
+        assert_eq!(
+            parsed["version"],
+            serde_json::json!(1),
+            "the file names the format version it carries: {text}"
+        );
+        assert_eq!(
+            parsed["entries"]["ffprobe:/library/song.mkv"]["value"]["format"],
+            serde_json::json!("matroska"),
+            "every entry lives under `entries`: {text}"
+        );
+        let object = parsed.as_object().expect("cache file is an object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["entries", "version"],
+            "the file holds the version and the entries and nothing else: {text}"
+        );
+    }
+
+    /// A file that names no version carries nothing this build can read.
+    ///
+    /// The bare map the cache once held is not a shape with a version, and
+    /// reading it as one would adopt numbers whose meaning the file never
+    /// stated. It is treated as absent instead, so the next write replaces it
+    /// with a file that does name its shape.
+    #[test]
+    fn a_versionless_metadata_file_is_read_as_empty() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let cache_path = dir.path().join(CACHE_FILE_NAME);
         let seeded = BTreeMap::from([(
             "ffprobe:/library/song.mkv".to_string(),
             MetadataCacheEntry {
@@ -357,40 +407,53 @@ mod tests {
                 last_access_unix_seconds: unix_seconds_now(),
             },
         )]);
-        fs::write(&legacy_path, serde_json::to_string_pretty(&seeded).expect("encode seeded"))
-            .expect("write seeded legacy cache");
+        fs::write(&cache_path, serde_json::to_string_pretty(&seeded).expect("encode seeded"))
+            .expect("write versionless cache");
 
         let cache = MetadataCache::open(dir.path());
 
-        assert!(
-            !legacy_path.exists(),
-            "the superseded file has to go, or the workspace keeps two records of one library"
-        );
         assert_eq!(
-            cache.get("ffprobe:/library/song.mkv"),
-            Some(serde_json::json!({"format": "matroska"})),
-            "the rename changed the file name and nothing else, so the entries still answer"
+            cache.entry_count(),
+            0,
+            "a versionless file carries no entry this build can read"
         );
+        assert!(cache.get("ffprobe:/library/song.mkv").is_none());
 
-        // An adopted entry is not a modification, so the file appears with the
-        // first write that does change something, and then holds both.
         cache.set("ffprobe:/library/other.mkv".to_string(), serde_json::json!({"format": "mp4"}));
         cache.flush().expect("flush");
-        assert!(
-            dir.path().join(CACHE_FILE_NAME).is_file(),
-            "the cache has to be written under the name this build reads"
-        );
         let reopened = MetadataCache::open(dir.path());
-        assert_eq!(
-            reopened.get("ffprobe:/library/song.mkv"),
-            Some(serde_json::json!({"format": "matroska"})),
-            "an adopted entry has to answer after the rename as it did before it"
-        );
         assert_eq!(
             reopened.get("ffprobe:/library/other.mkv"),
             Some(serde_json::json!({"format": "mp4"})),
-            "an entry written by one run has to answer the next one"
+            "the write that follows the rebuild leaves a file this build reads"
         );
+    }
+
+    /// A file naming a version this build does not read carries nothing.
+    #[test]
+    fn a_metadata_file_from_an_unknown_version_is_read_as_empty() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let cache_path = dir.path().join(CACHE_FILE_NAME);
+        let foreign = serde_json::json!({
+            "version": 99,
+            "entries": {
+                "ffprobe:/library/song.mkv": {
+                    "value": {"format": "matroska"},
+                    "lastAccessUnixSeconds": unix_seconds_now(),
+                }
+            }
+        });
+        fs::write(&cache_path, serde_json::to_string_pretty(&foreign).expect("encode foreign"))
+            .expect("write foreign cache");
+
+        let cache = MetadataCache::open(dir.path());
+
+        assert_eq!(
+            cache.entry_count(),
+            0,
+            "a file from another version must not be read as this build's entries"
+        );
+        assert!(cache.get("ffprobe:/library/song.mkv").is_none());
     }
 
     #[test]
