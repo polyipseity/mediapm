@@ -18,7 +18,7 @@ pub(crate) mod variant_binding;
 pub(crate) mod yt_dlp;
 pub(crate) mod yt_dlp_inputs;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -62,6 +62,103 @@ pub(crate) fn conductor_output_save_mode(config: OutputSaveConfig) -> OutputSave
         OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => OutputSaveMode::Saved,
         OutputSaveConfig::Bool(false) => OutputSaveMode::Unsaved,
         OutputSaveConfig::Full => OutputSaveMode::Full,
+    }
+}
+
+/// Facts an `auto` save policy resolves against.
+///
+/// [`resolve_variant_save`] needs three things it cannot derive from the
+/// declared policy alone: which of the media's variants the library
+/// materializes, where the producing step sits in the media's step list, and
+/// whether that step is impure (asked separately, because it belongs to the
+/// tool rather than to the media).
+pub(crate) struct AutoSaveContext {
+    /// Variants this media's hierarchy materializes.
+    ///
+    /// Taken from
+    /// [`crate::config::hierarchy_types::hierarchy_consumed_variants`] for the
+    /// media being synthesized, so the answer matches what the materializer
+    /// writes rather than what a selector looks like it should write.
+    materialized: BTreeSet<String>,
+    /// Index of the media's final mediapm step in `MediaSourceSpec::steps`.
+    ///
+    /// A step at this index is final even when it fans out into several
+    /// conductor calls, so the answer is a step index rather than a step id.
+    /// A media with no steps has no final step, and `None` says so rather than
+    /// naming an index that does not exist.
+    last_step_index: Option<usize>,
+}
+
+impl AutoSaveContext {
+    /// Builds the context for one media.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The synthesis that calls this is not part of this change, so the crate denies the item as dead code until it lands."
+        )
+    )]
+    pub(crate) const fn new(
+        materialized: BTreeSet<String>,
+        last_step_index: Option<usize>,
+    ) -> Self {
+        Self { materialized, last_step_index }
+    }
+}
+
+/// Resolves a declared [`OutputSaveConfig`] into the [`SaveMode`] the conductor
+/// records on the capture spec.
+///
+/// An explicit policy answers with itself and never consults `context` or
+/// `step_impure`. [`OutputSaveConfig::Auto`] resolves in this order:
+///
+/// 1. `variant` is one the hierarchy materializes, so the library links to the
+///    object: [`SaveMode::Full`], which keeps the blob whole instead of storing
+///    it as a delta against another blob.
+/// 2. `step_index` is the media's final step, so its output is what a user sees
+///    as the result: [`SaveMode::True`]. A media with no steps matches nothing
+///    here.
+/// 3. `step_impure`, so the output cannot be reproduced from the step's
+///    inputs and is worth keeping: [`SaveMode::True`].
+/// 4. otherwise [`SaveMode::False`]: an intermediate output of a reproducible
+///    step.
+///
+/// The order is the rule, not a preference among equals: a materialized variant
+/// resolves to `Full` even when it is also the final step's output or was
+/// produced by an impure step.
+///
+/// The returned mode is what the conductor records; retention is decided later,
+/// by the collector reading that record, so this function performs no I/O and
+/// keeps no state.
+#[must_use]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The synthesis that calls this is not part of this change, so the crate denies the item as dead code until it lands."
+    )
+)]
+pub(crate) fn resolve_variant_save(
+    declared: OutputSaveConfig,
+    variant: &str,
+    step_index: usize,
+    context: &AutoSaveContext,
+    step_impure: bool,
+) -> SaveMode {
+    match declared {
+        OutputSaveConfig::Bool(true) => SaveMode::True,
+        OutputSaveConfig::Bool(false) => SaveMode::False,
+        OutputSaveConfig::Full => SaveMode::Full,
+        OutputSaveConfig::Auto => {
+            if context.materialized.contains(variant) {
+                SaveMode::Full
+            } else if context.last_step_index == Some(step_index) || step_impure {
+                SaveMode::True
+            } else {
+                SaveMode::False
+            }
+        }
     }
 }
 
@@ -1754,5 +1851,66 @@ mod tests {
         }
         let bytes = mediapm_conductor::encode_document(doc).expect("encode");
         mediapm_conductor::decode_document(&bytes).expect("decode roundtrip");
+    }
+
+    /// `auto` saves what the library materializes, then what the media's final
+    /// step produces, then anything an impure step produced, and nothing else.
+    ///
+    /// The order is the contract: a materialized variant resolves to `full` even
+    /// when it is also the final step's output, because the library links to
+    /// that object and a delta against another blob would outlive the base's
+    /// reachability with it.
+    #[test]
+    fn auto_save_resolves_materialized_then_final_then_impure_then_unsaved() {
+        const LAST_STEP: usize = 2;
+        let context = AutoSaveContext::new(BTreeSet::from(["keep".to_string()]), Some(LAST_STEP));
+
+        assert_eq!(
+            resolve_variant_save(OutputSaveConfig::Auto, "keep", 0, &context, false),
+            SaveMode::Full,
+            "a variant the hierarchy materializes is kept whole"
+        );
+        assert_eq!(
+            resolve_variant_save(OutputSaveConfig::Auto, "result", LAST_STEP, &context, false),
+            SaveMode::True,
+            "the final step's output is saved without being forced whole"
+        );
+        assert_eq!(
+            resolve_variant_save(OutputSaveConfig::Auto, "scratch", 0, &context, true),
+            SaveMode::True,
+            "an impure step's output cannot be reproduced, so it is saved"
+        );
+        assert_eq!(
+            resolve_variant_save(OutputSaveConfig::Auto, "scratch", 0, &context, false),
+            SaveMode::False,
+            "an intermediate output of a pure step is not retained"
+        );
+        assert_eq!(
+            resolve_variant_save(OutputSaveConfig::Auto, "keep", LAST_STEP, &context, true),
+            SaveMode::Full,
+            "materialized wins over the final step and over impurity"
+        );
+    }
+
+    /// An explicit policy answers with itself, whatever the library, the step
+    /// position and the step's purity say.
+    #[test]
+    fn auto_save_leaves_an_explicit_policy_alone() {
+        let context = AutoSaveContext::new(BTreeSet::from(["keep".to_string()]), Some(2));
+        for (declared, expected) in [
+            (OutputSaveConfig::Bool(true), SaveMode::True),
+            (OutputSaveConfig::Bool(false), SaveMode::False),
+            (OutputSaveConfig::Full, SaveMode::Full),
+        ] {
+            for (step_index, impure) in [(0, false), (2, false), (0, true), (2, true)] {
+                for variant in ["keep", "other"] {
+                    assert_eq!(
+                        resolve_variant_save(declared, variant, step_index, &context, impure),
+                        expected,
+                        "an explicit policy must not consult the context"
+                    );
+                }
+            }
+        }
     }
 }
