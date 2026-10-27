@@ -694,6 +694,9 @@ pub(crate) fn reconcile_media_workflows(
 }
 
 #[cfg(test)]
+mod tests_impure_parity;
+
+#[cfg(test)]
 mod tests_media_tagger_apply;
 
 #[cfg(test)]

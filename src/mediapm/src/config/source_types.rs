@@ -175,6 +175,31 @@ impl MediaStepTool {
         matches!(self, Self::YtDlp | Self::Import)
     }
 
+    /// Returns true when this tool's output depends on more than its declared
+    /// inputs, so the conductor cannot reuse a recorded instance of it merely
+    /// because the inputs matched.
+    ///
+    /// `yt-dlp` reaches an upstream server, `media-tagger` queries `MusicBrainz`
+    /// and the `Cover Art Archive`, and the `import` builtin ingests bytes from a
+    /// source outside the step's own arguments. `ffmpeg` and `rsgain` compute
+    /// their output from the bytes they are handed, so a matching instance is
+    /// the same work already done.
+    ///
+    /// The answer mirrors what the specs already say, and the parity test in
+    /// `tools::workflows::tests_impure_parity` holds the two in step: the
+    /// builders pass the flag as a literal to `assemble_tool_spec` — `true` at
+    /// `yt_dlp.rs` and `media_tagger.rs`, `false` at `ffmpeg.rs` and `rsgain.rs`
+    /// — and the bridge copies the `import` builtin's registration
+    /// (`IS_IMPURE` in `mediapm-conductor-builtins/import`) onto the generated
+    /// document. Change one of those and this classification has to follow.
+    #[must_use]
+    pub const fn is_impure(self) -> bool {
+        match self {
+            Self::YtDlp | Self::Import | Self::MediaTagger => true,
+            Self::Ffmpeg | Self::Rsgain => false,
+        }
+    }
+
     /// Returns true when the given tool name identifies a builtin
     /// source-ingest step that is never downloader-provisioned.
     #[must_use]
