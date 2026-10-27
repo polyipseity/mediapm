@@ -22,7 +22,6 @@ use crate::conductor_impl::Conductor;
 use crate::defaults;
 use crate::error::ConductorError;
 use crate::state::ConductorState;
-use crate::state::versions::decode_state_json;
 
 // ---------------------------------------------------------------------------
 // CLI structure
@@ -220,21 +219,6 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
                 .map_err(|e| ConductorError::Serialization(e.to_string()))?;
             println!("{json}");
         }
-        Some(StateCommand::Export { path }) => {
-            let conductor = ensure_conductor().await?;
-            conductor.ensure_persisted_state_loaded().await?;
-            let state = conductor.get_state()?;
-            let json = serde_json::to_string_pretty(&state)
-                .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-            std::fs::write(&path, &json)
-                .map_err(|e| ConductorError::io("writing state export", &path, e))?;
-            println!("State exported to '{}'", path.display());
-        }
-        Some(StateCommand::Import { path }) => {
-            let conductor = ensure_conductor().await?;
-            import_state_file(conductor, &path).await?;
-            println!("State imported from '{}'", path.display());
-        }
         Some(StateCommand::InvalidateToolCall { key }) => {
             let conductor = ensure_conductor().await?;
             let change = change_instance_invalidation(conductor, &key, true).await?;
@@ -324,35 +308,6 @@ where
         .parse()
         .map_err(|e| ConductorError::Workflow(format!("invalid instance key: {e}")))?;
     conductor.update_state(|state| set_instance_invalidation(state, &key, invalidated)).await
-}
-
-/// Replaces the persisted orchestration state with the document at `path`.
-///
-/// The write is the point: a façade keeps its snapshot in memory, so an import
-/// that only swapped memory would be discarded when the process exited, which
-/// is what the command used to do.
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read or decoded, or when the
-/// resulting state cannot be written.
-async fn import_state_file<C>(
-    conductor: &Conductor<C>,
-    path: &std::path::Path,
-) -> Result<(), ConductorError>
-where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
-{
-    let json = std::fs::read_to_string(path)
-        .map_err(|e| ConductorError::io("reading state import", path, e))?;
-    let imported: ConductorState = decode_state_json(json.as_bytes())
-        .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-    conductor
-        .update_state(|state| {
-            *state = imported;
-            Ok(())
-        })
-        .await
 }
 
 /// Prints the outcome of a marker request.
@@ -501,12 +456,11 @@ mod tests {
     use mediapm_utils::Timestamp;
 
     use super::{
-        MarkerChange, change_instance_invalidation, import_state_file, marker_change_message,
+        MarkerChange, change_instance_invalidation, marker_change_message,
         set_instance_invalidation,
     };
     use crate::api::RuntimeStoragePaths;
     use crate::conductor_impl::Conductor;
-    use crate::state::versions::encode_state_json;
     use crate::state::{CapturedOutput, ConductorState, ToolCallInstance};
 
     /// Builds the state one command test starts from: a single recorded
@@ -788,37 +742,6 @@ mod tests {
         assert_eq!(
             marker_change_message("k", false, MarkerChange::AlreadyInRequestedState),
             "Tool call instance 'k' is not marked invalid",
-        );
-    }
-    /// An import reaches the file, not only the process.
-    ///
-    /// The façade's state is an in-memory snapshot, so an import that only
-    /// replaced it would vanish at exit — which is what this command did before
-    /// it grew a durable write.
-    #[tokio::test]
-    async fn importing_persists_the_imported_state() {
-        let key = Hash::from_content(b"imported");
-        let imported = state_with_one_instance(key);
-        // The directory owner has to outlive the write: dropping the handle
-        // deletes the tree before the file exists.
-        let source_dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
-        let source_path = source_dir.path().join("import.json");
-        std::fs::write(&source_path, encode_state_json(&imported).expect("encode"))
-            .expect("write import source");
-
-        let (_dir, conductor) =
-            conductor_in_scratch_dir(&state_with_one_instance(Hash::from_content(b"other")));
-        import_state_file(&conductor, &source_path).await.expect("import");
-
-        let recorded = state_on_disk(&conductor);
-        assert!(
-            recorded.tool_call_instances.contains_key(&key),
-            "the imported instance must survive the process, or the command did nothing",
-        );
-        assert_eq!(
-            recorded.tool_call_instances.len(),
-            1,
-            "an import replaces the document rather than merging into it",
         );
     }
 }

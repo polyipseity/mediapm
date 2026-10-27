@@ -101,16 +101,6 @@ pub struct StateArgs {
 pub enum StateCommand {
     /// Compile and display the effective configuration.
     Compile,
-    /// Export state to a JSON file.
-    Export {
-        /// Output file path.
-        path: PathBuf,
-    },
-    /// Import state from a JSON file.
-    Import {
-        /// Input file path.
-        path: PathBuf,
-    },
     /// Show runtime diagnostics.
     Show,
 
@@ -266,17 +256,7 @@ mod tests {
     fn nested_commands_declare_the_expected_subcommands() {
         let root = command();
         for (parent, expected) in [
-            (
-                "state",
-                vec![
-                    "compile",
-                    "export",
-                    "import",
-                    "show",
-                    "invalidate-tool-call",
-                    "revalidate-tool-call",
-                ],
-            ),
+            ("state", vec!["compile", "show", "invalidate-tool-call", "revalidate-tool-call"]),
             ("import", vec!["tool"]),
             ("remove", vec!["data", "tool"]),
             ("tool", vec!["run", "list"]),

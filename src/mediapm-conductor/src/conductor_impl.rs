@@ -636,9 +636,9 @@ where
 
     /// Writes one state snapshot to the configured state file.
     ///
-    /// The single saver: the workflow run, the GC pass, the background loop, the
-    /// marker commands, and `state import` all publish state through it, so the
-    /// on-disk shape and the way it is replaced cannot diverge between them.
+    /// The single saver: the workflow run, the GC pass, the background loop, and
+    /// the marker commands all publish state through it, so the on-disk shape and
+    /// the way it is replaced cannot diverge between them.
     ///
     /// # Errors
     ///
