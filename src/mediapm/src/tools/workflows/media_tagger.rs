@@ -29,8 +29,8 @@ use super::ffmpeg::{
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
 use super::yt_dlp_inputs::resolve_step_output_binding;
 use super::{
-    FfmpegSlotLimits, VariantProducer, media_step_id, resolve_input_variant_producer,
-    step_option_input_bindings, variant_to_output_capture_spec,
+    AutoSaveContext, FfmpegSlotLimits, VariantProducer, media_step_id,
+    resolve_input_variant_producer, step_option_input_bindings, variant_to_output_capture_spec,
 };
 
 /// Fixed sandbox output file path for media-tagger `FFmetadata` documents.
@@ -156,6 +156,7 @@ pub(crate) fn synthesize_media_tagger_step(
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     media_tagger_cache_dir: &Path,
+    context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
     let ffmpeg_tool_id = resolve_media_tagger_ffmpeg_tool_id(step, generated_doc)?;
     let ffmpeg_bin_for_metadata = resolve_media_tagger_ffmpeg_bin(step);
@@ -232,7 +233,14 @@ pub(crate) fn synthesize_media_tagger_step(
             depends_on: apply_depends_on,
             outputs: BTreeMap::from([(
                 apply_output_name.clone(),
-                build_media_tagger_apply_output(&apply_output_name, output_variant_value),
+                build_media_tagger_apply_output(
+                    &apply_output_name,
+                    &mapping.output,
+                    output_variant_value,
+                    step_index,
+                    context,
+                    step.tool.is_impure(),
+                ),
             )]),
             max_retries: 0,
         });
@@ -338,15 +346,28 @@ fn build_media_tagger_apply_inputs(
 ///
 /// The capture matches the ffmpeg slot-0 output file regardless of the
 /// container-override extension; the save mode derives from the step's
-/// output-variant configuration.
+/// output-variant configuration, resolved against the declared variant name the
+/// hierarchy selector matches rather than against the capture key.
 fn build_media_tagger_apply_output(
     apply_output_name: &str,
+    variant: &str,
     output_variant_value: &OutputVariantValue,
+    step_index: usize,
+    context: &AutoSaveContext,
+    step_impure: bool,
 ) -> OutputCaptureSpec {
     OutputCaptureSpec {
         name: apply_output_name.to_string(),
         capture: format!("file_regex:{MEDIA_TAGGER_APPLY_OUTPUT_FILE_REGEX}"),
-        save: variant_to_output_capture_spec(apply_output_name, output_variant_value).save,
+        save: variant_to_output_capture_spec(
+            apply_output_name,
+            variant,
+            output_variant_value,
+            step_index,
+            context,
+            step_impure,
+        )
+        .save,
         allow_empty: false,
         include_topmost_folder: true,
     }

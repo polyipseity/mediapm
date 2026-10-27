@@ -27,8 +27,8 @@ use crate::error::MediaPmError;
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
 use super::yt_dlp_inputs::{resolve_step_output_binding, yt_dlp_variant_inputs};
 use super::{
-    FfmpegSlotLimits, VariantProducer, media_step_id, step_option_input_bindings,
-    variant_to_output_capture_spec,
+    AutoSaveContext, FfmpegSlotLimits, VariantProducer, media_step_id, resolve_variant_save,
+    step_option_input_bindings, variant_to_output_capture_spec,
 };
 
 /// Synthesizes yt-dlp workflow steps from one media step definition.
@@ -56,6 +56,7 @@ pub(crate) fn synthesize_yt_dlp_step(
     tool_id: &str,
     _producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
+    context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
     let mut pending_variant_updates = Vec::new();
 
@@ -111,7 +112,14 @@ pub(crate) fn synthesize_yt_dlp_step(
         let mut outputs = BTreeMap::new();
         outputs.insert(
             output_binding.output_name.clone(),
-            variant_to_output_capture_spec(&output_binding.output_name, variant_value),
+            variant_to_output_capture_spec(
+                &output_binding.output_name,
+                &mapping.output,
+                variant_value,
+                step_index,
+                context,
+                step.tool.is_impure(),
+            ),
         );
 
         let mut producers_for_step = vec![(
@@ -129,7 +137,14 @@ pub(crate) fn synthesize_yt_dlp_step(
         {
             outputs.insert(
                 OUTPUT_YT_DLP_ARCHIVE_FILE.to_string(),
-                variant_to_output_capture_spec(OUTPUT_YT_DLP_ARCHIVE_FILE, archive_variant),
+                variant_to_output_capture_spec(
+                    OUTPUT_YT_DLP_ARCHIVE_FILE,
+                    "archive",
+                    archive_variant,
+                    step_index,
+                    context,
+                    step.tool.is_impure(),
+                ),
             );
             producers_for_step.push((
                 "archive".to_string(),
@@ -165,8 +180,12 @@ pub(crate) fn synthesize_yt_dlp_step(
 #[must_use]
 pub(crate) fn yt_dlp_variant_capture_and_save(
     config: &crate::config::YtDlpOutputVariantConfig,
+    variant: &str,
+    step_index: usize,
+    context: &AutoSaveContext,
+    step_impure: bool,
 ) -> (String, mediapm_conductor::SaveMode) {
-    use crate::config::{OutputSaveConfig, YtDlpOutputKind};
+    use crate::config::YtDlpOutputKind;
 
     let capture = match config.kind {
         YtDlpOutputKind::Primary => format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
@@ -180,11 +199,7 @@ pub(crate) fn yt_dlp_variant_capture_and_save(
         YtDlpOutputKind::Annotation => format!("file_regex:{YT_DLP_ANNOTATION_OUTPUT_REGEX}"),
         YtDlpOutputKind::Links => format!("folder_regex:{YT_DLP_LINK_ARTIFACTS_REGEX}"),
     };
-    let save = match config.save {
-        OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => mediapm_conductor::SaveMode::True,
-        OutputSaveConfig::Bool(false) => mediapm_conductor::SaveMode::False,
-        OutputSaveConfig::Full => mediapm_conductor::SaveMode::Full,
-    };
+    let save = resolve_variant_save(config.save, variant, step_index, context, step_impure);
     (capture, save)
 }
 

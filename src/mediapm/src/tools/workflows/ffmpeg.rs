@@ -16,11 +16,12 @@ use mediapm_conductor::tools::helpers::build_os_conditional_selector;
 use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
 use crate::config::defaults::{DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS};
 use crate::config::output_types::ResolvedStepVariantFlow;
-use crate::config::{MediaStep, OutputSaveConfig, OutputVariantValue};
+use crate::config::{MediaStep, OutputVariantValue};
 use crate::error::MediaPmError;
 
 use super::{
-    VariantProducer, ffmpeg_step_id, resolve_input_variant_producer, step_option_input_bindings,
+    AutoSaveContext, VariantProducer, ffmpeg_step_id, resolve_input_variant_producer,
+    resolve_variant_save, step_option_input_bindings,
 };
 
 /// Synthesizes the single aggregated ffmpeg workflow step from one media step
@@ -52,6 +53,7 @@ pub(crate) fn synthesize_ffmpeg_step(
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
+    context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
     let step_id = ffmpeg_step_id(step_index);
     let mut depends_on = Vec::new();
@@ -136,11 +138,13 @@ pub(crate) fn synthesize_ffmpeg_step(
             ffmpeg_output_path_for_variant(output_index, &config.extension),
         );
 
-        let save = match config.save {
-            OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => SaveMode::True,
-            OutputSaveConfig::Bool(false) => SaveMode::False,
-            OutputSaveConfig::Full => SaveMode::Full,
-        };
+        let save = resolve_variant_save(
+            config.save,
+            &mapping.output,
+            step_index,
+            context,
+            step.tool.is_impure(),
+        );
         outputs.insert(
             output_name.clone(),
             OutputCaptureSpec {

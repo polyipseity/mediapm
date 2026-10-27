@@ -31,7 +31,7 @@ use mediapm_conductor::{
 use crate::conductor_bridge::documents::save_conductor_generated_document;
 use crate::conductor_bridge::sync::find_active_tool_spec;
 pub(crate) use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
-use crate::config::hierarchy_types::validate_media_ids;
+use crate::config::hierarchy_types::{hierarchy_consumed_variants, validate_media_ids};
 use crate::config::output_types::{ResolvedStepVariantFlow, resolve_step_variant_flow};
 use crate::config::source_types::step_option_scalar;
 use crate::config::{
@@ -54,16 +54,6 @@ pub(crate) const INPUT_IMPORT_KIND: &str = "kind";
 pub(crate) const INPUT_IMPORT_HASH: &str = "hash";
 /// Value for import kind: CAS hash pointer.
 pub(crate) const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
-
-/// Converts a mediapm [`OutputSaveConfig`] to a conductor [`OutputSaveMode`].
-#[must_use]
-pub(crate) fn conductor_output_save_mode(config: OutputSaveConfig) -> OutputSaveMode {
-    match config {
-        OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => OutputSaveMode::Saved,
-        OutputSaveConfig::Bool(false) => OutputSaveMode::Unsaved,
-        OutputSaveConfig::Full => OutputSaveMode::Full,
-    }
-}
 
 /// Facts an `auto` save policy resolves against.
 ///
@@ -92,13 +82,6 @@ pub(crate) struct AutoSaveContext {
 impl AutoSaveContext {
     /// Builds the context for one media.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The synthesis that calls this is not part of this change, so the crate denies the item as dead code until it lands."
-        )
-    )]
     pub(crate) const fn new(
         materialized: BTreeSet<String>,
         last_step_index: Option<usize>,
@@ -132,13 +115,6 @@ impl AutoSaveContext {
 /// by the collector reading that record, so this function performs no I/O and
 /// keeps no state.
 #[must_use]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The synthesis that calls this is not part of this change, so the crate denies the item as dead code until it lands."
-    )
-)]
 pub(crate) fn resolve_variant_save(
     declared: OutputSaveConfig,
     variant: &str,
@@ -217,45 +193,52 @@ pub(crate) fn resolve_selected_dependency_tool_id(
 }
 
 /// Builds a step-output capture spec from one decoded variant config.
+///
+/// `name` is the capture spec's own key, which the workflow step and the
+/// variant producers address the output by; `variant` is the declared output
+/// variant the policy belongs to, which is the name a hierarchy selector
+/// matches. The two differ for the tools whose capture keys are logical output
+/// names (yt-dlp's `yt_dlp_subtitle_artifacts`, ffmpeg's `primary`), so the save
+/// policy is resolved against `variant`.
 #[must_use]
 pub(crate) fn variant_to_output_capture_spec(
     name: &str,
+    variant: &str,
     config: &OutputVariantValue,
+    step_index: usize,
+    context: &AutoSaveContext,
+    step_impure: bool,
 ) -> OutputCaptureSpec {
-    match config {
+    let (capture, save) = match config {
         OutputVariantValue::Generic(g) => {
-            let (capture, save) = generic_variant_capture_and_save(g);
-            OutputCaptureSpec {
-                name: name.to_string(),
-                capture,
-                save,
-                allow_empty: false,
-                include_topmost_folder: true,
-            }
+            generic_variant_capture_and_save(g, variant, step_index, context, step_impure)
         }
         OutputVariantValue::YtDlp(y) => {
-            let (capture, save) = yt_dlp::yt_dlp_variant_capture_and_save(y);
-            OutputCaptureSpec {
-                name: name.to_string(),
-                capture,
-                save,
-                allow_empty: false,
-                include_topmost_folder: true,
-            }
+            yt_dlp::yt_dlp_variant_capture_and_save(y, variant, step_index, context, step_impure)
         }
+    };
+    OutputCaptureSpec {
+        name: name.to_string(),
+        capture,
+        save,
+        allow_empty: false,
+        include_topmost_folder: true,
     }
 }
 
-fn generic_variant_capture_and_save(config: &GenericOutputVariantConfig) -> (String, SaveMode) {
+/// Builds the capture selector and save mode of one generic output variant.
+fn generic_variant_capture_and_save(
+    config: &GenericOutputVariantConfig,
+    variant: &str,
+    step_index: usize,
+    context: &AutoSaveContext,
+    step_impure: bool,
+) -> (String, SaveMode) {
     let capture = match config.capture_kind {
         Some(OutputCaptureKind::Folder) => format!("file:{}/*", config.kind),
         _ => format!("file:{}", config.kind),
     };
-    let save = match config.save {
-        OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => SaveMode::True,
-        OutputSaveConfig::Bool(false) => SaveMode::False,
-        OutputSaveConfig::Full => SaveMode::Full,
-    };
+    let save = resolve_variant_save(config.save, variant, step_index, context, step_impure);
     (capture, save)
 }
 
@@ -462,27 +445,27 @@ fn seed_local_variant_sources(
 
 /// Builds import-step output capture: the import builtin emits stdout bytes,
 /// not sandbox file paths, regardless of variant policy kind labels.
+///
+/// Both variant shapes declare the same `save` field, so the declared policy is
+/// read once and resolved through [`resolve_variant_save`] rather than matched
+/// per shape.
 fn import_step_output_capture(
     output_variants: &BTreeMap<String, OutputVariantValue>,
     output_variant: &str,
+    step_index: usize,
+    context: &AutoSaveContext,
+    step_impure: bool,
 ) -> Result<BTreeMap<String, OutputCaptureSpec>, MediaPmError> {
     let value = output_variants.get(output_variant).ok_or_else(|| {
         MediaPmError::Workflow(format!(
             "missing output variant '{output_variant}' while resolving import output policy"
         ))
     })?;
-    let save = match value {
-        OutputVariantValue::Generic(g) => match g.save {
-            OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => SaveMode::True,
-            OutputSaveConfig::Bool(false) => SaveMode::False,
-            OutputSaveConfig::Full => SaveMode::Full,
-        },
-        OutputVariantValue::YtDlp(y) => match y.save {
-            OutputSaveConfig::Bool(true) | OutputSaveConfig::Auto => SaveMode::True,
-            OutputSaveConfig::Bool(false) => SaveMode::False,
-            OutputSaveConfig::Full => SaveMode::Full,
-        },
+    let declared = match value {
+        OutputVariantValue::Generic(g) => g.save,
+        OutputVariantValue::YtDlp(y) => y.save,
     };
+    let save = resolve_variant_save(declared, output_variant, step_index, context, step_impure);
     Ok(BTreeMap::from([(
         output_variant.to_string(),
         OutputCaptureSpec {
@@ -520,6 +503,7 @@ fn synthesize_import_step(
     mappings: &[ResolvedStepVariantFlow],
     generated_doc: &NickelDocument,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
+    context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
     let tool_id = resolve_step_tool_id(step.tool, generated_doc)?;
     let kind = step_option_scalar(step, INPUT_IMPORT_KIND)
@@ -557,7 +541,13 @@ fn synthesize_import_step(
         inputs.insert(INPUT_IMPORT_HASH.to_string(), hash.clone());
         inputs.insert(INPUT_IMPORT_KIND.to_string(), kind.clone());
 
-        let outputs = import_step_output_capture(&step.output_variants, &mapping.output)?;
+        let outputs = import_step_output_capture(
+            &step.output_variants,
+            &mapping.output,
+            step_index,
+            context,
+            step.tool.is_impure(),
+        )?;
 
         workflow.steps.push(WorkflowStepSpec {
             id: step_id.clone(),
@@ -591,6 +581,11 @@ fn synthesize_import_step(
 /// Import steps are synthesized inline; the four managed tools delegate to
 /// their per-tool submodule synthesizers (which own step building AND
 /// variant-producer registration).
+///
+/// `context` carries the facts the `auto` save policy resolves against for this
+/// media — the variants its hierarchy entries materialize and where its final
+/// step sits — so no synthesizer has to walk the hierarchy itself. Each one
+/// answers the step's purity from the step it was handed.
 #[allow(clippy::too_many_arguments)]
 fn synthesize_media_steps(
     workflow: &mut WorkflowSpec,
@@ -601,6 +596,7 @@ fn synthesize_media_steps(
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
     media_tagger_cache_dir: &Path,
+    context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
     for (step_index, step) in source.steps.iter().enumerate() {
         let mappings = resolve_step_variant_flow(step)
@@ -618,6 +614,7 @@ fn synthesize_media_steps(
                     &mappings,
                     generated_doc,
                     variant_producers,
+                    context,
                 )?;
             }
             MediaStepTool::YtDlp => {
@@ -631,6 +628,7 @@ fn synthesize_media_steps(
                     &tool_id,
                     &producer_snapshot,
                     variant_producers,
+                    context,
                 )?;
             }
             MediaStepTool::Ffmpeg => {
@@ -645,6 +643,7 @@ fn synthesize_media_steps(
                     &producer_snapshot,
                     variant_producers,
                     ffmpeg_slot_limits,
+                    context,
                 )?;
             }
             MediaStepTool::MediaTagger => {
@@ -660,6 +659,7 @@ fn synthesize_media_steps(
                     &producer_snapshot,
                     variant_producers,
                     media_tagger_cache_dir,
+                    context,
                 )?;
             }
             MediaStepTool::Rsgain => {
@@ -675,6 +675,7 @@ fn synthesize_media_steps(
                     &producer_snapshot,
                     variant_producers,
                     ffmpeg_slot_limits,
+                    context,
                 )?;
             }
         }
@@ -694,6 +695,11 @@ pub(crate) struct MediaWorkflowPlan {
 
 /// Builds the full managed workflow/external-data plan from `mediapm` config
 /// with explicit ffmpeg slot limits.
+///
+/// The index of variants each media's hierarchy materializes is built once here
+/// rather than per step, and each media's synthesis receives it as an
+/// [`AutoSaveContext`] so a declared `auto` save policy resolves to the mode the
+/// conductor records.
 fn build_media_workflow_plan_with_limits(
     document: &MediaPmDocument,
     generated_doc: &NickelDocument,
@@ -711,7 +717,18 @@ fn build_media_workflow_plan_with_limits(
     // reconcile instead of leaving a partially synthesized plan behind.
     validate_media_ids(document)?;
 
+    // One pass for the whole document: the answer is per media, but the walk
+    // over the hierarchy is not, so asking per step would repeat it.
+    let consumed = hierarchy_consumed_variants(document)?;
+
     for (media_id, source) in &document.media {
+        // A media with no hierarchy entry materializes nothing, so an absent key
+        // is the answer rather than a failure. `checked_sub` states the same
+        // thing for the step list: a media with no steps has no final step.
+        let context = AutoSaveContext::new(
+            consumed.get(media_id).cloned().unwrap_or_default(),
+            source.steps.len().checked_sub(1),
+        );
         let mut workflow = WorkflowSpec {
             name: managed_workflow_name(media_id),
             description: (!source.description.is_empty()).then(|| source.description.clone()),
@@ -731,6 +748,7 @@ fn build_media_workflow_plan_with_limits(
             &mut variant_producers,
             ffmpeg_slot_limits,
             media_tagger_cache_dir,
+            &context,
         )?;
 
         plan.workflows.insert(managed_workflow_name(media_id), workflow);
@@ -801,6 +819,10 @@ mod tests {
     use super::*;
 
     use mediapm_conductor::{ToolKindSpec, ToolSpec};
+
+    use crate::config::hierarchy_types::{
+        HierarchyNode, HierarchyNodeKind, HierarchyPath, PlaylistFormat,
+    };
 
     /// The index of a step id round-trips through both constructors.
     ///
@@ -1889,6 +1911,164 @@ mod tests {
             resolve_variant_save(OutputSaveConfig::Auto, "keep", LAST_STEP, &context, true),
             SaveMode::Full,
             "materialized wins over the final step and over impurity"
+        );
+    }
+
+    /// Builds the `media_folder` hierarchy entry that materializes `variants`
+    /// for `media_id`.
+    ///
+    /// A folder entry with an empty selector list materializes every available
+    /// variant, so naming one variant here is what makes the rest of the
+    /// media's output variants unsaved by default.
+    fn media_folder_node(media_id: &str, variants: &[&str]) -> HierarchyNode {
+        HierarchyNode {
+            path: HierarchyPath::simple(media_id),
+            kind: HierarchyNodeKind::MediaFolder,
+            id: None,
+            media_id: Some(media_id.to_string()),
+            variant: None,
+            variants: variants.iter().map(|variant| (*variant).to_string()).collect(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::default(),
+            ids: Vec::new(),
+            sanitize_names: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// Builds one ffmpeg output variant that declares the given `save` policy,
+    /// or leaves the policy out when `save` is `None` so the field decodes to
+    /// its `auto` default.
+    fn ffmpeg_variant_with_policy(idx: u32, save: Option<Value>) -> Value {
+        match save {
+            Some(save) => json!({ "kind": "output_content", "idx": idx, "save": save }),
+            None => json!({ "kind": "output_content", "idx": idx }),
+        }
+    }
+
+    /// A variant the hierarchy materializes is kept whole, an intermediate
+    /// output of a pure step is not retained, and the media's final step is
+    /// saved.
+    ///
+    /// This is the end of the `auto` policy's wiring: the resolver's answer has
+    /// to reach the capture spec the conductor records, because retention reads
+    /// that record rather than the document.
+    #[test]
+    fn auto_save_reaches_the_generated_capture_specs() {
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                "keep-media".to_string(),
+                media_source(
+                    "",
+                    vec![("default", AAA_HASH)],
+                    vec![
+                        media_step(
+                            MediaStepTool::Ffmpeg,
+                            vec!["default"],
+                            vec![
+                                ("keep", ffmpeg_variant_with_policy(0, None)),
+                                ("scratch", ffmpeg_variant_with_policy(1, None)),
+                            ],
+                            vec![],
+                        ),
+                        media_step(
+                            MediaStepTool::Ffmpeg,
+                            vec!["keep"],
+                            vec![("final", ffmpeg_variant_with_policy(0, None))],
+                            vec![],
+                        ),
+                    ],
+                ),
+            )]),
+            hierarchy: vec![media_folder_node("keep-media", &["keep"])],
+            ..MediaPmDocument::default()
+        };
+        let generated_doc = tools_document(&["ffmpeg"]);
+        let plan = build_plan(&document, &generated_doc).expect("plan");
+        let workflow = &plan.workflows[&managed_workflow_name("keep-media")];
+
+        let first_step = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == "step-0-ffmpeg")
+            .expect("the first media step synthesizes one ffmpeg call");
+        assert_eq!(
+            first_step.outputs.get("primary").map(|output| output.save),
+            Some(SaveMode::Full),
+            "the hierarchy materializes 'keep', so the blob must stay whole"
+        );
+        assert_eq!(
+            first_step.outputs.get("primary_1").map(|output| output.save),
+            Some(SaveMode::False),
+            "'scratch' feeds a later step and can be reproduced, so it is not retained"
+        );
+
+        let final_step = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == "step-1-ffmpeg")
+            .expect("the second media step synthesizes one ffmpeg call");
+        assert_eq!(
+            final_step.outputs.get("primary").map(|output| output.save),
+            Some(SaveMode::True),
+            "the media's final step produces what a user sees as the result"
+        );
+    }
+
+    /// An explicit policy never consults the library, the step position or the
+    /// step's purity.
+    ///
+    /// The two declared values are chosen to contradict what `auto` would say
+    /// for the same variant, so the assertion fails if the wiring forgets to
+    /// pass the declaration through.
+    #[test]
+    fn an_explicit_policy_overrides_the_auto_rule() {
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                "keep-media".to_string(),
+                media_source(
+                    "",
+                    vec![("default", AAA_HASH)],
+                    vec![
+                        media_step(
+                            MediaStepTool::Ffmpeg,
+                            vec!["default"],
+                            vec![
+                                ("keep", ffmpeg_variant_with_policy(0, Some(json!(true)))),
+                                ("scratch", ffmpeg_variant_with_policy(1, Some(json!("full")))),
+                            ],
+                            vec![],
+                        ),
+                        media_step(
+                            MediaStepTool::Ffmpeg,
+                            vec!["keep"],
+                            vec![("final", ffmpeg_variant_with_policy(0, None))],
+                            vec![],
+                        ),
+                    ],
+                ),
+            )]),
+            hierarchy: vec![media_folder_node("keep-media", &["keep"])],
+            ..MediaPmDocument::default()
+        };
+        let generated_doc = tools_document(&["ffmpeg"]);
+        let plan = build_plan(&document, &generated_doc).expect("plan");
+        let workflow = &plan.workflows[&managed_workflow_name("keep-media")];
+        let first_step = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == "step-0-ffmpeg")
+            .expect("the first media step synthesizes one ffmpeg call");
+
+        assert_eq!(
+            first_step.outputs.get("primary").map(|output| output.save),
+            Some(SaveMode::True),
+            "an explicit true is saved even where auto would keep the blob whole"
+        );
+        assert_eq!(
+            first_step.outputs.get("primary_1").map(|output| output.save),
+            Some(SaveMode::Full),
+            "an explicit full is kept whole even where auto would not retain it"
         );
     }
 

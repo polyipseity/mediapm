@@ -29,9 +29,9 @@ use super::ffmpeg::{
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
 use super::yt_dlp_inputs::resolve_step_output_binding;
 use super::{
-    FfmpegSlotLimits, VariantProducer, conductor_output_save_mode, media_step_id,
+    AutoSaveContext, FfmpegSlotLimits, VariantProducer, media_step_id,
     resolve_input_variant_producer, resolve_selected_dependency_tool_id, resolve_step_tool_id,
-    step_option_input_bindings,
+    resolve_variant_save, step_option_input_bindings,
 };
 
 /// File extensions the provisioned `rsgain` binary accepts for in-place tagging.
@@ -67,6 +67,7 @@ pub(crate) fn synthesize_rsgain_step_chain(
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
+    context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
     let ffmpeg_tool_id = resolve_selected_dependency_tool_id("ffmpeg", generated_doc)?;
     let sd_tool_id = resolve_selected_dependency_tool_id("sd", generated_doc)?;
@@ -122,7 +123,13 @@ pub(crate) fn synthesize_rsgain_step_chain(
         let apply_output_extension =
             resolve_rsgain_output_extension(Some(&output_config.extension), producer);
         let apply_output_capture = ffmpeg_output_capture_name(0);
-        let apply_save_mode = conductor_output_save_mode(output_config.save);
+        let apply_save_mode = resolve_variant_save(
+            output_config.save,
+            &mapping.output,
+            step_index,
+            context,
+            step.tool.is_impure(),
+        );
 
         let extract_inputs = BTreeMap::from([
             (ffmpeg_input_content_name(0), input_binding.clone()),
@@ -294,11 +301,7 @@ pub(crate) fn synthesize_rsgain_step_chain(
                 OutputCaptureSpec {
                     name: apply_output_capture.clone(),
                     capture: format!("file_regex:{}", ffmpeg_output_file_regex(0)),
-                    save: match apply_save_mode {
-                        mediapm_conductor::OutputSaveMode::Saved => SaveMode::True,
-                        mediapm_conductor::OutputSaveMode::Unsaved => SaveMode::False,
-                        mediapm_conductor::OutputSaveMode::Full => SaveMode::Full,
-                    },
+                    save: apply_save_mode,
                     allow_empty: false,
                     include_topmost_folder: true,
                 },
