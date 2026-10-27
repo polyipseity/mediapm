@@ -26,6 +26,9 @@ mod cache_probe;
 /// directory goes.
 mod fixture_teardown;
 
+/// A `full` capture marks its object keep-full in the CAS; `true` does not.
+mod capture_keep_full;
+
 /// Name-addressed capture union: one instance serves steps that declare
 /// different names, a changed capture spec replaces only its entry, and two
 /// steps disagreeing about one name's capture fail the run.

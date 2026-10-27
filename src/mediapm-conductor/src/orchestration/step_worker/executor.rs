@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mediapm_cas::{CasApi, Hash};
+use mediapm_cas::{CasApi, ConstraintApi, Hash};
 use mediapm_utils::Timestamp;
 
 use crate::config::OutputCaptureSpec;
@@ -32,7 +32,7 @@ use crate::instance_key::{derive_instance_key, deterministic_input_hashes_from_r
 /// Dispatches execution: runs a builtin or resolves and runs an executable
 /// process. Returns the execution result plus the resolved command-argument
 /// records (empty for builtins) to store on the tool call instance.
-async fn dispatch_tool_execution<C: CasApi + Send + Sync>(
+async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
     cas: &C,
     tool_spec: &UnifiedToolSpec,
     request: &StepExecutionRequest,
@@ -86,7 +86,7 @@ async fn dispatch_tool_execution<C: CasApi + Send + Sync>(
 }
 
 /// Executes one step: resolves inputs, runs the tool, captures outputs.
-pub(super) async fn execute_step<C: CasApi + Send + Sync>(
+pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
     cas: &C,
     request: StepExecutionRequest,
 ) -> Result<StepExecutionBundle, ConductorError> {

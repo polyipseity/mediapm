@@ -171,6 +171,14 @@ pub trait ConstraintApi: Send + Sync {
     /// The marker is durable (it survives a reopen of the store) and is dropped
     /// with the object it describes.
     async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError>;
+
+    /// Report whether `target` was marked keep-full.
+    ///
+    /// This is the read half of [`ConstraintApi::mark_keep_full`], and it exists
+    /// on the public trait because a caller that asked for a full object has to
+    /// be able to observe that the store recorded it; an effect reachable only
+    /// through a private file is an effect no test can assert.
+    async fn is_keep_full(&self, target: Hash) -> Result<bool, CasError>;
 }
 
 /// Describes an atomic modification to a constraint's base set.

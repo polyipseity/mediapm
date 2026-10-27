@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, InMemoryCas};
+use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::provision::ProvisionedTool;
@@ -80,7 +80,7 @@ const MEDIAPM_EXTRA_GITIGNORE: &str = concat!("/cache/\n", "/tools/\n");
 
 /// Resolves the workspace CAS store used for tool payload import and materialization.
 pub(crate) trait WorkspaceProvisioningCas:
-    CasApi + CasMaintenanceApi + Send + Sync + Sized + 'static
+    CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + Sized + 'static
 {
     async fn workspace_provisioning_cas(
         conductor: &Conductor<Self>,
@@ -114,8 +114,8 @@ impl WorkspaceProvisioningCas for InMemoryCas {
 ///
 /// # Type parameters
 ///
-/// * `Cas` — The CAS backend. Must implement [`CasApi`] + [`CasMaintenanceApi`] + `Send + Sync + 'static`.
-pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> {
+/// * `Cas` — The CAS backend. Must implement [`CasApi`] + [`CasMaintenanceApi`] + [`ConstraintApi`] + `Send + Sync + 'static`.
+pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static> {
     /// Conductor instance bound to this service's workspace.
     conductor: Conductor<Cas>,
     /// Resolved filesystem paths for this workspace.

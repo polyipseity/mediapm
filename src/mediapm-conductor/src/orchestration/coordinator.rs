@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
+use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi, Hash};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use mediapm_utils::Timestamp;
@@ -362,7 +362,7 @@ fn record_capture_claims(
 /// dispatch over a free worker pool (no level barrier), and state merging.
 pub(crate) struct WorkflowCoordinator<C>
 where
-    C: CasApi + CasMaintenanceApi,
+    C: CasApi + CasMaintenanceApi + ConstraintApi,
 {
     /// Shared CAS handle passed into child actors.
     cas: Arc<C>,
@@ -492,7 +492,7 @@ fn worker_slot_label(
 
 impl<C> WorkflowCoordinator<C>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]

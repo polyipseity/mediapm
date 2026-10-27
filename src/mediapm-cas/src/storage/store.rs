@@ -250,6 +250,16 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
         self.metadata.mark_keep_full(target).await
     }
 
+    async fn is_keep_full(&self, target: Hash) -> Result<bool, CasError> {
+        // The sentinel is never marked: `mark_keep_full` declines it, so asking
+        // is answered without a metadata lookup and without a marker the store
+        // never writes.
+        if target == Hash::empty() {
+            return Ok(false);
+        }
+        self.metadata.is_keep_full(&target).await
+    }
+
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
         // Sentinel always has empty constraints.
         if target == Hash::empty() {
@@ -379,6 +389,10 @@ where
 
     async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError> {
         self.deref().mark_keep_full(target).await
+    }
+
+    async fn is_keep_full(&self, target: Hash) -> Result<bool, CasError> {
+        self.deref().is_keep_full(target).await
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {

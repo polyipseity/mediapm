@@ -14,7 +14,7 @@ use mediapm_utils::progress::ProgressScreenApi;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
-use mediapm_cas::{CasApi, CasMaintenanceApi, ConfiguredCas, FileSystemCas, Hash};
+use mediapm_cas::{CasApi, CasMaintenanceApi, ConfiguredCas, ConstraintApi, FileSystemCas, Hash};
 use tokio::sync::OnceCell;
 
 use crate::api::{PathOverrides, RunWorkflowOptions, RuntimeStoragePaths};
@@ -302,7 +302,7 @@ async fn change_instance_invalidation<C>(
     invalidated: bool,
 ) -> Result<MarkerChange, ConductorError>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     let key: Hash = key_text
         .parse()

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use ractor::rpc::CallResult;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
 
-use mediapm_cas::{CasApi, CasMaintenanceApi};
+use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use crate::error::ConductorError;
@@ -77,7 +77,7 @@ struct ConductorActor<C: CasApi> {
     _marker: PhantomData<C>,
 }
 
-impl<C: CasApi + CasMaintenanceApi> Default for ConductorActor<C> {
+impl<C: CasApi + CasMaintenanceApi + ConstraintApi> Default for ConductorActor<C> {
     fn default() -> Self {
         Self { _marker: PhantomData }
     }
@@ -85,7 +85,7 @@ impl<C: CasApi + CasMaintenanceApi> Default for ConductorActor<C> {
 
 impl<C> Actor for ConductorActor<C>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     type Msg = ConductorMessage;
     type State = WorkflowCoordinator<C>;
@@ -335,7 +335,7 @@ pub(crate) async fn spawn_conductor_actor<C>(
     conductor_tmp_dir: PathBuf,
 ) -> Result<ConductorActorClient, ConductorError>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     let coordinator = WorkflowCoordinator::new(cas, conductor_tmp_dir);
     // Use anonymous spawn to avoid ractor global name registry conflicts

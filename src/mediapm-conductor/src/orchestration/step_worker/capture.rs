@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mediapm_cas::CasApi;
+use mediapm_cas::{CasApi, ConstraintApi};
 
-use crate::config::OutputCaptureSpec;
+use crate::config::{OutputCaptureSpec, SaveMode};
 use crate::error::ConductorError;
 use crate::state::CapturedOutput;
 
@@ -28,7 +28,7 @@ pub(super) fn implicit_stream_specs() -> BTreeMap<String, OutputCaptureSpec> {
             let spec = OutputCaptureSpec {
                 name: name.to_string(),
                 capture: name.to_string(),
-                save: crate::config::SaveMode::True,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             };
@@ -177,7 +177,19 @@ async fn capture_folder_regex_output(
 /// for different captures, so a name-addressed record is only reusable when
 /// the spec beside it says the bytes were produced the way the reusing step
 /// would produce them.
-pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
+///
+/// A capture whose spec says [`SaveMode::Full`] also marks its object keep-full
+/// in the store, because the mark is the only record of what `full` promises:
+/// that these bytes are never re-encoded as a delta against another blob.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Cas`] when the bytes cannot be stored, and when a
+/// `full` capture's marker cannot be recorded. The mark fails the step rather
+/// than being retried or ignored: a run that recorded a `full` capture without
+/// its mark would leave the promise in the state document and nothing in the
+/// store, and only the next maintenance pass would discover the difference.
+pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
     cas: &C,
     output_specs: &BTreeMap<String, OutputCaptureSpec>,
     execution: &ExecutionResult,
@@ -260,6 +272,11 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
         };
 
         let hash = cas.put(bytes::Bytes::from(data)).await.map_err(ConductorError::Cas)?;
+
+        // After the put, so the mark can only describe an object that exists.
+        if spec.save == SaveMode::Full {
+            cas.mark_keep_full(hash).await.map_err(ConductorError::Cas)?;
+        }
 
         records.insert(spec.name.clone(), CapturedOutput { hash, capture: Some((*spec).clone()) });
     }

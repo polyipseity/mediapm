@@ -102,19 +102,26 @@ pub struct ToolInputSpec {
 
 /// Whether to persist a captured output to CAS: `"false"`, `"true"`, or `"full"`.
 ///
-/// - `False`: do not persist this output.
-/// - `True` (default): persist this output normally.
-/// - `Full`: persist even when empty or the step fails.
+/// Every mode writes the capture when the step runs; the mode decides how long
+/// the bytes live and whether the store may re-encode them, never whether they
+/// are produced.
+///
+/// - `False`: the bytes stop being garbage-collection roots once the producing
+///   instance is superseded.
+/// - `True` (default): the bytes are retained as a saved artifact.
+/// - `Full`: as `True`, and the object is marked keep-full in the CAS, so the
+///   maintenance optimizer never stores it as a delta against another blob. It
+///   may still serve as another object's delta base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum SaveMode {
-    /// Do not persist this output.
+    /// Drop the bytes once the producing instance is superseded.
     False,
-    /// Persist this output normally.
+    /// Retain the bytes as a saved artifact.
     #[default]
     True,
-    /// Force full persistence even when empty or the step fails.
+    /// Retain the bytes and never re-encode the object as a delta.
     Full,
 }
 
@@ -189,11 +196,12 @@ pub struct OutputCaptureSpec {
     /// The persistence intent this record carries, one of `"false"`, `"true"`,
     /// `"full"`.
     ///
-    /// It decides retention, not capture: every capture is written to the CAS
-    /// whatever this says, and no reader consults it to decide what a step may
-    /// reuse or materialize. `False` keeps the bytes only while the producing
-    /// instance is reachable, so the conductor's GC reclaims them once that
-    /// instance is superseded.
+    /// It decides retention and encoding, not capture: every capture is written
+    /// to the CAS whatever this says, and no reader consults it to decide what a
+    /// step may reuse or materialize. `False` keeps the bytes only while the
+    /// producing instance is reachable, so the conductor's GC reclaims them once
+    /// that instance is superseded. `Full` marks the object keep-full, so the
+    /// optimizer never stores it as a delta against another blob.
     ///
     /// This is the one field a step may set on a name its tool already
     /// declares: the tool owns the capture itself (selector, `allow_empty`,

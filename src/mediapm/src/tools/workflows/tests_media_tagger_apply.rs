@@ -353,7 +353,7 @@ fn apply_document(
 /// instance map.
 async fn captured_primary<C>(conductor: &Conductor<C>) -> bytes::Bytes
 where
-    C: CasApi + mediapm_cas::CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + mediapm_cas::CasMaintenanceApi + mediapm_cas::ConstraintApi + Send + Sync + 'static,
 {
     let state = conductor.get_state().expect("the run must record state");
     let instance = state

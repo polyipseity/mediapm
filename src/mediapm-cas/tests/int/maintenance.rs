@@ -493,6 +493,48 @@ async fn a_keep_full_target_still_serves_as_a_delta_base() {
     assert_eq!(retrieved, target_content, "the delta reconstructs the third object");
 }
 
+/// The public store reports a keep-full marker for an object that carries one
+/// and not for one that does not, in memory.
+///
+/// The metadata store's own tests prove the marker persists; this proves the
+/// path a caller actually holds — `ConstraintApi` on the assembled store —
+/// answers for it, which is what a caller recording `save = "full"` depends on.
+#[tokio::test]
+async fn keep_full_markers_are_readable_in_memory() {
+    let cas = new_in_memory_cas();
+
+    let marked = cas.put(Bytes::from_static(b"marked in memory")).await.unwrap();
+    let unmarked = cas.put(Bytes::from_static(b"unmarked in memory")).await.unwrap();
+
+    assert!(!cas.is_keep_full(unmarked).await.unwrap(), "a fresh object carries no marker");
+    cas.mark_keep_full(marked).await.unwrap();
+
+    assert!(cas.is_keep_full(marked).await.unwrap(), "the marked object reports its marker");
+    assert!(
+        !cas.is_keep_full(unmarked).await.unwrap(),
+        "marking one object says nothing about another",
+    );
+}
+
+/// The same answer through a filesystem store, which is the one that also has
+/// to persist the marker.
+#[tokio::test]
+async fn keep_full_markers_are_readable_on_disk() {
+    let cas = open_file_cas().await;
+
+    let marked = cas.put(Bytes::from_static(b"marked on disk")).await.unwrap();
+    let unmarked = cas.put(Bytes::from_static(b"unmarked on disk")).await.unwrap();
+
+    assert!(!cas.is_keep_full(unmarked).await.unwrap(), "a fresh object carries no marker");
+    cas.mark_keep_full(marked).await.unwrap();
+
+    assert!(cas.is_keep_full(marked).await.unwrap(), "the marked object reports its marker");
+    assert!(
+        !cas.is_keep_full(unmarked).await.unwrap(),
+        "marking one object says nothing about another",
+    );
+}
+
 /// Base and target content that differ only in `marker`, so the VCDIFF
 /// delta is meaningfully smaller than the full content.
 fn similar_content_pair(fill: u8, marker: &[u8]) -> (Bytes, Bytes) {

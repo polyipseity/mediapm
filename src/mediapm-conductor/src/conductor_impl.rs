@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi, Hash};
+use mediapm_cas::{BackgroundMaintenanceGuard, CasApi, CasMaintenanceApi, ConstraintApi, Hash};
 use tokio::sync::OnceCell;
 
 use crate::api::{
@@ -29,7 +29,7 @@ use crate::state::ConductorState;
 /// [`ConductorState`] across runs so repeated deterministic workflows hit the cache.
 pub struct Conductor<C>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     /// Shared CAS store.
     cas: Arc<C>,
@@ -61,7 +61,7 @@ where
 
 impl<C> Conductor<C>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     /// Creates a new conductor facade.
     #[must_use]
@@ -697,7 +697,9 @@ where
 // ConductorApi trait implementation
 // ---------------------------------------------------------------------------
 
-impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for Conductor<C> {
+impl<C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static> ConductorApi<C>
+    for Conductor<C>
+{
     fn run_workflow_with_options(
         &self,
         workflow_name: &str,
@@ -1040,7 +1042,7 @@ fn find_cas_binary() -> Option<PathBuf> {
     })
 }
 
-impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Drop for Conductor<C> {
+impl<C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static> Drop for Conductor<C> {
     /// Best-effort stop of the conductor actor on drop.
     ///
     /// Sends a fire-and-forget stop signal so the actor (and its linked step

@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mediapm_cas::CasApi;
+use mediapm_cas::{CasApi, ConstraintApi};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 
 use crate::error::ConductorError;
@@ -85,12 +85,12 @@ impl<C> Default for StepWorkerActor<C> {
 }
 
 /// Runtime state for one worker actor.
-struct StepWorkerState<C: CasApi + Send + Sync> {
+struct StepWorkerState<C: CasApi + ConstraintApi + Send + Sync> {
     /// Shared CAS handle for content I/O.
     cas: Arc<C>,
 }
 
-impl<C: CasApi + Send + Sync + 'static> Actor for StepWorkerActor<C> {
+impl<C: CasApi + ConstraintApi + Send + Sync + 'static> Actor for StepWorkerActor<C> {
     type Msg = StepWorkerMessage;
     type State = StepWorkerState<C>;
     type Arguments = StepWorkerState<C>;
@@ -121,7 +121,7 @@ impl<C: CasApi + Send + Sync + 'static> Actor for StepWorkerActor<C> {
 
 /// Spawns a pool of step-worker actors, linked to the conductor actor's
 /// supervision tree so they are torn down when it stops.
-pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
+pub(crate) async fn spawn_step_worker_pool<C: CasApi + ConstraintApi + Send + Sync + 'static>(
     cas: Arc<C>,
     pool_size: usize,
     supervisor: ractor::ActorCell,
