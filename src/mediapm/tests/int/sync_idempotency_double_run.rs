@@ -13,7 +13,7 @@
 //! pins it hermetically on the offline path (builtin `import`, no managed-tool
 //! downloads). The workflow half and the materialization half are asserted
 //! separately because they are decided by different layers: the conductor's
-//! instance cache versus the materializer's verdict + `state.managed_files`
+//! instance cache versus the materializer's record cache and `state.managed_files`
 //! records.
 //!
 //! The witness reads the file itself on either side of the second run, not just

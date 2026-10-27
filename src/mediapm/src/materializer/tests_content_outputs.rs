@@ -1,4 +1,4 @@
-//! What a remembered verdict saves a run, and what it does not.
+//! What a remembered record saves a run, and what it does not.
 //!
 //! The witness throughout is a read count rather than a timestamp. The
 //! materializer's first method is a hardlink, so a rewrite relinks the same
@@ -11,19 +11,19 @@
 //! The fixture is a media folder whose members are extracted from an archive.
 //! They are written from bytes the run resolved rather than from a store
 //! object, so they hold no relationship to any object and always land on the
-//! content branch, which is the only branch a verdict can serve. A media entry
+//! content branch, which is the only branch a record can serve. A media entry
 //! written through the materializer's default method is a hardlink and never
 //! reaches it, which is the point the last test here makes.
 
 use super::file_ops::read_watch::ReadCountGuard;
+use super::outputs::CacheFile;
 use super::tests_common::{
     FOLDER_PATH, open_hierarchy_cas, resolvable_media_document, run_sync, write_folder_over_archive,
 };
-use super::verdicts::CacheFile;
 use super::*;
 
 /// Hierarchy-relative path of the single media entry the media-arm tests
-/// re-sync, which is the key both `state.managed_files` and the verdict cache
+/// re-sync, which is the key both `state.managed_files` and the record cache
 /// record it under.
 const MEDIA_RELATIVE_PATH: &str = "song";
 
@@ -38,8 +38,8 @@ const ARCHIVE_MEMBERS: [(&str, &[u8]); 2] =
 /// [`SAME_LENGTH_REPLACEMENT`] matches exactly.
 ///
 /// Same length on purpose. A replacement holding a different number of bytes is
-/// caught by the length comparison that runs before a verdict is consulted, so
-/// the test would pass against a build whose verdicts were consulted nowhere
+/// caught by the length comparison that runs before a record is consulted, so
+/// the test would pass against a build whose records were consulted nowhere
 /// and never noticed an edit at all.
 const ORIGINAL: &[u8] = b"same-number-of-bytes";
 
@@ -48,7 +48,7 @@ const ORIGINAL: &[u8] = b"same-number-of-bytes";
 const SAME_LENGTH_REPLACEMENT: &[u8] = b"SAME-NUMBER-OF-BYTES";
 
 /// Hierarchy-relative path of the first archive member, which is the key its
-/// verdict is stored under.
+/// record is stored under.
 fn first_member_relative() -> String {
     format!("{FOLDER_PATH}/{}", ARCHIVE_MEMBERS[0].0)
 }
@@ -58,33 +58,33 @@ fn members_of(folder: &Path) -> Vec<PathBuf> {
     ARCHIVE_MEMBERS.iter().map(|(name, _)| folder.join(name)).collect()
 }
 
-/// Reads the verdict cache a run left at `paths`.
+/// Reads the record cache a run left at `paths`.
 fn read_cache(paths: &MediaPmPaths) -> CacheFile {
-    let file = verdicts::cache_file_path(paths);
-    serde_json::from_slice(&std::fs::read(&file).expect("the run wrote the verdict cache"))
+    let file = outputs::cache_file_path(paths);
+    serde_json::from_slice(&std::fs::read(&file).expect("the run wrote the record cache"))
         .expect("a cache this build wrote is a cache this build can read")
 }
 
-/// Replaces the hash one verdict names, leaving its length and its
+/// Replaces the hash one record names, leaving its length and its
 /// modification time alone.
 ///
 /// The result is what a corrupt or a stale cache holds: a stamp whose length
 /// and timestamp still match the file while the content it claims does not.
 /// A run that trusts it skips an output whose bytes are wrong, which is the
 /// failure the hash in the stamp is there to stop.
-fn rewrite_verdict_hash(paths: &MediaPmPaths, relative_path: &str, hash: &str) {
-    let file = verdicts::cache_file_path(paths);
+fn rewrite_record_hash(paths: &MediaPmPaths, relative_path: &str, hash: &str) {
+    let file = outputs::cache_file_path(paths);
     let mut parsed = read_cache(paths);
-    parsed.verdicts.get_mut(relative_path).expect("the run confirmed this path").hash =
+    parsed.outputs.get_mut(relative_path).expect("the run confirmed this path").hash =
         hash.to_string();
     std::fs::write(&file, serde_json::to_vec_pretty(&parsed).unwrap())
         .expect("the tampered cache is writable");
 }
 
-/// Writes `bytes` over the verdict cache, standing in for a file a person
+/// Writes `bytes` over the record cache, standing in for a file a person
 /// truncated or a write that stopped part way.
 fn corrupt_cache(paths: &MediaPmPaths, bytes: &[u8]) {
-    let file = verdicts::cache_file_path(paths);
+    let file = outputs::cache_file_path(paths);
     std::fs::create_dir_all(file.parent().expect("the cache path names a directory"))
         .expect("the cache directory is creatable");
     std::fs::write(&file, bytes).expect("the corrupt cache is writable");
@@ -102,7 +102,7 @@ fn corrupt_cache(paths: &MediaPmPaths, bytes: &[u8]) {
 /// The folder is already on disk and both members are already correct, so the
 /// only work the run had left was proving it, and the count says it proved it
 /// with a stat.
-/// [`a_deleted_verdict_cache_costs_a_reread_and_nothing_else`] is the same run
+/// [`a_deleted_record_cache_costs_a_reread_and_nothing_else`] is the same run
 /// with the cache removed, and it is what shows this count is the cache talking
 /// rather than the run happening to be cheap.
 #[tokio::test]
@@ -111,7 +111,7 @@ async fn a_second_run_over_an_unchanged_folder_reads_no_bytes() {
     let paths = entry.paths().clone();
     let members = members_of(&entry.output);
     assert_eq!(
-        read_cache(&paths).verdicts.len(),
+        read_cache(&paths).outputs.len(),
         ARCHIVE_MEMBERS.len(),
         "the first run wrote each member from resolved bytes, so it has to have stamped both, \
          or the second run has nothing to consult"
@@ -135,7 +135,7 @@ async fn a_second_run_over_an_unchanged_folder_reads_no_bytes() {
     assert_eq!(second.removed_paths, 0, "nothing changed, so nothing was removed: {second:?}");
 }
 
-/// Deleting the verdict cache costs a re-read and nothing else.
+/// Deleting the record cache costs a re-read and nothing else.
 ///
 /// The entry is still correct and is still skipped; only the reads come back.
 /// That is the whole cost of the cache being absent, and it is why the file
@@ -148,11 +148,11 @@ async fn a_second_run_over_an_unchanged_folder_reads_no_bytes() {
 /// one deleted file, and the read count differs by exactly the number of
 /// members, so the zero there is this cache and not the fixture.
 #[tokio::test]
-async fn a_deleted_verdict_cache_costs_a_reread_and_nothing_else() {
+async fn a_deleted_record_cache_costs_a_reread_and_nothing_else() {
     let mut entry = write_folder_over_archive(&ARCHIVE_MEMBERS).await;
     let paths = entry.paths().clone();
     let members = members_of(&entry.output);
-    let cache = verdicts::cache_file_path(&paths);
+    let cache = outputs::cache_file_path(&paths);
     assert!(cache.is_file(), "the first run has to have written the cache this test deletes");
     std::fs::remove_file(&cache).expect("a cache file a run wrote is removable");
 
@@ -168,12 +168,12 @@ async fn a_deleted_verdict_cache_costs_a_reread_and_nothing_else() {
     assert_eq!(
         guard.total_hashed(),
         ARCHIVE_MEMBERS.len() as u64,
-        "with no verdicts to consult, each member is hashed again, which is the re-read the \
+        "with no records to consult, each member is hashed again, which is the re-read the \
          cache was saving"
     );
     assert!(
-        verdicts::cache_file_path(&paths).is_file(),
-        "the run writes the verdicts it just established, so the run after this one is the cheap \
+        outputs::cache_file_path(&paths).is_file(),
+        "the run writes the records it just established, so the run after this one is the cheap \
          one rather than every run from here on"
     );
 }
@@ -208,10 +208,10 @@ async fn replacing_an_output_with_different_content_moves_the_stamp() {
     assert_eq!(first.materialized_paths, 1, "the first run has nothing recorded: {first:?}");
 
     let target = paths.hierarchy_root_dir.join(MEDIA_RELATIVE_PATH);
-    let before = verdicts::mtime_nanos(&std::fs::metadata(&target).unwrap());
+    let before = outputs::mtime_nanos(&std::fs::metadata(&target).unwrap());
     commit::remove_path(&target).expect("a readonly managed output is removable");
     std::fs::write(&target, SAME_LENGTH_REPLACEMENT).expect("the replacement lands on the library");
-    let after = verdicts::mtime_nanos(&std::fs::metadata(&target).unwrap());
+    let after = outputs::mtime_nanos(&std::fs::metadata(&target).unwrap());
     assert_ne!(
         after, before,
         "the replacement has to have moved the modification time for this test to be about the \
@@ -244,13 +244,13 @@ async fn replacing_an_output_with_different_content_moves_the_stamp() {
 /// this a statement about the tampered entry rather than about the cache as a
 /// whole.
 #[tokio::test]
-async fn a_verdict_naming_another_hash_is_not_trusted() {
+async fn a_record_naming_another_hash_is_not_trusted() {
     let mut entry = write_folder_over_archive(&ARCHIVE_MEMBERS).await;
     let paths = entry.paths().clone();
     let members = members_of(&entry.output);
     let tampered = first_member_relative();
     let decoy = Hash::from_content(b"content no member of this folder holds");
-    rewrite_verdict_hash(&paths, &tampered, &decoy.to_string());
+    rewrite_record_hash(&paths, &tampered, &decoy.to_string());
 
     let guard = ReadCountGuard::new(members.clone());
     let second = entry.resync(None, None).await;
@@ -284,7 +284,7 @@ async fn a_verdict_naming_another_hash_is_not_trusted() {
 /// round. Believing the stamp here would leave the library short an entry the
 /// document asked for and report a clean run over it.
 #[tokio::test]
-async fn a_verdict_whose_file_is_gone_is_ignored() {
+async fn a_record_whose_file_is_gone_is_ignored() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -297,7 +297,7 @@ async fn a_verdict_whose_file_is_gone_is_ignored() {
 
     let target = paths.hierarchy_root_dir.join(MEDIA_RELATIVE_PATH);
     assert!(
-        read_cache(&paths).verdicts.contains_key(MEDIA_RELATIVE_PATH),
+        read_cache(&paths).outputs.contains_key(MEDIA_RELATIVE_PATH),
         "the first run stamped the path this test is about to empty, or the case never arises"
     );
     commit::remove_path(&target).expect("a readonly managed output is removable");
@@ -325,7 +325,7 @@ async fn a_verdict_whose_file_is_gone_is_ignored() {
     );
 }
 
-/// An empty or a corrupt verdict cache costs a re-read and fails nothing.
+/// An empty or a corrupt record cache costs a re-read and fails nothing.
 ///
 /// A cache is a file a person is free to truncate, and an interrupted write
 /// leaves the same shape, so neither may end a run. Both answer the empty
@@ -333,8 +333,8 @@ async fn a_verdict_whose_file_is_gone_is_ignored() {
 /// folder: the members hold what the document resolves, and only the
 /// remembered proof of it is gone.
 #[tokio::test]
-async fn an_empty_or_corrupt_verdict_cache_is_handled() {
-    for (label, bytes) in [("an empty one", b"".as_slice()), ("a truncated one", b"{ \"verdicts\"")]
+async fn an_empty_or_corrupt_record_cache_is_handled() {
+    for (label, bytes) in [("an empty one", b"".as_slice()), ("a truncated one", b"{ \"outputs\"")]
     {
         let mut entry = write_folder_over_archive(&ARCHIVE_MEMBERS).await;
         let paths = entry.paths().clone();
@@ -347,7 +347,7 @@ async fn an_empty_or_corrupt_verdict_cache_is_handled() {
         assert_eq!(
             (second.materialized_paths, second.skipped_paths, second.missing_paths),
             (0, 1, 0),
-            "{label} has to read as no verdicts at all, which is the state a fresh workspace \
+            "{label} has to read as no records at all, which is the state a fresh workspace \
              starts in, and the folder is still correct: {second:?}"
         );
         assert_eq!(
@@ -356,9 +356,9 @@ async fn an_empty_or_corrupt_verdict_cache_is_handled() {
             "{label} leaves nothing to consult, so each member is hashed again"
         );
         assert_eq!(
-            read_cache(&paths).verdicts.len(),
+            read_cache(&paths).outputs.len(),
             ARCHIVE_MEMBERS.len(),
-            "{label} has to be replaced by a cache holding the verdicts the run just established, \
+            "{label} has to be replaced by a cache holding the records the run just established, \
              or every run from here on pays the re-read"
         );
     }
@@ -379,7 +379,7 @@ async fn an_empty_or_corrupt_verdict_cache_is_handled() {
 /// whatever it says.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_linked_output_is_skipped_though_its_verdict_names_another_hash() {
+async fn a_linked_output_is_skipped_though_its_record_names_another_hash() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -401,7 +401,7 @@ async fn a_linked_output_is_skipped_though_its_verdict_names_another_hash() {
          before this test has the case it is about"
     );
     let decoy = Hash::from_content(b"content this output does not hold");
-    rewrite_verdict_hash(&paths, MEDIA_RELATIVE_PATH, &decoy.to_string());
+    rewrite_record_hash(&paths, MEDIA_RELATIVE_PATH, &decoy.to_string());
 
     let guard = ReadCountGuard::new([target.clone()]);
     let second = run_sync(&paths, &document, &mut state, &cas, None, None).await;

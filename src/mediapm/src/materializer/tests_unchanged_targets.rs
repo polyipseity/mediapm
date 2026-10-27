@@ -535,7 +535,7 @@ async fn an_untouched_output_skips_whatever_method_produced_it() {
             .iter()
             .map(|(relative_path, _, _)| (relative_path.clone(), hash.to_string()))
             .collect(),
-        verdicts: VerdictCache::open(&paths),
+        outputs: OutputCache::open(&paths),
     };
     for (relative_path, target, label) in &outputs {
         assert!(

@@ -6,10 +6,10 @@
 pub(crate) mod commit;
 pub(crate) mod file_ops;
 mod metadata;
+mod outputs;
 pub(crate) mod playlist;
 pub(crate) mod progress_labels;
 mod resolve;
-mod verdicts;
 // Named `zip_reader` rather than `zip` because a child module shadows the
 // `zip` extern crate in the type namespace from edition 2018 on, and the
 // tests below this one write a ZIP archive.
@@ -43,6 +43,7 @@ pub(crate) use resolve::backfill_source_variant_hashes_from_workflow_outputs;
 use self::metadata::{
     MaterializationLookupContext, StepOutputHashes, resolve_interpolated_folder_rename_rules,
 };
+use self::outputs::OutputCache;
 use self::playlist::{
     PlaylistEntryPathMode, RenderedPlaylistEntry, generate_playlist_bytes,
     resolve_playlist_target_relative_path,
@@ -51,7 +52,6 @@ use self::resolve::{
     collect_media_source_available_variants, resolve_hierarchy_source, resolve_variant_hash,
     resolve_variant_source_bytes,
 };
-use self::verdicts::VerdictCache;
 use self::zip_reader::extract_zip_member_bytes;
 
 /// Per-workflow required step output names (`step_id -> output_name[]`).
@@ -193,7 +193,7 @@ struct SyncSharedState {
     /// their CAS object, so a run that finds a library unchanged does not read
     /// it to learn that. Consulted and recorded by [`Self::separate_output_holds`]
     /// and by the write path, and written out once by [`sync_hierarchy`].
-    verdicts: VerdictCache,
+    outputs: OutputCache,
 }
 
 /// Returns the number of concurrent hierarchy-worker tasks.
@@ -261,7 +261,7 @@ pub async fn sync_hierarchy(
             .iter()
             .map(|(path, record)| (path.clone(), record.hash.clone()))
             .collect(),
-        verdicts: VerdictCache::open(paths),
+        outputs: OutputCache::open(paths),
     });
 
     let worker_count = hierarchy_worker_count();
@@ -387,11 +387,11 @@ pub async fn sync_hierarchy(
         return Err(e);
     }
 
-    // The verdicts are written once, here, rather than from the workers. A run
+    // The records are written once, here, rather than from the workers. A run
     // that dies inside the loop leaves the previous run's file whole, and a
     // partial set would be safe anyway: an entry that is absent costs one
     // re-read, which is what a missing cache costs.
-    if let Err(error) = shared.verdicts.flush() {
+    if let Err(error) = shared.outputs.flush() {
         warn!("the materialization cache was not written: {error}");
     }
 
@@ -2017,12 +2017,12 @@ impl SyncSharedState {
     }
 
     /// Whether the bytes at `target_path` are `hash` over `expected_len` bytes,
-    /// asking a verdict an earlier run left before reading anything.
+    /// asking a record an earlier run left before reading anything.
     ///
     /// This is the branch a reflink and a copy land in, and the branch every
     /// output an arm resolved from the document lands in, since a folder member
     /// and a playlist body share no inode with any object. It is the only
-    /// branch that can consult a verdict at all. A hardlink and a symlink answer
+    /// branch that can consult a record at all. A hardlink and a symlink answer
     /// from the relationship above, and they have to: a hardlink rewrite
     /// relinks the same inode with the same bytes and the same modification
     /// time, so a modification time cannot tell one from a no-op and a stamp
@@ -2030,10 +2030,9 @@ impl SyncSharedState {
     ///
     /// The length decides before anything else, because one stat settles the
     /// common case of a file something else replaced, and only a file that
-    /// survives it reaches the verdict.
+    /// survives it reaches the record.
     ///
-    /// A miss reads the target and, when the bytes hash to `hash`, records a
-    /// fresh verdict from that same read. Confirming a miss rather than only a
+    /// A miss reads the target and, when the bytes hash to `hash`,     /// fresh record from that same read. Confirming a miss rather than only a
     /// hit is what keeps a library restored from a backup, or written by a
     /// build without this cache, from paying for two consecutive runs.
     async fn separate_output_holds(
@@ -2052,11 +2051,11 @@ impl SyncSharedState {
         if !metadata.is_file() || metadata.len() != expected_len {
             return false;
         }
-        if self.verdicts.is_current(
+        if self.outputs.is_current(
             relative_path,
             hash,
             expected_len,
-            verdicts::mtime_nanos(&metadata),
+            outputs::mtime_nanos(&metadata),
         ) {
             return true;
         }
@@ -2084,8 +2083,8 @@ impl SyncSharedState {
         let Ok(metadata) = tokio::fs::metadata(target_path).await else {
             return;
         };
-        let mtime_nanos = verdicts::mtime_nanos(&metadata);
-        self.verdicts.confirm(relative_path, hash, metadata.len(), mtime_nanos);
+        let mtime_nanos = outputs::mtime_nanos(&metadata);
+        self.outputs.confirm(relative_path, hash, metadata.len(), mtime_nanos);
     }
 
     /// Whether every file an entry resolves to is already on disk holding what
@@ -2130,7 +2129,7 @@ impl SyncSharedState {
 #[cfg(test)]
 mod tests_common;
 #[cfg(test)]
-mod tests_content_verdicts;
+mod tests_content_outputs;
 #[cfg(test)]
 mod tests_entry_row_total;
 #[cfg(test)]

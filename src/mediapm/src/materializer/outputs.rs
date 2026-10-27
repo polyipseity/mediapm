@@ -7,12 +7,12 @@
 //! them to answer a question that has not changed is the cost this cache
 //! removes.
 //!
-//! # What one verdict records
+//! # What one record holds
 //!
 //! The hierarchy-relative path of an output, the hash its bytes were verified
 //! against, how many bytes long it was, and its modification time read after
 //! the read finished. A later run compares those four numbers against one stat
-//! and reuses the verdict when they all agree.
+//! and reuses the record when they all agree.
 //!
 //! Reading the modification time after the read rather than before is what makes
 //! the four numbers describe one state. A file replaced while it was being read
@@ -25,7 +25,7 @@
 //! see is a file that was edited and then given its old modification time back.
 //!
 //!
-//! # What invalidates a verdict
+//! # What invalidates a record
 //!
 //! Any disagreement between those numbers and what the file shows now, plus a
 //! file the platform will not stamp at all. A rewrite moves the length and the
@@ -36,7 +36,7 @@
 //! is the behaviour without this cache.
 //!
 //! One case survives, and it is the price of trusting a modification time: a
-//! file rewritten and then handed its old modification time back keeps a verdict
+//! file rewritten and then handed its old modification time back keeps a record
 //! that has stopped being true. Moving a timestamp backwards is deliberate work
 //! that mediapm does not do, and nothing else in the tree does either.
 //!
@@ -44,22 +44,20 @@
 //!
 //! One full read of one output, and nothing else. A cache that is missing,
 //! unreadable, empty or written by a version this build does not know is read as
-//! no verdicts at all, which is the state a fresh workspace starts in. No run
+//! no records at all, which is the state a fresh workspace starts in. No run
 //! fails over it and nothing in `state.json` depends on it.
 //!
 //! # Where it lives
 //!
 //! `<runtime>/cache/mediapm/materialization.json`, beside the workspace
-//! metadata cache, and named for what it holds: the record of what this
+//! metadata cache, and named for what it holds: the records of what this
 //! workspace's materialization already proved. It is a cache, so a person is
 //! free to delete it.
 //!
-//! A workspace written by an older build holds the same record one file name
-//! over, `content_verdicts.json`. [`VerdictCache::open`] reads that file when
-//! the current one is absent, writes what it read under the current name, and
-//! then removes the superseded file. A removal that fails is reported and tried
-//! again on the next open, so the two files cannot both survive a run that
-//! could write the new one.
+//! The file names its format version and holds its records under `outputs`. A
+//! file naming no version, naming one this build does not read, or failing to
+//! parse is read as holding nothing, which is the state a fresh workspace
+//! starts in; nothing about it is migrated.
 
 use std::collections::BTreeMap;
 use std::fs::Metadata;
@@ -77,19 +75,19 @@ use crate::paths::MediaPmPaths;
 
 /// Format version this build reads and writes.
 ///
-/// A file carrying any other version is treated as carrying no verdicts. That
+/// A file carrying any other version is treated as carrying no records. That
 /// costs one read per output, which is what a missing cache costs, and it keeps
-/// a future format from being read as the wrong numbers.
-const CACHE_VERSION: u32 = 1;
+/// numbers another build wrote from being read as these ones.
+const CACHE_VERSION: u32 = 2;
 
 /// One output the materializer verified, and the four numbers that proved it.
 ///
 /// Public only so the tests can build and corrupt one by hand; the production
-/// call sites read and write it through [`VerdictCache`].
+/// call sites read and write it through [`OutputCache`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct Verdict {
+pub(super) struct OutputRecord {
     /// Hash the output's bytes were verified against, spelled the way the run
-    /// spells it. A verdict naming any other hash describes a different file
+    /// spells it. A record naming any other hash describes a different file
     /// and is never matched against this one.
     pub(super) hash: String,
     /// Length the output had when it was verified, which settles the common
@@ -112,41 +110,23 @@ pub(super) struct Verdict {
 /// a corrupt cache actually holds.
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct CacheFile {
-    /// Format version, defaulted so a file that names none is read as this
-    /// version rather than rejected.
-    #[serde(default = "current_cache_version")]
+    /// Format version the file was written with.
+    ///
+    /// Required rather than defaulted: a file that names no version carries
+    /// nothing this build can read, and a default would adopt it instead.
     pub(super) version: u32,
-    /// Verdicts by hierarchy-relative path, defaulted so a file carrying only a
+    /// Records by hierarchy-relative path, defaulted so a file carrying only a
     /// version reads as carrying none.
     #[serde(default)]
-    pub(super) verdicts: BTreeMap<String, Verdict>,
-}
-
-/// The version a file that names none is read as.
-fn current_cache_version() -> u32 {
-    CACHE_VERSION
+    pub(super) outputs: BTreeMap<String, OutputRecord>,
 }
 
 /// Name of the file this build reads and writes.
 const CACHE_FILE_NAME: &str = "materialization.json";
 
-/// Name the same file carried before it was named for its contents.
-///
-/// One build released it under this name, so a workspace may still hold one.
-const LEGACY_CACHE_FILE_NAME: &str = "content_verdicts.json";
-
-/// Where the verdicts for this workspace are kept.
+/// Where the records for this workspace are kept.
 pub(super) fn cache_file_path(paths: &MediaPmPaths) -> PathBuf {
     paths.workspace_mediapm_cache_dir().join(CACHE_FILE_NAME)
-}
-
-/// Where a workspace written by an older build kept the same record.
-///
-/// Exists so a test can seed the superseded file; production code reaches the
-/// name through [`VerdictCache::adopt_legacy_file`].
-#[cfg(test)]
-pub(super) fn legacy_cache_file_path(paths: &MediaPmPaths) -> PathBuf {
-    paths.workspace_mediapm_cache_dir().join(LEGACY_CACHE_FILE_NAME)
 }
 
 /// The file's modification time as whole nanoseconds since the unix epoch.
@@ -160,67 +140,63 @@ pub(super) fn mtime_nanos(metadata: &Metadata) -> Option<u64> {
     u64::try_from(since_epoch.as_nanos()).ok()
 }
 
-/// The verdicts one `sync_hierarchy` run reads and writes.
+/// The records one `sync_hierarchy` run reads and writes.
 ///
 /// Two sets, because they answer different questions. `remembered` comes from
-/// the previous run's file and is never written to during this run, so a verdict
+/// the previous run's file and is never written to during this run, so a record
 /// is only ever reused on the strength of a completed earlier run. `confirmed`
 /// collects what this run proved and becomes the file it leaves behind, which is
 /// why the file is written once after the materialization loop rather than from
-/// the workers: a run that ends part way leaves the previous run's verdicts
+/// the workers: a run that ends part way leaves the previous run's records
 /// rather than a partial set.
-pub(super) struct VerdictCache {
+pub(super) struct OutputCache {
     /// The file this cache reads at the start of a run and writes at its end.
     file: PathBuf,
-    /// Verdicts loaded from `file`, which this run reads and never changes.
-    remembered: BTreeMap<String, Verdict>,
-    /// Verdicts this run established, written out by [`Self::flush`].
-    confirmed: Mutex<BTreeMap<String, Verdict>>,
+    /// Records loaded from `file`, which this run reads and never changes.
+    remembered: BTreeMap<String, OutputRecord>,
+    /// Records this run established, written out by [`Self::flush`].
+    confirmed: Mutex<BTreeMap<String, OutputRecord>>,
 }
 
-impl VerdictCache {
-    /// Load the verdicts this workspace was left with.
+impl OutputCache {
+    /// Load the records this workspace was left with.
     ///
     /// A missing file, an unreadable one, one that is not JSON, and one written
     /// by another format version all produce the same empty cache, with a note
-    /// for the two cases a person could act on. A missing file additionally
-    /// adopts the record an older build left under the superseded name, writes
-    /// it under the current name, and removes the old file; a removal that
-    /// fails is reported and retried on the next open.
+    /// for the cases a person could act on. A file naming no version at all
+    /// produces it too: the version is what says whose numbers these are, so a
+    /// file without one describes nothing this build can reuse.
     ///
-    /// Opening has one side effect, then: it may create or replace the cache
-    /// file and delete the superseded one. Both are best-effort, because a cache
-    /// that cannot be written costs one read per output and nothing else.
+    /// Opening has no side effect on the disk: it reads, or it does not.
     pub(super) fn open(paths: &MediaPmPaths) -> Self {
         let file = cache_file_path(paths);
-        let remembered = match Self::read_file(&file) {
-            Some(remembered) => remembered,
-            None => Self::adopt_legacy_file(&file),
-        };
-        Self::retire_legacy_file(&file);
+        let remembered = Self::read_file(&file);
         Self { file, remembered, confirmed: Mutex::new(BTreeMap::new()) }
     }
 
-    /// Reads `file`, answering `None` when it is not there and an empty map for
-    /// anything that is there but unusable.
+    /// Reads `file`, answering an empty map for anything that is absent or
+    /// unusable.
     ///
-    /// The two answers differ because a missing file may be one an older build
-    /// left under another name, while a file that is present and unreadable is
-    /// the record this build keeps.
-    fn read_file(file: &Path) -> Option<BTreeMap<String, Verdict>> {
+    /// One answer covers every case because the caller has one recovery: read
+    /// the outputs again and write the records in the current shape. A warning
+    /// separates the cases that leave a file behind unread, so a shape that
+    /// keeps arriving stays visible in the logs.
+    fn read_file(file: &Path) -> BTreeMap<String, OutputRecord> {
         let bytes = match std::fs::read(file) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return BTreeMap::new();
+            }
             Err(error) => {
                 warn!("ignoring unreadable materialization cache '{}': {error}", file.display());
-                return Some(BTreeMap::new());
+                return BTreeMap::new();
             }
         };
         let parsed = match serde_json::from_slice::<CacheFile>(&bytes) {
             Ok(parsed) => parsed,
             Err(error) => {
                 warn!("ignoring malformed materialization cache '{}': {error}", file.display());
-                return Some(BTreeMap::new());
+                return BTreeMap::new();
             }
         };
         if parsed.version != CACHE_VERSION {
@@ -230,53 +206,12 @@ impl VerdictCache {
                 file.display(),
                 parsed.version
             );
-            return Some(BTreeMap::new());
-        }
-        Some(parsed.verdicts)
-    }
-
-    /// Reads the record a workspace kept under the name this build no longer
-    /// writes, and writes it under the current name before that file is removed.
-    ///
-    /// The name is the only thing that changed, so the verdicts beside it still
-    /// describe the library. Writing them out first is what makes the rename
-    /// durable: a run that only skips never calls [`Self::flush`], so a record
-    /// that lived only in memory would be gone with the file that carried it. A
-    /// write that fails is reported and the record is kept in memory for this
-    /// run, which is the same cost as a missing cache: one read per output.
-    fn adopt_legacy_file(new_file: &Path) -> BTreeMap<String, Verdict> {
-        let legacy = new_file.with_file_name(LEGACY_CACHE_FILE_NAME);
-        let Some(remembered) = Self::read_file(&legacy) else {
             return BTreeMap::new();
-        };
-        if let Err(error) = Self::write_file(new_file, &remembered) {
-            warn!(
-                "could not write the adopted materialization cache '{}': {error}",
-                new_file.display()
-            );
         }
-        remembered
+        parsed.outputs
     }
 
-    /// Removes the file a workspace kept under the superseded name, if it is
-    /// still there.
-    ///
-    /// This runs on every open rather than only on the open that adopted the
-    /// file, so a removal that failed once is retried instead of leaving both
-    /// files for the life of the workspace. A file that will not go is reported
-    /// and the run continues, because it is a cache.
-    fn retire_legacy_file(new_file: &Path) {
-        let legacy = new_file.with_file_name(LEGACY_CACHE_FILE_NAME);
-        match std::fs::remove_file(&legacy) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                warn!("could not remove the superseded cache '{}': {error}", legacy.display());
-            }
-        }
-    }
-
-    /// Whether a remembered verdict still describes `relative_path`.
+    /// Whether a remembered record still describes `relative_path`.
     ///
     /// All four numbers have to agree. The hash says which content, the length
     /// says the file is still that long, and the modification time says the
@@ -293,10 +228,10 @@ impl VerdictCache {
         let Some(mtime_nanos) = mtime_nanos else {
             return false;
         };
-        self.remembered.get(relative_path).is_some_and(|verdict| {
-            verdict.hash == hash.to_string()
-                && verdict.len == len
-                && verdict.mtime_nanos == mtime_nanos
+        self.remembered.get(relative_path).is_some_and(|record| {
+            record.hash == hash.to_string()
+                && record.len == len
+                && record.mtime_nanos == mtime_nanos
         })
     }
 
@@ -327,11 +262,11 @@ impl VerdictCache {
         };
         confirmed.insert(
             relative_path.to_string(),
-            Verdict { hash: hash.to_string(), len, mtime_nanos },
+            OutputRecord { hash: hash.to_string(), len, mtime_nanos },
         );
     }
 
-    /// Write this run's verdicts, and only this run's.
+    /// Write this run's records, and only this run's.
     ///
     /// Paths this run never confirmed are dropped rather than carried forward, so
     /// the file tracks the library instead of growing for as long as the
@@ -340,7 +275,7 @@ impl VerdictCache {
     /// # Errors
     ///
     /// Returns the I/O failure that stopped the write. The caller reports it and
-    /// carries on, because the verdicts are a cache and a run that cannot write
+    /// carries on, because the records are a cache and a run that cannot write
     /// one is still a run that verified the library.
     pub(super) fn flush(&self) -> Result<(), MediaPmError> {
         let confirmed = match self.confirmed.lock() {
@@ -350,13 +285,16 @@ impl VerdictCache {
         Self::write_file(&self.file, &confirmed)
     }
 
-    /// Writes `verdicts` to `file`, beside it and renamed over it.
+    /// Writes `records` to `file`, beside it and renamed over it.
     ///
     /// # Errors
     ///
     /// Returns the I/O failure that stopped the write, or the encode failure
     /// that stopped it earlier.
-    fn write_file(file: &Path, verdicts: &BTreeMap<String, Verdict>) -> Result<(), MediaPmError> {
+    fn write_file(
+        file: &Path,
+        records: &BTreeMap<String, OutputRecord>,
+    ) -> Result<(), MediaPmError> {
         let directory = file.parent().unwrap_or(Path::new("."));
         if let Err(source) = std::fs::create_dir_all(directory) {
             return Err(MediaPmError::Io {
@@ -367,14 +305,14 @@ impl VerdictCache {
         }
         let bytes = serde_json::to_vec_pretty(&CacheFile {
             version: CACHE_VERSION,
-            verdicts: verdicts.clone(),
+            outputs: records.clone(),
         })
         .map_err(|error| {
             MediaPmError::Workflow(format!("encoding the materialization cache failed: {error}"))
         })?;
 
         // Write beside the target and rename over it, so a run that is killed
-        // mid-write leaves the previous verdicts rather than half of this run's.
+        // mid-write leaves the previous records rather than half of this run's.
         let mut staging =
             tempfile::NamedTempFile::new_in(directory).map_err(|source| MediaPmError::Io {
                 operation: "creating the materialization cache staging file".to_string(),
@@ -404,13 +342,13 @@ impl VerdictCache {
 mod tests {
     use super::*;
 
-    /// Writes `bytes` where a workspace's verdict cache goes and answers the
+    /// Writes `bytes` where a workspace's record cache goes and answers the
     /// cache a run would then open.
-    fn cache_over(paths: &MediaPmPaths, bytes: &[u8]) -> VerdictCache {
+    fn cache_over(paths: &MediaPmPaths, bytes: &[u8]) -> OutputCache {
         let file = cache_file_path(paths);
         std::fs::create_dir_all(file.parent().expect("the cache path names a directory")).unwrap();
         std::fs::write(&file, bytes).expect("the cache file is writable");
-        VerdictCache::open(paths)
+        OutputCache::open(paths)
     }
 
     /// A workspace nothing has run against, which is the state a fresh one
@@ -421,32 +359,50 @@ mod tests {
         (root, paths)
     }
 
+    /// A record file this build writes, with the numbers a run would leave
+    /// behind.
+    fn current_record_file(relative_path: &str) -> Vec<u8> {
+        serde_json::to_vec_pretty(&CacheFile {
+            version: CACHE_VERSION,
+            outputs: BTreeMap::from([(
+                relative_path.to_string(),
+                OutputRecord { hash: "blake3:recorded".to_string(), len: 7, mtime_nanos: 7 },
+            )]),
+        })
+        .unwrap()
+    }
+
     /// A file carrying a version this build does not read is read as carrying
-    /// no verdicts rather than as the wrong numbers.
+    /// no records rather than as the wrong numbers.
     ///
-    /// Reading it as the wrong numbers is the failure this branch exists to
-    /// prevent: a future build that adds a field and keeps the same version
-    /// would otherwise have its entries matched against a hash a file does not
-    /// have, which is a silent skip rather than a re-read.
+    /// Two versions matter. A later one is the field-adds-without-a-bump
+    /// failure: entries matched against a hash a file does not have, which is a
+    /// silent skip rather than a re-read. An earlier one is the record a build
+    /// left under this name before the format moved, whose numbers describe the
+    /// same library in a shape this build does not read.
     #[test]
-    fn a_file_from_another_version_is_read_as_no_verdicts() {
+    fn a_cache_from_another_version_is_read_as_empty() {
         let (_workspace, paths) = empty_workspace();
-        let from_the_future = serde_json::to_vec_pretty(&CacheFile {
+        let later = serde_json::to_vec_pretty(&CacheFile {
             version: CACHE_VERSION + 1,
-            verdicts: BTreeMap::from([(
+            outputs: BTreeMap::from([(
                 "song".to_string(),
-                Verdict { hash: "blake3:nonsense".to_string(), len: 7, mtime_nanos: 7 },
+                OutputRecord { hash: "blake3:nonsense".to_string(), len: 7, mtime_nanos: 7 },
             )]),
         })
         .unwrap();
-        let cache = cache_over(&paths, &from_the_future);
+        let earlier = br#"{"version": 1, "outputs": {"song": {"hash": "blake3:earlier", "len": 7, "mtime_nanos": 7}}}"#;
 
-        let verdict = cache.remembered.get("song");
-        assert!(
-            verdict.is_none(),
-            "a version this build cannot read has to cost a re-read, not a skip on numbers it \
-             never checked: {verdict:?}"
-        );
+        for (label, bytes) in
+            [("a later version", later.as_slice()), ("version 1", earlier.as_slice())]
+        {
+            let cache = cache_over(&paths, bytes);
+            let record = cache.remembered.get("song");
+            assert!(
+                record.is_none(),
+                "{label} has to cost a re-read, not a skip on numbers it never checked: {record:?}"
+            );
+        }
     }
 
     /// A file that is empty, or that is not JSON at all, costs the re-read a
@@ -456,98 +412,101 @@ mod tests {
     /// is the same shape. Neither may end a run: the answer is an empty cache,
     /// which is the state a workspace starts in.
     #[test]
-    fn an_empty_or_malformed_file_is_read_as_no_verdicts() {
+    fn an_empty_or_malformed_file_is_read_as_no_records() {
         let (_workspace, paths) = empty_workspace();
-        for (label, bytes) in [("empty", b"".as_slice()), ("malformed", b"{ \"verdicts\": ")] {
+        for (label, bytes) in [("empty", b"".as_slice()), ("malformed", b"{ \"outputs\": ")] {
             let cache = cache_over(&paths, bytes);
             assert!(
                 cache.remembered.is_empty(),
-                "a {label} cache file has to read as no verdicts rather than fail the run: \
+                "a {label} cache file has to read as no records rather than fail the run: \
                  {:?}",
                 cache.remembered
             );
         }
     }
 
-    /// A workspace from an older build carries its verdicts across the rename
-    /// and is left holding one file, not two.
+    /// A file naming no version at all holds nothing this build can reuse.
     ///
-    /// The contents did not change with the name, so discarding the old file
-    /// would spend a full read of the library to relearn what it already says,
-    /// and keeping both would leave two files answering the same question with
-    /// no way to tell which one a run trusted.
+    /// The version is what says whose numbers these are. A hand-written file
+    /// that leaves it out states no format, so its numbers cannot be compared
+    /// against records this build derived, and the run reads the outputs again
+    /// instead of trusting them.
     #[test]
-    fn regression_a_legacy_verdict_file_is_adopted_and_removed() {
+    fn a_file_naming_no_version_is_read_as_empty() {
         let (_workspace, paths) = empty_workspace();
-        let legacy = legacy_cache_file_path(&paths);
-        std::fs::create_dir_all(legacy.parent().expect("the cache path names a directory"))
-            .unwrap();
-        let seeded = serde_json::to_vec_pretty(&CacheFile {
-            version: CACHE_VERSION,
-            verdicts: BTreeMap::from([(
-                "song".to_string(),
-                Verdict { hash: "blake3:seeded".to_string(), len: 7, mtime_nanos: 7 },
-            )]),
-        })
-        .unwrap();
-        std::fs::write(&legacy, seeded).unwrap();
-
-        let cache = VerdictCache::open(&paths);
+        let unversioned = br#"{"outputs": {"song": {"hash": "h", "len": 7, "mtime_nanos": 7}}}"#;
+        let cache = cache_over(&paths, unversioned);
 
         assert!(
-            !legacy.exists(),
-            "the superseded file has to go, or the workspace keeps two records of one library"
-        );
-        assert_eq!(
-            cache.remembered.get("song").map(|verdict| verdict.hash.as_str()),
-            Some("blake3:seeded"),
-            "the rename changed the file name and nothing else, so the verdicts it held still \
-             describe the library: {:?}",
+            cache.remembered.is_empty(),
+            "a file that names no version has to cost a re-read: {:?}",
             cache.remembered
-        );
-
-        // Opening writes the adopted record out before the old file goes, so a
-        // run that only skips is answered from the new name rather than from
-        // nothing: `is_current` answers from the file alone.
-        assert!(
-            cache_file_path(&paths).is_file(),
-            "opening has to write the adopted record under the new name, or a run that only \
-             skips loses it with the file that carried it"
-        );
-        let reopened = VerdictCache::open(&paths);
-        assert_eq!(
-            reopened.remembered.get("song").map(|verdict| verdict.hash.as_str()),
-            Some("blake3:seeded"),
-            "the adopted record has to answer the next run: {:?}",
-            reopened.remembered
-        );
-
-        // A verdict this run confirms reaches the file through `flush`, which is
-        // the other half of the same guarantee.
-        cache.confirm("song", &Hash::from_content(b"seven!"), 7, Some(7));
-        cache.flush().expect("flush");
-        let after_flush = VerdictCache::open(&paths);
-        assert!(
-            after_flush.is_current("song", &Hash::from_content(b"seven!"), 7, Some(7)),
-            "a verdict written by one run has to answer the next one: {:?}",
-            after_flush.remembered
         );
     }
 
-    /// A file naming no version at all is read as this one, because a version
-    /// field a hand-written file leaves out is not a reason to throw the
-    /// verdicts beside it away.
+    /// A record this run confirms reaches the file through `flush`, and the next
+    /// run reads it back out of `outputs`.
+    ///
+    /// The file is the only thing that carries a record between runs, so this is
+    /// the round trip the whole cache rests on.
     #[test]
-    fn a_file_naming_no_version_is_read_as_this_one() {
+    fn a_confirmed_record_reaches_the_next_run_through_the_file() {
         let (_workspace, paths) = empty_workspace();
-        let unversioned = br#"{"verdicts": {"song": {"hash": "h", "len": 7, "mtime_nanos": 7}}}"#;
-        let cache = cache_over(&paths, unversioned);
+        let cache = cache_over(&paths, &current_record_file("song"));
 
+        cache.confirm("other", &Hash::from_content(b"seven!"), 7, Some(7));
+        cache.flush().expect("flush");
+
+        let reopened = OutputCache::open(&paths);
+        assert!(
+            reopened.is_current("other", &Hash::from_content(b"seven!"), 7, Some(7)),
+            "a record written by one run has to answer the next one: {:?}",
+            reopened.remembered
+        );
+        assert!(
+            !reopened.is_current("song", &Hash::from_content(b"seven!"), 7, Some(7)),
+            "a path this run never confirmed is dropped rather than carried forward: {:?}",
+            reopened.remembered
+        );
+    }
+
+    /// The record cache names the shape it writes: a version and the records,
+    /// under `outputs`.
+    ///
+    /// A reader opening the file learns which format wrote these numbers before
+    /// trusting one, and the field name says what a record is rather than what
+    /// a run concluded about it.
+    #[test]
+    fn the_materialization_cache_names_its_records_outputs() {
+        let (_workspace, paths) = empty_workspace();
+        let cache = cache_over(&paths, &[]);
+        cache.confirm("song", &Hash::from_content(b"seven!"), 7, Some(7));
+        cache.flush().expect("flush");
+
+        let text =
+            std::fs::read_to_string(cache_file_path(&paths)).expect("the run wrote the cache file");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("the cache is json");
+        let mut keys: Vec<&str> = parsed
+            .as_object()
+            .expect("the cache file is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
         assert_eq!(
-            cache.remembered.get("song").map(|verdict| (verdict.hash.as_str(), verdict.len)),
-            Some(("h", 7)),
-            "the verdicts beside a missing version field are still verdicts: {:?}",
-            cache.remembered
+            keys,
+            ["outputs", "version"],
+            "the file holds the version and the records and nothing else: {text}"
+        );
+        assert_eq!(
+            parsed["version"],
+            serde_json::json!(2),
+            "the file names the format version it carries: {text}"
+        );
+        assert_eq!(
+            parsed["outputs"]["song"]["hash"],
+            serde_json::json!(Hash::from_content(b"seven!").to_string()),
+            "every record lives under `outputs`: {text}"
         );
     }
 }
