@@ -36,6 +36,17 @@
 //! lists its bytes, and starts aging the moment that consumer re-runs onto
 //! different inputs.
 //!
+//! The walk decides how long a record lives; the mode its capture spec recorded
+//! decides whether the bytes outlive the producing instance. An output captured
+//! with [`SaveMode::False`] is not a root once its producer leaves the closure,
+//! so the next pass reclaims the blob while the record waits out its grace
+//! period. While the producer is still reachable those bytes stay rooted: the
+//! loop runs independently of the application, and a pass landing between one
+//! step's capture and the next step's read would otherwise delete bytes the
+//! consumer is about to open. A record that carries no capture spec roots, and
+//! an abstained pass keeps every output, because a spec or a walk that cannot
+//! answer is not evidence that the bytes are disposable.
+//!
 //! Two rules keep a GC pass from destroying live work. A workflow declared in
 //! the merged document but carrying no seed makes the whole pass abstain —
 //! refreshing and evicting nothing, logged once — because a closure computed
@@ -48,10 +59,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, Hash, PruneReport};
 
+use crate::config::SaveMode;
 use crate::error::ConductorError;
 use crate::orchestration::protocol::UnifiedNickelDocument;
 
-use crate::state::ConductorState;
+use crate::state::{CapturedOutput, ConductorState};
 
 /// Aggregate report from one full conductor GC cycle.
 #[derive(Debug, Clone, Default)]
@@ -204,11 +216,38 @@ pub(crate) fn run_instance_gc(
                 .saturating_sub(state.tool_call_instances.len()),
             reachable_instances,
             superseded_instances,
+            abstained: false,
         };
     };
 
     tracing::info!("conductor GC phase 1/3: {reason}, so this pass refreshes and evicts nothing");
-    InstanceGcCounts::default()
+    InstanceGcCounts { abstained: true, ..InstanceGcCounts::default() }
+}
+
+/// Whether a captured output recorded itself as not worth keeping.
+///
+/// Only `false` is unsaved: `true` and `full` both ask for the bytes. A record
+/// with no capture spec is saved, because the spec is what records the mode and
+/// a record too old to carry one is no evidence that its bytes are disposable.
+fn output_is_unsaved(record: &CapturedOutput) -> bool {
+    record.capture.as_ref().is_some_and(|spec| spec.save == SaveMode::False)
+}
+
+/// Whether an instance's captured output is a root for this pass.
+///
+/// A saved output is always a root. An unsaved one is a root while its producer
+/// can still be reached, and it is a root when `reachable` is `None`: an
+/// abstained pass does not know which instances a live workflow reads, and the
+/// doubt that stops it evicting records stops it reclaiming their bytes.
+fn keeps_output(
+    record: &CapturedOutput,
+    instance_key: &Hash,
+    reachable: Option<&BTreeSet<Hash>>,
+) -> bool {
+    if !output_is_unsaved(record) {
+        return true;
+    }
+    reachable.is_none_or(|reached| reached.contains(instance_key))
 }
 
 /// Runs full conductor garbage collection: instance pruning, CAS orphan
@@ -227,7 +266,9 @@ pub(crate) fn run_instance_gc(
 ///
 /// 1. [`run_instance_gc`] — evict the records the walk did not keep.
 /// 2. Root-set / orphan reclamation — collect referenced CAS hashes from
-///    surviving instances and the unified config, then delete orphans.
+///    surviving instances and the unified config, then delete orphans. An
+///    instance's outputs are roots except the ones it recorded as unsaved, and
+///    those are roots only while the instance is still reachable.
 /// 3. CAS maintenance — delegate to [`run_cas_gc_sweep`] for constraint
 ///    pruning and WAL consumption.
 ///
@@ -263,10 +304,17 @@ where
     tracing::info!("conductor GC phase 2/3: root-set collection and orphan reclamation");
     let mut root_set: BTreeSet<Hash> = BTreeSet::new();
 
-    // Hashes referenced by surviving tool-call instance outputs.
-    for instance in state.tool_call_instances.values() {
+    // Hashes referenced by surviving tool-call instance outputs, minus the ones
+    // the run recorded as unsaved whose producer nothing live can reach. The walk
+    // is recomputed rather than carried out of phase 1 because phase 1 abstains
+    // without computing one, and an abstention is exactly the case where this
+    // pass must keep every output.
+    let reachable = (!counts.abstained).then(|| reachability_closure(state));
+    for (instance_key, instance) in &state.tool_call_instances {
         for record in instance.outputs.values() {
-            root_set.insert(record.hash);
+            if keeps_output(record, instance_key, reachable.as_ref()) {
+                root_set.insert(record.hash);
+            }
         }
     }
 
@@ -314,6 +362,13 @@ pub(crate) struct InstanceGcCounts {
     /// Records the walk did not reach, whether or not they were old enough to
     /// evict.
     pub superseded_instances: usize,
+    /// Whether the pass refused to decide, because it could not trust the walk.
+    ///
+    /// An abstained pass classifies nothing, so the counts above stay zero and
+    /// the caller must not read the absence of a classification as "nothing is
+    /// reachable": no instance may lose its bytes on the strength of a walk the
+    /// pass declined to use.
+    pub abstained: bool,
 }
 
 /// Runs full CAS maintenance: optimize, prune constraints.
@@ -344,8 +399,12 @@ mod tests {
     use mediapm_utils::Timestamp;
 
     use super::*;
-    use crate::config::{ConductorRuntimeConfig, WorkflowSpec};
+    use crate::config::{ConductorRuntimeConfig, SaveMode, WorkflowSpec};
     use crate::state::{AuxData, CapturedOutput, HashedValueRecord, InstanceAux, ToolCallInstance};
+
+    /// A grace period longer than any test run, so no record is evicted and the
+    /// root set alone decides which bytes survive.
+    const A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST: u64 = 86_400;
 
     /// One instance with the given inputs and outputs, keyed by `b"instance-{n}"`.
     ///
@@ -402,6 +461,34 @@ mod tests {
             live_instances: seeds,
         };
         state
+    }
+
+    /// `recorded` with every output recording `mode` as the capture spec it ran
+    /// under, which is the fact the root set reads.
+    fn instance_saving(recorded: ToolCallInstance, mode: SaveMode) -> ToolCallInstance {
+        let mut saved = recorded;
+        for output in saved.outputs.values_mut() {
+            output.capture = Some(crate::config::OutputCaptureSpec {
+                name: String::new(),
+                capture: "stdout".to_string(),
+                save: mode,
+                ..crate::config::OutputCaptureSpec::default()
+            });
+        }
+        saved
+    }
+
+    /// Stamps every recorded instance's last reference at the present, so a pass
+    /// inside the grace period evicts none of them.
+    ///
+    /// The eviction branch reads an absent clock as "never referenced", which is
+    /// what [`state_with`] installs, so a test that wants a record to survive the
+    /// walk has to say when it was last read.
+    fn keep_records_within_their_grace_period(state: &mut ConductorState) {
+        let now = Timestamp::now();
+        for entry in state.aux.instances.values_mut() {
+            entry.last_referenced_at = now;
+        }
     }
 
     /// A merged document declaring exactly the given workflow names.
@@ -670,5 +757,202 @@ mod tests {
             "with the seed gone the instance is unreachable and ages out"
         );
         assert_eq!(report.instances_removed, 1, "the abandoned instance is the one removed");
+    }
+
+    /// An output the run recorded as unsaved stops rooting once its producer is
+    /// superseded.
+    ///
+    /// The user-level guarantee: saving has consequences. The record outlives the
+    /// bytes, because the grace period is about the record, so the assertion that
+    /// the record is still present is what keeps this from passing by eviction.
+    #[tokio::test]
+    async fn an_unsaved_output_of_a_superseded_instance_is_reclaimed() {
+        let cas = InMemoryCas::new();
+        let blob = cas.put(bytes::Bytes::from_static(b"intermediate payload")).await.expect("put");
+        let producer = instance_saving(instance("producer", &[], &[blob]), SaveMode::False);
+        let producer_key = producer.instance_key;
+        let mut state =
+            state_with(vec![producer], BTreeMap::from([("default".to_string(), BTreeSet::new())]));
+        keep_records_within_their_grace_period(&mut state);
+
+        let report = run_conductor_gc(
+            &cas,
+            &mut state,
+            &unified_with(&["default"]),
+            A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST,
+        )
+        .await
+        .expect("gc");
+
+        assert!(
+            state.tool_call_instances.contains_key(&producer_key),
+            "the grace period is about the record, so the record stays while its bytes go"
+        );
+        assert!(
+            cas.get(blob).await.is_err(),
+            "an unsaved output is not a root once its producer is outside the closure"
+        );
+        assert_eq!(report.orphans_removed, 1, "the only unreachable blob is the unsaved output");
+    }
+
+    /// An unsaved output stays rooted while its producer is reachable.
+    ///
+    /// The user-level guarantee: a pass landing between one step's capture and the
+    /// next step's read must not delete the bytes the consumer is about to open.
+    #[tokio::test]
+    async fn an_unsaved_output_of_a_reachable_instance_survives_the_pass() {
+        let cas = InMemoryCas::new();
+        let blob = cas.put(bytes::Bytes::from_static(b"intermediate payload")).await.expect("put");
+        let producer = instance_saving(instance("producer", &[], &[blob]), SaveMode::False);
+        let producer_key = producer.instance_key;
+        let mut state = state_with(
+            vec![producer],
+            BTreeMap::from([("default".to_string(), BTreeSet::from([producer_key]))]),
+        );
+        keep_records_within_their_grace_period(&mut state);
+
+        let report = run_conductor_gc(
+            &cas,
+            &mut state,
+            &unified_with(&["default"]),
+            A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST,
+        )
+        .await
+        .expect("gc");
+
+        assert!(
+            cas.get(blob).await.is_ok(),
+            "a reachable producer's unsaved output is still being read by the run in flight"
+        );
+        assert_eq!(report.orphans_removed, 0, "nothing is reclaimable while the producer is live");
+    }
+
+    /// An unsaved output survives while a live consumer's inputs name it.
+    ///
+    /// The user-level guarantee: the mid-run guard follows the graph, not the seed.
+    /// A producer that is not itself seeded is still reached through the consumer
+    /// that lists its blob, so the bytes a running workflow is about to read outlive
+    /// the pass even though the run recorded them as unsaved.
+    #[tokio::test]
+    async fn an_unsaved_output_a_live_consumer_reads_survives_the_pass() {
+        let cas = InMemoryCas::new();
+        let blob = cas.put(bytes::Bytes::from_static(b"intermediate payload")).await.expect("put");
+        let producer = instance_saving(instance("producer", &[], &[blob]), SaveMode::False);
+        let consumer = instance("consumer", &[blob], &[]);
+        let consumer_key = consumer.instance_key;
+        let mut state = state_with(
+            vec![producer, consumer],
+            BTreeMap::from([("default".to_string(), BTreeSet::from([consumer_key]))]),
+        );
+        keep_records_within_their_grace_period(&mut state);
+
+        run_conductor_gc(
+            &cas,
+            &mut state,
+            &unified_with(&["default"]),
+            A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST,
+        )
+        .await
+        .expect("gc");
+
+        assert!(
+            cas.get(blob).await.is_ok(),
+            "the live consumer lists the blob, so its producer is reachable and the bytes stay"
+        );
+    }
+
+    /// Retention reads the record, so a `save`-only config change cannot revoke
+    /// bytes the run recorded as kept.
+    ///
+    /// The user-level guarantee: what the document says now does not decide what a
+    /// past run promised. `same_capture_identity` excludes `save`, so a step that
+    /// now declares `false` still hits the instance that ran under `true`, and that
+    /// instance's record is what this pass reads. Both kept modes are asserted so
+    /// the test cannot pass by treating every spec as saved.
+    #[tokio::test]
+    async fn a_save_only_change_does_not_retroactively_change_retention() {
+        let cas = InMemoryCas::new();
+        let saved = cas.put(bytes::Bytes::from_static(b"saved payload")).await.expect("put");
+        let full = cas.put(bytes::Bytes::from_static(b"full payload")).await.expect("put");
+        let producer = instance("producer", &[], &[saved, full]);
+        let mut producer = instance_saving(producer, SaveMode::True);
+        producer.outputs.get_mut("out-1").expect("second output").capture =
+            Some(crate::config::OutputCaptureSpec {
+                save: SaveMode::Full,
+                ..crate::config::OutputCaptureSpec::default()
+            });
+        let mut state =
+            state_with(vec![producer], BTreeMap::from([("default".to_string(), BTreeSet::new())]));
+        keep_records_within_their_grace_period(&mut state);
+
+        run_conductor_gc(
+            &cas,
+            &mut state,
+            &unified_with(&["default"]),
+            A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST,
+        )
+        .await
+        .expect("gc");
+
+        assert!(cas.get(saved).await.is_ok(), "a recorded `true` output stays a root");
+        assert!(cas.get(full).await.is_ok(), "a recorded `full` output stays a root");
+    }
+
+    /// A record too old to carry a capture spec still roots its output.
+    ///
+    /// The user-level guarantee: a missing spec is not evidence of unsavedness, so
+    /// upgrading a state file must not turn its outputs into orphans.
+    #[tokio::test]
+    async fn a_record_without_a_capture_spec_still_roots_its_output() {
+        let cas = InMemoryCas::new();
+        let blob = cas.put(bytes::Bytes::from_static(b"legacy payload")).await.expect("put");
+        let producer = instance("producer", &[], &[blob]);
+        let mut state =
+            state_with(vec![producer], BTreeMap::from([("default".to_string(), BTreeSet::new())]));
+        keep_records_within_their_grace_period(&mut state);
+
+        run_conductor_gc(
+            &cas,
+            &mut state,
+            &unified_with(&["default"]),
+            A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST,
+        )
+        .await
+        .expect("gc");
+
+        assert!(
+            cas.get(blob).await.is_ok(),
+            "a record with no capture spec roots by default, because it cannot say otherwise"
+        );
+    }
+
+    /// An abstained pass keeps an unsaved output rooted.
+    ///
+    /// The user-level guarantee: a pass that cannot tell which instances are live
+    /// must not act on its doubt. The document declares a workflow that recorded
+    /// no seed, so the closure says nothing about the producer, and reclaiming its
+    /// bytes on that basis would be the same mistake as evicting its record.
+    #[tokio::test]
+    async fn an_abstaining_pass_keeps_an_unsaved_output_rooted() {
+        let cas = InMemoryCas::new();
+        let blob = cas.put(bytes::Bytes::from_static(b"intermediate payload")).await.expect("put");
+        let producer = instance_saving(instance("producer", &[], &[blob]), SaveMode::False);
+        let mut state = state_with(vec![producer], BTreeMap::new());
+        keep_records_within_their_grace_period(&mut state);
+
+        let report = run_conductor_gc(
+            &cas,
+            &mut state,
+            &unified_with(&["default"]),
+            A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST,
+        )
+        .await
+        .expect("gc");
+
+        assert!(
+            cas.get(blob).await.is_ok(),
+            "an abstained pass does not know the producer is disposable, so it keeps its bytes"
+        );
+        assert_eq!(report.orphans_removed, 0, "an abstained pass reclaims nothing");
     }
 }

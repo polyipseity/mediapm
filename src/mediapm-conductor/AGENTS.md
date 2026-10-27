@@ -414,7 +414,7 @@ Cross-crate data flow, shared invariants, and the full module-layer index are do
 - **State persistence**: conductor writes its orchestration state to `storage_paths.state_file_path` as pretty JSON (schema v4). It is a file, not a CAS blob, and no state pointer exists.
 - **Input resolution**: step inputs resolve to CAS hashes; `ToolCallInstance` persists input, argument and env hashes (`materialized_inputs`, `command_args`, `env_vars`), never inline content.
 - **Output capture**: step outputs are CAS blobs; each entry in `ToolCallInstance::outputs` records the hash and the capture spec that produced it.
-- **GC coordination**: the root set is surviving instance output hashes plus the unified document's external-data policy keys and tool content hashes (see Section G).
+- **GC coordination**: the root set is surviving instance output hashes plus the unified document's external-data policy keys and tool content hashes, minus an unsaved output whose producer is no longer reachable (see Section G).
 - **Existence checks**: `CasExistenceBitmap` for batch cache probing across step outputs.
 - **Content map materialization**: under `copy`, `tools.<tool>.runtime.content_map` entries are resolved from CAS into step sandbox directories; under `in_place` the step reads the provisioned tree at `runtime.payload_root` instead, and the content map is provenance rather than a staging instruction; under `hard_link` the payload is linked into the sandbox, so the step runs from a copy that shares the payload's inodes.
 
@@ -543,7 +543,7 @@ After `list_hashes`, every hash outside the root set is removed with a plain `Ca
 
 `gc::run_conductor_gc` builds the root set from:
 
-- every output hash of every surviving `ToolCallInstance`
+- every output hash of every surviving `ToolCallInstance`, except an output whose capture spec recorded `save = "false"` once its producing instance is outside the reachability closure. The record keeps the mode the run used, so a later document cannot revoke bytes a past run kept, and a reachable producer's unsaved outputs stay rooted because a pass landing between one step's capture and the next step's read would otherwise delete bytes about to be read. An abstained pass roots every output: a walk it declined to use cannot say which bytes are disposable.
 - the unified document's `external_data` policy keys
 - the unified document's `tool_content_hashes`
 

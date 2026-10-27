@@ -189,9 +189,11 @@ pub struct OutputCaptureSpec {
     /// The persistence intent this record carries, one of `"false"`, `"true"`,
     /// `"full"`.
     ///
-    /// It is recorded, not obeyed: every capture is written to the CAS whatever
-    /// this says, and no reader consults it to decide what a step may reuse or
-    /// materialize. Its one live effect is which side of a settlement keeps it.
+    /// It decides retention, not capture: every capture is written to the CAS
+    /// whatever this says, and no reader consults it to decide what a step may
+    /// reuse or materialize. `False` keeps the bytes only while the producing
+    /// instance is reachable, so the conductor's GC reclaims them once that
+    /// instance is superseded.
     ///
     /// This is the one field a step may set on a name its tool already
     /// declares: the tool owns the capture itself (selector, `allow_empty`,
