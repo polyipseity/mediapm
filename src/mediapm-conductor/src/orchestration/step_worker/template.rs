@@ -23,6 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use mediapm_cas::Hash;
 
@@ -52,7 +53,29 @@ pub struct TemplateContext<'a, C> {
     /// Resolved input values for the current step.
     /// Populated for command-parts resolution; empty during input resolution.
     pub inputs: &'a BTreeMap<String, String>,
+    /// Collector for the inputs a `:file` or `:folder` selector stages.
+    ///
+    /// A selector knows the bytes it consumed and the destination it staged
+    /// them at; the caller knows which record has to remember both, so the
+    /// caller hands over a map to fill. `None` wherever nothing records
+    /// staging — a template resolved for its text writes into a sandbox at
+    /// most, and no instance is asking what it wrote.
+    pub staged_inputs: Option<&'a Mutex<StagedInputs>>,
 }
+
+/// Inputs a command staged into its sandbox, keyed by sandbox-relative
+/// destination.
+///
+/// The value is the hash of the bytes the selector consumed: the blob a
+/// `:file` selector wrote, and the archive a `:folder` selector extracted. A
+/// folder records the archive rather than its members because the archive is
+/// the single object the command was handed; no member came from an object of
+/// its own.
+///
+/// The destination is sandbox-relative on purpose. A command receives absolute
+/// paths inside a sandbox named for the instance key, so recording the path the
+/// command ran with would make every run's record different for the same work.
+pub type StagedInputs = BTreeMap<String, Hash>;
 
 /// Result of resolving a single template reference.
 #[derive(Debug, Clone)]
@@ -274,22 +297,40 @@ pub async fn resolve_content<C: mediapm_cas::CasApi + Send + Sync>(
     Ok(string_result.into_bytes())
 }
 
+/// Everything one command's resolution answers.
+///
+/// Kept as one value rather than three tuple elements: the argv, its
+/// determinism and the inputs staged on the way are read by one caller, and a
+/// tuple of parallel vectors says nothing about what the third element is.
+pub struct ResolvedCommandParts {
+    /// Resolved argv, one element per part that produced a value.
+    pub parts: Vec<String>,
+    /// One flag per element of [`Self::parts`]: a part is nondeterministic
+    /// exactly when it contains an OS conditional (`context.os ...`), an
+    /// environment reference (`${env.<VAR>}`), or a sandbox path selector.
+    /// Splat elements inherit the splat's determinism (inputs are
+    /// deterministic).
+    pub determinism: Vec<bool>,
+    /// Inputs the command's selectors staged, keyed by sandbox-relative
+    /// destination; see [`StagedInputs`].
+    pub staged_inputs: StagedInputs,
+}
+
 /// Resolves a slice of command parts, expanding splat references
 /// (`${*inputs.<name>}`) into their constituent elements.
 ///
 /// Each part is resolved as a template.  If the raw part matches the splat
 /// pattern `${*inputs.<name>}`, the named input is JSON-decoded as
-/// `Vec<String>` and its elements are inserted in place.
-///
-/// Returns the resolved parts plus a parallel determinism classification
-/// (one flag per output element): a part is nondeterministic exactly when it
-/// contains an OS conditional (`context.os ...`) or an environment reference
-/// (`${env.<VAR>}`). Splat elements inherit the splat's determinism (inputs
-/// are deterministic).
+/// `Vec<String>` and its elements are inserted in place. Every `:file` and
+/// `:folder` selector a part carries stages its bytes into the sandbox the
+/// context names, and the destination and source object are collected into
+/// [`ResolvedCommandParts::staged_inputs`] as they are staged.
 pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
     command_parts: &[String],
     ctx: &TemplateContext<'_, C>,
-) -> Result<(Vec<String>, Vec<bool>), ConductorError> {
+) -> Result<ResolvedCommandParts, ConductorError> {
+    let staged = Mutex::new(StagedInputs::new());
+    let ctx = &TemplateContext { staged_inputs: Some(&staged), ..*ctx };
     let mut resolved = Vec::with_capacity(command_parts.len());
     let mut determinism = Vec::with_capacity(command_parts.len());
 
@@ -335,7 +376,12 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
         }
     }
 
-    Ok((resolved, determinism))
+    // No lock is held across an await: every selector took it for the insert
+    // and released it, so this read cannot block.
+    let staged_inputs = staged.into_inner().map_err(|_| {
+        ConductorError::Internal("template: the staged-input collector is poisoned".to_string())
+    })?;
+    Ok(ResolvedCommandParts { parts: resolved, determinism, staged_inputs })
 }
 
 /// Classifies a command-part template as deterministic.
@@ -1274,6 +1320,7 @@ async fn apply_file_selector<C: mediapm_cas::CasApi + Send + Sync>(
     tokio::fs::write(&target_path, &data).await.map_err(|source| {
         ConductorError::io("template: write :file content", &target_path, source)
     })?;
+    record_staged_input(ctx, path, Hash::from_content(&data))?;
 
     Ok(ResolvedValue::MaterializedFile(target_path))
 }
@@ -1298,8 +1345,29 @@ async fn apply_folder_selector<C: mediapm_cas::CasApi + Send + Sync>(
     })?;
 
     extract_archive_to_folder(&data, &target_dir).await?;
+    record_staged_input(ctx, path, Hash::from_content(&data))?;
 
     Ok(ResolvedValue::MaterializedFolder(target_dir))
+}
+
+/// Records one staged input against the destination it was staged at.
+///
+/// A no-op when the context collects nothing, which is the case for every
+/// resolution whose answer is a string: the bytes still land in the sandbox,
+/// and there is no instance record to hold them.
+fn record_staged_input<C>(
+    ctx: &TemplateContext<'_, C>,
+    destination: &str,
+    source: Hash,
+) -> Result<(), ConductorError> {
+    let Some(staged_inputs) = ctx.staged_inputs else {
+        return Ok(());
+    };
+    let mut staged = staged_inputs.lock().map_err(|_| {
+        ConductorError::Internal("template: the staged-input collector is poisoned".to_string())
+    })?;
+    staged.insert(destination.to_string(), source);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1440,7 +1508,16 @@ mod tests {
         inputs: &'a BTreeMap<String, String>,
         host_os: &'a str,
     ) -> TemplateContext<'a, InMemoryCas> {
-        TemplateContext { cas, step_outputs, env_vars, tokens, sandbox_dir, host_os, inputs }
+        TemplateContext {
+            cas,
+            step_outputs,
+            env_vars,
+            tokens,
+            sandbox_dir,
+            host_os,
+            inputs,
+            staged_inputs: None,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1463,6 +1540,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("${step_output.step-1.result}", &ctx).await.unwrap();
         assert_eq!(result, Hash::from_content(b"hello").to_string());
@@ -1481,6 +1559,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("${step_output.missing.output}", &ctx).await;
         assert!(result.is_err());
@@ -1501,6 +1580,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("${step_output.step-1.output}", &ctx).await;
         assert!(result.is_err());
@@ -1636,6 +1716,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("\\${not_a_reference}", &ctx).await.unwrap();
         assert_eq!(result, "${not_a_reference}");
@@ -1657,6 +1738,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result =
             resolve_template("\\${escaped} and ${step_output.s1.val}", &ctx).await.unwrap();
@@ -1680,6 +1762,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result =
             resolve_template("${context.os == \"macos\" ? hello : world}", &ctx).await.unwrap();
@@ -1699,6 +1782,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "linux",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result =
             resolve_template("${context.os == \"macos\" ? hello : world}", &ctx).await.unwrap();
@@ -1718,6 +1802,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "linux",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result =
             resolve_template("${context.os != \"macos\" ? hello : world}", &ctx).await.unwrap();
@@ -1741,6 +1826,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template(
             "${context.os == \"macos\" ? ${step_output.s1.a} : ${step_output.s1.b}}",
@@ -1764,6 +1850,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "windows",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result =
             resolve_template("${context.os == \"windows\" ? win : other}", &ctx).await.unwrap();
@@ -1787,6 +1874,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("${context.os <= \"macos\" ? yes : no}", &ctx).await.unwrap();
         // "macos" <= "macos" → true
@@ -1806,6 +1894,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("${context.os > \"linux\" ? yes : no}", &ctx).await.unwrap();
         assert_eq!(result, "yes");
@@ -1844,6 +1933,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("hello world", &ctx).await.unwrap();
         assert_eq!(result, "hello world");
@@ -1866,6 +1956,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("${unclosed", &ctx).await;
         assert!(result.is_err());
@@ -1884,6 +1975,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("${foo.bar}", &ctx).await;
         assert!(result.is_err());
@@ -1965,6 +2057,7 @@ mod tests {
             sandbox_dir: Some(tmp.path()),
             host_os: "macos",
             inputs: &inputs,
+            staged_inputs: None,
         };
 
         let result = resolve_template("${inputs.input_content_0:file(inputs/input-0.bin)}", &ctx)
@@ -2004,6 +2097,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &BTreeMap::new(),
+            staged_inputs: None,
         };
         let result = resolve_template("", &ctx).await.unwrap();
         assert_eq!(result, "");
@@ -2048,6 +2142,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &inputs,
+            staged_inputs: None,
         };
         let result = resolve_template("${inputs.url}", &ctx).await.unwrap();
         assert_eq!(result, "https://example.com");
@@ -2067,6 +2162,7 @@ mod tests {
             sandbox_dir: None,
             host_os: "macos",
             inputs: &inputs,
+            staged_inputs: None,
         };
         let result = resolve_template("${inputs.url}", &ctx).await;
         assert!(result.is_err());
@@ -2135,7 +2231,7 @@ mod tests {
         let ctx =
             full_ctx_with_inputs(None, &step_outputs, &env_vars, &tokens, None, &inputs, "macos");
         let parts = vec!["${*inputs.codec_audio ? --codec-audio | ''}".to_string()];
-        let (resolved, _) = resolve_command_parts(&parts, &ctx).await.unwrap();
+        let resolved = resolve_command_parts(&parts, &ctx).await.unwrap().parts;
         assert!(
             !resolved.iter().any(|part| part.contains("codec-audio")),
             "unexpected argv parts: {resolved:?}"
@@ -2158,7 +2254,7 @@ mod tests {
             "${*inputs.codec_copy == \"true\" ? -c | ''}".to_string(),
             "${*inputs.codec_copy == \"true\" ? copy | ''}".to_string(),
         ];
-        let (resolved, _) = resolve_command_parts(&parts, &ctx).await.unwrap();
+        let resolved = resolve_command_parts(&parts, &ctx).await.unwrap().parts;
         assert_eq!(resolved, vec!["-c".to_string(), "copy".to_string()]);
     }
 
@@ -2186,10 +2282,113 @@ mod tests {
             "${*inputs.input_content_0 ? inputs.input_content_0:file(inputs/input-0.bin) | ''}"
                 .to_string(),
         ];
-        let (resolved, _) = resolve_command_parts(&parts, &ctx).await.unwrap();
+        let resolved = resolve_command_parts(&parts, &ctx).await.unwrap().parts;
         let expected_path = tmp.path().join("inputs/input-0.bin");
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0], expected_path.to_string_lossy().to_string());
+    }
+
+    // -----------------------------------------------------------------------
+    // Staged inputs
+    // -----------------------------------------------------------------------
+
+    /// Creates a small uncompressed ZIP, which is the archive a `:folder`
+    /// selector unpacks.
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, content) in entries {
+            writer.start_file(*name, options).expect("the ZIP entry starts");
+            writer.write_all(content).expect("the ZIP entry is written");
+        }
+        writer.finish().expect("the ZIP is finished").into_inner()
+    }
+
+    /// A `:file` selector records the bytes it staged under the destination it
+    /// staged them at.
+    ///
+    /// The record is what the step instance carries, so its key is the
+    /// sandbox-relative path the selector names rather than the absolute path
+    /// the command receives: the sandbox is named for the instance key and moves
+    /// with it, and a record of that path could never be compared across runs.
+    #[tokio::test]
+    async fn a_staged_input_is_recorded_under_its_destination_path() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let data = b"source-bytes";
+        let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
+
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::from([("input_content_0".to_string(), hash.to_string())]);
+        let ctx = full_ctx_with_inputs(
+            Some(&cas),
+            &step_outputs,
+            &env_vars,
+            &tokens,
+            Some(tmp.path()),
+            &inputs,
+            "macos",
+        );
+        let parts = vec!["${inputs.input_content_0:file(inputs/input-0.bin)}".to_string()];
+
+        let resolved = resolve_command_parts(&parts, &ctx).await.unwrap();
+
+        assert_eq!(
+            resolved.staged_inputs,
+            BTreeMap::from([("inputs/input-0.bin".to_string(), hash)]),
+            "the staged bytes must be recorded under the destination they were staged at",
+        );
+        assert_eq!(
+            resolved.parts,
+            vec![tmp.path().join("inputs/input-0.bin").to_string_lossy().to_string()],
+            "the argv still receives the path it runs with",
+        );
+    }
+
+    /// A `:folder` selector records the archive it unpacked, not its members.
+    ///
+    /// The command was handed one object and one destination, so that is the
+    /// pair the record names. Recording a member instead would claim a staged
+    /// object nothing staged, and there is no member object to name: the bytes
+    /// came out of the archive.
+    #[tokio::test]
+    async fn a_folder_selector_records_the_archive_hash_under_its_destination() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let archive = make_zip(&[("pack/a.txt", b"a"), ("pack/b.txt", b"b")]);
+        let hash = cas.put(bytes::Bytes::from(archive)).await.unwrap();
+
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::from([("pack".to_string(), hash.to_string())]);
+        let ctx = full_ctx_with_inputs(
+            Some(&cas),
+            &step_outputs,
+            &env_vars,
+            &tokens,
+            Some(tmp.path()),
+            &inputs,
+            "macos",
+        );
+        let parts = vec!["${inputs.pack:folder(deps/pack)}".to_string()];
+
+        let resolved = resolve_command_parts(&parts, &ctx).await.unwrap();
+
+        assert_eq!(
+            resolved.staged_inputs,
+            BTreeMap::from([("deps/pack".to_string(), hash)]),
+            "a folder selector stages one archive, so the archive's hash is what it records",
+        );
+        assert!(
+            tmp.path().join("deps/pack/pack/a.txt").is_file(),
+            "the members must still be unpacked into the destination folder",
+        );
     }
 
     // -----------------------------------------------------------------------

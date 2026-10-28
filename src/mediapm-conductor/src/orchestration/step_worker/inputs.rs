@@ -38,6 +38,7 @@ pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
         sandbox_dir: None,
         host_os: std::env::consts::OS,
         inputs: &request.step.inputs,
+        staged_inputs: None,
     };
 
     // Collect all input keys: the tool spec declares its known input

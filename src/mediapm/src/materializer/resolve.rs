@@ -872,8 +872,7 @@ pub(super) fn instance_matches_expected_inputs(
         merged_step_inputs,
         instance_key_resolved_values,
     );
-    let materialized_hashes = mediapm_conductor::deterministic_materialized_input_hashes(instance);
-    mediapm_conductor::instance_matches_stored_key(instance, &input_hashes, &materialized_hashes)
+    mediapm_conductor::instance_matches_stored_key(instance, &input_hashes)
 }
 
 /// Returns whether `instance` records every name `expected_outputs` binds.
@@ -1368,13 +1367,14 @@ mod tests {
     /// Recomputes one recorded instance's key from the spec.
     ///
     /// Components, in order: the versioned domain separator, the unified
-    /// tools-catalog key, the deterministic binding hashes, and the instance's
-    /// materialized-input hashes in `BTreeMap` order. Captures do not
+    /// tools-catalog key, and the deterministic binding hashes. Captures do not
     /// participate: they are records addressed by name, and two steps running
     /// the same work share one instance however differently they declare what
     /// they record. No time component exists either: the recorded `executed_at`
     /// is provenance, never key material, so a stored impure instance keeps
-    /// matching across runs.
+    /// matching across runs. The inputs the step staged do not participate
+    /// either: they are known only once the command's selectors have run, and
+    /// the key names the sandbox they run in.
     ///
     /// Written out here rather than delegating to `derive_instance_key` (or its
     /// `derive_tool_call_instance_key` façade), for the reason given on
@@ -1384,7 +1384,6 @@ mod tests {
         parts.push(Hash::from_content(ORACLE_INSTANCE_KEY_DOMAIN.as_bytes()));
         parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
         parts.extend_from_slice(binding_hashes);
-        parts.extend(instance.materialized_inputs.values().map(|record| record.hash));
         Hash::composite(&parts)
     }
 
@@ -1856,7 +1855,7 @@ mod tests {
             let current_key = mediapm_conductor::derive_tool_call_instance_key(
                 &instance.tool_call_id,
                 &current_hashes,
-                &mediapm_conductor::deterministic_materialized_input_hashes(instance),
+                &[],
             );
             if let Some(rewrite) = rewrites.get_mut(stored_key) {
                 if rewrite.current_key != current_key {

@@ -412,7 +412,7 @@ Cross-crate data flow, shared invariants, and the full module-layer index are do
 ### CAS ↔ Conductor
 
 - **State persistence**: conductor writes its orchestration state to `storage_paths.state_file_path` as pretty JSON (schema v4). It is a file, not a CAS blob, and no state pointer exists.
-- **Input resolution**: step inputs resolve to CAS hashes; `ToolCallInstance` persists input, argument and env hashes (`materialized_inputs`, `command_args`, `env_vars`), never inline content.
+- **Input resolution**: step inputs resolve to CAS hashes; `ToolCallInstance` persists hashed records only — the argument and environment hashes (`command_args`, `env_vars`) and the inputs each command staged (`materialized_inputs`, keyed by sandbox-relative destination) — never inline content.
 - **Output capture**: step outputs are CAS blobs; each entry in `ToolCallInstance::outputs` records the hash and the capture spec that produced it. A capture whose spec says `full` also marks its object keep-full in the CAS after the write, so the optimizer never stores it as a delta against another blob (it may still serve as a base); `true` and `false` record no marker. The marker is durable across a reopen of the store and dies with the object.
 - **GC coordination**: the root set is surviving instance output hashes plus the unified document's external-data policy keys and tool content hashes, minus an unsaved output whose producer is no longer reachable (see Section G).
 - **Existence checks**: `CasExistenceBitmap` for batch cache probing across step outputs.
@@ -473,7 +473,7 @@ A v1 document is migrated in two hops: `migrate_v1_to_v2` reads the instance blo
 Instance keys in Conductor are derived deterministically:
 
 ```text
-instance_key = blake3(domain || tool_id || arg_hashes… || materialized_inputs…)
+instance_key = blake3(domain || tool_id || arg_hashes…)
 ```
 
 Where:
@@ -481,7 +481,7 @@ Where:
 - `domain` = the scheme separator, `mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}` with `INSTANCE_KEY_SCHEME: u32 = 4` (`instance_key.rs`). The scheme is versioned by an integer and only moves forward; a change to key material bumps it and leaves every older key unreachable once. There is no dotted revision and no compatibility branch: a bump re-executes the affected steps one time. The scheme version is not the state schema version, which is why the constant lives beside the derivation rather than in `state/versions/`.
 - `tool_call_id` = the key of the conductor document's `tools` map entry the step references (the versioned id such as `echo@v1`), not the bare `spec.name`. In mediapm the managed-tool key is `{name}@{content_map_hash}`, so a changed payload is a different tool identity; a step that references the tool by its bare name still resolves to the same entry and derives the same key.
 - `arg_hashes` = one hash per deterministic command argument, in argv order.
-- `materialized_inputs` = one hash per materialized tool-content entry, in content-map path order.
+- `materialized_inputs` is not key material either. It records what the step's `:file` and `:folder` selectors staged, keyed by sandbox-relative destination and hashed by the bytes each selector consumed (a folder records its archive, not its members). Those pairs exist only after the selectors run, inside a sandbox whose name the key already fixed, so they cannot decide the key they ran under. They are recorded for the GC (Section G) and for the record's own account of what the command read.
 - Captures are not key material. The key answers whether the work has been done, which inputs alone decide. What a step binds is a record addressed by name: each instance entry carries the capture spec that produced it, and the probe requires the recorded spec to identify the same capture as the one the step's producible set gives that name (a recorded `None`, the v2 migration's "spec unknown", never matches). Coverage is what keeps a shared instance useful — the tool's declared captures are live, so an instance records every name a step with that work can bind, whichever names the step that executed it declared. Two steps running the same tool with the same inputs but recording different files therefore share one instance, where hashing the declarations would have split them and re-run the command.
 - Time never participates: an impure step's recorded `executed_at` is provenance, not key material, so an immediate second sync hits the step cache (`executed_instances == 0`) for unchanged inputs, pure and impure alike. Re-execution follows changed key material or the run-scoped `RunWorkflowOptions::force_rerun` explicit invalidation (API), `--force-rerun` (CLI), or a persisted mediapm invalidation marker. Pins: `impure_keys_ignore_time`, `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`, `force_rerun_reexecutes_the_cached_workflow`, `declared_captures_are_not_key_material`, `two_steps_declaring_different_tool_artifacts_reuse_one_instance`.
 

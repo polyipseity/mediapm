@@ -31,22 +31,21 @@ pub fn instance_key_domain() -> String {
 /// Derives the content-addressed key of one tool-call instance.
 ///
 /// The key answers whether this work has been done before, from material any
-/// party can re-derive: the tool call identity, the deterministic argument
-/// hashes and the materialized tool-content hashes. Captures are **not** key
-/// material. They are records addressed by name, so two steps that run the same
-/// work share one key however differently they name what they record, and each
-/// step reads the names it binds out of the instance it found. An entry records
-/// the spec that produced it, which is what lets a step tell whether the bytes
-/// it finds were produced the way it would produce them; the key cannot answer
-/// that question and does not try.
+/// party can re-derive: the tool call identity and the deterministic argument
+/// hashes. Captures are **not** key material. They are records addressed by
+/// name, so two steps that run the same work share one key however differently
+/// they name what they record, and each step reads the names it binds out of
+/// the instance it found. An entry records the spec that produced it, which is
+/// what lets a step tell whether the bytes it finds were produced the way it
+/// would produce them; the key cannot answer that question and does not try.
 ///
-/// The composite is exactly those four terms, in this order: the scheme domain
-/// separator ([`instance_key_domain`]), the tool call id, the command-arg
-/// hashes in argv order, and the materialized-input hashes in
-/// tool-content-map path order. Nothing here sorts, so the order is key
-/// material and the caller owes it:
-/// [`deterministic_materialized_input_hashes`] reads a `BTreeMap` and is
-/// path-ordered already.
+/// The composite is exactly those three terms, in this order: the scheme domain
+/// separator ([`instance_key_domain`]), the tool call id, and the command-arg
+/// hashes in argv order. Nothing here sorts, so the order is key material and
+/// the caller owes it. A fourth term is accepted so a caller that keys inputs it
+/// staged can pass them; the step worker passes none, because the inputs it
+/// stages are known only once the command's selectors have run, and the key has
+/// to exist before the sandbox they stage into.
 ///
 /// The environment term earlier schemes carried is gone. The executor records
 /// every env value as nondeterministic and therefore passes no env hashes, so
@@ -196,28 +195,22 @@ pub fn deterministic_input_hashes_from_resolved_value_bytes(
     input_hashes
 }
 
-/// Returns materialized-input hashes in tool content-map key order.
-#[must_use]
-pub fn deterministic_materialized_input_hashes(instance: &ToolCallInstance) -> Vec<Hash> {
-    instance.materialized_inputs.values().map(|record| record.hash).collect()
-}
-
 /// Returns true when `instance.instance_key` matches re-derived key material.
 ///
-/// The derivation is content-only (tool id, deterministic input hashes,
-/// materialized-input hashes), so an impure instance's stored key keeps
-/// matching no matter how much wall-clock time separates the recording from the
-/// check, and a step's capture declarations cannot move it.
+/// The derivation is content-only (tool id, deterministic input hashes), so an
+/// impure instance's stored key keeps matching no matter how much wall-clock
+/// time separates the recording from the check, and a step's capture
+/// declarations cannot move it. The inputs a step staged are not compared here
+/// for the reason given on [`derive_instance_key`].
 #[must_use]
 pub fn instance_matches_stored_key(
     instance: &ToolCallInstance,
     deterministic_input_hashes: &[Hash],
-    deterministic_materialized_input_hashes: &[Hash],
 ) -> bool {
     let derived = crate::state::derive_tool_call_instance_key(
         &instance.tool_call_id,
         deterministic_input_hashes,
-        deterministic_materialized_input_hashes,
+        &[],
     );
     derived == instance.instance_key
 }

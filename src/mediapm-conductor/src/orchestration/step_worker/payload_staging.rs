@@ -26,7 +26,7 @@ use crate::error::ConductorError;
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
 };
-use crate::state::ConductorState;
+use crate::state::{ConductorState, HashedValueRecord};
 
 use super::executor::execute_step;
 use super::sandbox::prepare_tool_payload;
@@ -323,6 +323,54 @@ async fn a_relative_output_still_lands_in_the_sandbox() {
     assert!(
         !fixture.payload_root.join("downloads").exists(),
         "the payload directory must not collect the run's outputs",
+    );
+}
+
+/// A step records the inputs its command staged, and nothing else.
+///
+/// `materialized_inputs` used to be a copy of the tool's content map — the
+/// payload the provisioner handed the step — which no command ever read as an
+/// input. What a selector stages is the fact the record exists for: the
+/// destination in the sandbox and the object whose bytes were written there.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_step_records_the_inputs_its_command_stages() {
+    let fixture = Fixture::with_script().await;
+    let content_map = fixture.content_map().await;
+    let first_hash = fixture
+        .cas
+        .put(Bytes::from_static(b"first-staged-bytes"))
+        .await
+        .expect("import the first input");
+    let second_hash = fixture
+        .cas
+        .put(Bytes::from_static(b"second-staged-bytes"))
+        .await
+        .expect("import the second input");
+    let mut tool = script_tool(content_map, &fixture.payload_root, PayloadStaging::InPlace);
+    tool.command_parts = vec![
+        script_key(),
+        format!("${{external_data.{first_hash}:file(inputs/first.bin)}}"),
+        format!("${{external_data.{second_hash}:file(inputs/second.bin)}}"),
+    ];
+
+    let (bundle, _sandbox) =
+        run_step(&fixture, tool, "staged-input-step", "staged-input").await.expect("the step runs");
+
+    assert_eq!(
+        bundle.instance.materialized_inputs,
+        BTreeMap::from([
+            (
+                "inputs/first.bin".to_string(),
+                HashedValueRecord { hash: first_hash, deterministic: true },
+            ),
+            (
+                "inputs/second.bin".to_string(),
+                HashedValueRecord { hash: second_hash, deterministic: true },
+            ),
+        ]),
+        "the record must name the destinations the command staged at and the objects staged \
+         there, and carry no entry from the tool content map",
     );
 }
 

@@ -26,26 +26,42 @@ use super::sandbox::{
     create_sandbox, pre_qualify_payload_arguments, prepare_tool_payload,
     resolve_executable_under_payload_root,
 };
-use super::template::{TemplateContext, resolve_command_parts};
+use super::template::{ResolvedCommandParts, StagedInputs, TemplateContext, resolve_command_parts};
 use crate::instance_key::{derive_instance_key, deterministic_input_hashes_from_resolved_inputs};
 
+/// One dispatched execution: what the tool produced, the argv it ran, and the
+/// inputs its command staged on the way.
+struct DispatchedExecution {
+    /// What the capture phase reads: streams, exit status, written files.
+    result: ExecutionResult,
+    /// Hashed argv in order, one record per resolved part (empty for a
+    /// builtin, which runs no argv).
+    command_args: Vec<HashedValueRecord>,
+    /// Inputs the command's selectors staged, keyed by sandbox-relative
+    /// destination (empty for a builtin, which has no command parts).
+    materialized_inputs: BTreeMap<String, HashedValueRecord>,
+}
+
 /// Dispatches execution: runs a builtin or resolves and runs an executable
-/// process. Returns the execution result plus the resolved command-argument
-/// records (empty for builtins) to store on the tool call instance.
+/// process.
 async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
     cas: &C,
     tool_spec: &UnifiedToolSpec,
     request: &StepExecutionRequest,
     resolved_inputs: &[ResolvedInput],
     sandbox_dir: &Path,
-) -> Result<(ExecutionResult, Vec<HashedValueRecord>), ConductorError> {
+) -> Result<DispatchedExecution, ConductorError> {
     if tool_spec.command_parts.is_empty() {
         let args: BTreeMap<String, String> =
             resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
         let builtin_id = tool_spec.builtin_id.as_deref().unwrap_or(&request.step.tool);
         let result =
             run_builtin(cas, builtin_id, &args, &request.outermost_config_dir, sandbox_dir).await?;
-        Ok((result, Vec::new()))
+        Ok(DispatchedExecution {
+            result,
+            command_args: Vec::new(),
+            materialized_inputs: BTreeMap::new(),
+        })
     } else {
         let resolved_inputs_map: BTreeMap<String, String> =
             resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
@@ -57,9 +73,11 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
             sandbox_dir: Some(sandbox_dir),
             host_os: std::env::consts::OS,
             inputs: &resolved_inputs_map,
+            staged_inputs: None,
         };
-        let (mut resolved_parts, determinism) =
+        let ResolvedCommandParts { parts, determinism, staged_inputs } =
             resolve_command_parts(&tool_spec.command_parts, &cmd_ctx).await?;
+        let mut resolved_parts = parts;
         // `in_place` executes the tool where the provisioner put it, so the
         // executable the document names relative to the sandbox is resolved
         // against the payload root before anything runs, and so is every
@@ -81,8 +99,25 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
             &tool_spec.execution_env_vars,
         )
         .await?;
-        Ok((result, command_args))
+        Ok(DispatchedExecution {
+            result,
+            command_args,
+            materialized_inputs: staged_input_records(staged_inputs),
+        })
     }
+}
+
+/// Turns the staged destinations into the records the instance carries.
+///
+/// Each record is marked deterministic: the hash is the content the selector
+/// staged, which no sandbox path or host environment can move. What varies
+/// between runs is the destination's absolute path, and that is not what the
+/// record holds.
+fn staged_input_records(staged_inputs: StagedInputs) -> BTreeMap<String, HashedValueRecord> {
+    staged_inputs
+        .into_iter()
+        .map(|(destination, hash)| (destination, HashedValueRecord { hash, deterministic: true }))
+        .collect()
 }
 
 /// Executes one step: resolves inputs, runs the tool, captures outputs.
@@ -112,12 +147,14 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         &tool_spec.default_inputs,
     );
 
-    // Materialized content-map inputs keyed by sandbox-relative path, sorted
-    // by path. Only hash-valued entries participate in the key (inline bytes
-    // are skipped); content hashes are tool-fixed and deterministic.
-    let materialized_inputs = build_materialized_inputs(&tool_spec.tool_content_map);
-    let deterministic_materialized_hashes: Vec<Hash> =
-        materialized_inputs.values().map(|record| record.hash).collect();
+    // Materialized inputs are the inputs the step stages, not the tool payload
+    // it runs from: a selector's destination and the object staged there are
+    // recorded when they are staged, which happens after the key is derived and
+    // inside the sandbox the key names. The key therefore carries no
+    // materialized term, and the tool payload stays out of it the way it always
+    // was: `tool_call_id` is the versioned tools-catalog key, which already
+    // names the content map.
+    let instance_key = derive_instance_key(&tool_call_id, &deterministic_input_hashes, &[]);
 
     // Tool-level capture defaults merged with the step's own declarations. The
     // tool owns the capture identity of every name it declares (its selector,
@@ -134,11 +171,6 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
     // spec that produced each one; the key answers only whether the work itself
     // has been done, which inputs alone can answer.
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
-    let instance_key = derive_instance_key(
-        &tool_call_id,
-        &deterministic_input_hashes,
-        &deterministic_materialized_hashes,
-    );
 
     // Environment values are stored hashed (never literally); the minimal set
     // is the non-empty configured execution env vars.
@@ -208,12 +240,12 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
     let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &instance_key).await?;
     prepare_tool_payload(cas, tool_spec, &sandbox_dir).await?;
 
-    let (execution_result, command_args) =
+    let dispatched =
         dispatch_tool_execution(cas, tool_spec, &request, &resolved_inputs, &sandbox_dir).await?;
 
     // Capture outputs: the merged set computed before the probe, so the probe
     // and the capture phase cannot disagree about which names exist.
-    let captured = capture_outputs(cas, &merged_outputs, &execution_result, &sandbox_dir).await?;
+    let captured = capture_outputs(cas, &merged_outputs, &dispatched.result, &sandbox_dir).await?;
 
     let instance = ToolCallInstance {
         instance_key,
@@ -226,9 +258,9 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         invalidated_at: None,
         executed_at,
         step_ids: BTreeSet::from([request.step.id.clone()]),
-        command_args,
+        command_args: dispatched.command_args,
         env_vars,
-        materialized_inputs,
+        materialized_inputs: dispatched.materialized_inputs,
         outputs: captured.records,
     };
 
@@ -412,24 +444,6 @@ fn build_env_vars(
         .collect()
 }
 
-/// Builds the recorded materialized-input map from the tool content map:
-/// sandbox-relative path → content hash, deterministic (tool-fixed). Entries
-/// whose value is not a content hash (e.g. inline bytes) are skipped; the
-/// `BTreeMap` yields sorted-by-path order.
-fn build_materialized_inputs(
-    tool_content_map: &BTreeMap<String, String>,
-) -> BTreeMap<String, HashedValueRecord> {
-    tool_content_map
-        .iter()
-        .filter_map(|(path, value)| {
-            value
-                .parse::<Hash>()
-                .ok()
-                .map(|hash| (path.clone(), HashedValueRecord { hash, deterministic: true }))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -438,8 +452,8 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::{
-        build_env_vars, build_materialized_inputs, discarded_step_fields, execute_step,
-        merge_output_specs, producible_output_specs,
+        build_env_vars, discarded_step_fields, execute_step, merge_output_specs,
+        producible_output_specs,
     };
     use crate::config::{OutputCaptureSpec, SaveMode, WorkflowStepSpec};
     use crate::orchestration::protocol::{
@@ -1161,49 +1175,5 @@ mod tests {
     #[test]
     fn env_vars_empty_input_yields_empty_records() {
         assert!(build_env_vars(&BTreeMap::new()).is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // Materialized inputs: sandbox-relative paths, sorted, hash-only
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn materialized_inputs_uses_sandbox_relative_paths() {
-        let key = Hash::from_content(b"payload");
-        let records =
-            build_materialized_inputs(&BTreeMap::from([("bin/tool".to_string(), key.to_string())]));
-        assert!(records.contains_key("bin/tool"));
-    }
-
-    #[test]
-    fn materialized_inputs_sorted_by_path() {
-        let a = Hash::from_content(b"a");
-        let b = Hash::from_content(b"b");
-        let records = build_materialized_inputs(&BTreeMap::from([
-            ("z/last".to_string(), b.to_string()),
-            ("a/first".to_string(), a.to_string()),
-        ]));
-        let paths: Vec<&String> = records.keys().collect();
-        assert_eq!(paths, vec!["a/first", "z/last"]);
-    }
-
-    #[test]
-    fn materialized_inputs_skip_non_hash_values() {
-        let a = Hash::from_content(b"a");
-        let records = build_materialized_inputs(&BTreeMap::from([
-            ("bin/hashed".to_string(), a.to_string()),
-            ("inline/bytes".to_string(), "not-a-hash".to_string()),
-        ]));
-        assert_eq!(records.len(), 1);
-        assert!(records.contains_key("bin/hashed"));
-        assert!(!records.contains_key("inline/bytes"));
-    }
-
-    #[test]
-    fn materialized_inputs_all_deterministic() {
-        let a = Hash::from_content(b"a");
-        let records =
-            build_materialized_inputs(&BTreeMap::from([("bin/tool".to_string(), a.to_string())]));
-        assert!(records.values().all(|record| record.deterministic));
     }
 }

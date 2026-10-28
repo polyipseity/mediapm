@@ -154,7 +154,15 @@ pub struct ToolCallInstance {
     /// Execution environment variables (minimal set: non-empty config values
     /// only). Values are hashed, never stored literally.
     pub env_vars: BTreeMap<String, HashedValueRecord>,
-    /// Materialized tool-content inputs keyed by sandbox-relative path.
+    /// Inputs this step staged into its sandbox, keyed by sandbox-relative
+    /// destination.
+    ///
+    /// The hash is the bytes a `:file` selector wrote, or the archive a
+    /// `:folder` selector extracted; a folder records the archive rather than
+    /// its members because the archive is the one object the command was
+    /// handed. Never key material: the staged pairs exist only once the
+    /// command's selectors have run, and the key is what names the sandbox
+    /// they ran in.
     pub materialized_inputs: BTreeMap<String, HashedValueRecord>,
     /// Captured output records keyed by output name, each carrying the spec
     /// that produced it.
