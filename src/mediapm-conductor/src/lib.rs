@@ -55,6 +55,9 @@ pub use instance_key::{
     is_deterministic_binding_source, key_material_for_builtin, key_material_for_command_parts,
     key_material_for_tool, merge_step_input_bindings, references_environment,
 };
+pub use orchestration::step_worker::inputs::{
+    InstanceKeyInputValues, resolve_instance_key_input_values,
+};
 pub use state::ConductorState;
 pub use state::versions::{decode_state_json, encode_state_json};
 pub use state::{

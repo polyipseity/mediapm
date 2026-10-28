@@ -458,7 +458,7 @@ async fn resolve_single_step_output_hashes_strict(
     let expected_inputs =
         resolve_expected_input_hashes(cas, generated_doc, &merged_step_inputs, prior_step_outputs)
             .await?;
-    let Some(expected_inputs) = expected_inputs else {
+    let Some(mut expected_inputs) = expected_inputs else {
         return Ok(None);
     };
 
@@ -475,13 +475,23 @@ async fn resolve_single_step_output_hashes_strict(
         required_step_output_names.get(&step.id).cloned().unwrap_or_default();
     let required_zip_members = required_step_zip_members.get(&step.id);
 
-    let resolved_values =
-        build_instance_key_resolved_value_bytes(cas, &merged_step_inputs, &expected_inputs).await?;
+    let resolved_values = build_instance_key_resolved_value_bytes(
+        cas,
+        &step.inputs,
+        &merged_step_inputs,
+        &expected_inputs,
+        prior_step_outputs,
+    )
+    .await?;
+    // A binding the worker resolved and this pass could not leaves a term out of
+    // the key, and the key derived without it is not this step's key.
+    let unresolved = resolved_values.unresolved.clone();
+    expected_inputs.unresolved_hash_input_names.extend(unresolved);
     let key_material = materializer_key_material(
         generated_doc,
         &step.tool,
         &merged_step_inputs,
-        &resolved_values,
+        &resolved_values.values,
     )?;
 
     let mut matching_instances = state
@@ -647,50 +657,69 @@ fn materializer_key_material(
     ))
 }
 
-/// Resolved value bytes of every binding the step can resolve.
+/// Value bytes of every binding the step's key material hashes.
 ///
-/// A hash-backed binding resolves to the referenced object's canonical hash
-/// text, which is what the step worker's own resolution produces for the same
-/// binding; a literal binding resolves to its source text. Those are the bytes
-/// the instance key's terms are hashed from.
+/// The step worker derives those bytes by resolving each binding through the
+/// template engine with no store handle, then hashing the result. A reader that
+/// has only the document and the recorded instances has to reproduce exactly
+/// that, so this asks the conductor for the worker's own resolution rather than
+/// re-deriving it: a literal binding resolves to the text its template produces
+/// on this host — a `${context.os …}` conditional selects a path — and a
+/// hash-backed binding resolves to the hash text, because the worker holds no
+/// handle to fetch bytes with.
+///
+/// Two shapes that resolution cannot answer are handled here:
+///
+/// - A `:zip(member)` selector needs the archive's bytes, which the step-input
+///   context has no handle for; the member comes from the store here, as the
+///   command surface resolves it.
+/// - A binding whose template raises is reported in
+///   [`mediapm_conductor::InstanceKeyInputValues::unresolved`], so the caller
+///   refuses the strict match instead of hashing an omission.
 async fn build_instance_key_resolved_value_bytes(
     cas: &FileSystemCas,
+    step_inputs: &BTreeMap<String, String>,
     merged_bindings: &BTreeMap<String, String>,
     expected_inputs: &ExpectedStepInputs,
-) -> Result<BTreeMap<String, Vec<u8>>, MediaPmError> {
-    use mediapm_conductor::{
-        instance_key_resolved_value_bytes_for_hash_reference,
-        instance_key_resolved_value_bytes_for_literal_binding,
-    };
+    prior_step_outputs: &StepOutputHashes,
+) -> Result<mediapm_conductor::InstanceKeyInputValues, MediaPmError> {
+    let mut engine_bindings = BTreeMap::new();
+    let mut resolved = mediapm_conductor::InstanceKeyInputValues::default();
 
-    let mut values = BTreeMap::new();
     for (key, raw_binding) in merged_bindings {
-        let Some(resolved_hash) = expected_inputs.resolved_hashes.get(key) else {
+        let zip_member =
+            parse_step_output_reference(raw_binding).and_then(|reference| reference.zip_member);
+        let Some(zip_member) = zip_member else {
+            engine_bindings.insert(key.clone(), raw_binding.clone());
             continue;
         };
-        let value_bytes = if let Some(reference) = parse_step_output_reference(raw_binding) {
-            if let Some(zip_member) = reference.zip_member {
-                let zip_bytes = cas.get(*resolved_hash).await.map_err(|source| {
-                    MediaPmError::Workflow(format!(
-                        "reading ZIP output '{resolved_hash}' for instance-key member '{zip_member}' failed: {source}"
-                    ))
-                })?;
-                extract_zip_member_bytes(zip_bytes.as_ref(), zip_member).map_err(|error| {
-                    MediaPmError::Workflow(format!(
-                        "extracting ZIP member '{zip_member}' for instance-key material failed: {error}"
-                    ))
-                })?
-            } else {
-                instance_key_resolved_value_bytes_for_hash_reference(*resolved_hash)
-            }
-        } else if parse_external_data_reference(raw_binding)?.is_some() {
-            instance_key_resolved_value_bytes_for_hash_reference(*resolved_hash)
-        } else {
-            instance_key_resolved_value_bytes_for_literal_binding(raw_binding)
+        let Some(resolved_hash) = expected_inputs.resolved_hashes.get(key) else {
+            resolved.unresolved.insert(key.clone());
+            continue;
         };
-        values.insert(key.clone(), value_bytes);
+        let zip_bytes = cas.get(*resolved_hash).await.map_err(|source| {
+            MediaPmError::Workflow(format!(
+                "reading ZIP output '{resolved_hash}' for instance-key member '{zip_member}' failed: {source}"
+            ))
+        })?;
+        let member_bytes =
+            extract_zip_member_bytes(zip_bytes.as_ref(), zip_member).map_err(|error| {
+                MediaPmError::Workflow(format!(
+                    "extracting ZIP member '{zip_member}' for instance-key material failed: {error}"
+                ))
+            })?;
+        resolved.values.insert(key.clone(), member_bytes);
     }
-    Ok(values)
+
+    let engine = mediapm_conductor::resolve_instance_key_input_values::<FileSystemCas>(
+        &engine_bindings,
+        step_inputs,
+        prior_step_outputs,
+    )
+    .await;
+    resolved.values.extend(engine.values);
+    resolved.unresolved.extend(engine.unresolved);
+    Ok(resolved)
 }
 
 /// The argv one declared tool runs, empty for a builtin.
@@ -1096,6 +1125,199 @@ mod tests {
         );
     }
 
+    /// Two steps over one tool, whose command reads an input whose default
+    /// carries a host conditional.
+    ///
+    /// The shape is the demo's: `js_runtimes` is
+    /// `deno:${context.os == … ? … : …}`, so the worker keys the path this host
+    /// selects, not the template text.
+    const TWO_STEP_DOCUMENT: &str = r#"{
+  external_data = {},
+  tools = {
+    "probe@v1" = {
+      command = [
+        "${*inputs.js_runtimes ? --js-runtimes | ''}",
+        "${inputs.js_runtimes}",
+        "${inputs.output_path}",
+      ],
+      default_inputs = {
+        js_runtimes = "deno:${context.os == \"linux\" ? deps/linux/deno : deps/other/deno}",
+        output_path = "",
+      },
+      inputs = {
+        js_runtimes = { kind = "string", required = false },
+        output_path = { kind = "string", required = false },
+      },
+      kind = "executable",
+      name = "probe",
+      outputs = {
+        primary = { capture = "stdout", name = "primary" },
+      },
+      runtime = { impure = false, max_concurrent_calls = 0, max_retries = 0 },
+      success_codes = [ 0 ],
+    },
+  },
+  version = 2,
+  workflows = [
+    {
+      description = "two steps over one tool",
+      impure = false,
+      name = "wf",
+      steps = [
+        {
+          id = "step-0",
+          inputs = { output_path = "first.txt" },
+          max_retries = 0,
+          outputs = { primary = { capture = "stdout", name = "primary" } },
+          tool = "probe",
+        },
+        {
+          depends_on = [ "step-0" ],
+          id = "step-1",
+          inputs = { output_path = "second.txt" },
+          max_retries = 0,
+          outputs = { primary = { capture = "stdout", name = "primary" } },
+          tool = "probe",
+        },
+      ],
+    },
+  ],
+}"#;
+
+    /// Records the state a worker run of [`TWO_STEP_DOCUMENT`] leaves behind.
+    ///
+    /// Every instance is keyed through the worker's own derivation: the value
+    /// bytes come from the template engine, and the key material and key come
+    /// from the same public functions the executor calls. The later step is
+    /// stamped newer, so a resolver that cannot tell the two instances apart
+    /// prefers it for both steps — which is what the demo's broken run did.
+    async fn state_recorded_by_the_worker(
+        cas: &FileSystemCas,
+    ) -> (NickelDocument, mediapm_conductor::WorkflowSpec, ConductorState) {
+        use mediapm_conductor::{
+            derive_tool_call_instance_key, key_material_for_tool, resolve_instance_key_input_values,
+        };
+
+        let generated =
+            decode_document(TWO_STEP_DOCUMENT.as_bytes()).expect("decode the two-step document");
+        let workflow = generated.workflows.first().expect("the document's workflow").clone();
+        let mut state = ConductorState::new_empty();
+        let mut step_outputs = StepOutputHashes::new();
+
+        for (index, step) in workflow.steps.iter().enumerate() {
+            let (tool_call_id, tool_spec) =
+                find_active_tool_spec(&generated, &step.tool).expect("the step's tool spec");
+            let merged = merge_step_inputs_with_tool_defaults(&generated, &step.tool, &step.inputs)
+                .expect("merge step inputs with the tool's defaults");
+            let values = resolve_instance_key_input_values::<FileSystemCas>(
+                &merged,
+                &step.inputs,
+                &step_outputs,
+            )
+            .await;
+            assert!(
+                values.unresolved.is_empty(),
+                "step '{}' has bindings the worker could not resolve either: {:?}",
+                step.id,
+                values.unresolved,
+            );
+            let key_material =
+                key_material_for_tool(tool_command_parts(tool_spec), &values.values, &merged);
+            let instance_key = derive_tool_call_instance_key(tool_call_id, &key_material);
+
+            let mut outputs = BTreeMap::new();
+            for output_name in step.outputs.keys() {
+                let bytes = format!("step '{}' output '{}'", step.id, output_name);
+                let hash = cas.put(bytes::Bytes::from(bytes)).await.expect("store step output");
+                outputs.insert(
+                    output_name.clone(),
+                    mediapm_conductor::CapturedOutput { hash, capture: None },
+                );
+            }
+            let output_hashes = outputs
+                .iter()
+                .map(|(name, output)| (name.clone(), output.hash))
+                .collect::<BTreeMap<_, _>>();
+            step_outputs.insert(step.id.clone(), output_hashes);
+
+            let executed_at =
+                mediapm_utils::Timestamp::from_unix_secs(1_700_000_000 + index as u64);
+            state.tool_call_instances.insert(
+                instance_key,
+                mediapm_conductor::ToolCallInstance {
+                    tool_call_id: tool_call_id.clone(),
+                    impure: false,
+                    invalidated_at: None,
+                    executed_at,
+                    last_referenced_at: executed_at,
+                    step_ids: BTreeSet::from([mediapm_conductor::StepRef {
+                        workflow_id: workflow.name.clone(),
+                        step_id: step.id.clone(),
+                    }]),
+                    command_args: key_material,
+                    env_vars: BTreeMap::new(),
+                    materialized_inputs: BTreeMap::new(),
+                    outputs,
+                },
+            );
+        }
+
+        assert_eq!(
+            state.tool_call_instances.len(),
+            workflow.steps.len(),
+            "each step must key distinct work, or this witness cannot tell them apart",
+        );
+        (generated, workflow, state)
+    }
+
+    /// A state recorded the way the step worker records it binds every step to
+    /// its own instance.
+    ///
+    /// The worker hashes the *resolved* value of every input a command part
+    /// reads. While the reader hashed a literal binding's unexpanded text
+    /// instead, no recorded key ever matched, the strict pass found nothing, and
+    /// the relaxed pass chose a candidate by recency — binding the earlier step
+    /// to the later one's object. That is how the online demo's `video_untagged`
+    /// variant came to hold the final ffmpeg step's bytes, which are the tagged
+    /// ones; its own title assertion is what noticed.
+    #[tokio::test]
+    async fn steps_keyed_the_way_the_worker_keys_them_bind_their_own_outputs() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let (generated, workflow, state) = state_recorded_by_the_worker(&cas).await;
+        let recorded = state
+            .tool_call_instances
+            .values()
+            .flat_map(|instance| {
+                instance.step_ids.iter().map(move |served| {
+                    (
+                        served.step_id.clone(),
+                        instance
+                            .outputs
+                            .iter()
+                            .map(|(n, o)| (n.clone(), o.hash))
+                            .collect::<BTreeMap<_, _>>(),
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let resolved = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
+            .await
+            .expect("resolve workflow step outputs")
+            .expect("the recorded instances supply every step");
+
+        for step in &workflow.steps {
+            let expected = recorded.get(&step.id).expect("recorded outputs for the step");
+            assert_eq!(
+                resolved.get(&step.id),
+                Some(expected),
+                "step '{}' resolved to another step's record",
+                step.id,
+            );
+        }
+    }
+
     /// A marked instance is still projected into the library.
     ///
     /// Invalidation asks for the next execution to produce the bytes again; it
@@ -1189,15 +1411,20 @@ mod tests {
 
         let (conductor_tool_key, _) =
             find_active_tool_spec(&generated, &ffmpeg_step.tool).expect("active ffmpeg tool");
-        let resolved_values =
-            build_instance_key_resolved_value_bytes(&cas, &merged_ffmpeg_inputs, &expected_inputs)
-                .await
-                .expect("build ffmpeg instance-key resolved values");
+        let resolved_values = build_instance_key_resolved_value_bytes(
+            &cas,
+            &ffmpeg_step.inputs,
+            &merged_ffmpeg_inputs,
+            &expected_inputs,
+            &step_outputs,
+        )
+        .await
+        .expect("build ffmpeg instance-key resolved values");
         let key_material = materializer_key_material(
             &generated,
             &ffmpeg_step.tool,
             &merged_ffmpeg_inputs,
-            &resolved_values,
+            &resolved_values.values,
         )
         .expect("derive ffmpeg key material");
         let ffmpeg_instance = state
@@ -1608,17 +1835,28 @@ mod tests {
                     step.id,
                 ));
             };
-            let resolved_values =
-                build_instance_key_resolved_value_bytes(cas, &merged, &expected_inputs)
-                    .await
-                    .map_err(|error| {
-                        format!(
-                            "step '{}': resolving instance-key value bytes failed: {error}",
-                            step.id,
-                        )
-                    })?;
-            let key_material =
-                oracle_key_material(tool_command_parts(tool_spec), &resolved_values, &merged);
+            let resolved_values = build_instance_key_resolved_value_bytes(
+                cas,
+                &step.inputs,
+                &merged,
+                &expected_inputs,
+                &step_outputs,
+            )
+            .await
+            .map_err(|error| {
+                format!("step '{}': resolving instance-key value bytes failed: {error}", step.id)
+            })?;
+            if !resolved_values.unresolved.is_empty() {
+                return Err(format!(
+                    "step '{}': bindings the worker resolves did not resolve here: {:?}",
+                    step.id, resolved_values.unresolved,
+                ));
+            }
+            let key_material = oracle_key_material(
+                tool_command_parts(tool_spec),
+                &resolved_values.values,
+                &merged,
+            );
 
             let mut candidates = Vec::new();
             let mut diagnostics = Vec::new();
@@ -1908,14 +2146,22 @@ mod tests {
         };
         let resolved_values = build_instance_key_resolved_value_bytes(
             cas,
+            &step.inputs,
             &merged,
             &expected_inputs,
+            step_outputs,
         )
         .await
         .map_err(|error| {
             format!("step '{}': resolving instance-key value bytes failed: {error}", step.id)
         })?;
-        materializer_key_material(generated, &step.tool, &merged, &resolved_values)
+        if !resolved_values.unresolved.is_empty() {
+            return Err(format!(
+                "step '{}': bindings the worker resolves did not resolve here: {:?}",
+                step.id, resolved_values.unresolved,
+            ));
+        }
+        materializer_key_material(generated, &step.tool, &merged, &resolved_values.values)
             .map_err(|error| format!("step '{}': composing key material failed: {error}", step.id))
     }
 

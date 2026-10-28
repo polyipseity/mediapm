@@ -18,7 +18,7 @@ use crate::orchestration::protocol::{StepExecutionBundle, StepExecutionRequest};
 mod cache;
 mod capture;
 mod executor;
-mod inputs;
+pub(crate) mod inputs;
 #[cfg(test)]
 mod payload_staging;
 mod process;

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mediapm_cas::CasApi;
+use mediapm_cas::{CasApi, Hash};
 
 use crate::error::ConductorError;
 use crate::orchestration::protocol::{StepExecutionRequest, find_tool_by_name};
@@ -73,6 +73,71 @@ pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
     Ok(resolved)
 }
 
+/// The value bytes one step's instance key hashes, and the bindings that could
+/// not be resolved.
+///
+/// A binding that raised is reported rather than dropped: the key derived
+/// without it is not the step's key, and a caller that cannot tell the
+/// difference would match an instance recorded from different work.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstanceKeyInputValues {
+    /// Binding name to the bytes the template resolved to.
+    pub values: BTreeMap<String, Vec<u8>>,
+    /// Binding names whose template did not resolve.
+    pub unresolved: BTreeSet<String>,
+}
+
+/// Resolves the values an instance key hashes, the way the step worker resolves
+/// them.
+///
+/// The key of a step is derived twice: once by the worker that runs it, and once
+/// by a reader that has only the document and the recorded instances. The two
+/// only agree while both hash the same bytes, so the reader calls this function
+/// rather than re-implementing resolution: it builds the context
+/// `resolve_step_inputs` builds — no store handle, the step's own bindings as
+/// `${inputs.…}`, the recorded step outputs as `${step_output.…}`, the host OS
+/// as `${context.os}`, and no environment — and resolves every binding through
+/// the same engine.
+///
+/// `bindings` is the step's input map merged with the tool's declared defaults,
+/// which is the map the worker iterates; `step_inputs` is the step's own map,
+/// which is what `${inputs.…}` reads inside a default.
+///
+/// A binding whose template raises is reported in
+/// [`InstanceKeyInputValues::unresolved`] instead of being hashed from its
+/// unexpanded text.
+pub async fn resolve_instance_key_input_values<C: CasApi + Send + Sync>(
+    bindings: &BTreeMap<String, String>,
+    step_inputs: &BTreeMap<String, String>,
+    step_outputs: &BTreeMap<String, BTreeMap<String, Hash>>,
+) -> InstanceKeyInputValues {
+    let env_vars = BTreeMap::new();
+    let tokens = BTreeMap::new();
+    let ctx = TemplateContext::<C> {
+        cas: None,
+        step_outputs,
+        env_vars: &env_vars,
+        tokens: &tokens,
+        sandbox_dir: None,
+        host_os: std::env::consts::OS,
+        inputs: step_inputs,
+        staged_inputs: None,
+    };
+
+    let mut resolved = InstanceKeyInputValues::default();
+    for (key, raw_binding) in bindings {
+        match resolve_template(raw_binding, &ctx).await {
+            Ok(value) => {
+                resolved.values.insert(key.clone(), value.into_bytes());
+            }
+            Err(_) => {
+                resolved.unresolved.insert(key.clone());
+            }
+        }
+    }
+    resolved
+}
+
 /// Resolves `${step_output.<step_id>.<name>}` references only (legacy).
 ///
 /// Uses regex-based substitution to remain synchronous and runtime-independent.
@@ -133,6 +198,107 @@ mod tests {
             crate::config::InputBinding::Vec(v) => serde_json::to_string(&v).unwrap_or_default(),
         };
         assert_eq!(resolved, r#"["a","b"]"#);
+    }
+
+    /// A binding that reads the host OS resolves to the OS name, not to its
+    /// template.
+    ///
+    /// The demo's tools bind `js_runtimes` to
+    /// `deno:${context.os == "linux" ? … | …}`, and the worker hashes the
+    /// selected path. Hashing the template would make a step's recorded key
+    /// unreachable, which is the divergence this function exists to remove.
+    #[tokio::test]
+    async fn a_context_reading_binding_resolves_to_the_host_os() {
+        let mut bindings = BTreeMap::new();
+        bindings.insert(
+            "js_runtimes".to_string(),
+            "deno:${context.os == \"linux\" ? deps/deno/linux/deno : deps/deno/other/deno}"
+                .to_string(),
+        );
+        let step_inputs = bindings.clone();
+        let step_outputs = BTreeMap::new();
+
+        let resolved = resolve_instance_key_input_values::<mediapm_cas::InMemoryCas>(
+            &bindings,
+            &step_inputs,
+            &step_outputs,
+        )
+        .await;
+
+        let expected = if std::env::consts::OS == "linux" {
+            "deno:deps/deno/linux/deno"
+        } else {
+            "deno:deps/deno/other/deno"
+        };
+        assert_eq!(
+            resolved.values.get("js_runtimes").map(Vec::as_slice),
+            Some(expected.as_bytes()),
+            "a context-reading binding must resolve to the host's branch, not to its template",
+        );
+        assert!(resolved.unresolved.is_empty(), "every binding here resolves");
+
+        // The rule this pins: key material derives from the resolved value, so a
+        // part that reads the binding must key the host's branch. Composing the
+        // raw template instead is what made every recorded key unreachable.
+        let parts = vec!["--js-runtimes".to_string(), "${inputs.js_runtimes}".to_string()];
+        let from_resolved =
+            crate::instance_key::key_material_for_tool(&parts, &resolved.values, &bindings);
+        let explicitly_resolved =
+            BTreeMap::from([("js_runtimes".to_string(), expected.as_bytes().to_vec())]);
+        assert_eq!(
+            from_resolved,
+            crate::instance_key::key_material_for_tool(&parts, &explicitly_resolved, &bindings,),
+            "key material must hash the resolved value, not the binding's template",
+        );
+    }
+
+    /// A binding that reads a step output resolves to that output's hash text.
+    ///
+    /// The worker runs with no store handle, so `${step_output.…}` hands the
+    /// hash on rather than fetching bytes; a reader that fetched them would hash
+    /// content the worker never hashed.
+    #[tokio::test]
+    async fn a_step_output_binding_resolves_to_the_hash_text() {
+        let hash = Hash::from_content(b"primary");
+        let mut outputs = BTreeMap::new();
+        outputs.insert("primary".to_string(), hash);
+        let mut step_outputs = BTreeMap::new();
+        step_outputs.insert("step-1".to_string(), outputs);
+        let mut bindings = BTreeMap::new();
+        bindings.insert("input".to_string(), "${step_output.step-1.primary}".to_string());
+
+        let resolved = resolve_instance_key_input_values::<mediapm_cas::InMemoryCas>(
+            &bindings,
+            &bindings,
+            &step_outputs,
+        )
+        .await;
+
+        assert_eq!(
+            resolved.values.get("input").map(Vec::as_slice),
+            Some(hash.to_string().as_bytes()),
+        );
+    }
+
+    /// A binding whose template raises is reported, never hashed as written.
+    #[tokio::test]
+    async fn an_unresolvable_binding_is_reported() {
+        let mut bindings = BTreeMap::new();
+        bindings.insert("path".to_string(), "${step_output.absent.primary}".to_string());
+        let step_outputs = BTreeMap::new();
+
+        let resolved = resolve_instance_key_input_values::<mediapm_cas::InMemoryCas>(
+            &bindings,
+            &bindings,
+            &step_outputs,
+        )
+        .await;
+
+        assert!(!resolved.values.contains_key("path"), "an unresolved binding has no value");
+        assert!(
+            resolved.unresolved.contains("path"),
+            "an unresolved binding must be named, or its absence reads as an empty value",
+        );
     }
 
     /// Verifies that an empty `InputBinding::Vec` resolves as an empty JSON array.
