@@ -15,7 +15,7 @@ use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_roo
 use mediapm_conductor::provision::ProvisionedTool;
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
-use mediapm_conductor::{Conductor, RuntimeStoragePaths};
+use mediapm_conductor::{Conductor, RuntimeStoragePaths, StepRef};
 use url::Url;
 
 use crate::conductor_bridge::documents::{
@@ -741,12 +741,14 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// conductor's [`mediapm_conductor::ToolCallInstance`], and the probe that
     /// decides reuse consults it before serving recorded work.
     ///
-    /// Instance keys are derived from step content and are shared by every media
-    /// that asks for the same work, so marking one media's step also marks the
-    /// bytes another media would have reused. That is the accepted direction of
-    /// the mistake: the alternative — remembering which instance each media last
-    /// used — goes stale exactly when the record is superseded, and a step the
-    /// operator asked to re-run would then silently not re-run.
+    /// The marker reaches the instances whose recorded provenance names this
+    /// media's step of this media's workflow, not every instance carrying that
+    /// step id. Step ids carry no media identity — mediapm synthesizes
+    /// `step-0-0-import-…` for every medium of that shape — so selecting by id
+    /// alone would discard the work of every other media the operator never
+    /// asked about. Two media that ask for exactly the same work still share one
+    /// instance record, and a marker on it stops both from reusing it; that is
+    /// the record's identity doing its job, not a step-id collision.
     ///
     /// # Errors
     ///
@@ -760,9 +762,13 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         step_index: usize,
     ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
         let (workflow_id, targeted_step_ids) = self.resolve_media_step_ids(media_id, step_index)?;
+        let targeted_steps: std::collections::BTreeSet<StepRef> = targeted_step_ids
+            .iter()
+            .map(|step_id| StepRef { workflow_id: workflow_id.clone(), step_id: step_id.clone() })
+            .collect();
         let counts = self
             .conductor
-            .invalidate_instances_for_steps(&targeted_step_ids.iter().cloned().collect())
+            .invalidate_instances_for_steps(&targeted_steps)
             .await
             .map_err(MediaPmError::Conductor)?;
         Ok(MediaStepInvalidationSummary {
@@ -790,9 +796,13 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         step_index: usize,
     ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
         let (workflow_id, targeted_step_ids) = self.resolve_media_step_ids(media_id, step_index)?;
+        let targeted_steps: std::collections::BTreeSet<StepRef> = targeted_step_ids
+            .iter()
+            .map(|step_id| StepRef { workflow_id: workflow_id.clone(), step_id: step_id.clone() })
+            .collect();
         let counts = self
             .conductor
-            .revalidate_instances_for_steps(&targeted_step_ids.iter().cloned().collect())
+            .revalidate_instances_for_steps(&targeted_steps)
             .await
             .map_err(MediaPmError::Conductor)?;
         Ok(MediaStepInvalidationSummary {

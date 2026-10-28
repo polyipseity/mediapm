@@ -425,22 +425,19 @@ mod tests {
             instance.outputs["content"].capture, None,
             "a v2 entry recorded no spec, so it must carry the unknown-spec sentinel",
         );
-        let aux =
-            state.aux.instances.values().next().expect("the aux record survives the migration");
-        assert_eq!(aux.last_referenced_at.as_unix_nanos(), 7);
+        assert_eq!(
+            instance.last_referenced_at.as_unix_nanos(),
+            7,
+            "the per-instance clock survives the migration and lands on the record",
+        );
 
         let re_encoded =
             super::super::encode_state_json(&state).expect("the migrated state encodes");
         let value: serde_json::Value = serde_json::from_slice(&re_encoded).expect("valid JSON");
         assert_eq!(value["version"], json!(crate::state::STATE_VERSION));
-        let encoded_aux = value["aux"]["instances"]
-            .as_object()
-            .and_then(|instances| instances.values().next())
-            .and_then(serde_json::Value::as_object)
-            .expect("one encoded aux record");
         assert!(
-            encoded_aux.get("save_modes").is_none(),
-            "a v2 save mode must not reappear in the v3 document: {encoded_aux:?}",
+            value["aux"].get("instances").is_none(),
+            "the per-instance aux map is gone from the current wire shape: {value:?}",
         );
         let encoded_instance = value["tool_call_instances"]
             .as_object()

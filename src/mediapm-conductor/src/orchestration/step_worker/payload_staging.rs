@@ -26,7 +26,7 @@ use crate::error::ConductorError;
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
 };
-use crate::state::{ConductorState, HashedValueRecord};
+use crate::state::ConductorState;
 
 use super::executor::execute_step;
 use super::sandbox::prepare_tool_payload;
@@ -242,6 +242,7 @@ async fn run_step(
             max_retries: 0,
             depends_on: Vec::new(),
         },
+        workflow_id: "test-workflow".to_string(),
         impure_timestamp: None,
         state_snapshot: Arc::new(ConductorState::new_empty()),
         outermost_config_dir: fixture.runtime_root.clone(),
@@ -256,7 +257,7 @@ async fn run_step(
     let sandbox = fixture
         .runtime_root
         .join("sandbox")
-        .join(super::sandbox::sanitize_for_path(&bundle.instance.instance_key.to_hex()));
+        .join(super::sandbox::sanitize_for_path(&bundle.instance_key.to_hex()));
     Ok((bundle, sandbox))
 }
 
@@ -360,14 +361,8 @@ async fn a_step_records_the_inputs_its_command_stages() {
     assert_eq!(
         bundle.instance.materialized_inputs,
         BTreeMap::from([
-            (
-                "inputs/first.bin".to_string(),
-                HashedValueRecord { hash: first_hash, deterministic: true },
-            ),
-            (
-                "inputs/second.bin".to_string(),
-                HashedValueRecord { hash: second_hash, deterministic: true },
-            ),
+            ("inputs/first.bin".to_string(), first_hash),
+            ("inputs/second.bin".to_string(), second_hash),
         ]),
         "the record must name the destinations the command staged at and the objects staged \
          there, and carry no entry from the tool content map",

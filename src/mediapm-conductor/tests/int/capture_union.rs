@@ -132,8 +132,8 @@ async fn two_disjoint_declarations_union_into_one_instance_and_the_re_run_execut
         "both captures read the same stdout, so they must name the same bytes",
     );
     assert_eq!(
-        instance.step_ids.iter().cloned().collect::<Vec<_>>(),
-        vec!["first".to_string(), "second".to_string()],
+        instance.step_ids.iter().map(|step| step.step_id.as_str()).collect::<Vec<_>>(),
+        vec!["first", "second"],
         "provenance must name every step the instance served",
     );
 
@@ -680,8 +680,17 @@ async fn two_same_work_siblings_in_one_cohort_both_execute_and_then_share_the_in
     let instance = only_instance(tc.conductor());
     assert_eq!(
         instance.step_ids,
-        std::collections::BTreeSet::from(["first".to_string(), "second".to_string()]),
-        "one instance must name both siblings it served",
+        std::collections::BTreeSet::from([
+            mediapm_conductor::StepRef {
+                workflow_id: "default".to_string(),
+                step_id: "first".to_string(),
+            },
+            mediapm_conductor::StepRef {
+                workflow_id: "default".to_string(),
+                step_id: "second".to_string(),
+            },
+        ]),
+        "one instance must name both siblings it served, each qualified by its workflow",
     );
 
     let second = tc

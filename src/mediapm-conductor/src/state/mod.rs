@@ -17,20 +17,20 @@ pub mod versions;
 /// Current orchestration-state schema version.
 ///
 /// Bumped when the persisted JSON layout changes in a way older or newer
-/// readers cannot absorb. Every V4 wire type that can carry a field denies
+/// readers cannot absorb. Every V5 wire type that can carry a field denies
 /// unknown ones (`#[serde(deny_unknown_fields)]`; a fieldless enum and a
 /// newtype cannot carry the attribute), so an older reader handed a newer
 /// document fails on the field it cannot name instead of decoding it away and
 /// then writing the document back without it. That makes the unsupported
 /// direction a loud error rather than a silent loss, while the direction that
-/// matters still holds: every field a V4 document may omit is
+/// matters still holds: every field a V5 document may omit is
 /// `#[serde(default)]`, so a document this version wrote always decodes here,
 /// and so does one an earlier version wrote, whose fields are a subset. A
-/// field a V4 document must carry stays required: `capture` is the example,
+/// field a V5 document must carry stays required: `capture` is the example,
 /// because no reader has ever written a record without one.
 ///
 /// Backward compatibility is handled via the `state/versions/` module.
-pub(crate) const STATE_VERSION: u32 = 4;
+pub(crate) const STATE_VERSION: u32 = 5;
 
 /// Persistence policy for a CAS-referenced blob declared as external data.
 ///
@@ -57,13 +57,24 @@ pub struct ResolvedInput {
     pub value: String,
 }
 
-/// A content-addressed value with its determinism classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HashedValueRecord {
-    /// CAS content hash of the recorded value.
-    pub hash: Hash,
-    /// Whether the value is deterministic (participates in instance keys).
-    pub deterministic: bool,
+/// One step, named by the workflow it belongs to and the id it has inside it.
+///
+/// Both halves are load-bearing. Step ids are only unique inside a workflow —
+/// mediapm synthesizes one workflow per media and names steps after their
+/// media, but nothing stops two documents from reusing a step id — so an
+/// invalidation request that named a bare id would reach work another workflow
+/// recorded. The pair is what a request means, and it is what a record stores.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct StepRef {
+    /// Workflow the step belongs to.
+    ///
+    /// Empty on a ref migrated from a version whose wire shape could not name
+    /// one: such a ref matches no request, which is the safe direction for a
+    /// workflow-scoped invalidation, and the record re-acquires a qualified ref
+    /// the next time the step serves it.
+    pub workflow_id: String,
+    /// Step id inside that workflow.
+    pub step_id: String,
 }
 
 /// One captured output: its content hash and the spec that produced it.
@@ -91,12 +102,11 @@ pub struct CapturedOutput {
 ///
 /// Records the effective command argv, execution environment, materialized
 /// inputs, and captured outputs. Values are content-addressed (never stored
-/// literally); only deterministic records participate in the instance key.
+/// literally). The record does not carry its own key: the key is the map key
+/// `ConductorState::tool_call_instances` files it under, which is the one home
+/// an identity can have, derived by [`crate::instance_key::derive_instance_key`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallInstance {
-    /// Content-addressed instance key (see
-    /// [`crate::instance_key::derive_instance_key`]).
-    pub instance_key: Hash,
     /// Tool call identifier: the unified tools-catalog map key (e.g.
     /// `"ffmpeg@v1"`).
     pub tool_call_id: String,
@@ -136,24 +146,39 @@ pub struct ToolCallInstance {
     /// Execution timestamp recorded at run time. Provenance only; it is never
     /// part of any instance key, impure or pure.
     pub executed_at: Timestamp,
-    /// Steps that have served this instance, by step id.
+    /// Conductor GC last-reference clock: when a run last referenced this
+    /// instance, refreshed by every settlement and by every GC pass that keeps
+    /// it.
     ///
-    /// Provenance only, never key material. It names the step that recorded
-    /// the instance and every later step that reused it, which is what lets
-    /// the demo fixture be re-keyed without re-deriving a historical key
-    /// scheme: regeneration pairs an instance with every step that claims it —
-    /// the one that executed the work and each later one that reused it.
-    /// A cache hit records the reusing step here, and an id the set already
-    /// holds is left as it is, so a steady-state sync persists the same
-    /// record.
+    /// It lives on the record because it describes the record: an instance and
+    /// the clock its eviction is measured against are written and deleted
+    /// together, so neither can be left describing an instance that is gone.
+    pub last_referenced_at: Timestamp,
+    /// Steps that have served this instance, qualified by workflow.
+    ///
+    /// Provenance and the target of an invalidation request, never key
+    /// material. It names the step that recorded the instance and every later
+    /// step that reused it, which is what lets the demo fixture be re-keyed
+    /// without re-deriving a historical key scheme: regeneration pairs an
+    /// instance with every step that claims it — the one that executed the
+    /// work and each later one that reused it.
+    /// A cache hit records the reusing step here, and a ref the set already
+    /// holds is left as it is, so a steady-state sync persists the same record.
     #[serde(default)]
-    pub step_ids: BTreeSet<String>,
-    /// Effective command argv recorded at execution time, in order. Values
-    /// are content-addressed; deterministic records participate in the key.
-    pub command_args: Vec<HashedValueRecord>,
+    pub step_ids: BTreeSet<StepRef>,
+    /// Effective command argv recorded at execution time, in order.
+    ///
+    /// These are the hashed parts the instance key is composed from, so the
+    /// recorded argv and the key material are one list rather than two views
+    /// that can drift apart.
+    pub command_args: Vec<Hash>,
     /// Execution environment variables (minimal set: non-empty config values
     /// only). Values are hashed, never stored literally.
-    pub env_vars: BTreeMap<String, HashedValueRecord>,
+    ///
+    /// Recorded, never key material: the environment a step runs under is not
+    /// something the step declares, so keying it would re-execute work once per
+    /// environment it happens to be run in.
+    pub env_vars: BTreeMap<String, Hash>,
     /// Inputs this step staged into its sandbox, keyed by sandbox-relative
     /// destination.
     ///
@@ -163,36 +188,19 @@ pub struct ToolCallInstance {
     /// handed. Never key material: the staged pairs exist only once the
     /// command's selectors have run, and the key is what names the sandbox
     /// they ran in.
-    pub materialized_inputs: BTreeMap<String, HashedValueRecord>,
+    pub materialized_inputs: BTreeMap<String, Hash>,
     /// Captured output records keyed by output name, each carrying the spec
     /// that produced it.
     pub outputs: BTreeMap<String, CapturedOutput>,
 }
 
-/// Per-instance auxiliary metadata, kept off the instance record so cache
-/// probes and key derivation stay lean.
-///
-/// Persistence is not here: a save mode belongs to the capture spec recorded
-/// with the entry it describes, not to the instance, so replacing one output
-/// never speaks for another.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct InstanceAux {
-    /// Conductor GC last-reference clock: refreshed whenever the instance is
-    /// referenced during step execution or retained by GC.
-    pub last_referenced_at: Timestamp,
-}
-
 /// Auxiliary metadata attached to the orchestration state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AuxData {
-    /// Monotonic tool call instance counter.
-    pub tool_call_instance_counter: u64,
     /// Conductor GC reference clock — updated to [`Timestamp::now()`] on every
     /// state commit. Used by `run_conductor_gc()` for grace-period comparisons
     /// and CAS blob reclamation. Distinct from CAS GC.
     pub conductor_gc_epoch: Timestamp,
-    /// Per-instance aux metadata keyed by instance key.
-    pub instances: BTreeMap<Hash, InstanceAux>,
     /// Instance keys each workflow's most recent successful run produced or
     /// hit, keyed by workflow id.
     ///
@@ -212,7 +220,8 @@ pub struct AuxData {
 pub struct ConductorState {
     /// Schema version marker.
     pub version: u32,
-    /// Declared tool call instance store (`instance_key` → instance).
+    /// Declared tool call instance store: the instance key is the map key, and
+    /// the record it holds does not repeat it.
     pub tool_call_instances: BTreeMap<Hash, ToolCallInstance>,
     /// Auxiliary metadata.
     pub aux: AuxData,
@@ -230,9 +239,8 @@ impl ConductorState {
     }
 
     /// Runs conductor GC on instances: refreshes
-    /// `aux.instances[key].last_referenced_at` for reachable instances, evicts
-    /// everything else past the TTL grace period, then updates
-    /// `conductor_gc_epoch`.
+    /// `last_referenced_at` for reachable instances, evicts everything else
+    /// past the TTL grace period, then updates `conductor_gc_epoch`.
     ///
     /// `reachable_keys` is the set a live workflow can still reach, not a
     /// caller's opinion: `crate::gc::run_conductor_gc` derives it from
@@ -242,6 +250,12 @@ impl ConductorState {
     /// deleted on sight — it keeps its last reference and ages out only once
     /// the grace period has passed.
     ///
+    /// Both halves read the record's own clock, because that is where the clock
+    /// lives: a reachable instance is refreshed in place, and an unreachable one
+    /// is judged by the value its own record carries. There is no second map to
+    /// fall out of step with the records it describes, and no separate entry to
+    /// create for a record that never had one.
+    ///
     /// This is CONDUCTOR GC — prunes stale tool call instances and reclaims
     /// unreachable CAS blobs. Distinct from CAS GC which is a separate
     /// mechanism.
@@ -249,37 +263,21 @@ impl ConductorState {
         let ttl_nanos = ttl_seconds.saturating_mul(1_000_000_000);
         let epoch = self.aux.conductor_gc_epoch;
         let epoch_nanos = epoch.as_unix_nanos();
-        let aux = &mut self.aux;
 
-        self.tool_call_instances.retain(|key, _instance| {
+        self.tool_call_instances.retain(|key, instance| {
             if reachable_keys.contains(key) {
                 // Referenced instances survive and get their last-reference
-                // clock refreshed to the current GC epoch. A reachable instance
-                // with no aux entry gets one here rather than being skipped: the
-                // eviction branch reads a missing entry as "never referenced",
-                // so a record that is protected this pass and loses its aux
-                // entry would otherwise be evicted the moment it becomes
-                // unreachable, skipping its grace period.
-                aux.instances
-                    .entry(*key)
-                    .or_insert_with(|| InstanceAux { last_referenced_at: epoch })
-                    .last_referenced_at = epoch;
+                // clock refreshed to the current GC epoch.
+                instance.last_referenced_at = epoch;
                 true
             } else {
-                let last_ref = aux
-                    .instances
-                    .get(key)
-                    .map_or(0, |entry| entry.last_referenced_at.as_unix_nanos());
+                let last_ref = instance.last_referenced_at.as_unix_nanos();
                 // Evict if last reference was more than TTL ago.
                 let deadline = last_ref.saturating_add(ttl_nanos);
                 deadline >= epoch_nanos
             }
         });
-        // Drop aux entries for evicted instances so the map never grows stale
-        // keys.
-        let live: BTreeSet<Hash> = self.tool_call_instances.keys().copied().collect();
-        aux.instances.retain(|key, _| live.contains(key));
-        aux.conductor_gc_epoch = Timestamp::now();
+        self.aux.conductor_gc_epoch = Timestamp::now();
     }
 }
 
@@ -1052,24 +1050,24 @@ mod tests {
             "the message must name the step: {error}",
         );
     }
-    /// A reachable instance with no aux entry keeps its grace period.
+    /// A pass stamps its clock on every instance it keeps.
     ///
-    /// The eviction branch reads a missing entry as "never referenced", so
-    /// a record protected this pass and lacking a clock would be evicted on
-    /// sight the moment it stopped being reachable. Giving it a clock is
-    /// what makes the two branches agree about what "no entry" means.
+    /// The record is the only place a clock lives now, so a pass that kept an
+    /// instance without touching its clock would leave the record ageing from
+    /// whenever it last ran work — and a long-lived cache would evict itself
+    /// while still being referenced on every run.
     #[test]
-    fn a_reachable_instance_without_an_aux_entry_gets_a_clock() {
+    fn a_pass_stamps_the_epoch_on_every_instance_it_keeps() {
         let key = Hash::from_content(b"instance");
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
             key,
             ToolCallInstance {
-                instance_key: key,
                 tool_call_id: "echo@v1".to_string(),
                 impure: false,
                 invalidated_at: None,
                 executed_at: Timestamp::default(),
+                last_referenced_at: Timestamp::from_unix_nanos(7),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
@@ -1077,17 +1075,15 @@ mod tests {
                 outputs: BTreeMap::new(),
             },
         );
-        assert!(state.aux.instances.is_empty(), "the fixture starts without a clock");
         // The pass refreshes to the epoch it found, then advances the epoch, so
         // a fixed starting epoch is what makes "the clock it gets" checkable.
         state.aux.conductor_gc_epoch = Timestamp::from_unix_nanos(42);
 
         state.run_conductor_gc(&BTreeSet::from([key]), 0);
 
-        assert!(state.tool_call_instances.contains_key(&key), "a reachable key survives");
-        let entry = state.aux.instances.get(&key).expect("the pass must record the clock");
+        let instance = state.tool_call_instances.get(&key).expect("a reachable key survives");
         assert_eq!(
-            entry.last_referenced_at,
+            instance.last_referenced_at,
             Timestamp::from_unix_nanos(42),
             "the clock it gets is the epoch this pass used",
         );

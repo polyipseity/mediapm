@@ -125,7 +125,7 @@ pub(crate) fn reachability_closure(state: &ConductorState) -> BTreeSet<Hash> {
             continue;
         };
         for input in instance.materialized_inputs.values() {
-            let Some(instance_keys) = producers.get(&input.hash) else {
+            let Some(instance_keys) = producers.get(input) else {
                 continue;
             };
             for producer in instance_keys {
@@ -400,7 +400,9 @@ mod tests {
 
     use super::*;
     use crate::config::{ConductorRuntimeConfig, SaveMode, WorkflowSpec};
-    use crate::state::{AuxData, CapturedOutput, HashedValueRecord, InstanceAux, ToolCallInstance};
+    use std::ops::{Deref, DerefMut};
+
+    use crate::state::{AuxData, CapturedOutput, ToolCallInstance};
 
     /// A grace period longer than any test run, so no record is evicted and the
     /// root set alone decides which bytes survive.
@@ -411,23 +413,56 @@ mod tests {
     /// Inputs are recorded under `in-{i}` and outputs under `out-{i}`, which is
     /// all the reachability walk reads: names are the step's business, hashes
     /// are the graph's.
-    fn instance(label: &str, inputs: &[Hash], outputs: &[Hash]) -> ToolCallInstance {
-        let hash = |text: &str| Hash::from_content(text.as_bytes());
+    fn instance(label: &str, inputs: &[Hash], outputs: &[Hash]) -> FixtureInstance {
+        FixtureInstance {
+            key: Hash::from_content(label.as_bytes()),
+            instance: recorded_instance(inputs, outputs),
+        }
+    }
+
+    /// One fixture instance with the key it is filed under.
+    ///
+    /// Held as a pair because the record no longer carries its own key: the map
+    /// key is the identity, so a fixture has to state it beside the record the
+    /// way the store does. Deref keeps the tests reading fields off the record
+    /// itself.
+    struct FixtureInstance {
+        /// The key the instance is filed under.
+        key: Hash,
+        /// The record itself.
+        instance: ToolCallInstance,
+    }
+
+    impl Deref for FixtureInstance {
+        type Target = ToolCallInstance;
+
+        fn deref(&self) -> &Self::Target {
+            &self.instance
+        }
+    }
+
+    impl DerefMut for FixtureInstance {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.instance
+        }
+    }
+
+    /// The record half of a fixture instance: inputs under `in-{i}`, outputs
+    /// under `out-{i}`.
+    fn recorded_instance(inputs: &[Hash], outputs: &[Hash]) -> ToolCallInstance {
         ToolCallInstance {
-            instance_key: hash(label),
             tool_call_id: "echo@v1".to_string(),
             impure: false,
             invalidated_at: None,
             executed_at: Timestamp::default(),
+            last_referenced_at: Timestamp::from_unix_nanos(0),
             step_ids: BTreeSet::new(),
             command_args: Vec::new(),
             env_vars: BTreeMap::new(),
             materialized_inputs: inputs
                 .iter()
                 .enumerate()
-                .map(|(index, hash)| {
-                    (format!("in-{index}"), HashedValueRecord { hash: *hash, deterministic: true })
-                })
+                .map(|(index, hash)| (format!("in-{index}"), *hash))
                 .collect(),
             outputs: outputs
                 .iter()
@@ -442,32 +477,21 @@ mod tests {
     /// A state holding `instances` with every `last_referenced_at` at the Unix
     /// epoch, so a zero-second TTL puts all of them past their grace period.
     fn state_with(
-        instances: Vec<ToolCallInstance>,
+        instances: Vec<FixtureInstance>,
         seeds: BTreeMap<String, BTreeSet<Hash>>,
     ) -> ConductorState {
         let mut state = ConductorState::new_empty();
         state.tool_call_instances =
-            instances.into_iter().map(|instance| (instance.instance_key, instance)).collect();
-        state.aux = AuxData {
-            tool_call_instance_counter: 0,
-            conductor_gc_epoch: Timestamp::now(),
-            instances: state
-                .tool_call_instances
-                .keys()
-                .map(|key| {
-                    (*key, InstanceAux { last_referenced_at: Timestamp::from_unix_nanos(0) })
-                })
-                .collect(),
-            live_instances: seeds,
-        };
+            instances.into_iter().map(|fixture| (fixture.key, fixture.instance)).collect();
+        state.aux = AuxData { conductor_gc_epoch: Timestamp::now(), live_instances: seeds };
         state
     }
 
     /// `recorded` with every output recording `mode` as the capture spec it ran
     /// under, which is the fact the root set reads.
-    fn instance_saving(recorded: ToolCallInstance, mode: SaveMode) -> ToolCallInstance {
+    fn instance_saving(recorded: FixtureInstance, mode: SaveMode) -> FixtureInstance {
         let mut saved = recorded;
-        for output in saved.outputs.values_mut() {
+        for output in saved.instance.outputs.values_mut() {
             output.capture = Some(crate::config::OutputCaptureSpec {
                 name: String::new(),
                 capture: "stdout".to_string(),
@@ -481,13 +505,13 @@ mod tests {
     /// Stamps every recorded instance's last reference at the present, so a pass
     /// inside the grace period evicts none of them.
     ///
-    /// The eviction branch reads an absent clock as "never referenced", which is
-    /// what [`state_with`] installs, so a test that wants a record to survive the
-    /// walk has to say when it was last read.
+    /// The eviction branch reads the epoch as "never referenced", which is what
+    /// [`state_with`] installs, so a test that wants a record to survive the walk
+    /// has to say when it was last read.
     fn keep_records_within_their_grace_period(state: &mut ConductorState) {
         let now = Timestamp::now();
-        for entry in state.aux.instances.values_mut() {
-            entry.last_referenced_at = now;
+        for instance in state.tool_call_instances.values_mut() {
+            instance.last_referenced_at = now;
         }
     }
 
@@ -593,8 +617,8 @@ mod tests {
         let blob = cas.put(bytes::Bytes::from_static(b"producer payload")).await.expect("put");
         let producer = instance("producer", &[], &[blob]);
         let consumer = instance("consumer", &[blob], &[]);
-        let producer_key = producer.instance_key;
-        let consumer_key = consumer.instance_key;
+        let producer_key = producer.key;
+        let consumer_key = consumer.key;
         let mut state = state_with(
             vec![producer, consumer],
             BTreeMap::from([("default".to_string(), BTreeSet::from([consumer_key]))]),
@@ -624,8 +648,8 @@ mod tests {
         let blob = cas.put(bytes::Bytes::from_static(b"producer payload")).await.expect("put");
         let producer = instance("producer", &[], &[blob]);
         let consumer = instance("consumer", &[blob], &[]);
-        let producer_key = producer.instance_key;
-        let consumer_key = consumer.instance_key;
+        let producer_key = producer.key;
+        let consumer_key = consumer.key;
         let mut state = state_with(
             vec![producer, consumer],
             BTreeMap::from([("default".to_string(), BTreeSet::from([consumer_key]))]),
@@ -644,7 +668,7 @@ mod tests {
             .get_mut(&consumer_key)
             .expect("consumer")
             .materialized_inputs
-            .insert("in-0".to_string(), HashedValueRecord { hash: moved_on, deterministic: true });
+            .insert("in-0".to_string(), moved_on);
 
         let report = run_conductor_gc(&cas, &mut state, &unified, 0).await.expect("second gc");
 
@@ -673,7 +697,7 @@ mod tests {
     async fn a_workflow_without_a_seed_evicts_nothing() {
         let cas = InMemoryCas::new();
         let orphan_of_opportunity = instance("unseeded", &[], &[]);
-        let instance_key = orphan_of_opportunity.instance_key;
+        let instance_key = orphan_of_opportunity.key;
         let mut state = state_with(vec![orphan_of_opportunity], BTreeMap::new());
         let unified = unified_with(&["default"]);
 
@@ -699,9 +723,9 @@ mod tests {
         let blob = cas.put(bytes::Bytes::from_static(b"marked payload")).await.expect("put");
         let mut producer = instance("producer", &[], &[blob]);
         producer.invalidated_at = Some(Timestamp::now());
-        let producer_key = producer.instance_key;
+        let producer_key = producer.key;
         let consumer = instance("consumer", &[blob], &[]);
-        let consumer_key = consumer.instance_key;
+        let consumer_key = consumer.key;
         let mut state = state_with(
             vec![producer, consumer],
             BTreeMap::from([("default".to_string(), BTreeSet::from([consumer_key]))]),
@@ -736,7 +760,7 @@ mod tests {
     async fn a_seed_for_a_removed_workflow_is_pruned_and_its_instances_age_out() {
         let cas = InMemoryCas::new();
         let abandoned = instance("abandoned", &[], &[]);
-        let abandoned_key = abandoned.instance_key;
+        let abandoned_key = abandoned.key;
         let mut state = state_with(
             vec![abandoned],
             BTreeMap::from([
@@ -770,7 +794,7 @@ mod tests {
         let cas = InMemoryCas::new();
         let blob = cas.put(bytes::Bytes::from_static(b"intermediate payload")).await.expect("put");
         let producer = instance_saving(instance("producer", &[], &[blob]), SaveMode::False);
-        let producer_key = producer.instance_key;
+        let producer_key = producer.key;
         let mut state =
             state_with(vec![producer], BTreeMap::from([("default".to_string(), BTreeSet::new())]));
         keep_records_within_their_grace_period(&mut state);
@@ -804,7 +828,7 @@ mod tests {
         let cas = InMemoryCas::new();
         let blob = cas.put(bytes::Bytes::from_static(b"intermediate payload")).await.expect("put");
         let producer = instance_saving(instance("producer", &[], &[blob]), SaveMode::False);
-        let producer_key = producer.instance_key;
+        let producer_key = producer.key;
         let mut state = state_with(
             vec![producer],
             BTreeMap::from([("default".to_string(), BTreeSet::from([producer_key]))]),
@@ -839,7 +863,7 @@ mod tests {
         let blob = cas.put(bytes::Bytes::from_static(b"intermediate payload")).await.expect("put");
         let producer = instance_saving(instance("producer", &[], &[blob]), SaveMode::False);
         let consumer = instance("consumer", &[blob], &[]);
-        let consumer_key = consumer.instance_key;
+        let consumer_key = consumer.key;
         let mut state = state_with(
             vec![producer, consumer],
             BTreeMap::from([("default".to_string(), BTreeSet::from([consumer_key]))]),

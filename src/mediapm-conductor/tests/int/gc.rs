@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{Hash, InMemoryCas};
 use mediapm_conductor::api::RunWorkflowOptions;
-use mediapm_conductor::{AuxData, Conductor, ConductorState, InstanceAux, ToolCallInstance};
+use mediapm_conductor::{AuxData, Conductor, ConductorState, ToolCallInstance};
 use mediapm_utils::Timestamp;
 
 use crate::{TestConductor, doc_with_workflows, echo_step, echo_tool, workflow_with_steps};
@@ -27,14 +27,17 @@ use crate::{TestConductor, doc_with_workflows, echo_step, echo_tool, workflow_wi
 // Helper
 // ---------------------------------------------------------------------------
 
-/// Creates a minimal `ToolCallInstance` with the given content-addressed key.
-fn sample_instance(key: Hash) -> ToolCallInstance {
+/// Creates a minimal `ToolCallInstance` to file under `key`.
+///
+/// The key is the caller's, not the record's: the instance carries no key of its
+/// own, and the store it is inserted into is what gives it one.
+fn sample_instance(_key: Hash) -> ToolCallInstance {
     ToolCallInstance {
-        instance_key: key,
         tool_call_id: "echo@v1".to_string(),
         impure: false,
         invalidated_at: None,
         executed_at: Timestamp::default(),
+        last_referenced_at: Timestamp::from_unix_nanos(0),
         step_ids: BTreeSet::new(),
         command_args: Vec::new(),
         env_vars: BTreeMap::new(),
@@ -43,19 +46,11 @@ fn sample_instance(key: Hash) -> ToolCallInstance {
     }
 }
 
-/// Seeds an instance with aux `last_referenced_at` far enough in the past to
+/// Seeds instances whose own `last_referenced_at` is far enough in the past to
 /// be evicted by a zero-TTL sweep.
 fn seed_state_with(keys: &[Hash]) -> ConductorState {
     let mut state = ConductorState::new_empty();
-    state.aux = AuxData {
-        tool_call_instance_counter: 0,
-        conductor_gc_epoch: Timestamp::now(),
-        instances: keys
-            .iter()
-            .map(|key| (*key, InstanceAux { last_referenced_at: Timestamp::from_unix_nanos(0) }))
-            .collect(),
-        live_instances: BTreeMap::new(),
-    };
+    state.aux = AuxData { conductor_gc_epoch: Timestamp::now(), live_instances: BTreeMap::new() };
     state.tool_call_instances = keys.iter().map(|key| (*key, sample_instance(*key))).collect();
     state
 }
@@ -279,10 +274,6 @@ async fn the_seed_reaches_the_file_and_a_pass_classifies_with_it() {
     let superseded = Hash::from_content(b"superseded");
     let mut state = reopened.get_state().expect("state");
     state.tool_call_instances.insert(superseded, sample_instance(superseded));
-    state
-        .aux
-        .instances
-        .insert(superseded, InstanceAux { last_referenced_at: Timestamp::from_unix_nanos(0) });
     reopened.replace_resolved_state(state).expect("replace state");
 
     // Two passes: the grace period is measured against the epoch the previous

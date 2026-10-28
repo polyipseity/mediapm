@@ -340,7 +340,7 @@ mod tests {
         let envelope = v1::OrchestrationStateEnvelopeV1 {
             version: v1::ORCHESTRATION_STATE_VERSION_V1,
             instances: BTreeMap::from([("legacy-key".to_string(), v1::InstanceRefV1 { hash })]),
-            aux: crate::state::AuxData {
+            aux: v1::AuxDataV1 {
                 tool_call_instance_counter: 7,
                 conductor_gc_epoch: Timestamp::from_unix_nanos(99),
                 instances: BTreeMap::new(),

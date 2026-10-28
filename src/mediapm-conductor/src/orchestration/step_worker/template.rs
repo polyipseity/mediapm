@@ -299,18 +299,18 @@ pub async fn resolve_content<C: mediapm_cas::CasApi + Send + Sync>(
 
 /// Everything one command's resolution answers.
 ///
-/// Kept as one value rather than three tuple elements: the argv, its
-/// determinism and the inputs staged on the way are read by one caller, and a
-/// tuple of parallel vectors says nothing about what the third element is.
+/// Kept as one value rather than two tuple elements: the argv and the inputs
+/// staged on the way are read by one caller, and a tuple of two vectors says
+/// nothing about what the second element is.
+///
+/// The per-part determinism classification is computed where it is needed —
+/// [`is_deterministic_command_part`], called by the input-resolution side of the
+/// instance key — rather than carried beside the argv: a flag recorded next to a
+/// value that nothing reads is a second answer to a question one place already
+/// answers.
 pub struct ResolvedCommandParts {
     /// Resolved argv, one element per part that produced a value.
     pub parts: Vec<String>,
-    /// One flag per element of [`Self::parts`]: a part is nondeterministic
-    /// exactly when it contains an OS conditional (`context.os ...`), an
-    /// environment reference (`${env.<VAR>}`), or a sandbox path selector.
-    /// Splat elements inherit the splat's determinism (inputs are
-    /// deterministic).
-    pub determinism: Vec<bool>,
     /// Inputs the command's selectors staged, keyed by sandbox-relative
     /// destination; see [`StagedInputs`].
     pub staged_inputs: StagedInputs,
@@ -332,7 +332,6 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
     let staged = Mutex::new(StagedInputs::new());
     let ctx = &TemplateContext { staged_inputs: Some(&staged), ..*ctx };
     let mut resolved = Vec::with_capacity(command_parts.len());
-    let mut determinism = Vec::with_capacity(command_parts.len());
 
     for part in command_parts {
         let trimmed = part.trim();
@@ -365,13 +364,11 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
             } else {
                 vec![raw.clone()]
             };
-            resolved.extend(parts.clone());
-            determinism.extend(std::iter::repeat_n(true, parts.len()));
+            resolved.extend(parts);
         } else {
             let value = resolve_template(part, ctx).await?;
             if !value.is_empty() && value != "''" {
                 resolved.push(value);
-                determinism.push(is_deterministic_command_part(part));
             }
         }
     }
@@ -381,7 +378,7 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
     let staged_inputs = staged.into_inner().map_err(|_| {
         ConductorError::Internal("template: the staged-input collector is poisoned".to_string())
     })?;
-    Ok(ResolvedCommandParts { parts: resolved, determinism, staged_inputs })
+    Ok(ResolvedCommandParts { parts: resolved, staged_inputs })
 }
 
 /// Classifies a command-part template as deterministic.
@@ -393,10 +390,11 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
 /// - a sandbox path selector (`:file(...)` / `:folder(...)`), whose resolved
 ///   value embeds the per-instance sandbox directory path.
 ///
-/// Nondeterministic parts still execute (and their resolved values are
-/// recorded on the instance) but never participate in instance keys, so a
-/// different host OS, environment, or sandbox layout cannot produce a false
-/// cache hit.
+/// Nondeterministic parts still execute, and the hashes of their resolved
+/// values are recorded on the instance; what the classification decides is which
+/// resolved bindings [`crate::instance_key`] treats as key material. A host OS,
+/// environment, or sandbox layout can therefore change what runs without
+/// producing a false cache hit for work recorded under a different one.
 ///
 /// The scan is conservative (a match anywhere flips the whole part): the
 /// cost of a false nondeterministic is one extra execution, while a false

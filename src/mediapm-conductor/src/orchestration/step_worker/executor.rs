@@ -16,7 +16,7 @@ use crate::error::ConductorError;
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec, find_tool_entry_by_name,
 };
-use crate::state::{HashedValueRecord, ResolvedInput, ToolCallInstance};
+use crate::state::{ResolvedInput, StepRef, ToolCallInstance};
 
 use super::cache::probe_cache;
 use super::capture::{capture_outputs, implicit_stream_specs};
@@ -34,12 +34,15 @@ use crate::instance_key::{derive_instance_key, deterministic_input_hashes_from_r
 struct DispatchedExecution {
     /// What the capture phase reads: streams, exit status, written files.
     result: ExecutionResult,
-    /// Hashed argv in order, one record per resolved part (empty for a
-    /// builtin, which runs no argv).
-    command_args: Vec<HashedValueRecord>,
+    /// Hashed argv in order, one hash per resolved part (empty for a builtin,
+    /// which runs no argv).
+    ///
+    /// Hashes alone: the instance key is composed from exactly this list, so the
+    /// recorded argv and the key material cannot drift apart.
+    command_args: Vec<Hash>,
     /// Inputs the command's selectors staged, keyed by sandbox-relative
     /// destination (empty for a builtin, which has no command parts).
-    materialized_inputs: BTreeMap<String, HashedValueRecord>,
+    materialized_inputs: BTreeMap<String, Hash>,
 }
 
 /// Dispatches execution: runs a builtin or resolves and runs an executable
@@ -75,7 +78,7 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
             inputs: &resolved_inputs_map,
             staged_inputs: None,
         };
-        let ResolvedCommandParts { parts, determinism, staged_inputs } =
+        let ResolvedCommandParts { parts, staged_inputs } =
             resolve_command_parts(&tool_spec.command_parts, &cmd_ctx).await?;
         let mut resolved_parts = parts;
         // `in_place` executes the tool where the provisioner put it, so the
@@ -84,14 +87,8 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
         // companion path an argument names.
         resolve_executable_under_payload_root(&mut resolved_parts, tool_spec)?;
         pre_qualify_payload_arguments(&mut resolved_parts, tool_spec);
-        let command_args = resolved_parts
-            .iter()
-            .zip(&determinism)
-            .map(|(part, deterministic)| HashedValueRecord {
-                hash: Hash::from_content(part.as_bytes()),
-                deterministic: *deterministic,
-            })
-            .collect();
+        let command_args =
+            resolved_parts.iter().map(|part| Hash::from_content(part.as_bytes())).collect();
         let result = run_executable_process(
             &resolved_parts,
             &tool_spec.success_codes,
@@ -107,17 +104,13 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
     }
 }
 
-/// Turns the staged destinations into the records the instance carries.
+/// Turns the staged destinations into the map the instance carries.
 ///
-/// Each record is marked deterministic: the hash is the content the selector
-/// staged, which no sandbox path or host environment can move. What varies
-/// between runs is the destination's absolute path, and that is not what the
-/// record holds.
-fn staged_input_records(staged_inputs: StagedInputs) -> BTreeMap<String, HashedValueRecord> {
-    staged_inputs
-        .into_iter()
-        .map(|(destination, hash)| (destination, HashedValueRecord { hash, deterministic: true }))
-        .collect()
+/// The hash is the content the selector staged, which no sandbox path or host
+/// environment can move. What varies between runs is the destination's absolute
+/// path, and that is not what the record holds.
+fn staged_input_records(staged_inputs: StagedInputs) -> BTreeMap<String, Hash> {
+    staged_inputs.into_iter().collect()
 }
 
 /// Executes one step: resolves inputs, runs the tool, captures outputs.
@@ -226,12 +219,16 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         // coordinator merges the bundle's instance into the run state, while
         // GC refresh still happens through the referenced-keys set at GC
         // time, not by per-hit mutation.
-        cached.step_ids.insert(request.step.id.clone());
+        cached.step_ids.insert(StepRef {
+            workflow_id: request.workflow_id.clone(),
+            step_id: request.step.id.clone(),
+        });
         // A hit declares nothing: it produced no artifact this run, so the
         // settlement may add the reusing step to `step_ids` and must leave the
         // recorded outputs exactly as the store holds them.
         return Ok(StepExecutionBundle {
             instance: cached,
+            instance_key,
             cache_hit: true,
             producible_outputs: BTreeMap::new(),
         });
@@ -248,7 +245,6 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
     let captured = capture_outputs(cas, &merged_outputs, &dispatched.result, &sandbox_dir).await?;
 
     let instance = ToolCallInstance {
-        instance_key,
         tool_call_id,
         impure: tool_spec.is_impure,
         // A fresh execution clears any marker: the bytes below were produced
@@ -257,14 +253,22 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         // the next run would miss forever on a key it cannot change.
         invalidated_at: None,
         executed_at,
-        step_ids: BTreeSet::from([request.step.id.clone()]),
+        // The record starts its GC clock at the run that produced it. The
+        // settlement refreshes it to the run's reference time, so this seed only
+        // matters for the window between the two; taking it from `executed_at`
+        // keeps the record's own two clocks consistent.
+        last_referenced_at: executed_at,
+        step_ids: BTreeSet::from([StepRef {
+            workflow_id: request.workflow_id.clone(),
+            step_id: request.step.id.clone(),
+        }]),
         command_args: dispatched.command_args,
         env_vars,
         materialized_inputs: dispatched.materialized_inputs,
         outputs: captured.records,
     };
 
-    Ok(StepExecutionBundle { instance, cache_hit: false, producible_outputs })
+    Ok(StepExecutionBundle { instance, instance_key, cache_hit: false, producible_outputs })
 }
 
 /// Returns whether every required output still resolves in the store.
@@ -423,24 +427,15 @@ fn merge_output_specs(
 }
 
 /// Builds the recorded environment set from configured execution env vars:
-/// only non-empty values, each content-hashed (never stored literally). Every
-/// record is nondeterministic, and the instance-key derivation takes no env
-/// term at all, so a changed variable invalidates nothing implicitly.
-fn build_env_vars(
-    execution_env_vars: &BTreeMap<String, String>,
-) -> BTreeMap<String, HashedValueRecord> {
+/// only non-empty values, each content-hashed (never stored literally).
+///
+/// Recorded, never key material: the instance-key derivation takes no env term,
+/// so a changed variable re-runs nothing implicitly.
+fn build_env_vars(execution_env_vars: &BTreeMap<String, String>) -> BTreeMap<String, Hash> {
     execution_env_vars
         .iter()
         .filter(|(_, value)| !value.is_empty())
-        .map(|(name, value)| {
-            (
-                name.clone(),
-                HashedValueRecord {
-                    hash: Hash::from_content(value.as_bytes()),
-                    deterministic: false,
-                },
-            )
-        })
+        .map(|(name, value)| (name.clone(), Hash::from_content(value.as_bytes())))
         .collect()
 }
 
@@ -459,7 +454,7 @@ mod tests {
     use crate::orchestration::protocol::{
         StepExecutionBundle, StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
     };
-    use crate::state::ConductorState;
+    use crate::state::{ConductorState, StepRef};
 
     /// Builds a capture spec for `name` reading the implicit stream `stream`,
     /// with every optional field at its documented default.
@@ -560,6 +555,7 @@ mod tests {
                 external_data_policies: BTreeMap::new(),
                 runtime: crate::config::ConductorRuntimeConfig::default(),
             }),
+            workflow_id: "test-workflow".to_string(),
             step: WorkflowStepSpec {
                 id: step_id.to_string(),
                 tool: "echo".to_string(),
@@ -607,7 +603,7 @@ mod tests {
         );
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -624,7 +620,7 @@ mod tests {
             "identical work must be reused however each step names what it captures",
         );
         assert_eq!(
-            second.instance.instance_key, first.instance.instance_key,
+            second.instance_key, first.instance_key,
             "a step's declared captures must not move the instance key",
         );
     }
@@ -719,7 +715,7 @@ mod tests {
         );
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
         let second = execute_echo_step(
             &cas,
             state,
@@ -805,7 +801,7 @@ mod tests {
         .await;
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -882,7 +878,7 @@ mod tests {
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -935,7 +931,7 @@ mod tests {
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1078,7 +1074,13 @@ mod tests {
         )
         .await;
 
-        assert_eq!(bundle.instance.step_ids, BTreeSet::from(["step-7-echo".to_string()]));
+        assert_eq!(
+            bundle.instance.step_ids,
+            BTreeSet::from([StepRef {
+                workflow_id: "test-workflow".to_string(),
+                step_id: "step-7-echo".to_string(),
+            }]),
+        );
     }
 
     /// A cache hit records the reusing step, and a hit whose id the instance
@@ -1107,10 +1109,16 @@ mod tests {
         )
         .await;
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
-        assert_eq!(first.instance.step_ids, BTreeSet::from(["step-a-echo".to_string()]));
+        assert_eq!(
+            first.instance.step_ids,
+            BTreeSet::from([StepRef {
+                workflow_id: "test-workflow".to_string(),
+                step_id: "step-a-echo".to_string(),
+            }]),
+        );
 
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(first.instance.instance_key, first.instance.clone());
+        state.tool_call_instances.insert(first.instance_key, first.instance.clone());
 
         let second = execute_echo_step(
             &cas,
@@ -1124,11 +1132,20 @@ mod tests {
         assert!(second.cache_hit, "identical work must hit the instance the first step recorded");
         assert_eq!(
             second.instance.step_ids,
-            BTreeSet::from(["step-a-echo".to_string(), "step-b-echo".to_string()]),
+            BTreeSet::from([
+                StepRef {
+                    workflow_id: "test-workflow".to_string(),
+                    step_id: "step-a-echo".to_string(),
+                },
+                StepRef {
+                    workflow_id: "test-workflow".to_string(),
+                    step_id: "step-b-echo".to_string(),
+                },
+            ]),
             "the reusing step must be recorded beside the step that executed the work",
         );
 
-        state.tool_call_instances.insert(second.instance.instance_key, second.instance.clone());
+        state.tool_call_instances.insert(second.instance_key, second.instance.clone());
         let third =
             execute_echo_step(&cas, state, "step-b-echo", tool_defaults, BTreeMap::new(), required)
                 .await;
@@ -1159,17 +1176,8 @@ mod tests {
         let records =
             build_env_vars(&BTreeMap::from([("FOO".to_string(), "raw-secret".to_string())]));
         let record = &records["FOO"];
-        assert_eq!(record.hash, Hash::from_content(b"raw-secret"));
-        assert_ne!(record.hash, Hash::from_content(b"raw-secret-other"));
-    }
-
-    #[test]
-    fn env_vars_all_nondeterministic() {
-        let records = build_env_vars(&BTreeMap::from([
-            ("A".to_string(), "1".to_string()),
-            ("B".to_string(), "2".to_string()),
-        ]));
-        assert!(records.values().all(|record| !record.deterministic));
+        assert_eq!(*record, Hash::from_content(b"raw-secret"));
+        assert_ne!(*record, Hash::from_content(b"raw-secret-other"));
     }
 
     #[test]

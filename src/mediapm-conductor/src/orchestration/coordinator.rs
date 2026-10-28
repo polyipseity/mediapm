@@ -22,9 +22,7 @@ use super::progress_labels::WorkerBarLabel;
 
 use crate::config::{OutputCaptureSpec, WorkflowStepSpec};
 use crate::error::ConductorError;
-use crate::state::{
-    ConductorState, InstanceAux, SettlingStep, ToolCallInstance, merge_captured_outputs,
-};
+use crate::state::{ConductorState, SettlingStep, ToolCallInstance, merge_captured_outputs};
 
 use ractor::rpc::CallResult;
 
@@ -160,9 +158,12 @@ struct StepStateContribution {
     /// The tool-call instance the step settled with (fresh or cache-hit
     /// replay of a pre-existing one).
     instance: ToolCallInstance,
-    /// The aux record stored alongside the instance in the live state (the
-    /// GC last-reference clock; persistence lives on each captured entry).
-    aux: InstanceAux,
+    /// Key the instance is filed under in the live state.
+    ///
+    /// Held beside the record rather than read off it: the map key is the
+    /// instance's only identity, so a scoped snapshot that rebuilt one from the
+    /// record would have to invent a key the store never agreed to.
+    instance_key: Hash,
 }
 
 /// Collects each step's required output names: the names its dependents
@@ -265,9 +266,9 @@ fn scoped_state_snapshot(
     let mut scoped = run_entry.clone();
     for ancestor in ancestors {
         if let Some(contribution) = contributions.get(ancestor) {
-            let instance_key = contribution.instance.instance_key;
-            scoped.tool_call_instances.insert(instance_key, contribution.instance.clone());
-            scoped.aux.instances.insert(instance_key, contribution.aux.clone());
+            scoped
+                .tool_call_instances
+                .insert(contribution.instance_key, contribution.instance.clone());
         }
     }
     scoped
@@ -291,8 +292,8 @@ fn scoped_state_snapshot(
 /// via [`merge_captured_outputs`], so this function must not be handed a
 /// bundle's raw capture set or a sibling's names would be evicted. The stored
 /// ids remain the one fact a sibling's snapshot cannot show it.
-/// `instance_key` is unchanged by construction — callers pass the record stored
-/// under `incoming.instance_key`.
+/// The instance key is unchanged by construction — callers file the result under
+/// the key the settlement derived, which is the key the stored record sits at.
 fn with_accumulated_step_ids(
     stored: Option<&ToolCallInstance>,
     mut incoming: ToolCallInstance,
@@ -323,13 +324,14 @@ fn with_accumulated_step_ids(
 fn record_capture_claims(
     claims: &mut BTreeMap<(Hash, String), (OutputCaptureSpec, String)>,
     instance: &ToolCallInstance,
+    instance_key: Hash,
     step_id: &str,
 ) -> Result<(), ConductorError> {
     for (name, output) in &instance.outputs {
         let Some(capture) = output.capture.as_ref() else {
             continue;
         };
-        match claims.get(&(instance.instance_key, name.clone())) {
+        match claims.get(&(instance_key, name.clone())) {
             Some((claimed, claimed_by)) if !capture.same_capture_identity(claimed) => {
                 return Err(ConductorError::Workflow(format!(
                     "steps '{claimed_by}' and '{step_id}' both capture output '{name}' for the \
@@ -341,10 +343,7 @@ fn record_capture_claims(
             }
             Some(_) => {}
             None => {
-                claims.insert(
-                    (instance.instance_key, name.clone()),
-                    (capture.clone(), step_id.to_string()),
-                );
+                claims.insert((instance_key, name.clone()), (capture.clone(), step_id.to_string()));
             }
         }
     }
@@ -741,6 +740,7 @@ where
 
                     let request = StepExecutionRequest {
                         unified: Arc::new(unified.clone()),
+                        workflow_id: workflow_name.to_string(),
                         step: step.clone(),
                         impure_timestamp: if tool_spec.is_impure {
                             Some(Timestamp::now())
@@ -876,9 +876,12 @@ where
                         if attempt > 1 {
                             retried_steps += 1;
                         }
-                        let StepExecutionBundle { instance, cache_hit, producible_outputs } =
-                            bundle;
-                        let instance_key = instance.instance_key;
+                        let StepExecutionBundle {
+                            instance,
+                            instance_key,
+                            cache_hit,
+                            producible_outputs,
+                        } = bundle;
                         // The two conflict rules are enforced as steps settle:
                         // a claim that contradicts an earlier one in this run
                         // fails the run before it writes anything, and long
@@ -891,7 +894,12 @@ where
                         // turn a changed declaration elsewhere into a phantom
                         // conflict that repeats on every sync.
                         if !cache_hit {
-                            record_capture_claims(&mut run_capture_claims, &instance, &step_id)?;
+                            record_capture_claims(
+                                &mut run_capture_claims,
+                                &instance,
+                                instance_key,
+                                &step_id,
+                            )?;
                         }
                         for (name, record) in &instance.outputs {
                             step_outputs
@@ -900,12 +908,11 @@ where
                                 .insert(name.clone(), record.hash);
                         }
                         // Insert executed instance into state so subsequent
-                        // steps (and future runs) can find cache hits, plus
-                        // the GC last-reference clock on the aux record. Refreshing the clock on both
-                        // creation and cache-hit mirrors the pre-redesign
-                        // executor behavior (`conductor_gc_last_referenced_at =
-                        // now` on every bundle), keeping instances alive across
-                        // GC sweeps. The contribution is retained so later
+                        // steps (and future runs) can find cache hits, with the
+                        // GC last-reference clock set to this settlement. A run
+                        // referencing an instance is what keeps it alive across
+                        // GC sweeps, and both a fresh execution and a cache hit
+                        // are references. The contribution is retained so later
                         // spawns scope their state snapshot to their own
                         // ancestors (see `scoped_state_snapshot`).
                         //
@@ -944,15 +951,12 @@ where
                                 )?
                             };
                         }
-                        let instance = with_accumulated_step_ids(stored, incoming);
-                        let contribution = StepStateContribution {
-                            instance,
-                            aux: InstanceAux { last_referenced_at: Timestamp::now() },
-                        };
+                        let mut instance = with_accumulated_step_ids(stored, incoming);
+                        instance.last_referenced_at = Timestamp::now();
+                        let contribution = StepStateContribution { instance, instance_key };
                         state
                             .tool_call_instances
                             .insert(instance_key, contribution.instance.clone());
-                        state.aux.instances.insert(instance_key, contribution.aux.clone());
                         step_state_contributions.insert(step_id.clone(), contribution);
                         #[cfg(feature = "progress")]
                         if options.progress_group.is_some() {
@@ -1153,7 +1157,7 @@ where
             if failed_steps == 0 {
                 let live: BTreeSet<Hash> = step_state_contributions
                     .values()
-                    .map(|contribution| contribution.instance.instance_key)
+                    .map(|contribution| contribution.instance_key)
                     .collect();
                 state.aux.live_instances.insert(workflow_name.to_string(), live);
             }
@@ -1236,6 +1240,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::StepRef;
 
     /// Verifies the dependency graph records in-degree and reverse edges for
     /// a basic DAG, so the scheduler seeds the right initial ready queue.
@@ -1400,13 +1405,16 @@ mod tests {
     }
 
     /// Builds a minimal tool-call instance for state-scoping tests.
-    fn test_instance(instance_key: Hash) -> ToolCallInstance {
+    ///
+    /// The record carries no key of its own, so `instance_key` is the caller's
+    /// name for it and is used only where the fixture files the record.
+    fn test_instance(_instance_key: Hash) -> ToolCallInstance {
         ToolCallInstance {
-            instance_key,
             tool_call_id: "echo@v1".to_string(),
             impure: false,
             invalidated_at: None,
             executed_at: Timestamp::default(),
+            last_referenced_at: Timestamp::default(),
             step_ids: BTreeSet::new(),
             command_args: Vec::new(),
             env_vars: BTreeMap::new(),
@@ -1428,13 +1436,15 @@ mod tests {
         let key = Hash::from_content(b"instance");
         let mut stored = test_instance(key);
         stored.invalidated_at = Some(Timestamp::from_unix_nanos(5));
-        stored.step_ids = BTreeSet::from(["step-0-echo".to_string()]);
+        let recorded =
+            StepRef { workflow_id: "default".to_string(), step_id: "step-0-echo".into() };
+        stored.step_ids = BTreeSet::from([recorded.clone()]);
         let incoming = test_instance(key);
 
         let settled = with_accumulated_step_ids(Some(&stored), incoming);
 
         assert_eq!(settled.invalidated_at, None);
-        assert_eq!(settled.step_ids, BTreeSet::from(["step-0-echo".to_string()]));
+        assert_eq!(settled.step_ids, BTreeSet::from([recorded]));
     }
 
     /// Verifies the ancestor closure is transitive (a join sees its root),
@@ -1531,10 +1541,8 @@ mod tests {
         let unrelated_key = Hash::from_content(b"unrelated-c");
         let mut run_entry = ConductorState::new_empty();
         run_entry.tool_call_instances.insert(run_entry_key, test_instance(run_entry_key));
-        let contribution = |key: Hash| StepStateContribution {
-            instance: test_instance(key),
-            aux: InstanceAux::default(),
-        };
+        let contribution =
+            |key: Hash| StepStateContribution { instance: test_instance(key), instance_key: key };
         let contributions = BTreeMap::from([
             ("a".to_string(), contribution(ancestor_key)),
             ("c".to_string(), contribution(unrelated_key)),
@@ -1558,14 +1566,13 @@ mod tests {
             !scoped.tool_call_instances.contains_key(&unrelated_key),
             "the unrelated step's instance must not leak into the scoped snapshot"
         );
-        assert!(
-            scoped.aux.instances.contains_key(&ancestor_key),
-            "the ancestor's aux record merges alongside its instance"
+        assert_eq!(
+            scoped.tool_call_instances.len(),
+            2,
+            "the snapshot holds exactly the run-entry instance plus the ancestor's: {:?}",
+            scoped.tool_call_instances.keys().collect::<Vec<_>>(),
         );
-        assert!(
-            !scoped.aux.instances.contains_key(&unrelated_key),
-            "the unrelated step's aux record must not leak either"
-        );
+        assert!(!scoped.tool_call_instances.contains_key(&unrelated_key));
     }
 
     /// Verifies settlement accumulates `step_ids` and takes every other field
@@ -1579,12 +1586,14 @@ mod tests {
     #[test]
     fn with_accumulated_step_ids_unions_provenance_and_prefers_incoming_fields() {
         let key = Hash::from_content(b"shared-instance");
+        let step_a = StepRef { workflow_id: "default".to_string(), step_id: "step-a".into() };
+        let step_b = StepRef { workflow_id: "default".to_string(), step_id: "step-b".into() };
         let mut stored = test_instance(key);
-        stored.step_ids = BTreeSet::from(["step-a".to_string()]);
+        stored.step_ids = BTreeSet::from([step_a.clone()]);
         stored.tool_call_id = "stale@v1".to_string();
         stored.impure = false;
         let mut incoming = test_instance(key);
-        incoming.step_ids = BTreeSet::from(["step-b".to_string()]);
+        incoming.step_ids = BTreeSet::from([step_b.clone()]);
         incoming.tool_call_id = "fresh@v2".to_string();
         incoming.impure = true;
 
@@ -1592,7 +1601,7 @@ mod tests {
 
         assert_eq!(
             merged.step_ids,
-            BTreeSet::from(["step-a".to_string(), "step-b".to_string()]),
+            BTreeSet::from([step_a, step_b]),
             "a stored id survives alongside the incoming one"
         );
         assert_eq!(
@@ -1600,7 +1609,6 @@ mod tests {
             "fields other than step_ids come from the incoming record"
         );
         assert!(merged.impure, "a re-execution's classification is the incoming one");
-        assert_eq!(merged.instance_key, key, "the merged record stays under its own key");
 
         let first = test_instance(key);
         assert_eq!(

@@ -484,6 +484,7 @@ async fn resolve_single_step_output_hashes_strict(
         .filter_map(|(instance_key, instance)| {
             (instance.tool_call_id == conductor_tool_key
                 && instance_matches_expected_inputs(
+                    instance_key,
                     instance,
                     &expected_inputs,
                     &merged_step_inputs,
@@ -859,6 +860,7 @@ async fn resolve_input_binding_hash(
 /// the names a step binds inside that instance is a separate question, answered
 /// by name in [`instance_matches_expected_output_names`].
 pub(super) fn instance_matches_expected_inputs(
+    instance_key: &Hash,
     instance: &ToolCallInstance,
     expected_inputs: &ExpectedStepInputs,
     merged_step_inputs: &BTreeMap<String, String>,
@@ -872,7 +874,7 @@ pub(super) fn instance_matches_expected_inputs(
         merged_step_inputs,
         instance_key_resolved_values,
     );
-    mediapm_conductor::instance_matches_stored_key(instance, &input_hashes)
+    mediapm_conductor::instance_matches_stored_key(*instance_key, instance, &input_hashes)
 }
 
 /// Returns whether `instance` records every name `expected_outputs` binds.
@@ -914,6 +916,19 @@ mod tests {
 
     fn fixture_path(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+    }
+
+    /// Returns whether `instance` records serving `step_id`, whatever workflow
+    /// the ref names.
+    ///
+    /// The demo fixture is a record of one workflow, so its refs are compared by
+    /// step id alone: a ref migrated from a document written before refs named a
+    /// workflow reads with an empty workflow id, and pairing has to accept it or
+    /// every rewrite plan would refuse an otherwise honest record. Nothing
+    /// outside this module's fixture tooling pairs by bare id — an invalidation
+    /// request, which decides what work to discard, names the workflow.
+    fn records_step(instance: &ToolCallInstance, step_id: &str) -> bool {
+        instance.step_ids.iter().any(|recorded| recorded.step_id == step_id)
     }
 
     fn load_generated_doc() -> NickelDocument {
@@ -997,7 +1012,10 @@ mod tests {
             .get_mut(&key)
             .expect("recorded import instance")
             .step_ids
-            .insert(DUPLICATED_IMPORT_STEP_ID.to_string());
+            .insert(mediapm_conductor::StepRef {
+                workflow_id: "mediapm.media.demo.local.dQw4w9WgXcQ".to_string(),
+                step_id: DUPLICATED_IMPORT_STEP_ID.to_string(),
+            });
         claimed
     }
 
@@ -1136,10 +1154,11 @@ mod tests {
                 .expect("build ffmpeg instance-key resolved values");
         let ffmpeg_instance = state
             .tool_call_instances
-            .values()
-            .find(|instance| {
+            .iter()
+            .find(|(instance_key, instance)| {
                 instance.tool_call_id == *conductor_tool_key
                     && instance_matches_expected_inputs(
+                        instance_key,
                         instance,
                         &expected_inputs,
                         &merged_ffmpeg_inputs,
@@ -1147,7 +1166,7 @@ mod tests {
                     )
             })
             .expect("ffmpeg instance matching step inputs");
-        assert!(ffmpeg_instance.outputs.contains_key("primary"));
+        assert!(ffmpeg_instance.1.outputs.contains_key("primary"));
     }
 
     /// A step under a tool that declares capture defaults matches the instance
@@ -1182,11 +1201,11 @@ mod tests {
         )]);
         let tool_call_id = "ffmpeg@blake3:fixture";
         let instance = ToolCallInstance {
-            instance_key: mediapm_conductor::derive_tool_call_instance_key(tool_call_id, &[], &[]),
             tool_call_id: tool_call_id.to_string(),
             impure: false,
             invalidated_at: None,
             executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
+            last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(0),
             step_ids: BTreeSet::new(),
             command_args: Vec::new(),
             env_vars: BTreeMap::new(),
@@ -1225,11 +1244,11 @@ mod tests {
         let tool_call_id = "echo@v1";
         let stdout_hash = Hash::from_content(b"stdout-bytes");
         let instance = ToolCallInstance {
-            instance_key: mediapm_conductor::derive_tool_call_instance_key(tool_call_id, &[], &[]),
             tool_call_id: tool_call_id.to_string(),
             impure: false,
             invalidated_at: None,
             executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
+            last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(0),
             step_ids: BTreeSet::new(),
             command_args: Vec::new(),
             env_vars: BTreeMap::new(),
@@ -1486,15 +1505,6 @@ mod tests {
                 ));
             }
             let (stored_key, instance) = candidates[0];
-            if instance.instance_key != *stored_key {
-                return Err(format!(
-                    "step '{}' (tool '{tool_call_id}') is recorded under key {} but the instance \
-                     body carries instance_key {}",
-                    step.id,
-                    stored_key.to_hex(),
-                    instance.instance_key.to_hex(),
-                ));
-            }
             claimed.insert(*stored_key);
             paired.push((step.id.clone(), tool_call_id, *stored_key));
             step_outputs.insert(step.id.clone(), output_hashes_from_instance(instance));
@@ -1693,10 +1703,9 @@ mod tests {
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
 
         let import_key = import_instance_key(&state);
-        let mut stray = state.tool_call_instances[&import_key].clone();
+        let stray = state.tool_call_instances[&import_key].clone();
         let stray_key = Hash::from_content(b"task-4-oracle-unclaimed-instance");
         assert_ne!(stray_key, import_key, "the stray record needs a key of its own");
-        stray.instance_key = stray_key;
         state.tool_call_instances.insert(stray_key, stray);
 
         let error = oracle_derive_demo_instance_keys(&cas, &generated, &state, &workflow)
@@ -1832,7 +1841,7 @@ mod tests {
             let paired = state
                 .tool_call_instances
                 .iter()
-                .filter(|(_, instance)| instance.step_ids.contains(&step.id))
+                .filter(|(_, instance)| records_step(instance, &step.id))
                 .collect::<Vec<_>>();
             if paired.len() != 1 {
                 return Err(format!(
@@ -1939,7 +1948,7 @@ mod tests {
             let instance = &state.tool_call_instances[stored_key];
             for step_id in &rewrite.claiming_steps {
                 assert!(
-                    instance.step_ids.contains(step_id),
+                    records_step(instance, step_id),
                     "step {step_id} claims instance {} it did not record",
                     stored_key.to_hex(),
                 );
@@ -2117,7 +2126,7 @@ mod tests {
         })
     }
 
-    /// Asserts that the `instance_key`s recorded in
+    /// Asserts that the instance keys recorded in
     /// `tests/fixtures/demo_conductor_state.json` are the keys the current
     /// derivation produces, and rewrites them when asked.
     ///
@@ -2139,10 +2148,9 @@ mod tests {
     /// the companion half — that the file also matches what `encode_state_json`
     /// produces — so this test reads the same fixture without comparing bytes.
     ///
-    /// The rewrite replaces the recorded `instance_key` in the fixture's JSON
-    /// text — the `tool_call_instances` map key, that entry's `instance_key`
-    /// field, and the matching `aux.instances` key — so every other byte of the
-    /// file is preserved. Provenance is read, never written: `step_ids` is the
+    /// The rewrite replaces the recorded key in the fixture's JSON text — the
+    /// `tool_call_instances` map key, and every `aux.live_instances` entry that
+    /// names it — so every other byte of the file is preserved. Provenance is read, never written: `step_ids` is the
     /// pairing record, the planner can pair an instance only through it, and a
     /// record the planner paired already carries the ids it paired by, so there
     /// is nothing to synthesize. A fixture that does not supply the provenance
@@ -2226,7 +2234,7 @@ mod tests {
                 .expect("a planned rewrite names a recorded instance");
             for step_id in &rewrite.claiming_steps {
                 assert!(
-                    instance.step_ids.contains(step_id),
+                    records_step(instance, step_id),
                     "instance {} must name step '{step_id}' as a step it served",
                     stored_key.to_hex(),
                 );
@@ -2266,11 +2274,12 @@ mod tests {
     ///
     /// The caller proves every instance pairs with some step's recorded
     /// provenance before calling this, so a fixture the planner cannot pair is
-    /// never touched. The replacement works on the file's JSON text — the
-    /// `tool_call_instances` map key, that entry's `instance_key` field, and the
-    /// matching `aux.instances` key carry the same string — and the edited text
-    /// is decoded and re-encoded through `encode_state_json` before it is
-    /// written, so the fixture always lands in the current wire shape. The bytes
+    /// never touched. The replacement works on the file's JSON text: the key is
+    /// the `tool_call_instances` map key, and it appears again in every
+    /// `aux.live_instances` entry that names it, so both move together or the
+    /// fixture would carry a live seed pointing at no record. The edited text is
+    /// decoded and re-encoded through `encode_state_json` before it is written,
+    /// so the fixture always lands in the current wire shape. The bytes
     /// go to a sibling temporary file in the fixture's own directory and are
     /// then renamed over it, so a partial write is never observable in a
     /// checked-in record; the sibling path keeps the rename on one filesystem,
@@ -2337,7 +2346,7 @@ mod tests {
             let instance = &rewritten.tool_call_instances[&current_key];
             for step_id in &rewrite.claiming_steps {
                 assert!(
-                    instance.step_ids.contains(step_id),
+                    records_step(instance, step_id),
                     "rewritten fixture must name step '{step_id}' as a step the instance served",
                 );
             }
@@ -2433,11 +2442,11 @@ mod tests {
         state.tool_call_instances.insert(
             primary_key,
             ToolCallInstance {
-                instance_key: primary_key,
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
                 invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(2),
+                last_referenced_at: Timestamp::from_unix_nanos(2),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
@@ -2457,11 +2466,11 @@ mod tests {
         state.tool_call_instances.insert(
             sidecar_key,
             ToolCallInstance {
-                instance_key: sidecar_key,
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
                 invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(1),
+                last_referenced_at: Timestamp::from_unix_nanos(1),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
@@ -2589,11 +2598,11 @@ mod tests {
         state.tool_call_instances.insert(
             instance_key,
             ToolCallInstance {
-                instance_key,
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
                 invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(1),
+                last_referenced_at: Timestamp::from_unix_nanos(1),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
@@ -2721,11 +2730,11 @@ mod tests {
         state.tool_call_instances.insert(
             primary_key,
             ToolCallInstance {
-                instance_key: primary_key,
                 tool_call_id: "yt-dlp".to_string(),
                 impure: true,
                 invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(2),
+                last_referenced_at: Timestamp::from_unix_nanos(2),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
@@ -2836,11 +2845,11 @@ mod tests {
         state.tool_call_instances.insert(
             instance_key,
             ToolCallInstance {
-                instance_key,
                 tool_call_id: versioned_tool_id.clone(),
                 impure: true,
                 invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(1),
+                last_referenced_at: Timestamp::from_unix_nanos(1),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),

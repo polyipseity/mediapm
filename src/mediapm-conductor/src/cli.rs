@@ -461,7 +461,7 @@ mod tests {
     };
     use crate::api::RuntimeStoragePaths;
     use crate::conductor_impl::Conductor;
-    use crate::state::{CapturedOutput, ConductorState, ToolCallInstance};
+    use crate::state::{CapturedOutput, ConductorState, StepRef, ToolCallInstance};
 
     /// Builds the state one command test starts from: a single recorded
     /// instance with an output, so a test can prove the record survives a
@@ -471,12 +471,15 @@ mod tests {
         state.tool_call_instances.insert(
             key,
             ToolCallInstance {
-                instance_key: key,
                 tool_call_id: "echo@v1".to_string(),
                 impure: false,
                 invalidated_at: None,
                 executed_at: Timestamp::default(),
-                step_ids: BTreeSet::from(["step-0-echo".to_string()]),
+                last_referenced_at: Timestamp::default(),
+                step_ids: BTreeSet::from([StepRef {
+                    workflow_id: "default".to_string(),
+                    step_id: "step-0-echo".to_string(),
+                }]),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),

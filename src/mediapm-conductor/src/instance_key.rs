@@ -195,15 +195,21 @@ pub fn deterministic_input_hashes_from_resolved_value_bytes(
     input_hashes
 }
 
-/// Returns true when `instance.instance_key` matches re-derived key material.
+/// Returns true when `stored_key` — the key `instance` is filed under — matches
+/// re-derived key material.
 ///
 /// The derivation is content-only (tool id, deterministic input hashes), so an
 /// impure instance's stored key keeps matching no matter how much wall-clock
 /// time separates the recording from the check, and a step's capture
 /// declarations cannot move it. The inputs a step staged are not compared here
 /// for the reason given on [`derive_instance_key`].
+///
+/// The key is a parameter and the record does not carry one: the map key is the
+/// instance's only identity, so there is no second copy for a caller to compare
+/// against the derivation instead of against where the record is filed.
 #[must_use]
 pub fn instance_matches_stored_key(
+    stored_key: Hash,
     instance: &ToolCallInstance,
     deterministic_input_hashes: &[Hash],
 ) -> bool {
@@ -212,7 +218,7 @@ pub fn instance_matches_stored_key(
         deterministic_input_hashes,
         &[],
     );
-    derived == instance.instance_key
+    derived == stored_key
 }
 
 #[cfg(test)]

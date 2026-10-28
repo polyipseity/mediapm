@@ -49,7 +49,10 @@ fn conductor_state_on_disk(paths: &MediaPmPaths) -> ConductorState {
     mediapm_conductor::decode_state_json(&bytes).expect("decode conductor state")
 }
 
-/// Asserts every recorded instance that served `step_id` carries the marker.
+/// Asserts the marker reaches exactly the instances that served `step_id`.
+///
+/// The instances are named by the key they are filed under, because that is the
+/// only identity a record has.
 fn assert_step_instances_marked(
     state: &ConductorState,
     step_id: &str,
@@ -58,16 +61,16 @@ fn assert_step_instances_marked(
 ) {
     let served: Vec<_> = state
         .tool_call_instances
-        .values()
-        .filter(|instance| instance.step_ids.contains(step_id))
+        .iter()
+        .filter(|(_, instance)| instance.step_ids.iter().any(|step| step.step_id == step_id))
         .collect();
     assert!(!served.is_empty(), "{context}: no recorded instance served '{step_id}'");
-    for instance in served {
+    for (key, instance) in served {
         assert_eq!(
             instance.invalidated_at.is_some(),
             marked,
             "{context}: instance {} of '{step_id}' must be {}",
-            instance.instance_key,
+            key.to_hex(),
             if marked { "marked" } else { "unmarked" },
         );
     }
@@ -318,15 +321,17 @@ async fn a_failed_run_leaves_the_marker_set() -> Result<(), MediaPmError> {
     Ok(())
 }
 
-/// Marking a step also marks the work another media would reuse.
+/// Marking one media's step leaves another media that reuses the step id alone.
 ///
-/// The accepted blast radius, pinned: media step ids carry no media identity, so
-/// two sources with the same step shape share one step id and their recorded
-/// instances are marked together. The alternative — remembering which instance
-/// each media last used — goes stale exactly when the record is superseded, and
-/// the step the operator asked to re-run would then silently not re-run.
+/// Step ids carry no media identity: two sources of the same shape get the same
+/// `step-0-0-import-…` id in their own workflows. The marker selects on the pair
+/// — the workflow generated for the media and the step id inside it — so asking
+/// to re-run one media's step re-runs exactly that media. Selecting on the bare
+/// id would discard the other media's work, which nobody asked about, and the
+/// operator would see a sync redo an unrelated download.
 #[tokio::test]
-async fn marking_a_shared_step_marks_every_media_that_reuses_it() -> Result<(), MediaPmError> {
+async fn marking_a_shared_step_leaves_another_media_that_reuses_it_alone()
+-> Result<(), MediaPmError> {
     let (mut service, _root, _cache) = service_with_cache(MediaRuntimeStorage::default()).await?;
     let uri = Url::parse(SOURCE_URI).expect("source URI must parse");
     let media_id = media_id_from_uri(&uri);
@@ -338,14 +343,34 @@ async fn marking_a_shared_step_marks_every_media_that_reuses_it() -> Result<(), 
 
     let summary = service.invalidate_media_step_tool_calls(&media_id, 0).await?;
     assert_eq!(
-        summary.changed_instances, 2,
-        "both media share the step id, so both instances carry the marker: {summary:?}",
+        summary.changed_instances, 1,
+        "only the named media's instance carries the marker: {summary:?}",
     );
+
+    let state = conductor_state_on_disk(&service.paths().clone());
+    assert_eq!(
+        state
+            .tool_call_instances
+            .values()
+            .filter(|instance| instance.invalidated_at.is_some())
+            .count(),
+        1,
+        "exactly one recorded instance is marked",
+    );
+    for instance in state.tool_call_instances.values() {
+        let names_the_media =
+            instance.step_ids.iter().any(|step| step.workflow_id == summary.workflow_id);
+        assert_eq!(
+            instance.invalidated_at.is_some(),
+            names_the_media,
+            "the marker must follow the workflow the request named",
+        );
+    }
 
     let forced = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        forced.executed_instances, 2,
-        "the shared step re-executes for both media: {forced:?}",
+        forced.executed_instances, 1,
+        "the named media re-executes while the other is served from cache: {forced:?}",
     );
 
     drop(service);
@@ -394,11 +419,11 @@ async fn unknown_media_and_absent_step_indexes_are_errors() -> Result<(), MediaP
 
     // Neither failure marked anything.
     let state = conductor_state_on_disk(&service.paths().clone());
-    for instance in state.tool_call_instances.values() {
+    for (key, instance) in &state.tool_call_instances {
         assert!(
             instance.invalidated_at.is_none(),
             "a rejected invalidation must not mark instance {}",
-            instance.instance_key,
+            key.to_hex(),
         );
     }
 

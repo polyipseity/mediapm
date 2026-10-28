@@ -13,25 +13,25 @@
 //! - Files outside `versions/` must reach versioned symbols only through
 //!   `versions/mod.rs`, never through a direct `versions::vX` path.
 //!
-//! ## `aux: AuxData` is the historical V1 shape
+//! ## `aux` is a version-local copy of the historical V1 shape
 //!
-//! This envelope types `aux` as [`AuxData`] rather than a version-local
-//! `AuxDataV1`, and that is confirmed correct, not a pending deviation:
-//! `AuxData` as it is typed today *is* the shape a V1 envelope's aux block
-//! always had. V2 introduced the version-local `AuxDataV2` because V2 really
-//! did change the wire shape; V1 predates that change, so the runtime type
-//! and the V1 wire shape coincide.
+//! This envelope types `aux` as [`AuxDataV1`]. It used to reuse the runtime
+//! `AuxData` on the argument that the two coincided, and that argument has now
+//! failed in exactly the way it predicted: the runtime block dropped the
+//! instance counter and the per-instance clock map, so reusing it would have
+//! silently redefined the V1 wire format and refused to read the files it was
+//! meant to migrate. A reader for an old format keeps its own copy of that
+//! format's shape; the runtime type is free to move.
 //!
-//! Re-typing this field into a version-local copy would be wrong on both
-//! counts: it would duplicate a type that has no V2-era variant, and it would
-//! invite a future edit of [`AuxData`] to silently rewrite the V1 wire format.
+//! Every field of [`AuxDataV1`] decodes from the JSON the old writers emitted,
+//! because the timestamp newtype serializes as bare Unix nanoseconds, which is
+//! what those files held.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::Hash;
+use mediapm_utils::Timestamp;
 use serde::{Deserialize, Serialize};
-
-use crate::state::AuxData;
 
 /// V1 schema version marker.
 pub(crate) const ORCHESTRATION_STATE_VERSION_V1: u32 = 1;
@@ -49,6 +49,35 @@ pub(crate) struct InstanceRefV1 {
     pub hash: Hash,
 }
 
+/// V1 per-instance auxiliary metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub(crate) struct InstanceAuxV1 {
+    /// Conductor GC last-reference clock, in Unix nanoseconds.
+    #[serde(default)]
+    pub last_referenced_at: Timestamp,
+}
+
+/// V1 auxiliary metadata block.
+///
+/// The counter and the per-instance clock map are carried even though the V1→V2
+/// migration reads only the counter: they are what the format held, and a reader
+/// that dropped them would decode a V1 document into a different document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub(crate) struct AuxDataV1 {
+    /// Monotonic tool call instance counter.
+    #[serde(default)]
+    pub tool_call_instance_counter: u64,
+    /// Conductor GC reference clock, in Unix nanoseconds.
+    #[serde(default)]
+    pub conductor_gc_epoch: Timestamp,
+    /// Per-instance aux metadata keyed by instance key.
+    #[serde(default)]
+    pub instances: BTreeMap<Hash, InstanceAuxV1>,
+    /// Instance keys each workflow's latest successful run produced or hit.
+    #[serde(default)]
+    pub live_instances: BTreeMap<String, BTreeSet<Hash>>,
+}
+
 /// V1 orchestration state envelope stored in CAS.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct OrchestrationStateEnvelopeV1 {
@@ -56,6 +85,6 @@ pub(crate) struct OrchestrationStateEnvelopeV1 {
     pub version: u32,
     /// Instance store (key → CAS hash reference).
     pub instances: BTreeMap<String, InstanceRefV1>,
-    /// Auxiliary metadata.
-    pub aux: AuxData,
+    /// Auxiliary metadata, in the shape V1 wrote it.
+    pub aux: AuxDataV1,
 }

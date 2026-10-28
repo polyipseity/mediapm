@@ -77,7 +77,7 @@ Document contract:
 - Payload staging is decided at two levels, and the document schema that carries the pair is v4: `runtime.payload_staging` is the default a tool that names none takes (`in_place` when absent), and `tools.<tool>.runtime.payload_staging` is that tool's choice — `inherit`, the default, or one of the three strategies. `ConfigPayloadStaging` is the choice type and `PayloadStaging` the strategy it resolves to; `NickelDocument::effective_payload_staging` resolves the pair while the document is read, so `to_unified` writes a concrete strategy onto every unified tool and nothing downstream holds `inherit`.
 - Validation judges the resolved strategy, so a tool with a content map that inherits `in_place` or `hard_link` still needs the `payload_root` that strategy reads, and the error says when the strategy came from the document default rather than from the tool.
 - The encoder states each decision once: a tool's choice only where it differs from the resolved default, and the document default only where it is not `in_place`. The rule is loadability, not size: mediapm merges its user document over the generated one, an absent field already means `in_place`, and a generated `in_place` would be a second explicit statement that conflicts with a user document stating any other default — a legal document made unloadable by a value nobody chose. The hop down to v3 writes the resolved strategy onto every tool that inherited it before the default leaves the document, so a downgrade loses no decision.
-- the state file holds the JSON orchestration state only, with its own integer `version` marker (`STATE_VERSION`, currently 3); it is not a Nickel document. The legacy `impure_timestamps` and `state_pointer` fields survive in the v1 config schema and are dropped by the v1→v2 migration; neither is a field of the state file.
+- the state file holds the JSON orchestration state only, with its own integer `version` marker (`STATE_VERSION`, currently 5); it is not a Nickel document. The legacy `impure_timestamps` and `state_pointer` fields survive in the v1 config schema and are dropped by the v1→v2 migration; neither is a field of the state file.
 - `conductor.ncl` and `conductor.generated.ncl` share the full schema surface, and both carry an explicit top-level numeric `version` marker.
 - Effective configuration is resolved by merging the two config documents; the state file is loaded and saved separately.
 - Conflicts must fail fast with explicit workflow errors.
@@ -186,7 +186,7 @@ When editing tool/config schema behavior, preserve these invariants:
 19. Builtin `import`/`export` `kind=file|folder` path semantics: `path_mode` defaults to `relative` (resolves `path` against the outermost config directory, must not escape that root); `path_mode=absolute` requires an explicit absolute `path`.
 20. Orchestration-state snapshots must include explicit top-level `version`.
 21. `ToolCallInstance` has no `metadata` record: provenance lives at the top level (`tool_call_id`, `impure`, `executed_at`, `step_ids`).
-22. `ToolCallInstance` persists content-addressed records only: `command_args`, `env_vars` and `materialized_inputs` hold `HashedValueRecord`s (hash + determinism), and captured outputs hold `CapturedOutput`s (hash + the spec that produced it). No field stores inline payload bytes.
+22. `ToolCallInstance` persists content-addressed records only: `command_args` is the argv's hashes in order (key material), `env_vars` and `materialized_inputs` map a name or destination to a hash (recorded, never key material), and captured outputs hold `CapturedOutput`s (hash + the spec that produced it). No field stores inline payload bytes.
 23. A name-addressed output record carries the capture spec that produced it, and reuse requires the recorded spec to identify the same capture: `capture`, `allow_empty` and `include_topmost_folder`. `save` is recorded beside the entry but never compared, because persistence changes no bytes — two steps that share an instance and disagree only about keeping the artifact must not invalidate each other. A recorded `None` (the v2 migration's "spec unknown") never matches. There is no merged-persistence record: persistence is the `save` of the spec the entry carries, it is the executing step's decision, and reuse never consults it. That is what lets the bytes be reclaimed without breaking reuse: a `false` entry is still served while its producing instance is reachable, the collector reclaims its bytes once that instance is superseded (Section G), and the probe's `stat` check then turns that reuse into a miss, so the step re-executes instead of reading bytes that are gone.
 24. If a cached `${step_output...}` payload fails CAS integrity, conductor auto-recovers only for pure workflows (warn, drop affected instances, delete the corrupt hash, retry once). Impure workflows fail without auto-retry unless `retry_impure` is enabled, which applies the same cache-invalidation and retry logic to both. Configure via `RunWorkflowOptions.retry_impure` (API), `runtime.retry_impure` (conductor.ncl), or `--retry-impure` (CLI).
 25. `tools.<tool>.runtime.max_retries` controls the per-tool outer retry budget after the initial failed call. Valid values: `-1` (use runtime default) or non-negative integers; unified execution normalizes `-1` to the current default retry policy.
@@ -446,13 +446,19 @@ The one property the store adds is dedupe of repeated identical saves, and it is
 
 ## D. Orchestration State Decode Migration
 
-Version dispatch lives in `src/mediapm-conductor/src/state/versions/mod.rs`. `decode_state_json` peeks the state's numeric `version` field and routes to the matching wire module; `decode_state_json_with_cas` is the async form, needed because a v1 document references its instance blobs through the CAS. V1 and V2 are migration-only, V3 is current, and `encode_state_json` always writes V3.
+Version dispatch lives in `src/mediapm-conductor/src/state/versions/mod.rs`. `decode_state_json` peeks the state's numeric `version` field and routes to the matching wire module; `decode_state_json_with_cas` is the async form, needed because a v1 document references its instance blobs through the CAS. V1 through V4 are migration-only, V5 is current, and `encode_state_json` always writes V5.
+
+### V4 → V5
+
+- The record dropped its own `instance_key`. The key is the `tool_call_instances` map key, and the migration discards the stored copy instead of comparing it: a document that ever disagreed with itself about which key a record sat under has no reader that could say which was right.
+- `aux.instances` is gone. Each record carries `last_referenced_at`, taken from the aux entry the migration found for its key; a record with no entry takes the epoch, which is the value the collector already read as "never referenced".
+- `step_ids` is a set of `StepRef` — workflow id plus step id — so a marker selects the step a media actually ran. The migration files an existing bare id under an empty workflow id, because the document it came from never recorded which workflow the step ran in; that residue is reported rather than guessed at.
 
 ### V2 → V3
 
 - A v3 output is a `CapturedOutput`: the hash plus the `capture: Option<OutputCaptureSpec>` that produced it. The migration maps every v2 output to `capture: None`, the "spec unknown" sentinel that matches no declared spec, so an affected step re-executes once and re-records.
 - V2's per-instance `save_modes` map is dropped without being read; a save mode now belongs to the capture spec recorded with the entry it describes.
-- `InstanceAux` carries the GC clock (`last_referenced_at`) only.
+- V2's per-instance aux record carried no per-entry spec; its GC clock was the only field the v3 migration kept.
 
 ### V1 → V2 → V3
 
@@ -464,7 +470,7 @@ A v1 document is migrated in two hops: `migrate_v1_to_v2` reads the instance blo
 
 ### Cutoff Computation
 
-`gc::run_conductor_gc` takes `ttl_seconds` as a parameter and calls `ConductorState::run_conductor_gc`, which compares each unreferenced instance's `aux.instances[key].last_referenced_at` against `conductor_gc_epoch` plus the TTL (a missing aux entry counts as epoch 0, so the instance is evicted). MediaPM passes `lifecycle.instance_ttl_seconds`, defaulting to `DEFAULT_INSTANCE_TTL_SECONDS` (604800, 7 days) in `mediapm/src/config/defaults.rs`.
+`gc::run_conductor_gc` takes `ttl_seconds` as a parameter and calls `ConductorState::run_conductor_gc`, which compares each unreferenced instance's own `last_referenced_at` against `conductor_gc_epoch` plus the TTL. MediaPM passes `lifecycle.instance_ttl_seconds`, defaulting to `DEFAULT_INSTANCE_TTL_SECONDS` (604800, 7 days) in `mediapm/src/config/defaults.rs`.
 
 ## E. Instance Key Lifecycle and Failure Recovery
 
@@ -517,12 +523,12 @@ The reachable set is computed by the pass from the run seeds, never supplied by 
 
 1. **Seed pruning**: an entry whose workflow the merged document no longer declares is dropped, so a deleted workflow's instances become unreachable. Pruning runs only when the pass otherwise proceeds: a generated document can be legitimately incomplete for one run, so a missing workflow is evidence of deletion only when the document is otherwise describing the same world.
 2. **Closure**: the seed keys, plus every instance that recorded, as an output, a hash some reached instance names in `materialized_inputs`. Sharing widens the set; `invalidated_at` does not narrow it, so a marked instance a live consumer still reads keeps its bytes.
-3. **Reachability refresh**: every key in the closure is kept and its `aux.instances[key].last_referenced_at` is set to the GC epoch.
-4. **TTL sweep**: an instance outside the closure is evicted once `last_referenced_at + ttl < conductor_gc_epoch`, and its aux entry is dropped with it. A key inside the closure that has no aux entry gets one at the current epoch rather than being skipped, so a record protected this pass is not evicted on sight the moment it becomes unreachable; a key outside the closure with no aux entry counts as epoch 0 and is evicted on the first pass that classifies.
+3. **Reachability refresh**: every key in the closure is kept and its record's `last_referenced_at` is set to the GC epoch.
+4. **TTL sweep**: an instance outside the closure is evicted once its `last_referenced_at + ttl < conductor_gc_epoch`, and the record goes with it.
 
 Two abstentions keep the sweep from deleting more than it understands. A document that declares no workflow at all — config discovery skips missing files and an empty merge is legal — makes the pass refresh, evict and prune nothing while the state still holds instances, because its empty seed set would have swept everything. A document that declares a workflow with no seed does the same, logging once: a closure computed from an absent seed is empty, and an empty closure past the grace period would empty the store.
 
-`aux.instances[*].last_referenced_at` is the only TTL clock: it is refreshed on every reference and on every retained sweep, so an instance that stops being referenced survives the full TTL window. `AuxData::conductor_gc_epoch` advances to `Timestamp::now()` at the end of each sweep, so the sweep measures the TTL against the previous sweep's clock.
+`ToolCallInstance::last_referenced_at` is the only TTL clock: it is written when the instance settles and refreshed on every retained sweep, so an instance that stops being referenced survives the full TTL window. `AuxData::conductor_gc_epoch` advances to `Timestamp::now()` at the end of each sweep, so the sweep measures the TTL against the previous sweep's clock.
 
 **Trigger points**: `Conductor::run_gc` (the CLI `conductor gc` command) calls the actor's `run_gc`, which computes the reachable set inside the pass — the requester supplies state and config only — and then writes the result to the state file before returning, because the pass has already deleted the evicted instances' blobs. The background maintenance loop (`Conductor::start_background_maintenance`, tick `DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS` = 86400s, started on the first `ensure_actor_client`) runs the same full cycle — `gc::run_conductor_gc`, instance eviction plus orphan reclamation plus CAS metadata maintenance — and persists it the same way. See §H for what makes byte reclamation safe on a timer.
 

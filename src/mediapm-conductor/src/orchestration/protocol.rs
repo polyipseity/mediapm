@@ -134,6 +134,12 @@ pub(crate) struct UnifiedNickelDocument {
 pub(crate) struct StepExecutionRequest {
     /// Unified configuration snapshot shared across one workflow run.
     pub unified: Arc<UnifiedNickelDocument>,
+    /// Workflow this step belongs to, as the run was asked to execute it.
+    ///
+    /// Settled onto the instance's step refs so an invalidation can name one
+    /// workflow's step without reaching a same-named step of another; a step id
+    /// is unique only inside its workflow.
+    pub workflow_id: String,
     /// Step definition to execute.
     pub step: WorkflowStepSpec,
     /// Impure timestamp captured before the level starts, when required.
@@ -193,6 +199,13 @@ pub(crate) struct StepExecutionBundle {
     /// produced nothing during this run: the settlement may record the reusing
     /// step, but it must not present the recorded outputs as its own.
     pub instance: ToolCallInstance,
+    /// Key the bundle's instance is filed under.
+    ///
+    /// Carried beside the record because the record no longer carries it: the
+    /// map key is the identity, and a consumer that needs the key to name a
+    /// sandbox or to file the settlement has to be handed it rather than read a
+    /// second copy off the record.
+    pub instance_key: Hash,
     /// Whether this result came from a cache hit (vs. fresh execution).
     pub cache_hit: bool,
     /// The names this execution declared it could produce, each under the spec

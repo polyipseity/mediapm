@@ -101,11 +101,11 @@ mod tests {
         state.tool_call_instances.insert(
             key,
             ToolCallInstance {
-                instance_key: key,
                 tool_call_id: "echo@v1".to_string(),
                 impure: false,
                 invalidated_at: None,
                 executed_at: Timestamp::default(),
+                last_referenced_at: Timestamp::default(),
                 step_ids: BTreeSet::new(),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),

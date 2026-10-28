@@ -21,7 +21,7 @@ use crate::config::versions;
 use crate::error::ConductorError;
 use crate::orchestration::node::ConductorActorClient;
 use crate::orchestration::protocol::{UnifiedNickelDocument, find_tool_by_name};
-use crate::state::ConductorState;
+use crate::state::{ConductorState, StepRef};
 
 /// Concrete facade over the conductor orchestration runtime.
 ///
@@ -280,15 +280,20 @@ where
         Ok(())
     }
 
-    /// Marks every recorded instance that served one of `step_ids` as not to be
+    /// Marks every recorded instance that served one of `steps` as not to be
     /// reused, and persists the state.
     ///
     /// This is the programmatic half of `conductor state invalidate-tool-call`,
     /// scoped by step rather than by instance key: the caller knows which steps
     /// it wants re-run, and the keys are content-derived — a caller cannot name
     /// an instance it has not already found. An instance is selected when any of
-    /// the steps it has served is in `step_ids`, which includes one that served a
-    /// targeted step under a different workflow run.
+    /// the step refs it has served is in `steps`.
+    ///
+    /// A ref names a workflow as well as a step id, so marking one workflow's
+    /// step leaves a same-named step of another workflow alone. That matters
+    /// because step ids are unique only inside their workflow: mediapm names each
+    /// step after its media, and nothing stops two documents from reusing a step
+    /// id, so a bare-id match would mark work the caller never named.
     ///
     /// An instance that already carries a marker keeps the timestamp it has: the
     /// field says since when the bytes have been marked, so re-marking must not
@@ -305,13 +310,13 @@ where
     /// Panics if the in-memory orchestration state mutex is poisoned.
     pub async fn invalidate_instances_for_steps(
         &self,
-        step_ids: &BTreeSet<String>,
+        steps: &BTreeSet<StepRef>,
     ) -> Result<InstanceMarkerCounts, ConductorError> {
-        self.set_instances_marker(step_ids, true).await
+        self.set_instances_marker(steps, true).await
     }
 
     /// Clears the invalidation marker from every instance that served one of
-    /// `step_ids`, and persists the state.
+    /// `steps`, and persists the state.
     ///
     /// The undo of [`Self::invalidate_instances_for_steps`]. Clearing a marker
     /// that is not there is counted, not an error: the caller asked for a state
@@ -327,12 +332,12 @@ where
     /// Panics if the in-memory orchestration state mutex is poisoned.
     pub async fn revalidate_instances_for_steps(
         &self,
-        step_ids: &BTreeSet<String>,
+        steps: &BTreeSet<StepRef>,
     ) -> Result<InstanceMarkerCounts, ConductorError> {
-        self.set_instances_marker(step_ids, false).await
+        self.set_instances_marker(steps, false).await
     }
 
-    /// Applies one marker request to the recorded instances of `step_ids`.
+    /// Applies one marker request to the recorded instances of `steps`.
     ///
     /// The state is loaded from disk first, because the caller may be the first
     /// thing the process does, and written back before the in-memory snapshot is
@@ -348,13 +353,13 @@ where
     /// Panics if the in-memory orchestration state mutex is poisoned.
     async fn set_instances_marker(
         &self,
-        step_ids: &BTreeSet<String>,
+        steps: &BTreeSet<StepRef>,
         invalidated: bool,
     ) -> Result<InstanceMarkerCounts, ConductorError> {
         self.update_state(|state| {
             let mut counts = InstanceMarkerCounts::default();
             for instance in state.tool_call_instances.values_mut() {
-                if instance.step_ids.is_disjoint(step_ids) {
+                if instance.step_ids.is_disjoint(steps) {
                     continue;
                 }
                 let already_set = instance.invalidated_at.is_some() == invalidated;
@@ -1165,19 +1170,29 @@ mod tests {
         (dir, Conductor::new(paths, mediapm_cas::new_in_memory_cas()))
     }
 
-    /// Builds a state with one recorded instance that served `step_id`.
-    fn state_with_step_instance(step_id: &str) -> (ConductorState, Hash) {
-        let key = Hash::from_content(step_id.as_bytes());
+    /// A step ref inside `workflow_id`, so a test names the pair an
+    /// invalidation request is matched against.
+    fn step_ref(workflow_id: &str, step_id: &str) -> StepRef {
+        StepRef { workflow_id: workflow_id.to_string(), step_id: step_id.to_string() }
+    }
+
+    /// Builds a state with one recorded instance that served `step`.
+    ///
+    /// The key is derived from the pair, so two instances serving a same-named
+    /// step of two workflows get distinct keys and the test compares what the
+    /// marker reached rather than which record it could have reached.
+    fn state_with_step_instance(step: &StepRef) -> (ConductorState, Hash) {
+        let key = Hash::from_content(format!("{}/{}", step.workflow_id, step.step_id).as_bytes());
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
             key,
             crate::state::ToolCallInstance {
-                instance_key: key,
                 tool_call_id: "echo@v1".to_string(),
                 impure: false,
                 invalidated_at: None,
                 executed_at: mediapm_utils::Timestamp::default(),
-                step_ids: BTreeSet::from([step_id.to_string()]),
+                last_referenced_at: mediapm_utils::Timestamp::default(),
+                step_ids: BTreeSet::from([step.clone()]),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
@@ -1185,6 +1200,52 @@ mod tests {
             },
         );
         (state, key)
+    }
+
+    /// Builds a state with two instances: one serving `step_id` of `left`, one
+    /// serving the same step id of `right`.
+    fn state_with_same_step_in_two_workflows(
+        left: &str,
+        right: &str,
+        step_id: &str,
+    ) -> (ConductorState, Hash, Hash) {
+        let (mut state, left_key) = state_with_step_instance(&step_ref(left, step_id));
+        let (other, right_key) = state_with_step_instance(&step_ref(right, step_id));
+        state.tool_call_instances.extend(other.tool_call_instances);
+        (state, left_key, right_key)
+    }
+
+    /// Marking one workflow's step leaves a same-named step of another workflow
+    /// alone.
+    ///
+    /// Step ids are unique only inside their workflow: mediapm synthesizes one
+    /// workflow per media and names the steps after their media, so two media can
+    /// well carry a `step-0-echo`. A request that named only the id would mark
+    /// both, and the user's `media invalidate a 0` would silently discard b's
+    /// cached work — the defect this test exists to catch.
+    #[tokio::test]
+    async fn marking_a_step_marks_only_instances_of_that_workflow() {
+        let (state, left_key, right_key) =
+            state_with_same_step_in_two_workflows("media.a", "media.b", "step-0-echo");
+        let (_dir, conductor) = conductor_with_state(&state);
+
+        let counts = conductor
+            .invalidate_instances_for_steps(&BTreeSet::from([step_ref("media.a", "step-0-echo")]))
+            .await
+            .expect("mark a's step");
+
+        assert_eq!(counts, InstanceMarkerCounts { changed: 1, unchanged: 0 });
+        let on_disk = load_state_file(conductor.storage_paths())
+            .expect("load state file")
+            .expect("state file must exist");
+        assert!(
+            on_disk.tool_call_instances[&left_key].invalidated_at.is_some(),
+            "the targeted workflow's instance must be marked",
+        );
+        assert_eq!(
+            on_disk.tool_call_instances[&right_key].invalidated_at, None,
+            "another workflow's same-named step must be untouched",
+        );
     }
 
     /// Marking by step id reaches the instance that served the step, persists,
@@ -1195,9 +1256,10 @@ mod tests {
     /// next process and to the next run in this one.
     #[tokio::test]
     async fn invalidating_instances_for_steps_marks_and_persists() {
-        let (state, key) = state_with_step_instance("step-0-echo");
+        let step = step_ref("default", "step-0-echo");
+        let (state, key) = state_with_step_instance(&step);
         let (_dir, conductor) = conductor_with_state(&state);
-        let steps = BTreeSet::from(["step-0-echo".to_string()]);
+        let steps = BTreeSet::from([step.clone()]);
 
         let counts = conductor.invalidate_instances_for_steps(&steps).await.expect("mark");
         assert_eq!(counts, InstanceMarkerCounts { changed: 1, unchanged: 0 });
@@ -1220,7 +1282,7 @@ mod tests {
 
         // A step no instance served reaches nothing and says so.
         let unrelated = conductor
-            .invalidate_instances_for_steps(&BTreeSet::from(["step-9-echo".to_string()]))
+            .invalidate_instances_for_steps(&BTreeSet::from([step_ref("default", "step-9-echo")]))
             .await
             .expect("mark an unserved step");
         assert_eq!(unrelated, InstanceMarkerCounts::default());
@@ -1236,15 +1298,14 @@ mod tests {
     /// Clearing a marker that is not there changes nothing, including the file.
     #[tokio::test]
     async fn revalidating_an_unmarked_instance_writes_nothing() {
-        let (state, _key) = state_with_step_instance("step-0-echo");
+        let step = step_ref("default", "step-0-echo");
+        let (state, _key) = state_with_step_instance(&step);
         let (_dir, conductor) = conductor_with_state(&state);
         let path = conductor.storage_paths().state_file_path.clone();
         let before = std::fs::read(&path).expect("read state file");
 
-        let counts = conductor
-            .revalidate_instances_for_steps(&BTreeSet::from(["step-0-echo".to_string()]))
-            .await
-            .expect("clear");
+        let counts =
+            conductor.revalidate_instances_for_steps(&BTreeSet::from([step])).await.expect("clear");
 
         assert_eq!(counts, InstanceMarkerCounts { changed: 0, unchanged: 1 });
         assert_eq!(std::fs::read(&path).expect("read state file"), before);
@@ -1303,13 +1364,13 @@ mod tests {
 
     /// Builds a recorded instance with no inputs and no outputs, so it is
     /// reachable only if a seed names it.
-    fn bare_instance(key: Hash) -> crate::state::ToolCallInstance {
+    fn bare_instance(_key: Hash) -> crate::state::ToolCallInstance {
         crate::state::ToolCallInstance {
-            instance_key: key,
             tool_call_id: "echo@v1".to_string(),
             impure: false,
             invalidated_at: None,
             executed_at: mediapm_utils::Timestamp::default(),
+            last_referenced_at: mediapm_utils::Timestamp::default(),
             step_ids: BTreeSet::new(),
             command_args: Vec::new(),
             env_vars: BTreeMap::new(),
@@ -1333,27 +1394,18 @@ mod tests {
         let live = Hash::from_content(b"live");
         let superseded = Hash::from_content(b"superseded");
         let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(live, bare_instance(live));
-        state.tool_call_instances.insert(superseded, bare_instance(superseded));
+        // Each record is judged on its own clock, so the seeded one is what
+        // survives and the one stamped at the epoch is what ages out.
+        let mut live_instance = bare_instance(live);
+        live_instance.last_referenced_at = mediapm_utils::Timestamp::now();
+        let mut superseded_instance = bare_instance(superseded);
+        superseded_instance.last_referenced_at = mediapm_utils::Timestamp::from_unix_nanos(0);
+        state.tool_call_instances.insert(live, live_instance);
+        state.tool_call_instances.insert(superseded, superseded_instance);
         state.aux = crate::state::AuxData {
-            tool_call_instance_counter: 2,
             // A pass measures the grace period against the epoch it finds, so a
             // current epoch is what puts the unseeded record past its deadline.
             conductor_gc_epoch: mediapm_utils::Timestamp::now(),
-            instances: BTreeMap::from([
-                (
-                    live,
-                    crate::state::InstanceAux {
-                        last_referenced_at: mediapm_utils::Timestamp::now(),
-                    },
-                ),
-                (
-                    superseded,
-                    crate::state::InstanceAux {
-                        last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(0),
-                    },
-                ),
-            ]),
             live_instances: BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]),
         };
         save_state_file(&paths, &state).expect("seed state file");
@@ -1385,12 +1437,21 @@ mod tests {
     fn a_saved_state_file_is_whole_and_leaves_no_temporary_file() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
-        let (state, key) = state_with_step_instance("step-0-echo");
+        let (state, key) = state_with_step_instance(&step_ref("default", "step-0-echo"));
 
         save_state_file(&paths, &state).expect("save state file");
 
         let loaded = load_state_file(&paths).expect("load state file").expect("state file exists");
         assert_eq!(loaded, state, "the file must hold the whole document");
+        let written = std::fs::read_to_string(&paths.state_file_path).expect("read state file");
+        assert!(
+            !written.contains("instance_key"),
+            "the record is filed under its key and must not repeat it: {written}",
+        );
+        assert!(
+            written.contains(&key.to_string()),
+            "the key the record is filed under must be in the file: {written}",
+        );
         let mut names: Vec<String> = std::fs::read_dir(dir.path())
             .expect("read dir")
             .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
@@ -1414,7 +1475,7 @@ mod tests {
     fn an_interrupted_save_keeps_the_previous_file_and_cleans_up() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
-        let (state, _key) = state_with_step_instance("step-0-echo");
+        let (state, _key) = state_with_step_instance(&step_ref("default", "step-0-echo"));
         save_state_file(&paths, &state).expect("save the good state");
         let published = std::fs::read(&paths.state_file_path).expect("read published state");
 
