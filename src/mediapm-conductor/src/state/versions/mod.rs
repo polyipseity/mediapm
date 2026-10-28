@@ -640,6 +640,72 @@ mod tests {
         );
     }
 
+    /// A document whose marker is absent or not a number is refused, and the
+    /// message says which of the two it was.
+    ///
+    /// The marker is the only thing that selects a reader, so a document
+    /// without one cannot be attributed to a rung of the ladder. Guessing the
+    /// current version instead would hand a foreign file to a parser that was
+    /// never written for it.
+    #[test]
+    fn a_document_without_a_numeric_version_is_refused() {
+        for body in [r#"{"tool_call_instances":{}}"#, r#"{"version":"5"}"#] {
+            let error = peek_version_marker(body.as_bytes())
+                .expect_err("a marker-less document must not be attributed to a version");
+            assert!(
+                error.to_string().contains("missing or non-numeric 'version'"),
+                "the diagnostic must name what is missing: {error}",
+            );
+        }
+    }
+
+    /// A version past `u32` is refused by the marker reader rather than
+    /// truncated into a version this build might recognise.
+    #[test]
+    fn a_version_marker_beyond_u32_is_refused() {
+        let error = peek_version_marker(br#"{"version": 4294967296}"#)
+            .expect_err("a marker past u32 must not be narrowed");
+        assert!(
+            error.to_string().contains("exceeds u32 range"),
+            "the diagnostic must say the marker is out of range: {error}",
+        );
+    }
+
+    /// A version this build does not know is refused, and the message lists
+    /// every version it does know, so a reader can tell which build wrote the
+    /// file it is holding.
+    #[test]
+    fn an_unsupported_version_is_refused_and_names_the_supported_set() {
+        let error =
+            decode_state_json(br#"{"version": 99}"#).expect_err("version 99 must not be decoded");
+        let message = error.to_string();
+        assert!(message.contains("unsupported orchestration state version: 99"), "{message}");
+        for supported in ["5", "4", "3", "2", "1"] {
+            assert!(
+                message.contains(supported),
+                "the diagnostic must list supported version {supported}: {message}",
+            );
+        }
+    }
+
+    /// A V1 document is refused by the plain decoder and points at the
+    /// CAS-backed one.
+    ///
+    /// V1's envelope refers to blobs rather than carrying them, so decoding it
+    /// here would either fail obscurely or invent empty content. Naming the
+    /// decoder that can read it is the whole difference between a usable error
+    /// and a dead end.
+    #[test]
+    fn a_v1_document_without_cas_is_refused_and_points_at_the_cas_decoder() {
+        let error = decode_state_json(br#"{"version": 1}"#)
+            .expect_err("a v1 document needs the CAS-backed decoder");
+        assert!(
+            error.to_string().contains("requires CAS-backed migration")
+                && error.to_string().contains("decode_state_json_with_cas"),
+            "the diagnostic must name the decoder that can read it: {error}",
+        );
+    }
+
     /// The instance wire record carries no `version` field (fact 26) — only
     /// the envelope has one, and the instance's identity is its map key.
     #[test]
