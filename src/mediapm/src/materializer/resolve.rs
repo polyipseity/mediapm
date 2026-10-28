@@ -1129,8 +1129,10 @@ mod tests {
     /// carries a host conditional.
     ///
     /// The shape is the demo's: `js_runtimes` is
-    /// `deno:${context.os == … ? … : …}`, so the worker keys the path this host
-    /// selects, not the template text.
+    /// `deno:${context.os == … ? … : …}`, so the worker resolves the path this
+    /// host selects for the command it runs, while the key material hashes the
+    /// binding's text. A host-specific path is where the payload lives, not what
+    /// the step does.
     const TWO_STEP_DOCUMENT: &str = r#"{
   external_data = {},
   tools = {
@@ -1566,14 +1568,14 @@ mod tests {
     /// key scheme.
     ///
     /// The version is an integer and only moves forward, so a dotted revision
-    /// (`v5.1`) must never appear here: a change to key material is a new
+    /// (`v6.1`) must never appear here: a change to key material is a new
     /// integer, not a patch of this one.
     ///
     /// Re-declared here instead of rendered from `INSTANCE_KEY_SCHEME` or
     /// imported from `instance_key_domain`: this oracle exists to pin the
     /// documented value, so a changed domain string must fail the oracle rather
     /// than move both sides together.
-    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v5";
+    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v6";
 
     /// Returns whether a command part participates in the key, per the
     /// documented spec: a part reading `${env.` reports whatever the host holds,
@@ -1622,8 +1624,9 @@ mod tests {
     ///
     /// No command part on the demo path reads the environment, so without this
     /// a rule that always returned `true` would still pass the fixture test.
-    /// A selector part is key material — that is what the v5 scheme changed —
-    /// so it must report `true` here even though it used to be excluded.
+    /// A selector part is key material, so it must report `true` here: the
+    /// selector's destination and source hash identify the bytes the step
+    /// stages, which is work, even though the part's own text cannot be hashed.
     #[test]
     fn oracle_is_key_material_refuses_the_environment_and_keeps_selectors() {
         let cases = [
@@ -1663,13 +1666,87 @@ mod tests {
         assert!(oracle_selectors("--plain").is_empty());
     }
 
+    /// Returns whether a binding source names work rather than the environment
+    /// the step runs in.
+    ///
+    /// The second implementation of production's `binding_names_work`, kept
+    /// separate for the reason [`Self::oracle_is_key_material`] gives. The
+    /// classification decides a *value term*, not composition, so an oracle
+    /// that borrowed it would stop being able to catch production moving it.
+    fn oracle_binding_names_work(raw_binding: &str) -> bool {
+        raw_binding.contains("step_output.")
+            || raw_binding.contains("external_data.")
+            || raw_binding.contains("inputs.")
+    }
+
+    /// The bytes one input contributes, per the documented spec.
+    ///
+    /// Resolved bytes when the binding names work, the binding's own text when
+    /// it names only the host or the environment, and resolved bytes when the
+    /// input records no binding at all.
+    fn oracle_value_term<'a>(raw_binding: Option<&'a String>, resolved: &'a [u8]) -> &'a [u8] {
+        match raw_binding {
+            Some(text) if !oracle_binding_names_work(text) => text.as_bytes(),
+            _ => resolved,
+        }
+    }
+
+    /// Pins the value rule the demo fixture cannot reach.
+    ///
+    /// No demo builtin binds an input to `${context.` or `${env.`, so the fixture
+    /// comparison alone cannot tell the scheme-6 rule from the dropped-slot rule
+    /// it replaced. Both shapes are named here directly: the context-only
+    /// binding keeps its slot and hashes its own text, and the binding that
+    /// names a step output hashes the bytes it resolves to.
+    #[test]
+    fn oracle_key_material_keeps_a_context_only_binding_and_hashes_its_text() {
+        let command_parts: Vec<String> = Vec::new();
+        let resolved_values = BTreeMap::from([
+            ("runtime".to_string(), b"deno:deps/deno/macos/deno".to_vec()),
+            ("source".to_string(), b"blake3:00".to_vec()),
+        ]);
+        let raw_bindings = BTreeMap::from([
+            (
+                "runtime".to_string(),
+                "deno:${context.os == \"macos\" ? deps/deno/macos/deno : deps/deno/other/deno}"
+                    .to_string(),
+            ),
+            ("source".to_string(), "${step_output.step-0-0-import.video_untagged}".to_string()),
+        ]);
+
+        let material = oracle_key_material(&command_parts, &resolved_values, &raw_bindings);
+
+        let expected = vec![
+            Hash::composite(&[
+                Hash::from_content("runtime".as_bytes()),
+                Hash::from_content(raw_bindings["runtime"].as_bytes()),
+            ]),
+            Hash::composite(&[
+                Hash::from_content("source".as_bytes()),
+                Hash::from_content(&resolved_values["source"]),
+            ]),
+        ];
+        assert_eq!(
+            material, expected,
+            "a context-only binding keeps its slot and hashes its text; a work binding hashes its bytes",
+        );
+    }
+
     /// Recomposes one tool's key material from the documented spec.
     ///
     /// A tool with no command parts keys its inputs in name order, each as
-    /// `composite(name bytes, resolved value bytes)`. Every other tool keys its
-    /// command, in argv order: a plain part contributes `composite(part bytes,
-    /// the value hash of every input it reads)`, and a selector part contributes
-    /// `composite(destination bytes, source hash)`.
+    /// `composite(name bytes, value)`. Every other tool keys its command, in
+    /// argv order: a plain part contributes `composite(part bytes, the value of
+    /// every input it reads)`, a selector part contributes
+    /// `composite(destination bytes, source hash)`, and a part reading
+    /// `${env.` contributes nothing.
+    ///
+    /// Every value term is chosen by [`Self::oracle_value_term`], so a binding
+    /// that names only `${context.…}` or `${env.…}` contributes its text while a
+    /// binding that names an input or a step output contributes the bytes it
+    /// resolves to. Both branches use it, including the builtin branch, which
+    /// keeps every declared input's slot: a dropped slot would let two inputs
+    /// collide under distinct names.
     ///
     /// The composition is written out here rather than delegated to
     /// `key_material_for_tool`: a test that calls the code under test cannot
@@ -1684,13 +1761,10 @@ mod tests {
         if command_parts.is_empty() {
             let mut material = Vec::new();
             for (name, value) in resolved_values {
-                let raw = raw_bindings.get(name).map_or("", String::as_str);
-                if !oracle_is_key_material(raw) {
-                    continue;
-                }
+                let term = oracle_value_term(raw_bindings.get(name), value);
                 material.push(Hash::composite(&[
                     Hash::from_content(name.as_bytes()),
-                    Hash::from_content(value),
+                    Hash::from_content(term),
                 ]));
             }
             return material;
@@ -1705,8 +1779,9 @@ mod tests {
             if selectors.is_empty() {
                 let mut parts = vec![Hash::from_content(part.as_bytes())];
                 for name in oracle_referenced_inputs(part) {
-                    let value = resolved_values.get(&name).map_or(&[][..], Vec::as_slice);
-                    parts.push(Hash::from_content(value));
+                    let resolved = resolved_values.get(&name).map_or(&[][..], Vec::as_slice);
+                    let term = oracle_value_term(raw_bindings.get(&name), resolved);
+                    parts.push(Hash::from_content(term));
                 }
                 material.push(Hash::composite(&parts));
                 continue;

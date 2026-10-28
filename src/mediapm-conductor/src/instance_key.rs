@@ -17,10 +17,17 @@ use crate::state::{ResolvedInput, ToolCallInstance};
 /// Version of the tool-call instance key scheme.
 ///
 /// The scheme is versioned by an integer and only ever moves forward:
-/// `v1 -> v2 -> v3 -> v4 -> v5`. A change to the key material bumps this number;
-/// it never appends a revision such as `v4.1`, because the point of the bump is
-/// to be visible. Old persisted keys simply miss once and re-execute.
-pub const INSTANCE_KEY_SCHEME: u32 = 5;
+/// `v1 -> v2 -> v3 -> v4 -> v5 -> v6`. A change to the key material bumps this
+/// number; it never appends a revision such as `v5.1`, because the point of the
+/// bump is to be visible. Old persisted keys simply miss once and re-execute.
+///
+/// Scheme 6 changed one term. Schemes 4 and 5 hashed every input by its resolved
+/// value, so a binding reading `${context.os}` — `js_runtimes`, in the managed
+/// tools — produced a different term on each host. Scheme 6 hashes the binding's
+/// own text when the binding reads nothing but the host or the environment, and
+/// keeps resolved bytes for a binding that reads a step output, external data or
+/// another input.
+pub const INSTANCE_KEY_SCHEME: u32 = 6;
 
 /// Domain separator for tool-call instance keys, carrying the scheme version.
 #[must_use]
@@ -60,40 +67,86 @@ pub fn derive_instance_key(tool_call_id: &str, key_material: &[Hash]) -> Hash {
     Hash::composite(&parts)
 }
 
-/// Returns whether a command part or a binding source reads the host
-/// environment.
+/// Returns whether a command part reads the host environment.
 ///
-/// Such a source resolves to a value no other host is obliged to reproduce, so
-/// it is not key material: two runs differing only in that value are the same
-/// work. Everything else is, including a `:file(dest)` / `:folder(dest)`
-/// selector, whose contribution is `composite(dest, source_hash)` rather than
-/// its resolved text — the text embeds a sandbox path named for the key, which
-/// cannot be hashed into the key that names it.
+/// Such a part resolves to a value no other host is obliged to reproduce, so it
+/// contributes nothing to the key: two runs differing only in that value are the
+/// same work. Everything else contributes, including a `:file(dest)` /
+/// `:folder(dest)` selector, whose term is `composite(dest, source_hash)` rather
+/// than its resolved text — the text embeds a sandbox path named for the key,
+/// which cannot be hashed into the key that names it.
+///
+/// An input *binding* that reads `${env.…}` is handled by
+/// `input_value_term_bytes` instead: it contributes its own text, so the input
+/// still occupies its slot and two different variables stay distinct.
 #[must_use]
 pub fn references_environment(source: &str) -> bool {
     source.contains("${env.")
 }
 
+/// Returns whether a binding source names work rather than the environment it
+/// runs in.
+///
+/// A binding that reads a step output, external data or another input names
+/// bytes the document fixes, and those bytes are the work. A binding that reads
+/// nothing but `${context.…}` or `${env.…}` selects where provisioned tooling
+/// lives, which is environment: `js_runtimes` is the live case, and keying the
+/// path it selects would split one deployment across hosts. A literal reads
+/// neither, and its text already equals its value.
+///
+/// The test is a substring test, and that is its limit: a reference sitting in
+/// an unreachable branch, or the same text inside a literal, classifies as
+/// work. Nothing splits between the worker and the materializer, because both
+/// read the same binding text, so the cost of a false positive is that the
+/// binding is keyed by its resolved bytes, which for a literal is the literal
+/// itself.
+fn binding_names_work(raw_binding_source: &str) -> bool {
+    raw_binding_source.contains("step_output.")
+        || raw_binding_source.contains("external_data.")
+        || raw_binding_source.contains("inputs.")
+}
+
+/// The bytes one input contributes to an instance key.
+///
+/// This is the whole of the scheme-6 rule: resolved bytes when the binding names
+/// work, the binding's own text when it names only the host or the environment.
+/// An input with no recorded binding contributes its resolved bytes, because the
+/// caller that submits a value without a source has nothing else to hash.
+fn input_value_term_bytes<'a>(
+    input_values: &'a BTreeMap<String, Vec<u8>>,
+    raw_bindings: &'a BTreeMap<String, String>,
+    name: &str,
+) -> &'a [u8] {
+    match raw_bindings.get(name) {
+        Some(raw) if !binding_names_work(raw) => {
+            instance_key_value_bytes_for_context_only_binding(raw)
+        }
+        _ => input_values.get(name).map_or(&[][..], Vec::as_slice),
+    }
+}
+
 /// Builds the key material of a tool that runs no argv (every builtin).
 ///
 /// A builtin receives its inputs by name, so the declared inputs in input-name
-/// order are its command: each contributes `composite(name, resolved value)`,
-/// and the name is part of the term because it decides which slot the value
-/// occupies. An input whose binding source reads the host environment is left
-/// out for the reason [`references_environment`] gives.
+/// order are its command: each contributes `composite(name, value)`, and the
+/// name is part of the term because it decides which slot the value occupies.
+/// Every declared input keeps its slot, because dropping one would let two
+/// inputs with distinct names collide when the remaining terms coincide.
 ///
 /// `input_values` holds each input's resolved value bytes, which both the
 /// executor and the materializer can reconstruct: the executor from its own
-/// resolution, the materializer from the object or literal a binding names.
+/// resolution, the materializer from the object or literal a binding names. The
+/// value bytes are chosen by `input_value_term_bytes`, so a builtin keys a
+/// context-only binding by its text exactly as a command tool does.
 #[must_use]
 pub fn key_material_for_builtin(
     input_values: &BTreeMap<String, Vec<u8>>,
     raw_bindings: &BTreeMap<String, String>,
 ) -> Vec<Hash> {
     input_values
-        .iter()
-        .filter(|(name, _)| !raw_bindings.get(*name).is_some_and(|raw| references_environment(raw)))
-        .map(|(name, value)| {
+        .keys()
+        .map(|name| {
+            let value = input_value_term_bytes(input_values, raw_bindings, name);
             Hash::composite(&[Hash::from_content(name.as_bytes()), Hash::from_content(value)])
         })
         .collect()
@@ -106,7 +159,9 @@ pub fn key_material_for_builtin(
 /// - A plain part contributes `composite(part template bytes, the value hash of
 ///   every input it reads, in reference order)`. The part's own text is in the
 ///   term because a changed flag is changed work, and the referenced values are
-///   in it because a part is how a step passes an input to its tool.
+///   in it because a part is how a step passes an input to its tool. The value
+///   hash follows `input_value_term_bytes`: a binding naming work contributes
+///   its resolved bytes, a binding naming only the host contributes its text.
 /// - A part carrying `:file(dest)` or `:folder(dest)` contributes
 ///   `composite(dest, source hash)` per selector. The source is the object the
 ///   selector stages, which the resolved input names; the resolved text cannot
@@ -116,9 +171,11 @@ pub fn key_material_for_builtin(
 ///
 /// Both the executor and the materializer derive from these two inputs, so the
 /// ordering and the term shape live here rather than at either call site.
+#[must_use]
 pub fn key_material_for_command_parts(
     command_parts: &[String],
     input_values: &BTreeMap<String, Vec<u8>>,
+    raw_bindings: &BTreeMap<String, String>,
 ) -> Vec<Hash> {
     let mut material = Vec::with_capacity(command_parts.len());
     for part in command_parts {
@@ -129,7 +186,7 @@ pub fn key_material_for_command_parts(
         if selectors.is_empty() {
             let mut parts = vec![Hash::from_content(part.as_bytes())];
             for name in referenced_inputs(part) {
-                let value = input_values.get(&name).map_or(&[][..], Vec::as_slice);
+                let value = input_value_term_bytes(input_values, raw_bindings, &name);
                 parts.push(Hash::from_content(value));
             }
             material.push(Hash::composite(&parts));
@@ -156,7 +213,7 @@ pub fn key_material_for_tool(
     if command_parts.is_empty() {
         return key_material_for_builtin(input_values, raw_bindings);
     }
-    key_material_for_command_parts(command_parts, input_values)
+    key_material_for_command_parts(command_parts, input_values, raw_bindings)
 }
 
 /// One selector a command part carries: where it stages, and what it stages.
@@ -307,10 +364,15 @@ pub fn instance_key_resolved_value_bytes_for_hash_reference(hash: Hash) -> Vec<u
     hash.to_string().into_bytes()
 }
 
-/// Resolved value bytes for a literal binding (no template expansion).
+/// Bytes a binding contributes when it names only the host or the environment.
+///
+/// The binding's own text stands in for the value it selects. Two hosts running
+/// the same document therefore derive one key for work whose only difference is
+/// where the provisioned payload lives, and editing the template is still a
+/// change to the key.
 #[must_use]
-pub fn instance_key_resolved_value_bytes_for_literal_binding(raw_binding_source: &str) -> Vec<u8> {
-    raw_binding_source.as_bytes().to_vec()
+pub fn instance_key_value_bytes_for_context_only_binding(raw_binding_source: &str) -> &[u8] {
+    raw_binding_source.as_bytes()
 }
 
 /// Maps one resolved binding to its instance-key hash when the raw binding
@@ -509,14 +571,13 @@ mod tests {
         );
     }
 
-    /// Pins that a literal binding's value material is its raw source bytes
-    /// (no template expansion) and that the input name participates in the
-    /// instance hash.
+    /// Pins that a binding naming no work contributes its source bytes, and that
+    /// the input name participates in the instance hash.
     #[test]
     fn literal_binding_uses_raw_source_bytes() {
         let raw = "mp4";
-        let bytes = instance_key_resolved_value_bytes_for_literal_binding(raw);
-        let key_hash = instance_key_hash_from_resolved_value_bytes("format", raw, &bytes)
+        let bytes = instance_key_value_bytes_for_context_only_binding(raw);
+        let key_hash = instance_key_hash_from_resolved_value_bytes("format", raw, bytes)
             .expect("literal is deterministic");
         assert_eq!(
             key_hash,
@@ -589,8 +650,10 @@ mod tests {
         let second_values =
             BTreeMap::from([("source".to_string(), second_hash.to_string().into_bytes())]);
 
-        let first = key_material_for_command_parts(&parts, &first_values);
-        let second = key_material_for_command_parts(&parts, &second_values);
+        let bindings =
+            BTreeMap::from([("source".to_string(), "${step_output.step-0.primary}".to_string())]);
+        let first = key_material_for_command_parts(&parts, &first_values, &bindings);
+        let second = key_material_for_command_parts(&parts, &second_values, &bindings);
 
         assert_eq!(
             first,
@@ -614,10 +677,12 @@ mod tests {
         let first = key_material_for_command_parts(
             &parts,
             &BTreeMap::from([("format".to_string(), b"mkv".to_vec())]),
+            &BTreeMap::from([("format".to_string(), "mkv".to_string())]),
         );
         let second = key_material_for_command_parts(
             &parts,
             &BTreeMap::from([("format".to_string(), b"mp4".to_vec())]),
+            &BTreeMap::from([("format".to_string(), "mp4".to_string())]),
         );
         assert_ne!(first, second, "a changed input value must move the key");
         assert_eq!(first.len(), 1, "one key-material part is one term");
@@ -626,10 +691,12 @@ mod tests {
         let empty = key_material_for_command_parts(
             &splat,
             &BTreeMap::from([("extra".to_string(), b"[]".to_vec())]),
+            &BTreeMap::new(),
         );
         let filled = key_material_for_command_parts(
             &splat,
             &BTreeMap::from([("extra".to_string(), br#"["-y"]"#.to_vec())]),
+            &BTreeMap::new(),
         );
         assert_ne!(empty, filled, "a changed splat list must move the key");
     }
@@ -638,10 +705,117 @@ mod tests {
     #[test]
     fn an_environment_part_is_not_key_material() {
         let parts = ["${env.HOME}".to_string(), "--flag".to_string()];
-        let first = key_material_for_command_parts(&parts, &BTreeMap::new());
-        let second = key_material_for_command_parts(&parts[1..], &BTreeMap::new());
+        let first = key_material_for_command_parts(&parts, &BTreeMap::new(), &BTreeMap::new());
+        let second =
+            key_material_for_command_parts(&parts[1..], &BTreeMap::new(), &BTreeMap::new());
         assert_eq!(first, second, "the environment term must not reach the key");
         assert_eq!(first.len(), 1);
+    }
+
+    /// A binding that reads only the host contributes its own text, so the path
+    /// it selects does not split the key.
+    ///
+    /// `js_runtimes` in the demo's tools is
+    /// `deno:${context.os == "macos" ? … }`: the branch picks where the provisioned
+    /// Deno payload lives, which is environment rather than work. Keying the
+    /// resolved path would make one deployment on two hosts look like two
+    /// different jobs, and a workspace carried between them would redo every step
+    /// for a path change. The template text is what names the job.
+    #[test]
+    fn a_binding_that_reads_only_the_host_does_not_split_the_key() {
+        let parts = ["--js-runtimes".to_string(), "${inputs.js_runtimes}".to_string()];
+        let binding = "deno:${context.os == \"macos\" ? deps/macos/deno : deps/linux/deno}";
+        let bindings = BTreeMap::from([("js_runtimes".to_string(), binding.to_string())]);
+        let on_macos =
+            BTreeMap::from([("js_runtimes".to_string(), b"deno:deps/macos/deno".to_vec())]);
+        let on_linux =
+            BTreeMap::from([("js_runtimes".to_string(), b"deno:deps/linux/deno".to_vec())]);
+
+        let macos = key_material_for_tool(&parts, &on_macos, &bindings);
+        let linux = key_material_for_tool(&parts, &on_linux, &bindings);
+        assert_eq!(
+            macos, linux,
+            "a binding that reads only the host names no work, so the branch it selects must not move the key",
+        );
+        assert_eq!(
+            macos[1],
+            Hash::composite(&[
+                Hash::from_content(parts[1].as_bytes()),
+                Hash::from_content(binding.as_bytes()),
+            ]),
+            "the term is the binding's text, composed with the part that reads it",
+        );
+
+        let edited = BTreeMap::from([(
+            "js_runtimes".to_string(),
+            "deno:${context.os == \"macos\" ? deps/macos/other : deps/linux/other}".to_string(),
+        )]);
+        assert_ne!(
+            key_material_for_tool(&parts, &on_macos, &edited),
+            macos,
+            "editing the template is editing what the step asks for",
+        );
+    }
+
+    /// A context-only binding reaches a builtin's key as its text too.
+    ///
+    /// A builtin takes its inputs by name, so the same rule has to hold there:
+    /// otherwise one host would split the key for a builtin while the identical
+    /// binding left a command tool alone.
+    #[test]
+    fn a_builtin_keys_a_context_only_binding_by_its_text() {
+        let binding = "${context.os == \"macos\" ? payload/macos : payload/linux}";
+        let bindings = BTreeMap::from([("runtime".to_string(), binding.to_string())]);
+        let on_macos = BTreeMap::from([("runtime".to_string(), b"payload/macos".to_vec())]);
+        let on_linux = BTreeMap::from([("runtime".to_string(), b"payload/linux".to_vec())]);
+
+        assert_eq!(
+            key_material_for_builtin(&on_macos, &bindings),
+            key_material_for_builtin(&on_linux, &bindings),
+            "the host branch a builtin input selects is environment, not work",
+        );
+    }
+
+    /// A literal value still reaches the key, unchanged by the rule above.
+    ///
+    /// A literal reads neither an input nor a step output, and its text and its
+    /// resolved value are the same bytes, so `"23"` and `"24"` stay two different
+    /// jobs. The pin exists because the rule now reads the binding, and a version
+    /// of it that skipped literals would silently collapse every literal input
+    /// into one key.
+    #[test]
+    fn a_literal_binding_value_reaches_the_key() {
+        let parts = ["-crf".to_string(), "${inputs.crf}".to_string()];
+        let low = BTreeMap::from([("crf".to_string(), b"23".to_vec())]);
+        let high = BTreeMap::from([("crf".to_string(), b"24".to_vec())]);
+        let bindings_low = BTreeMap::from([("crf".to_string(), "23".to_string())]);
+        let bindings_high = BTreeMap::from([("crf".to_string(), "24".to_string())]);
+
+        assert_ne!(
+            key_material_for_tool(&parts, &low, &bindings_low),
+            key_material_for_tool(&parts, &high, &bindings_high),
+            "a changed literal is changed work",
+        );
+    }
+
+    /// A binding that reads a step output reaches the key through that output's
+    /// hash, so a rerun producing different bytes re-keys the step.
+    #[test]
+    fn a_step_output_binding_reaches_the_key_through_its_hash() {
+        let parts = ["-i".to_string(), "${inputs.source}".to_string()];
+        let binding = "${step_output.step-1.primary}";
+        let bindings = BTreeMap::from([("source".to_string(), binding.to_string())]);
+        let first = Hash::from_content(b"first");
+        let second = Hash::from_content(b"second");
+        let first_values = BTreeMap::from([("source".to_string(), first.to_string().into_bytes())]);
+        let second_values =
+            BTreeMap::from([("source".to_string(), second.to_string().into_bytes())]);
+
+        assert_ne!(
+            key_material_for_tool(&parts, &first_values, &bindings),
+            key_material_for_tool(&parts, &second_values, &bindings),
+            "an input read from another step is work, so its bytes belong in the key",
+        );
     }
 
     /// A builtin keys its inputs in name order, each name and value composed.
@@ -672,7 +846,7 @@ mod tests {
     #[test]
     fn the_instance_key_domain_carries_an_integer_version() {
         let domain = instance_key_domain();
-        assert_eq!(domain, "mediapm/conductor/tool call instances/v5");
+        assert_eq!(domain, "mediapm/conductor/tool call instances/v6");
         assert_eq!(domain, format!("mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}"));
         assert!(!domain.contains('.'), "dotted scheme revision in {domain}");
     }

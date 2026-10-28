@@ -407,16 +407,14 @@ mod proptests {
         type Strategy = BoxedStrategy<Self>;
         /// Generates literal-binding inputs only.
         ///
-        /// Production drops non-deterministic bindings from the key material
-        /// (`is_deterministic_binding_source` rejects `${env.`, `context.os`,
-        /// `:file(` and `:folder(`), and [`arg_hashes`] now routes through that
-        /// same production helper. An unconstrained `any::<String>()` can emit
-        /// a value containing `${env.`, which would be filtered out; two
-        /// distinct input lists could then both filter to empty and the
-        /// `different_inputs_produce_different_keys` property would fail on a
-        /// rejection, not on a real collision. Restricting the generators to
-        /// literal shapes keeps the filter a no-op here so the properties test
-        /// what they claim to test.
+        /// Production keys every input: a binding that reads an input or a step
+        /// output contributes the bytes it resolves to, and a binding that reads
+        /// only `${context.` or `${env.` contributes its own text. Nothing is
+        /// filtered out, so the restriction here is not what keeps the
+        /// properties meaningful. It stays because a generated value carrying a
+        /// `${` fragment would make the *resolved* side of a comparison depend
+        /// on a template engine this unit test does not run, and the generator
+        /// would be measuring that engine rather than the key.
         fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
             (
                 proptest::string::string_regex("[a-z_]{0,6}").expect("literal input names"),

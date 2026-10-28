@@ -1,40 +1,7 @@
 {
   "version": 5,
   "tool_call_instances": {
-    "blake3:1d92846a175b613c7c9f4aa2e9b8f63f09eded7cbba5204c4a8a2ec49589b5ef": {
-      "tool_call_id": "import@v1",
-      "impure": true,
-      "executed_at": 1785987849238789000,
-      "last_referenced_at": 1785987849261165000,
-      "step_ids": [
-        {
-          "workflow_id": "",
-          "step_id": "step-0-0-import-video_untagged-to-video_untagged"
-        }
-      ],
-      "command_args": [],
-      "env_vars": {},
-      "materialized_inputs": {},
-      "outputs": {
-        "process_code": {
-          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "capture": null
-        },
-        "stderr": {
-          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "capture": null
-        },
-        "stdout": {
-          "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
-          "capture": null
-        },
-        "video_untagged": {
-          "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
-          "capture": null
-        }
-      }
-    },
-    "blake3:1e778c1b8c9071914431acbe71d34a9cbbbf3f27e3cb40ee6f7ee7ef54344efe": {
+    "blake3:1b45c0cdbfeac4d6c633bff2830e9e9735385f4080629fdde1d70ecf91ebbd6a": {
       "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
       "impure": false,
       "executed_at": 1785987849261570000,
@@ -88,7 +55,7 @@
         }
       }
     },
-    "blake3:3a18372c2856bed32a14115906b58aa2b852f1d6a9fbb233e823046f1a7e780e": {
+    "blake3:8351cead556fffcbd408316142ded30b8546253d9aaf3b9f8f97b63d4563f270": {
       "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
       "impure": false,
       "executed_at": 1785987892263567000,
@@ -141,7 +108,7 @@
         }
       }
     },
-    "blake3:3d1f8f8dd342950aa1e7231f3d67ad47c4f285a9d724909fee9ed91be72b3288": {
+    "blake3:93b50ddabc59c3a1650104bab60df84eb0e0bc78da7f315d8c01ca35b4528286": {
       "tool_call_id": "rsgain@blake3:754a0e4d9cf5df2cc61b5336d9d543b2765a85cbbbab890cca34a0eee4c2db98",
       "impure": false,
       "executed_at": 1785987881255817000,
@@ -194,7 +161,7 @@
         }
       }
     },
-    "blake3:b07e43cab47df14393855986475d1dc356fdf026f29a9c4ca3a8c7610da530ce": {
+    "blake3:a84ec15bf8390c51c30795f5c112fd1f302872f9d476c25a6b12e6d3b5a7dcdd": {
       "tool_call_id": "media-tagger@blake3:7d51827f1043df72adea899d45dbcca6cb1ef16eb1bfd0021662e80715e53b90",
       "impure": true,
       "executed_at": 1785987882536740000,
@@ -254,6 +221,39 @@
         },
         "stdout": {
           "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "capture": null
+        }
+      }
+    },
+    "blake3:ef6b1ec092d664c312907501eb84a7fe8694761672ac81c857fa997405254eab": {
+      "tool_call_id": "import@v1",
+      "impure": true,
+      "executed_at": 1785987849238789000,
+      "last_referenced_at": 1785987849261165000,
+      "step_ids": [
+        {
+          "workflow_id": "",
+          "step_id": "step-0-0-import-video_untagged-to-video_untagged"
+        }
+      ],
+      "command_args": [],
+      "env_vars": {},
+      "materialized_inputs": {},
+      "outputs": {
+        "process_code": {
+          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+          "capture": null
+        },
+        "stderr": {
+          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "capture": null
+        },
+        "stdout": {
+          "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
+          "capture": null
+        },
+        "video_untagged": {
+          "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
           "capture": null
         }
       }

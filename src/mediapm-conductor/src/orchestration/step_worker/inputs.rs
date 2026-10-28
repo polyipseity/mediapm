@@ -204,11 +204,12 @@ mod tests {
     /// template.
     ///
     /// The demo's tools bind `js_runtimes` to
-    /// `deno:${context.os == "linux" ? … | …}`, and the worker hashes the
-    /// selected path. Hashing the template would make a step's recorded key
-    /// unreachable, which is the divergence this function exists to remove.
+    /// `deno:${context.os == "linux" ? … | …}`. The worker still resolves the
+    /// branch, because the command it runs names the selected path; the key
+    /// material hashes the binding's text instead, because the branch chooses
+    /// where the payload lives rather than what the step does.
     #[tokio::test]
-    async fn a_context_reading_binding_resolves_to_the_host_os() {
+    async fn a_context_reading_binding_resolves_to_the_host_os_but_does_not_key_it() {
         let mut bindings = BTreeMap::new();
         bindings.insert(
             "js_runtimes".to_string(),
@@ -237,18 +238,29 @@ mod tests {
         );
         assert!(resolved.unresolved.is_empty(), "every binding here resolves");
 
-        // The rule this pins: key material derives from the resolved value, so a
-        // part that reads the binding must key the host's branch. Composing the
-        // raw template instead is what made every recorded key unreachable.
+        // Resolution and key material answer different questions, and this pins
+        // the difference: the resolved value is the host's branch, while the key
+        // material hashes the binding's text, so the two hosts share one key.
         let parts = vec!["--js-runtimes".to_string(), "${inputs.js_runtimes}".to_string()];
-        let from_resolved =
-            crate::instance_key::key_material_for_tool(&parts, &resolved.values, &bindings);
-        let explicitly_resolved =
-            BTreeMap::from([("js_runtimes".to_string(), expected.as_bytes().to_vec())]);
+        let other_host = if std::env::consts::OS == "linux" {
+            b"deno:deps/deno/other/deno".to_vec()
+        } else {
+            b"deno:deps/deno/linux/deno".to_vec()
+        };
+        let other_values = BTreeMap::from([("js_runtimes".to_string(), other_host)]);
         assert_eq!(
-            from_resolved,
-            crate::instance_key::key_material_for_tool(&parts, &explicitly_resolved, &bindings,),
-            "key material must hash the resolved value, not the binding's template",
+            crate::instance_key::key_material_for_tool(&parts, &resolved.values, &bindings),
+            crate::instance_key::key_material_for_tool(&parts, &other_values, &bindings),
+            "a binding that reads only the host must key its text, not the branch it selects",
+        );
+        let composed = Hash::composite(&[
+            Hash::from_content(parts[1].as_bytes()),
+            Hash::from_content(bindings["js_runtimes"].as_bytes()),
+        ]);
+        assert_eq!(
+            crate::instance_key::key_material_for_tool(&parts, &resolved.values, &bindings)[1],
+            composed,
+            "the term is the binding's text composed with the part that reads it",
         );
     }
 
