@@ -305,6 +305,10 @@ pub struct MediaInvalidateArgs {
     /// Media source id that owns the step.
     pub media_id: String,
     /// Zero-based step index to mark (or unmark with `--undo`).
+    ///
+    /// The index addresses this media's own workflow, so marking step 0 here
+    /// never marks another media's step 0, even when both workflows number
+    /// their steps the same way.
     pub step_index: usize,
     /// Clear the marker instead of setting it.
     #[arg(long, conflicts_with_all = ["invalidate_calls", "regenerate"])]
