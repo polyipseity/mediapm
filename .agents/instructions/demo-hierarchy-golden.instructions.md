@@ -43,6 +43,7 @@ All three extensions (`url`, `webloc`, `desktop`) are required in both locations
 5. A root template renders the artist and the title from their own metadata entries. Do not drop `${media.metadata.artist}` from a root name, and do not add it to a yt-dlp sidecar name — the sidecar family is upstream's, and mediapm never renames it.
 6. When extending link coverage: update helpers in `demo_hierarchy_spec.rs`, golden JSON, `golden_fixture_link_paths_match_helpers`, then the live check — exact helper basenames in the hermetic tests, family-exact plus normalized-prefix title in the live demo.
 7. Do not modify hermetic golden fixtures (`tests/fixtures/demo_hierarchy_golden.json`, `demo_hierarchy_spec.rs`) casually — they are the offline contract for the materialized tree; update fixtures and the helper-linkage test in the same commit as a materialization change.
+8. Each demo declares one captured variant that no hierarchy entry links, with `save = false`, and the tree above omits it on purpose. `assert_demo_saves_what_the_hierarchy_materializes` pins the counts, so linking that variant or dropping it fails the demo's own test: the pair of decisions (linked variants `Full`, an unlinked one `false`) is what the document is meant to teach.
 
 ## Content verification assertions
 

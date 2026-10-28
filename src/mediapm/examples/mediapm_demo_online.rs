@@ -1,7 +1,12 @@
 //! End-to-end online demo exercising managed tool provisioning.
 //!
 //! Default sync enabled; disable via `MEDIAPM_RUN_ONLINE_SYNC=false`.
-//! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on `YouTube` URL.
+//! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on `YouTube` URL, plus one
+//! further ffmpeg step that transcodes a `preview` the hierarchy never links.
+//! That preview is the demo's unsaved capture: ffmpeg is local, so the step costs
+//! no network, and the document shows both halves of the save policy — every
+//! linked variant keeps its bytes whole, the preview is declared unsaved and the
+//! conductor's GC reclaims it once the step's instance is superseded.
 //! The embedded test exercises `main()` in reduced (config-only) mode; the
 //! full-sync path (network + external tools) runs only on an explicit
 //! `cargo build -p mediapm` followed by `cargo run -p mediapm --example
@@ -1237,6 +1242,25 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     extension: "mkv".to_string(),
                     // Materialized as the untagged media leaf.
                     save: OutputSaveConfig::Full,
+                    ..Default::default()
+                }),
+            )]),
+            options: BTreeMap::new(),
+        },
+        MediaStep {
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["video_untagged".to_string()],
+            output_variants: BTreeMap::from([(
+                "preview".to_string(),
+                OutputVariantValue::Generic(GenericOutputVariantConfig {
+                    kind: "primary".to_string(),
+                    extension: "mp4".to_string(),
+                    // No hierarchy entry links this variant, so nothing in the
+                    // library asks the store to keep its bytes: the conductor's GC
+                    // reclaims them once this step's instance is superseded. It is
+                    // the demo's unsaved capture, produced from the untagged video
+                    // by ffmpeg alone so the demonstration needs no network.
+                    save: OutputSaveConfig::Bool(false),
                     ..Default::default()
                 }),
             )]),
@@ -4081,12 +4105,14 @@ mod tests {
     }
 
     /// Proves the online demo states the save policy its own hierarchy asks
-    /// for, variant by variant.
+    /// for, variant by variant, and shows both decisions: every variant the
+    /// library links keeps its bytes whole, and the preview variant nothing
+    /// links is not kept at all.
     ///
     /// The document is built by the example's own builder and read back from
     /// `mediapm.ncl`, so an omitted `save` comes back as `Auto` and fails. The
-    /// variant count is pinned so a step that stops declaring an output cannot
-    /// pass by shrinking the walk.
+    /// counts are pinned so a step that stops declaring an output, or a demo
+    /// that drops its unsaved variant, cannot pass by shrinking the walk.
     #[test]
     fn the_online_demo_saves_what_the_hierarchy_materializes() {
         let _isolated = IsolatedExampleRoots::with_cache();
@@ -4097,13 +4123,21 @@ mod tests {
 
         let document = mediapm::load_mediapm_document(&workspace_root.join("mediapm.ncl"))
             .expect("reload the online demo document");
-        let checked =
+        let counts =
             mediapm::demo_hierarchy_spec::assert_demo_saves_what_the_hierarchy_materializes(
                 &document,
             )
             .expect("the online demo states what it saves");
 
-        assert_eq!(checked, 11, "the online demo declares eleven step output variants");
+        assert_eq!(
+            counts,
+            mediapm::demo_hierarchy_spec::DemoSavePolicyCounts {
+                variants: 12,
+                full: 11,
+                unsaved: 1,
+            },
+            "the online demo declares eleven materialized outputs and one preview nothing keeps"
+        );
     }
 
     #[test]

@@ -26,7 +26,7 @@ For workspace-crate integration tests under `src/*/tests/`, prefer one CAS-style
 
 ### Demo examples
 
-`mediapm_demo` demonstrates the config-to-artifact path offline: its single `import` step provisions with no network, so it invokes no managed binary. `mediapm_demo_online` is the full-pipeline demonstration with real tool invocations, and its full-sync path is human-gated to explicit `cargo run --example` runs (three-level run model in `example-execution-policy.instructions.md`). Run `mediapm_demo` before push, never during incremental development. During development, prefer selective `cargo test -p <crate>` calls.
+`mediapm_demo` demonstrates the config-to-artifact path offline: its two `import` steps provision with no network — one keeps the media the hierarchy links, one captures a scratch payload nothing keeps — so it invokes no managed binary. `mediapm_demo_online` is the full-pipeline demonstration with real tool invocations, and its full-sync path is human-gated to explicit `cargo run --example` runs (three-level run model in `example-execution-policy.instructions.md`). Run `mediapm_demo` before push, never during incremental development. During development, prefer selective `cargo test -p <crate>` calls.
 
 Demos need external tools: `mediapm_demo_online` needs yt-dlp, ffmpeg, media-tagger, and network access. `mediapm_demo` needs no managed binary, because the tools that fetch real payloads are exactly the ones it no longer declares. Use selective unit/integration tests during iteration.
 

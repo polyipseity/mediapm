@@ -4,11 +4,18 @@
 //! hierarchy entry.
 //! Default sync enabled; the offline demo always runs a full sync.
 //!
-//! The demo deliberately runs one step. Its defining property is that it needs
+//! The demo deliberately runs only the `import` builtin, twice: once for the
+//! media fixture its hierarchy links, and once for a scratch payload nothing
+//! links. The second step exists so the document shows both halves of the save
+//! policy — the linked variant keeps its bytes whole, the scratch capture is
+//! declared unsaved — and it stays inside the demo's defining property: it needs
 //! no network, so it cannot include tools that fetch payloads or make network
 //! lookups. Real-binary coverage of the transform and tagging stages lives
 //! behind the `MEDIAPM_RUN_ONLINE_SYNC` gate instead; see
 //! `.agents/instructions/example-execution-policy.instructions.md`.
+//!
+//! The scratch capture is deliberately absent from the tree below: nothing in the
+//! hierarchy selects it, which is what `save = false` states.
 //!
 //! # Expected post-sync hierarchy
 //!
@@ -84,6 +91,16 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 /// Embedded tiny MP4 payload containing both video and audio tracks.
 const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
+
+/// Payload the offline demo seeds only to have a second object to capture.
+///
+/// The demo's only local tool is `import`, which copies bytes verbatim, so any
+/// second capture it can produce is another object rather than a transformation of
+/// the first one. This payload is that object: the demo's scratch step captures
+/// it and declares the capture unsaved, so the document shows both halves of the
+/// save policy without adding a managed tool or a network fetch.
+const OFFLINE_DEMO_SCRATCH_PAYLOAD: &[u8] =
+    b"offline demo scratch payload: captured by a step, never linked from the library\n";
 
 const DEMO_MEDIA_ID: &str = "demo.local.dQw4w9WgXcQ";
 const DEMO_UNTAGGED_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.untagged";
@@ -475,14 +492,31 @@ fn bytes_contain_ascii(bytes: &[u8], marker: &[u8]) -> bool {
     bytes.windows(marker.len()).any(|window| window == marker)
 }
 
-async fn import_source_fixture_into_cas(
-    cas: &FileSystemCas,
-    source_bytes: &[u8],
-) -> ExampleResult<Hash> {
-    let hash = cas.put(source_bytes.to_vec().into()).await?;
+/// Stores one payload in the demo's CAS and returns its hash.
+///
+/// The demo seeds every object its steps import this way, including the scratch
+/// payload no hierarchy entry links: an import step resolves its payload by hash,
+/// so the object has to be in the store before the workflow runs.
+async fn seed_object_into_cas(cas: &FileSystemCas, payload: &[u8]) -> ExampleResult<Hash> {
+    let hash = cas.put(payload.to_vec().into()).await?;
     Ok(hash)
 }
 
+/// Builds the offline demo's media document: one import step the hierarchy links,
+/// and one scratch import step nothing links.
+///
+/// The kept step's single output is materialized as the demo's untagged media
+/// leaf, so it declares `"full"`: the library links to that object, and `full`
+/// keeps the blob whole instead of storing it as a delta. The scratch step's
+/// output is declared `save = false` because no hierarchy entry reads it, which is
+/// what the document demonstrates: the bytes exist after the step and nothing in
+/// the library asks the store to keep them.
+///
+/// Both steps use `import`, the demo's only tool, so the whole chain is local: the
+/// scratch payload is seeded beside the media fixture rather than fetched. The
+/// scratch step comes first so the media step stays the media's final step: a
+/// reader evaluating the pipeline should see the kept capture end it, not a
+/// capture the document has already said it will not keep.
 #[expect(
     clippy::too_many_lines,
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
@@ -490,29 +524,50 @@ async fn import_source_fixture_into_cas(
 fn configure_document_for_local_tool_chain(
     workspace_root: &Path,
     source_hash: &str,
+    scratch_hash: &str,
 ) -> ExampleResult<(usize, usize)> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
 
     document.tools = local_demo_tool_requirements();
 
-    let steps = vec![MediaStep {
-        tool: MediaStepTool::Import,
-        input_variants: Vec::new(),
-        output_variants: BTreeMap::from([(
-            "video_untagged".to_string(),
-            OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
-                kind: YtDlpOutputKind::Primary,
-                // Materialized as the demo's untagged media leaf.
-                save: OutputSaveConfig::Full,
-                ..Default::default()
-            }),
-        )]),
-        options: BTreeMap::from([
-            ("kind".to_string(), TransformInputValue::String(IMPORT_KIND_CAS_HASH.to_string())),
-            ("hash".to_string(), TransformInputValue::String(source_hash.to_string())),
-        ]),
-    }];
+    let steps = vec![
+        MediaStep {
+            tool: MediaStepTool::Import,
+            input_variants: Vec::new(),
+            output_variants: BTreeMap::from([(
+                "scratch".to_string(),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    // No hierarchy entry links this variant, so the conductor's GC
+                    // reclaims the bytes once this step's instance is superseded.
+                    save: OutputSaveConfig::Bool(false),
+                    ..Default::default()
+                }),
+            )]),
+            options: BTreeMap::from([
+                ("kind".to_string(), TransformInputValue::String(IMPORT_KIND_CAS_HASH.to_string())),
+                ("hash".to_string(), TransformInputValue::String(scratch_hash.to_string())),
+            ]),
+        },
+        MediaStep {
+            tool: MediaStepTool::Import,
+            input_variants: Vec::new(),
+            output_variants: BTreeMap::from([(
+                "video_untagged".to_string(),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    // Materialized as the demo's untagged media leaf.
+                    save: OutputSaveConfig::Full,
+                    ..Default::default()
+                }),
+            )]),
+            options: BTreeMap::from([
+                ("kind".to_string(), TransformInputValue::String(IMPORT_KIND_CAS_HASH.to_string())),
+                ("hash".to_string(), TransformInputValue::String(source_hash.to_string())),
+            ]),
+        },
+    ];
 
     let configured_step_count = steps.len();
 
@@ -827,14 +882,15 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         (0, 0)
     };
 
-    let source_hash_text = {
+    let (source_hash_text, scratch_hash_text) = {
         // Clone the service's CAS handle instead of reopening the same root:
         // `FileSystemCas::open` would re-acquire the directory lock and hit
         // `LockContention` because the service already holds it. Cloning the
         // `Arc<FileSystemCas>` shares the same `DirectoryLockGuard`.
         let cas = ingest_service.conductor().cas().clone();
-        let source_hash = import_source_fixture_into_cas(&cas, &source_bytes).await?;
-        source_hash.to_string()
+        let source_hash = seed_object_into_cas(&cas, &source_bytes).await?;
+        let scratch_hash = seed_object_into_cas(&cas, OFFLINE_DEMO_SCRATCH_PAYLOAD).await?;
+        (source_hash.to_string(), scratch_hash.to_string())
     };
 
     let auto_added_media_id = ingest_service
@@ -860,8 +916,11 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         .into());
     }
 
-    let (configured_tool_count, configured_step_count) =
-        configure_document_for_local_tool_chain(&workspace_root, &source_hash_text)?;
+    let (configured_tool_count, configured_step_count) = configure_document_for_local_tool_chain(
+        &workspace_root,
+        &source_hash_text,
+        &scratch_hash_text,
+    )?;
 
     // No runtime refresh is needed here: `sync_library_with_options` performs
     // the dotenv load, runtime env-file creation, and schema export itself as
@@ -1027,8 +1086,8 @@ mod tests {
         );
         assert_eq!(
             manifest_json.get("configured_step_count").and_then(serde_json::Value::as_u64),
-            Some(1),
-            "demo should configure a single import workflow step"
+            Some(2),
+            "demo should configure the kept import step and the unsaved scratch step"
         );
         assert_eq!(
             manifest_json.get("tool_update_precheck_executed").and_then(serde_json::Value::as_bool),
@@ -1157,13 +1216,15 @@ mod tests {
     }
 
     /// Proves the offline demo states the save policy its own hierarchy asks
-    /// for, rather than relying on the default `auto` resolves.
+    /// for, and shows both decisions: the variant the library links keeps its
+    /// bytes whole, and the scratch variant nothing links is not kept at all.
     ///
     /// The check reads `mediapm.ncl` back from disk, so a variant that omits
     /// `save` comes back as `Auto` and fails: the point is that a reader of the
     /// demo sees what it keeps without tracing the resolver through the
-    /// hierarchy. The variant count is pinned too, so a step that stops
-    /// declaring its output fails here instead of passing an empty walk.
+    /// hierarchy. The counts are pinned too, so a step that stops declaring its
+    /// output, or a demo that drops its unsaved variant, fails here instead of
+    /// passing a walk that proves less than it claims.
     #[test]
     fn the_offline_demo_saves_what_the_hierarchy_materializes() {
         let _isolated = IsolatedExampleRoots::with_cache();
@@ -1176,18 +1237,28 @@ mod tests {
         .expect("seed the demo document");
 
         let source_hash = mediapm_cas::Hash::from_content(super::SAMPLE_AV_MP4_BYTES).to_string();
-        super::configure_document_for_local_tool_chain(&workspace_root, &source_hash)
-            .expect("configure the offline demo document");
+        let scratch_hash =
+            mediapm_cas::Hash::from_content(super::OFFLINE_DEMO_SCRATCH_PAYLOAD).to_string();
+        super::configure_document_for_local_tool_chain(
+            &workspace_root,
+            &source_hash,
+            &scratch_hash,
+        )
+        .expect("configure the offline demo document");
 
         let document = mediapm::load_mediapm_document(&workspace_root.join("mediapm.ncl"))
             .expect("reload the offline demo document");
-        let checked =
+        let counts =
             mediapm::demo_hierarchy_spec::assert_demo_saves_what_the_hierarchy_materializes(
                 &document,
             )
             .expect("the offline demo states what it saves");
 
-        assert_eq!(checked, 1, "the offline demo declares the import step's single output variant");
+        assert_eq!(
+            counts,
+            mediapm::demo_hierarchy_spec::DemoSavePolicyCounts { variants: 2, full: 1, unsaved: 1 },
+            "the offline demo declares the kept import output and one scratch output nothing keeps"
+        );
     }
 
     /// Proves the offline demo is idempotent: an immediate second sync does

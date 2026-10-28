@@ -44,6 +44,22 @@ pub const OFFLINE_DEMO_PLAYLIST: &str = "local-demo.m3u8";
 /// Online demo playlist leaf under `playlists/`.
 pub const ONLINE_DEMO_PLAYLIST: &str = "rickroll.m3u8";
 
+/// Counts of the save policies one demo document declares, by the decision each
+/// variant records.
+///
+/// A demo is documentation a reader checks against the tree: the counts let a
+/// demo test state both that its kept variants are `Full` and that at least one
+/// variant is deliberately not kept, without walking the document a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DemoSavePolicyCounts {
+    /// Every step output variant the document declares.
+    pub variants: usize,
+    /// Variants that declare [`OutputSaveConfig::Full`].
+    pub full: usize,
+    /// Variants that declare `false`, so nothing keeps their bytes.
+    pub unsaved: usize,
+}
+
 /// Checks that every step output variant a demo document declares states the
 /// save policy its own hierarchy asks for.
 ///
@@ -54,12 +70,13 @@ pub const ONLINE_DEMO_PLAYLIST: &str = "rickroll.m3u8";
 /// [`OutputSaveConfig::Full`], because the library links to that object and
 /// `Full` keeps the blob whole instead of storing it as a delta.
 ///
-/// A variant the hierarchy does *not* materialize is a retention decision this
-/// check refuses to guess at: the demo would then be relying on the collector to
-/// reclaim bytes once the producing instance is superseded, which is worth
-/// demonstrating only on purpose. Such a variant fails the check rather than
-/// being accepted, so demonstrating one takes a deliberate change here, not a
-/// declaration a demo makes on its own.
+/// A variant the hierarchy does *not* materialize is the other half of the
+/// demonstration: it must be explicit and must not be `Full`, because nothing in
+/// the library links to it. `false` says the collector reclaims the bytes once
+/// the producing instance is superseded; `true` says the bytes are kept even
+/// though nothing reads them. Each demo holds at least one variant in each half —
+/// a `Full` one and a `false` one — so both decisions are visible in the document
+/// a user reads.
 ///
 /// The document is read from disk after the demo wrote it, so the check sees the
 /// document a user gets rather than the value the builder held: an omitted
@@ -69,16 +86,17 @@ pub const ONLINE_DEMO_PLAYLIST: &str = "rickroll.m3u8";
 /// # Errors
 ///
 /// Returns a message naming the media, the step index and the variant when a
-/// variant relies on the default policy, is not materialized by the demo's
-/// hierarchy, or does not resolve to `Full`; and when the document declares no
-/// step output variant at all, because an empty walk would otherwise pass.
+/// variant relies on the default policy, when a materialized variant is not
+/// `Full`, when an unmaterialized variant is `Full`, when the document declares
+/// no variant at all, and when it declares no `Full` variant or no `false` one —
+/// an empty half of the demonstration is the failure this check exists to catch.
 pub fn assert_demo_saves_what_the_hierarchy_materializes(
     document: &MediaPmDocument,
-) -> Result<usize, String> {
+) -> Result<DemoSavePolicyCounts, String> {
     let materialized = hierarchy_consumed_variants(document)
         .map_err(|error| format!("demo document hierarchy does not resolve: {error}"))?;
     let empty = BTreeSet::new();
-    let mut checked = 0_usize;
+    let mut counts = DemoSavePolicyCounts { variants: 0, full: 0, unsaved: 0 };
 
     for (media_id, source) in &document.media {
         let consumed = materialized.get(media_id).unwrap_or(&empty);
@@ -91,32 +109,52 @@ pub fn assert_demo_saves_what_the_hierarchy_materializes(
                          the default save policy; state the mode the demo keeps"
                     ));
                 }
-                if !consumed.contains(variant_name) {
-                    return Err(format!(
-                        "media '{media_id}' variant '{variant_name}' (step {step_index}) is not \
-                         materialized by the demo hierarchy, so its retention is a deliberate \
-                         choice this check does not make; decide the mode before the demo \
-                         declares it"
-                    ));
-                }
-                if declared != OutputSaveConfig::Full {
+                let materialized_here = consumed.contains(variant_name);
+                if materialized_here && declared != OutputSaveConfig::Full {
                     return Err(format!(
                         "media '{media_id}' variant '{variant_name}' (step {step_index}) is \
                          materialized by the demo hierarchy and declares {declared:?}; a \
                          materialized variant is Full"
                     ));
                 }
-                checked += 1;
+                if !materialized_here && declared == OutputSaveConfig::Full {
+                    return Err(format!(
+                        "media '{media_id}' variant '{variant_name}' (step {step_index}) is not \
+                         materialized by the demo hierarchy and declares Full; a variant nothing \
+                         links to states true (kept anyway) or false (reclaimable)"
+                    ));
+                }
+                counts.variants += 1;
+                if materialized_here {
+                    counts.full += 1;
+                }
+                if declared == OutputSaveConfig::Bool(false) {
+                    counts.unsaved += 1;
+                }
             }
         }
     }
 
-    if checked == 0 {
+    if counts.variants == 0 {
         return Err("demo document declares no step output variant, so this check proved nothing"
             .to_string());
     }
+    if counts.full == 0 {
+        return Err(format!(
+            "demo document materializes no declared variant ({} declared), so it never shows \
+             bytes the library keeps",
+            counts.variants
+        ));
+    }
+    if counts.unsaved == 0 {
+        return Err(format!(
+            "demo document declares no variant with save = false ({} declared), so it never shows \
+             bytes nothing keeps; declare one the hierarchy does not consume",
+            counts.variants
+        ));
+    }
 
-    Ok(checked)
+    Ok(counts)
 }
 
 /// Returns the Jellyfin-style media folder name a `"${artist} - ${title} [${id}]"` template renders.
