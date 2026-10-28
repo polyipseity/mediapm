@@ -1,9 +1,9 @@
 //! A user-authored `media` map key is one identity with three consumers.
 //!
-//! The same string reaches the hierarchy as `${media.id}`, the state as a
-//! `workflow_states` key, and every `managed_files` record, so a spelling that
-//! one of those consumers rewrites is an identity split: the file lands on disk
-//! under `a_b` while the state records `a/b`, and no later join can find it.
+//! The same string reaches the hierarchy as `${media.id}`, every `managed_files`
+//! key, and every `ManagedFileRecord.media_id`, so a spelling that one of those
+//! consumers rewrites is an identity split: the file lands on disk under `a_b`
+//! while the state records `a/b`, and no later join can find it.
 //! The config boundary therefore *rejects* such an id instead of sanitizing
 //! it, because the key is the user's to spell correctly.
 //!
@@ -170,14 +170,14 @@ async fn sync_rejects_media_id_with_splitting_shape_and_writes_nothing()
     Ok(())
 }
 
-/// A refused media id must leave no row in the state under either spelling.
+/// A refused media id must leave no record in the state under either spelling.
 ///
 /// The state half of the identity invariant: before the boundary rejected a
-/// splitting id, the sync succeeded with `workflow_states` keyed by the raw
-/// `a/b` while the library root held `a_b/track.mp4`. A refusal is only
-/// meaningful if the unsplit and the sanitized spelling both leave nothing
-/// behind to be joined against later. Parameterized over the same splitting
-/// shapes, because the state half is where both of them split.
+/// splitting id, the sync succeeded with a state key spelled `a/b` while the
+/// library root held `a_b/track.mp4`. A refusal is only meaningful if the
+/// unsplit and the sanitized spelling both leave nothing behind to be joined
+/// against later. Parameterized over the same splitting shapes, because the
+/// state half is where both of them split.
 #[tokio::test]
 async fn refused_media_id_leaves_no_state_row_under_either_spelling()
 -> Result<(), mediapm::MediaPmError> {
@@ -189,15 +189,16 @@ async fn refused_media_id_leaves_no_state_row_under_either_spelling()
         );
 
         let state = read_synced_state(root.path())?;
-        let state_keys: Vec<&String> = state.workflow_states.keys().collect();
-        assert!(
-            state_keys.is_empty(),
-            "a refused media id must leave no workflow_states row, got {state_keys:?}"
-        );
         assert!(
             state.managed_files.is_empty(),
             "a refused media id must leave no managed_files row, got {:?}",
             state.managed_files.keys().collect::<Vec<_>>()
+        );
+        let recorded_ids: Vec<&str> =
+            state.managed_files.values().map(|record| record.media_id.as_str()).collect();
+        assert!(
+            recorded_ids.is_empty(),
+            "a refused media id must leave no media_id record, got {recorded_ids:?}"
         );
         assert!(
             !root.path().join(sanitized_spelling).exists() && !root.path().join(media_id).exists(),
@@ -308,12 +309,13 @@ async fn sync_accepts_plain_media_id() -> Result<(), mediapm::MediaPmError> {
 /// The state key and the materialized path must agree on one spelling of the
 /// media id.
 ///
-/// This is the invariant the rejection exists to protect. `workflow_states` is
-/// keyed by the raw id the hierarchy declared, `managed_files` by the relative
-/// path that reached disk, and the directory on disk by the id after
-/// sanitization. The assertion is not "a file exists" but "the state key, the
-/// managed-file key prefix, and the on-disk directory are the same string" —
-/// which is precisely what a media id that sanitizes to something else breaks.
+/// This is the invariant the rejection exists to protect. `managed_files` is
+/// keyed by the relative path that reached disk, the record's `media_id` holds
+/// the raw id the hierarchy declared, and the directory on disk is spelled from
+/// the id after sanitization. The assertion is not "a file exists" but "the
+/// recorded media id, the managed-file key prefix, and the on-disk directory are
+/// the same string" — which is precisely what a media id that sanitizes to
+/// something else breaks.
 #[tokio::test]
 async fn state_key_and_materialized_path_share_one_media_id_spelling()
 -> Result<(), mediapm::MediaPmError> {
@@ -323,11 +325,12 @@ async fn state_key_and_materialized_path_share_one_media_id_spelling()
 
     let state = read_synced_state(root.path())?;
 
-    let state_keys: Vec<&String> = state.workflow_states.keys().collect();
+    let recorded_ids: Vec<&str> =
+        state.managed_files.values().map(|record| record.media_id.as_str()).collect();
     assert_eq!(
-        state_keys,
+        recorded_ids,
         vec![MEDIA_ID],
-        "workflow_states must hold exactly the accepted media id, unsanitized"
+        "the state must record exactly the accepted media id, unsanitized"
     );
 
     let managed_keys: Vec<&String> = state.managed_files.keys().collect();
@@ -355,7 +358,7 @@ async fn state_key_and_materialized_path_share_one_media_id_spelling()
     );
     assert_eq!(
         managed_key.split('/').next(),
-        Some(state_keys[0].as_str()),
+        Some(recorded_ids[0]),
         "the first path component of a managed file must equal its media id"
     );
     Ok(())

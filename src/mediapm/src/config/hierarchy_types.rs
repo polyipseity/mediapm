@@ -966,11 +966,11 @@ pub(crate) fn check_nfd_source(components: &[&str]) -> Result<(), MediaPmError> 
 /// Validates one user-authored media id at the config boundary.
 ///
 /// A `media` map key is a single identity with three consumers: it is
-/// interpolated into `${media.id}` path templates, it keys
-/// `state.workflow_states`, and it is carried in every `ManagedFileRecord`.
-/// A shape that one of those consumers rewrites is therefore an identity split,
-/// not a cosmetic problem — a key `a/b` reaches disk as `a_b` while the state
-/// records `a/b`, and no later join between the two finds the file.
+/// interpolated into `${media.id}` path templates, it is carried in every
+/// `ManagedFileRecord.media_id`, and it is the state key of the file that record
+/// names. A shape that one of those consumers rewrites is therefore an identity
+/// split, not a cosmetic problem — a key `a/b` reaches disk as `a_b` while the
+/// record keeps `a/b`, and no later join between the two finds the file.
 ///
 /// The rules below are exactly the shapes that break that identity:
 ///
@@ -1678,8 +1678,8 @@ mod tests {
     ///
     /// The id is interpolated into `${media.id}` path templates, so a
     /// separator here is the one spelling that reaches a filesystem join while
-    /// the state keys keep the unsplit form: the same media written to disk as
-    /// `a_b` and recorded in `workflow_states` as `a/b`.
+    /// the recorded id keeps the unsplit form: the same media written to disk as
+    /// `a_b` and recorded as `a/b`.
     #[test]
     fn strict_media_id_rejects_path_separator() {
         assert_media_id_rejected("a/b", "path separator");

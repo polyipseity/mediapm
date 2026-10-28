@@ -446,21 +446,6 @@ impl ToolRequirement {
     }
 }
 
-/// Per-media-source workflow step state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ManagedWorkflowStepState {
-    /// Pre-seeded CAS hash pointers keyed by variant name.
-    #[serde(default)]
-    pub variant_hashes: BTreeMap<String, String>,
-    /// Number of completed steps (0 = none).
-    #[serde(default)]
-    pub steps_completed: u32,
-    /// Optional last impure sync timestamp.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_impure_sync_at: Option<mediapm_utils::Timestamp>,
-}
-
 /// Entry in the managed-tool registry tracking fetch/deployment metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -531,12 +516,13 @@ pub struct ManagedFileRecord {
 
 /// Persisted mediapm machine state (`state.json`).
 ///
-/// V4 format with `managed_files` (path → record map), `managed_tools` (flat
-/// tool deployment metadata list), and `workflow_states` (per-media workflow
-/// progress). No longer stores tool requirements, active instances,
-/// last-materialization hash, or a queue of workflows to force-rerun — explicit
-/// invalidation marks the recorded conductor instance, and the document config
-/// owns everything the user authored.
+/// V5 format with `managed_files` (path → record map) and `managed_tools` (flat
+/// tool deployment metadata list). It does not record per-media workflow
+/// progress: the conductor records what each tool-call instance produced, and a
+/// second copy in this document could disagree with it. No longer stores tool
+/// requirements, active instances, last-materialization hash, or a queue of
+/// workflows to force-rerun — explicit invalidation marks the recorded conductor
+/// instance, and the document config owns everything the user authored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaPmState {
@@ -549,9 +535,6 @@ pub struct MediaPmState {
     /// Managed tool deployment metadata (flat list).
     #[serde(default)]
     pub managed_tools: Vec<ToolRegistryEntry>,
-    /// Per-media-source workflow state.
-    #[serde(default)]
-    pub workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
 }
 
 impl Default for MediaPmState {
@@ -560,7 +543,6 @@ impl Default for MediaPmState {
             version: defaults::MEDIAPM_STATE_VERSION,
             managed_files: BTreeMap::new(),
             managed_tools: Vec::new(),
-            workflow_states: BTreeMap::new(),
         }
     }
 }

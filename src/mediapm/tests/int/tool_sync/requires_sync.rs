@@ -159,7 +159,7 @@ async fn state_v2_on_disk_bridges_to_current_version_on_load() -> Result<(), med
 
     let state = mediapm::load_mediapm_state_document(&state_path).expect("load v2 state.json");
 
-    assert_eq!(state.version, 4, "v2 state should bridge to the current version");
+    assert_eq!(state.version, 5, "v2 state should bridge to the current version");
     assert_eq!(state.managed_tools.len(), 1, "v2 bridge should produce one tool entry");
     assert_eq!(state.managed_tools[0].tool_id, "ffmpeg");
     assert_eq!(state.managed_tools[0].canonical_version, "ffmpeg-v7.1");
@@ -191,7 +191,7 @@ async fn sync_upgrades_v2_state_to_current_format() -> Result<(), mediapm::Media
     let value: serde_json::Value =
         serde_json::from_str(&content).expect("state.json after sync should be valid JSON");
     assert_eq!(
-        value["version"], 4,
+        value["version"], 5,
         "state.json must be the current version after sync with v2 input"
     );
     assert!(
@@ -213,7 +213,7 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let missing_path = root.path().join("does-not-exist.json");
     let state = mediapm::load_mediapm_state_document(&missing_path)?;
-    assert_eq!(state.version, 4, "default state should be the current version");
+    assert_eq!(state.version, 5, "default state should be the current version");
     assert!(state.managed_tools.is_empty(), "default state should have no managed tools");
     Ok(())
 }

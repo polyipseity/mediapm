@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{ManagedFileRecord, ManagedWorkflowStepState, MediaPmState};
+use crate::config::{ManagedFileRecord, MediaPmState};
 use crate::error::MediaPmError;
 
 /// V2 wire representation of one tool-registry entry.
@@ -72,6 +72,25 @@ pub(super) struct ToolRegistryEntryV2 {
     pub resolved_vcs_hash: Option<String>,
 }
 
+/// V2 wire representation of one media's workflow step state.
+///
+/// Declared here because V2 is the first version that keyed these by media id
+/// (V1 held a history vector per media). Later versions accept the field
+/// unchanged and V5 drops it, so this is the one declaration of that shape.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkflowStepStateV2 {
+    /// Pre-seeded CAS hash pointers keyed by variant name.
+    #[serde(default)]
+    pub(super) variant_hashes: BTreeMap<String, String>,
+    /// Number of completed steps (0 = none).
+    #[serde(default)]
+    pub(super) steps_completed: u32,
+    /// Last impure sync timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) last_impure_sync_at: Option<mediapm_utils::Timestamp>,
+}
+
 /// V2 wire representation of the persisted state document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MediaPmStateV2 {
@@ -85,7 +104,7 @@ pub(super) struct MediaPmStateV2 {
     pub managed_tools: BTreeMap<String, ToolRegistryEntryV2>,
     /// Workflow step states keyed by media id.
     #[serde(default)]
-    pub workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
+    pub workflow_states: BTreeMap<String, WorkflowStepStateV2>,
 }
 
 /// Decodes one V2 JSON [`Value`] into the canonical [`MediaPmStateV2`] wire type.
@@ -139,7 +158,10 @@ pub(super) fn to_v2_json_value(state: &MediaPmState) -> Result<Value, MediaPmErr
         version: 2,
         managed_files: state.managed_files.clone(),
         managed_tools,
-        workflow_states: state.workflow_states.clone(),
+        // The runtime model no longer records a workflow map, so a document
+        // encoded from it carries none. This encoder exists for the round-trip
+        // proof, not to resurrect a deleted field.
+        workflow_states: BTreeMap::new(),
     };
 
     serde_json::to_value(v2)
@@ -179,7 +201,6 @@ mod tests {
                 resolved_version: Some("7.1".to_string()),
                 resolved_vcs_hash: Some("abc".to_string()),
             }],
-            workflow_states: BTreeMap::new(),
         };
 
         let encoded = to_v2_json_value(&state).expect("encode as V2");

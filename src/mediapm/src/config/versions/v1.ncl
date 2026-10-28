@@ -258,7 +258,7 @@ let ManagedFileRecordV1 = {
 }
 in
 
-# ||| Managed workflow step state (mirrors `ManagedWorkflowStepState`).
+# ||| Managed workflow step state (mirrors the V1 wire type `ManagedWorkflowStepStateV1`).
 let ManagedWorkflowStepStateV1 = {
   variant_hashes | { _ : String } | default = {},
   steps_completed | IntegerNumberV1 | default = 0,

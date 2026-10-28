@@ -4,12 +4,17 @@
 //! dispatch, and migration from legacy formats.
 //!
 //! These tests verify:
-//! - V2 round-trip: `to_json_value` + `from_json_value` produces the same state
-//! - V1→V2 migration: pre-rewrite wrapper format converts correctly
-//! - Flat→V2 migration: post-rewrite flat format converts correctly
+//! - Round-trip: `to_json_value` + `from_json_value` produces the same state
+//! - V1 migration: pre-rewrite wrapper format converts correctly
+//! - Flat migration: post-rewrite flat format converts correctly
 //! - File-level migration: `state.ncl` → `state.json` via
 //!   `load_mediapm_state_document`
 //! - Idempotency: re-saving produces identical bytes
+//!
+//! Every legacy format that carried a per-media workflow map still loads, and
+//! every one of them has that map dropped: the conductor records what each
+//! tool-call instance produced, so a second copy in this document is a second
+//! answer to the same question.
 //!
 //! Does NOT test the full tool-sync pipeline — see `tool_sync/` for that.
 
@@ -29,7 +34,7 @@ use serde_json::json;
 #[test]
 fn state_round_trip() {
     let state = MediaPmState {
-        version: 3,
+        version: 5,
         managed_files: BTreeMap::from([(
             "/media/file.mp4".to_string(),
             ManagedFileRecord {
@@ -48,16 +53,18 @@ fn state_round_trip() {
             resolved_version: None,
             resolved_vcs_hash: None,
         }],
-        workflow_states: BTreeMap::new(),
     };
 
     let value = to_json_value(&state).expect("serialization must succeed");
+    assert!(
+        value.get("workflow_states").is_none(),
+        "the current format has no workflow map: {value}"
+    );
     let decoded = from_json_value(value).expect("deserialization must succeed");
 
     assert_eq!(state.managed_files, decoded.managed_files);
     assert_eq!(state.managed_tools, decoded.managed_tools);
-    assert_eq!(state.workflow_states, decoded.workflow_states);
-    assert_eq!(decoded.version, 4);
+    assert_eq!(decoded.version, 5);
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +72,7 @@ fn state_round_trip() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn migrate_v1_wrapper_to_v2() {
+fn migrate_v1_wrapper_to_current() {
     let v1_json = json!({
         "version": 1,
         "state": {
@@ -105,14 +112,18 @@ fn migrate_v1_wrapper_to_v2() {
 
     // V1 wrapper fields dropped
     assert!(state.managed_tools.is_empty(), "tool_registry should be dropped");
-    // managed_files preserved
+    // managed_files preserved, and they carry the hash the workflow map repeated:
+    // the record is what the library is built from, so the dropped copy loses
+    // nothing the run needs.
     assert_eq!(state.managed_files.len(), 1);
     assert_eq!(state.managed_files.get("path/to/file.mp4").unwrap().hash, "blake3:abc");
-    // workflow_states converted from Vec<T> to T (last entry)
-    assert_eq!(state.workflow_states.len(), 1);
-    let ws = &state.workflow_states["source-1"];
-    assert_eq!(ws.steps_completed, 3);
-    assert_eq!(ws.variant_hashes.get("primary").unwrap(), "blake3:abc");
+    // The workflow map is dropped, and the document written from this state
+    // cannot mention it.
+    let rewritten = to_json_value(&state).expect("re-encoding must succeed");
+    assert!(
+        rewritten.get("workflow_states").is_none(),
+        "the dropped map must not reappear on write: {rewritten}",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +131,7 @@ fn migrate_v1_wrapper_to_v2() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn migrate_flat_to_v2() {
+fn migrate_flat_to_current() {
     let flat_json = json!({
         "version": 1,
         "managed_files": [
@@ -144,10 +155,12 @@ fn migrate_flat_to_v2() {
     assert_eq!(record.variant, "");
     assert_eq!(record.hash, "path/to/file.mp4");
 
-    // workflow_states at top level
-    assert_eq!(state.workflow_states.len(), 1);
-    let ws = &state.workflow_states["source-1"];
-    assert_eq!(ws.steps_completed, 3);
+    // The top-level workflow map is accepted and dropped.
+    let rewritten = to_json_value(&state).expect("re-encoding must succeed");
+    assert!(
+        rewritten.get("workflow_states").is_none(),
+        "the dropped map must not reappear on write: {rewritten}",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -157,15 +170,14 @@ fn migrate_flat_to_v2() {
 #[test]
 fn default_state_round_trip() {
     let state = MediaPmState::default();
-    assert_eq!(state.version, 4);
+    assert_eq!(state.version, 5);
 
     let value = to_json_value(&state).expect("serialization must succeed");
     let decoded = from_json_value(value).expect("deserialization must succeed");
 
     assert!(decoded.managed_files.is_empty());
     assert!(decoded.managed_tools.is_empty());
-    assert!(decoded.workflow_states.is_empty());
-    assert_eq!(decoded.version, 4);
+    assert_eq!(decoded.version, 5);
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +217,6 @@ fn json_save_idempotent() {
             resolved_version: None,
             resolved_vcs_hash: None,
         }],
-        workflow_states: BTreeMap::new(),
     };
 
     let value1 = to_json_value(&state).expect("first serialization");
@@ -241,9 +252,8 @@ fn ncl_to_json_file_migration() {
 
     assert!(json_path.exists(), "state.json should exist");
     assert!(!ncl_path.exists(), "state.ncl should be deleted after migration");
-    assert_eq!(state.version, 4);
+    assert_eq!(state.version, 5);
     assert!(state.managed_files.is_empty());
-    assert!(state.workflow_states.is_empty());
 }
 
 #[test]
@@ -252,7 +262,7 @@ fn load_missing_state_returns_default() {
     let json_path = dir.path().join("state.json");
 
     let state = load_mediapm_state_document(&json_path).expect("load should return default");
-    assert_eq!(state.version, 4);
+    assert_eq!(state.version, 5);
     assert!(state.managed_files.is_empty());
     assert!(state.managed_tools.is_empty());
 }
@@ -420,12 +430,8 @@ fn state_json_always_writes_to_disk() {
     let tmp = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let path = tmp.path().join("state.json");
 
-    let state = MediaPmState {
-        version: 2,
-        managed_files: BTreeMap::new(),
-        managed_tools: Vec::new(),
-        workflow_states: BTreeMap::new(),
-    };
+    let state =
+        MediaPmState { version: 2, managed_files: BTreeMap::new(), managed_tools: Vec::new() };
 
     // First save: create the file.
     save_mediapm_state_document(&path, &state).expect("first save should succeed");
@@ -484,7 +490,6 @@ fn state_v3_roundtrip_resolved_options() {
             resolved_version: Some("2025.07.15".to_string()),
             resolved_vcs_hash: Some("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0".to_string()),
         }],
-        workflow_states: BTreeMap::new(),
     };
 
     let value = to_json_value(&state).expect("serialization must succeed");
@@ -517,7 +522,6 @@ fn state_v3_roundtrip_resolved_options() {
             resolved_version: None,
             resolved_vcs_hash: None,
         }],
-        workflow_states: BTreeMap::new(),
     };
     let value_none = to_json_value(&state_none).expect("serialization must succeed");
     let entry_none = &value_none["managed_tools"][0];
@@ -570,15 +574,18 @@ fn state_v3_roundtrip_resolved_options() {
     );
 }
 
-/// A V3 document loads and is written back as V4 without its queue.
+/// A V3 document loads and is written back in the current format without its
+/// queue and without its workflow map.
 ///
 /// The queue named a workflow a later run had to re-execute; V4 removed it
 /// because a marker on the recorded instance says the same thing where the
-/// decision is actually made. Dropping it is the whole migration — everything
-/// else is shared with V4 — and the rewritten document must not mention it, or a
-/// later reader would believe a request is pending.
+/// decision is actually made. The workflow map named what each variant had
+/// produced; V5 removed it because the conductor records that per instance.
+/// Dropping both is the whole migration — everything else is shared — and the
+/// rewritten document must not mention either, or a later reader would believe a
+/// request is pending or a copy is authoritative.
 #[test]
-fn v3_document_migrates_to_v4_without_its_queue() {
+fn v3_document_migrates_to_v5_without_its_queue_or_workflow_map() {
     let v3_document = json!({
         "version": 3,
         "managed_files": {
@@ -606,19 +613,19 @@ fn v3_document_migrates_to_v4_without_its_queue() {
 
     let state = from_json_value(v3_document).expect("a V3 document must still load");
 
-    assert_eq!(state.version, 4, "loading always resolves to the current version");
+    assert_eq!(state.version, 5, "loading always resolves to the current version");
     assert_eq!(state.managed_files.len(), 1);
     assert_eq!(state.managed_tools.len(), 1);
     assert_eq!(state.managed_tools[0].canonical_version, "ffmpeg-v7.1");
-    assert_eq!(
-        state.workflow_states["kept"].steps_completed, 4,
-        "the progress the queue named is not the queue, and it survives",
-    );
 
     let rewritten = to_json_value(&state).expect("re-encoding must succeed");
-    assert_eq!(rewritten["version"], 4);
+    assert_eq!(rewritten["version"], 5);
     assert!(
         rewritten.get("pending_force_rerun").is_none(),
         "the removed queue must not reappear on write: {rewritten}",
+    );
+    assert!(
+        rewritten.get("workflow_states").is_none(),
+        "the removed workflow map must not reappear on write: {rewritten}",
     );
 }

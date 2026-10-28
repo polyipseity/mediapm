@@ -11,20 +11,20 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 - `state.json` is machine-managed **JSON with pretty-printing and always-write semantics**, not a Nickel document, though legacy versions were `.ncl`.
 - `mediapm.ncl` is the user-owned Nickel intent document; `conductor.generated.ncl` is the machine-managed Nickel runtime document. Only `state.json` is JSON.
 - Legacy `state.ncl` files are auto-migrated on load and then deleted (`load_mediapm_state_document` in `nickel_io.rs` is JSON-first, falls back to the legacy Nickel file, and removes it after a successful load). Never write new `.ncl` state files.
+- A `state.json` that names a schema version is decoded through that version's reader, and any failure is reported: a document whose body does not parse, or that names a version this build does not know, aborts the load instead of being read as empty. Reading it as empty would discard recorded files and let the next scan treat every one of them as stale. Only a document that names no version at all is rebuilt, because no writer here emits one, and the warning that says so names the path.
 
-State persisted in `state.json` under `<runtime_root>/` tracks managed file records, tool fetch/deploy metadata, and media workflow step state, with version dispatch for migration from legacy `.ncl` formats.
+State persisted in `state.json` under `<runtime_root>/` tracks managed file records and tool fetch/deploy metadata, with version dispatch for migration from legacy `.ncl` formats. It records no per-media workflow progress: the conductor records what each tool-call instance produced, and `managed_files` records what reached the library.
 
 - **No `MigrateState` trait**: migration helpers are plain functions in `state/versions/v1.rs` (no trait dispatch), avoiding trait overhead for a single migration path.
-- **File organization**: public API in `state/ser.rs` (thin delegation), V1 wire types and migration in `state/versions/v1.rs`, V2 wire types in `state/versions/v2.rs`, version dispatch utilities in `state/versions/mod.rs`.
+- **File organization**: public API in `state/ser.rs` (thin delegation), V1 wire types and migration in `state/versions/v1.rs`, V2 wire types in `state/versions/v2.rs`, the current wire shape and the runtime bridge in `state/versions/v5.rs`, version dispatch utilities in `state/versions/mod.rs`.
 
-## `MediaPmState` fields (v3)
+## `MediaPmState` fields (v5)
 
-| Field             | Type                                         | Purpose                                         |
-| ----------------- | -------------------------------------------- | ----------------------------------------------- |
-| `version`         | `u32`                                        | Schema version marker (for migration dispatch)  |
-| `managed_files`   | `BTreeMap<String, ManagedFileRecord>`        | Materialized files keyed by output path         |
-| `managed_tools`   | `Vec<ToolRegistryEntry>`                     | Flat list of tool deployment metadata entries   |
-| `workflow_states` | `BTreeMap<String, ManagedWorkflowStepState>` | Per-media-source workflow step state            |
+| Field             | Type                                  | Purpose                                         |
+| ----------------- | ------------------------------------- | ----------------------------------------------- |
+| `version`         | `u32`                                 | Schema version marker (for migration dispatch)  |
+| `managed_files`   | `BTreeMap<String, ManagedFileRecord>` | Materialized files keyed by output path         |
+| `managed_tools`   | `Vec<ToolRegistryEntry>`              | Flat list of tool deployment metadata entries   |
 
 ## `ToolRegistryEntry` (v3)
 
@@ -45,12 +45,14 @@ The three `resolved_*` fields are `Option<String>`: `None` serializes as JSON
 `null`, and a missing field deserializes to `None` via `#[serde(default)]`.
 Empty is `None`; the empty string `""` is invalid for these fields and is
 rejected by the parser (no normalization, no migration). Stale state files
-containing `""` fail to load and are discarded/regenerated on the next run.
+containing `""` fail to load, and the error propagates rather than being
+rebuilt: the document names a version, so its contents were written to hold
+data.
 
-The schema change is applied **in place**: the existing V3 schema keeps its
-version marker (3), with no version bump, no V4 wire format, and no
-migration code. Old and new files are distinguished by content, not by version
-number.
+The `resolved_*` schema change is applied **in place** within the version that
+introduced it: it keeps that version's marker, with no extra wire format and no
+migration code, and old and new files are distinguished by content rather than
+by version number. Every later shape change is a version bump.
 
 **Why-empty invariant:** any field left `None` must be documented via an inline
 `// WHY:` comment on the provider dispatch arm, the per-tool provider module
@@ -85,12 +87,12 @@ V1→v2 mapping:
 - `managed_files`: record→record with same shape (kept as-is).
 - `tool_registry`: dropped — replaced by `managed_tools` with renamed fields.
 - `active_tools`: dropped — superseded by `deployed_at` ordering.
-- `workflow_states`: `Vec<T>` → `T` (take last entry or first).
+- `workflow_states`: `Vec<T>` → `T` (take last entry or first). V5 drops the map; the field remains part of the V1 wire shape so a legacy document parses.
 - `last_materialized_state_hash`: dropped (dead field).
 
 ## V1 flat format (post-rewrite — migration-only, never written)
 
-The post-rewrite flat format (current `state.json`):
+The post-rewrite flat format:
 
 ```text
 { "version": 1, "media": { "<id>": { "variant_hashes": {...}, "steps_completed": 0, "last_impure_sync_at": null } }, "tools": { ... }, "tool_registry": { ... }, "active_tools": { ... }, "last_materialized_state_hash": "", "managed_files": [ "<path>" ]
@@ -108,18 +110,19 @@ Flat→v2 mapping:
 
 ## State-specific versioning scheme
 
-- `MEDIAPM_STATE_VERSION = 4` in `src/mediapm/src/config/defaults.rs` (independent constant from `MEDIAPM_DOCUMENT_VERSION`).
+- `MEDIAPM_STATE_VERSION = 5` in `src/mediapm/src/config/defaults.rs` (independent constant from `MEDIAPM_DOCUMENT_VERSION`).
 - `MediaPmState.version` uses `state_version` default, not `document_version`.
 - V1 = legacy Nickel formats (both wrapper and flat).
-- V2 = intermediate JSON format, read-only: decoded as V3, then migrated to V4 on load (never written).
-- V3 = JSON format before instance invalidation: read-only, migrated to V4 on load (never written).
-- V4 = current JSON format (always written, never reverted).
+- V2 = intermediate JSON format, read-only: decoded as V3, then migrated forward on load (never written).
+- V3 = JSON format before instance invalidation: read-only, migrated forward on load (never written).
+- V4 = JSON format with the per-media workflow map: read-only, migrated to V5 on load (never written).
+- V5 = current JSON format: no per-media workflow map (always written, never reverted).
 - A schema change is a version bump. Versions are integers; a field that appears or disappears is a new `vN` module plus a `from_v(N-1)_into_vN` migration, never an in-place edit of the current version's shape.
 
 ## Version dispatch
 
-- On load (`state/ser.rs::from_json_value` → `state/versions/mod.rs::from_json_value`): `versions::extract_state_version_field`, then `v1::from_v1_json_value` (1), `v4::from_v3_into_v4(v3::decode_v2_as_v3(..))` (2), `v4::from_v3_into_v4(v3::decode_v3(..))` (3), or `v4::from_v4_json_value` (4). Anything else is an `unsupported mediapm state schema version` error.
-- On save (`state/ser.rs::to_json_value` → `state/versions/mod.rs::to_json_value`): `v4::to_v4_json_value` (always V4).
+- On load (`state/ser.rs::from_json_value` → `state/versions/mod.rs::from_json_value`): `versions::extract_state_version_field`, then `v1::from_v1_json_value` (1), `v5::resolve_v5(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::decode_v2_as_v3(..))))` (2), the same composition over `v3::decode_v3(..)` (3), `v5::resolve_v5(v5::from_v4_into_v5(v4::decode_v4(..)))` (4), or `v5::from_v5_json_value` (5). Anything else is an `unsupported mediapm state schema version` error.
+- On save (`state/ser.rs::to_json_value` → `state/versions/mod.rs::to_json_value`): `v5::to_v5_json_value` (always V5).
 - Migration from `.ncl` (`state/ser.rs::migrate_from_old_nickel`): delegates to `versions::v1::from_v1_json_value` which handles both wrapper and flat V1 shapes → writes `state.json` → deletes `state.ncl`.
 
 ## `deployed_at` ordering semantics
@@ -136,7 +139,6 @@ Flat→v2 mapping:
 
 - `managed_files`: remove entries with empty/whitespace-only keys.
 - `managed_tools`: retain only entries with a non-empty `canonical_version` or at least one `Some` `resolved_*` field. No trim/empty-string guards are applied to the `resolved_*` `Option` fields; empty is `None`, never `""`.
-- `workflow_states`: no special normalization.
 - Normalization runs in `MediaPmState::normalize()`.
 
 ## Canonical version resolution

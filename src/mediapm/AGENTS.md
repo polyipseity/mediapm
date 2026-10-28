@@ -88,7 +88,7 @@ Four-document system, all with explicit top-level `version`:
 | `mediapm.ncl` | `<root>/mediapm.ncl` (`paths.mediapm_ncl`) | User | Declares media, hierarchy, tools, runtime |
 | `mediapm.conductor.ncl` | `<root>/mediapm.conductor.ncl` (`paths.conductor_user_ncl`) | User | Conductor user intent + workflow defs; never a reconcile save target |
 | `mediapm.conductor.generated.ncl` | `<root>/mediapm.conductor.generated.ncl` (`paths.conductor_generated_ncl`) | Machine | Tool registry, resolved hashes |
-| `state.json` | `<runtime_root>/state.json` (`paths.mediapm_state_json`; `<runtime_root>` defaults to `<root>/.mediapm`) | Machine | Per-media workflow state, managed files, hashes |
+| `state.json` | `<runtime_root>/state.json` (`paths.mediapm_state_json`; `<runtime_root>` defaults to `<root>/.mediapm`) | Machine | Managed files and their hashes, tool deployment metadata |
 
 The two conductor documents sit at the workspace root, not under `<mediapm_dir>`: `MediaPmPathOverrides.mediapm_dir` only moves `runtime_root` (`paths.rs`). Only the conductor-path overrides (`conductor_config`, `conductor_generated_config`, `conductor_state_config`, `conductor_schema_dir`) relocate those documents, each resolved relative to the `mediapm.ncl` parent directory.
 

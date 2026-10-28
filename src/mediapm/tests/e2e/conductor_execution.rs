@@ -258,9 +258,24 @@ async fn sync_populates_managed_files_from_conductor_state() -> Result<(), media
         !state.managed_files.is_empty(),
         "expected managed_files after hierarchy materialization"
     );
+    // The variant hash the run resolved reaches the state through the record of
+    // the file it produced, which is the thing a later run joins against. The
+    // record names both the media and the variant, so the property the old
+    // per-media map carried is asserted here rather than dropped with it.
+    let record = state
+        .managed_files
+        .values()
+        .find(|record| record.media_id == media_id && record.variant == "primary")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a managed_files record for {media_id} variant 'primary': {:?}",
+                state.managed_files
+            )
+        });
     assert!(
-        state.workflow_states.get(&media_id).is_some_and(|ws| !ws.variant_hashes.is_empty()),
-        "expected workflow_states.variant_hashes for {media_id}"
+        record.hash.starts_with("blake3:"),
+        "the record must carry the resolved content hash, got {:?}",
+        record.hash
     );
 
     Ok(())

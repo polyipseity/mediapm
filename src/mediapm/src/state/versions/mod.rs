@@ -12,11 +12,12 @@
 //! | 1 | `v1.rs` | legacy Nickel wrapper + flat set formats | read-only (migrated on load) |
 //! | 2 | `v2.rs` | `managed_tools` as `BTreeMap`, nullable `content_map_hash` | read-only (migrated on load) |
 //! | 3 | `v3.rs` | `managed_tools` as flat `Vec`, plus `pending_force_rerun` | read-only (migrated on load) |
-//! | 4 | `v4.rs` | V3 without the queue | current; the only format written |
+//! | 4 | `v4.rs` | V3 without the queue | read-only (migrated on load) |
+//! | 5 | `v5.rs` | V4 without the per-media workflow map | current; the only format written |
 //!
 //! Every readable version stays readable: each one exists on disk somewhere, so
 //! dropping a read path would be data loss rather than cleanup. The ladder is
-//! one-way forward, and `v4.rs` owns the resolution into the runtime model so
+//! one-way forward, and `v5.rs` owns the resolution into the runtime model so
 //! that no shape is declared twice.
 //!
 //! ## Boundaries
@@ -43,6 +44,7 @@ mod v1;
 mod v2;
 mod v3;
 mod v4;
+mod v5;
 
 use serde_json::Value;
 
@@ -62,12 +64,13 @@ fn extract_state_version_field(value: &Value) -> Result<u64, MediaPmError> {
 /// Decodes one state JSON [`Value`] into the runtime model, dispatching on the
 /// document's `version` marker.
 ///
-/// Versions 1 through 3 are read-only and migrate forward; version 4 is decoded
+/// Versions 1 through 4 are read-only and migrate forward; version 5 is decoded
 /// natively. The composition lives here so each version module references only
-/// the one before it: V2 becomes a V3 wire value, and any V3 wire value becomes
-/// the runtime model through the V4 entry point. An unknown marker is an error
-/// rather than a silent fallback, so a document written by a newer mediapm is
-/// reported instead of being mis-parsed as an older shape.
+/// the one before it: V2 becomes a V3 wire value, V3 a V4 wire value, and any
+/// V4 wire value becomes the runtime model through the V5 entry point. An
+/// unknown marker is an error rather than a silent fallback, so a document
+/// written by a newer mediapm is reported instead of being mis-parsed as an
+/// older shape.
 ///
 /// # Errors
 ///
@@ -77,23 +80,26 @@ fn extract_state_version_field(value: &Value) -> Result<u64, MediaPmError> {
 pub(super) fn from_json_value(value: Value) -> Result<MediaPmState, MediaPmError> {
     match extract_state_version_field(&value)? {
         1 => v1::from_v1_json_value(value),
-        2 => Ok(v4::from_v3_into_v4(v3::decode_v2_as_v3(value)?)),
-        3 => Ok(v4::from_v3_into_v4(v3::decode_v3(value)?)),
-        4 => v4::from_v4_json_value(value),
+        2 => Ok(v5::resolve_v5(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::decode_v2_as_v3(
+            value,
+        )?)))),
+        3 => Ok(v5::resolve_v5(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::decode_v3(value)?)))),
+        4 => Ok(v5::resolve_v5(v5::from_v4_into_v5(v4::decode_v4(value)?))),
+        5 => v5::from_v5_json_value(value),
         v => Err(MediaPmError::Workflow(format!("unsupported mediapm state schema version {v}"))),
     }
 }
 
 /// Encodes one [`MediaPmState`] into a state JSON [`Value`].
 ///
-/// Always emits V4, regardless of which version the in-memory state was read
+/// Always emits V5, regardless of which version the in-memory state was read
 /// from: the ladder is one-way forward.
 ///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Serialization`] if serialization fails.
 pub(super) fn to_json_value(state: &MediaPmState) -> Result<Value, MediaPmError> {
-    v4::to_v4_json_value(state)
+    v5::to_v5_json_value(state)
 }
 
 /// Migrates one legacy Nickel-sourced state [`Value`] into the runtime model.
@@ -166,15 +172,19 @@ mod tests {
 
     /// Every readable version must round-trip: load, then write back, then
     /// load again, with all preserved data intact and the output in the
-    /// current (V4) format.
+    /// current (V5) format.
     #[test]
-    fn dispatch_round_trips_every_supported_version_through_v4() {
+    fn dispatch_round_trips_every_supported_version_through_v5() {
         for (label, document) in [("v1", v1_document()), ("v2", v2_document())] {
             let loaded =
                 from_json_value(document).unwrap_or_else(|e| panic!("{label} must load: {e}"));
             let re_encoded = to_json_value(&loaded)
                 .unwrap_or_else(|e| panic!("{label} state must re-encode: {e}"));
-            assert_eq!(re_encoded["version"], 4, "{label} must be written forward as V4");
+            assert_eq!(re_encoded["version"], 5, "{label} must be written forward as V5");
+            assert!(
+                re_encoded.get("workflow_states").is_none(),
+                "{label} must not be written with the workflow map V5 deleted: {re_encoded}"
+            );
             let reloaded = from_json_value(re_encoded)
                 .unwrap_or_else(|e| panic!("{label} re-encoded document must load: {e}"));
             assert_eq!(
@@ -184,10 +194,6 @@ mod tests {
             assert_eq!(
                 reloaded.managed_tools, loaded.managed_tools,
                 "{label} managed_tools must survive the round trip"
-            );
-            assert_eq!(
-                reloaded.workflow_states, loaded.workflow_states,
-                "{label} workflow_states must survive the round trip"
             );
         }
     }

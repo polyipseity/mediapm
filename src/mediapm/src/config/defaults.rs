@@ -94,10 +94,10 @@ pub const DEFAULT_VERIFY_MATERIALIZATION: bool = false;
 
 /// Current persisted schema marker for `state.json`.
 ///
-/// V4 removed the `pending_force_rerun` queue: explicit invalidation marks the
-/// recorded instance instead, so a stored workflow name was a second place for
-/// the same decision to live.
-pub const MEDIAPM_STATE_VERSION: u32 = 4;
+/// V5 removed the per-media `workflow_states` map: the conductor records what
+/// each tool-call instance produced, so a copy in this document was a second
+/// place for the same facts to live and drift.
+pub const MEDIAPM_STATE_VERSION: u32 = 5;
 
 /// Serde default function for state `version` field.
 #[must_use]

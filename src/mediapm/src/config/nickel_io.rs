@@ -138,9 +138,18 @@ pub fn save_mediapm_document(
 /// writes the result, and deletes the `.ncl` file. Returns
 /// [`crate::config::MediaPmState::default`] when neither exists (first run or reset).
 ///
+/// A document that names a schema version is decoded through that version's
+/// reader, and a failure there is reported rather than swallowed: its contents
+/// were written to hold data, and reading it as empty would discard that data
+/// and let the next scan treat every recorded file as stale. A document that
+/// names no version at all is the one rebuilding case, because no writer here
+/// produces one and its contents cannot be attributed to any rung of the ladder.
+///
 /// # Errors
 ///
-/// Returns an error when the state file cannot be loaded, parsed, or migrated.
+/// Returns [`MediaPmError::Serialization`] when the file cannot be read as JSON
+/// or does not match the wire shape of the version it names, and
+/// [`MediaPmError::Workflow`] when it names a version this build does not know.
 pub fn load_mediapm_state_document(
     path: &Path,
 ) -> Result<crate::config::MediaPmState, MediaPmError> {
@@ -152,8 +161,21 @@ pub fn load_mediapm_state_document(
             source: e,
         })?;
         let value: serde_json::Value = serde_json::from_reader(file).map_err(|e| {
-            MediaPmError::Serialization(format!("failed to parse mediapm state JSON: {e}"))
+            MediaPmError::Serialization(format!(
+                "failed to parse mediapm state JSON at '{}': {e}; the file is left in place \
+                 because a document that cannot be read may name a version whose contents \
+                 would be lost by rebuilding it",
+                path.display(),
+            ))
         })?;
+        if value.get("version").is_none() {
+            tracing::warn!(
+                path = %path.display(),
+                "mediapm state document names no schema version, so it is read as empty and \
+                 rewritten by the next save",
+            );
+            return Ok(crate::config::MediaPmState::default());
+        }
         return crate::state::ser::from_json_value(value);
     }
 
@@ -202,16 +224,140 @@ pub fn save_mediapm_state_document(
 
 /// Merges runtime state into a [`crate::config::MediaPmDocument`].
 ///
-/// Currently a no-op passthrough since the state document contains
-/// `ManagedWorkflowStepState` entries that are structurally incompatible with
-/// the document's `MediaSourceSpec` entries.
+/// Returns the document unchanged: the state document records what the library
+/// holds and which tool payloads are deployed, and neither is a field of the
+/// user-authored document.
 ///
 /// # Errors
 ///
-/// Returns an error if the merge encounters a structural incompatibility.
+/// Returns an error if the merge encounters a structural incompatibility. It
+/// currently has none to encounter, so this is unreachable in practice; the
+/// signature keeps the seam for a merge that does write something.
 pub fn merge_mediapm_document_with_state(
     doc: &crate::config::MediaPmDocument,
     _state: &crate::config::MediaPmState,
 ) -> Result<crate::config::MediaPmDocument, MediaPmError> {
     Ok(doc.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// Writes one state document to `state.json` under a fresh artifact root.
+    ///
+    /// Returns the temp root and the path to the file. The root must outlive the
+    /// test body: dropping it removes the document the assertions read back.
+    fn state_file_with(contents: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let path = root.path().join("state.json");
+        std::fs::write(&path, contents).expect("write state document");
+        (root, path)
+    }
+
+    /// A V4 document loads and is written back as V5, without the field V5 removed.
+    ///
+    /// The user-level guarantee: a library written by a V4 build keeps every file
+    /// and tool it recorded. The deleted per-media workflow map is the one thing
+    /// that does not survive, because the conductor's instance records are now its
+    /// only home and a second copy could disagree with them.
+    #[test]
+    fn a_v4_state_document_migrates_to_v5() {
+        let document = json!({
+            "version": 4,
+            "managed_files": {
+                "/media/a.mkv": { "media_id": "a", "variant": "primary", "hash": "blake3:a" }
+            },
+            "managed_tools": [{
+                "tool_id": "ffmpeg",
+                "version": "7.1",
+                "canonical_version": "ffmpeg-v7.1",
+                "content_map_hash": "blake3:abc",
+                "deployed_at": 1000
+            }],
+            "workflow_states": {
+                "a": { "variant_hashes": { "primary": "blake3:p" }, "steps_completed": 2 }
+            }
+        });
+        let (_root, path) = state_file_with(document.to_string().as_bytes());
+
+        let state = load_mediapm_state_document(&path).expect("a V4 document must load");
+        assert_eq!(state.version, 5, "the loader must resolve into the current runtime version");
+        assert_eq!(state.managed_files.len(), 1, "the recorded files must survive the migration");
+        assert_eq!(state.managed_tools.len(), 1, "the recorded tools must survive the migration");
+
+        save_mediapm_state_document(&path, &state).expect("save the migrated state");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read back")).expect("parse back");
+
+        assert_eq!(written["version"], 5, "the ladder is one-way forward");
+        assert!(
+            written.get("workflow_states").is_none(),
+            "V5 has no per-media workflow map, so it must not be written: {written}"
+        );
+        assert_eq!(
+            written["managed_files"]["/media/a.mkv"]["hash"], "blake3:a",
+            "the migrated document must still record the file it materialized: {written}"
+        );
+    }
+
+    /// A state document naming a version this build does not know fails loudly.
+    ///
+    /// A newer writer must never have its state silently re-read as an older
+    /// shape, and the file is left untouched for the build that wrote it.
+    #[test]
+    fn a_state_document_naming_an_unknown_version_is_an_error() {
+        let (_root, path) = state_file_with(json!({ "version": 99 }).to_string().as_bytes());
+
+        let error = load_mediapm_state_document(&path).expect_err("version 99 must not load");
+        assert!(
+            error.to_string().contains("99"),
+            "the diagnostic must name the rejected version: {error}"
+        );
+        let on_disk = std::fs::read(&path).expect("the file must still be there");
+        assert_eq!(
+            on_disk,
+            json!({ "version": 99 }).to_string().as_bytes(),
+            "a rejected document must not be rewritten"
+        );
+    }
+
+    /// A corrupt body that names a known version reports instead of rebuilding.
+    ///
+    /// The distinction the guard draws: the document states which ladder rung it
+    /// belongs to, so its contents were written to hold data. Reading it as empty
+    /// would discard that data and let the next scan treat every recorded file as
+    /// stale.
+    #[test]
+    fn a_corrupt_state_document_naming_a_known_version_is_an_error() {
+        let corrupt = json!({ "version": 4, "managed_files": { "a": 1 } });
+        let (_root, path) = state_file_with(corrupt.to_string().as_bytes());
+
+        let error =
+            load_mediapm_state_document(&path).expect_err("a corrupt V4 body must not rebuild");
+        assert!(
+            error.to_string().contains("V4"),
+            "the diagnostic must name the version it decoded as: {error}"
+        );
+        let on_disk = std::fs::read(&path).expect("the file must still be there");
+        assert_eq!(on_disk, corrupt.to_string().as_bytes(), "a rejected file is never rewritten");
+    }
+
+    /// A versionless state document is read as empty and rebuilt.
+    ///
+    /// No writer of this workspace emits such a file, so its contents cannot be
+    /// attributed to any rung of the ladder. The next save replaces it, which is
+    /// what makes this the one rebuilding case.
+    #[test]
+    fn a_versionless_state_document_is_rebuilt() {
+        let (_root, path) = state_file_with(json!({ "managed_files": {} }).to_string().as_bytes());
+
+        let state = load_mediapm_state_document(&path)
+            .expect("a versionless document is read as empty, not refused");
+        assert_eq!(state.version, 5);
+        assert!(state.managed_files.is_empty());
+        assert!(state.managed_tools.is_empty());
+    }
 }

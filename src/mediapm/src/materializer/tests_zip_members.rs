@@ -166,6 +166,17 @@ async fn a_zip_member_variant_that_is_unchanged_is_skipped_on_the_next_sync() {
          member: {first:?}"
     );
 
+    // The hash the write records is the member's own, and the skip below has to
+    // record the same one: a record spelling a hash the write never wrote would
+    // make the next run compare the target against nothing it holds.
+    let expected_hash = Hash::from_content(member).to_string();
+    assert_eq!(
+        state.managed_files.get(ZIP_MEMBER_PATH).map(|record| record.hash.as_str()),
+        Some(expected_hash.as_str()),
+        "the write records the extracted member's hash: {:?}",
+        state.managed_files
+    );
+
     let target = paths.hierarchy_root_dir.join(ZIP_MEMBER_PATH);
     assert_eq!(
         std::fs::read(&target).unwrap(),
@@ -200,23 +211,12 @@ async fn a_zip_member_variant_that_is_unchanged_is_skipped_on_the_next_sync() {
         target.display()
     );
 
-    let expected_hash = Hash::from_content(member).to_string();
     assert_eq!(
         state.managed_files.get(ZIP_MEMBER_PATH).map(|record| record.hash.as_str()),
         Some(expected_hash.as_str()),
-        "a skip records the member's hash, the same hash the write records, or the next run \
-         would compare the target against a hash it never wrote: {:?}",
+        "a skip records the member's hash, the same hash the write records, or the two runs \
+         disagree about what the library holds: {:?}",
         state.managed_files
-    );
-    assert_eq!(
-        state
-            .workflow_states
-            .get(ZIP_MEMBER_MEDIA_ID)
-            .and_then(|workflow| workflow.variant_hashes.get(ZIP_MEMBER_VARIANT)),
-        Some(&expected_hash),
-        "the variant hash a skip leaves behind must be the one a write leaves behind, or the two \
-         runs disagree about what the library holds: {:?}",
-        state.workflow_states
     );
 }
 

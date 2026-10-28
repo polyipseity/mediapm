@@ -147,8 +147,6 @@ struct PreparedHierarchyEntryResult {
     outcome: EntryOutcome,
     /// Managed file records keyed by hierarchy-relative path.
     managed_files: BTreeMap<String, ManagedFileRecord>,
-    /// Per-media variant hash updates (`media_id -> variant -> hash`).
-    media_variant_updates: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Shared state passed to each hierarchy entry worker.
@@ -338,12 +336,6 @@ pub async fn sync_hierarchy(
                 desired_managed_paths.extend(entry_result.managed_files.keys().cloned());
                 for (path, record) in entry_result.managed_files {
                     state.managed_files.insert(path, record);
-                }
-                for (media_id, variant_hashes) in entry_result.media_variant_updates {
-                    let step_state = state.workflow_states.entry(media_id).or_default();
-                    for (variant, hash) in variant_hashes {
-                        step_state.variant_hashes.insert(variant, hash);
-                    }
                 }
             }
             Ok(Err(e)) => {
@@ -756,13 +748,6 @@ async fn prepare_hierarchy_entry(
                             relative_path.clone(),
                             record_for(media_id, &effective_variant, &expected_hash),
                         )]),
-                        media_variant_updates: BTreeMap::from([(
-                            media_id.clone(),
-                            BTreeMap::from([(
-                                effective_variant.clone(),
-                                expected_hash.to_string(),
-                            )]),
-                        )]),
                     });
                 }
 
@@ -802,13 +787,6 @@ async fn prepare_hierarchy_entry(
                 Ok(PreparedHierarchyEntryResult {
                     outcome: EntryOutcome::Materialized,
                     managed_files: BTreeMap::from([(relative_path.clone(), record)]),
-                    media_variant_updates: BTreeMap::from([(
-                        media_id.clone(),
-                        BTreeMap::from([(
-                            effective_variant.clone(),
-                            materialized_hash.to_string(),
-                        )]),
-                    )]),
                 })
             } else {
                 shared.missing_reason(format!(
@@ -824,7 +802,6 @@ async fn prepare_hierarchy_entry(
                 Ok(PreparedHierarchyEntryResult {
                     outcome: EntryOutcome::Missing,
                     managed_files: BTreeMap::new(),
-                    media_variant_updates: BTreeMap::new(),
                 })
             }
         }
@@ -1428,7 +1405,6 @@ async fn materialize_media_folder_entry(
     // the skipped counter.
     let mut resolved_variants: Vec<ResolvedFolderVariant> =
         Vec::with_capacity(parsed_variants.len());
-    let mut variant_hashes: BTreeMap<String, String> = BTreeMap::new();
     for (variant_name, variant_path) in selected_variants.iter().zip(parsed_variants) {
         let payload = match resolve_variant_source_bytes(
             lookup,
@@ -1458,9 +1434,6 @@ async fn materialize_media_folder_entry(
         };
         if let Some(notice) = payload.notice {
             shared.missing_reason(notice);
-        }
-        if let Some(source_hash) = payload.source_hash {
-            variant_hashes.insert(variant_name.clone(), source_hash.to_string());
         }
         resolved_variants.push(ResolvedFolderVariant {
             name: variant_name.clone(),
@@ -1495,7 +1468,6 @@ async fn materialize_media_folder_entry(
                 .iter()
                 .filter_map(|member| Some((member.relative.clone(), member.record.clone()?)))
                 .collect(),
-            media_variant_updates: BTreeMap::from([(media_id.to_string(), variant_hashes)]),
         });
     }
 
@@ -1529,7 +1501,6 @@ async fn materialize_media_folder_entry(
     Ok(PreparedHierarchyEntryResult {
         outcome: if unwritten_variant { EntryOutcome::Missing } else { EntryOutcome::Materialized },
         managed_files,
-        media_variant_updates: BTreeMap::from([(media_id.to_string(), variant_hashes)]),
     })
 }
 
@@ -1607,7 +1578,6 @@ async fn materialize_playlist_entry(
         return Ok(PreparedHierarchyEntryResult {
             outcome: EntryOutcome::AlreadyCorrect,
             managed_files: BTreeMap::new(),
-            media_variant_updates: BTreeMap::new(),
         });
     }
 
@@ -1642,7 +1612,6 @@ async fn materialize_playlist_entry(
         return Ok(PreparedHierarchyEntryResult {
             outcome: EntryOutcome::Missing,
             managed_files: BTreeMap::new(),
-            media_variant_updates: BTreeMap::new(),
         });
     }
     write_generated_file(target_path, &bytes).await?;
@@ -1653,7 +1622,6 @@ async fn materialize_playlist_entry(
     Ok(PreparedHierarchyEntryResult {
         outcome: EntryOutcome::Materialized,
         managed_files: BTreeMap::new(),
-        media_variant_updates: BTreeMap::new(),
     })
 }
 

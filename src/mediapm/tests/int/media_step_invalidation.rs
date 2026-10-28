@@ -10,10 +10,8 @@
 //! These tests pin the mediapm half: `media invalidate` resolves a media's step
 //! index to the step ids the generated document assigned, marks every instance
 //! that served one of them, and `--undo` clears the same markers. Nothing else
-//! is written. The invalidation is no longer a queue and no longer clears the
-//! recorded step progress, because both were destructive: clearing
-//! `variant_hashes` and the impure timestamps could not be undone, and a queued
-//! workflow name had to be remembered by a run that had no reason to look.
+//! is written: the request is a marker on the instance, so no queue carries it
+//! forward and no recorded progress has to be cleared to make it take effect.
 //!
 //! Every test walks the full sequence — a proven cache hit, the invalidation, the
 //! re-run — because a "re-executed" step is meaningless without a cache hit
@@ -119,10 +117,10 @@ async fn seed_other_workspace(
 /// alone.
 ///
 /// The user-level guarantee: `mediapm media invalidate` is a reversible request
-/// to re-execute, not a state edit. `variant_hashes` is what the materializer
-/// projects, and `last_impure_sync_at` is the impure-step provenance; clearing
-/// either destroyed information an undo could not restore, and neither had a
-/// production reader that made the clear do anything.
+/// to re-execute, not a state edit. The `managed_files` records are what the
+/// materializer projects into the library; clearing them would destroy
+/// information an undo could not restore, and nothing in the request needs them
+/// gone for it to take effect.
 #[tokio::test]
 async fn invalidating_marks_the_instances_and_leaves_recorded_progress_alone()
 -> Result<(), MediaPmError> {
@@ -134,18 +132,15 @@ async fn invalidating_marks_the_instances_and_leaves_recorded_progress_alone()
     let first = sync_library_with_test_terminal(&mut service, false).await?;
     assert!(first.executed_instances >= 1, "the first sync must execute the workflow: {first:?}");
 
-    // Seed the provenance field the old implementation wiped, so "untouched"
-    // is an assertion about a value that is actually there.
+    // Capture the records the sync wrote, so "untouched" is an assertion about a
+    // value that is actually there.
     let paths = service.paths().clone();
-    let mut state = load_mediapm_state_document(&paths.mediapm_state_json)?;
-    let step_state = state
-        .workflow_states
-        .get_mut(&media_id)
-        .expect("the sync must record the media's workflow state");
-    step_state.last_impure_sync_at = Some(mediapm_utils::Timestamp::now());
-    let recorded_hashes = step_state.variant_hashes.clone();
-    let recorded_impure = step_state.last_impure_sync_at;
-    mediapm::save_mediapm_state_document(&paths.mediapm_state_json, &state)?;
+    let before = load_mediapm_state_document(&paths.mediapm_state_json)?;
+    let recorded_files = before.managed_files.clone();
+    assert!(
+        !recorded_files.is_empty(),
+        "the sync must record the files it materialized: {recorded_files:?}"
+    );
 
     let summary = service.invalidate_media_step_tool_calls(&media_id, 0).await?;
     assert_eq!(
@@ -168,14 +163,9 @@ async fn invalidating_marks_the_instances_and_leaves_recorded_progress_alone()
     );
 
     let after = load_mediapm_state_document(&paths.mediapm_state_json)?;
-    let step_state_after = &after.workflow_states[&media_id];
     assert_eq!(
-        step_state_after.variant_hashes, recorded_hashes,
-        "invalidation must not clear the recorded variant hashes",
-    );
-    assert_eq!(
-        step_state_after.last_impure_sync_at, recorded_impure,
-        "invalidation must not clear the recorded impure timestamp",
+        after.managed_files, recorded_files,
+        "invalidation must not clear the recorded materialized files",
     );
 
     let marked = conductor_state_on_disk(&paths);

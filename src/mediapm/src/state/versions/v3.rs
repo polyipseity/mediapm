@@ -23,7 +23,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::v2::{MediaPmStateV2, ToolRegistryEntryV2};
-use crate::config::{ManagedFileRecord, ManagedWorkflowStepState, ToolRegistryEntry};
+
+/// V2's workflow-state shape, threaded for the versions after it.
+///
+/// V4 still has to accept the field so a V4 document loads, and its own policy
+/// forbids reaching past its immediate predecessor. The shape is declared once,
+/// in [`super::v2`], and this module is the step along the ladder that names it.
+pub(super) use super::v2::WorkflowStepStateV2;
+
+use crate::config::{ManagedFileRecord, ToolRegistryEntry};
 use crate::error::MediaPmError;
 
 /// V3 wire representation of [`crate::config::MediaPmState`].
@@ -43,8 +51,12 @@ pub(super) struct MediaPmStateV3 {
     #[serde(default)]
     pub(super) managed_tools: Vec<ToolRegistryEntry>,
     /// Workflow step states keyed by media id.
+    ///
+    /// Carried because V3 documents have it. V5 drops it: the conductor records
+    /// the same facts per tool-call instance, and no production reader consulted
+    /// this copy.
     #[serde(default)]
-    pub(super) workflow_states: BTreeMap<String, ManagedWorkflowStepState>,
+    pub(super) workflow_states: BTreeMap<String, WorkflowStepStateV2>,
     /// Workflows whose next run had to ignore the instance cache.
     ///
     /// V3's only writer was the destructive `media invalidate`, which has since
@@ -122,31 +134,9 @@ fn tool_entry_from_v2(tool_id: String, entry: ToolRegistryEntryV2) -> ToolRegist
     }
 }
 
-/// Deduplicate `managed_tools` Vec by `(tool_id, canonical_version)`.
-/// Keeps the entry with the most recent `deployed_at` for each group.
-pub(crate) fn dedup_managed_tools(entries: Vec<ToolRegistryEntry>) -> Vec<ToolRegistryEntry> {
-    let mut seen: BTreeMap<(String, String), ToolRegistryEntry> = BTreeMap::new();
-    for entry in entries {
-        let key = (entry.tool_id.clone(), entry.canonical_version.clone());
-        match seen.entry(key) {
-            std::collections::btree_map::Entry::Occupied(mut o) => {
-                if entry.deployed_at > o.get().deployed_at {
-                    o.insert(entry);
-                }
-            }
-            std::collections::btree_map::Entry::Vacant(v) => {
-                v.insert(entry);
-            }
-        }
-    }
-    seen.into_values().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-
-    use crate::config::ToolRegistryEntry;
 
     use super::*;
 
@@ -311,106 +301,5 @@ mod tests {
 
         let state = decode_v2_as_v3(v2_json).expect("v2→v3 advance without a content map hash");
         assert_eq!(state.managed_tools[0].content_map_hash, "");
-    }
-
-    #[test]
-    fn dedup_managed_tools_no_duplicates() {
-        let entries = vec![ToolRegistryEntry {
-            tool_id: "ffmpeg".to_string(),
-            version: String::new(),
-            canonical_version: "ffmpeg-v7.1".to_string(),
-            content_map_hash: String::new(),
-            deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
-            resolved_tag: None,
-            resolved_version: None,
-            resolved_vcs_hash: None,
-        }];
-        let result = dedup_managed_tools(entries);
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn dedup_managed_tools_keeps_newest() {
-        let entries = vec![
-            ToolRegistryEntry {
-                tool_id: "ffmpeg".to_string(),
-                version: String::new(),
-                canonical_version: "ffmpeg-v7.1".to_string(),
-                content_map_hash: String::new(),
-                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
-                resolved_tag: None,
-                resolved_version: None,
-                resolved_vcs_hash: None,
-            },
-            ToolRegistryEntry {
-                tool_id: "ffmpeg".to_string(),
-                version: String::new(),
-                canonical_version: "ffmpeg-v7.1".to_string(),
-                content_map_hash: String::new(),
-                deployed_at: mediapm_utils::Timestamp::from_unix_secs(2000),
-                resolved_tag: None,
-                resolved_version: None,
-                resolved_vcs_hash: None,
-            },
-        ];
-        let result = dedup_managed_tools(entries);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].deployed_at, mediapm_utils::Timestamp::from_unix_secs(2000));
-    }
-
-    #[test]
-    fn dedup_managed_tools_different_versions_kept() {
-        let entries = vec![
-            ToolRegistryEntry {
-                tool_id: "ffmpeg".to_string(),
-                version: String::new(),
-                canonical_version: "ffmpeg-v7.1".to_string(),
-                content_map_hash: String::new(),
-                deployed_at: mediapm_utils::Timestamp::from_unix_secs(1000),
-                resolved_tag: None,
-                resolved_version: None,
-                resolved_vcs_hash: None,
-            },
-            ToolRegistryEntry {
-                tool_id: "ffmpeg".to_string(),
-                version: String::new(),
-                canonical_version: "ffmpeg-v6.0".to_string(),
-                content_map_hash: String::new(),
-                deployed_at: mediapm_utils::Timestamp::from_unix_secs(2000),
-                resolved_tag: None,
-                resolved_version: None,
-                resolved_vcs_hash: None,
-            },
-        ];
-        let result = dedup_managed_tools(entries);
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn dedup_managed_tools_different_tools_kept() {
-        let entries = vec![
-            ToolRegistryEntry {
-                tool_id: "ffmpeg".to_string(),
-                version: String::new(),
-                canonical_version: "ffmpeg-v7.1".to_string(),
-                content_map_hash: String::new(),
-                deployed_at: mediapm_utils::Timestamp::default(),
-                resolved_tag: None,
-                resolved_version: None,
-                resolved_vcs_hash: None,
-            },
-            ToolRegistryEntry {
-                tool_id: "yt-dlp".to_string(),
-                version: String::new(),
-                canonical_version: "yt-dlp-v2".to_string(),
-                content_map_hash: String::new(),
-                deployed_at: mediapm_utils::Timestamp::default(),
-                resolved_tag: None,
-                resolved_version: None,
-                resolved_vcs_hash: None,
-            },
-        ];
-        let result = dedup_managed_tools(entries);
-        assert_eq!(result.len(), 2);
     }
 }

@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::{ManagedFileRecord, ManagedWorkflowStepState, MediaPmState};
+use crate::config::{ManagedFileRecord, MediaPmState};
 use crate::error::MediaPmError;
 
 /// V1 state envelope wrapper (old Nickel-sourced format with `state` key).
@@ -57,6 +57,9 @@ pub(super) struct MediaPmStateV1Payload {
     #[serde(default)]
     pub(super) active_tools: BTreeMap<String, String>,
     /// Workflow step states keyed by media id (each value is a history vec).
+    ///
+    /// Accepted and discarded: the runtime model has no workflow map, because
+    /// the conductor records the same facts per tool-call instance.
     #[serde(default)]
     pub(super) workflow_states: BTreeMap<String, Vec<ManagedWorkflowStepStateV1>>,
     /// Hash of last materialized state (dropped in V2).
@@ -102,6 +105,10 @@ pub(super) struct ToolRegistryRecordV1 {
 
 /// V1 managed workflow step state (with history vec).
 #[derive(Debug, Clone, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "accept-and-discard: the field exists so a V1 document deserializes, and the runtime model has no workflow map to fill from it. The map is dropped wholesale."
+)]
 pub(super) struct ManagedWorkflowStepStateV1 {
     /// Pre-seeded CAS hash pointers keyed by variant name.
     #[serde(default)]
@@ -116,6 +123,10 @@ pub(super) struct ManagedWorkflowStepStateV1 {
 
 /// V1 impure sync timestamp.
 #[derive(Debug, Clone, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "accept-and-discard: the timestamp exists so a V1 document deserializes, and the runtime model has no workflow map to fill from it. The map is dropped wholesale."
+)]
 pub(super) struct MediaPmImpureTimestampV1 {
     /// Seconds since Unix epoch.
     pub(super) utc_epoch_seconds: u64,
@@ -147,7 +158,7 @@ pub(crate) fn from_v1_json_value(value: Value) -> Result<MediaPmState, MediaPmEr
 
 /// Converts a [`MediaPmStateV1Payload`] into [`MediaPmState`].
 fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
-    // Destructure in full: the three fields V2 dropped are bound here so the
+    // Destructure in full: the fields no version keeps are bound here so the
     // discard is explicit and the compiler proves the struct is fully
     // accounted for. If a future version ever needs one, this is the place it
     // stops being dropped. The bindings are unused by construction — the
@@ -156,7 +167,7 @@ fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
         managed_files,
         tool_registry: _discarded_tool_registry,
         active_tools: _discarded_active_tools,
-        workflow_states,
+        workflow_states: _discarded_workflow_states,
         last_materialized_state_hash: _discarded_materialized_state_hash,
     } = payload;
 
@@ -175,31 +186,10 @@ fn from_v1_payload(payload: MediaPmStateV1Payload) -> MediaPmState {
         })
         .collect();
 
-    // Convert workflow_states from Vec<T> to T (take last entry per vec).
-    let workflow_states: BTreeMap<String, ManagedWorkflowStepState> = workflow_states
-        .into_iter()
-        .map(|(key, mut vec)| {
-            let state = if vec.is_empty() {
-                ManagedWorkflowStepState::default()
-            } else {
-                let last = vec.remove(vec.len() - 1);
-                ManagedWorkflowStepState {
-                    variant_hashes: last.variant_hashes,
-                    steps_completed: last.steps_completed,
-                    last_impure_sync_at: last
-                        .last_impure_sync_at
-                        .map(|ts| mediapm_utils::Timestamp::from_unix_secs(ts.utc_epoch_seconds)),
-                }
-            };
-            (key, state)
-        })
-        .collect();
-
     MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
         managed_files,
         managed_tools: Vec::new(),
-        workflow_states,
     }
 }
 
@@ -225,15 +215,11 @@ fn migrate_flat_v1_fields(value: &Value) -> Result<MediaPmState, MediaPmError> {
         })
         .collect();
 
-    let workflow_states: BTreeMap<String, ManagedWorkflowStepState> =
-        serde_json::from_value(value.get("workflow_states").cloned().unwrap_or_default()).map_err(
-            |e| MediaPmError::Serialization(format!("failed to decode V1 workflow_states: {e}")),
-        )?;
-
+    // The flat set format's top-level `workflow_states` is accepted and
+    // discarded with the rest of the map: the runtime model has no place for it.
     Ok(MediaPmState {
         version: crate::config::defaults::MEDIAPM_STATE_VERSION,
         managed_files,
         managed_tools: Vec::new(),
-        workflow_states,
     })
 }
