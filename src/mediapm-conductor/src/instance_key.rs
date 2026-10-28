@@ -17,10 +17,10 @@ use crate::state::{ResolvedInput, ToolCallInstance};
 /// Version of the tool-call instance key scheme.
 ///
 /// The scheme is versioned by an integer and only ever moves forward:
-/// `v1 -> v2 -> v3 -> v4`. A change to the key material bumps this number; it
-/// never appends a revision such as `v4.1`, because the point of the bump is to
-/// be visible. Old persisted keys simply miss once and re-execute.
-pub const INSTANCE_KEY_SCHEME: u32 = 4;
+/// `v1 -> v2 -> v3 -> v4 -> v5`. A change to the key material bumps this number;
+/// it never appends a revision such as `v4.1`, because the point of the bump is
+/// to be visible. Old persisted keys simply miss once and re-execute.
+pub const INSTANCE_KEY_SCHEME: u32 = 5;
 
 /// Domain separator for tool-call instance keys, carrying the scheme version.
 #[must_use]
@@ -31,50 +31,235 @@ pub fn instance_key_domain() -> String {
 /// Derives the content-addressed key of one tool-call instance.
 ///
 /// The key answers whether this work has been done before, from material any
-/// party can re-derive: the tool call identity and the deterministic argument
-/// hashes. Captures are **not** key material. They are records addressed by
+/// party can re-derive: the tool call identity and the key material the command
+/// names. Captures are **not** key material. They are records addressed by
 /// name, so two steps that run the same work share one key however differently
 /// they name what they record, and each step reads the names it binds out of
-/// the instance it found. An entry records the spec that produced it, which is
-/// what lets a step tell whether the bytes it finds were produced the way it
-/// would produce them; the key cannot answer that question and does not try.
+/// the instance it found.
 ///
-/// The composite is exactly those three terms, in this order: the scheme domain
-/// separator ([`instance_key_domain`]), the tool call id, and the command-arg
-/// hashes in argv order. Nothing here sorts, so the order is key material and
-/// the caller owes it. A fourth term is accepted so a caller that keys inputs it
-/// staged can pass them; the step worker passes none, because the inputs it
-/// stages are known only once the command's selectors have run, and the key has
-/// to exist before the sandbox they stage into.
+/// The composite is exactly those two terms and the material between them, in
+/// this order: the scheme domain separator ([`instance_key_domain`]), the tool
+/// call id, then one hash per key-material term in the order the command names
+/// them. Nothing here sorts, so the order is key material and the caller owes
+/// it; [`key_material_for_tool`] is the one function that builds it, so the
+/// executor and the materializer cannot rank the terms differently.
 ///
-/// The environment term earlier schemes carried is gone. The executor records
-/// every env value as nondeterministic and therefore passes no env hashes, so
-/// that term was empty by construction on every path and keyed nothing; it
-/// existed only to keep two derivations looking symmetric.
+/// The environment is not material. A command part reading `${env.VAR}`
+/// resolves to whatever the host holds, so keying it would make one tool mint a
+/// new instance per environment it runs under.
 ///
 /// What this key omits is answered by the records it addresses, not by the key.
-/// A binding whose source is excluded as nondeterministic — anything reading
-/// `${env.…}`, `${context.…}`, `:file(…)` or `:folder(…)` — can resolve to
-/// different bytes for the same key, so two executions of one instance may
-/// disagree. That is deliberate and errs toward reuse: the stored entry carries
-/// its capture spec, and the settlement decides whether a differing record is
-/// divergence or the expected output of impure work. Adding such a binding to
-/// the key instead would make every value it can take a new instance, so a
-/// single tool would re-execute once per environment it is run under.
+/// The stored entry carries its capture spec, and the settlement decides whether
+/// a differing record is divergence or the expected output of impure work.
 #[must_use]
-pub fn derive_instance_key(
-    tool_call_id: &str,
-    deterministic_command_args: &[Hash],
-    deterministic_materialized_inputs: &[Hash],
-) -> Hash {
-    let mut parts = Vec::with_capacity(
-        2 + deterministic_command_args.len() + deterministic_materialized_inputs.len(),
-    );
+pub fn derive_instance_key(tool_call_id: &str, key_material: &[Hash]) -> Hash {
+    let mut parts = Vec::with_capacity(2 + key_material.len());
     parts.push(Hash::from_content(instance_key_domain().as_bytes()));
     parts.push(Hash::from_content(tool_call_id.as_bytes()));
-    parts.extend_from_slice(deterministic_command_args);
-    parts.extend_from_slice(deterministic_materialized_inputs);
+    parts.extend_from_slice(key_material);
     Hash::composite(&parts)
+}
+
+/// Returns whether a command part or a binding source reads the host
+/// environment.
+///
+/// Such a source resolves to a value no other host is obliged to reproduce, so
+/// it is not key material: two runs differing only in that value are the same
+/// work. Everything else is, including a `:file(dest)` / `:folder(dest)`
+/// selector, whose contribution is `composite(dest, source_hash)` rather than
+/// its resolved text — the text embeds a sandbox path named for the key, which
+/// cannot be hashed into the key that names it.
+#[must_use]
+pub fn references_environment(source: &str) -> bool {
+    source.contains("${env.")
+}
+
+/// Builds the key material of a tool that runs no argv (every builtin).
+///
+/// A builtin receives its inputs by name, so the declared inputs in input-name
+/// order are its command: each contributes `composite(name, resolved value)`,
+/// and the name is part of the term because it decides which slot the value
+/// occupies. An input whose binding source reads the host environment is left
+/// out for the reason [`references_environment`] gives.
+///
+/// `input_values` holds each input's resolved value bytes, which both the
+/// executor and the materializer can reconstruct: the executor from its own
+/// resolution, the materializer from the object or literal a binding names.
+#[must_use]
+pub fn key_material_for_builtin(
+    input_values: &BTreeMap<String, Vec<u8>>,
+    raw_bindings: &BTreeMap<String, String>,
+) -> Vec<Hash> {
+    input_values
+        .iter()
+        .filter(|(name, _)| !raw_bindings.get(*name).is_some_and(|raw| references_environment(raw)))
+        .map(|(name, value)| {
+            Hash::composite(&[Hash::from_content(name.as_bytes()), Hash::from_content(value)])
+        })
+        .collect()
+}
+
+/// Builds the key material of a command, in argv order.
+///
+/// Each key-material part contributes one hash:
+///
+/// - A plain part contributes `composite(part template bytes, the value hash of
+///   every input it reads, in reference order)`. The part's own text is in the
+///   term because a changed flag is changed work, and the referenced values are
+///   in it because a part is how a step passes an input to its tool.
+/// - A part carrying `:file(dest)` or `:folder(dest)` contributes
+///   `composite(dest, source hash)` per selector. The source is the object the
+///   selector stages, which the resolved input names; the resolved text cannot
+///   be hashed instead, because it embeds a sandbox path named for the key.
+/// - A part reading `${env.VAR}` contributes nothing, for the reason
+///   [`references_environment`] gives.
+///
+/// Both the executor and the materializer derive from these two inputs, so the
+/// ordering and the term shape live here rather than at either call site.
+pub fn key_material_for_command_parts(
+    command_parts: &[String],
+    input_values: &BTreeMap<String, Vec<u8>>,
+) -> Vec<Hash> {
+    let mut material = Vec::with_capacity(command_parts.len());
+    for part in command_parts {
+        if references_environment(part) {
+            continue;
+        }
+        let selectors = selector_sources(part);
+        if selectors.is_empty() {
+            let mut parts = vec![Hash::from_content(part.as_bytes())];
+            for name in referenced_inputs(part) {
+                let value = input_values.get(&name).map_or(&[][..], Vec::as_slice);
+                parts.push(Hash::from_content(value));
+            }
+            material.push(Hash::composite(&parts));
+        } else {
+            for selector in selectors {
+                material.push(selector.term(input_values));
+            }
+        }
+    }
+    material
+}
+
+/// Builds the key material of one tool, choosing the form its shape calls for.
+///
+/// A tool with no command parts is a builtin and keys its inputs; every other
+/// tool keys its command. Both the executor and the materializer call this, so
+/// the ordering lives in one place.
+#[must_use]
+pub fn key_material_for_tool(
+    command_parts: &[String],
+    input_values: &BTreeMap<String, Vec<u8>>,
+    raw_bindings: &BTreeMap<String, String>,
+) -> Vec<Hash> {
+    if command_parts.is_empty() {
+        return key_material_for_builtin(input_values, raw_bindings);
+    }
+    key_material_for_command_parts(command_parts, input_values)
+}
+
+/// One selector a command part carries: where it stages, and what it stages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectorSource {
+    /// Sandbox-relative destination the selector writes to.
+    destination: String,
+    /// Binding source the selector consumes, as written in the template.
+    source: String,
+}
+
+impl SelectorSource {
+    /// Key material of this selector: its destination and its source, composed.
+    ///
+    /// The source is the hash of the object the selector stages. A resolved
+    /// input value carries that hash as text when the binding names a stored
+    /// object, and carries the value itself when the binding is a literal, so
+    /// the parsed hash wins and the value's own hash is the fallback.
+    fn term(&self, input_values: &BTreeMap<String, Vec<u8>>) -> Hash {
+        Hash::composite(&[
+            Hash::from_content(self.destination.as_bytes()),
+            self.source_hash(input_values),
+        ])
+    }
+
+    /// The hash of the bytes the selector consumes.
+    fn source_hash(&self, input_values: &BTreeMap<String, Vec<u8>>) -> Hash {
+        let value = self
+            .source
+            .strip_prefix("inputs.")
+            .and_then(|name| input_values.get(name))
+            .map_or(&[][..], Vec::as_slice);
+        std::str::from_utf8(value)
+            .ok()
+            .and_then(|text| text.parse::<Hash>().ok())
+            .unwrap_or_else(|| Hash::from_content(value))
+    }
+}
+
+/// Every input a command part reads, in the order it reads them.
+///
+/// A part names inputs as `${inputs.NAME}` or, inside a splat, as
+/// `${*inputs.NAME}`; both are reads of that input and both are captured, so a
+/// changed value moves the key whether the part spreads it or passes it.
+fn referenced_inputs(part: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = part;
+    while let Some(offset) = rest.find("inputs.") {
+        let after = &rest[offset + "inputs.".len()..];
+        let end = after
+            .find(|character: char| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+            })
+            .unwrap_or(after.len());
+        if end > 0 {
+            names.push(after[..end].to_string());
+        }
+        rest = &after[end..];
+    }
+    names
+}
+
+/// Finds every `:file(dest)` / `:folder(dest)` a command part carries, in
+/// order.
+///
+/// The source of a selector is the identifier immediately before its colon: the
+/// template grammar requires the reference to end there, so a conditional wraps
+/// the selector without moving it.
+fn selector_sources(part: &str) -> Vec<SelectorSource> {
+    let mut found = Vec::new();
+    let mut rest = part;
+    loop {
+        let file = rest.find(":file(");
+        let folder = rest.find(":folder(");
+        let (offset, marker) = match (file, folder) {
+            (Some(file), Some(folder)) if folder < file => (folder, ":folder("),
+            (Some(file), _) => (file, ":file("),
+            (None, Some(folder)) => (folder, ":folder("),
+            (None, None) => break,
+        };
+        let after = &rest[offset + marker.len()..];
+        let Some(close) = after.find(')') else { break };
+        found.push(SelectorSource {
+            destination: after[..close].to_string(),
+            source: trailing_identifier(&rest[..offset]),
+        });
+        rest = &after[close + 1..];
+    }
+    found
+}
+
+/// The identifier a selector source ends with, read backwards from the colon.
+fn trailing_identifier(prefix: &str) -> String {
+    let mut start = prefix.len();
+    for (index, character) in prefix.char_indices().rev() {
+        let continues =
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-' | ':');
+        if !continues {
+            break;
+        }
+        start = index;
+    }
+    prefix[start..].to_string()
 }
 
 /// Returns whether a binding source participates in instance-key material,
@@ -198,11 +383,10 @@ pub fn deterministic_input_hashes_from_resolved_value_bytes(
 /// Returns true when `stored_key` — the key `instance` is filed under — matches
 /// re-derived key material.
 ///
-/// The derivation is content-only (tool id, deterministic input hashes), so an
+/// The derivation is content-only (tool id and key material), so an
 /// impure instance's stored key keeps matching no matter how much wall-clock
 /// time separates the recording from the check, and a step's capture
-/// declarations cannot move it. The inputs a step staged are not compared here
-/// for the reason given on [`derive_instance_key`].
+/// declarations cannot move it.
 ///
 /// The key is a parameter and the record does not carry one: the map key is the
 /// instance's only identity, so there is no second copy for a caller to compare
@@ -211,14 +395,9 @@ pub fn deterministic_input_hashes_from_resolved_value_bytes(
 pub fn instance_matches_stored_key(
     stored_key: Hash,
     instance: &ToolCallInstance,
-    deterministic_input_hashes: &[Hash],
+    key_material: &[Hash],
 ) -> bool {
-    let derived = crate::state::derive_tool_call_instance_key(
-        &instance.tool_call_id,
-        deterministic_input_hashes,
-        &[],
-    );
-    derived == stored_key
+    crate::state::derive_tool_call_instance_key(&instance.tool_call_id, key_material) == stored_key
 }
 
 #[cfg(test)]
@@ -228,8 +407,8 @@ mod tests {
     /// Deriving twice from identical material yields identical keys.
     #[test]
     fn derive_instance_key_is_deterministic() {
-        let a = derive_instance_key("echo@v1", &[], &[]);
-        let b = derive_instance_key("echo@v1", &[], &[]);
+        let a = derive_instance_key("echo@v1", &[]);
+        let b = derive_instance_key("echo@v1", &[]);
         assert_eq!(a, b);
     }
 
@@ -244,8 +423,8 @@ mod tests {
     fn impure_keys_ignore_time() {
         let args = [Hash::from_content(b"arg")];
         assert_eq!(
-            derive_instance_key("tool", &args, &[]),
-            derive_instance_key("tool", &args, &[]),
+            derive_instance_key("tool", &args),
+            derive_instance_key("tool", &args),
             "identical material must derive identical keys regardless of wall-clock time",
         );
     }
@@ -258,7 +437,7 @@ mod tests {
     #[test]
     fn derive_instance_key_domain_prefix() {
         let args = [Hash::from_content(b"arg")];
-        let with_domain = derive_instance_key("tool", &args, &[]);
+        let with_domain = derive_instance_key("tool", &args);
         let expected = Hash::composite(&[
             Hash::from_content(instance_key_domain().as_bytes()),
             Hash::from_content(b"tool"),
@@ -272,20 +451,19 @@ mod tests {
         assert_ne!(with_domain, without_domain, "dropping the domain term must move the key");
     }
 
-    /// Argument order matters, and materialized-input hashes participate.
+    /// Argument order matters.
+    ///
+    /// The v4 scheme also had a separate materialized-inputs term here; it is
+    /// gone, because a selector's material now reaches the key through the argv
+    /// part that names it (see `a_staged_input_whose_bytes_change_re_keys_the_step`).
     #[test]
-    fn derive_instance_key_args_and_inputs_ordered() {
+    fn derive_instance_key_args_are_ordered() {
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
         assert_ne!(
-            derive_instance_key("t", &[a, b], &[]),
-            derive_instance_key("t", &[b, a], &[]),
+            derive_instance_key("t", &[a, b]),
+            derive_instance_key("t", &[b, a]),
             "command arg order must matter",
-        );
-        assert_ne!(
-            derive_instance_key("t", &[], &[]),
-            derive_instance_key("t", &[], &[b]),
-            "deterministic materialized inputs must participate",
         );
     }
 
@@ -299,7 +477,7 @@ mod tests {
     #[test]
     fn derive_instance_key_composite_components_exact() {
         let arg = Hash::from_content(b"arg");
-        let key = derive_instance_key("t", &[arg], &[]);
+        let key = derive_instance_key("t", &[arg]);
         let expected = Hash::composite(&[
             Hash::from_content(instance_key_domain().as_bytes()),
             Hash::from_content(b"t"),
@@ -376,6 +554,114 @@ mod tests {
         assert_eq!(left, again, "and the derivation stays deterministic");
     }
 
+    /// A command part's position is key material.
+    ///
+    /// The argv the tool runs is a sequence, so two steps that pass the same
+    /// two values in opposite orders run different commands. The list the
+    /// derivation consumes is that argv, in order, and nothing in this module
+    /// sorts it.
+    #[test]
+    fn command_part_order_is_key_material() {
+        let first = Hash::from_content(b"-i");
+        let second = Hash::from_content(b"-y");
+        assert_ne!(
+            derive_instance_key("tool", &[first, second]),
+            derive_instance_key("tool", &[second, first]),
+            "argv order must move the key",
+        );
+    }
+
+    /// A staged input's bytes are key material.
+    ///
+    /// A `:file(dest)` part hands the command a file whose bytes come from a
+    /// binding, and the part reaches the key as `composite(dest, source_hash)`.
+    /// Two steps identical but for that source therefore derive different keys.
+    /// Classifying the selector as nondeterministic instead would let two
+    /// different files stage under one key, and the second step would be served
+    /// the first one's instance.
+    #[test]
+    fn a_staged_input_whose_bytes_change_re_keys_the_step() {
+        let parts = ["${inputs.source:file(inputs/source.mkv)}".to_string()];
+        let first_hash = Hash::from_content(b"first-variant");
+        let second_hash = Hash::from_content(b"second-variant");
+        let first_values =
+            BTreeMap::from([("source".to_string(), first_hash.to_string().into_bytes())]);
+        let second_values =
+            BTreeMap::from([("source".to_string(), second_hash.to_string().into_bytes())]);
+
+        let first = key_material_for_command_parts(&parts, &first_values);
+        let second = key_material_for_command_parts(&parts, &second_values);
+
+        assert_eq!(
+            first,
+            vec![Hash::composite(&[Hash::from_content(b"inputs/source.mkv"), first_hash,])],
+            "the selector hashes its destination and the object it stages",
+        );
+        assert_ne!(
+            derive_instance_key("tool", &first),
+            derive_instance_key("tool", &second),
+            "different staged bytes must derive different keys",
+        );
+    }
+
+    /// A plain part names the inputs it reads, and their changes reach the key.
+    ///
+    /// A splat reads its input too: the values it spreads are that input's, so
+    /// a changed list is changed work even though the template does not move.
+    #[test]
+    fn a_plain_part_keys_its_text_and_the_inputs_it_reads() {
+        let parts = ["--format=${inputs.format}".to_string()];
+        let first = key_material_for_command_parts(
+            &parts,
+            &BTreeMap::from([("format".to_string(), b"mkv".to_vec())]),
+        );
+        let second = key_material_for_command_parts(
+            &parts,
+            &BTreeMap::from([("format".to_string(), b"mp4".to_vec())]),
+        );
+        assert_ne!(first, second, "a changed input value must move the key");
+        assert_eq!(first.len(), 1, "one key-material part is one term");
+
+        let splat = ["${*inputs.extra}".to_string()];
+        let empty = key_material_for_command_parts(
+            &splat,
+            &BTreeMap::from([("extra".to_string(), b"[]".to_vec())]),
+        );
+        let filled = key_material_for_command_parts(
+            &splat,
+            &BTreeMap::from([("extra".to_string(), br#"["-y"]"#.to_vec())]),
+        );
+        assert_ne!(empty, filled, "a changed splat list must move the key");
+    }
+
+    /// A part reading the host environment stays out of the key entirely.
+    #[test]
+    fn an_environment_part_is_not_key_material() {
+        let parts = ["${env.HOME}".to_string(), "--flag".to_string()];
+        let first = key_material_for_command_parts(&parts, &BTreeMap::new());
+        let second = key_material_for_command_parts(&parts[1..], &BTreeMap::new());
+        assert_eq!(first, second, "the environment term must not reach the key");
+        assert_eq!(first.len(), 1);
+    }
+
+    /// A builtin keys its inputs in name order, each name and value composed.
+    #[test]
+    fn a_builtin_keys_its_inputs_by_name() {
+        let values = BTreeMap::from([
+            ("kind".to_string(), b"file".to_vec()),
+            ("hash".to_string(), b"blake3:abc".to_vec()),
+        ]);
+        let material = key_material_for_builtin(&values, &BTreeMap::new());
+        assert_eq!(
+            material,
+            vec![
+                Hash::composite(&[Hash::from_content(b"hash"), Hash::from_content(b"blake3:abc"),]),
+                Hash::composite(&[Hash::from_content(b"kind"), Hash::from_content(b"file")]),
+            ],
+            "input-name order decides the terms",
+        );
+    }
+
     /// The scheme version is an integer and the domain states it verbatim.
     ///
     /// Version sequences in this repository move `v1 -> v2 -> v3 -> v4`; a
@@ -386,7 +672,7 @@ mod tests {
     #[test]
     fn the_instance_key_domain_carries_an_integer_version() {
         let domain = instance_key_domain();
-        assert_eq!(domain, "mediapm/conductor/tool call instances/v4");
+        assert_eq!(domain, "mediapm/conductor/tool call instances/v5");
         assert_eq!(domain, format!("mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}"));
         assert!(!domain.contains('.'), "dotted scheme revision in {domain}");
     }

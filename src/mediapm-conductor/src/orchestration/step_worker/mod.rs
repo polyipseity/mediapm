@@ -189,8 +189,8 @@ mod tests {
         let args: Vec<Hash> =
             inputs.iter().map(|i| Hash::from_content(i.value.as_bytes())).collect();
 
-        let key1 = derive_instance_key("test_tool", &args, &[]);
-        let key2 = derive_instance_key("test_tool", &args, &[]);
+        let key1 = derive_instance_key("test_tool", &args);
+        let key2 = derive_instance_key("test_tool", &args);
         assert_eq!(key1, key2);
     }
 

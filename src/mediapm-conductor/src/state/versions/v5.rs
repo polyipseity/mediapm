@@ -260,11 +260,11 @@ pub(crate) struct ConductorStateV5 {
 ///   record with no aux entry gets [`WireTimestampV5::default`] — the epoch,
 ///   which is exactly what the V4 reader's `map_or(0, …)` treated a missing
 ///   entry as. The eviction semantics are therefore unchanged.
-/// - A V4 `step_id` becomes [`StepRefV5::default`]'s workflow plus the id: a ref
-///   naming no workflow. It matches no invalidation request, which always names
-///   a workflow, so a migrated record cannot be marked for work another
-///   workflow recorded. The record gains a qualified ref the next time the step
-///   serves it, by executing or by hitting it.
+/// - A V4 `step_id` becomes a ref whose `workflow_id` is empty: a ref naming no
+///   workflow. It matches no invalidation request, which always names a
+///   workflow, so a migrated record cannot be marked for work another workflow
+///   recorded. The record gains a qualified ref the next time the step serves
+///   it, by executing or by hitting it.
 pub(crate) fn from_v4_into_v5(state: v4::ConductorStateV4) -> ConductorStateV5 {
     let v4::ConductorStateV4 { tool_call_instances, aux, .. } = state;
     let mut aux_instances = aux.instances;

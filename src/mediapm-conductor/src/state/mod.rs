@@ -170,7 +170,8 @@ pub struct ToolCallInstance {
     ///
     /// These are the hashed parts the instance key is composed from, so the
     /// recorded argv and the key material are one list rather than two views
-    /// that can drift apart.
+    /// that can drift apart. A builtin runs no argv, so its entry holds the
+    /// hashed inputs it was called with, in input-name order.
     pub command_args: Vec<Hash>,
     /// Execution environment variables (minimal set: non-empty config values
     /// only). Values are hashed, never stored literally.
@@ -290,9 +291,9 @@ impl Default for ConductorState {
 /// Re-derives a tool-call instance key from the same components recorded at
 /// execution time.
 ///
-/// Builtin tools store resolved deterministic input hashes in the key rather
-/// than `command_args`, so mediapm materialization uses this helper to match
-/// persisted instances. Every step's key derives from content alone: the
+/// The materializer re-derives the key from the same command the executor
+/// keyed, so it reads the tool's command parts and its inputs rather than the
+/// recorded `command_args` alone. Every step's key derives from content alone: the
 /// recorded `executed_at` timestamp never participates, so an impure step's
 /// stored instance keeps matching across runs until its key material changes
 /// (or an explicit `force_rerun` bypasses the cache for one run).
@@ -303,16 +304,8 @@ impl Default for ConductorState {
 /// differently they declare what they record, which is what lets one execution
 /// serve both.
 #[must_use]
-pub fn derive_tool_call_instance_key(
-    tool_call_id: &str,
-    deterministic_input_hashes: &[Hash],
-    deterministic_materialized_input_hashes: &[Hash],
-) -> Hash {
-    crate::instance_key::derive_instance_key(
-        tool_call_id,
-        deterministic_input_hashes,
-        deterministic_materialized_input_hashes,
-    )
+pub fn derive_tool_call_instance_key(tool_call_id: &str, key_material: &[Hash]) -> Hash {
+    crate::instance_key::derive_instance_key(tool_call_id, key_material)
 }
 
 /// The step and work a settlement is merging for.

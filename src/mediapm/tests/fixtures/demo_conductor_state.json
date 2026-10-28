@@ -1,7 +1,7 @@
 {
   "version": 5,
   "tool_call_instances": {
-    "blake3:12d08bc1c0155ec10a7e636ad47ce90b4f37793393466af078d18096e8edfa4e": {
+    "blake3:1d92846a175b613c7c9f4aa2e9b8f63f09eded7cbba5204c4a8a2ec49589b5ef": {
       "tool_call_id": "import@v1",
       "impure": true,
       "executed_at": 1785987849238789000,
@@ -34,7 +34,167 @@
         }
       }
     },
-    "blake3:3e7ab9f2f34b1dde4317aaf192e19aabf0a295cd2fb3aab8539aa4515319f660": {
+    "blake3:1e778c1b8c9071914431acbe71d34a9cbbbf3f27e3cb40ee6f7ee7ef54344efe": {
+      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
+      "impure": false,
+      "executed_at": 1785987849261570000,
+      "last_referenced_at": 1785987881255441000,
+      "step_ids": [
+        {
+          "workflow_id": "",
+          "step_id": "step-1-ffmpeg"
+        }
+      ],
+      "command_args": [
+        "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
+        "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
+        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
+        "blake3:d58b36427fc4344bc233597820ea8e0b670cef773c19fdf4eeb7418621329899",
+        "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
+        "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
+        "blake3:67c63e93bb738a524b00816c702c2069c103002cf66185d616289570c35897d5",
+        "blake3:b51f23dae542295587205003545302aba37bd4cbab75d7d9b8ac8bf73367c149",
+        "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
+        "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
+        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+        "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
+        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+        "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
+        "blake3:26532c4262624ed12a90d98ad2b2126f31255db2ce6a35482e739d5291c94238",
+        "blake3:7bea5b2870ff84310b59dbd7600e7275d42d4a05a442c6d97b1dc9e5c805ba26"
+      ],
+      "env_vars": {},
+      "materialized_inputs": {
+        "linux/": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
+        "macos/": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
+        "windows/": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df"
+      },
+      "outputs": {
+        "primary": {
+          "hash": "blake3:13c005b65697c8679f7d8319bf869a51ac937ab425cc70257fb214756d9bb665",
+          "capture": null
+        },
+        "process_code": {
+          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+          "capture": null
+        },
+        "stderr": {
+          "hash": "blake3:c953d2f43b5cd3669fa318cab3171d48622a1067d271aaeca71cfedb17d0d763",
+          "capture": null
+        },
+        "stdout": {
+          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "capture": null
+        }
+      }
+    },
+    "blake3:3a18372c2856bed32a14115906b58aa2b852f1d6a9fbb233e823046f1a7e780e": {
+      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
+      "impure": false,
+      "executed_at": 1785987892263567000,
+      "last_referenced_at": 1785987904018955000,
+      "step_ids": [
+        {
+          "workflow_id": "",
+          "step_id": "step-3-0-media-tagger-audio-to-audio-apply"
+        }
+      ],
+      "command_args": [
+        "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
+        "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
+        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
+        "blake3:2d2f6a73b2dbf5689fcb4fa8a0aa525c0c6a86f1eb154f2dc087249f8d533531",
+        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
+        "blake3:418ff7b43499e11805be95edc47658bbbdca0bb40b1b3819b6c23ab055f36a4b",
+        "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
+        "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
+        "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
+        "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
+        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+        "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
+        "blake3:d63bd9a826af91c1fea371965a64e11ee20f13e46b5f52c59901136605b3a487",
+        "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
+        "blake3:baf570d380d94531b570c45030228cfc20913e898e69e828de642dcff53d241d"
+      ],
+      "env_vars": {},
+      "materialized_inputs": {
+        "linux/": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
+        "macos/": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
+        "windows/": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df"
+      },
+      "outputs": {
+        "primary": {
+          "hash": "blake3:e182b428226d3ea8e226a169a82bed226bd6e656836025b92ee92f6c650e4472",
+          "capture": null
+        },
+        "process_code": {
+          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+          "capture": null
+        },
+        "stderr": {
+          "hash": "blake3:930e26ffa35f043aca4849b7b2d46d27671bb404afff12fdb982ce6a22505743",
+          "capture": null
+        },
+        "stdout": {
+          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "capture": null
+        }
+      }
+    },
+    "blake3:3d1f8f8dd342950aa1e7231f3d67ad47c4f285a9d724909fee9ed91be72b3288": {
+      "tool_call_id": "rsgain@blake3:754a0e4d9cf5df2cc61b5336d9d543b2765a85cbbbab890cca34a0eee4c2db98",
+      "impure": false,
+      "executed_at": 1785987881255817000,
+      "last_referenced_at": 1785987882536660000,
+      "step_ids": [
+        {
+          "workflow_id": "",
+          "step_id": "step-2-0-rsgain-audio-to-audio"
+        }
+      ],
+      "command_args": [
+        "blake3:ca03060dd2798bea170dc597f7ae1d805339e8fd9224554cfc215d7f3120debb",
+        "blake3:ae5814d1e0aa2e1190851b1b7c858e1fb8d97b600017b3254d35cc65a1097ecf",
+        "blake3:90bcd1ca413b6cba33332bbf15a89e0ddd4d20596413fc9acfbf87dc8aecd9ee",
+        "blake3:e9c0ba08015769a0c4354594b96ce0dfbf27c9eb534a2f8378508985f732ff6d",
+        "blake3:c223f03168da98fdc4dc28dad82a4825c4561647b0d00bf34349f7562ad14e69",
+        "blake3:18671c2a89b88d2973f51986a4d802ce3720209fbc6d3eb4c63597d5d7f91c63",
+        "blake3:c223f03168da98fdc4dc28dad82a4825c4561647b0d00bf34349f7562ad14e69",
+        "blake3:18671c2a89b88d2973f51986a4d802ce3720209fbc6d3eb4c63597d5d7f91c63",
+        "blake3:e3a323ccd3ae6af8bc7c2e06d4ac0056d2e3b3693c54302825a840d9ef56ac7e",
+        "blake3:73f291693e31fe77be7bfb78ebc9042b2e2c437c87eca0c122e0e8a0bbfbe625",
+        "blake3:259cc195129d35bf043a9301faf6ca0fc5dffd00a0b75d559e17d59a5cd3be1f",
+        "blake3:1180ba7d2d693e2c4441af6ddb0cfa84316e25d82d18abe4c7fef4594faeea81",
+        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+        "blake3:aeeb18cb290506ed2c457dbab45fe3959d77e116bf57e9dd561be24f6237c9dd",
+        "blake3:086585959f5c1b787c6aa1c03c254b2a7ba2dc65044bd2745083bb85cd38d7b7"
+      ],
+      "env_vars": {},
+      "materialized_inputs": {
+        "linux/": "blake3:2a0af4cca3406c50132f3c982bdba0398e36dd78c393d4da21ccdab9f0dbfec1",
+        "macos/": "blake3:ba398dbf68b249148e041df757bd2c277d254b7959fbafb35d4548af1c2ee004",
+        "windows/": "blake3:2f35eeb65805dea80913c417868d9cc021fcf917ee89778a733f5efc249fb477"
+      },
+      "outputs": {
+        "output_content": {
+          "hash": "blake3:2bc0940b8b8a877a3ab09a1f3c0d562fec4bcf8a228a90342811e725c71a6ea6",
+          "capture": null
+        },
+        "process_code": {
+          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+          "capture": null
+        },
+        "stderr": {
+          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "capture": null
+        },
+        "stdout": {
+          "hash": "blake3:7e6f877ddedee767b41692553c10a1702465764b4000660d8d43210b2ea17c19",
+          "capture": null
+        }
+      }
+    },
+    "blake3:b07e43cab47df14393855986475d1dc356fdf026f29a9c4ca3a8c7610da530ce": {
       "tool_call_id": "media-tagger@blake3:7d51827f1043df72adea899d45dbcca6cb1ef16eb1bfd0021662e80715e53b90",
       "impure": true,
       "executed_at": 1785987882536740000,
@@ -90,166 +250,6 @@
         },
         "stderr": {
           "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "capture": null
-        },
-        "stdout": {
-          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "capture": null
-        }
-      }
-    },
-    "blake3:6b8e0acb001842c972bd424026be02122218779fc384b8c4b899a1a897108f53": {
-      "tool_call_id": "rsgain@blake3:754a0e4d9cf5df2cc61b5336d9d543b2765a85cbbbab890cca34a0eee4c2db98",
-      "impure": false,
-      "executed_at": 1785987881255817000,
-      "last_referenced_at": 1785987882536660000,
-      "step_ids": [
-        {
-          "workflow_id": "",
-          "step_id": "step-2-0-rsgain-audio-to-audio"
-        }
-      ],
-      "command_args": [
-        "blake3:ca03060dd2798bea170dc597f7ae1d805339e8fd9224554cfc215d7f3120debb",
-        "blake3:ae5814d1e0aa2e1190851b1b7c858e1fb8d97b600017b3254d35cc65a1097ecf",
-        "blake3:90bcd1ca413b6cba33332bbf15a89e0ddd4d20596413fc9acfbf87dc8aecd9ee",
-        "blake3:e9c0ba08015769a0c4354594b96ce0dfbf27c9eb534a2f8378508985f732ff6d",
-        "blake3:c223f03168da98fdc4dc28dad82a4825c4561647b0d00bf34349f7562ad14e69",
-        "blake3:18671c2a89b88d2973f51986a4d802ce3720209fbc6d3eb4c63597d5d7f91c63",
-        "blake3:c223f03168da98fdc4dc28dad82a4825c4561647b0d00bf34349f7562ad14e69",
-        "blake3:18671c2a89b88d2973f51986a4d802ce3720209fbc6d3eb4c63597d5d7f91c63",
-        "blake3:e3a323ccd3ae6af8bc7c2e06d4ac0056d2e3b3693c54302825a840d9ef56ac7e",
-        "blake3:73f291693e31fe77be7bfb78ebc9042b2e2c437c87eca0c122e0e8a0bbfbe625",
-        "blake3:259cc195129d35bf043a9301faf6ca0fc5dffd00a0b75d559e17d59a5cd3be1f",
-        "blake3:1180ba7d2d693e2c4441af6ddb0cfa84316e25d82d18abe4c7fef4594faeea81",
-        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-        "blake3:aeeb18cb290506ed2c457dbab45fe3959d77e116bf57e9dd561be24f6237c9dd",
-        "blake3:086585959f5c1b787c6aa1c03c254b2a7ba2dc65044bd2745083bb85cd38d7b7"
-      ],
-      "env_vars": {},
-      "materialized_inputs": {
-        "linux/": "blake3:2a0af4cca3406c50132f3c982bdba0398e36dd78c393d4da21ccdab9f0dbfec1",
-        "macos/": "blake3:ba398dbf68b249148e041df757bd2c277d254b7959fbafb35d4548af1c2ee004",
-        "windows/": "blake3:2f35eeb65805dea80913c417868d9cc021fcf917ee89778a733f5efc249fb477"
-      },
-      "outputs": {
-        "output_content": {
-          "hash": "blake3:2bc0940b8b8a877a3ab09a1f3c0d562fec4bcf8a228a90342811e725c71a6ea6",
-          "capture": null
-        },
-        "process_code": {
-          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "capture": null
-        },
-        "stderr": {
-          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "capture": null
-        },
-        "stdout": {
-          "hash": "blake3:7e6f877ddedee767b41692553c10a1702465764b4000660d8d43210b2ea17c19",
-          "capture": null
-        }
-      }
-    },
-    "blake3:6dd5b047ccad24784244c58ec40c2e658a5f299cbca57c28713b4ac576c45494": {
-      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
-      "impure": false,
-      "executed_at": 1785987849261570000,
-      "last_referenced_at": 1785987881255441000,
-      "step_ids": [
-        {
-          "workflow_id": "",
-          "step_id": "step-1-ffmpeg"
-        }
-      ],
-      "command_args": [
-        "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
-        "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
-        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
-        "blake3:d58b36427fc4344bc233597820ea8e0b670cef773c19fdf4eeb7418621329899",
-        "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
-        "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
-        "blake3:67c63e93bb738a524b00816c702c2069c103002cf66185d616289570c35897d5",
-        "blake3:b51f23dae542295587205003545302aba37bd4cbab75d7d9b8ac8bf73367c149",
-        "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
-        "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
-        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-        "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
-        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-        "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
-        "blake3:26532c4262624ed12a90d98ad2b2126f31255db2ce6a35482e739d5291c94238",
-        "blake3:7bea5b2870ff84310b59dbd7600e7275d42d4a05a442c6d97b1dc9e5c805ba26"
-      ],
-      "env_vars": {},
-      "materialized_inputs": {
-        "linux/": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
-        "macos/": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
-        "windows/": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df"
-      },
-      "outputs": {
-        "primary": {
-          "hash": "blake3:13c005b65697c8679f7d8319bf869a51ac937ab425cc70257fb214756d9bb665",
-          "capture": null
-        },
-        "process_code": {
-          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "capture": null
-        },
-        "stderr": {
-          "hash": "blake3:c953d2f43b5cd3669fa318cab3171d48622a1067d271aaeca71cfedb17d0d763",
-          "capture": null
-        },
-        "stdout": {
-          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "capture": null
-        }
-      }
-    },
-    "blake3:83d607fb18c6af43073a617769ea05beb7dabe50aab13f5b28a70705e83a63fb": {
-      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
-      "impure": false,
-      "executed_at": 1785987892263567000,
-      "last_referenced_at": 1785987904018955000,
-      "step_ids": [
-        {
-          "workflow_id": "",
-          "step_id": "step-3-0-media-tagger-audio-to-audio-apply"
-        }
-      ],
-      "command_args": [
-        "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
-        "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
-        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
-        "blake3:2d2f6a73b2dbf5689fcb4fa8a0aa525c0c6a86f1eb154f2dc087249f8d533531",
-        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
-        "blake3:418ff7b43499e11805be95edc47658bbbdca0bb40b1b3819b6c23ab055f36a4b",
-        "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
-        "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
-        "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
-        "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
-        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-        "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
-        "blake3:d63bd9a826af91c1fea371965a64e11ee20f13e46b5f52c59901136605b3a487",
-        "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
-        "blake3:baf570d380d94531b570c45030228cfc20913e898e69e828de642dcff53d241d"
-      ],
-      "env_vars": {},
-      "materialized_inputs": {
-        "linux/": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
-        "macos/": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
-        "windows/": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df"
-      },
-      "outputs": {
-        "primary": {
-          "hash": "blake3:e182b428226d3ea8e226a169a82bed226bd6e656836025b92ee92f6c650e4472",
-          "capture": null
-        },
-        "process_code": {
-          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "capture": null
-        },
-        "stderr": {
-          "hash": "blake3:930e26ffa35f043aca4849b7b2d46d27671bb404afff12fdb982ce6a22505743",
           "capture": null
         },
         "stdout": {

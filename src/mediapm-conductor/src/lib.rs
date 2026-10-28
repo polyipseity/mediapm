@@ -52,7 +52,8 @@ pub use instance_key::{
     instance_key_hash_from_resolved_value_bytes,
     instance_key_resolved_value_bytes_for_hash_reference,
     instance_key_resolved_value_bytes_for_literal_binding, instance_matches_stored_key,
-    is_deterministic_binding_source, merge_step_input_bindings,
+    is_deterministic_binding_source, key_material_for_builtin, key_material_for_command_parts,
+    key_material_for_tool, merge_step_input_bindings, references_environment,
 };
 pub use state::ConductorState;
 pub use state::versions::{decode_state_json, encode_state_json};

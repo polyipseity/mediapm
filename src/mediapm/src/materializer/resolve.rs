@@ -475,8 +475,14 @@ async fn resolve_single_step_output_hashes_strict(
         required_step_output_names.get(&step.id).cloned().unwrap_or_default();
     let required_zip_members = required_step_zip_members.get(&step.id);
 
-    let instance_key_resolved_values =
+    let resolved_values =
         build_instance_key_resolved_value_bytes(cas, &merged_step_inputs, &expected_inputs).await?;
+    let key_material = materializer_key_material(
+        generated_doc,
+        &step.tool,
+        &merged_step_inputs,
+        &resolved_values,
+    )?;
 
     let mut matching_instances = state
         .tool_call_instances
@@ -487,8 +493,7 @@ async fn resolve_single_step_output_hashes_strict(
                     instance_key,
                     instance,
                     &expected_inputs,
-                    &merged_step_inputs,
-                    &instance_key_resolved_values,
+                    &key_material,
                 )
                 && instance_matches_expected_output_names(instance, &step.outputs)
                 && instance_matches_required_output_names(instance, &required_output_names))
@@ -617,6 +622,37 @@ fn merge_step_inputs_with_tool_defaults(
     Ok(merge_step_input_bindings(step_inputs, tool_spec))
 }
 
+/// Rebuilds the key material of one step from a generated document.
+///
+/// The materializer does not run the command, so it feeds
+/// [`mediapm_conductor::key_material_for_tool`] the same two inputs the executor
+/// derives from: each binding's resolved value bytes, and the bindings
+/// themselves. A selector's source is therefore the hash the binding names,
+/// which is the object the executor would have staged.
+fn materializer_key_material(
+    generated_doc: &NickelDocument,
+    step_tool: &str,
+    merged_bindings: &BTreeMap<String, String>,
+    resolved_values: &BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<Hash>, MediaPmError> {
+    let (_, tool_spec) = find_active_tool_spec(generated_doc, step_tool).ok_or_else(|| {
+        MediaPmError::Workflow(format!(
+            "workflow step references unknown tool '{step_tool}' in generated config",
+        ))
+    })?;
+    Ok(mediapm_conductor::key_material_for_tool(
+        tool_command_parts(tool_spec),
+        resolved_values,
+        merged_bindings,
+    ))
+}
+
+/// Resolved value bytes of every binding the step can resolve.
+///
+/// A hash-backed binding resolves to the referenced object's canonical hash
+/// text, which is what the step worker's own resolution produces for the same
+/// binding; a literal binding resolves to its source text. Those are the bytes
+/// the instance key's terms are hashed from.
 async fn build_instance_key_resolved_value_bytes(
     cas: &FileSystemCas,
     merged_bindings: &BTreeMap<String, String>,
@@ -655,6 +691,14 @@ async fn build_instance_key_resolved_value_bytes(
         values.insert(key.clone(), value_bytes);
     }
     Ok(values)
+}
+
+/// The argv one declared tool runs, empty for a builtin.
+fn tool_command_parts(tool_spec: &mediapm_conductor::ToolSpec) -> &[String] {
+    match &tool_spec.kind {
+        mediapm_conductor::ToolKindSpec::Executable { command, .. } => command,
+        mediapm_conductor::ToolKindSpec::Builtin { .. } => &[],
+    }
 }
 
 fn collect_required_step_output_names(
@@ -852,9 +896,10 @@ async fn resolve_input_binding_hash(
 /// Returns true when one runtime instance was recorded from the step's inputs
 /// and materialized tool content.
 ///
-/// Instance identity is input-derived only: the matcher recomposes the same
-/// four terms the step worker composed — domain, unified tools-catalog key,
-/// deterministic binding hashes and materialized-input hashes. A step's capture
+/// Instance identity is content-derived only: the matcher recomposes the two
+/// terms the step worker composed — the domain and the unified tools-catalog key
+/// — followed by the key material the command names in argv order, which
+/// [`materializer_key_material`] rebuilds from the same spec. A step's capture
 /// declarations are not part of it, because two steps running the same work
 /// share one instance however differently they name what they record. Finding
 /// the names a step binds inside that instance is a separate question, answered
@@ -863,18 +908,14 @@ pub(super) fn instance_matches_expected_inputs(
     instance_key: &Hash,
     instance: &ToolCallInstance,
     expected_inputs: &ExpectedStepInputs,
-    merged_step_inputs: &BTreeMap<String, String>,
-    instance_key_resolved_values: &BTreeMap<String, Vec<u8>>,
+    key_material: &[Hash],
 ) -> bool {
+    // An input whose hash this traversal could not reconstruct would drop out of
+    // the key material, and the key derived without it is not this step's key.
     if !expected_inputs.unresolved_hash_input_names.is_empty() {
         return false;
     }
-
-    let input_hashes = mediapm_conductor::deterministic_input_hashes_from_resolved_value_bytes(
-        merged_step_inputs,
-        instance_key_resolved_values,
-    );
-    mediapm_conductor::instance_matches_stored_key(*instance_key, instance, &input_hashes)
+    mediapm_conductor::instance_matches_stored_key(*instance_key, instance, key_material)
 }
 
 /// Returns whether `instance` records every name `expected_outputs` binds.
@@ -1148,10 +1189,17 @@ mod tests {
 
         let (conductor_tool_key, _) =
             find_active_tool_spec(&generated, &ffmpeg_step.tool).expect("active ffmpeg tool");
-        let instance_key_resolved_values =
+        let resolved_values =
             build_instance_key_resolved_value_bytes(&cas, &merged_ffmpeg_inputs, &expected_inputs)
                 .await
                 .expect("build ffmpeg instance-key resolved values");
+        let key_material = materializer_key_material(
+            &generated,
+            &ffmpeg_step.tool,
+            &merged_ffmpeg_inputs,
+            &resolved_values,
+        )
+        .expect("derive ffmpeg key material");
         let ffmpeg_instance = state
             .tool_call_instances
             .iter()
@@ -1161,8 +1209,7 @@ mod tests {
                         instance_key,
                         instance,
                         &expected_inputs,
-                        &merged_ffmpeg_inputs,
-                        &instance_key_resolved_values,
+                        &key_material,
                     )
             })
             .expect("ffmpeg instance matching step inputs");
@@ -1292,117 +1339,206 @@ mod tests {
     /// key scheme.
     ///
     /// The version is an integer and only moves forward, so a dotted revision
-    /// (`v4.1`) must never appear here: a change to key material is a new
+    /// (`v5.1`) must never appear here: a change to key material is a new
     /// integer, not a patch of this one.
     ///
     /// Re-declared here instead of rendered from `INSTANCE_KEY_SCHEME` or
     /// imported from `instance_key_domain`: this oracle exists to pin the
     /// documented value, so a changed domain string must fail the oracle rather
     /// than move both sides together.
-    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v4";
+    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v5";
 
-    /// Returns whether a raw binding source is deterministic, per the documented
-    /// spec: a source naming `${env.`, `context.os`, `:file(`, or `:folder(`
-    /// resolves from the host rather than from the recorded inputs, so it stays
-    /// out of the instance key.
+    /// Returns whether a command part participates in the key, per the
+    /// documented spec: a part reading `${env.` reports whatever the host holds,
+    /// so it is not key material. Everything else is, selectors included.
     ///
     /// Deliberately a second implementation of the rule rather than a call to
-    /// `is_deterministic_binding_source`: a filter that moves with production
-    /// cannot detect production being wrong about which bindings are key material.
-    fn oracle_is_deterministic_binding(raw_source: &str) -> bool {
-        !(raw_source.contains("${env.")
-            || raw_source.contains("context.os")
-            || raw_source.contains(":file(")
-            || raw_source.contains(":folder("))
+    /// `references_environment`: a filter that moves with production cannot
+    /// detect production being wrong about what the key covers.
+    fn oracle_is_key_material(part: &str) -> bool {
+        !part.contains("${env.")
     }
 
-    /// Pins the oracle's restatement of the determinism rule against the spec.
+    /// Splits a command part into its selectors, as `(destination, source)`
+    /// pairs, in order.
     ///
-    /// No binding source on the demo path carries any of the four markers, so
-    /// without this an `oracle_is_deterministic_binding` that always returned `true`
-    /// would still pass the fixture test — the rule would be restated but never
-    /// exercised false. Each marker must make a source host-dependent, whether it
-    /// stands alone or sits inside a longer source; a plain literal must not, and
-    /// neither must a source that merely *looks* templated: the rule is a substring
-    /// scan for those four markers, so an unrelated `${` interpolation and the bare
-    /// word `folder` both stay deterministic.
+    /// A second implementation of the scan on purpose: the oracle has to read
+    /// the parts itself, or it would only prove that production agrees with
+    /// production.
+    fn oracle_selectors(part: &str) -> Vec<(String, String)> {
+        let mut selectors = Vec::new();
+        let mut remaining = part;
+        while !remaining.is_empty() {
+            let next = [":file(", ":folder("]
+                .iter()
+                .filter_map(|marker| remaining.find(marker).map(|offset| (offset, *marker)))
+                .min_by_key(|(offset, _)| *offset);
+            let Some((offset, marker)) = next else { break };
+            let after = &remaining[offset + marker.len()..];
+            let Some(close) = after.find(')') else { break };
+            let destination = after[..close].to_string();
+            let source = remaining[..offset]
+                .rsplit(|character: char| {
+                    !(character.is_ascii_alphanumeric()
+                        || matches!(character, '_' | '.' | '-' | ':'))
+                })
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            selectors.push((destination, source));
+            remaining = &after[close + 1..];
+        }
+        selectors
+    }
+
+    /// Pins the oracle's restatement of the key-material rule.
+    ///
+    /// No command part on the demo path reads the environment, so without this
+    /// a rule that always returned `true` would still pass the fixture test.
+    /// A selector part is key material — that is what the v5 scheme changed —
+    /// so it must report `true` here even though it used to be excluded.
     #[test]
-    fn oracle_is_deterministic_binding_refuses_each_host_marker() {
+    fn oracle_is_key_material_refuses_the_environment_and_keeps_selectors() {
         let cases = [
             ("${env.HOME}", false),
             ("--flag ${env.MY_VAR} --other", false),
-            ("context.os", false),
-            (r#"${context.os == "macos" ? "a" : "b"}"#, false),
-            (":file(", false),
-            ("${inputs.payload:file(payload.txt)}", false),
-            (":folder(", false),
-            ("${inputs.folder:folder(dir)}", false),
+            ("${inputs.payload:file(payload.txt)}", true),
+            ("${inputs.folder:folder(dir)}", true),
             ("mp4", true),
             ("", true),
             ("${step_output.step-0-0-import.video_untagged}", true),
             ("my-folder-name", true),
         ];
-        for (source, expected) in cases {
+        for (part, expected) in cases {
             assert_eq!(
-                oracle_is_deterministic_binding(source),
+                oracle_is_key_material(part),
                 expected,
-                "source {source:?} must be classified as deterministic={expected}",
+                "part {part:?} must be classified as key material={expected}",
             );
         }
     }
 
-    /// Recomposes one step's deterministic binding hashes from the spec: each
-    /// deterministic binding contributes `composite(name bytes, resolved value
-    /// bytes)`, walked in `BTreeMap` order (sorted by name).
+    /// Pins the oracle's selector scan against the shapes the document writes.
     ///
-    /// This is the composition the oracle exists to check, so it is written out
-    /// here instead of calling `instance_key_hash_from_resolved_value_bytes` or
-    /// `deterministic_input_hashes_from_resolved_value_bytes`. Contrast
-    /// `arg_hashes` in `mediapm-conductor`'s `step_worker/cache.rs`, which
-    /// deliberately *does* call the production composition because its job is to
-    /// guard that helper. Different purpose, opposite rule: do not "de-duplicate"
-    /// this against production, because a test that calls the code under test
-    /// cannot detect that code being wrong.
-    fn oracle_binding_hashes(
-        merged_bindings: &BTreeMap<String, String>,
+    /// A selector sits inside a conditional in the real presets, so the source
+    /// has to be read from the identifier before the colon rather than from the
+    /// start of the reference.
+    #[test]
+    fn oracle_selectors_reads_the_conditional_shapes() {
+        assert_eq!(
+            oracle_selectors("${inputs.source:file(inputs/source.mkv)}"),
+            vec![("inputs/source.mkv".to_string(), "inputs.source".to_string())],
+        );
+        assert_eq!(
+            oracle_selectors("${{*inputs.video ? inputs.video:file(downloads/video.mkv) | ''}}",),
+            vec![("downloads/video.mkv".to_string(), "inputs.video".to_string())],
+        );
+        assert!(oracle_selectors("--plain").is_empty());
+    }
+
+    /// Recomposes one tool's key material from the documented spec.
+    ///
+    /// A tool with no command parts keys its inputs in name order, each as
+    /// `composite(name bytes, resolved value bytes)`. Every other tool keys its
+    /// command, in argv order: a plain part contributes `composite(part bytes,
+    /// the value hash of every input it reads)`, and a selector part contributes
+    /// `composite(destination bytes, source hash)`.
+    ///
+    /// The composition is written out here rather than delegated to
+    /// `key_material_for_tool`: a test that calls the code under test cannot
+    /// detect that code being wrong. Resolution — which bytes a binding names —
+    /// does come from production, because resolution is not what this oracle
+    /// checks.
+    fn oracle_key_material(
+        command_parts: &[String],
         resolved_values: &BTreeMap<String, Vec<u8>>,
+        raw_bindings: &BTreeMap<String, String>,
     ) -> Vec<Hash> {
-        let mut hashes = Vec::new();
-        for (name, raw_source) in merged_bindings {
-            let Some(value_bytes) = resolved_values.get(name) else {
-                continue;
-            };
-            if !oracle_is_deterministic_binding(raw_source) {
+        if command_parts.is_empty() {
+            let mut material = Vec::new();
+            for (name, value) in resolved_values {
+                let raw = raw_bindings.get(name).map_or("", String::as_str);
+                if !oracle_is_key_material(raw) {
+                    continue;
+                }
+                material.push(Hash::composite(&[
+                    Hash::from_content(name.as_bytes()),
+                    Hash::from_content(value),
+                ]));
+            }
+            return material;
+        }
+
+        let mut material = Vec::new();
+        for part in command_parts {
+            if !oracle_is_key_material(part) {
                 continue;
             }
-            hashes.push(Hash::composite(&[
-                Hash::from_content(name.as_bytes()),
-                Hash::from_content(value_bytes),
-            ]));
+            let selectors = oracle_selectors(part);
+            if selectors.is_empty() {
+                let mut parts = vec![Hash::from_content(part.as_bytes())];
+                for name in oracle_referenced_inputs(part) {
+                    let value = resolved_values.get(&name).map_or(&[][..], Vec::as_slice);
+                    parts.push(Hash::from_content(value));
+                }
+                material.push(Hash::composite(&parts));
+                continue;
+            }
+            for (destination, source) in selectors {
+                let value = source
+                    .strip_prefix("inputs.")
+                    .and_then(|name| resolved_values.get(name))
+                    .map_or(&[][..], Vec::as_slice);
+                let source_hash = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(|text| text.parse::<Hash>().ok())
+                    .unwrap_or_else(|| Hash::from_content(value));
+                material.push(Hash::composite(&[
+                    Hash::from_content(destination.as_bytes()),
+                    source_hash,
+                ]));
+            }
         }
-        hashes
+        material
+    }
+
+    /// Every input a part reads, in order, by the oracle's own scan.
+    fn oracle_referenced_inputs(part: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut remaining = part;
+        while let Some(offset) = remaining.find("inputs.") {
+            let after = &remaining[offset + "inputs.".len()..];
+            let end = after
+                .find(|character: char| {
+                    !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+                })
+                .unwrap_or(after.len());
+            if end > 0 {
+                names.push(after[..end].to_string());
+            }
+            remaining = &after[end..];
+        }
+        names
     }
 
     /// Recomputes one recorded instance's key from the spec.
     ///
     /// Components, in order: the versioned domain separator, the unified
-    /// tools-catalog key, and the deterministic binding hashes. Captures do not
-    /// participate: they are records addressed by name, and two steps running
-    /// the same work share one instance however differently they declare what
-    /// they record. No time component exists either: the recorded `executed_at`
-    /// is provenance, never key material, so a stored impure instance keeps
-    /// matching across runs. The inputs the step staged do not participate
-    /// either: they are known only once the command's selectors have run, and
-    /// the key names the sandbox they run in.
+    /// tools-catalog key, and the key material the command names. Captures do
+    /// not participate: they are records addressed by name, and two steps
+    /// running the same work share one instance however differently they
+    /// declare what they record. No time component exists either: the recorded
+    /// `executed_at` is provenance, never key material, so a stored impure
+    /// instance keeps matching across runs.
     ///
     /// Written out here rather than delegating to `derive_instance_key` (or its
     /// `derive_tool_call_instance_key` façade), for the reason given on
-    /// [`Self::oracle_binding_hashes`].
-    fn oracle_instance_key(instance: &ToolCallInstance, binding_hashes: &[Hash]) -> Hash {
+    /// [`Self::oracle_key_material`].
+    fn oracle_instance_key(instance: &ToolCallInstance, key_material: &[Hash]) -> Hash {
         let mut parts = Vec::new();
         parts.push(Hash::from_content(ORACLE_INSTANCE_KEY_DOMAIN.as_bytes()));
         parts.push(Hash::from_content(instance.tool_call_id.as_bytes()));
-        parts.extend_from_slice(binding_hashes);
+        parts.extend_from_slice(key_material);
         Hash::composite(&parts)
     }
 
@@ -1412,12 +1548,11 @@ mod tests {
     /// *Resolution* comes from the production helpers — which hash a binding
     /// points at, and which bytes a binding resolves to — because resolution is
     /// not what this oracle checks. *Composition* comes from
-    /// [`Self::oracle_binding_hashes`] and [`Self::oracle_instance_key`], which are
+    /// [`Self::oracle_key_material`] and [`Self::oracle_instance_key`], which are
     /// this oracle's own implementation of the documented spec. The forbidden
-    /// production calls are `instance_key_hash_from_resolved_value_bytes`,
-    /// `deterministic_input_hashes_from_resolved_inputs`,
-    /// `deterministic_input_hashes_from_resolved_value_bytes` and
-    /// `derive_instance_key`; see [`Self::oracle_binding_hashes`] for why.
+    /// production calls are `key_material_for_tool`,
+    /// `key_material_for_command_parts` and `derive_instance_key`; see
+    /// [`Self::oracle_key_material`] for why.
     ///
     /// Steps are walked in the workflow's declared (dependency) order, so each
     /// step's hash-reference bindings see the outputs recorded for the steps
@@ -1446,7 +1581,7 @@ mod tests {
         let mut paired = Vec::new();
 
         for step in &workflow.steps {
-            let (tool_call_id, _) = find_active_tool_spec(generated, &step.tool)
+            let (tool_call_id, tool_spec) = find_active_tool_spec(generated, &step.tool)
                 .map(|(key, spec)| (key.clone(), spec))
                 .ok_or_else(|| {
                     format!(
@@ -1482,7 +1617,8 @@ mod tests {
                             step.id,
                         )
                     })?;
-            let binding_hashes = oracle_binding_hashes(&merged, &resolved_values);
+            let key_material =
+                oracle_key_material(tool_command_parts(tool_spec), &resolved_values, &merged);
 
             let mut candidates = Vec::new();
             let mut diagnostics = Vec::new();
@@ -1490,7 +1626,7 @@ mod tests {
                 if instance.tool_call_id != tool_call_id {
                     continue;
                 }
-                let derived = oracle_instance_key(instance, &binding_hashes);
+                let derived = oracle_instance_key(instance, &key_material);
                 diagnostics.push(format!("{} -> {}", stored_key.to_hex(), derived.to_hex()));
                 if derived == *stored_key {
                     candidates.push((stored_key, instance));
@@ -1541,11 +1677,12 @@ mod tests {
     /// its independence for exactly those keys; this test buys it back.
     ///
     /// The oracle must not call the production key helpers, and it must stay that
-    /// way; see [`Self::oracle_binding_hashes`]. It does use production
+    /// way; see [`Self::oracle_key_material`]. It does use production
     /// *resolution* helpers — `find_active_tool_spec`,
     /// `merge_step_inputs_with_tool_defaults`, `resolve_expected_input_hashes`,
     /// `build_instance_key_resolved_value_bytes`, and
-    /// `output_hashes_from_instance` — because resolution is not in question here.
+    /// `output_hashes_from_instance` —
+    /// because resolution is not in question here.
     ///
     /// A deliberate change to the instance-key spec — the domain constant, the
     /// component order, or the name term of a binding hash — has to update this
@@ -1749,7 +1886,7 @@ mod tests {
     ///
     /// A step whose recorded predecessors are missing cannot be planned: the
     /// fixture is then incomplete rather than stale, so the error names the step.
-    async fn demo_step_input_hashes(
+    async fn demo_step_key_material(
         cas: &FileSystemCas,
         generated: &NickelDocument,
         step: &mediapm_conductor::WorkflowStepSpec,
@@ -1778,10 +1915,8 @@ mod tests {
         .map_err(|error| {
             format!("step '{}': resolving instance-key value bytes failed: {error}", step.id)
         })?;
-        Ok(mediapm_conductor::deterministic_input_hashes_from_resolved_value_bytes(
-            &merged,
-            &resolved_values,
-        ))
+        materializer_key_material(generated, &step.tool, &merged, &resolved_values)
+            .map_err(|error| format!("step '{}': composing key material failed: {error}", step.id))
     }
 
     /// Pairs every recorded instance with the steps that claim it, returning one
@@ -1835,8 +1970,7 @@ mod tests {
                     step.id, step.tool,
                 ));
             };
-            let current_hashes =
-                demo_step_input_hashes(cas, generated, step, &step_outputs).await?;
+            let key_material = demo_step_key_material(cas, generated, step, &step_outputs).await?;
 
             let paired = state
                 .tool_call_instances
@@ -1863,8 +1997,7 @@ mod tests {
             }
             let current_key = mediapm_conductor::derive_tool_call_instance_key(
                 &instance.tool_call_id,
-                &current_hashes,
-                &[],
+                &key_material,
             );
             if let Some(rewrite) = rewrites.get_mut(stored_key) {
                 if rewrite.current_key != current_key {
@@ -2176,16 +2309,17 @@ mod tests {
     ///
     /// **Resolution path.** The new keys are derived from the materializer's live
     /// resolution (`merge_step_inputs_with_tool_defaults`,
-    /// `resolve_expected_input_hashes`, `build_instance_key_resolved_value_bytes`)
+    /// `resolve_expected_input_hashes`)
     /// rather than the conductor's `resolve_step_inputs`, because that function is
     /// `pub(super)` inside `mediapm-conductor`'s `step_worker` module and is
     /// therefore unreachable from this crate. The pairing does not rest on this
     /// path — it comes from the fixture's own `step_ids` — so a resolution helper
     /// that drifted would produce new keys, not a mismatched pairing.
     ///
-    /// **Write.** The decoded state is re-encoded through `encode_state_json`
-    /// before it is written, so the checked-in record always lands in the
-    /// current wire shape. The bytes go to a sibling temporary file in the
+    /// **Write.** The decoded state is re-keyed in memory — the map key and every
+    /// `aux.live_instances` seed that names it move together — and then
+    /// re-encoded through `encode_state_json`, so the checked-in record always
+    /// lands in the current wire shape. The bytes go to a sibling temporary file in the
     /// fixture's own directory (`demo_conductor_state.json.regenerated`) and are
     /// then renamed over the fixture, so a partial write can never be observed
     /// in a checked-in record; the sibling path keeps the rename on one
@@ -2291,10 +2425,14 @@ mod tests {
         rewrites: &BTreeMap<Hash, DemoInstanceKeyRewrite>,
     ) {
         let original_bytes = std::fs::read(path).expect("read demo conductor state fixture");
-        let mut text = String::from_utf8(original_bytes.clone())
-            .expect("demo conductor state fixture is utf-8");
+        let mut rewritten =
+            decode_state_json(&original_bytes).expect("decode demo conductor state fixture");
 
-        let mut changed = Vec::new();
+        // Re-key the decoded value, never the file text: the key is the
+        // `tool_call_instances` map key and it appears again in every
+        // `aux.live_instances` seed that names it, so both move together here by
+        // construction rather than by a substring that happens to match.
+        let mut changed = 0usize;
         for (stored_key, rewrite) in rewrites {
             if rewrite.current_key == *stored_key {
                 println!(
@@ -2304,38 +2442,31 @@ mod tests {
                 );
                 continue;
             }
-            let needle = stored_key.to_string();
-            let occurrences = text.matches(needle.as_str()).count();
-            assert!(occurrences > 0, "instance key {needle} does not appear in the fixture text");
-            println!(
-                "steps {:?}: {needle} -> {} ({occurrences} occurrences)",
-                rewrite.claiming_steps, rewrite.current_key,
+            let instance = rewritten.tool_call_instances.remove(stored_key).unwrap_or_else(|| {
+                panic!("instance key {} is not in the fixture", stored_key.to_hex())
+            });
+            for seeds in rewritten.aux.live_instances.values_mut() {
+                if seeds.remove(stored_key) {
+                    seeds.insert(rewrite.current_key);
+                }
+            }
+            assert!(
+                rewritten.tool_call_instances.insert(rewrite.current_key, instance).is_none(),
+                "instance key {} is already recorded",
+                rewrite.current_key.to_hex(),
             );
-            text = text.replace(needle.as_str(), &rewrite.current_key.to_string());
-            changed.push((*stored_key, rewrite.current_key));
+            println!(
+                "steps {:?}: {} -> {}",
+                rewrite.claiming_steps,
+                stored_key.to_hex(),
+                rewrite.current_key.to_hex(),
+            );
+            changed += 1;
         }
 
-        // Validate the regenerated text before it can replace a checked-in
+        // Validate the regenerated value before it can replace a checked-in
         // record: no stale key may survive, and every instance must carry the
         // provenance the caller's pairing check relies on.
-        for (stored_key, current_key) in &changed {
-            assert!(
-                !text.contains(stored_key.to_string().as_str()),
-                "stale key {} survived the rewrite",
-                stored_key.to_hex(),
-            );
-            assert!(text.contains(current_key.to_string().as_str()));
-        }
-        let rewritten =
-            decode_state_json(text.as_bytes()).expect("regenerated demo conductor state decodes");
-        assert_eq!(rewritten.tool_call_instances.len(), state.tool_call_instances.len());
-        for (key, instance) in &rewritten.tool_call_instances {
-            assert!(
-                !instance.step_ids.is_empty(),
-                "instance {} records no step; the provenance insertion missed it",
-                key.to_hex(),
-            );
-        }
         for rewrite in rewrites.values() {
             let current_key = rewrite.current_key;
             assert!(
@@ -2351,11 +2482,8 @@ mod tests {
                 );
             }
         }
+        assert_eq!(rewritten.tool_call_instances.len(), state.tool_call_instances.len());
 
-        // Re-encode from the value, not from the edited text: the fixture is a
-        // checked-in record of the current wire shape, and a file that arrives
-        // one migration behind would otherwise be migrated on every read and
-        // never exercise the encoder.
         let mut encoded = encode_state_json(&rewritten).expect("encode regenerated demo state");
         encoded.push(b'\n');
         if encoded == original_bytes {
@@ -2370,10 +2498,10 @@ mod tests {
         std::fs::write(&temporary_path, &encoded).expect("write regenerated demo conductor state");
         std::fs::rename(&temporary_path, path)
             .expect("move regenerated demo conductor state over the fixture");
-        if changed.is_empty() {
+        if changed == 0 {
             println!("normalized the fixture to the current wire shape");
         } else {
-            println!("rewrote {} instance key(s)", changed.len());
+            println!("rewrote {changed} instance key(s)");
         }
     }
 

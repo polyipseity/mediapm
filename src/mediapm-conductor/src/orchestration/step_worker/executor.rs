@@ -27,17 +27,17 @@ use super::sandbox::{
     resolve_executable_under_payload_root,
 };
 use super::template::{ResolvedCommandParts, StagedInputs, TemplateContext, resolve_command_parts};
-use crate::instance_key::{derive_instance_key, deterministic_input_hashes_from_resolved_inputs};
+use crate::instance_key::{derive_instance_key, input_binding_to_string, key_material_for_tool};
 
 /// One dispatched execution: what the tool produced, the argv it ran, and the
 /// inputs its command staged on the way.
 struct DispatchedExecution {
     /// What the capture phase reads: streams, exit status, written files.
     result: ExecutionResult,
-    /// Hashed argv in order, one hash per resolved part (empty for a builtin,
-    /// which runs no argv).
+    /// Key material in order, one hash per key-material part (a builtin's
+    /// inputs by name; a command's parts in argv order).
     ///
-    /// Hashes alone: the instance key is composed from exactly this list, so the
+    /// Hashes alone, and exactly the list the instance key composes, so the
     /// recorded argv and the key material cannot drift apart.
     command_args: Vec<Hash>,
     /// Inputs the command's selectors staged, keyed by sandbox-relative
@@ -53,6 +53,7 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
     request: &StepExecutionRequest,
     resolved_inputs: &[ResolvedInput],
     sandbox_dir: &Path,
+    key_material: &[Hash],
 ) -> Result<DispatchedExecution, ConductorError> {
     if tool_spec.command_parts.is_empty() {
         let args: BTreeMap<String, String> =
@@ -62,7 +63,7 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
             run_builtin(cas, builtin_id, &args, &request.outermost_config_dir, sandbox_dir).await?;
         Ok(DispatchedExecution {
             result,
-            command_args: Vec::new(),
+            command_args: key_material.to_vec(),
             materialized_inputs: BTreeMap::new(),
         })
     } else {
@@ -87,8 +88,6 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
         // companion path an argument names.
         resolve_executable_under_payload_root(&mut resolved_parts, tool_spec)?;
         pre_qualify_payload_arguments(&mut resolved_parts, tool_spec);
-        let command_args =
-            resolved_parts.iter().map(|part| Hash::from_content(part.as_bytes())).collect();
         let result = run_executable_process(
             &resolved_parts,
             &tool_spec.success_codes,
@@ -98,7 +97,7 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
         .await?;
         Ok(DispatchedExecution {
             result,
-            command_args,
+            command_args: key_material.to_vec(),
             materialized_inputs: staged_input_records(staged_inputs),
         })
     }
@@ -134,20 +133,21 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
                 ))
             })?;
 
-    let deterministic_input_hashes = deterministic_input_hashes_from_resolved_inputs(
-        &resolved_inputs,
-        &request.step.inputs,
-        &tool_spec.default_inputs,
-    );
-
-    // Materialized inputs are the inputs the step stages, not the tool payload
-    // it runs from: a selector's destination and the object staged there are
-    // recorded when they are staged, which happens after the key is derived and
-    // inside the sandbox the key names. The key therefore carries no
-    // materialized term, and the tool payload stays out of it the way it always
-    // was: `tool_call_id` is the versioned tools-catalog key, which already
-    // names the content map.
-    let instance_key = derive_instance_key(&tool_call_id, &deterministic_input_hashes, &[]);
+    // The key material is what the command asks the store for, in the order it
+    // asks. A selector contributes its destination and its source hash, taken
+    // from the resolved input rather than from the bytes it stages: those bytes
+    // land in a sandbox named for the key, so the key has to exist first.
+    let mut raw_bindings = request.step.inputs.clone();
+    for (key, binding) in &tool_spec.default_inputs {
+        raw_bindings.entry(key.clone()).or_insert_with(|| input_binding_to_string(binding));
+    }
+    let input_values: BTreeMap<String, Vec<u8>> = resolved_inputs
+        .iter()
+        .map(|input| (input.key.clone(), input.value.as_bytes().to_vec()))
+        .collect();
+    let key_material =
+        key_material_for_tool(&tool_spec.command_parts, &input_values, &raw_bindings);
+    let instance_key = derive_instance_key(&tool_call_id, &key_material);
 
     // Tool-level capture defaults merged with the step's own declarations. The
     // tool owns the capture identity of every name it declares (its selector,
@@ -237,8 +237,15 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
     let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &instance_key).await?;
     prepare_tool_payload(cas, tool_spec, &sandbox_dir).await?;
 
-    let dispatched =
-        dispatch_tool_execution(cas, tool_spec, &request, &resolved_inputs, &sandbox_dir).await?;
+    let dispatched = dispatch_tool_execution(
+        cas,
+        tool_spec,
+        &request,
+        &resolved_inputs,
+        &sandbox_dir,
+        &key_material,
+    )
+    .await?;
 
     // Capture outputs: the merged set computed before the probe, so the probe
     // and the capture phase cannot disagree about which names exist.
