@@ -8,53 +8,62 @@ applyTo: "src/**/*.rs"
 
 ## Required structure
 
-- Keep the version-agnostic source of truth in a central, unversioned struct (e.g., `DeltaState`).
-- Place each wire-format version in a dedicated file per version (`versions/v1.rs`, `versions/v2.rs`).
-- Keep versioned envelope structs `pub(crate)` to avoid exposing wire internals.
+- Keep the version-agnostic source of truth in one unversioned struct per surface. `DeltaState` in `src/mediapm-cas/src/delta/object.rs` holds `base_hash`, `content_len` and `payload`, and every delta wire version converts to it.
+- Place each version in its own file under a `versions/` directory, whether the version covers a wire format or an on-disk layout. Examples: `src/mediapm-cas/src/delta/versions/v1.rs` through `v3.rs`, `src/mediapm-cas/src/storage/wal/versions/v1.rs` and `v2.rs`, and `src/mediapm/src/state/versions/v1.rs` through `v5.rs`. Eight such directories exist across the workspace; the list above is a sample, not the set.
+- Keep versioned envelope and version-local state types `pub(crate)` or narrower; the mediapm state ladder uses `pub(super)`. `V3Envelope` and `DeltaStateV3` stay inside `delta/versions/`, and no module outside that directory names a wire shape. `has_known_versioned_type_leak` in `src/mediapm-cas/src/delta/versions/mod_policy_guard.rs` enforces the second half by matching an enumerated token list, so a type absent from that list is unguarded until someone adds it.
+- Make the surface's `versions/mod.rs` the only bridge between versioned and unversioned state. `decode_delta_state` and `encode_delta_state` in `delta/versions/mod.rs` are that bridge for CAS deltas.
+
+## Where the version tag lives
+
+A tag sits in the payload it belongs to or in the filename. Each surface picks one and stays with it.
+
+- **In the envelope.** A delta file starts with six magic bytes and a little-endian `u16`: `CASDLT` for version 3 and later, `MDCASD` for versions 1 and 2. `decode_magic_embedded_version` rejects a `CASDLT` envelope below version 3, an `MDCASD` envelope above version 2, and version 0, which is reserved for a scheme with more than 65535 versions.
+- **In the document.** `state.json` and `state.conductor.json` carry an integer `version` field. `extract_state_version_field` in the mediapm ladder and `peek_version_marker` in the conductor ladder raise on a missing or non-numeric marker, and `peek_version_marker` also rejects a value beyond `u32`. A document that names no version, names one this build does not read, or does not parse is an error rather than an empty rebuild; `state-persistence.instructions.md` and `src/mediapm-conductor/AGENTS.md` section D hold the per-document rules.
+- **In the filename.** Per-directory metadata snapshots carry no version field inside. The name states it (`metadata-v1.json`), and `src/mediapm-cas/src/storage/metadata_store/versions/mod.rs` owns both the filenames and the codecs, so a `metadata-v2.json` cannot reach a V1 parser.
 
 ## Canonical versioning pattern (config documents)
 
-Every versioned config/state surface follows the same shape, regardless of transport (`.ncl` or `.json`):
+Every versioned config surface follows this shape, on either transport:
 
-1. **Migrations live at the version boundary.** For `.ncl`, each `vN.ncl` owns the migration INTO that version (`v2.ncl` exports `migrate_v1_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`); `mod.ncl` only dispatches. For `.json`, migration code is written in Rust (`versions/mod.rs` or `state/versions/`) — same dispatch shape.
-2. **Parse into a "latest" boundary type** named `*Latest` representing the ACTIVE version's wire shape; it carries `Option` on user-optional fields, not a generic all-versions boundary.
-3. **Resolve defaults to an option-free resolved struct** (no `Option`) via `from_boundary`.
+1. **Migrations live at the version boundary.** Each `vN.ncl` owns the edges into and out of itself: `v2.ncl` exports `migrate_v1_to_v2` and `migrate_v3_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`. `mod.ncl` selects the edge and composes two hops for the `1 <-> 3` pairs, so no edge implementation lives in the registry. The JSON documents do the same in Rust, in `versions/mod.rs` or `state/versions/`.
+2. **Parse into a `*Latest` boundary type.** The conductor's `config/versions/mod.rs` parses into `v_latest::NickelEnvelopeLatest`, and `from_boundary` and `into_boundary` are the two directions. The mediapm side parses into `MediaRuntimeStorageLatest` and resolves it with `resolve_runtime_storage`.
+3. **Resolve defaults into plain values** with a separate resolved model: user-facing config types use plain values with serde defaults, not `Option<T>`. `resolve_runtime_storage` turns `MediaRuntimeStorageLatest` into `MediaRuntimeStorage`, and an unset boundary path stays empty so the `MediaPmPaths` defaults win. The resolved model's `Option`s are documented exceptions: `cache_root_override` exists for tests, and the `resolved_*` provenance fields record an absent upstream value.
 
-**INVARIANT — each version envelope keeps its OWN shape.** Old versions are BRIDGED to the latest boundary through the unified model (`MediaPmDocument`), NEVER reshaped to mirror the latest version's grouping. A V1 envelope type (e.g. `MediaRuntimeStorageV1`) is a distinct flat wire shape converting to/from `MediaRuntimeStorageLatest` via `From` impls. Do not replace a V1 envelope type with the grouped resolved type, and do not push V2's sub-record grouping into V1's contract.
+**Each version envelope keeps its own shape.** `MediaRuntimeStorageV1` in `src/mediapm/src/config/versions/v1.ncl` lists its fields flat, while `MediaRuntimeStorageLatest` groups most of them under `paths`, `materialization`, `verification`, `caching`, `lifecycle` and `environment`, leaving `path_sanitization` and `retry_impure` at the top level. The bridge is a conversion, so the old contract keeps the shape its version actually wrote. Do not reshape an old contract to mirror the newest grouping.
 
-**File placement — version-specific types and their `From` bridges live INSIDE the version file** (`versions/v1.rs`, `versions/v_latest.rs`), never in shared `config/mod.rs`. `config/mod.rs` holds only the resolved (option-free) types; the active `*Latest` family belongs in `versions/v_latest.rs`. The boundary entry points (`from_boundary`, `into_boundary`, and the multi-document merge entry point) live in `versions/mod.rs`, which may import from `v_latest` but must not re-export versioned symbols outside `versions/`; `config/mod.rs` names no versioned type in either direction.
+**Version-specific types stay inside the version file.** `versions/v_latest.rs` holds the `*Latest` family (`MediaRuntimeStorageLatest`, `RuntimePathsConfigLatest`, `RuntimeMaterializationConfigLatest` and their siblings), and `versions/document.rs` holds `MediaPmDocument`, the boundary document carrying `MediaRuntimeStorageLatest` on its `runtime` field. `config/mod.rs` holds the resolved model, whose fields carry plain values with serde defaults.
 
 ## Strict `versions/` boundary policy
 
-- Inside `versions/vX.rs`, do **not** import unversioned structs from outside `versions/`.
-- A `versions/vX.rs` file may reference only the immediately previous version module (e.g. `v3` → `v2`), and only for version-to-version isomorphism/migration.
-- Implement latest-version ↔ unversioned-struct isomorphism in `versions/mod.rs`, not in individual `vX.rs` files.
-- Files outside `versions/` interact with versioned symbols through `versions/mod.rs` only; do not import `versions::vX` directly. This is enforced mechanically: `no_file_outside_versions_references_a_version_module_path` in `src/mediapm-cas/src/delta/versions/mod_policy_guard.rs` scans every workspace member and fails on any such path in code, so a reintroduced leak is caught by the suite rather than by a reviewer's `git grep`. Doc comments and string literals that *describe* the rule are not violations — the guard projects each file onto its code first.
-- In `versions/mod.rs`, do not re-export `versions::vX` structs as public API; expose unversioned wrapper functions/constants.
-- Files outside `versions/` keep their own unversioned runtime data structures and call into `versions/mod.rs` only when encoding/decoding persisted or wire versioned formats.
-- Prefer unversioned facade APIs in aggregate modules (e.g. `index/mod.rs`) so siblings (e.g. `index/db.rs`) do not import `versions` paths directly.
-- In non-`versions/` modules, avoid version-tag fields and explicit version checks; keep version parsing/validation confined to `versions/` code.
-- Keep a module-level `DO NOT REMOVE` policy docstring in each `versions/` file.
+- Inside `versions/vX.rs`, do not import unversioned structs from outside `versions/`.
+- A `versions/vX.rs` file may reference only the immediately previous version module (for example `v3` reaching `v2`), and only for version-to-version migration.
+- Implement latest-version to unversioned-struct isomorphism in `versions/mod.rs`, not in individual `vX.rs` files.
+- Files outside `versions/` reach versioned symbols through `versions/mod.rs` only. `no_file_outside_versions_references_a_version_module_path` in `src/mediapm-cas/src/delta/versions/mod_policy_guard.rs` scans every workspace member and fails on any such path in code, so the rule is enforced by the suite rather than by review. Doc comments and string literals that describe the rule are not violations, because the guard projects each file onto its code first.
+- Do not re-export `versions::vX` structs as public API from `versions/mod.rs`; expose unversioned functions and constants.
+- Files outside `versions/` keep their own unversioned runtime data structures and call into `versions/mod.rs` when encoding or decoding a persisted format.
+- Keep the `DO NOT REMOVE` policy docstring in every Rust file under a `versions/` directory. `every_versions_dir_keeps_policy_guard_docstring` checks every workspace member, and it collects `.rs` files only, so a Nickel version file carries no such marker.
 
-## Required optic bridges
+## Migration policy
 
-- Every wire-format version exposes a version-local optic bridge in `vX.rs` (e.g., `IsoPrime<RcBrand, VersionEnvelope, VersionLocalState>`).
-- Bridge latest version-local state to unversioned runtime state in `versions/mod.rs`.
-- Prefer optic composition over manual `From`/`Into`/`to_state`/`from_state` for envelopes.
-- Implement envelope migration by optic composition through the version-agnostic state (`old_iso.view` then `new_iso.review`).
-- Keep migration ladders sequential (`vN -> vN+1`) with explicit provenance in comments/tests.
-- For lossless migrations, add round-trip checks; for lossy migrations, document one-way guarantees and preserved complement data.
+A migration converts one version's state into the next when a reader meets it, and records nothing about having run. Whether the reader writes the converted document back is per surface: the conductor rewrites a v1 state file at load (`load_state_file_async`), mediapm's JSON state ladder writes nothing on a version hop (only the legacy `.ncl` migration writes, and it deletes the `.ncl` it replaced), and a delta decode rewrites nothing because `decode_delta_state` converts in memory only.
+
+- **Hops are sequential and live with a version.** `decode_delta_state` dispatches on the embedded version and walks `V1 -> V2 -> V3` through `From` impls: `From<DeltaStateV1> for DeltaStateV2` copies `base_hash`, `content_len` and `payload` field by field, and `From<DeltaStateV2> for DeltaStateV3` keeps those three and computes `diff_hash`. `encode_delta_state` always writes the latest version.
+- **A hop preserves content, not provenance.** No field records which versions a document passed through, and no code writes one. Preserved state is the delta's `base_hash`, `content_len` and `payload`; anything a later version adds is derived at migration time or defaulted.
+- **An unreadable version is an error.** An unknown embedded version returns `CasError::corrupt_object("delta envelope: unsupported version N")`, and a state document naming an unsupported version fails its load. The read path of a version that can exist on disk stays in place.
+- **The workspace uses no optics library.** There is no `IsoPrime`, no `RcBrand` and no optic composition anywhere under `src/`; `src/mediapm-conductor/src/config/mod.rs` records the choice. A migration is a `From` impl or a `migrate_*` function, and the version module holding it is where the hop belongs.
+
+Delta wire versions:
+
+| Version | Magic | Fields beside the payload | What the hop into it does |
+| --- | --- | --- | --- |
+| V1 | `MDCASD` | `base_hash`, `content_len`, `payload_len`, `checksum` | no hop; the decoder reads `checksum` and never verifies it |
+| V2 | `MDCASD` | `base_hash`, `content_len`, `payload_len` | copies the three state fields from V1 and drops `checksum` |
+| V3 | `CASDLT` | `base_hash`, `content_len`, `diff_hash` | copies the three state fields from V2 and computes `diff_hash = blake3(payload)` |
 
 ## Hash and checksum safety
 
-- Delegate multihash parsing/serialization to `rust-multihash` via `Hash` helpers; do not manually parse varint code/size.
-- Keep checksum scope tied to logical envelope fields; document exactly which fields are covered.
-
-## Schema versioning
-
-- Preserve original reference semantics (e.g., `original_variant_hash`).
-- Keep lineage references valid (`from_variant_hash`/`to_variant_hash` exist in `variants`).
-- Keep schema version explicit (`schema_version`) and migrations sequential; record provenance per applied hop.
+- Delegate multihash parsing and serialization to `multihash` through the `Hash` helpers. `Hash::from_storage_bytes_with_len` reads a `Multihash<32>` and rejects any code except `BLAKE3_MULTICODEC`, so a hand-rolled varint parser is never correct.
+- Tie an integrity field to the bytes it covers, and verify it where the envelope is validated. V3's `diff_hash` covers the payload and `V3Envelope::validate` recomputes it. V1's `checksum` is parsed and never verified, which is why its encode path is test-only. An older version that carries an unverified field is read as-is; do not add another one.
 
 ## Version sequences are integers
 
