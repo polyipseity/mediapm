@@ -396,9 +396,11 @@ async fn resolve_variant_hash_from_workflow_state(
 
 /// Resolves concrete output hashes for each workflow step using conductor state.
 ///
-/// Strict input-key matching is attempted per step first; steps that miss under
-/// strict matching are retried with relaxed instance selection so partial strict
-/// success (for example ffmpeg) does not block yt-dlp sidecar resolution.
+/// Every step is offered to strict input-key matching first. A step whose key
+/// matches no recorded instance falls back to the instances that name it:
+/// exactly one answers, several answer only when they record the same hash for
+/// every required output, and several that disagree are an error rather than a
+/// pick.
 pub(super) async fn resolve_workflow_step_output_hashes(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
@@ -434,7 +436,7 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             continue;
         }
         if let Some(outputs) =
-            resolve_single_step_output_hashes_relaxed(cas, generated_doc, state, step).await?
+            resolve_single_step_output_hashes_relaxed(generated_doc, state, &workflow.name, step)?
             && step_declared_outputs_resolved(step, &outputs)
         {
             step_outputs.insert(step.id.clone(), outputs);
@@ -546,10 +548,45 @@ fn step_declared_outputs_resolved(
     step.outputs.keys().all(|output_name| outputs.contains_key(output_name))
 }
 
-async fn resolve_single_step_output_hashes_relaxed(
-    cas: &FileSystemCas,
+/// Returns true when an instance records this step among the steps it served.
+///
+/// The step id is the part that must match. A ref migrated from a wire shape
+/// that could not name a workflow carries an empty `workflow_id`, so matching on
+/// the workflow alone would exclude every migrated record. An instance that
+/// records no ref at all names no step and is therefore not a candidate: the
+/// record is the only provenance a state has for what served a step.
+fn instance_names_step(instance: &ToolCallInstance, workflow_name: &str, step_id: &str) -> bool {
+    instance.step_ids.iter().any(|recorded| {
+        recorded.step_id == step_id
+            && (recorded.workflow_id.is_empty() || recorded.workflow_id == workflow_name)
+    })
+}
+
+/// Resolves one step's outputs from the instances that name it, when its key
+/// matched none.
+///
+/// A candidate is an instance of the step's tool that records this step among
+/// the steps it served and records every required output name. Recorded names
+/// decide candidacy. Whether the store still holds the bytes does not: a record
+/// whose object is gone still answers for the step, and the read path reports
+/// the lost object as the run's failure instead of this pass reporting a step
+/// that produced nothing.
+///
+/// Three outcomes:
+///
+/// - no candidate: the step produced nothing this state can name, so the caller
+///   records a miss;
+/// - one candidate, or several that record the same hash for every required
+///   output: that is the step's work, and its hashes answer. Agreement chooses
+///   nothing, which makes it safe where a choice between records would not be;
+/// - several that disagree on a required output: this refuses, naming the
+///   workflow, the step, the tool key and every candidate. A step names the
+///   work it performs, so a state where two records answer to it with different
+///   bytes needs a re-run.
+fn resolve_single_step_output_hashes_relaxed(
     generated_doc: &NickelDocument,
     state: &ConductorState,
+    workflow_name: &str,
     step: &mediapm_conductor::WorkflowStepSpec,
 ) -> Result<Option<BTreeMap<String, Hash>>, MediaPmError> {
     let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
@@ -562,55 +599,70 @@ async fn resolve_single_step_output_hashes_relaxed(
         })?;
 
     let required_output_names: BTreeSet<String> = step.outputs.keys().cloned().collect();
-    let mut candidates = state
-        .tool_call_instances
-        .values()
-        .filter(|instance| instance.tool_call_id == conductor_tool_key)
-        .filter(|instance| {
-            required_output_names
-                .iter()
-                .all(|output_name| instance.outputs.contains_key(output_name))
-        })
-        .collect::<Vec<_>>();
-
-    candidates.sort_by(|left, right| {
-        left.outputs
-            .len()
-            .cmp(&right.outputs.len())
-            .then_with(|| right.executed_at.cmp(&left.executed_at))
-    });
-
-    for instance in candidates {
-        let mut all_materialized = true;
-        for output_name in &required_output_names {
-            let Some(output) = instance.outputs.get(output_name) else {
-                all_materialized = false;
-                break;
-            };
-            if cas.get(output.hash).await.is_err() {
-                all_materialized = false;
-                break;
-            }
+    let mut candidates = Vec::new();
+    for (instance_key, instance) in &state.tool_call_instances {
+        if instance.tool_call_id != conductor_tool_key {
+            continue;
         }
-        if all_materialized {
-            return Ok(Some(output_hashes_from_instance(instance)));
+        if !instance_names_step(instance, workflow_name, &step.id) {
+            continue;
         }
+        if !required_output_names.iter().all(|name| instance.outputs.contains_key(name)) {
+            continue;
+        }
+        candidates.push((instance_key, instance));
     }
 
-    Ok(None)
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [(_, instance)] => Ok(Some(output_hashes_from_instance(instance))),
+        several => {
+            let (_, first) = several[0];
+            let agreed = several.iter().all(|(_, instance)| {
+                required_output_names.iter().all(|name| {
+                    instance.outputs.get(name).map(|output| output.hash)
+                        == first.outputs.get(name).map(|output| output.hash)
+                })
+            });
+            if agreed {
+                return Ok(Some(output_hashes_from_instance(first)));
+            }
+
+            let described = several
+                .iter()
+                .map(|(instance_key, instance)| {
+                    format!(
+                        "{instance_key} ({} output(s), executed_at {} unix seconds)",
+                        instance.outputs.len(),
+                        instance.executed_at.as_unix_secs(),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(MediaPmError::Workflow(format!(
+                "workflow '{workflow_name}' step '{}' matched no instance by key, and {} instances \
+                 of tool '{conductor_tool_key}' name that step while recording different required \
+                 outputs: {described}; refusing to choose between them. \
+                 `mediapm media invalidate <media-id> <step-index>` marks the record this state \
+                 holds for the step, and the next sync runs it again; it cannot mark a record \
+                 whose ref carries no workflow id, and a step whose inputs do not resolve \
+                 reports the same disagreement after the re-run.",
+                step.id,
+                several.len(),
+            )))
+        }
+    }
 }
 
 /// Returns the hashes an instance recorded, keyed by the names it recorded them
 /// under — exactly that, with no name inferred from another.
 ///
-/// A declared stream capture (`stdout`, `stderr`, `process_code`) used to be
-/// aliased to the recorded `stdout` hash when the instance had not recorded the
-/// declared name. That predates name-addressed captures: it guessed that a
-/// declaration naming a stream had to hold the stream's bytes, which is only
-/// true of the implicit captures and not of a name that reads `stderr`. Under
-/// the current record every name a step binds is recorded under its own name
-/// and spec, and both resolution paths above require the bound names to be
-/// present before selecting an instance, so the alias had no live case. An
+/// A declared stream capture (`stdout`, `stderr`, `process_code`) is never
+/// aliased to the recorded `stdout` hash. The alias would guess that a
+/// declaration naming a stream holds the stream's bytes, which is true of the
+/// implicit captures and not of a name that reads `stderr`. Every name a step
+/// binds is recorded under its own name and spec, and both resolution paths
+/// above require the bound names to be present before selecting an instance. An
 /// inferred hash is worse than an absent one here: it materializes bytes the
 /// step never asked for under a name that claims they are something else.
 fn output_hashes_from_instance(instance: &ToolCallInstance) -> BTreeMap<String, Hash> {
@@ -1275,13 +1327,11 @@ mod tests {
     /// A state recorded the way the step worker records it binds every step to
     /// its own instance.
     ///
-    /// The worker hashes the *resolved* value of every input a command part
-    /// reads. While the reader hashed a literal binding's unexpanded text
-    /// instead, no recorded key ever matched, the strict pass found nothing, and
-    /// the relaxed pass chose a candidate by recency — binding the earlier step
-    /// to the later one's object. That is how the online demo's `video_untagged`
-    /// variant came to hold the final ffmpeg step's bytes, which are the tagged
-    /// ones; its own title assertion is what noticed.
+    /// Both steps run one tool, so the store holds two instances that record the
+    /// same output name; the later step's record is newer and has the same
+    /// output count. Only the key separates them. A reader whose derivation
+    /// drifts from the worker's finds neither by key, and this is the test that
+    /// says so before the wrong instance's bytes reach a library path.
     #[tokio::test]
     async fn steps_keyed_the_way_the_worker_keys_them_bind_their_own_outputs() {
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
@@ -1507,14 +1557,12 @@ mod tests {
 
     /// A declared stream capture is never aliased to another name's bytes.
     ///
-    /// `output_hashes_from_instance` used to map a declared `stderr`,
-    /// `stdout` or `process_code` name the instance had not recorded to the
-    /// recorded `stdout` hash. That was defensible while the only stream names
-    /// were the implicit ones; with name-addressed captures it can serve bytes
-    /// captured under a different name. Every name the step binds is recorded
-    /// under its own name and spec by the merged capture set, and an instance
-    /// missing a bound name is refused by the matcher rather than aliased, so
-    /// the function must return exactly the recorded names.
+    /// `output_hashes_from_instance` returns exactly the recorded names. Mapping
+    /// a declared `stderr`, `stdout` or `process_code` name the instance did not
+    /// record onto the recorded `stdout` hash serves bytes captured under a
+    /// different name. The merged capture set records every bound name under its
+    /// own name and spec, and the matcher refuses an instance missing one rather
+    /// than aliasing it, so the function must return exactly the recorded names.
     #[test]
     fn a_declared_stream_name_is_not_aliased_to_another_name() {
         let tool_call_id = "echo@v1";
@@ -2171,8 +2219,8 @@ mod tests {
         );
     }
 
-    /// One recorded instance's rewrite: the key each claiming step now derives,
-    /// and the steps whose recorded provenance claims the instance.
+    /// One recorded instance's rewrite: the key each claiming step derives, and
+    /// the steps whose recorded provenance claims the instance.
     ///
     /// The claiming set is a set, not a single id, because one instance is shared
     /// by every step running the same work and the fixture's provenance names all
@@ -2852,19 +2900,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the two seeded instances and the step resolving between them read as one scenario"
-    )]
-    async fn merged_resolution_prefers_specialized_yt_dlp_sidecar_instance() {
-        use mediapm_conductor::{
-            CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec, ToolSpec,
-            WorkflowSpec, WorkflowStepSpec,
-        };
-        use mediapm_utils::Timestamp;
+    /// The yt-dlp tool document the relaxed-resolution tests resolve against.
+    fn relaxed_generated_doc() -> NickelDocument {
+        use mediapm_conductor::{ToolKindSpec, ToolSpec};
 
-        let generated = NickelDocument {
+        NickelDocument {
             tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 ToolSpec {
@@ -2875,69 +2915,20 @@ mod tests {
                 },
             )]),
             ..NickelDocument::default()
-        };
+        }
+    }
 
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
-        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
-        let primary_infojson_hash =
-            cas.put(bytes::Bytes::from_static(b"primary-infojson")).await.expect("put primary");
-        let sidecar_infojson_hash =
-            cas.put(bytes::Bytes::from_static(b"sidecar-infojson")).await.expect("put sidecar");
+    /// The one-step infojson workflow those tests resolve.
+    fn infojson_workflow() -> mediapm_conductor::WorkflowSpec {
+        use mediapm_conductor::{OutputCaptureSpec, SaveMode, WorkflowSpec, WorkflowStepSpec};
 
-        let primary_key = Hash::from_content(b"primary-instance");
-        let sidecar_key = Hash::from_content(b"sidecar-instance");
-
-        let mut state = ConductorState::new_empty();
-        state.tool_call_instances.insert(
-            primary_key,
-            ToolCallInstance {
-                tool_call_id: "yt-dlp".to_string(),
-                impure: true,
-                invalidated_at: None,
-                executed_at: Timestamp::from_unix_nanos(2),
-                last_referenced_at: Timestamp::from_unix_nanos(2),
-                step_ids: BTreeSet::new(),
-                command_args: Vec::new(),
-                env_vars: BTreeMap::new(),
-                materialized_inputs: BTreeMap::new(),
-                outputs: BTreeMap::from([
-                    (
-                        "primary".to_string(),
-                        CapturedOutput { hash: primary_infojson_hash, capture: None },
-                    ),
-                    (
-                        "yt_dlp_infojson_file".to_string(),
-                        CapturedOutput { hash: primary_infojson_hash, capture: None },
-                    ),
-                ]),
-            },
-        );
-        state.tool_call_instances.insert(
-            sidecar_key,
-            ToolCallInstance {
-                tool_call_id: "yt-dlp".to_string(),
-                impure: true,
-                invalidated_at: None,
-                executed_at: Timestamp::from_unix_nanos(1),
-                last_referenced_at: Timestamp::from_unix_nanos(1),
-                step_ids: BTreeSet::new(),
-                command_args: Vec::new(),
-                env_vars: BTreeMap::new(),
-                materialized_inputs: BTreeMap::new(),
-                outputs: BTreeMap::from([(
-                    "yt_dlp_infojson_file".to_string(),
-                    CapturedOutput { hash: sidecar_infojson_hash, capture: None },
-                )]),
-            },
-        );
-
-        let workflow = WorkflowSpec {
+        WorkflowSpec {
             name: "mediapm.media.test".to_string(),
             display_name: None,
             description: None,
             impure: true,
             steps: vec![WorkflowStepSpec {
-                id: "step-0-0-yt-dlp-infojson-to-infojson".to_string(),
+                id: INFOJSON_STEP_ID.to_string(),
                 tool: "yt-dlp".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([(
@@ -2953,21 +2944,460 @@ mod tests {
                 max_retries: 1,
                 depends_on: Vec::new(),
             }],
+        }
+    }
+
+    /// One yt-dlp instance recording the infojson output under `hash`.
+    ///
+    /// `recorded` is the ref the record carries: `Some` names this step, `None`
+    /// leaves the record unnamed, which is the shape a record has when another
+    /// step of the same tool wrote it.
+    fn infojson_instance(
+        hash: Hash,
+        executed_nanos: u64,
+        recorded: Option<mediapm_conductor::StepRef>,
+    ) -> mediapm_conductor::ToolCallInstance {
+        use mediapm_conductor::{CapturedOutput, ToolCallInstance};
+        use mediapm_utils::Timestamp;
+
+        ToolCallInstance {
+            tool_call_id: "yt-dlp".to_string(),
+            impure: true,
+            invalidated_at: None,
+            executed_at: Timestamp::from_unix_nanos(executed_nanos),
+            last_referenced_at: Timestamp::from_unix_nanos(executed_nanos),
+            step_ids: recorded.into_iter().collect(),
+            command_args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            materialized_inputs: BTreeMap::new(),
+            outputs: BTreeMap::from([
+                ("primary".to_string(), CapturedOutput { hash, capture: None }),
+                ("yt_dlp_infojson_file".to_string(), CapturedOutput { hash, capture: None }),
+            ]),
+        }
+    }
+
+    /// The ref that names this workflow's infojson step.
+    fn infojson_step_ref(workflow_id: &str) -> mediapm_conductor::StepRef {
+        mediapm_conductor::StepRef {
+            workflow_id: workflow_id.to_string(),
+            step_id: INFOJSON_STEP_ID.to_string(),
+        }
+    }
+
+    /// The id of the step the relaxed-resolution tests resolve.
+    const INFOJSON_STEP_ID: &str = "step-0-0-yt-dlp-infojson-to-infojson";
+
+    /// Records `payload` in `cas` and returns the hash it was stored under.
+    ///
+    /// A store that refuses the write is the test's setup failing, so the panic
+    /// names the payload rather than the store's error alone.
+    async fn put_payload(cas: &FileSystemCas, payload: &'static [u8], what: &str) -> Hash {
+        cas.put(bytes::Bytes::from_static(payload))
+            .await
+            .unwrap_or_else(|error| panic!("put {what}: {error}"))
+    }
+
+    /// Two records that name the step and disagree about a required output.
+    ///
+    /// The relaxed pass recovers outputs for a step whose strict key matches no
+    /// recorded instance. Two records that both name the step and record
+    /// different bytes for a required output cannot both be that step's work, and
+    /// the key that would settle it did not match either, so the pass reports the
+    /// state instead of picking one. The message names the workflow, because
+    /// step ids repeat across media and this pass runs for every media in the
+    /// document.
+    #[tokio::test]
+    async fn relaxed_resolution_refuses_instances_that_disagree_about_a_required_output() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let primary_hash =
+            cas.put(bytes::Bytes::from_static(b"primary-infojson")).await.expect("put primary");
+        let sidecar_hash =
+            cas.put(bytes::Bytes::from_static(b"sidecar-infojson")).await.expect("put sidecar");
+
+        let primary_key = Hash::from_content(b"primary-instance");
+        let sidecar_key = Hash::from_content(b"sidecar-instance");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            primary_key,
+            infojson_instance(
+                primary_hash,
+                2_000_000_000,
+                Some(infojson_step_ref("mediapm.media.test")),
+            ),
+        );
+        state.tool_call_instances.insert(
+            sidecar_key,
+            infojson_instance(
+                sidecar_hash,
+                1_000_000_000,
+                Some(infojson_step_ref("mediapm.media.test")),
+            ),
+        );
+
+        let workflow = infojson_workflow();
+        let error =
+            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
+                .await
+                .expect_err(
+                    "two records that disagree about a required output must not be chosen between",
+                );
+
+        let message = error.to_string();
+        assert!(
+            message.contains(&workflow.name),
+            "the refusal names the workflow a reader has to act on: {message}"
+        );
+        assert!(message.contains(INFOJSON_STEP_ID), "the refusal names the step: {message}");
+        assert!(
+            message.contains(&primary_key.to_string())
+                && message.contains(&sidecar_key.to_string()),
+            "the refusal names both candidates: {message}"
+        );
+        assert!(
+            message.contains("media invalidate"),
+            "the refusal names the remedy a user can run: {message}"
+        );
+        assert!(
+            message.contains("yt-dlp"),
+            "the refusal names the tool whose records disagree: {message}"
+        );
+        for candidate in [
+            format!("{primary_key} (2 output(s), executed_at 2 unix seconds)"),
+            format!("{sidecar_key} (2 output(s), executed_at 1 unix seconds)"),
+        ] {
+            assert!(
+                message.contains(&candidate),
+                "the refusal names a candidate's key, its output count and when it ran: \
+                 {candidate} missing from {message}"
+            );
+        }
+    }
+
+    /// Two records that name the step and agree on every required output.
+    ///
+    /// Agreement is not a choice between records: whatever produced them recorded
+    /// the same bytes for the surface this step binds, so the step's answer is
+    /// settled. Refusing here would fail a state that holds no ambiguity.
+    #[tokio::test]
+    async fn relaxed_resolution_accepts_instances_that_agree_on_every_required_output() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let hash = cas.put(bytes::Bytes::from_static(b"shared-infojson")).await.expect("put info");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            Hash::from_content(b"first-instance"),
+            infojson_instance(hash, 2, Some(infojson_step_ref("mediapm.media.test"))),
+        );
+        state.tool_call_instances.insert(
+            Hash::from_content(b"second-instance"),
+            infojson_instance(hash, 1, Some(infojson_step_ref("mediapm.media.test"))),
+        );
+
+        let workflow = infojson_workflow();
+        let step_outputs =
+            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
+                .await
+                .expect("agreement between candidates is not an ambiguity")
+                .expect("the agreeing records answer for the step");
+
+        assert_eq!(
+            step_outputs
+                .get(INFOJSON_STEP_ID)
+                .and_then(|outputs| outputs.get("yt_dlp_infojson_file"))
+                .copied(),
+            Some(hash),
+        );
+    }
+
+    /// A record of the same tool that never served this step is not a candidate.
+    ///
+    /// Candidacy follows the record's own provenance. Two yt-dlp records with
+    /// the same output name are ordinary — one download produced the sidecar
+    /// file and another produced the primary — and only the record that served
+    /// the step can answer for it.
+    #[tokio::test]
+    async fn relaxed_resolution_ignores_a_record_that_never_served_the_step() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let named_hash =
+            cas.put(bytes::Bytes::from_static(b"named-infojson")).await.expect("put named");
+        let other_hash =
+            cas.put(bytes::Bytes::from_static(b"other-infojson")).await.expect("put other");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            Hash::from_content(b"named-instance"),
+            infojson_instance(named_hash, 1, Some(infojson_step_ref("mediapm.media.test"))),
+        );
+        state
+            .tool_call_instances
+            .insert(Hash::from_content(b"other-instance"), infojson_instance(other_hash, 2, None));
+
+        let workflow = infojson_workflow();
+        let step_outputs =
+            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
+                .await
+                .expect("a record that never served the step is not a candidate")
+                .expect("the record that names the step answers for it");
+
+        assert_eq!(
+            step_outputs
+                .get(INFOJSON_STEP_ID)
+                .and_then(|outputs| outputs.get("yt_dlp_infojson_file"))
+                .copied(),
+            Some(named_hash),
+            "the record that names the step answers, not the newer record of the same tool",
+        );
+    }
+
+    /// A record that names the step matches whatever workflow its ref names when
+    /// that ref names none.
+    ///
+    /// A ref migrated from a wire shape that could not name a workflow carries an
+    /// empty id, and pairing on the workflow alone would exclude every such
+    /// record. That turns a state the materializer can answer into a miss, so the
+    /// step id is what has to match.
+    #[tokio::test]
+    async fn relaxed_resolution_matches_a_ref_that_names_no_workflow() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let hash = cas.put(bytes::Bytes::from_static(b"legacy-infojson")).await.expect("put info");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            Hash::from_content(b"legacy-instance"),
+            infojson_instance(hash, 1, Some(infojson_step_ref(""))),
+        );
+        // The tool has to resolve, and the step has to come back with the ref's
+        // hash despite the empty workflow id.
+        let workflow = infojson_workflow();
+        let step_outputs =
+            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
+                .await
+                .expect("an empty workflow id matches any workflow")
+                .expect("the migrated record answers for the step");
+
+        assert_eq!(
+            step_outputs
+                .get(INFOJSON_STEP_ID)
+                .and_then(|outputs| outputs.get("yt_dlp_infojson_file"))
+                .copied(),
+            Some(hash),
+        );
+    }
+
+    /// A record that served this step id in another workflow is not a candidate.
+    ///
+    /// Step ids repeat across media, so the id alone does not name a step. A
+    /// record whose ref pairs this id with another workflow holds that
+    /// workflow's work, and counting it as a candidate would either answer for a
+    /// step that never ran or turn a miss into a refusal.
+    #[tokio::test]
+    async fn relaxed_resolution_ignores_a_record_from_another_workflow() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let other_hash =
+            cas.put(bytes::Bytes::from_static(b"other-workflow-infojson")).await.expect("put");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            Hash::from_content(b"other-workflow-instance"),
+            infojson_instance(other_hash, 1, Some(infojson_step_ref("mediapm.media.other"))),
+        );
+
+        let workflow = infojson_workflow();
+        let step_outputs =
+            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
+                .await
+                .expect("a record of another workflow is not an error");
+
+        assert!(
+            step_outputs.is_none(),
+            "a record that served this step id in another workflow answers for nothing here: \
+             {step_outputs:?}"
+        );
+    }
+
+    /// A step declaring two outputs refuses when the candidates agree on one and
+    /// differ on the other.
+    ///
+    /// Agreement has to hold for every required name. A comparison satisfied by
+    /// one matching name accepts a record whose other bytes belong to different
+    /// work, which is the wrong-content binding this pass exists to refuse.
+    #[tokio::test]
+    async fn relaxed_resolution_refuses_candidates_that_disagree_about_one_of_two_outputs() {
+        use mediapm_conductor::{CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance};
+        use mediapm_utils::Timestamp;
+
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let shared_hash =
+            cas.put(bytes::Bytes::from_static(b"shared-infojson")).await.expect("put shared");
+        let first_description = cas
+            .put(bytes::Bytes::from_static(b"first-description"))
+            .await
+            .expect("put first description");
+        let second_description = cas
+            .put(bytes::Bytes::from_static(b"second-description"))
+            .await
+            .expect("put second description");
+
+        let two_output_instance = |infojson: Hash, description: Hash, executed: u64| {
+            let mut outputs = BTreeMap::new();
+            outputs.insert(
+                "yt_dlp_infojson_file".to_string(),
+                CapturedOutput { hash: infojson, capture: None },
+            );
+            outputs.insert(
+                "yt_dlp_description_file".to_string(),
+                CapturedOutput { hash: description, capture: None },
+            );
+            ToolCallInstance {
+                tool_call_id: "yt-dlp".to_string(),
+                impure: true,
+                invalidated_at: None,
+                executed_at: Timestamp::from_unix_nanos(executed),
+                last_referenced_at: Timestamp::from_unix_nanos(executed),
+                step_ids: [infojson_step_ref("mediapm.media.test")].into_iter().collect(),
+                command_args: Vec::new(),
+                env_vars: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs,
+            }
         };
 
-        let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
-            .await
-            .expect("resolve workflow outputs")
-            .expect("expected workflow step outputs");
+        let first_key = Hash::from_content(b"first-two-output-instance");
+        let second_key = Hash::from_content(b"second-two-output-instance");
 
-        let outputs = step_outputs
-            .get("step-0-0-yt-dlp-infojson-to-infojson")
-            .expect("infojson step outputs");
-        assert_eq!(
-            outputs.get("yt_dlp_infojson_file"),
-            Some(&sidecar_infojson_hash),
-            "relaxed resolution should prefer the specialized yt-dlp sidecar instance"
+        let mut state = ConductorState::new_empty();
+        state
+            .tool_call_instances
+            .insert(first_key, two_output_instance(shared_hash, first_description, 2_000_000_000));
+        state.tool_call_instances.insert(
+            second_key,
+            two_output_instance(shared_hash, second_description, 1_000_000_000),
         );
+
+        let mut workflow = infojson_workflow();
+        let capture = |name: &str| OutputCaptureSpec {
+            name: name.to_string(),
+            capture: format!("file:{name}"),
+            save: SaveMode::True,
+            allow_empty: false,
+            include_topmost_folder: true,
+        };
+        let step = workflow.steps.first_mut().expect("the fixture declares one step");
+        step.outputs
+            .insert("yt_dlp_description_file".to_string(), capture("yt_dlp_description_file"));
+        step.outputs.insert("yt_dlp_infojson_file".to_string(), capture("yt_dlp_infojson_file"));
+
+        let error =
+            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
+                .await
+                .expect_err("agreement on one output does not settle the other required output");
+
+        let message = error.to_string();
+        assert!(message.contains(INFOJSON_STEP_ID), "the refusal names the step: {message}");
+        assert!(
+            message.contains(&first_key.to_string()) && message.contains(&second_key.to_string()),
+            "the refusal names both candidates, whose only disagreement is the second output: \
+             {message}"
+        );
+    }
+
+    /// A lone record whose object the store no longer holds still answers, and
+    /// the read path reports the missing object.
+    ///
+    /// The record says the step ran and where its bytes went. Dropping it for
+    /// want of those bytes would report a step that produced nothing, which is
+    /// the miss a caller treats as a workflow that has not run; the run instead
+    /// has to fail on the object the store lost.
+    #[tokio::test]
+    async fn a_lone_candidate_whose_object_is_gone_reports_the_missing_object() {
+        use crate::config::{
+            MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue,
+            TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
+        };
+        use crate::materializer::metadata::MaterializationLookupContext;
+        use crate::tools::workflows::{managed_workflow_name, resolve_ffmpeg_slot_limits};
+
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        // Never stored: the record names bytes the store does not hold.
+        let lost_hash = Hash::from_content(b"infojson-the-store-lost");
+
+        let media_id = "youtube.dQw4w9WgXcQ";
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            Hash::from_content(b"lone-instance"),
+            infojson_instance(
+                lost_hash,
+                1,
+                Some(infojson_step_ref(&managed_workflow_name(media_id))),
+            ),
+        );
+
+        let mut generated_doc = relaxed_generated_doc();
+        let mut workflow = infojson_workflow();
+        workflow.name = managed_workflow_name(media_id);
+        generated_doc.workflows.push(workflow);
+
+        let mut document = MediaPmDocument::default();
+        document.media.insert(
+            media_id.to_string(),
+            MediaSourceSpec {
+                steps: vec![MediaStep {
+                    tool: MediaStepTool::YtDlp,
+                    input_variants: Vec::new(),
+                    output_variants: BTreeMap::from([(
+                        "infojson".to_string(),
+                        OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                            kind: YtDlpOutputKind::Infojson,
+                            ..Default::default()
+                        }),
+                    )]),
+                    options: BTreeMap::from([(
+                        "uri".to_string(),
+                        TransformInputValue::String(
+                            "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
+                        ),
+                    )]),
+                }],
+                ..MediaSourceSpec::default()
+            },
+        );
+
+        let lookup = MaterializationLookupContext::new(
+            cas.clone(),
+            Some(state),
+            generated_doc,
+            resolve_ffmpeg_slot_limits(&document),
+        );
+        let source = document.media.get(media_id).expect("source");
+        let Err(failure) =
+            resolve_variant_source_bytes(&lookup, media_id, source, "infojson", true).await
+        else {
+            panic!("a recorded object the store lost is the run's failure");
+        };
+
+        match failure {
+            VariantResolveFailure::Fatal(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("store does not hold"),
+                    "the failure names the lost object rather than a step that produced nothing: \
+                     {message}"
+                );
+                assert!(message.contains(&lost_hash.to_string()), "{message}");
+            }
+            VariantResolveFailure::NotProduced(error) => panic!(
+                "a lone record whose object is gone must not read as a step that produced nothing: {error}"
+            ),
+        }
     }
 
     #[tokio::test]
@@ -3052,7 +3482,10 @@ mod tests {
                 invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(1),
                 last_referenced_at: Timestamp::from_unix_nanos(1),
-                step_ids: BTreeSet::new(),
+                step_ids: BTreeSet::from([mediapm_conductor::StepRef {
+                    workflow_id: managed_workflow_name("youtube.dQw4w9WgXcQ").clone(),
+                    step_id: "step-0-0-yt-dlp-infojson-to-infojson".to_string(),
+                }]),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
@@ -3184,7 +3617,10 @@ mod tests {
                 invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(2),
                 last_referenced_at: Timestamp::from_unix_nanos(2),
-                step_ids: BTreeSet::new(),
+                step_ids: BTreeSet::from([mediapm_conductor::StepRef {
+                    workflow_id: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
+                    step_id: "step-0-2-yt-dlp-infojson-to-infojson".to_string(),
+                }]),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
@@ -3299,7 +3735,10 @@ mod tests {
                 invalidated_at: None,
                 executed_at: Timestamp::from_unix_nanos(1),
                 last_referenced_at: Timestamp::from_unix_nanos(1),
-                step_ids: BTreeSet::new(),
+                step_ids: BTreeSet::from([mediapm_conductor::StepRef {
+                    workflow_id: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
+                    step_id: "step-0-2-yt-dlp-infojson-to-infojson".to_string(),
+                }]),
                 command_args: Vec::new(),
                 env_vars: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
@@ -3425,11 +3864,11 @@ mod tests {
     /// worth pinning for the same reason it is dead: nothing in production will
     /// ever draw attention to it.
     ///
-    /// The defect is not the extraction failing, which is correct. It is what the
-    /// failure used to become: the `Err` was discarded, control fell out of the
-    /// block into the raw-bytes fallback, and the caller received the *pack* as
-    /// the variant's content. The assertion therefore distinguishes an error from
-    /// a wrong success, which is why it checks the error and not only its message.
+    /// The defect is not the extraction failing, which is correct. It is what a
+    /// discarded `Err` does: control falls out of the block into the raw-bytes
+    /// fallback, and the caller receives the *pack* as the variant's content.
+    /// The assertion therefore distinguishes an error from a wrong success,
+    /// which is why it checks the error and not only its message.
     ///
     /// The demo fixture supplies the recorded conductor state the arm needs before
     /// it extracts anything, so the resolution above the defect is real rather than
@@ -3444,12 +3883,12 @@ mod tests {
         // state records, so the state has to record the pack. A store is
         // content-addressed, which makes recording the pack's own hash the only
         // way to put chosen bytes behind a recorded hash.
-        let pack_hash = cas.put(bytes::Bytes::from_static(b"not a zip archive")).await.unwrap();
+        let pack_hash = put_payload(&cas, b"not a zip archive", "the not-a-zip payload").await;
         let mut state = load_conductor_state();
-        // The fixture records more than one ffmpeg instance, and resolution
-        // selects among them by inputs rather than by key, so every one of them
-        // has to record the pack. Pointing only the first at it left the test
-        // reading a hash nothing held, which is how it silently reached nothing.
+        // The fixture records more than one ffmpeg instance, and each of them
+        // writes the output the binding names, so every one of them records the
+        // pack; leaving one on its original hash would leave the lookup reading
+        // bytes nothing holds.
         let mut recorded_pack = 0;
         for instance in state.tool_call_instances.values_mut() {
             if instance.tool_call_id.starts_with("ffmpeg@")
@@ -3464,13 +3903,36 @@ mod tests {
             "the fixture must record the pack on an ffmpeg instance, or no step output resolves \
              to it"
         );
+        // A step's key material names the bytes it read, so replacing an output
+        // leaves every later step that reads it with a key describing work it did
+        // not do. Re-deriving keeps this state resolvable by key instead of
+        // leaning on fallback selection, which refuses to choose between two
+        // records that could both answer.
+        let workflow = load_demo_workflow(&generated);
+        let rewrites = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
+            .await
+            .expect("the mutated state must pair one recorded instance per step");
+        let mut instances = std::mem::take(&mut state.tool_call_instances);
+        let mut rekeyed = BTreeMap::new();
+        for (stored_key, rewrite) in rewrites {
+            let instance = instances
+                .remove(&stored_key)
+                .expect("the planner pairs only instances the state records");
+            rekeyed.insert(rewrite.current_key, instance);
+        }
+        assert!(
+            instances.is_empty(),
+            "every recorded instance must be re-keyed, or a stale key survives to be resolved by \
+             fallback"
+        );
+        state.tool_call_instances = rekeyed;
         assert!(
             cas.get(pack_hash).await.is_ok(),
             "the fixture's recorded output hash must be readable, or the arm bails before it \
              extracts anything and this test reaches nothing"
         );
 
-        let input_hash = cas.put(bytes::Bytes::from_static(b"pinned input")).await.unwrap();
+        let input_hash = put_payload(&cas, b"pinned input", "the pinned input").await;
         let source = pinned_zip_member_source(&input_hash.to_string(), &pack_hash.to_string());
 
         // Precondition, asserted rather than assumed: if the binding stops
