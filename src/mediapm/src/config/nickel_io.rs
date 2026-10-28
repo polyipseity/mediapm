@@ -142,14 +142,17 @@ pub fn save_mediapm_document(
 /// reader, and a failure there is reported rather than swallowed: its contents
 /// were written to hold data, and reading it as empty would discard that data
 /// and let the next scan treat every recorded file as stale. A document that
-/// names no version at all is the one rebuilding case, because no writer here
-/// produces one and its contents cannot be attributed to any rung of the ladder.
+/// names no version is refused for the same reason: every writer here emits the
+/// field first, so a file without one is foreign or damaged, and there is no
+/// rung of the ladder whose reader could be trusted with it. The only state a
+/// load rebuilds is the one that does not exist.
 ///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Serialization`] when the file cannot be read as JSON
 /// or does not match the wire shape of the version it names, and
-/// [`MediaPmError::Workflow`] when it names a version this build does not know.
+/// [`MediaPmError::Workflow`] when it names no version, or one this build does
+/// not know.
 pub fn load_mediapm_state_document(
     path: &Path,
 ) -> Result<crate::config::MediaPmState, MediaPmError> {
@@ -169,12 +172,12 @@ pub fn load_mediapm_state_document(
             ))
         })?;
         if value.get("version").is_none() {
-            tracing::warn!(
-                path = %path.display(),
-                "mediapm state document names no schema version, so it is read as empty and \
-                 rewritten by the next save",
-            );
-            return Ok(crate::config::MediaPmState::default());
+            return Err(MediaPmError::Workflow(format!(
+                "mediapm state document at '{}' names no schema version; every writer here emits \
+                 one, so the file is either foreign or damaged, and reading it as empty would \
+                 discard the files it records",
+                path.display(),
+            )));
         }
         return crate::state::ser::from_json_value(value);
     }
@@ -345,19 +348,27 @@ mod tests {
         assert_eq!(on_disk, corrupt.to_string().as_bytes(), "a rejected file is never rewritten");
     }
 
-    /// A versionless state document is read as empty and rebuilt.
+    /// A versionless state document is refused rather than rebuilt.
     ///
-    /// No writer of this workspace emits such a file, so its contents cannot be
-    /// attributed to any rung of the ladder. The next save replaces it, which is
-    /// what makes this the one rebuilding case.
+    /// Every writer here emits `version` first, so a file without one is foreign
+    /// or damaged. Rebuilding it would read the document as empty, discard the
+    /// files it records, and let the next scan treat each of them as stale.
     #[test]
-    fn a_versionless_state_document_is_rebuilt() {
-        let (_root, path) = state_file_with(json!({ "managed_files": {} }).to_string().as_bytes());
+    fn a_versionless_state_document_is_an_error() {
+        let versionless = json!({ "managed_files": {} });
+        let (_root, path) = state_file_with(versionless.to_string().as_bytes());
 
-        let state = load_mediapm_state_document(&path)
-            .expect("a versionless document is read as empty, not refused");
-        assert_eq!(state.version, 5);
-        assert!(state.managed_files.is_empty());
-        assert!(state.managed_tools.is_empty());
+        let error = load_mediapm_state_document(&path)
+            .expect_err("a versionless document must not be read as empty");
+        assert!(
+            error.to_string().contains("names no schema version"),
+            "the diagnostic must say what is missing: {error}"
+        );
+        let on_disk = std::fs::read(&path).expect("the file must still be there");
+        assert_eq!(
+            on_disk,
+            versionless.to_string().as_bytes(),
+            "a refused document is never rewritten"
+        );
     }
 }
