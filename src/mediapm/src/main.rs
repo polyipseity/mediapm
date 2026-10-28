@@ -46,12 +46,17 @@ use url::Url;
 /// for shell misuse.
 const EXIT_WARNING: i32 = 3;
 
-/// Exit status for a `sync` that left the library short of what the config
-/// asked for.
+/// Exit status for a `sync` that finished and left the library short of what
+/// the config asked for.
 ///
 /// Its own status, so a caller can tell a library missing entries from a
 /// binary that never ran: the missing-`cli`-feature path exits `1` and says so
 /// on stderr, a warning exits `3`, this one exits `4` and names the counts.
+///
+/// Only a *finished* run reaches here. An entry that raises — a resolved hash
+/// whose bytes the store no longer holds, for instance — leaves before any
+/// summary exists, so it exits `1` and a lost object is not distinguishable
+/// from another failure by status alone.
 const EXIT_INCOMPLETE_LIBRARY: i32 = 4;
 
 /// Exit status for a finished `sync`, or `None` when the run leaves the library

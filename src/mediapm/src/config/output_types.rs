@@ -22,7 +22,8 @@ use super::source_types::MediaStep;
 /// neither one, while the Nickel contract accepts both.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutputSaveConfig {
-    /// Boolean toggle (`true` / `false`).
+    /// Boolean policy: `true` keeps the bytes as a saved artifact, `false`
+    /// leaves them unrooted once the producing instance is superseded.
     Bool(bool),
     /// Full persistence: the blob is kept whole instead of being stored as a
     /// delta against another blob, so it stays a complete artifact.

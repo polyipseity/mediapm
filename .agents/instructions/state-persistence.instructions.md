@@ -13,10 +13,10 @@ applyTo: "src/mediapm/src/config/mod.rs, src/mediapm/src/config/versions/**/*.rs
 - Legacy `state.ncl` files are auto-migrated on load and then deleted (`load_mediapm_state_document` in `nickel_io.rs` is JSON-first, falls back to the legacy Nickel file, and removes it after a successful load). Never write new `.ncl` state files.
 - A `state.json` that names a schema version is decoded through that version's reader, and any failure is reported: a document whose body does not parse, or that names a version this build does not know, aborts the load instead of being read as empty. Reading it as empty would discard recorded files and let the next scan treat every one of them as stale. A document that names no version is refused for the same reason: every writer emits the field first, so such a file is foreign or damaged, and no rung of the ladder has a reader that could be trusted with it. The only state a load rebuilds is the one that does not exist.
 
-State persisted in `state.json` under `<runtime_root>/` tracks managed file records and tool fetch/deploy metadata, with version dispatch for migration from legacy `.ncl` formats. It records no per-media workflow progress: the conductor records what each tool-call instance produced, and `managed_files` records what reached the library.
+State persisted in `state.json` under `<runtime_root>/` tracks managed file records and tool fetch/deploy metadata, with version dispatch for migration from both legacy `.ncl` formats and older JSON versions. It records no per-media workflow progress: the conductor records what each tool-call instance produced, and `managed_files` records what reached the library. The conductor's own state file (`state.conductor.json`) keeps its own integer ladder, documented in `src/mediapm-conductor/AGENTS.md` section D; the two documents are loaded independently and neither is checked against the other.
 
-- **No `MigrateState` trait**: migration helpers are plain functions in `state/versions/v1.rs` (no trait dispatch), avoiding trait overhead for a single migration path.
-- **File organization**: public API in `state/ser.rs` (thin delegation), V1 wire types and migration in `state/versions/v1.rs`, V2 wire types in `state/versions/v2.rs`, the current wire shape and the runtime bridge in `state/versions/v5.rs`, version dispatch utilities in `state/versions/mod.rs`.
+- **No `MigrateState` trait**: migration helpers are plain functions in each `state/versions/vN.rs` (no trait dispatch), because a hop is a function and a trait would add a name per hop without removing one.
+- **File organization**: public API in `state/ser.rs` (thin delegation), wire types and the migration into each version in `state/versions/vN.rs`, version dispatch utilities in `state/versions/mod.rs`. `v1.rs` reads both legacy Nickel shapes, `v2.rs` through `v4.rs` are read-only historical formats, and `v5.rs` holds the current shape plus the runtime bridge.
 
 ## `MediaPmState` fields (v5)
 
@@ -117,7 +117,7 @@ Flat→v2 mapping:
 - V3 = JSON format before instance invalidation: read-only, migrated forward on load (never written).
 - V4 = JSON format with the per-media workflow map: read-only, migrated to V5 on load (never written).
 - V5 = current JSON format: no per-media workflow map (always written, never reverted).
-- A schema change is a version bump. Versions are integers; a field that appears or disappears is a new `vN` module plus a `from_v(N-1)_into_vN` migration, never an in-place edit of the current version's shape.
+- A schema change is a version bump. Versions are integers; a field that appears or disappears is a new `vN` module plus a `from_v(N-1)_into_vN` migration, never an in-place edit of the current version's shape. The `resolved_*` fields are the one recorded exception, and it narrows rather than widens: a missing field reads as `None`, nothing changes what is written, and no file that loaded before stops loading.
 
 ## Version dispatch
 
