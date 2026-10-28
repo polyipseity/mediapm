@@ -5,6 +5,7 @@
 //! - [`builtin`] — builtin descriptor helpers and CLI argument parsing
 //! - [`timestamp`] — `Timestamp` (Unix-epoch nanoseconds)
 //! - [`generated`] — `GENERATED_FILE_BANNER`, `prepend_banner`
+//! - [`fs`] — atomic publication of a document's bytes
 //! - [`temp`] — prefixed temp directories for tests, examples, and runtime
 //! - `report` — result-line formatting
 //!   (`StatusIcon`, `print_result`, `format_duration`)
@@ -16,6 +17,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod builtin;
+pub mod fs;
 pub mod generated;
 pub mod path;
 pub mod progress;

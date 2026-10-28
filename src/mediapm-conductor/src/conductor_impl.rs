@@ -3,7 +3,6 @@
 //! [`Conductor`] is the concrete implementation of the conductor API.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -865,57 +864,17 @@ fn save_state_file(
 /// Publishes `bytes` at `path` by writing a sibling file and renaming it over
 /// the target.
 ///
-/// A rename within one directory is the only replacement the filesystem makes
-/// atomic, so the temporary file has to live beside the target rather than in
-/// the system temp directory, which may be another filesystem. The temporary
-/// name carries the process id so two conductors that share a state file cannot
-/// write the same temporary file; a crash leaves it behind, and the next save in
-/// that process reuses the name, while a save that fails removes it.
+/// The write itself lives in [`mediapm_utils::fs`], which the mediapm state save
+/// shares; this wrapper only maps the I/O failure into [`ConductorError`] with
+/// the conductor's own operation label.
 ///
-/// After the rename the parent directory is synced, which is what makes the new
-/// name durable rather than only the bytes it points at. That sync is
-/// best-effort because opening a directory as a file is not portable — Windows
-/// refuses it — and losing it costs durability of the rename across a power cut,
-/// not atomicity.
+/// # Errors
+///
+/// Returns an I/O error when the document cannot be published, including the case
+/// where its directory is gone.
 fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), ConductorError> {
-    write_atomically(path, |file| file.write_all(bytes))
-}
-
-/// Runs `write` against a temporary sibling of `path` and renames it into place.
-///
-/// The directory `path` lives in must already exist: this publishes into a root
-/// its owner created, and never creates one. A save that could create its own
-/// parent would resurrect a directory a teardown had just removed, which is how
-/// a background pass used to leave an orphan holding one state file.
-///
-/// Split from [`write_bytes_atomically`] so a test can fail the write halfway
-/// and observe what the target holds afterwards; that is the state a crash
-/// leaves behind, and it is the whole reason the temporary file exists.
-fn write_atomically(
-    path: &Path,
-    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
-) -> Result<(), ConductorError> {
-    let mut temporary_name =
-        path.file_name().map_or_else(std::ffi::OsString::new, std::ffi::OsStr::to_os_string);
-    temporary_name.push(format!(".tmp-{}", std::process::id()));
-    let temporary = path.with_file_name(temporary_name);
-
-    let publish = |temporary: &Path| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(temporary)?;
-        write(&mut file)?;
-        file.sync_all()?;
-        std::fs::rename(temporary, path)?;
-        if let Some(parent) = path.parent()
-            && let Ok(directory) = std::fs::File::open(parent)
-        {
-            drop(directory.sync_all());
-        }
-        Ok(())
-    };
-    publish(&temporary).map_err(|source| {
-        drop(std::fs::remove_file(&temporary));
-        ConductorError::io("writing state file", path, source)
-    })
+    mediapm_utils::fs::write_bytes_atomically(path, bytes)
+        .map_err(|source| ConductorError::io("writing state file", path, source))
 }
 
 /// Creates the runtime root the state file lives in.
@@ -1066,6 +1025,7 @@ impl<C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static> Drop
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
 
     use super::*;
     use crate::state::ConductorState;
@@ -1479,7 +1439,7 @@ mod tests {
         save_state_file(&paths, &state).expect("save the good state");
         let published = std::fs::read(&paths.state_file_path).expect("read published state");
 
-        let failed = write_atomically(&paths.state_file_path, |file| {
+        let failed = mediapm_utils::fs::write_atomically(&paths.state_file_path, |file| {
             file.write_all(b"{\"version\": 4, \"tool_call_inst")?;
             Err(std::io::Error::other("the disk went away"))
         });

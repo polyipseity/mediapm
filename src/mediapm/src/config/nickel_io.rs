@@ -207,9 +207,17 @@ pub fn load_mediapm_state_document(
 
 /// Serializes and writes a `state.json` document as pretty-printed JSON.
 ///
+/// The document is published by rename, so a save that dies partway leaves the
+/// previous document at the path rather than a prefix of the new one. That
+/// matters here more than it would for a scratch file: a `state.json` this build
+/// cannot parse is an error, not a rebuild, so a torn write would leave a
+/// workspace that does not open.
+///
 /// # Errors
 ///
-/// Returns an error when the state cannot be serialized or written.
+/// Returns an error when the state cannot be serialized, and an I/O error when
+/// the document cannot be published — including the case where its directory is
+/// gone, which this path does not create.
 pub fn save_mediapm_state_document(
     path: &Path,
     state: &crate::config::MediaPmState,
@@ -217,12 +225,13 @@ pub fn save_mediapm_state_document(
     let value = crate::state::ser::to_json_value(state)?;
     let json = serde_json::to_string_pretty(&value)
         .map_err(|e| MediaPmError::Serialization(format!("failed to format state JSON: {e}")))?;
-    std::fs::write(path, json).map_err(|err| MediaPmError::Io {
-        operation: "write mediapm state".to_string(),
-        path: path.to_path_buf(),
-        source: err,
-    })?;
-    Ok(())
+    mediapm_utils::fs::write_bytes_atomically(path, json.as_bytes()).map_err(|source| {
+        MediaPmError::Io {
+            operation: "write mediapm state".to_string(),
+            path: path.to_path_buf(),
+            source,
+        }
+    })
 }
 
 /// Merges runtime state into a [`crate::config::MediaPmDocument`].
@@ -258,6 +267,110 @@ mod tests {
         let path = root.path().join("state.json");
         std::fs::write(&path, contents).expect("write state document");
         (root, path)
+    }
+
+    /// Builds a state document holding one recorded file.
+    ///
+    /// A save of this value writes bytes that differ from any hand-written
+    /// fixture, which is what lets a test tell a replacement from an in-place
+    /// rewrite.
+    fn state_with_one_file() -> crate::config::MediaPmState {
+        let mut state = crate::config::MediaPmState::default();
+        state.managed_files.insert(
+            "media/a.mkv".to_string(),
+            crate::config::ManagedFileRecord {
+                media_id: "a".to_string(),
+                variant: "primary".to_string(),
+                hash: "blake3:a".to_string(),
+            },
+        );
+        state
+    }
+
+    /// A save replaces the document instead of rewriting it in place.
+    ///
+    /// A reader that opened `state.json` before a save keeps the document it
+    /// opened. An in-place rewrite truncates that same file and writes over it,
+    /// so the handle sees the new bytes and, on a crash midway, sees a prefix of
+    /// them. A replacement by rename leaves the reader on the old document and
+    /// publishes the new one to the next open, which is the guarantee a torn save
+    /// needs: the only document that ever exists at the path is a whole one.
+    #[test]
+    fn a_save_replaces_the_document_instead_of_rewriting_it() {
+        let original = b"{\"version\": 5, \"managed_files\": {}, \"managed_tools\": []}";
+        let (root, path) = state_file_with(original);
+        let mut open_handle =
+            std::fs::File::open(&path).expect("open the published document before the save");
+
+        save_mediapm_state_document(&path, &state_with_one_file()).expect("save over the document");
+
+        let mut still_open = String::new();
+        std::io::Read::read_to_string(&mut open_handle, &mut still_open)
+            .expect("read the document the handle opened");
+        assert_eq!(
+            still_open.as_bytes(),
+            original,
+            "the handle kept open across the save must still hold the document it opened",
+        );
+
+        let published = std::fs::read(&path).expect("read the published document");
+        assert!(
+            published.windows(11).any(|window| window == b"media/a.mkv"),
+            "the new document must be at the path: {}",
+            String::from_utf8_lossy(&published),
+        );
+        let siblings: Vec<String> = std::fs::read_dir(root.path())
+            .expect("read the state directory")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            siblings,
+            vec!["state.json".to_string()],
+            "a save must leave the document and no temporary: {siblings:?}",
+        );
+    }
+
+    /// A publish that dies after its temporary exists leaves a document the next load reads.
+    ///
+    /// The user-level guarantee: an interrupted sync leaves a library that still
+    /// opens. `state.json` is parsed strictly now — a document this build cannot
+    /// read is an error rather than a rebuild — so a save that truncated the
+    /// target and stopped would cost the user the recorded files of every media in
+    /// the library, not one run.
+    ///
+    /// The failure is injected at the seam the save uses, on the path the save
+    /// uses, and the assertion goes through the real loader rather than through
+    /// `std::fs::read`, so this composes the two halves a user depends on.
+    #[test]
+    fn a_failed_state_publish_leaves_a_document_the_next_load_reads() {
+        use std::io::Write as _;
+
+        let (root, path) = state_file_with(b"{}");
+        let previous = state_with_one_file();
+        save_mediapm_state_document(&path, &previous).expect("save the first document");
+
+        let error = mediapm_utils::fs::write_atomically(&path, |file| {
+            file.write_all(b"{\"version\": 5, \"managed_fil")?;
+            Err(std::io::Error::other("the disk went away"))
+        })
+        .expect_err("a write that fails must be reported");
+
+        assert_eq!(error.to_string(), "the disk went away", "the writer's error must survive");
+        let reloaded =
+            load_mediapm_state_document(&path).expect("the previous document must still load");
+        assert_eq!(
+            reloaded.managed_files, previous.managed_files,
+            "the failed publish replaced the recorded files",
+        );
+        let siblings: Vec<String> = std::fs::read_dir(root.path())
+            .expect("read the state directory")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            siblings,
+            vec!["state.json".to_string()],
+            "the failed publish left a temporary behind: {siblings:?}",
+        );
     }
 
     /// A V4 document loads and is written back as V5, without the field V5 removed.
