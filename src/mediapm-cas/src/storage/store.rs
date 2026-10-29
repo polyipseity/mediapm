@@ -209,6 +209,39 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasStore<J, M, B> {
     pub fn reconstructed_cache_stats(&self) -> Option<ReconstructedCacheStats> {
         self.bg_engine.reconstructed_cache_stats()
     }
+
+    /// Refuses a constraint whose target this store does not hold.
+    ///
+    /// A constraint says how to rebuild one object from other objects, so a
+    /// target with no bytes is a fact with no subject: the prune drops it, and
+    /// until the next pass runs a caller reads a recipe for bytes that are not
+    /// there. A store that accepts the fact and then drops it has told the
+    /// caller two different things, which is why the refusal happens where the
+    /// fact is written.
+    ///
+    /// The question asked is the read path's own, so a target still pending in
+    /// the write-back journal counts as held: `put` returns before the consumer
+    /// materializes the metadata entry, and refusing that target would make the
+    /// ordinary sequence of storing an object and then recording how it was
+    /// encoded fail until a maintenance pass ran.
+    ///
+    /// # Errors
+    ///
+    /// [`CasError::InvalidArgument`] when the store answers that the target is
+    /// not present, naming the hash and the rule. Any other read error is
+    /// returned unchanged, because a store that could not answer has not said
+    /// the target is absent.
+    async fn ensure_constraint_target_is_held(&self, target: Hash) -> Result<(), CasError> {
+        match self.stat(target).await {
+            Ok(_) => Ok(()),
+            Err(CasError::NotFound(_)) => Err(CasError::InvalidArgument(format!(
+                "constraint target {} is not held by this store; store the object before recording a \
+                 constraint",
+                target.to_hex()
+            ))),
+            Err(other) => Err(other),
+        }
+    }
 }
 
 #[async_trait]
@@ -224,6 +257,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
                 "constraint target cannot be its own base".into(),
             ));
         }
+        self.ensure_constraint_target_is_held(target).await?;
 
         // Write the constraint to WAL first (crash-safe commitment).
         self.wal.append(WalEntry::Constraint { target, bases: bases.clone() }).await?;
@@ -283,6 +317,9 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
         if target == Hash::empty() {
             return Ok(());
         }
+        // A patch records a constraint by another name, so it owes the same
+        // refusal before it writes anything.
+        self.ensure_constraint_target_is_held(target).await?;
         // Read current state (considers WAL fallback).
         let mut bases = self.get_constraint(target).await?;
 

@@ -4,6 +4,7 @@ use bytes::Bytes;
 
 use mediapm_cas::Hash;
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch};
+use mediapm_cas::error::CasError;
 use mediapm_cas::new_in_memory_cas;
 
 use crate::common::{open_file_cas, put_static};
@@ -195,4 +196,74 @@ async fn get_constraint_wal_fallback_before_consumption() {
     let bases = cas.get_constraint(target).await.unwrap();
     assert_eq!(bases.len(), 1, "materialized constraint still visible");
     assert!(bases.contains(&base), "materialized constraint still contains base");
+}
+
+/// A constraint is refused for a target the store does not hold.
+///
+/// A constraint says how to rebuild one object from other objects. Recorded
+/// for a hash the store never held, it is a fact with no subject: the prune
+/// drops it, and until then a caller reads a recipe for bytes that are not
+/// there. The refusal names the hash and the rule rather than storing the fact
+/// and leaving the prune to explain it later.
+#[tokio::test]
+async fn set_constraint_refuses_a_target_the_store_does_not_hold() {
+    let cas = new_in_memory_cas();
+    let base = put_static(&cas, b"base").await;
+    let absent = Hash::from_content(b"never stored");
+
+    let refused = cas.set_constraint(absent, [base].into()).await;
+
+    match refused {
+        Err(CasError::InvalidArgument(message)) => {
+            assert!(
+                message.contains(&absent.to_hex()),
+                "the refusal must name the hash it refuses: {message}"
+            );
+            assert!(
+                message.contains("not held"),
+                "the refusal must say what is wrong with the target: {message}"
+            );
+        }
+        other => panic!("a constraint on an unheld target must be refused, got {other:?}"),
+    }
+    assert!(
+        cas.get_constraint(absent).await.unwrap().is_empty(),
+        "a refused constraint must not be recorded",
+    );
+}
+
+/// A patch is refused for a target the store does not hold, because it records
+/// a constraint by another name.
+#[tokio::test]
+async fn patch_constraint_refuses_a_target_the_store_does_not_hold() {
+    let cas = new_in_memory_cas();
+    let base = put_static(&cas, b"base").await;
+    let absent = Hash::from_content(b"never stored");
+    let patch =
+        ConstraintPatch { clear: false, add_bases: [base].into(), remove_bases: BTreeSet::new() };
+
+    let refused = cas.patch_constraint(absent, patch).await;
+
+    assert!(
+        matches!(refused, Err(CasError::InvalidArgument(_))),
+        "a patch on an unheld target must be refused, got {refused:?}",
+    );
+}
+
+/// A target that only holds pending WAL bytes counts as held, because the read
+/// path answers it.
+///
+/// The filesystem store materializes metadata asynchronously, so a `put` that
+/// returned is not yet in the index. Refusing that target would make the
+/// ordinary sequence — put, then record how it was encoded — fail until a
+/// maintenance pass ran.
+#[tokio::test]
+async fn set_constraint_accepts_a_target_pending_in_the_wal() {
+    let cas = open_file_cas().await;
+    let base = put_static(&*cas, b"base").await;
+    let target = put_static(&*cas, b"target").await;
+
+    cas.set_constraint(target, [base].into())
+        .await
+        .expect("a target whose bytes are pending in the WAL is held");
 }

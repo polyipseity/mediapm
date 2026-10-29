@@ -250,15 +250,21 @@ impl MetadataStore for FileSystemMetadataStore {
     }
 
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError> {
-        // The marker prefixes are read before the prune, because the prune is
-        // what removes them from `inner`: a directory whose only fact was a
-        // marker for an object that no longer exists would otherwise keep the
-        // file on disk and resurrect the marker on the next open.
+        // The marker and target prefixes are read before the prune, because the
+        // prune is what removes them from `inner`: a directory whose only fact
+        // was a marker for an object that no longer exists, or a constraint for
+        // a target that no longer exists, would otherwise keep its file on disk
+        // and resurrect the fact on the next open. Only targets the prune will
+        // drop are collected here, because a surviving constraint's directory is
+        // already named by `occupied_prefixes`.
         let marked_before = self.inner.list_keep_full().await?;
+        let dropped_before: Vec<Hash> =
+            self.inner.list_targets().await?.into_iter().filter(|t| !live.contains(t)).collect();
         let pruned = self.inner.prune_targets(live).await?;
 
         let mut prefixes = self.occupied_prefixes().await?;
         prefixes.extend(marked_before.iter().map(|h| h.to_hex()[..4].to_string()));
+        prefixes.extend(dropped_before.iter().map(|h| h.to_hex()[..4].to_string()));
         // prune_targets is infrequent, so flushing every affected directory is
         // acceptable.
         self.flush_prefixes(&prefixes).await?;
@@ -509,6 +515,47 @@ mod tests {
         assert!(
             !reopened.is_keep_full(&ghost).await.unwrap(),
             "a marker left on disk comes back on the next open",
+        );
+    }
+
+    /// A constraint whose target the store never held leaves no file behind.
+    ///
+    /// The prune flushes the directories of the facts it kept and of the
+    /// markers it read before dropping them. A target with neither an entry nor
+    /// a marker contributes no prefix to either set, so its directory was never
+    /// rewritten and the snapshot on disk outlived the fact inside it. Removal
+    /// is what a content-addressed store does to bytes, so the state this test
+    /// seeds is one an older build wrote and a live store can still hold; the
+    /// prune has to heal it rather than leave it for the next open.
+    #[tokio::test]
+    async fn prune_removes_the_constraint_file_of_a_target_that_is_gone() {
+        let (blob, _dir) = test_blob_store().await;
+        let index = FileSystemMetadataStore::new(blob.clone());
+
+        let ghost = Hash::from_content(b"ghost target");
+        let base = Hash::from_content(b"ghost base");
+        // Seed through the inner store and flush by hand: the outer
+        // `set_constraint` names the same directory, so a test that used it
+        // would be measuring the seeding rather than the prune.
+        index.inner.set_constraint(ghost, BTreeSet::from([base])).await.unwrap();
+        index.flush_dir(&ghost).await.unwrap();
+        assert!(
+            blob.read_aux(&ghost, LATEST_METADATA_FORMAT).await.is_ok(),
+            "the constraint file must exist before the prune",
+        );
+
+        let pruned = index.prune_targets(&HashSet::new()).await.unwrap();
+        assert_eq!(pruned.targets, 1, "the constraint's target is not live, so it is dropped");
+
+        assert!(
+            blob.read_aux(&ghost, LATEST_METADATA_FORMAT).await.is_err(),
+            "the constraint file of a dropped target must be gone from disk",
+        );
+        let reopened = FileSystemMetadataStore::new(blob);
+        reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
+        assert!(
+            reopened.get_constraint(&ghost).await.unwrap().is_empty(),
+            "a constraint left on disk comes back on the next open",
         );
     }
 

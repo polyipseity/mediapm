@@ -83,7 +83,15 @@ pub trait MetadataStore: Send + Sync {
     /// Retrieve metadata for a hash, if any.
     async fn get(&self, hash: &Hash) -> Result<Option<MetadataEntry>, CasError>;
 
-    /// Delete metadata for a hash.
+    /// Delete metadata for a hash, with the constraint and keep-full marker
+    /// that describe those same bytes.
+    ///
+    /// The filesystem store flushes the hash's own fan-out directory here
+    /// rather than only the directories it believes are occupied, so a
+    /// directory left holding nothing loses its snapshot file. That is the gap
+    /// [`MetadataStore::prune_targets`] has to close by hand: a prune drops
+    /// facts about hashes the caller does not name, so it has to know which
+    /// directories those facts lived in, while a delete names its own hash.
     async fn delete(&self, hash: &Hash) -> Result<(), CasError>;
 
     /// List all hashes with entries.
