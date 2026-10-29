@@ -13,7 +13,7 @@ use crate::error::ConductorError;
 
 use super::helpers::{
     classify_content_map_key, ensure_payload_tree_user_execute_bits, ensure_user_execute_bit,
-    now_unix_seconds, persist_cache_metadata,
+    now_unix_seconds, persist_cache_metadata, record_cache_hit,
 };
 use super::types::{ContentMapKeyKind, Metadata, ProvisionedTool};
 use super::{LOCK_FILE_HEADER, VERSION};
@@ -303,15 +303,7 @@ fn double_check_hit(
     if !metadata.execute_bits_verified {
         ensure_payload_tree_user_execute_bits(payload_dir)?;
     }
-    let _ = persist_cache_metadata(
-        metadata_path,
-        &Metadata {
-            version: VERSION,
-            content_map: content_map.clone(),
-            last_used_unix_seconds: now,
-            execute_bits_verified: true,
-        },
-    );
+    record_cache_hit(metadata_path, content_map, now);
     // Clone fd and downgrade to shared.
     let shared_file = excl_file.try_clone().map_err(|source| ConductorError::Io {
         operation: "duplicating lock fd for shared downgrade".to_string(),

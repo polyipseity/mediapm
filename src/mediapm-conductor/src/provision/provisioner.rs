@@ -14,8 +14,7 @@ use crate::error::ConductorError;
 
 use super::extract::{ExtractPaths, extract_sync, fetch_all_cas_entries};
 use super::helpers::{
-    ensure_payload_tree_user_execute_bits, now_unix_seconds, persist_cache_metadata,
-    sanitize_tool_id,
+    ensure_payload_tree_user_execute_bits, now_unix_seconds, record_cache_hit, sanitize_tool_id,
 };
 use super::retain::{prune_expired_entries, retain_only_tool_dirs};
 use super::types::{CleanupGuard, Metadata, ProvisionedTool};
@@ -360,15 +359,7 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
                 if !metadata.execute_bits_verified {
                     ensure_payload_tree_user_execute_bits(payload_dir)?;
                 }
-                let _ = persist_cache_metadata(
-                    metadata_path,
-                    &Metadata {
-                        version: VERSION,
-                        content_map: content_map.clone(),
-                        last_used_unix_seconds: now,
-                        execute_bits_verified: true,
-                    },
-                );
+                record_cache_hit(metadata_path, content_map, now);
                 Ok(Some(ProvisionedTool {
                     payload_dir: payload_dir.to_path_buf(),
                     _lock_file: lock_file,
@@ -503,6 +494,57 @@ mod tests {
             edited.as_bytes(),
             "the lock header is written when the file is created, not on every open"
         );
+    }
+
+    /// A hit whose use time cannot be recorded still serves the payload.
+    ///
+    /// The refresh is bookkeeping, and the payload it describes is on disk and
+    /// readable. The entry directory is sealed against writes, so the save that
+    /// would record the hit fails; the materialize must still return the entry,
+    /// because refusing a valid payload over a directory this process cannot write
+    /// turns a permission problem into a tool nobody can use. What the failure
+    /// costs is the timestamp: the entry keeps aging from the use time it held.
+    ///
+    /// Root and some filesystems ignore the mode, so the premise is probed rather
+    /// than assumed. A test that fails for the account running it says nothing
+    /// about the writer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hit_that_cannot_record_its_use_time_still_serves_the_payload() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        let (tools_dir, cache) = cache_with_payload().await;
+        let content_map = BTreeMap::new();
+        drop(cache.materialize("sealed-tool", &content_map).await.expect("first materialize"));
+        let entry = tools_dir.path().join("sealed-tool");
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o500))
+            .expect("seal the entry directory");
+
+        let probe = entry.join("probe");
+        if std::fs::write(&probe, b"x").is_ok() {
+            drop(std::fs::remove_file(&probe));
+            std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o700))
+                .expect("restore the entry directory");
+            eprintln!(
+                "skipping a_hit_that_cannot_record_its_use_time_still_serves_the_payload: \
+                 this process can write into a 0o500 directory"
+            );
+            return;
+        }
+
+        let guard = cache
+            .materialize("sealed-tool", &content_map)
+            .await
+            .expect("a hit must serve the payload when its use time cannot be recorded");
+
+        assert!(
+            entry.join(PAYLOAD_DIR_NAME).is_dir(),
+            "the hit handed back an entry whose payload is gone"
+        );
+        drop(guard);
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o700))
+            .expect("restore the entry directory");
     }
 
     /// Re-extracting an entry writes the header again, because the extraction

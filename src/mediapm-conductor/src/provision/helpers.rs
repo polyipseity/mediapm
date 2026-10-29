@@ -1,7 +1,10 @@
 //! Free helper functions for the provisioning subsystem.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+
+use mediapm_cas::Hash;
 
 use crate::error::ConductorError;
 
@@ -186,6 +189,34 @@ pub(crate) fn persist_cache_metadata(
             source,
         },
     )
+}
+
+/// Records a cache hit by moving the entry's stored use time to `now`.
+///
+/// The refresh is bookkeeping. A hit means the payload on disk is the one the
+/// content map names, and that stays true whether or not the timestamp moves, so
+/// a failed save is reported and the hit still stands. Refusing a valid payload
+/// over a directory this process cannot write would turn a permission problem
+/// into a tool nobody can use.
+///
+/// The loss is stated rather than hidden: the entry keeps aging from the use time
+/// it already held, so the expiry sweep reclaims a tool that is in daily use. The
+/// next run extracts it again instead of finding it, and an extraction into a
+/// directory that still refuses writes reports the failure this save reported.
+pub(crate) fn record_cache_hit(
+    metadata_path: &Path,
+    content_map: &BTreeMap<String, Hash>,
+    now: u64,
+) {
+    let metadata = Metadata {
+        version: crate::provision::VERSION,
+        content_map: content_map.clone(),
+        last_used_unix_seconds: now,
+        execute_bits_verified: true,
+    };
+    if let Err(error) = persist_cache_metadata(metadata_path, &metadata) {
+        tracing::warn!("could not record a cache hit at '{}': {error}", metadata_path.display());
+    }
 }
 
 /// Copies (preferring hard links) all files from `source_dir` into `target_dir`.
@@ -427,19 +458,25 @@ mod tests {
         names
     }
 
-    /// A leftover temporary from another writer does not block the save.
+    /// A leftover temporary an older build wrote neither blocks the save nor is
+    /// swept by it.
     ///
-    /// A temporary named from the target alone is shared by every writer of that
-    /// directory. A writer that was killed leaves a partial document under that
-    /// name, and the next save cannot open it, so the tool it was recording stays
-    /// unrecorded until someone deletes the file by hand. The publish names its
-    /// own temporary and ignores what a previous writer abandoned.
+    /// Older builds named the temporary from the target alone, so every writer of
+    /// one directory shared it. This plants that name, aged past the sweep's
+    /// threshold and read-only, to stand for such a build. The current rule is the
+    /// helper's own marker: a name it does not produce is not a name it removes,
+    /// so the file stays where whoever left it can find it.
     #[test]
-    fn a_leftover_temporary_from_another_writer_does_not_block_the_save() {
+    fn a_leftover_temporary_from_an_older_build_neither_blocks_nor_is_swept() {
         let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let metadata_path = root.path().join("metadata.json");
         let leftover = root.path().join("metadata.json.tmp");
         fs::write(&leftover, b"{\"version\": 1").expect("write the abandoned temporary");
+        let handle = fs::OpenOptions::new().write(true).open(&leftover).expect("open the leftover");
+        handle
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_hours(2))
+            .expect("age the leftover past the sweep's threshold");
+        drop(handle);
         let mut permissions =
             fs::metadata(&leftover).expect("read leftover metadata").permissions();
         permissions.set_readonly(true);
@@ -448,10 +485,39 @@ mod tests {
         persist_cache_metadata(&metadata_path, &metadata_last_used(7))
             .expect("a leftover temporary must not block the save");
 
+        assert!(leftover.exists(), "the sweep removed a name this helper does not produce");
         let published = fs::read_to_string(&metadata_path).expect("read the published document");
         assert!(published.ends_with('\n'), "the document must end with a newline: {published:?}");
         let decoded: Metadata = serde_json::from_str(&published).expect("parse the document");
         assert_eq!(decoded.last_used_unix_seconds, 7, "the save published the wrong document");
+    }
+
+    /// A temporary of this target that another save is still using survives, and
+    /// the save does not wait for it.
+    ///
+    /// The name is the one this helper produces and carries the id of a process
+    /// other than this one, because a save in this process names its temporary from
+    /// a counter no other save shares. The file is younger than the sweep's
+    /// threshold, which is what tells a running save's temporary apart from a dead
+    /// one's. Removing it would make that save's rename fail, so the age rule
+    /// leaves it alone and this save publishes on a name of its own.
+    #[test]
+    fn a_young_temporary_from_another_process_does_not_block_the_save() {
+        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let metadata_path = root.path().join("metadata.json");
+        let live =
+            root.path().join(format!("metadata.json.mediapm-tmp-{}-0", std::process::id() + 1));
+        fs::write(&live, b"{\"version\": 1").expect("write the other save's partial document");
+
+        persist_cache_metadata(&metadata_path, &metadata_last_used(9)).expect("publish the save");
+
+        assert!(
+            live.exists(),
+            "a young temporary of this target belongs to a save that is still running"
+        );
+        let published = fs::read_to_string(&metadata_path).expect("read the published document");
+        let decoded: Metadata = serde_json::from_str(&published).expect("parse the document");
+        assert_eq!(decoded.last_used_unix_seconds, 9, "the save published the wrong document");
     }
 
     /// A save replaces the previous document and keeps no temporary beside it.
@@ -478,30 +544,34 @@ mod tests {
         assert_eq!(decoded.last_used_unix_seconds, 11);
     }
 
-    /// A save into a directory that does not exist fails and publishes nothing.
+    /// A save into a directory that cannot be created fails and publishes nothing.
     ///
-    /// The parent is created before the publish, so the failure here is a parent
-    /// that cannot be created rather than one that was never asked for, which is
-    /// what keeps this writer responsible for its own directory.
-    #[cfg(unix)]
+    /// The parent is created before the publish, which is what keeps this writer
+    /// responsible for its own directory. The failure is a regular file where the
+    /// parent directory would be, so it holds for every user: a directory without
+    /// write permission does not deny root, and a test that passes for one account
+    /// and fails for another is worse than no test at all.
     #[test]
     fn a_save_is_refused_when_its_parent_cannot_be_created() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let locked = root.path().join("locked");
-        fs::create_dir(&locked).expect("create the locked directory");
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500))
-            .expect("make the directory unwritable");
-        let metadata_path = locked.join("nested").join("metadata.json");
+        let blocker = root.path().join("blocked");
+        fs::write(&blocker, b"a file where the parent directory would be")
+            .expect("write the blocker");
+        let metadata_path = blocker.join("nested").join("metadata.json");
 
         let error = persist_cache_metadata(&metadata_path, &metadata_last_used(13))
             .expect_err("a parent that cannot be created must fail the save");
 
-        assert!(matches!(error, ConductorError::Io { .. }), "unexpected error: {error:?}");
+        match &error {
+            ConductorError::Io { operation, .. } => {
+                assert!(
+                    operation.contains("parent directory"),
+                    "the failure must name the parent creation, not the publish: {operation}"
+                );
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
         assert!(!metadata_path.exists(), "the failed save published a document");
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700))
-            .expect("restore directory permissions for cleanup");
     }
 
     /// Extracted raw-file entries should gain `u+x` so bundled companion
