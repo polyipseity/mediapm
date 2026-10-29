@@ -66,6 +66,10 @@ fn with_owner_write(mut permissions: std::fs::Permissions) -> std::fs::Permissio
 /// The read-only bit is a file attribute there rather than a mode bit, so
 /// clearing it is the whole operation.
 #[cfg(windows)]
+#[expect(
+    clippy::permissions_set_readonly_false,
+    reason = "the read-only bit is the file attribute Windows uses to refuse replacement, so clearing it is how a staged object becomes deletable and replaceable; POSIX has its own body below and is untouched"
+)]
 fn with_owner_write(mut permissions: std::fs::Permissions) -> std::fs::Permissions {
     permissions.set_readonly(false);
     permissions

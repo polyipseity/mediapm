@@ -8,7 +8,8 @@
 //!
 //! Each save also removes the temporaries a dead writer left beside the same
 //! target, so an interrupted publish costs one stale name rather than a growing
-//! pile of them.
+//! pile of them. The name carries [`TEMPORARY_MARKER`], which is what tells a
+//! leftover of this helper from a file somebody else put there.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -33,10 +34,15 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// carries the process id and a per-call counter, so no two writers of one path
 /// share a temporary: another process differs in the id, and another save in
 /// this one differs in the counter. A save that fails removes its own temporary.
-/// A killed writer cannot, so it leaves `.tmp-<pid>-<n>` beside the target; the
-/// next save of that target removes it, because it is older than
-/// [`STALE_TEMPORARY_AGE`]. The sweep is best effort: a temporary that cannot be
-/// removed leaves the save that was beside it unaffected.
+/// A killed writer cannot, so it leaves one beside the target; the next save of
+/// that target removes it, because it is older than [`STALE_TEMPORARY_AGE`]. The
+/// sweep is best effort: a temporary that cannot be removed leaves the save that
+/// was beside it unaffected.
+///
+/// A leftover named the old way, without [`TEMPORARY_MARKER`], is not swept: the
+/// sweep removes only names this version of the helper builds. Those files are a
+/// fixed historical set rather than a growing one, and matching a name a person's
+/// backup or editor can also produce was the larger risk.
 ///
 /// A save keeps the target's permissions. The rename replaces the target's
 /// inode with the temporary's, so without copying the mode across, a document a
@@ -46,13 +52,20 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// leaves the document published the same way. A document the caller asked to
 /// publish is worth more than the mode it lands with, and a filesystem that
 /// refuses a chmod would otherwise refuse every save of a document it lets us
-/// write.
+/// write. Nothing records a copy that did not take: this module has no logging
+/// dependency, and the only place a widened mode is visible is the file itself.
 ///
 /// Windows refuses to rename over a file whose read-only attribute is set, so a
 /// document a user protected would refuse every later save. The rename is tried
 /// first and, when it fails with a permission error, the target's attribute is
 /// cleared and the rename is tried once more. POSIX needs only write permission
 /// on the containing directory, so the clear touches nothing there.
+///
+/// Before the write, the target's directory is read once so the temporaries a
+/// dead writer left can be removed. That is the sweep's whole cost: one
+/// enumeration of the directory per save, paid by a document published at the root
+/// of a large library on every publication. The read happens before the write, so
+/// a slow listing delays the document rather than risking it.
 ///
 /// After the rename the parent directory is synced, which makes the new name
 /// durable rather than only the bytes it points at. That sync is best-effort
@@ -123,13 +136,23 @@ fn temporary_path(path: &Path) -> io::Result<PathBuf> {
     };
     let sequence = TEMPORARY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut temporary_name = file_name.to_os_string();
-    temporary_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
+    temporary_name.push(format!("{TEMPORARY_MARKER}{}-{sequence}", std::process::id()));
     Ok(path.with_file_name(temporary_name))
 }
 
 /// Counts the temporaries this process has named, so two saves of one path in
 /// one process never share a temporary file.
 static TEMPORARY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The part of a temporary's name that marks it as this helper's.
+///
+/// The sweep has to tell a leftover of a killed save from a file somebody else
+/// wrote beside the same document, and only the name can carry that. A bare
+/// `.tmp-<digits>-<digits>` suffix does not: `state.json.tmp-2024-01` is what a
+/// backup or archive tool produces, and it has the shape a process id and a
+/// counter take. The marker is what makes the sweep's claim about ownership true
+/// by construction rather than by convention.
+const TEMPORARY_MARKER: &str = ".mediapm-tmp-";
 
 /// How old a sibling temporary must be before a later save removes it.
 ///
@@ -147,11 +170,17 @@ const STALE_TEMPORARY_AGE: std::time::Duration = std::time::Duration::from_hours
 
 /// Removes the temporaries a dead writer left beside `path`.
 ///
-/// Only names [`temporary_path`] produces for this target are candidates, so a
-/// sibling document is never a candidate. Everything here is best effort: an
-/// unreadable directory, an entry that cannot be stat'd, and a temporary that
-/// cannot be removed all leave the save that follows them to proceed, because
-/// the save's own work is the document and this is housekeeping beside it.
+/// Only names carrying [`TEMPORARY_MARKER`] for this target are candidates, so a
+/// sibling document and a name another program chose are never candidates. That
+/// is a property of the name rather than a guess about it, because this helper is
+/// the only writer that puts the marker in a name. Everything here is best
+/// effort: an unreadable directory, an entry that cannot be stat'd, and a
+/// temporary that cannot be removed all leave the save that follows them to
+/// proceed, because the save's own work is the document and this is housekeeping
+/// beside it.
+///
+/// The directory is read once per save, which is the sweep's cost and the reason
+/// the read is the only one.
 ///
 /// A path whose final component is not valid UTF-8 is skipped rather than
 /// mangled, and a temporary of such a document stays where it is. A temporary
@@ -164,7 +193,7 @@ fn sweep_stale_temporaries(path: &Path) {
     let Some(parent) = path.parent() else {
         return;
     };
-    let prefix = format!("{file_name}.tmp-");
+    let prefix = format!("{file_name}{TEMPORARY_MARKER}");
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
     };
@@ -193,11 +222,12 @@ fn sweep_stale_temporaries(path: &Path) {
     }
 }
 
-/// Whether the part of a name after `.tmp-` is the `<pid>-<sequence>` pair
-/// [`temporary_path`] appends.
+/// Whether the part of a name after [`TEMPORARY_MARKER`] is the `<pid>-<sequence>`
+/// pair [`temporary_path`] appends.
 ///
-/// A name that does not have this shape belongs to something other than this
-/// helper, and the sweep must not remove it.
+/// The marker already says the name belongs to this helper, so this check is
+/// narrow: it refuses a marked name whose tail is something else, which is a shape
+/// no version of this helper writes.
 fn is_temporary_suffix(tail: &str) -> bool {
     let mut parts = tail.split('-');
     let (Some(process_id), Some(sequence), None) = (parts.next(), parts.next(), parts.next())
@@ -219,6 +249,13 @@ fn is_temporary_suffix(tail: &str) -> bool {
 /// A retry that clears the attribute and then fails leaves the target writable.
 /// The alternative is to clear before the first attempt, which would widen the
 /// mode of every protected document on a save that never lands.
+///
+/// No gate exercises the retry. It is unreachable on POSIX, where the rename needs
+/// only the directory's write permission, and CI's Windows job runs its tests over
+/// `mediapm-tests` and `test-runner` alone. That job compiles this body through the
+/// packages that depend on `mediapm-utils`, and runs no clippy, so the Windows
+/// branch is compiled by CI and checked by a developer running `cargo clippy-all`
+/// on Windows, and nothing else touches it.
 fn replace(temporary: &Path, path: &Path) -> io::Result<()> {
     match std::fs::rename(temporary, path) {
         Ok(()) => Ok(()),
@@ -244,6 +281,13 @@ fn replace(temporary: &Path, path: &Path) -> io::Result<()> {
     expect(
         clippy::unnecessary_wraps,
         reason = "the fallible signature is shared with the Windows body, where clearing the attribute can fail"
+    )
+)]
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::permissions_set_readonly_false,
+        reason = "Windows refuses to replace a read-only file, so the attribute is cleared before the retry renames over it; on POSIX the directory's write permission governs the replace, and clearing bits there would widen the mode rather than restore it"
     )
 )]
 fn clear_read_only_attribute(path: &Path) -> io::Result<()> {
@@ -427,7 +471,8 @@ mod tests {
         age: std::time::Duration,
     ) -> PathBuf {
         let file_name = path.file_name().expect("the document has a name").to_string_lossy();
-        let leftover = path.with_file_name(format!("{file_name}.tmp-{process_id}-{sequence}"));
+        let leftover =
+            path.with_file_name(format!("{file_name}{TEMPORARY_MARKER}{process_id}-{sequence}"));
         std::fs::write(&leftover, b"half a document").expect("plant the leftover");
         let handle =
             std::fs::OpenOptions::new().write(true).open(&leftover).expect("open the leftover");
@@ -457,6 +502,31 @@ mod tests {
             stranger.exists(),
             "the sweep removed a temporary that belongs to another document",
         );
+        assert_eq!(std::fs::read(&path).expect("read the document"), b"fresh");
+        drop(root);
+    }
+
+    /// A file whose name only resembles a temporary survives a save.
+    ///
+    /// The sweep exists to clean up after this helper, and a name it did not
+    /// write belongs to someone else. `state.json.tmp-2024-01` is what a
+    /// person's editor or archive makes beside a document, and it is also the
+    /// shape a `<pid>-<sequence>` suffix takes, so nothing in the older naming
+    /// told the two apart.
+    #[test]
+    fn a_name_that_resembles_a_temporary_is_not_swept() {
+        let (root, path) = document_with(b"previous");
+        let foreign = root.path().join("state.json.tmp-2024-01");
+        std::fs::write(&foreign, b"somebody else's file").expect("plant the foreign file");
+        let handle =
+            std::fs::OpenOptions::new().write(true).open(&foreign).expect("open the foreign file");
+        handle
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_hours(2))
+            .expect("age the foreign file");
+
+        write_bytes_atomically(&path, b"fresh").expect("publish the document");
+
+        assert!(foreign.exists(), "the sweep removed a file this helper never wrote");
         assert_eq!(std::fs::read(&path).expect("read the document"), b"fresh");
         drop(root);
     }
@@ -525,6 +595,21 @@ mod tests {
             std::fs::metadata(&path).expect("read the document").permissions().mode() & 0o777;
         assert_eq!(mode, 0o400, "the POSIX path rewrote the document's mode");
         drop(root);
+    }
+
+    /// The suffix check accepts exactly a process id and a counter.
+    ///
+    /// The marker decides ownership, so the check is narrow on purpose: a marked
+    /// name whose tail is something else is refused. Each case below is a shape a
+    /// looser split would accept and the sweep would then treat as its own.
+    #[test]
+    fn only_a_process_id_and_a_counter_are_a_temporary_suffix() {
+        assert!(is_temporary_suffix("4242-7"));
+        assert!(!is_temporary_suffix("a-1"), "a non-numeric process id was accepted");
+        assert!(!is_temporary_suffix("1-2-3"), "a three-part suffix was accepted");
+        assert!(!is_temporary_suffix("1"), "a suffix with no counter was accepted");
+        assert!(!is_temporary_suffix("-"), "an empty pair was accepted");
+        assert!(!is_temporary_suffix(""), "an empty suffix was accepted");
     }
 
     /// A write into a directory that does not exist fails and creates nothing.
