@@ -65,14 +65,20 @@ pub(super) type RequiredStepZipMembers = BTreeMap<String, BTreeMap<String, BTree
 pub(super) struct ExpectedStepInputs {
     /// Deterministically resolved input hashes.
     pub(super) resolved_hashes: BTreeMap<String, Hash>,
-    /// Input names whose hashes cannot be reconstructed from persisted CAS.
-    pub(super) unresolved_hash_input_names: BTreeSet<String>,
+    /// Input names this pass could not turn into a hash.
+    ///
+    /// Two failures land here, and both keep the name out of the key material:
+    /// the store could not read the object the binding names, and the binding's
+    /// own template did not resolve. A key derived without such a term is not the
+    /// step's key, so a non-empty set keeps every instance out of the strict
+    /// match.
+    pub(super) unresolved_input_names: BTreeSet<String>,
 }
 
 /// One input-binding hash resolution result.
 ///
 /// The two materialized-output variants differ in what a reader has to do about
-/// them: one names an object the store no longer holds, the other names a member
+/// them: one names an object the store could not read, the other names a member
 /// the object it holds does not yield. Each carries the failing operation's own
 /// words, because the hash and the member alone do not say what went wrong.
 pub(super) enum InputBindingHashResolution {
@@ -80,7 +86,8 @@ pub(super) enum InputBindingHashResolution {
     Resolved(Hash),
     /// Referenced prior step output is unavailable in the current traversal order.
     MissingPriorStepOutput,
-    /// The store refused or could not find the object the binding names.
+    /// The store could not read the object the binding names, whether it is
+    /// absent, corrupt or unreadable.
     MissingMaterializedObject {
         /// The failing read, in the words the store produced it under.
         detail: String,

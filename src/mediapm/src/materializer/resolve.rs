@@ -467,7 +467,10 @@ pub(super) async fn resolve_workflow_step_output_hashes(
 enum UnresolvedInputCause {
     /// The binding names a step output this traversal has not resolved.
     PriorStepOutput,
-    /// The store no longer holds the object the binding names.
+    /// The store could not read the object the binding names.
+    ///
+    /// A miss, a corrupt object and an I/O failure all land here, so the phrase
+    /// says the read failed and the detail says which way.
     MissingObject,
     /// The archive the binding names holds no member it selects, or the bytes it
     /// names are not an archive at all.
@@ -484,7 +487,7 @@ impl UnresolvedInputCause {
     fn phrase(&self) -> &'static str {
         match self {
             Self::PriorStepOutput => "names a step output this traversal did not resolve",
-            Self::MissingObject => "names an object the store does not hold",
+            Self::MissingObject => "names an object the store could not read",
             Self::MissingArchiveMember => "names an archive member the stored bytes do not contain",
             Self::UnresolvedBinding => "names a binding whose template did not resolve",
         }
@@ -507,6 +510,28 @@ impl UnresolvedInput {
             Some(detail) => format!("'{input_name}' ({}: {detail})", self.cause.phrase()),
             None => format!("'{input_name}' ({})", self.cause.phrase()),
         }
+    }
+}
+
+/// Records the bindings whose template did not resolve, keeping a cause an
+/// input already carries.
+///
+/// Each binding takes one path through
+/// [`build_instance_key_resolved_value_bytes`]: a `:zip(...)` selector is
+/// answered from the store and never reaches the template engine, and every
+/// other binding reaches the engine and never the store. A name therefore
+/// reaches one set only, and the check states that rather than assuming it: a
+/// second cause for one input would replace the store's answer with a weaker
+/// one.
+fn record_unresolved_bindings(unresolved: &mut UnresolvedInputs, bindings: &BTreeSet<String>) {
+    for input_name in bindings {
+        if unresolved.contains_key(input_name) {
+            continue;
+        }
+        unresolved.insert(
+            input_name.clone(),
+            UnresolvedInput { cause: UnresolvedInputCause::UnresolvedBinding, detail: None },
+        );
     }
 }
 
@@ -581,16 +606,11 @@ async fn resolve_single_step_output_hashes_strict(
     .await?;
     // A binding the worker resolved and this pass could not leaves a term out of
     // the key, and the key derived without it is not this step's key.
-    expected_inputs.unresolved_hash_input_names.extend(resolved_values.unresolved_names());
+    expected_inputs.unresolved_input_names.extend(resolved_values.unresolved_names());
     // A name whose hash never reconstructed already carries its own cause from
     // the pass that recorded it. Only the binding's own failures are new here, and
     // the engine reports their names without the reason each failed.
-    for input_name in &resolved_values.unresolved_bindings {
-        unresolved.insert(
-            input_name.clone(),
-            UnresolvedInput { cause: UnresolvedInputCause::UnresolvedBinding, detail: None },
-        );
-    }
+    record_unresolved_bindings(&mut unresolved, &resolved_values.unresolved_bindings);
     let key_material = materializer_key_material(
         generated_doc,
         &step.tool,
@@ -751,9 +771,9 @@ fn resolve_single_step_output_hashes_relaxed(
                 .join(", ");
             let strict_note = describe_unresolved_inputs(unresolved_inputs);
             Err(MediaPmError::Workflow(format!(
-                "workflow '{workflow_name}' step '{}': no instance answers for it, and {} instances \
-                 of tool '{conductor_tool_key}' name that step while recording different required \
-                 outputs: {described}; refusing to choose between them. \
+                "workflow '{workflow_name}' step '{}': no single instance answers for it, and {} \
+                 instances of tool '{conductor_tool_key}' name that step while recording different \
+                 required outputs: {described}; refusing to choose between them. \
                  `mediapm media invalidate <media-id> <step-index>` marks the record this state \
                  holds for the step, and the next sync runs it again.{strict_note}",
                 step.id,
@@ -885,13 +905,15 @@ async fn build_instance_key_resolved_value_bytes(
         };
         let zip_bytes = cas.get(*resolved_hash).await.map_err(|source| {
             MediaPmError::Workflow(format!(
-                "reading ZIP output '{resolved_hash}' for instance-key member '{zip_member}' failed: {source}"
+                "reading ZIP output '{resolved_hash}' for instance-key member '{}' failed: {source}",
+                zip_member.escape_debug()
             ))
         })?;
         let member_bytes =
             extract_zip_member_bytes(zip_bytes.as_ref(), zip_member).map_err(|error| {
                 MediaPmError::Workflow(format!(
-                    "extracting ZIP member '{zip_member}' for instance-key material failed: {error}"
+                    "extracting ZIP member '{}' for instance-key material failed: {error}",
+                    zip_member.escape_debug()
                 ))
             })?;
         resolved.values.insert(key.clone(), member_bytes);
@@ -1089,7 +1111,7 @@ async fn resolve_expected_input_hashes(
                 return Ok(ExpectedInputHashes { inputs: None, unresolved });
             }
             InputBindingHashResolution::MissingMaterializedObject { detail } => {
-                expected.unresolved_hash_input_names.insert(input_name.clone());
+                expected.unresolved_input_names.insert(input_name.clone());
                 unresolved.insert(
                     input_name.clone(),
                     UnresolvedInput {
@@ -1099,7 +1121,7 @@ async fn resolve_expected_input_hashes(
                 );
             }
             InputBindingHashResolution::MissingMaterializedArchiveMember { detail } => {
-                expected.unresolved_hash_input_names.insert(input_name.clone());
+                expected.unresolved_input_names.insert(input_name.clone());
                 unresolved.insert(
                     input_name.clone(),
                     UnresolvedInput {
@@ -1142,7 +1164,10 @@ async fn resolve_input_binding_hash(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     return Ok(InputBindingHashResolution::MissingMaterializedArchiveMember {
-                        detail: format!("extracting ZIP member '{zip_member}' failed: {error}"),
+                        detail: format!(
+                            "extracting ZIP member '{}' failed: {error}",
+                            zip_member.escape_debug()
+                        ),
                     });
                 }
             };
@@ -1188,7 +1213,7 @@ pub(super) fn instance_matches_expected_inputs(
 ) -> bool {
     // An input whose hash this traversal could not reconstruct would drop out of
     // the key material, and the key derived without it is not this step's key.
-    if !expected_inputs.unresolved_hash_input_names.is_empty() {
+    if !expected_inputs.unresolved_input_names.is_empty() {
         return false;
     }
     mediapm_conductor::instance_matches_stored_key(*instance_key, instance, key_material)
@@ -3444,6 +3469,10 @@ mod tests {
             "the refusal no longer warns about a record the matcher cannot admit: {message}"
         );
         assert!(
+            message.contains("no single instance answers for it"),
+            "the refusal says the step has no single answering instance: {message}"
+        );
+        assert!(
             !message.contains("matched no instance by key"),
             "the refusal does not claim a key matched nothing when no key was derived: {message}"
         );
@@ -3572,16 +3601,166 @@ mod tests {
             .describe("source");
 
         assert!(
-            absent.contains("store does not hold"),
-            "an archive the store lost is reported as a lost object: {absent}"
+            absent.contains("store could not read"),
+            "an archive the store lost is reported as a read the store could not do: {absent}"
         );
         assert!(
-            !unreadable.contains("store does not hold"),
+            !unreadable.contains("could not read"),
             "bytes the store holds are not reported as missing from it: {unreadable}"
         );
         assert_ne!(
             absent, unreadable,
             "the two ways an archive input fails send a reader to different places"
+        );
+    }
+
+    /// Removes the store's read-only mark from a committed blob so a test can
+    /// replace the bytes behind the name.
+    ///
+    /// The store marks every committed object read-only, and Windows refuses to
+    /// unlink a file that carries the attribute. POSIX governs removal by the
+    /// directory's write permission, so nothing there needs changing.
+    #[cfg(windows)]
+    fn make_blob_replaceable(path: &Path) {
+        let mut permissions = std::fs::metadata(path).expect("blob metadata").permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions).expect("clear the read-only attribute");
+    }
+
+    /// Nothing to do off Windows, where `remove_file` needs no mode change.
+    #[cfg(not(windows))]
+    fn make_blob_replaceable(_path: &Path) {}
+
+    /// An object the store holds and cannot read is not reported as absent.
+    ///
+    /// The phrase a cause contributes has to be true of every way that cause
+    /// arises. This one is built from any failed store read, and a store asked to
+    /// verify an object whose bytes no longer hash to their name fails that read
+    /// with `corrupt object`. Saying the store does not hold such an object sends
+    /// a reader looking for a missing file beside the one that is there.
+    #[tokio::test]
+    async fn an_object_the_store_holds_and_cannot_read_is_not_reported_as_absent() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open_with_strategies(
+            cas_root.path(),
+            vec![mediapm_cas::VerifyTriggerStrategy::Always],
+        )
+        .await
+        .expect("open a verifying cas");
+        // Larger than the WAL's inline limit, so the store keeps the payload in
+        // the blob store and a read has to verify it. A smaller object stays
+        // inline in the log, and a read answers from there without touching the
+        // bytes this test replaced.
+        let archive = cas
+            .put(bytes::Bytes::from(vec![0x41_u8; 1_200_000]))
+            .await
+            .expect("put a payload the store keeps out of the log");
+        let path = cas.object_path_for_hash(archive).expect("a file store names the object's path");
+        assert!(path.is_file(), "the payload is stored as a blob: {}", path.display());
+        make_blob_replaceable(&path);
+        std::fs::remove_file(&path).expect("remove the committed blob");
+        std::fs::write(&path, b"bytes the store never hashed")
+            .expect("write bytes under that name");
+
+        let step_inputs = BTreeMap::from([(
+            "source".to_string(),
+            "${step_output.pack.pack:zip(payload.txt)}".to_string(),
+        )]);
+        let pack =
+            BTreeMap::from([("pack".to_string(), BTreeMap::from([("pack".to_string(), archive)]))]);
+
+        let unresolved =
+            resolve_expected_input_hashes(&cas, &relaxed_generated_doc(), &step_inputs, &pack)
+                .await
+                .expect("an unreadable object is an unresolved input, not an error");
+        let described = unresolved
+            .unresolved
+            .get("source")
+            .expect("the archive input is unresolved")
+            .describe("source");
+
+        assert!(
+            described.contains("corrupt"),
+            "the store's own words say which read failed: {described}"
+        );
+        assert!(
+            described.contains(UnresolvedInputCause::MissingObject.phrase()),
+            "the cause names a read the store could not do: {described}"
+        );
+        assert!(
+            !described.contains("does not hold"),
+            "bytes the store holds are not reported as missing from it: {described}"
+        );
+    }
+
+    /// A member name cannot split the line that reports it.
+    ///
+    /// A ZIP member selector is document text, like a media id, so a name
+    /// carrying a newline must not reach the refusal unescaped: one input's
+    /// failure would otherwise read as two lines, the second of which looks like
+    /// a message of its own.
+    #[tokio::test]
+    async fn a_member_name_cannot_split_the_line_that_reports_it() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let not_an_archive =
+            put_payload(&cas, b"these bytes are not a zip archive", "not an archive").await;
+
+        let step_inputs = BTreeMap::from([(
+            "source".to_string(),
+            "${step_output.pack.pack:zip(payload\ntxt)}".to_string(),
+        )]);
+        let pack = BTreeMap::from([(
+            "pack".to_string(),
+            BTreeMap::from([("pack".to_string(), not_an_archive)]),
+        )]);
+
+        let unresolved =
+            resolve_expected_input_hashes(&cas, &relaxed_generated_doc(), &step_inputs, &pack)
+                .await
+                .expect("an unreadable archive is an unresolved input, not an error");
+        let described = unresolved
+            .unresolved
+            .get("source")
+            .expect("the archive input is unresolved")
+            .describe("source");
+
+        assert!(
+            !described.contains('\n'),
+            "the member name cannot break the line it is reported on: {described}"
+        );
+        assert!(
+            described.contains(r"payload\ntxt"),
+            "the escaped name still says which member was selected: {described}"
+        );
+    }
+
+    /// A binding failure does not replace the cause an input already carries.
+    ///
+    /// The two failures reach different sets by construction, and the merge keeps
+    /// the recorded cause anyway. Overwriting would replace the store's answer
+    /// with one that names the document, which sends a reader to the wrong file.
+    #[test]
+    fn a_binding_failure_does_not_replace_the_cause_an_input_carries() {
+        let mut unresolved = UnresolvedInputs::from([(
+            "source".to_string(),
+            UnresolvedInput {
+                cause: UnresolvedInputCause::MissingObject,
+                detail: Some("reading ZIP output 'h' failed: corrupt object h".to_string()),
+            },
+        )]);
+        record_unresolved_bindings(&mut unresolved, &BTreeSet::from(["source".to_string()]));
+
+        let kept = unresolved.get("source").expect("the input stays unresolved");
+        assert_eq!(
+            kept.cause.phrase(),
+            UnresolvedInputCause::MissingObject.phrase(),
+            "the store's answer survives a binding failure for the same input"
+        );
+        assert_eq!(
+            kept.detail.as_deref(),
+            Some("reading ZIP output 'h' failed: corrupt object h"),
+            "the failing read's own words survive as well"
         );
     }
 
