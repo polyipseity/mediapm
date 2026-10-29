@@ -603,6 +603,11 @@ where
     /// instance reachability pruning, CAS orphan reclamation, and CAS metadata
     /// maintenance.
     ///
+    /// The report says what the pass decided, not only what it counted: a pass
+    /// that refused to walk reports zero instances for want of a judgement,
+    /// while a pass over an empty library reports zero for want of a library.
+    /// The caller prints which happened, because the counts cannot say.
+    ///
     /// Which instances survive is decided inside the pass, from the seeds each
     /// successful run recorded and the input edges their records name.  A
     /// caller cannot supply a key set: the only caller that ever did passed an
@@ -626,16 +631,16 @@ where
     /// # Panics
     ///
     /// Panics if the in-memory orchestration state mutex is poisoned.
-    pub async fn run_gc(&self) -> Result<(), ConductorError> {
+    pub async fn run_gc(&self) -> Result<crate::gc::ConductorGcReport, ConductorError> {
         ensure_runtime_root(&self.storage_paths)?;
         let client = self.ensure_actor_client().await?;
         let unified = load_unified_config(self.storage_paths())?;
         let _gate = self.state_gate.lock().await;
         let state = self.state.lock().expect("state lock").clone();
-        let new_state = client.run_gc(state, unified).await?;
+        let (new_state, report) = client.run_gc(state, unified).await?;
         self.save_state(&new_state)?;
         *self.state.lock().expect("state lock") = new_state;
-        Ok(())
+        Ok(report)
     }
 
     /// Writes one state snapshot to the configured state file.

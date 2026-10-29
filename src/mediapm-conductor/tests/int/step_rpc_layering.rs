@@ -122,7 +122,7 @@ async fn the_control_plane_arms_keep_their_short_rpc_timeout_text() {
     assert_short_timeout_text("runtime_diagnostics", diagnostics.map(|_| ()));
 
     let gc = tc.conductor().run_gc().await;
-    assert_short_timeout_text("RunGc", gc);
+    assert_short_timeout_text("RunGc", gc.map(|_| ()));
 
     let shutdown = tc.conductor().shutdown().await;
     assert_short_timeout_text("Shutdown", shutdown);

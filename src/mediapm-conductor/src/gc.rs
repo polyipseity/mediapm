@@ -65,17 +65,48 @@ use crate::orchestration::protocol::UnifiedNickelDocument;
 
 use crate::state::{CapturedOutput, ConductorState};
 
+/// What one GC pass decided, as distinct from what it counted.
+///
+/// The counts in [`ConductorGcReport`] are all zero in two unrelated
+/// situations: a pass that declined to walk, and a pass that walked a library
+/// holding no instance. Only the first means the pass judged nothing, so the
+/// two cannot be told apart by the numbers and this field says which happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GcClassification {
+    /// The walk ran, so the counts describe it.
+    ///
+    /// An empty library and a walked library whose every record is outside the
+    /// closure both land here, and the counts separate them: no instances at
+    /// all gives zero reachable and zero superseded, while a closure that
+    /// missed everything gives zero reachable and a superseded count above
+    /// zero.
+    Classified,
+    /// The pass refused to judge, because it could not trust the walk.
+    ///
+    /// Nothing was classified and nothing was evicted. Every output stayed
+    /// rooted, because a walk the pass declined to use is no evidence that
+    /// bytes are disposable.
+    Abstained {
+        /// What the pass could not vouch for, in words an operator can act on.
+        reason: String,
+    },
+}
+
 /// Aggregate report from one full conductor GC cycle.
-#[derive(Debug, Clone, Default)]
+///
+/// There is no `Default`: a zeroed report is the report a walk that found
+/// nothing produces, and handing one to a caller that never ran a walk would
+/// state that as a fact.
+#[derive(Debug, Clone)]
 pub struct ConductorGcReport {
     /// Number of tool-call instances evicted by the TTL grace period.
     pub instances_removed: usize,
     /// Number of instances the reachability walk kept, whose
     /// `last_referenced_at` this pass refreshed.
     ///
-    /// Zero when the pass abstains for want of a seed, because nothing was
-    /// classified: the count is a statement about the walk, not about how many
-    /// instances happen to exist.
+    /// Zero when the pass abstains, because nothing was classified: the count
+    /// is a statement about the walk, not about how many instances happen to
+    /// exist. [`Self::classification`] is what tells the two apart.
     pub reachable_instances: usize,
     /// Number of recorded instances the walk did not reach.
     ///
@@ -83,6 +114,8 @@ pub struct ConductorGcReport {
     /// expired, so this count can exceed [`Self::instances_removed`]. Zero when
     /// the pass abstains.
     pub superseded_instances: usize,
+    /// What the pass decided, which the counts alone cannot express.
+    pub classification: GcClassification,
     /// Number of orphan CAS blobs deleted.
     pub orphans_removed: usize,
     /// Result of the final CAS maintenance / constraint-pruning step.
@@ -216,12 +249,12 @@ pub(crate) fn run_instance_gc(
                 .saturating_sub(state.tool_call_instances.len()),
             reachable_instances,
             superseded_instances,
-            abstained: false,
+            abstention: None,
         };
     };
 
     tracing::info!("conductor GC phase 1/3: {reason}, so this pass refreshes and evicts nothing");
-    InstanceGcCounts { abstained: true, ..InstanceGcCounts::default() }
+    InstanceGcCounts { abstention: Some(reason), ..InstanceGcCounts::default() }
 }
 
 /// Whether a captured output recorded itself as not worth keeping.
@@ -309,7 +342,7 @@ where
     // is recomputed rather than carried out of phase 1 because phase 1 abstains
     // without computing one, and an abstention is exactly the case where this
     // pass must keep every output.
-    let reachable = (!counts.abstained).then(|| reachability_closure(state));
+    let reachable = counts.abstention.is_none().then(|| reachability_closure(state));
     for (instance_key, instance) in &state.tool_call_instances {
         for record in instance.outputs.values() {
             if keeps_output(record, instance_key, reachable.as_ref()) {
@@ -347,13 +380,16 @@ where
         instances_removed: counts.instances_removed,
         reachable_instances: counts.reachable_instances,
         superseded_instances: counts.superseded_instances,
+        classification: counts
+            .abstention
+            .map_or(GcClassification::Classified, |reason| GcClassification::Abstained { reason }),
         orphans_removed,
         prune_report,
     })
 }
 
 /// What one instance-only pass decided.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InstanceGcCounts {
     /// Records evicted because their grace period had expired.
     pub instances_removed: usize,
@@ -362,13 +398,15 @@ pub(crate) struct InstanceGcCounts {
     /// Records the walk did not reach, whether or not they were old enough to
     /// evict.
     pub superseded_instances: usize,
-    /// Whether the pass refused to decide, because it could not trust the walk.
+    /// Why the pass refused to decide, or `None` when it walked.
     ///
-    /// An abstained pass classifies nothing, so the counts above stay zero and
-    /// the caller must not read the absence of a classification as "nothing is
-    /// reachable": no instance may lose its bytes on the strength of a walk the
-    /// pass declined to use.
-    pub abstained: bool,
+    /// The reason travels with the counts rather than only into a log line,
+    /// because the caller that prints the pass result needs to say what the
+    /// pass could not vouch for. An abstained pass classifies nothing, so the
+    /// counts above stay zero and the caller must not read their absence as
+    /// "nothing is reachable": no instance may lose its bytes on the strength
+    /// of a walk the pass declined to use.
+    pub abstention: Option<String>,
 }
 
 /// Runs full CAS maintenance: optimize, prune constraints.
@@ -549,6 +587,131 @@ mod tests {
             state.tool_call_instances.contains_key(&orphan),
             "an empty document must abstain, not sweep the store",
         );
+    }
+
+    /// A pass that declined to walk is a different outcome from a pass that
+    /// walked an empty library, and the report has to say which happened.
+    ///
+    /// The walk's counts are zero in both cases, so the counts cannot carry the
+    /// distinction on their own. An operator who reads zero as "nothing is
+    /// reachable" believes the pass kept less than it did, and the empty-library
+    /// side has to be asserted too: an empty library is the one case where the
+    /// zero counts are the whole truth rather than a redaction.
+    #[tokio::test]
+    async fn an_abstained_pass_reports_a_different_outcome_than_an_empty_library() {
+        let mut abstaining_state = state_with(vec![instance("orphan", &[], &[])], BTreeMap::new());
+        let abstained = run_conductor_gc(
+            &InMemoryCas::new(),
+            &mut abstaining_state,
+            &unified_with(&["declared"]),
+            0,
+        )
+        .await
+        .expect("gc");
+
+        let mut empty_state =
+            state_with(Vec::new(), BTreeMap::from([("declared".to_string(), BTreeSet::new())]));
+        let emptied = run_conductor_gc(
+            &InMemoryCas::new(),
+            &mut empty_state,
+            &unified_with(&["declared"]),
+            0,
+        )
+        .await
+        .expect("gc");
+
+        let GcClassification::Abstained { reason } = &abstained.classification else {
+            panic!("an unseeded workflow must abstain, got {:?}", abstained.classification);
+        };
+        assert!(
+            reason.contains("declared"),
+            "the reason must name the workflow with no seed, got {reason:?}",
+        );
+
+        assert_eq!(
+            emptied.classification,
+            GcClassification::Classified,
+            "a walk over an empty library judged an empty library",
+        );
+        assert_eq!(
+            emptied.reachable_instances, 0,
+            "there was nothing to reach, and the walk says so",
+        );
+        assert_eq!(emptied.superseded_instances, 0, "an empty library supersedes nothing");
+        assert_eq!(emptied.instances_removed, 0, "and evicts nothing");
+        assert_eq!(emptied.orphans_removed, 0, "and reclaims no orphan blob");
+    }
+
+    /// An abstained report carries the reason, not only the refusal.
+    ///
+    /// The reason is what an operator acts on: a workflow with no recorded seed
+    /// means a workflow that never ran, while an empty workflow map means a
+    /// config discovery that found nothing. The two need different fixes.
+    #[tokio::test]
+    async fn an_abstained_report_names_what_it_could_not_vouch_for() {
+        let mut state = state_with(vec![instance("orphan", &[], &[])], BTreeMap::new());
+
+        let report =
+            run_conductor_gc(&InMemoryCas::new(), &mut state, &unified_with(&["declared"]), 0)
+                .await
+                .expect("gc");
+
+        let GcClassification::Abstained { reason } = &report.classification else {
+            panic!("an unseeded workflow must abstain, got {:?}", report.classification);
+        };
+        assert!(
+            reason.contains("declared"),
+            "the reason must name the workflow with no seed, got {reason:?}",
+        );
+    }
+
+    /// An empty workflow map and a missing seed are refusals with different
+    /// reasons, so one message cannot serve both.
+    #[tokio::test]
+    async fn an_empty_workflow_map_abstains_for_its_own_reason() {
+        let mut state = state_with(vec![instance("orphan", &[], &[])], BTreeMap::new());
+
+        let report = run_conductor_gc(&InMemoryCas::new(), &mut state, &unified_with(&[]), 0)
+            .await
+            .expect("gc");
+
+        let GcClassification::Abstained { reason } = &report.classification else {
+            panic!("an empty workflow map must abstain, got {:?}", report.classification);
+        };
+        assert!(
+            reason.contains("declares no workflow"),
+            "the reason must name the missing document, got {reason:?}",
+        );
+    }
+
+    /// A pass that walked a library and reached nothing is classified, not
+    /// abstained, and the counts say which of the two classified shapes it is.
+    ///
+    /// Zero reachable instances with a superseded count above zero means the
+    /// walk ran and the closure missed every record. A pass over an empty
+    /// library also reports zero reachable, with nothing to supersede.
+    #[tokio::test]
+    async fn a_walk_that_reaches_nothing_is_classified_rather_than_abstained() {
+        let seeded = Hash::from_content(b"seeded");
+        let mut state = state_with(
+            vec![instance("orphan", &[], &[seeded])],
+            BTreeMap::from([("declared".to_string(), BTreeSet::from([seeded]))]),
+        );
+        keep_records_within_their_grace_period(&mut state);
+
+        let report =
+            run_conductor_gc(&InMemoryCas::new(), &mut state, &unified_with(&["declared"]), 0)
+                .await
+                .expect("gc");
+
+        assert_eq!(
+            report.classification,
+            GcClassification::Classified,
+            "the walk ran, so no refusal happened",
+        );
+        assert_eq!(report.reachable_instances, 0, "the seed names a hash, not the record");
+        assert_eq!(report.superseded_instances, 1, "the record is outside the closure");
+        assert_eq!(report.instances_removed, 0, "and inside its grace period");
     }
 
     /// An abstaining pass prunes no seed.

@@ -55,8 +55,12 @@ pub(crate) enum ConductorMessage {
         state: ConductorState,
         /// Unified configuration whose hashes protect blobs from reclamation.
         unified: UnifiedNickelDocument,
-        /// Reply channel.
-        reply: RpcReplyPort<Result<ConductorState, ConductorError>>,
+        /// Reply channel: the updated state, plus what the pass decided.
+        ///
+        /// The report travels with the state because a caller cannot derive it:
+        /// the counts it carries are zero both for a pass that abstained and
+        /// for a pass over an empty library, and only the pass knows which.
+        reply: RpcReplyPort<Result<(ConductorState, crate::gc::ConductorGcReport), ConductorError>>,
     },
     /// Deterministically stops the actor's own resources (the step-worker
     /// pool) before the actor is stopped.
@@ -124,7 +128,7 @@ where
             }
             ConductorMessage::RunGc { state: mut gc_state, unified, reply } => {
                 let result = state.run_gc(&mut gc_state, &unified).await;
-                let _ = reply.send(result.map(|_| gc_state));
+                let _ = reply.send(result.map(|report| (gc_state, report)));
             }
             ConductorMessage::Shutdown { reply } => {
                 let result = state.shutdown().await;
@@ -261,6 +265,10 @@ impl ConductorActorClient {
     /// seeds each successful run recorded, which no caller outside the state
     /// can see.
     ///
+    /// The reply also carries the pass report, because the distinction between
+    /// an abstained pass and a pass over an empty library exists only inside
+    /// the pass.
+    ///
     /// # Errors
     ///
     /// Returns [`ConductorError::Internal`] when the actor is unreachable or
@@ -269,7 +277,7 @@ impl ConductorActorClient {
         &self,
         state: ConductorState,
         unified: UnifiedNickelDocument,
-    ) -> Result<ConductorState, ConductorError> {
+    ) -> Result<(ConductorState, crate::gc::ConductorGcReport), ConductorError> {
         match self
             .actor_ref
             .call(|reply| ConductorMessage::RunGc { state, unified, reply }, Some(self.rpc_timeout))

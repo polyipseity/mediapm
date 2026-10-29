@@ -21,6 +21,7 @@ use crate::api::{PathOverrides, RunWorkflowOptions, RuntimeStoragePaths};
 use crate::conductor_impl::Conductor;
 use crate::defaults;
 use crate::error::ConductorError;
+use crate::gc::{ConductorGcReport, GcClassification};
 use crate::state::ConductorState;
 
 // ---------------------------------------------------------------------------
@@ -427,11 +428,42 @@ async fn cmd_export_schemas(output: PathBuf) -> Result<(), ConductorError> {
     Ok(())
 }
 
+/// Runs the full GC cycle and reports what the pass decided.
+///
+/// The report carries the decision because the counts cannot: an abstained pass
+/// and a pass over an empty library both report zero instances, and telling an
+/// operator that collection "completed" when it judged nothing would let them
+/// believe a sweep ran that did not. An abstention is a legitimate outcome, so
+/// it exits successfully.
 async fn cmd_gc() -> Result<(), ConductorError> {
     let conductor = ensure_conductor().await?;
-    conductor.run_gc().await?;
-    println!("Garbage collection completed");
+    let report = conductor.run_gc().await?;
+    println!("{}", gc_summary_line(&report));
     Ok(())
+}
+
+/// Renders the one line `conductor gc` prints for a finished pass.
+///
+/// Pure so both outcomes can be asserted without running a sweep. The
+/// abstained wording is scoped to what the walk declined to do: an abstaining
+/// pass still reclaims every blob outside the root set, so a sentence saying
+/// nothing was evicted would be false whenever `orphans_removed` is above zero.
+/// It also carries no failure word, because abstaining is a legitimate
+/// outcome, not an error.
+fn gc_summary_line(report: &ConductorGcReport) -> String {
+    match &report.classification {
+        GcClassification::Classified => "Garbage collection completed".to_string(),
+        GcClassification::Abstained { reason } => {
+            let reclaimed = match report.orphans_removed {
+                0 => "no orphan blob was reclaimed".to_string(),
+                1 => "1 orphan blob was reclaimed".to_string(),
+                count => format!("{count} orphan blobs were reclaimed"),
+            };
+            format!(
+                "Garbage collection abstained: {reason}; no instance was classified; {reclaimed}",
+            )
+        }
+    }
 }
 
 /// Renders `shell`'s completion script for this CLI to stdout.
@@ -456,11 +488,12 @@ mod tests {
     use mediapm_utils::Timestamp;
 
     use super::{
-        MarkerChange, change_instance_invalidation, marker_change_message,
+        MarkerChange, change_instance_invalidation, gc_summary_line, marker_change_message,
         set_instance_invalidation,
     };
     use crate::api::RuntimeStoragePaths;
     use crate::conductor_impl::Conductor;
+    use crate::gc::{ConductorGcReport, GcClassification};
     use crate::state::{CapturedOutput, ConductorState, StepRef, ToolCallInstance};
 
     /// Builds the state one command test starts from: a single recorded
@@ -746,5 +779,104 @@ mod tests {
             marker_change_message("k", false, MarkerChange::AlreadyInRequestedState),
             "Tool call instance 'k' is not marked invalid",
         );
+    }
+
+    /// Builds a report for the summary tests with every count zero except the
+    /// ones a case states.
+    ///
+    /// A count left at its zero also has to be one the sentence may ignore: the
+    /// assertions that follow read the line, so a case that should not mention a
+    /// count leaves it zero and the wording has nothing to mention.
+    fn report_with(classification: GcClassification, orphans_removed: usize) -> ConductorGcReport {
+        ConductorGcReport {
+            instances_removed: 0,
+            reachable_instances: 0,
+            superseded_instances: 0,
+            classification,
+            orphans_removed,
+            prune_report: mediapm_cas::PruneReport::default(),
+        }
+    }
+
+    /// A pass that judged the library reports that it finished.
+    #[test]
+    fn a_classified_pass_reports_completion() {
+        let line = gc_summary_line(&report_with(GcClassification::Classified, 0));
+
+        assert_eq!(line, "Garbage collection completed");
+    }
+
+    /// An abstained pass is not a completion and not a failure.
+    ///
+    /// Both wrong readings cost an operator something: "completed" says the
+    /// walk judged the library when it declined to, and a failure word sends
+    /// them looking for a broken store after a legitimate refusal.
+    #[test]
+    fn an_abstained_pass_reports_neither_completion_nor_failure() {
+        let line = gc_summary_line(&report_with(
+            GcClassification::Abstained {
+                reason: "workflow 'declared' has no recorded seed".into(),
+            },
+            0,
+        ));
+
+        assert!(line.contains("abstained"), "the outcome must be named, got {line:?}");
+        assert!(
+            line.contains("workflow 'declared' has no recorded seed"),
+            "the reason must reach the operator, got {line:?}",
+        );
+        assert!(
+            line.contains("no orphan blob was reclaimed"),
+            "with no reclaimed blob the line must say so rather than go silent, got {line:?}",
+        );
+        assert!(
+            !line.contains("completed"),
+            "an abstained pass must not claim to have completed, got {line:?}",
+        );
+        let lowered = line.to_lowercase();
+        for word in ["error", "fail", "failure"] {
+            assert!(
+                !lowered.contains(word),
+                "an abstained pass is not a failure, and the line says {word:?}: {line:?}",
+            );
+        }
+    }
+
+    /// An abstained pass still reclaims orphan blobs, so the line reports the
+    /// count instead of claiming nothing left the store.
+    #[test]
+    fn an_abstained_pass_reports_the_orphan_blobs_it_reclaimed() {
+        let line = gc_summary_line(&report_with(
+            GcClassification::Abstained {
+                reason: "workflow 'declared' has no recorded seed".into(),
+            },
+            3,
+        ));
+
+        assert!(
+            line.contains("3 orphan blobs were reclaimed"),
+            "the reclaimed count must be on the line, got {line:?}",
+        );
+        assert!(
+            !line.contains("nothing was evicted"),
+            "the pass did evict blobs, so the line must not deny it: {line:?}",
+        );
+    }
+
+    /// One reclaimed blob is singular, because the line is read by a person.
+    #[test]
+    fn the_orphan_blob_count_is_singular_for_one() {
+        let line = gc_summary_line(&report_with(
+            GcClassification::Abstained {
+                reason: "workflow 'declared' has no recorded seed".into(),
+            },
+            1,
+        ));
+
+        assert!(
+            line.contains("1 orphan blob was reclaimed"),
+            "one blob is singular on the line, got {line:?}",
+        );
+        assert!(!line.contains("1 orphan blobs"), "one blob is not plural: {line:?}");
     }
 }
