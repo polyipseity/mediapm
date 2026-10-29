@@ -167,12 +167,14 @@ canonical_version") for the format, the non-transitive rule, and
 
 ## State write policy
 
-`state.json` is written unconditionally via `std::fs::write` after every sync
-pass. No byte-level change detection is applied: it is the runtime audit trail
-recording each sync's observed metadata (canonical version, deploy timestamp,
-fetch hash), and a rotating autobuild tag that yields identical payloads is
-still a meaningful state change. `conductor.generated.ncl` absorbs
-artifact-stability via its own change-detected write policy
+`state.json` is written unconditionally after every sync pass, through
+`mediapm_utils::fs::write_bytes_atomically`, which writes a sibling temporary,
+fsyncs it, renames it over the target and syncs the directory. No byte-level
+change detection is applied: it is the runtime audit trail recording each
+sync's observed metadata (canonical version, deploy timestamp, fetch hash), and
+a rotating autobuild tag that yields identical payloads is still a meaningful
+state change. `conductor.generated.ncl` absorbs artifact-stability via its own
+change-detected write policy
 (`write_bytes_if_changed`).
 
 **Invariant:** `state.json` content changes are not errors. A diff showing only

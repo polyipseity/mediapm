@@ -788,6 +788,39 @@ mod tests {
         );
     }
 
+    /// A binding that reads declared external data is work, and its own clause
+    /// is what says so.
+    ///
+    /// A `${external_data.<hash>}` binding names bytes the document declares, so
+    /// two runs over different declared bytes are different work. The step-output
+    /// clause beside it does not cover this shape: the text contains neither
+    /// `step_output.` nor `inputs.`, so without its own clause the binding would
+    /// be read as host-only and keyed by its own text, and every declared value
+    /// would collapse into one key.
+    #[test]
+    fn an_external_data_binding_reaches_the_key_through_its_bytes() {
+        let parts = ["-i".to_string(), "${inputs.source}".to_string()];
+        let binding = "${external_data.blake3:abc}";
+        let bindings = BTreeMap::from([("source".to_string(), binding.to_string())]);
+        let first = BTreeMap::from([("source".to_string(), b"first".to_vec())]);
+        let second = BTreeMap::from([("source".to_string(), b"second".to_vec())]);
+
+        let from_first = key_material_for_tool(&parts, &first, &bindings);
+        assert_ne!(
+            from_first,
+            key_material_for_tool(&parts, &second, &bindings),
+            "declared bytes are work, so a different declared value must move the key",
+        );
+        assert_eq!(
+            from_first[1],
+            Hash::composite(&[
+                Hash::from_content(parts[1].as_bytes()),
+                Hash::from_content(b"first"),
+            ]),
+            "the term is the declared bytes, not the binding text that names them",
+        );
+    }
+
     /// A builtin keys its inputs in name order, each name and value composed.
     #[test]
     fn a_builtin_keys_its_inputs_by_name() {

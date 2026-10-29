@@ -582,7 +582,10 @@ fn instance_names_step(instance: &ToolCallInstance, workflow_name: &str, step_id
 /// - several that disagree on a required output: this refuses, naming the
 ///   workflow, the step, the tool key and every candidate. A step names the
 ///   work it performs, so a state where two records answer to it with different
-///   bytes needs a re-run.
+///   bytes needs a re-run, which `mediapm media invalidate <media-id>
+///   <step-index>` starts. Two limits belong with that advice: the command
+///   cannot mark a record whose ref carries no workflow id, and a step whose
+///   inputs do not resolve reports the same disagreement after the re-run.
 fn resolve_single_step_output_hashes_relaxed(
     generated_doc: &NickelDocument,
     state: &ConductorState,
@@ -2777,12 +2780,12 @@ mod tests {
     ///
     /// The caller proves every instance pairs with some step's recorded
     /// provenance before calling this, so a fixture the planner cannot pair is
-    /// never touched. The replacement works on the file's JSON text: the key is
-    /// the `tool_call_instances` map key, and it appears again in every
-    /// `aux.live_instances` entry that names it, so both move together or the
-    /// fixture would carry a live seed pointing at no record. The edited text is
-    /// decoded and re-encoded through `encode_state_json` before it is written,
-    /// so the fixture always lands in the current wire shape. The bytes
+    /// never touched. The replacement works on the decoded value: the key is the
+    /// `tool_call_instances` map key, and it appears again in every
+    /// `aux.live_instances` entry that names it, so both move together by
+    /// construction rather than by a substring of the file text that happens to
+    /// match. The result is re-encoded once through `encode_state_json` before it
+    /// is written, so the fixture always lands in the current wire shape. The bytes
     /// go to a sibling temporary file in the fixture's own directory and are
     /// then renamed over it, so a partial write is never observable in a
     /// checked-in record; the sibling path keeps the rename on one filesystem,

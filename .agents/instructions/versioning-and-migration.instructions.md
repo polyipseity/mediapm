@@ -1,7 +1,7 @@
 ---
 description: "Use when adding versioned structs, wire formats, DeltaState bridges, or version migrations anywhere in src/, or when choosing version sequences (schema, wire-format, domain-separator and key-scheme versions step forward as integers, no dotted revision)."
 name: "Struct versioning and migration protocol"
-applyTo: "src/**/*.rs"
+applyTo: "src/**/*.rs, **/*.ncl"
 ---
 
 # Struct Versioning and Migration Protocol
@@ -25,7 +25,7 @@ A tag sits in the payload it belongs to or in the filename. Each surface picks o
 
 Every versioned config surface follows this shape, on either transport:
 
-1. **Migrations live at the version boundary.** Each `vN.ncl` owns the edges into and out of itself: `v2.ncl` exports `migrate_v1_to_v2` and `migrate_v3_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`. `mod.ncl` selects the edge and composes two hops for the `1 <-> 3` pairs, so no edge implementation lives in the registry. The JSON documents do the same in Rust, in `versions/mod.rs` or `state/versions/`.
+1. **Migrations live at the version boundary.** Each version owns the edges into and out of itself, and the registry only dispatches. `.agents/instructions/nickel.instructions.md` states the Nickel rule ("Migration placement policy"); the JSON documents do the same in Rust, in `versions/mod.rs` or `state/versions/`.
 2. **Parse into a `*Latest` boundary type.** The conductor's `config/versions/mod.rs` parses into `v_latest::NickelEnvelopeLatest`, and `from_boundary` and `into_boundary` are the two directions. The mediapm side parses into `MediaRuntimeStorageLatest` and resolves it with `resolve_runtime_storage`.
 3. **Resolve defaults into plain values** with a separate resolved model: user-facing config types use plain values with serde defaults, not `Option<T>`. `resolve_runtime_storage` turns `MediaRuntimeStorageLatest` into `MediaRuntimeStorage`, and an unset boundary path stays empty so the `MediaPmPaths` defaults win. The resolved model's `Option`s are documented exceptions: `cache_root_override` exists for tests, and the `resolved_*` provenance fields record an absent upstream value.
 
