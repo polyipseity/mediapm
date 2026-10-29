@@ -8,8 +8,8 @@
 //!
 //! Each save also removes the temporaries a dead writer left beside the same
 //! target, so an interrupted publish costs one stale name rather than a growing
-//! pile of them. The name carries [`TEMPORARY_MARKER`], which is what tells a
-//! leftover of this helper from a file somebody else put there.
+//! pile of them. The name carries [`TEMPORARY_MARKER`], which narrows what counts
+//! as a leftover of this helper from what another program put there.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -40,9 +40,10 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// was beside it unaffected.
 ///
 /// A leftover named the old way, without [`TEMPORARY_MARKER`], is not swept: the
-/// sweep removes only names this version of the helper builds. Those files are a
-/// fixed historical set rather than a growing one, and matching a name a person's
-/// backup or editor can also produce was the larger risk.
+/// sweep removes only names this version of the helper builds. That is a fixed
+/// set only while every writer is this version. An older installed binary keeps
+/// writing the old name, and nothing reclaims what it leaves. Matching a name a
+/// person's backup or editor can also produce was the larger risk.
 ///
 /// A save keeps the target's permissions. The rename replaces the target's
 /// inode with the temporary's, so without copying the mode across, a document a
@@ -62,10 +63,11 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// on the containing directory, so the clear touches nothing there.
 ///
 /// Before the write, the target's directory is read once so the temporaries a
-/// dead writer left can be removed. That is the sweep's whole cost: one
-/// enumeration of the directory per save, paid by a document published at the root
-/// of a large library on every publication. The read happens before the write, so
-/// a slow listing delays the document rather than risking it.
+/// dead writer left can be removed. That enumeration is the sweep's whole cost,
+/// and it is an upper bound per call rather than per document: a caller that
+/// skips the publish when its bytes are unchanged — `write_bytes_if_changed` in
+/// mediapm does — reads no directory at all. The read happens before the write,
+/// so a slow listing delays the document rather than risking it.
 ///
 /// After the rename the parent directory is synced, which makes the new name
 /// durable rather than only the bytes it points at. That sync is best-effort
@@ -150,8 +152,17 @@ static TEMPORARY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 /// wrote beside the same document, and only the name can carry that. A bare
 /// `.tmp-<digits>-<digits>` suffix does not: `state.json.tmp-2024-01` is what a
 /// backup or archive tool produces, and it has the shape a process id and a
-/// counter take. The marker is what makes the sweep's claim about ownership true
-/// by construction rather than by convention.
+/// counter take. The marker narrows the collision from any two numeric parts to
+/// this literal, which is a name only this helper writes. It does not make the
+/// sweep safe by construction: a person who types `state.json.mediapm-tmp-2024-01`
+/// beside a document still produces a name the sweep treats as its own once the
+/// file is an hour old. What the marker buys is that the shape alone, with no
+/// marker, is never enough.
+///
+/// The spelling is persisted state. A leftover keeps the marker of the version
+/// that wrote it, so editing this literal abandons every leftover already on
+/// disk: the sweep stops matching them and nothing else reclaims them. A test
+/// pins the literal for that reason.
 const TEMPORARY_MARKER: &str = ".mediapm-tmp-";
 
 /// How old a sibling temporary must be before a later save removes it.
@@ -171,16 +182,15 @@ const STALE_TEMPORARY_AGE: std::time::Duration = std::time::Duration::from_hours
 /// Removes the temporaries a dead writer left beside `path`.
 ///
 /// Only names carrying [`TEMPORARY_MARKER`] for this target are candidates, so a
-/// sibling document and a name another program chose are never candidates. That
-/// is a property of the name rather than a guess about it, because this helper is
-/// the only writer that puts the marker in a name. Everything here is best
-/// effort: an unreadable directory, an entry that cannot be stat'd, and a
-/// temporary that cannot be removed all leave the save that follows them to
-/// proceed, because the save's own work is the document and this is housekeeping
-/// beside it.
+/// sibling document and a name another program chose are never candidates. The
+/// marker is a name only this helper writes. Everything here is best effort: an
+/// unreadable directory, an entry that cannot be stat'd, and a temporary that
+/// cannot be removed all leave the save that follows them to proceed, because the
+/// save's own work is the document and this is housekeeping beside it.
 ///
-/// The directory is read once per save, which is the sweep's cost and the reason
-/// the read is the only one.
+/// The directory is read once per call, and one call is what a publish makes, so a
+/// caller that skips the publish when its bytes are unchanged reads nothing. That
+/// read is the sweep's whole cost and the reason it is the only one.
 ///
 /// A path whose final component is not valid UTF-8 is skipped rather than
 /// mangled, and a temporary of such a document stays where it is. A temporary
@@ -225,9 +235,12 @@ fn sweep_stale_temporaries(path: &Path) {
 /// Whether the part of a name after [`TEMPORARY_MARKER`] is the `<pid>-<sequence>`
 /// pair [`temporary_path`] appends.
 ///
-/// The marker already says the name belongs to this helper, so this check is
-/// narrow: it refuses a marked name whose tail is something else, which is a shape
-/// no version of this helper writes.
+/// The marker says the name is one this helper writes, so this check catches the
+/// case the marker cannot: a marked name somebody composed by hand, such as
+/// `state.json.mediapm-tmp-backup`. The age rule alone would delete that file once
+/// it was an hour old. The check cannot separate a hand-planted
+/// `state.json.mediapm-tmp-2024-01` from a process id and a counter, because that
+/// name has the shape too; the marker plus the age threshold decide that one.
 fn is_temporary_suffix(tail: &str) -> bool {
     let mut parts = tail.split('-');
     let (Some(process_id), Some(sequence), None) = (parts.next(), parts.next(), parts.next())
@@ -610,6 +623,35 @@ mod tests {
         assert!(!is_temporary_suffix("1"), "a suffix with no counter was accepted");
         assert!(!is_temporary_suffix("-"), "an empty pair was accepted");
         assert!(!is_temporary_suffix(""), "an empty suffix was accepted");
+    }
+
+    /// The temporary's spelling is a persisted fact, so a test pins it.
+    ///
+    /// [`temporary_path`] and [`sweep_stale_temporaries`] both read
+    /// [`TEMPORARY_MARKER`], so an edit keeps them consistent with each other and
+    /// still strands every leftover already on disk: the sweep stops matching the
+    /// names the previous version wrote, and nothing else reclaims them. Writing
+    /// the literal out here makes such an edit deliberate, and makes the commit
+    /// that changes it say what happens to the leftovers it abandons.
+    #[test]
+    fn the_temporary_name_carries_the_literal_marker() {
+        assert_eq!(TEMPORARY_MARKER, ".mediapm-tmp-", "the marker spelling is persisted state");
+
+        let (root, path) = document_with(b"previous");
+        let temporary = temporary_path(&path).expect("the document has a sibling name");
+        let name =
+            temporary.file_name().expect("the temporary has a name").to_string_lossy().into_owned();
+        let prefix = format!("state.json.mediapm-tmp-{}-", std::process::id());
+        assert!(
+            name.starts_with(&prefix),
+            "the temporary is named {name}, which does not start with {prefix}",
+        );
+        let sequence = &name[prefix.len()..];
+        assert!(
+            !sequence.is_empty() && sequence.bytes().all(|byte| byte.is_ascii_digit()),
+            "the temporary carries {sequence} where a counter belongs",
+        );
+        drop(root);
     }
 
     /// A write into a directory that does not exist fails and creates nothing.
