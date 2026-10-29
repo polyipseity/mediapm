@@ -64,8 +64,8 @@ pub use config::{
     PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry,
     ToolRequirement, TransformInputValue, VerifyStrategy, YtDlpOutputKind,
     YtDlpOutputVariantConfig, flatten_hierarchy_value, load_mediapm_document,
-    load_mediapm_state_document, merge_mediapm_document_with_state, nest_hierarchy_value,
-    regex_variant_selector, save_mediapm_document, save_mediapm_state_document,
+    load_mediapm_state_document, nest_hierarchy_value, regex_variant_selector,
+    save_mediapm_document, save_mediapm_state_document,
 };
 pub use error::MediaPmError;
 pub use global::{

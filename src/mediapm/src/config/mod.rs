@@ -39,8 +39,8 @@ pub use hierarchy_types::{
     SanitizeNamesConfig, flatten_hierarchy_value, nest_hierarchy_value, regex_variant_selector,
 };
 pub use nickel_io::{
-    load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
-    save_mediapm_document, save_mediapm_state_document,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    save_mediapm_state_document,
 };
 pub use output_types::{
     GenericOutputVariantConfig, OutputCaptureKind, OutputSaveConfig, OutputVariantValue,

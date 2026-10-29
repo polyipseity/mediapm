@@ -12,7 +12,7 @@ use mediapm_cas::Hash;
 
 use crate::config::{InputBinding, ToolSpec};
 use crate::orchestration::step_worker::template::is_deterministic_command_part;
-use crate::state::{ResolvedInput, ToolCallInstance};
+use crate::state::ToolCallInstance;
 
 /// Version of the tool-call instance key scheme.
 ///
@@ -357,13 +357,6 @@ pub fn merge_step_input_bindings(
     merged
 }
 
-/// Resolved value bytes for a hash-backed binding (`step_output` / `external_data`
-/// with CAS unavailable during step-input resolution).
-#[must_use]
-pub fn instance_key_resolved_value_bytes_for_hash_reference(hash: Hash) -> Vec<u8> {
-    hash.to_string().into_bytes()
-}
-
 /// Bytes a binding contributes when it names only the host or the environment.
 ///
 /// The binding's own text stands in for the value it selects. Two hosts running
@@ -393,32 +386,6 @@ pub fn instance_key_hash_from_resolved_value_bytes(
     is_deterministic_binding_source(raw_binding_source).then(|| {
         Hash::composite(&[Hash::from_content(key.as_bytes()), Hash::from_content(resolved_value)])
     })
-}
-
-/// Collects deterministic input hashes from resolved step inputs, matching
-/// step-worker instance-key construction.
-#[must_use]
-pub fn deterministic_input_hashes_from_resolved_inputs(
-    resolved_inputs: &[ResolvedInput],
-    step_inputs: &BTreeMap<String, String>,
-    default_inputs: &BTreeMap<String, InputBinding>,
-) -> Vec<Hash> {
-    let mut input_hashes = Vec::new();
-    for resolved_input in resolved_inputs {
-        let raw_source = step_inputs
-            .get(&resolved_input.key)
-            .cloned()
-            .or_else(|| default_inputs.get(&resolved_input.key).map(input_binding_to_string))
-            .unwrap_or_default();
-        if let Some(hash) = instance_key_hash_from_resolved_value_bytes(
-            &resolved_input.key,
-            &raw_source,
-            resolved_input.value.as_bytes(),
-        ) {
-            input_hashes.push(hash);
-        }
-    }
-    input_hashes
 }
 
 /// Collects deterministic input hashes from merged bindings and resolved value
@@ -548,29 +515,6 @@ mod tests {
         assert_eq!(key, expected);
     }
 
-    /// Pins that a hash-backed binding resolves to the referenced hash's
-    /// canonical string bytes and that the instance hash covers the input name
-    /// as well as those bytes.
-    #[test]
-    fn hash_reference_binding_uses_hash_string_bytes() {
-        let hash = Hash::from_content(b"referenced-bytes");
-        let bytes = instance_key_resolved_value_bytes_for_hash_reference(hash);
-        assert_eq!(bytes, hash.to_string().as_bytes());
-        let key_hash = instance_key_hash_from_resolved_value_bytes(
-            "primary",
-            "${step_output.step-0.primary}",
-            &bytes,
-        )
-        .expect("hash reference binding is deterministic");
-        assert_eq!(
-            key_hash,
-            Hash::composite(&[
-                Hash::from_content(b"primary"),
-                Hash::from_content(hash.to_string().as_bytes()),
-            ])
-        );
-    }
-
     /// Pins that a binding naming no work contributes its source bytes, and that
     /// the input name participates in the instance hash.
     #[test]
@@ -585,15 +529,41 @@ mod tests {
         );
     }
 
-    /// Pins that a non-deterministic binding source (`${env.HOME}`, which the
-    /// host environment can change between runs) stays out of the instance-key
-    /// material entirely, so an env-dependent run never reuses a stale
-    /// instance.
+    /// A binding that reads only `${env.…}` contributes its own text, not the
+    /// value the host supplies for it.
+    ///
+    /// The live case is a step that passes a provisioned path held in the
+    /// environment: keying the value would split one deployment across hosts
+    /// that happen to hold different values for the same variable, while two
+    /// different variables stay two jobs because their text differs.
     #[test]
-    fn env_binding_is_not_instance_key_material() {
-        assert!(!is_deterministic_binding_source("${env.HOME}"));
-        assert!(
-            instance_key_hash_from_resolved_value_bytes("home", "${env.HOME}", b"/tmp").is_none()
+    fn an_environment_binding_contributes_its_text() {
+        let parts = ["--output".to_string(), "${inputs.out}".to_string()];
+        let binding = "${env.MEDIAPM_OUT}";
+        let bindings = BTreeMap::from([("out".to_string(), binding.to_string())]);
+        let first = BTreeMap::from([("out".to_string(), b"/tmp/one".to_vec())]);
+        let second = BTreeMap::from([("out".to_string(), b"/tmp/two".to_vec())]);
+
+        let from_first = key_material_for_tool(&parts, &first, &bindings);
+        assert_eq!(
+            from_first,
+            key_material_for_tool(&parts, &second, &bindings),
+            "the value the host holds is not work, so it must not move the key",
+        );
+        assert_eq!(
+            from_first[1],
+            Hash::composite(&[
+                Hash::from_content(parts[1].as_bytes()),
+                Hash::from_content(binding.as_bytes()),
+            ]),
+            "the term is the binding's own text",
+        );
+
+        let other_variable = BTreeMap::from([("out".to_string(), "${env.OTHER_OUT}".to_string())]);
+        assert_ne!(
+            key_material_for_tool(&parts, &first, &other_variable),
+            from_first,
+            "two variables are two jobs, so their bindings must not collapse into one key",
         );
     }
 

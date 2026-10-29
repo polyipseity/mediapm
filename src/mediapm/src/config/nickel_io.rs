@@ -234,24 +234,6 @@ pub fn save_mediapm_state_document(
     })
 }
 
-/// Merges runtime state into a [`crate::config::MediaPmDocument`].
-///
-/// Returns the document unchanged: the state document records what the library
-/// holds and which tool payloads are deployed, and neither is a field of the
-/// user-authored document.
-///
-/// # Errors
-///
-/// Returns an error if the merge encounters a structural incompatibility. It
-/// currently has none to encounter, so this is unreachable in practice; the
-/// signature keeps the seam for a merge that does write something.
-pub fn merge_mediapm_document_with_state(
-    doc: &crate::config::MediaPmDocument,
-    _state: &crate::config::MediaPmState,
-) -> Result<crate::config::MediaPmDocument, MediaPmError> {
-    Ok(doc.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
