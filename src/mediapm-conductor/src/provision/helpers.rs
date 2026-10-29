@@ -145,7 +145,22 @@ pub(crate) fn ensure_payload_tree_user_execute_bits(root: &Path) -> Result<(), C
     Ok(())
 }
 
-/// Writes cache metadata atomically via a temporary-file rename.
+/// Writes cache metadata through the shared atomic publish.
+///
+/// The document records which payload a provisioned tool directory holds, so a
+/// run either reads the whole of it or reads the previous one. Publishing by
+/// rename gives that: a reader never sees a partial document, and a save that
+/// fails leaves the previous copy in place.
+///
+/// The parent directory is created here, because the publish itself creates
+/// nothing — a writer that created its own parent could resurrect a directory a
+/// teardown had just removed.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Serialization`] when the metadata cannot be
+/// encoded, and [`ConductorError::Io`] when the parent cannot be created or the
+/// publish fails.
 pub(crate) fn persist_cache_metadata(
     metadata_path: &Path,
     metadata: &Metadata,
@@ -161,20 +176,16 @@ pub(crate) fn persist_cache_metadata(
     let rendered = serde_json::to_string_pretty(metadata).map_err(|error| {
         ConductorError::Serialization(format!("encoding tool-content cache metadata: {error}"))
     })?;
-    let temp_path = metadata_path.with_extension("json.tmp");
-    fs::write(&temp_path, format!("{rendered}\n")).map_err(|source| ConductorError::Io {
-        operation: "writing temporary tool-content cache metadata".to_string(),
-        path: temp_path.clone(),
-        source,
-    })?;
-    if metadata_path.exists() {
-        let _ = fs::remove_file(metadata_path);
-    }
-    fs::rename(&temp_path, metadata_path).map_err(|source| ConductorError::Io {
-        operation: "replacing tool-content cache metadata".to_string(),
-        path: metadata_path.to_path_buf(),
-        source,
-    })
+    let mut document = rendered;
+    document.push('\n');
+
+    mediapm_utils::fs::write_bytes_atomically(metadata_path, document.as_bytes()).map_err(
+        |source| ConductorError::Io {
+            operation: "publishing tool-content cache metadata".to_string(),
+            path: metadata_path.to_path_buf(),
+            source,
+        },
+    )
 }
 
 /// Copies (preferring hard links) all files from `source_dir` into `target_dir`.
@@ -391,6 +402,106 @@ mod tests {
             }
             other => panic!("unexpected error kind: {other:?}"),
         }
+    }
+
+    /// Metadata with no content map, recording `last_used` as its use time.
+    ///
+    /// The association is what the assertions read back: a save that publishes
+    /// the wrong document, or one that publishes none, fails on it.
+    fn metadata_last_used(last_used_unix_seconds: u64) -> Metadata {
+        Metadata {
+            version: crate::provision::VERSION,
+            content_map: std::collections::BTreeMap::new(),
+            last_used_unix_seconds,
+            execute_bits_verified: true,
+        }
+    }
+
+    /// The file names `root` holds, sorted, so a test can assert what a save left.
+    fn file_names(root: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(root)
+            .expect("read the artifact root")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A leftover temporary from another writer does not block the save.
+    ///
+    /// A temporary named from the target alone is shared by every writer of that
+    /// directory. A writer that was killed leaves a partial document under that
+    /// name, and the next save cannot open it, so the tool it was recording stays
+    /// unrecorded until someone deletes the file by hand. The publish names its
+    /// own temporary and ignores what a previous writer abandoned.
+    #[test]
+    fn a_leftover_temporary_from_another_writer_does_not_block_the_save() {
+        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let metadata_path = root.path().join("metadata.json");
+        let leftover = root.path().join("metadata.json.tmp");
+        fs::write(&leftover, b"{\"version\": 1").expect("write the abandoned temporary");
+        let mut permissions =
+            fs::metadata(&leftover).expect("read leftover metadata").permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&leftover, permissions).expect("make the leftover read-only");
+
+        persist_cache_metadata(&metadata_path, &metadata_last_used(7))
+            .expect("a leftover temporary must not block the save");
+
+        let published = fs::read_to_string(&metadata_path).expect("read the published document");
+        assert!(published.ends_with('\n'), "the document must end with a newline: {published:?}");
+        let decoded: Metadata = serde_json::from_str(&published).expect("parse the document");
+        assert_eq!(decoded.last_used_unix_seconds, 7, "the save published the wrong document");
+    }
+
+    /// A save replaces the previous document and keeps no temporary beside it.
+    ///
+    /// The document is what a later run parses to decide whether a payload is
+    /// already extracted, so the target must hold the new metadata in full and the
+    /// directory must hold nothing else a reader could mistake for it.
+    #[test]
+    fn a_save_replaces_the_previous_document_and_keeps_no_temporary() {
+        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let metadata_path = root.path().join("metadata.json");
+        fs::write(&metadata_path, b"{\"version\": 1, \"content_map\": {}}\n")
+            .expect("write the previous document");
+
+        persist_cache_metadata(&metadata_path, &metadata_last_used(11)).expect("publish the save");
+
+        assert_eq!(
+            file_names(root.path()),
+            vec!["metadata.json".to_string()],
+            "a completed save must leave exactly the document it published",
+        );
+        let published = fs::read_to_string(&metadata_path).expect("read the published document");
+        let decoded: Metadata = serde_json::from_str(&published).expect("parse the document");
+        assert_eq!(decoded.last_used_unix_seconds, 11);
+    }
+
+    /// A save into a directory that does not exist fails and publishes nothing.
+    ///
+    /// The parent is created before the publish, so the failure here is a parent
+    /// that cannot be created rather than one that was never asked for, which is
+    /// what keeps this writer responsible for its own directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_is_refused_when_its_parent_cannot_be_created() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let locked = root.path().join("locked");
+        fs::create_dir(&locked).expect("create the locked directory");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500))
+            .expect("make the directory unwritable");
+        let metadata_path = locked.join("nested").join("metadata.json");
+
+        let error = persist_cache_metadata(&metadata_path, &metadata_last_used(13))
+            .expect_err("a parent that cannot be created must fail the save");
+
+        assert!(matches!(error, ConductorError::Io { .. }), "unexpected error: {error:?}");
+        assert!(!metadata_path.exists(), "the failed save published a document");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700))
+            .expect("restore directory permissions for cleanup");
     }
 
     /// Extracted raw-file entries should gain `u+x` so bundled companion
