@@ -458,25 +458,54 @@ pub(super) async fn resolve_workflow_step_output_hashes(
     if step_outputs.is_empty() { Ok(None) } else { Ok(Some(step_outputs)) }
 }
 
-/// What the strict pass could not reconstruct about one step's inputs.
+/// What one input's reconstruction failed on.
 ///
-/// The relaxed pass reports this when it refuses, because a reader who follows
-/// the refusal's advice and re-runs lands in the same place while the input
-/// stays unresolved.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum UnresolvedInput {
+/// The causes are separate because a reader acts on them differently: a missing
+/// object sends them to the store, an unreadable archive member sends them to the
+/// bytes the store holds, a binding's own template sends them to the document, and
+/// a prior step output sends them to the traversal or to the step that produced it.
+enum UnresolvedInputCause {
     /// The binding names a step output this traversal has not resolved.
     PriorStepOutput,
-    /// The binding names bytes the store does not hold.
-    MaterializedStepOutput,
+    /// The store no longer holds the object the binding names.
+    MissingObject,
+    /// The archive the binding names holds no member it selects, or the bytes it
+    /// names are not an archive at all.
+    MissingArchiveMember,
+    /// The binding's own template did not resolve, so it names no value at all.
+    UnresolvedBinding,
+}
+
+impl UnresolvedInputCause {
+    /// The phrase the refusal uses to say why the input did not resolve.
+    ///
+    /// Each phrase is true of every way its cause arises, because a phrase that
+    /// fits one of two causes sends a reader to the wrong place.
+    fn phrase(&self) -> &'static str {
+        match self {
+            Self::PriorStepOutput => "names a step output this traversal did not resolve",
+            Self::MissingObject => "names an object the store does not hold",
+            Self::MissingArchiveMember => "names an archive member the stored bytes do not contain",
+            Self::UnresolvedBinding => "names a binding whose template did not resolve",
+        }
+    }
+}
+
+/// One input the strict pass could not reconstruct, and why.
+struct UnresolvedInput {
+    /// What the reconstruction failed on.
+    cause: UnresolvedInputCause,
+    /// The failing operation's own words, for the causes that have one.
+    detail: Option<String>,
 }
 
 impl UnresolvedInput {
-    /// The phrase the refusal uses to say why the input did not resolve.
-    fn reason(self) -> &'static str {
-        match self {
-            Self::PriorStepOutput => "names a step output this traversal did not resolve",
-            Self::MaterializedStepOutput => "names bytes the store does not hold",
+    /// This input as the refusal names it: its binding name, the cause, and the
+    /// detail when the failing operation supplied one.
+    fn describe(&self, input_name: &str) -> String {
+        match self.detail.as_deref() {
+            Some(detail) => format!("'{input_name}' ({}: {detail})", self.cause.phrase()),
+            None => format!("'{input_name}' ({})", self.cause.phrase()),
         }
     }
 }
@@ -552,9 +581,15 @@ async fn resolve_single_step_output_hashes_strict(
     .await?;
     // A binding the worker resolved and this pass could not leaves a term out of
     // the key, and the key derived without it is not this step's key.
-    expected_inputs.unresolved_hash_input_names.extend(resolved_values.unresolved.clone());
-    for input_name in &resolved_values.unresolved {
-        unresolved.insert(input_name.clone(), UnresolvedInput::MaterializedStepOutput);
+    expected_inputs.unresolved_hash_input_names.extend(resolved_values.unresolved_names());
+    // A name whose hash never reconstructed already carries its own cause from
+    // the pass that recorded it. Only the binding's own failures are new here, and
+    // the engine reports their names without the reason each failed.
+    for input_name in &resolved_values.unresolved_bindings {
+        unresolved.insert(
+            input_name.clone(),
+            UnresolvedInput { cause: UnresolvedInputCause::UnresolvedBinding, detail: None },
+        );
     }
     let key_material = materializer_key_material(
         generated_doc,
@@ -716,7 +751,7 @@ fn resolve_single_step_output_hashes_relaxed(
                 .join(", ");
             let strict_note = describe_unresolved_inputs(unresolved_inputs);
             Err(MediaPmError::Workflow(format!(
-                "workflow '{workflow_name}' step '{}' matched no instance by key, and {} instances \
+                "workflow '{workflow_name}' step '{}': no instance answers for it, and {} instances \
                  of tool '{conductor_tool_key}' name that step while recording different required \
                  outputs: {described}; refusing to choose between them. \
                  `mediapm media invalidate <media-id> <step-index>` marks the record this state \
@@ -783,6 +818,31 @@ fn materializer_key_material(
     ))
 }
 
+/// The bytes an instance key hashes, and the inputs that kept this pass from
+/// producing them.
+///
+/// The two unresolved sets are kept apart because their causes come from different
+/// places. A hash this pass never reconstructed was already recorded with its own
+/// cause by [`resolve_expected_input_hashes`]; a binding the template engine could
+/// not resolve is new here, and the engine reports its name without the reason it
+/// failed.
+#[derive(Default)]
+struct ResolvedKeyValueBytes {
+    /// Binding name to the bytes its template resolved to.
+    values: BTreeMap<String, Vec<u8>>,
+    /// Inputs whose hash this pass never reconstructed.
+    unresolved_hashes: BTreeSet<String>,
+    /// Inputs whose binding template did not resolve.
+    unresolved_bindings: BTreeSet<String>,
+}
+
+impl ResolvedKeyValueBytes {
+    /// Every input this pass could not turn into bytes, whichever cause applies.
+    fn unresolved_names(&self) -> BTreeSet<String> {
+        self.unresolved_hashes.union(&self.unresolved_bindings).cloned().collect()
+    }
+}
+
 /// Value bytes of every binding the step's key material hashes.
 ///
 /// The step worker derives those bytes by resolving each binding through the
@@ -808,9 +868,9 @@ async fn build_instance_key_resolved_value_bytes(
     merged_bindings: &BTreeMap<String, String>,
     expected_inputs: &ExpectedStepInputs,
     prior_step_outputs: &StepOutputHashes,
-) -> Result<mediapm_conductor::InstanceKeyInputValues, MediaPmError> {
+) -> Result<ResolvedKeyValueBytes, MediaPmError> {
     let mut engine_bindings = BTreeMap::new();
-    let mut resolved = mediapm_conductor::InstanceKeyInputValues::default();
+    let mut resolved = ResolvedKeyValueBytes::default();
 
     for (key, raw_binding) in merged_bindings {
         let zip_member =
@@ -820,7 +880,7 @@ async fn build_instance_key_resolved_value_bytes(
             continue;
         };
         let Some(resolved_hash) = expected_inputs.resolved_hashes.get(key) else {
-            resolved.unresolved.insert(key.clone());
+            resolved.unresolved_hashes.insert(key.clone());
             continue;
         };
         let zip_bytes = cas.get(*resolved_hash).await.map_err(|source| {
@@ -844,7 +904,7 @@ async fn build_instance_key_resolved_value_bytes(
     )
     .await;
     resolved.values.extend(engine.values);
-    resolved.unresolved.extend(engine.unresolved);
+    resolved.unresolved_bindings.extend(engine.unresolved);
     Ok(resolved)
 }
 
@@ -989,7 +1049,7 @@ fn describe_unresolved_inputs(unresolved_inputs: &UnresolvedInputs) -> String {
     }
     let described = unresolved_inputs
         .iter()
-        .map(|(input_name, reason)| format!("'{input_name}' ({})", reason.reason()))
+        .map(|(input_name, unresolved)| unresolved.describe(input_name))
         .collect::<Vec<_>>()
         .join(", ");
     let noun = if unresolved_inputs.len() == 1 { "input" } else { "inputs" };
@@ -1022,12 +1082,31 @@ async fn resolve_expected_input_hashes(
                 expected.resolved_hashes.insert(input_name.clone(), hash);
             }
             InputBindingHashResolution::MissingPriorStepOutput => {
-                unresolved.insert(input_name.clone(), UnresolvedInput::PriorStepOutput);
+                unresolved.insert(
+                    input_name.clone(),
+                    UnresolvedInput { cause: UnresolvedInputCause::PriorStepOutput, detail: None },
+                );
                 return Ok(ExpectedInputHashes { inputs: None, unresolved });
             }
-            InputBindingHashResolution::MissingMaterializedStepOutput => {
+            InputBindingHashResolution::MissingMaterializedObject { detail } => {
                 expected.unresolved_hash_input_names.insert(input_name.clone());
-                unresolved.insert(input_name.clone(), UnresolvedInput::MaterializedStepOutput);
+                unresolved.insert(
+                    input_name.clone(),
+                    UnresolvedInput {
+                        cause: UnresolvedInputCause::MissingObject,
+                        detail: Some(detail),
+                    },
+                );
+            }
+            InputBindingHashResolution::MissingMaterializedArchiveMember { detail } => {
+                expected.unresolved_hash_input_names.insert(input_name.clone());
+                unresolved.insert(
+                    input_name.clone(),
+                    UnresolvedInput {
+                        cause: UnresolvedInputCause::MissingArchiveMember,
+                        detail: Some(detail),
+                    },
+                );
             }
         }
     }
@@ -1051,11 +1130,21 @@ async fn resolve_input_binding_hash(
         };
 
         if let Some(zip_member) = reference.zip_member {
-            let Ok(zip_bytes) = cas.get(hash).await else {
-                return Ok(InputBindingHashResolution::MissingMaterializedStepOutput);
+            let zip_bytes = match cas.get(hash).await {
+                Ok(bytes) => bytes,
+                Err(source) => {
+                    return Ok(InputBindingHashResolution::MissingMaterializedObject {
+                        detail: format!("reading ZIP output '{hash}' failed: {source}"),
+                    });
+                }
             };
-            let Ok(member_bytes) = extract_zip_member_bytes(zip_bytes.as_ref(), zip_member) else {
-                return Ok(InputBindingHashResolution::MissingMaterializedStepOutput);
+            let member_bytes = match extract_zip_member_bytes(zip_bytes.as_ref(), zip_member) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return Ok(InputBindingHashResolution::MissingMaterializedArchiveMember {
+                        detail: format!("extracting ZIP member '{zip_member}' failed: {error}"),
+                    });
+                }
             };
             return Ok(InputBindingHashResolution::Resolved(Hash::from_content(
                 member_bytes.as_slice(),
@@ -2074,10 +2163,11 @@ mod tests {
             .map_err(|error| {
                 format!("step '{}': resolving instance-key value bytes failed: {error}", step.id)
             })?;
-            if !resolved_values.unresolved.is_empty() {
+            let unresolved = resolved_values.unresolved_names();
+            if !unresolved.is_empty() {
                 return Err(format!(
-                    "step '{}': bindings the worker resolves did not resolve here: {:?}",
-                    step.id, resolved_values.unresolved,
+                    "step '{}': bindings the worker resolves did not resolve here: {unresolved:?}",
+                    step.id,
                 ));
             }
             let key_material = oracle_key_material(
@@ -2384,10 +2474,11 @@ mod tests {
         .map_err(|error| {
             format!("step '{}': resolving instance-key value bytes failed: {error}", step.id)
         })?;
-        if !resolved_values.unresolved.is_empty() {
+        let unresolved = resolved_values.unresolved_names();
+        if !unresolved.is_empty() {
             return Err(format!(
-                "step '{}': bindings the worker resolves did not resolve here: {:?}",
-                step.id, resolved_values.unresolved,
+                "step '{}': bindings the worker resolves did not resolve here: {unresolved:?}",
+                step.id,
             ));
         }
         materializer_key_material(generated, &step.tool, &merged, &resolved_values.values)
@@ -3352,6 +3443,10 @@ mod tests {
             !message.contains("cannot mark"),
             "the refusal no longer warns about a record the matcher cannot admit: {message}"
         );
+        assert!(
+            !message.contains("matched no instance by key"),
+            "the refusal does not claim a key matched nothing when no key was derived: {message}"
+        );
     }
 
     /// The refusal's second limit names every input that stopped the strict pass,
@@ -3368,7 +3463,10 @@ mod tests {
             "a strict pass that derived the key has no second limit to state"
         );
 
-        let one = UnresolvedInputs::from([("url".to_string(), UnresolvedInput::PriorStepOutput)]);
+        let one = UnresolvedInputs::from([(
+            "url".to_string(),
+            UnresolvedInput { cause: UnresolvedInputCause::PriorStepOutput, detail: None },
+        )]);
         let described = describe_unresolved_inputs(&one);
         assert!(
             described.contains("could not derive this step's key"),
@@ -3376,17 +3474,29 @@ mod tests {
         );
         assert!(
             described.contains("input 'url'")
-                && described.contains(UnresolvedInput::PriorStepOutput.reason()),
+                && described.contains(UnresolvedInputCause::PriorStepOutput.phrase()),
             "one input is named as an input, with the reason it failed: {described}"
         );
 
         let two = UnresolvedInputs::from([
-            ("archive".to_string(), UnresolvedInput::MaterializedStepOutput),
-            ("url".to_string(), UnresolvedInput::PriorStepOutput),
+            (
+                "archive".to_string(),
+                UnresolvedInput {
+                    cause: UnresolvedInputCause::MissingArchiveMember,
+                    detail: Some(
+                        "extracting ZIP member 'payload.txt' failed: no such member".to_string(),
+                    ),
+                },
+            ),
+            (
+                "url".to_string(),
+                UnresolvedInput { cause: UnresolvedInputCause::PriorStepOutput, detail: None },
+            ),
         ]);
         let described = describe_unresolved_inputs(&two);
         for expected in [
-            "inputs 'archive' (names bytes the store does not hold)",
+            "inputs 'archive' (names an archive member the stored bytes do not contain: \
+             extracting ZIP member 'payload.txt' failed: no such member)",
             "'url' (names a step output this traversal did not resolve)",
         ] {
             assert!(
@@ -3394,6 +3504,119 @@ mod tests {
                 "{expected} missing from the clause: {described}"
             );
         }
+    }
+
+    /// Every cause says something different about what a reader should look at.
+    #[test]
+    fn each_unresolved_cause_has_its_own_phrase() {
+        let phrases = [
+            UnresolvedInputCause::PriorStepOutput,
+            UnresolvedInputCause::MissingObject,
+            UnresolvedInputCause::MissingArchiveMember,
+            UnresolvedInputCause::UnresolvedBinding,
+        ]
+        .map(|cause| cause.phrase());
+        let distinct: BTreeSet<&str> = phrases.iter().copied().collect();
+        assert_eq!(distinct.len(), phrases.len(), "two causes share a phrase: {phrases:?}");
+    }
+
+    /// The two ways an archive-backed input fails are told apart.
+    ///
+    /// A binding that selects a ZIP member fails when the store no longer holds
+    /// the archive and when the archive it holds has no such member. The refusal
+    /// tells a reader what to look for, so the two cannot share a phrase: the
+    /// first sends them to the store, and the second names bytes the store holds
+    /// and cannot read.
+    #[tokio::test]
+    async fn an_archive_input_names_whether_the_object_or_the_member_is_missing() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let not_an_archive =
+            put_payload(&cas, b"these bytes are not a zip archive", "not an archive").await;
+        let never_stored = Hash::from_content(b"an archive nothing stored");
+
+        let step_inputs = BTreeMap::from([(
+            "source".to_string(),
+            "${step_output.pack.pack:zip(payload.txt)}".to_string(),
+        )]);
+        let with_pack = |hash: Hash| {
+            BTreeMap::from([("pack".to_string(), BTreeMap::from([("pack".to_string(), hash)]))])
+        };
+
+        let unreadable = resolve_expected_input_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &step_inputs,
+            &with_pack(not_an_archive),
+        )
+        .await
+        .expect("an unreadable archive is an unresolved input, not an error");
+        let absent = resolve_expected_input_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &step_inputs,
+            &with_pack(never_stored),
+        )
+        .await
+        .expect("an archive the store never held is an unresolved input, not an error");
+
+        let unreadable = unreadable
+            .unresolved
+            .get("source")
+            .expect("the archive input is unresolved")
+            .describe("source");
+        let absent = absent
+            .unresolved
+            .get("source")
+            .expect("the absent input is unresolved")
+            .describe("source");
+
+        assert!(
+            absent.contains("store does not hold"),
+            "an archive the store lost is reported as a lost object: {absent}"
+        );
+        assert!(
+            !unreadable.contains("store does not hold"),
+            "bytes the store holds are not reported as missing from it: {unreadable}"
+        );
+        assert_ne!(
+            absent, unreadable,
+            "the two ways an archive input fails send a reader to different places"
+        );
+    }
+
+    /// A binding whose template does not resolve is not a lost object.
+    ///
+    /// The template engine reports the binding name and not the failure, so this
+    /// pass can say only that the binding did not resolve. Recording it as a
+    /// missing object would send a reader to the store for a fault in the
+    /// document, and the store still holds every byte the step names.
+    #[tokio::test]
+    async fn a_binding_that_does_not_resolve_is_not_recorded_as_a_lost_object() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let bindings = BTreeMap::from([("url".to_string(), "${inputs.missing}".to_string())]);
+
+        let resolved = build_instance_key_resolved_value_bytes(
+            &cas,
+            &bindings,
+            &bindings,
+            &ExpectedStepInputs::default(),
+            &StepOutputHashes::new(),
+        )
+        .await
+        .expect("a binding that does not resolve is reported, not raised");
+
+        assert!(
+            resolved.unresolved_bindings.contains("url"),
+            "the binding, not a store read, is what failed: {:?}",
+            resolved.unresolved_names()
+        );
+        assert!(
+            resolved.values.is_empty(),
+            "a binding that does not resolve contributes no bytes: {:?}",
+            resolved.values
+        );
     }
 
     /// A record that served two workflows answers both, and no third.

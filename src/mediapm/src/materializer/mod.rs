@@ -70,13 +70,27 @@ pub(super) struct ExpectedStepInputs {
 }
 
 /// One input-binding hash resolution result.
+///
+/// The two materialized-output variants differ in what a reader has to do about
+/// them: one names an object the store no longer holds, the other names a member
+/// the object it holds does not yield. Each carries the failing operation's own
+/// words, because the hash and the member alone do not say what went wrong.
 pub(super) enum InputBindingHashResolution {
     /// Fully reconstructed deterministic input hash.
     Resolved(Hash),
     /// Referenced prior step output is unavailable in the current traversal order.
     MissingPriorStepOutput,
-    /// Referenced step output exists but cannot be reconstructed from CAS bytes.
-    MissingMaterializedStepOutput,
+    /// The store refused or could not find the object the binding names.
+    MissingMaterializedObject {
+        /// The failing read, in the words the store produced it under.
+        detail: String,
+    },
+    /// The object the binding names holds no member it selects, or cannot be read
+    /// as an archive at all.
+    MissingMaterializedArchiveMember {
+        /// The failing extraction, in the words the extractor produced it under.
+        detail: String,
+    },
 }
 
 /// Resolved variant payload for materialization.
