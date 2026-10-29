@@ -300,8 +300,11 @@ pub struct RuntimeEnvironmentConfig {
 /// Runtime storage and behavior overrides for mediapm document processing.
 ///
 /// Fields here use `#[serde(default)]` to fill in defaults when omitted.
-/// Path-override fields use `Option` (`None` = use computed default from
-/// [`MediaPmPaths`](crate::paths::MediaPmPaths)).
+/// A path-override field is a plain [`PathBuf`]: an empty one means the field
+/// is unset, which is how a document says nothing about that path. The
+/// service resolves an empty value to `None` when it builds
+/// `MediaPmPathOverrides`, and [`MediaPmPaths`](crate::paths::MediaPmPaths)
+/// computes the default for every path whose override is `None`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaRuntimeStorage {

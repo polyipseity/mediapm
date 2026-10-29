@@ -656,10 +656,52 @@ fn has_known_versioned_type_leak(content: &str) -> bool {
         "PrimaryHeaderV",
         "V1Envelope",
         "V2Envelope",
+        "V3Envelope",
         "DeltaStateV",
     ];
     LEAKED_TOKENS.iter().any(|token| content.contains(token))
 }
+#[test]
+/// Every envelope type declared under `delta/versions/` is reachable by
+/// [`has_known_versioned_type_leak`].
+///
+/// The token list is hand-kept, and it named the two older envelopes while
+/// missing the current one, so a leak of the newest wire type passed the guard
+/// that exists to catch leaks. Reading the declarations back means the next
+/// envelope cannot arrive without the guard covering it.
+fn every_delta_envelope_type_is_covered_by_the_leak_tokens() {
+    let versions_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/delta/versions");
+    let mut files = Vec::new();
+    collect_rs_files_recursive(&versions_dir, &mut files);
+    assert!(!files.is_empty(), "expected versioned files under {}", versions_dir.display());
+
+    let mut declared = Vec::new();
+    for path in files {
+        let content = fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("failed reading versioned file '{}': {err}", path.display())
+        });
+        for line in content.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("pub(crate) struct ") else {
+                continue;
+            };
+            let name: String =
+                rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            if name.contains("Envelope") {
+                declared.push(name);
+            }
+        }
+    }
+
+    assert!(!declared.is_empty(), "no envelope types found under {}", versions_dir.display());
+    for name in declared {
+        assert!(
+            has_known_versioned_type_leak(&name),
+            "{name} is declared under delta/versions/ and no token matches it, so a leak of \
+             that type outside versions/ passes the guard",
+        );
+    }
+}
+
 #[test]
 /// Enforces version-folder policy guard and vN reference boundaries.
 fn versioned_files_keep_policy_guard_and_boundary_rules() {

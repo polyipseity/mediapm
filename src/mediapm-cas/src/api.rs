@@ -203,7 +203,12 @@ pub trait CasMaintenanceApi: Send + Sync {
     /// combined GC + optimizer.
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError>;
 
-    /// Remove constraints whose target or bases no longer exist.
+    /// Remove a constraint whose target the store no longer holds, drop the
+    /// dead hashes inside the bases of a constraint that survives, and drop the
+    /// keep-full markers of objects the store no longer holds.
+    ///
+    /// The three are different edits, so [`PruneReport`] counts them separately:
+    /// a dead base does not remove the constraint it sat in.
     async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
 
     /// List all hashes currently in the store (best-effort).
@@ -220,8 +225,17 @@ pub struct OptimizeReport {
 }
 
 /// Result of [`CasMaintenanceApi::prune_constraints`].
-#[derive(Debug, Clone, Default)]
+///
+/// Each count names one kind of fact the prune removes. A constraint whose
+/// target is gone, a dead hash inside the surviving bases of a constraint, and
+/// a keep-full marker whose object is gone are all removals, and reporting only
+/// the first says zero while the store changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PruneReport {
-    /// Number of constraint entries removed.
-    pub removed: usize,
+    /// Number of constraint entries removed because their target is gone.
+    pub targets_removed: usize,
+    /// Number of dead hashes dropped from the base sets of live constraints.
+    pub bases_removed: usize,
+    /// Number of keep-full markers dropped because their object is gone.
+    pub markers_removed: usize,
 }

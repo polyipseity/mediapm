@@ -210,7 +210,7 @@ async fn bg_engine_cancellation_graceful() {
 
     // prune_constraints works independently.
     let sweep = cas.prune_constraints().await.unwrap();
-    assert_eq!(sweep.removed, 0);
+    assert_eq!(sweep.targets_removed, 0);
 }
 
 /// In-flight dedup concurrent stress test.

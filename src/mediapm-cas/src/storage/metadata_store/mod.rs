@@ -41,6 +41,23 @@ impl MetadataEntry {
     }
 }
 
+/// What one [`MetadataStore::prune_targets`] pass dropped, counted by kind.
+///
+/// A prune drops three kinds of fact, and a caller that reports one number
+/// cannot say which: a constraint whose target is gone, a dead hash inside the
+/// base set of a constraint that survives, and a keep-full marker whose object
+/// is gone. The counts come from the same walk that removes them, so a caller
+/// never has to diff two listings and guess at the difference.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrunedConstraints {
+    /// Constraint entries removed because their target is not in the live set.
+    pub targets: usize,
+    /// Dead hashes dropped from the base set of a surviving constraint.
+    pub bases: usize,
+    /// Keep-full markers dropped because their object is not in the live set.
+    pub markers: usize,
+}
+
 /// Unified metadata store — payload metadata, constraint hints and keep-full
 /// markers.
 ///
@@ -93,8 +110,10 @@ pub trait MetadataStore: Send + Sync {
     /// List all constraint targets.
     async fn list_targets(&self) -> Result<Vec<Hash>, CasError>;
 
-    /// Remove constraints whose target or any base is not in `live`.
-    async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError>;
+    /// Remove a constraint whose target `live` does not hold, drop every hash
+    /// `live` does not hold from the bases of a constraint that survives, and
+    /// drop the keep-full markers of objects `live` does not hold.
+    async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError>;
 
     // Keep-full markers
 

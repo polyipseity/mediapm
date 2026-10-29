@@ -536,6 +536,56 @@ fn strict_v3_accepts_every_staging_spelling() {
 // Parity: the strict surface must not over-reject
 // ---------------------------------------------------------------------------
 
+/// S4: a legacy state payload carries a required version marker.
+///
+/// The v1 document contract requires it for the reason the state ladder gives
+/// for its own files: every writer emits the field, so a payload that names
+/// none is foreign or damaged, and a default would accept it while supplying a
+/// number nothing wrote.
+#[test]
+fn strict_v1_state_payload_requires_a_version_marker() {
+    let result = validate_v1_document(
+        r"{ version = 1, state = { managed_files = {} }, media = {}, hierarchy = [], tools = {}, runtime = {} }",
+    );
+    assert!(
+        result.is_err(),
+        "a legacy state payload without a version marker must be rejected, but it validated: {result:?}",
+    );
+}
+
+/// S4: the legacy state payload's marker is one the state ladder reads.
+///
+/// The bound is the current state version, and this test reads it rather than
+/// restating it, so a bump to the ladder fails here until the Nickel contract
+/// follows. A marker past the ladder names a payload no reader takes, and the
+/// contract accepted it before this bound existed.
+#[test]
+fn strict_v1_state_payload_marker_matches_the_state_ladder() {
+    let current = mediapm::config::defaults::MEDIAPM_STATE_VERSION;
+    let document = |version: u32| {
+        format!(
+            r"{{ version = 1, state = {{ version = {version}, managed_files = {{}} }}, media = {{}}, hierarchy = [], tools = {{}}, runtime = {{}} }}"
+        )
+    };
+
+    for version in 1..=current {
+        let result = validate_v1_document(&document(version));
+        assert!(
+            result.is_ok(),
+            "state marker {version} is one the ladder reads, so the contract must accept it: \
+             {result:?}",
+        );
+    }
+
+    let past_the_ladder = current + 1;
+    let result = validate_v1_document(&document(past_the_ladder));
+    assert!(
+        result.is_err(),
+        "state marker {past_the_ladder} is one the ladder refuses, but the contract accepted it: \
+         {result:?}",
+    );
+}
+
 /// R2: the v1 envelope still accepts its optional legacy `state` field with a
 /// valid `MediaPmStateV1` payload.
 #[test]

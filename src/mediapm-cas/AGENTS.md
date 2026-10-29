@@ -77,7 +77,7 @@ Stored in a separate constraint map (in-memory `DashMap<Hash, BTreeSet<Hash>>`, 
 
 Empty-content sentinel exception: constraints on `Hash::empty()` are always empty. `set_constraint`, `get_constraint`, and `patch_constraint` all succeed but have no effect (always return or leave empty sets).
 
-`mark_keep_full` is the one constraint-family call that changes what the store does to an object's bytes: a marked target is never rewritten as a delta against another blob, while remaining selectable as another object's delta base. It is the CAS half of mediapm's `save = "full"`. The marker is stored in the metadata store (durable in the filesystem store's `keep-full-v1.json` side file, dropped with the object), and the optimizer reads it before it looks for a base. Nothing in this workspace produces delta encodings today — `CasApi::put` always writes `ObjectEncoding::Full` and the optimizer is the only delta writer — so the marker's effect is exercised by its own tests and is the contract a future delta producer must honour.
+`mark_keep_full` is the one constraint-family call that changes what the store does to an object's bytes: a marked target is never rewritten as a delta against another blob, while remaining selectable as another object's delta base. It is the CAS half of mediapm's `save = "full"`. The marker is stored in the metadata store (durable in the filesystem store's `keep-full-v1.json` side file, dropped with the object), and the optimizer reads it before it looks for a base. `CasApi::put` always writes `ObjectEncoding::Full`; the background optimizer is the only thing that rewrites an object as a delta, and it skips a marked target, so the marker's effect is what its own tests and the optimizer's skip assert.
 
 ```rust
 pub struct ConstraintPatch { pub add_bases: BTreeSet<Hash>, pub remove_bases: BTreeSet<Hash>, pub clear: bool,   // clear existing bases before applying adds/removes
@@ -93,7 +93,7 @@ pub trait CasMaintenanceApi: Send + Sync { async fn run_maintenance_cycle(&self)
 ```
 
 - **run_maintenance_cycle**: Drain WAL consumer, run GC + optimizer.
-- **prune_constraints**: Remove constraint entries whose target or bases no longer exist.
+- **prune_constraints**: Remove a constraint whose target is gone, drop the dead hashes from the bases of a constraint that survives, drop the keep-full markers of objects the store no longer holds, and report a count for each of the three.
 - **list_hashes**: Enumerate all hashes in the store.
 
 ### 2.5 Backend types
@@ -371,7 +371,7 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 ### 8.7 Constraint invariants
 
 - `get_constraint` returns `BTreeSet<Hash>` — empty set means no constraint (no `Option`).
-- `prune_constraints()` removes entries whose target or bases no longer exist.
+- `prune_constraints()` removes a constraint whose target is gone, drops dead hashes from the bases of a constraint that survives, and drops markers whose object is gone; `PruneReport` counts the three separately, because a target removal, a dead base and a dead marker are three different edits to the store.
 - No `effective_bases` method — callers compute live intersection themselves.
 - Self-referencing constraint (target == base) is rejected at set/patch time.
 - Constraint data is stored independently from object metadata (separate `DashMap`). Put/delete/stat operations do not affect constraint state.

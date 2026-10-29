@@ -27,7 +27,7 @@ use super::versions::{
     self, KEEP_FULL_FORMAT_NAMES, LATEST_KEEP_FULL_FORMAT, LATEST_METADATA_FORMAT,
     METADATA_FORMAT_NAMES,
 };
-use super::{MetadataEntry, MetadataStore};
+use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 
 /// In-memory metadata with per-directory persistent snapshots.
 ///
@@ -152,24 +152,40 @@ impl FileSystemMetadataStore {
     /// Flush each of the given fan-out prefixes.
     async fn flush_prefixes(&self, prefixes: &BTreeSet<String>) -> Result<(), CasError> {
         for prefix in prefixes {
-            // Construct a hash with the given prefix for path derivation.
-            let dummy = Self::dummy_hash(prefix);
-            self.flush_dir(&dummy).await?;
+            let representative = Self::prefix_hash(prefix)?;
+            self.flush_dir(&representative).await?;
         }
         Ok(())
     }
 
-    /// Build a hash whose hex representation starts with the given 4‑character
-    /// prefix. Used only for path derivation during bulk flush operations.
-    fn dummy_hash(prefix: &str) -> Hash {
-        let mut bytes = [0u8; 32];
-        if prefix.len() >= 2 {
-            bytes[0] = u8::from_str_radix(&prefix[0..2], 16).unwrap_or(0);
+    /// Builds a hash whose hex representation starts with `prefix`.
+    ///
+    /// The value is used only to derive the fan-out directory of `prefix`, so
+    /// it never reaches the store. Every prefix this module produces is the
+    /// first four hex digits of a stored hash, and anything else is a defect in
+    /// the caller: reading a malformed prefix as zeros would flush a directory
+    /// no fact belongs to and leave the intended one on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::Internal`] when `prefix` is shorter than four
+    /// characters or is not hexadecimal.
+    fn prefix_hash(prefix: &str) -> Result<Hash, CasError> {
+        let digits = prefix.as_bytes();
+        let chunks = digits.get(0..2).zip(digits.get(2..4)).ok_or_else(|| {
+            CasError::internal(format!("fan-out prefix {prefix:?} is shorter than four hex digits"))
+        })?;
+        let mut raw = [0u8; 32];
+        let (first, second) = chunks;
+        for (slot, chunk) in raw.iter_mut().zip([first, second]) {
+            let text = std::str::from_utf8(chunk).map_err(|err| {
+                CasError::internal(format!("fan-out prefix {prefix:?} is not ASCII: {err}"))
+            })?;
+            *slot = u8::from_str_radix(text, 16).map_err(|err| {
+                CasError::internal(format!("fan-out prefix {prefix:?} is not hexadecimal: {err}"))
+            })?;
         }
-        if prefix.len() >= 4 {
-            bytes[1] = u8::from_str_radix(&prefix[2..4], 16).unwrap_or(0);
-        }
-        Hash::from_bytes(bytes)
+        Ok(Hash::from_bytes(raw))
     }
 }
 
@@ -233,19 +249,20 @@ impl MetadataStore for FileSystemMetadataStore {
         self.inner.list_keep_full().await
     }
 
-    async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError> {
+    async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError> {
         // The marker prefixes are read before the prune, because the prune is
         // what removes them from `inner`: a directory whose only fact was a
         // marker for an object that no longer exists would otherwise keep the
         // file on disk and resurrect the marker on the next open.
         let marked_before = self.inner.list_keep_full().await?;
-        self.inner.prune_targets(live).await?;
+        let pruned = self.inner.prune_targets(live).await?;
 
         let mut prefixes = self.occupied_prefixes().await?;
         prefixes.extend(marked_before.iter().map(|h| h.to_hex()[..4].to_string()));
         // prune_targets is infrequent, so flushing every affected directory is
         // acceptable.
-        self.flush_prefixes(&prefixes).await
+        self.flush_prefixes(&prefixes).await?;
+        Ok(pruned)
     }
 
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
@@ -417,6 +434,23 @@ mod tests {
         assert!(reloaded.get(&right).await.expect("read the second entry").is_some());
     }
 
+    /// A fan-out prefix is derived from stored hashes, so a malformed one is a
+    /// defect in the caller. Reading it as zeros would flush a directory no
+    /// fact belongs to.
+    #[tokio::test]
+    async fn a_malformed_fan_out_prefix_is_refused() {
+        let representative =
+            FileSystemMetadataStore::prefix_hash("ab12").expect("a hex prefix derives a hash");
+        assert_eq!(&representative.to_hex()[..4], "ab12");
+
+        for malformed in ["ab", "zzzz", "a\u{e9}12"] {
+            assert!(
+                FileSystemMetadataStore::prefix_hash(malformed).is_err(),
+                "prefix {malformed:?} must be refused rather than read as zeros",
+            );
+        }
+    }
+
     #[tokio::test]
     async fn prune_also_flushes() {
         let (blob, _dir) = test_blob_store().await;
@@ -432,6 +466,50 @@ mod tests {
         let journal = InMemoryWal::new();
         index2.rebuild_from_wal(&journal).await.unwrap();
         assert_eq!(index2.get_constraint(&live).await.unwrap(), BTreeSet::new());
+    }
+
+    /// A marker for an object the store no longer holds leaves no file behind.
+    ///
+    /// The marker is written into the fan-out directory of the hash it marks,
+    /// and the prune rewrites the directories it visited. A marked hash has no
+    /// metadata entry, so its directory is not one of the occupied ones: the
+    /// flush list has to carry it from the markers read before the prune, or
+    /// the file stays and the marker returns on the next open.
+    #[tokio::test]
+    async fn prune_removes_the_marker_file_of_an_object_that_is_gone() {
+        let (blob, _dir) = test_blob_store().await;
+        let index = FileSystemMetadataStore::new(blob.clone());
+
+        let live = Hash::from_content(b"live entry");
+        index.put(live, MetadataEntry { len: 10, encoding: ObjectEncoding::Full }).await.unwrap();
+
+        // A ghost in a fan-out directory of its own, so the marker file is the
+        // only reason to rewrite that directory.
+        // Bounded: every candidate but one lands outside the live entry's
+        // directory, so a thousand tries is an impossible miss rather than a
+        // search that insists on terminating.
+        let ghost = (0u32..1024)
+            .map(|counter| Hash::from_content(format!("ghost-{counter}").as_bytes()))
+            .find(|hash| hash.to_hex()[..4] != live.to_hex()[..4])
+            .expect("a hash outside the live entry's fan-out directory");
+        index.mark_keep_full(ghost).await.unwrap();
+        blob.read_aux(&ghost, LATEST_KEEP_FULL_FORMAT)
+            .await
+            .expect("the marker file is on disk before the prune");
+
+        let pruned = index.prune_targets(&HashSet::from([live])).await.unwrap();
+        assert_eq!(pruned.markers, 1, "the marker on a hash the store does not hold is dropped");
+        assert!(
+            blob.read_aux(&ghost, LATEST_KEEP_FULL_FORMAT).await.is_err(),
+            "the marker file must be gone from disk, not only from the in-memory map",
+        );
+
+        let reopened = FileSystemMetadataStore::new(blob);
+        reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
+        assert!(
+            !reopened.is_keep_full(&ghost).await.unwrap(),
+            "a marker left on disk comes back on the next open",
+        );
     }
 
     /// A keep-full marker is written to its own file and read back after a

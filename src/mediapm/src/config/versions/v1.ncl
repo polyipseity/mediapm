@@ -279,10 +279,30 @@ let ToolRegistryEntryV1 = {
 }
 in
 
+# ||| A state marker the state ladder reads.
+# |||
+# ||| The ladder steps forward as integers and keeps a reader for every rung it
+# ||| has written, so the readable set runs from 1 to the current state version.
+# ||| This is the Nickel half of that fact and moves with
+# ||| `MEDIAPM_STATE_VERSION` in `src/mediapm/src/config/defaults.rs`;
+# ||| `strict_v1_state_payload_marker_matches_the_state_ladder` reads that
+# ||| constant and fails while the two disagree.
+let StateMarkerV1 = std.contract.from_predicate (
+  fun value =>
+    std.is_number value
+    && std.number.is_integer value
+    && value >= 1
+    && value <= 5
+)
+in
+
 # ||| mediapm V1 state document (mirrors the V1 shape only; later versions add
 # and, at V4, remove fields).  Closed: no open `..` tail.
+# ||| The marker is required rather than defaulted: every writer emits it, so a
+# ||| payload that names none is foreign or damaged, and a default would accept
+# ||| a document no reader takes while supplying a number nothing wrote.
 let MediaPmStateV1 = {
-  version | IntegerNumberV1 | default = 3,
+  version | StateMarkerV1,
   managed_files | { _ : ManagedFileRecordV1 } | default = {},
   managed_tools | Array ToolRegistryEntryV1 | default = [],
   workflow_states | { _ : ManagedWorkflowStepStateV1 } | default = {},

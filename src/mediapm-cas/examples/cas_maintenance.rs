@@ -34,7 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- prune_constraints ---
     let pruned = cas.prune_constraints().await?;
-    println!("Pruned {} constraint entries.", pruned.removed);
+    println!(
+        "Pruned {} constraint entries, {} dead bases, {} keep-full markers.",
+        pruned.targets_removed, pruned.bases_removed, pruned.markers_removed
+    );
 
     // --- list_hashes ---
     let all = cas.list_hashes().await?;

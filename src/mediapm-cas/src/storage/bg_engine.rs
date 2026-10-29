@@ -372,9 +372,8 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             }
             // A keep-full marker is the CAS half of mediapm's `save = "full"`:
             // the object may be another object's base, but its own bytes are
-            // never rewritten as a delta. Nothing in production creates deltas
-            // today, so this guard is what a future delta producer has to
-            // honour rather than something a current producer already trips.
+            // never rewritten as a delta. This loop is the only delta writer,
+            // so this guard is the whole of that promise.
             if self.metadata.is_keep_full(target).await? {
                 continue;
             }
@@ -443,10 +442,8 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         // === Phase 2: Constraint pruning ===
         // Prune dead bases from constraint entries. The live set from Phase 1
         // is still valid — the optimizer only changes encodings, not existence.
-        let before = self.metadata.list_targets().await?.len();
-        self.metadata.prune_targets(&live).await?;
-        let after = self.metadata.list_targets().await?.len();
-        if after < before {
+        let pruned = self.metadata.prune_targets(&live).await?;
+        if pruned.targets > 0 || pruned.bases > 0 || pruned.markers > 0 {
             did_work = true;
         }
 

@@ -13,7 +13,7 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::super::wal::{Wal, WalEntry, WalPosition};
-use super::{MetadataEntry, MetadataStore};
+use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 
 /// An in-memory [`MetadataStore`] backed by `Arc<DashMap>` for both entry and
 /// constraint data.
@@ -127,18 +127,26 @@ impl MetadataStore for InMemoryMetadataStore {
         Ok(self.constraints.iter().map(|r| *r.key()).collect())
     }
 
-    async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError> {
+    async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError> {
+        let markers_before = self.keep_full.len();
         self.keep_full.retain(|hash| live.contains(hash));
-        self.constraints.retain(|target, bases| {
+        let markers = markers_before - self.keep_full.len();
+
+        let mut targets = 0;
+        let mut bases = 0;
+        self.constraints.retain(|target, live_bases| {
             // Remove entire entry if the target is gone.
             if !live.contains(target) {
+                targets += 1;
                 return false;
             }
             // Per-base pruning: keep only live bases.
-            bases.retain(|b| live.contains(b));
+            let bases_before = live_bases.len();
+            live_bases.retain(|b| live.contains(b));
+            bases += bases_before - live_bases.len();
             true
         });
-        Ok(())
+        Ok(PrunedConstraints { targets, bases, markers })
     }
 
     async fn mark_keep_full(&self, hash: Hash) -> Result<(), CasError> {
@@ -336,6 +344,31 @@ mod tests {
         // but does not remove blobs from the store.
         let bases = index.get_constraint(&live).await.unwrap();
         assert_eq!(bases, BTreeSet::from([base]));
+    }
+
+    #[tokio::test]
+    async fn prune_targets_counts_every_fact_it_drops() {
+        let index = InMemoryMetadataStore::new();
+        let live = Hash::from_content(b"live");
+        let base = Hash::from_content(b"base");
+        let dead_target = Hash::from_content(b"dead-target");
+        let dead_base = Hash::from_content(b"dead-base");
+        let marked_ghost = Hash::from_content(b"marked-ghost");
+
+        index.put(live, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.put(base, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.set_constraint(live, BTreeSet::from([base, dead_base])).await.unwrap();
+        index.set_constraint(dead_target, BTreeSet::new()).await.unwrap();
+        index.mark_keep_full(marked_ghost).await.unwrap();
+
+        let live_set = HashSet::from([live, base]);
+        let pruned = index.prune_targets(&live_set).await.unwrap();
+        assert_eq!(pruned, PrunedConstraints { targets: 1, bases: 1, markers: 1 });
+
+        // A second pass over the same live set has nothing left to drop, so a
+        // count that drifted or double-counted shows here.
+        let again = index.prune_targets(&live_set).await.unwrap();
+        assert_eq!(again, PrunedConstraints::default());
     }
 
     #[tokio::test]

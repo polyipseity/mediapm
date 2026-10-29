@@ -323,11 +323,12 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M
 
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
         let all_hashes: HashSet<Hash> = self.metadata.list_hashes().await?.into_iter().collect();
-        let targets = self.metadata.list_targets().await?;
-        let initial_count = targets.len();
-        self.metadata.prune_targets(&all_hashes).await?;
-        let final_count = self.metadata.list_targets().await?.len();
-        Ok(PruneReport { removed: initial_count.saturating_sub(final_count) })
+        let pruned = self.metadata.prune_targets(&all_hashes).await?;
+        Ok(PruneReport {
+            targets_removed: pruned.targets,
+            bases_removed: pruned.bases,
+            markers_removed: pruned.markers,
+        })
     }
 
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {

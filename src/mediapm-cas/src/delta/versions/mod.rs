@@ -12,9 +12,9 @@
 //!   for version-to-version migration.
 //! - This `mod.rs` is the only place where latest version state is bridged to
 //!   unversioned runtime state.
-//! - Files outside `delta/versions/` and `index/versions/` must interact with
-//!   versioned envelopes only through each folder's `versions/mod.rs`, never
-//!   through direct `versions::vX` imports.
+//! - Files outside a `versions/` directory must interact with its versioned
+//!   envelopes only through that directory's `versions/mod.rs`, never through
+//!   direct `versions::vX` imports.
 //! - Do not directly re-export `versions::vX` structs/types from this module.
 //!   Expose unversioned APIs here and keep versioned internals encapsulated.
 

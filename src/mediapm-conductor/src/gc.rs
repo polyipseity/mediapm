@@ -425,7 +425,12 @@ where
     cas.run_maintenance_cycle().await.map_err(ConductorError::Cas)?;
     tracing::info!("CAS GC phase 2/2: prune_constraints");
     let report = cas.prune_constraints().await.map_err(ConductorError::Cas)?;
-    tracing::info!("CAS GC phase 2/2: complete (removed={})", report.removed);
+    tracing::info!(
+        "CAS GC phase 2/2: complete (targets={}, bases={}, markers={})",
+        report.targets_removed,
+        report.bases_removed,
+        report.markers_removed,
+    );
     Ok(report)
 }
 

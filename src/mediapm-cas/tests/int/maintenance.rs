@@ -39,7 +39,7 @@ async fn prune_constraints_no_orphans_after_materialized_delete() {
     // index entry — deleting the entry also removes its constraint, so
     // no orphans remain after materialization.
     let report = cas.prune_constraints().await.unwrap();
-    assert_eq!(report.removed, 0);
+    assert_eq!(report.targets_removed, 0);
 }
 
 #[tokio::test]
@@ -69,7 +69,7 @@ async fn gc_sweep_never_deletes_objects() {
 
     // Prune_constraints runs without error and does NOT delete any object.
     let report = cas.prune_constraints().await.unwrap();
-    assert_eq!(report.removed, 0, "prune_constraints should not delete objects");
+    assert_eq!(report.targets_removed, 0, "prune_constraints should not delete objects");
 
     // All objects still retrievable after prune.
     assert!(cas.get(b1).await.is_ok(), "b1 should still exist after prune");
@@ -95,6 +95,43 @@ async fn prune_constraints_approaches_effective_constraints() {
     assert!(bases.contains(&live), "live base survives");
     assert!(!bases.contains(&dead), "dead base pruned");
     assert_eq!(bases.len(), 1, "only one effective base remains");
+}
+
+/// Every constraint the prune drops is reported, not only the ones that
+/// remove a whole target.
+///
+/// A prune drops three kinds of fact: a constraint whose target is gone, a
+/// dead base inside a surviving constraint, and a keep-full marker whose
+/// object is gone. Counting only the first reports zero while the prune
+/// rewrites the store.
+#[tokio::test]
+async fn prune_constraints_reports_bases_and_markers_it_drops() {
+    let cas = new_in_memory_cas();
+    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
+    let live_base = cas.put(Bytes::from_static(b"live")).await.unwrap();
+    // A base the store never held: not in the live set, so the prune drops it
+    // from a constraint that survives.
+    let dead_base = Hash::from_content(b"never-stored-base");
+    cas.set_constraint(target, [live_base, dead_base].into()).await.unwrap();
+
+    // A marker on an object the store never held. Marking such a hash is
+    // accepted, and the marker outlives nothing, so the prune drops it.
+    let ghost = Hash::from_content(b"never-stored-marked");
+    cas.mark_keep_full(ghost).await.unwrap();
+
+    let report = cas.prune_constraints().await.unwrap();
+
+    assert_eq!(
+        cas.get_constraint(target).await.unwrap(),
+        BTreeSet::from([live_base]),
+        "the dead base is gone from the surviving constraint",
+    );
+    assert!(!cas.is_keep_full(ghost).await.unwrap(), "the marker is gone");
+    assert_eq!(
+        report,
+        mediapm_cas::PruneReport { targets_removed: 0, bases_removed: 1, markers_removed: 1 },
+        "the report counts the base and the marker the prune dropped",
+    );
 }
 
 // ---------------------------------------------------------------------------
