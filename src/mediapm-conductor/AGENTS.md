@@ -452,7 +452,7 @@ Version dispatch lives in `src/mediapm-conductor/src/state/versions/mod.rs`. `de
 
 - The record dropped its own `instance_key`. The key is the `tool_call_instances` map key, and the migration discards the stored copy instead of comparing it: a document that ever disagreed with itself about which key a record sat under has no reader that could say which was right.
 - `aux.instances` is gone. Each record carries `last_referenced_at`, taken from the aux entry the migration found for its key; a record with no entry takes the epoch, which is the value the collector already read as "never referenced".
-- `step_ids` is a set of `StepRef` — workflow id plus step id — so a marker selects the step a media actually ran. The migration files an existing bare id under an empty workflow id, because the document it came from never recorded which workflow the step ran in; that residue is reported rather than guessed at.
+- `step_ids` is a set of `StepRef` — workflow id plus step id — so a marker selects the step a media actually ran. The migration files an existing bare id under an empty workflow id, because the document it came from never recorded which workflow the step ran in. That residue answers no step through the relaxed pass and no invalidation request either, since both compare the workflow; the record gains a qualified ref the next time the step serves it, by executing or by hitting it.
 
 ### V2 → V3
 
