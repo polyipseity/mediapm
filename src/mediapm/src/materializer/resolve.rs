@@ -410,9 +410,10 @@ pub(super) async fn resolve_workflow_step_output_hashes(
     let mut step_outputs = StepOutputHashes::new();
     let required_step_output_names = collect_required_step_output_names(workflow);
     let required_step_zip_members = collect_required_step_zip_members(workflow);
+    let mut unresolved_inputs_by_step: BTreeMap<String, UnresolvedInputs> = BTreeMap::new();
 
     for step in &workflow.steps {
-        if let Some(outputs) = resolve_single_step_output_hashes_strict(
+        let strict = resolve_single_step_output_hashes_strict(
             cas,
             generated_doc,
             state,
@@ -421,7 +422,13 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             &required_step_zip_members,
             &step_outputs,
         )
-        .await?
+        .await?;
+        // Kept for the relaxed pass: a refusal has to say that the strict key was
+        // never derived, and which input stopped it.
+        if !strict.unresolved_inputs.is_empty() {
+            unresolved_inputs_by_step.insert(step.id.clone(), strict.unresolved_inputs);
+        }
+        if let Some(outputs) = strict.outputs
             && step_declared_outputs_resolved(step, &outputs)
         {
             step_outputs.insert(step.id.clone(), outputs);
@@ -435,15 +442,72 @@ pub(super) async fn resolve_workflow_step_output_hashes(
         {
             continue;
         }
-        if let Some(outputs) =
-            resolve_single_step_output_hashes_relaxed(generated_doc, state, &workflow.name, step)?
-            && step_declared_outputs_resolved(step, &outputs)
+        let unresolved_inputs = unresolved_inputs_by_step.remove(&step.id).unwrap_or_default();
+        if let Some(outputs) = resolve_single_step_output_hashes_relaxed(
+            generated_doc,
+            state,
+            &workflow.name,
+            step,
+            &unresolved_inputs,
+        )? && step_declared_outputs_resolved(step, &outputs)
         {
             step_outputs.insert(step.id.clone(), outputs);
         }
     }
 
     if step_outputs.is_empty() { Ok(None) } else { Ok(Some(step_outputs)) }
+}
+
+/// What the strict pass could not reconstruct about one step's inputs.
+///
+/// The relaxed pass reports this when it refuses, because a reader who follows
+/// the refusal's advice and re-runs lands in the same place while the input
+/// stays unresolved.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum UnresolvedInput {
+    /// The binding names a step output this traversal has not resolved.
+    PriorStepOutput,
+    /// The binding names bytes the store does not hold.
+    MaterializedStepOutput,
+}
+
+impl UnresolvedInput {
+    /// The phrase the refusal uses to say why the input did not resolve.
+    fn reason(self) -> &'static str {
+        match self {
+            Self::PriorStepOutput => "names a step output this traversal did not resolve",
+            Self::MaterializedStepOutput => "names bytes the store does not hold",
+        }
+    }
+}
+
+/// The inputs that stopped the strict pass, keyed by their binding names.
+type UnresolvedInputs = BTreeMap<String, UnresolvedInput>;
+
+/// The strict pass's answer for one step, and what it could not reconstruct.
+struct ExpectedInputHashes {
+    /// The expected input hashes, absent when an input names a step output this
+    /// traversal has not resolved and no key can be derived at all.
+    inputs: Option<ExpectedStepInputs>,
+    /// The inputs that prevented a key, with the reason each failed.
+    unresolved: UnresolvedInputs,
+}
+
+impl ExpectedInputHashes {
+    /// The expected inputs alone, for the test helpers that compose no key and
+    /// so have nothing to say about the inputs they could not resolve.
+    #[cfg(test)]
+    fn into_expected_inputs(self) -> Option<ExpectedStepInputs> {
+        self.inputs
+    }
+}
+
+/// The strict pass's answer for one step.
+struct StrictStepResolution {
+    /// The outputs the step's key matched, or nothing when no instance matched.
+    outputs: Option<BTreeMap<String, Hash>>,
+    /// The inputs that stopped this pass from deriving the step's key.
+    unresolved_inputs: UnresolvedInputs,
 }
 
 async fn resolve_single_step_output_hashes_strict(
@@ -454,14 +518,15 @@ async fn resolve_single_step_output_hashes_strict(
     required_step_output_names: &RequiredStepOutputNames,
     required_step_zip_members: &RequiredStepZipMembers,
     prior_step_outputs: &StepOutputHashes,
-) -> Result<Option<BTreeMap<String, Hash>>, MediaPmError> {
+) -> Result<StrictStepResolution, MediaPmError> {
     let merged_step_inputs =
         merge_step_inputs_with_tool_defaults(generated_doc, &step.tool, &step.inputs)?;
-    let expected_inputs =
+    let expected =
         resolve_expected_input_hashes(cas, generated_doc, &merged_step_inputs, prior_step_outputs)
             .await?;
-    let Some(mut expected_inputs) = expected_inputs else {
-        return Ok(None);
+    let ExpectedInputHashes { inputs, mut unresolved } = expected;
+    let Some(mut expected_inputs) = inputs else {
+        return Ok(StrictStepResolution { outputs: None, unresolved_inputs: unresolved });
     };
 
     let (conductor_tool_key, _) = find_active_tool_spec(generated_doc, &step.tool)
@@ -487,8 +552,10 @@ async fn resolve_single_step_output_hashes_strict(
     .await?;
     // A binding the worker resolved and this pass could not leaves a term out of
     // the key, and the key derived without it is not this step's key.
-    let unresolved = resolved_values.unresolved.clone();
-    expected_inputs.unresolved_hash_input_names.extend(unresolved);
+    expected_inputs.unresolved_hash_input_names.extend(resolved_values.unresolved.clone());
+    for input_name in &resolved_values.unresolved {
+        unresolved.insert(input_name.clone(), UnresolvedInput::MaterializedStepOutput);
+    }
     let key_material = materializer_key_material(
         generated_doc,
         &step.tool,
@@ -535,10 +602,13 @@ async fn resolve_single_step_output_hashes_strict(
     let Some(instance) =
         selected_instance.or_else(|| matching_instances.first().map(|(_, instance)| *instance))
     else {
-        return Ok(None);
+        return Ok(StrictStepResolution { outputs: None, unresolved_inputs: unresolved });
     };
 
-    Ok(Some(output_hashes_from_instance(instance)))
+    Ok(StrictStepResolution {
+        outputs: Some(output_hashes_from_instance(instance)),
+        unresolved_inputs: unresolved,
+    })
 }
 
 fn step_declared_outputs_resolved(
@@ -550,16 +620,17 @@ fn step_declared_outputs_resolved(
 
 /// Returns true when an instance records this step among the steps it served.
 ///
-/// The step id is the part that must match. A ref migrated from a wire shape
-/// that could not name a workflow carries an empty `workflow_id`, so matching on
-/// the workflow alone would exclude every migrated record. An instance that
-/// records no ref at all names no step and is therefore not a candidate: the
-/// record is the only provenance a state has for what served a step.
+/// Both halves of a ref decide: the workflow and the step id. A ref written
+/// before refs carried a workflow id reads with an empty one, and an empty
+/// workflow id names no workflow, so such a record answers nothing through the
+/// relaxed pass. The step is then a miss, and the next run executes it. An
+/// instance that records no ref at all names no step and is not a candidate
+/// either: the record is the only provenance a state has for what served a step.
 fn instance_names_step(instance: &ToolCallInstance, workflow_name: &str, step_id: &str) -> bool {
-    instance.step_ids.iter().any(|recorded| {
-        recorded.step_id == step_id
-            && (recorded.workflow_id.is_empty() || recorded.workflow_id == workflow_name)
-    })
+    instance
+        .step_ids
+        .iter()
+        .any(|recorded| recorded.step_id == step_id && recorded.workflow_id == workflow_name)
 }
 
 /// Resolves one step's outputs from the instances that name it, when its key
@@ -583,14 +654,15 @@ fn instance_names_step(instance: &ToolCallInstance, workflow_name: &str, step_id
 ///   workflow, the step, the tool key and every candidate. A step names the
 ///   work it performs, so a state where two records answer to it with different
 ///   bytes needs a re-run, which `mediapm media invalidate <media-id>
-///   <step-index>` starts. Two limits belong with that advice: the command
-///   cannot mark a record whose ref carries no workflow id, and a step whose
-///   inputs do not resolve reports the same disagreement after the re-run.
+///   <step-index>` starts. One limit belongs with that advice: a step whose
+///   inputs do not resolve derives no key, so the re-run reports the same
+///   disagreement. The refusal names those inputs and the reason each failed.
 fn resolve_single_step_output_hashes_relaxed(
     generated_doc: &NickelDocument,
     state: &ConductorState,
     workflow_name: &str,
     step: &mediapm_conductor::WorkflowStepSpec,
+    unresolved_inputs: &UnresolvedInputs,
 ) -> Result<Option<BTreeMap<String, Hash>>, MediaPmError> {
     let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
         .map(|(key, _)| key.clone())
@@ -642,14 +714,13 @@ fn resolve_single_step_output_hashes_relaxed(
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
+            let strict_note = describe_unresolved_inputs(unresolved_inputs);
             Err(MediaPmError::Workflow(format!(
                 "workflow '{workflow_name}' step '{}' matched no instance by key, and {} instances \
                  of tool '{conductor_tool_key}' name that step while recording different required \
                  outputs: {described}; refusing to choose between them. \
                  `mediapm media invalidate <media-id> <step-index>` marks the record this state \
-                 holds for the step, and the next sync runs it again; it cannot mark a record \
-                 whose ref carries no workflow id, and a step whose inputs do not resolve \
-                 reports the same disagreement after the re-run.",
+                 holds for the step, and the next sync runs it again.{strict_note}",
                 step.id,
                 several.len(),
             )))
@@ -907,13 +978,43 @@ async fn instance_has_materializable_required_outputs(
     true
 }
 
+/// Returns the clause that names the inputs which stopped the strict pass.
+///
+/// Empty when the strict pass derived the step's key and still matched no
+/// instance: nothing then stands between the re-run and a different answer, so
+/// the refusal has no second limit to state.
+fn describe_unresolved_inputs(unresolved_inputs: &UnresolvedInputs) -> String {
+    if unresolved_inputs.is_empty() {
+        return String::new();
+    }
+    let described = unresolved_inputs
+        .iter()
+        .map(|(input_name, reason)| format!("'{input_name}' ({})", reason.reason()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let noun = if unresolved_inputs.len() == 1 { "input" } else { "inputs" };
+    format!(
+        " The strict pass could not derive this step's key: {noun} {described} did not \
+         resolve. The re-run meets this refusal as well until that does."
+    )
+}
+
+/// Returns the hashes a step's inputs name, and the inputs this traversal could
+/// not resolve.
+///
+/// A binding that names a step output the traversal has not resolved stops the
+/// whole derivation: the key would be composed without that term, and a key
+/// missing a term is not this step's key. A binding whose bytes the store lacks
+/// leaves the input recorded as unresolved, which keeps every instance out of the
+/// strict match for the same reason.
 async fn resolve_expected_input_hashes(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
     step_inputs: &BTreeMap<String, String>,
     step_outputs: &StepOutputHashes,
-) -> Result<Option<ExpectedStepInputs>, MediaPmError> {
+) -> Result<ExpectedInputHashes, MediaPmError> {
     let mut expected = ExpectedStepInputs::default();
+    let mut unresolved = UnresolvedInputs::new();
 
     for (input_name, value) in step_inputs {
         match resolve_input_binding_hash(cas, generated_doc, value, step_outputs).await? {
@@ -921,15 +1022,17 @@ async fn resolve_expected_input_hashes(
                 expected.resolved_hashes.insert(input_name.clone(), hash);
             }
             InputBindingHashResolution::MissingPriorStepOutput => {
-                return Ok(None);
+                unresolved.insert(input_name.clone(), UnresolvedInput::PriorStepOutput);
+                return Ok(ExpectedInputHashes { inputs: None, unresolved });
             }
             InputBindingHashResolution::MissingMaterializedStepOutput => {
                 expected.unresolved_hash_input_names.insert(input_name.clone());
+                unresolved.insert(input_name.clone(), UnresolvedInput::MaterializedStepOutput);
             }
         }
     }
 
-    Ok(Some(expected))
+    Ok(ExpectedInputHashes { inputs: Some(expected), unresolved })
 }
 
 async fn resolve_input_binding_hash(
@@ -1046,12 +1149,9 @@ mod tests {
     /// Returns whether `instance` records serving `step_id`, whatever workflow
     /// the ref names.
     ///
-    /// The demo fixture is a record of one workflow, so its refs are compared by
-    /// step id alone: a ref migrated from a document written before refs named a
-    /// workflow reads with an empty workflow id, and pairing has to accept it or
-    /// every rewrite plan would refuse an otherwise honest record. Nothing
-    /// outside this module's fixture tooling pairs by bare id — an invalidation
-    /// request, which decides what work to discard, names the workflow.
+    /// The demo fixture holds one workflow, so a bare step id names one step
+    /// there. This is fixture tooling: the materializer's own pairing, and an
+    /// invalidation request, compare the workflow as well as the step id.
     fn records_step(instance: &ToolCallInstance, step_id: &str) -> bool {
         instance.step_ids.iter().any(|recorded| recorded.step_id == step_id)
     }
@@ -1462,6 +1562,7 @@ mod tests {
             resolve_expected_input_hashes(&cas, &generated, &merged_ffmpeg_inputs, &step_outputs)
                 .await
                 .expect("resolve ffmpeg expected inputs")
+                .into_expected_inputs()
                 .expect("ffmpeg expected inputs");
 
         let (conductor_tool_key, _) =
@@ -1955,6 +2056,7 @@ mod tests {
                             step.id,
                         )
                     })?
+                    .into_expected_inputs()
             else {
                 return Err(format!(
                     "step '{}': no recorded predecessor supplies its hash-backed inputs",
@@ -2259,11 +2361,12 @@ mod tests {
         let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
             .map_err(|error| format!("step '{}': merging step inputs failed: {error}", step.id))?;
         let Some(expected_inputs) =
-            resolve_expected_input_hashes(cas, generated, &merged, step_outputs).await.map_err(
-                |error| {
+            resolve_expected_input_hashes(cas, generated, &merged, step_outputs)
+                .await
+                .map_err(|error| {
                     format!("step '{}': resolving expected input hashes failed: {error}", step.id)
-                },
-            )?
+                })?
+                .into_expected_inputs()
         else {
             return Err(format!(
                 "step '{}' resolves no inputs; its recorded predecessors are missing",
@@ -3157,15 +3260,15 @@ mod tests {
         );
     }
 
-    /// A record that names the step matches whatever workflow its ref names when
-    /// that ref names none.
+    /// A ref that names no workflow names no workflow, so the record answers
+    /// nothing.
     ///
-    /// A ref migrated from a wire shape that could not name a workflow carries an
-    /// empty id, and pairing on the workflow alone would exclude every such
-    /// record. That turns a state the materializer can answer into a miss, so the
-    /// step id is what has to match.
+    /// A ref written before refs carried a workflow id reads with an empty one.
+    /// Both halves of a ref decide whether a record served a step, so an empty
+    /// workflow id matches no workflow name. The record stops answering through
+    /// the relaxed pass, the step is a miss, and the next run executes it.
     #[tokio::test]
-    async fn relaxed_resolution_matches_a_ref_that_names_no_workflow() {
+    async fn relaxed_resolution_ignores_a_ref_that_names_no_workflow() {
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         let hash = cas.put(bytes::Bytes::from_static(b"legacy-infojson")).await.expect("put info");
@@ -3175,21 +3278,181 @@ mod tests {
             Hash::from_content(b"legacy-instance"),
             infojson_instance(hash, 1, Some(infojson_step_ref(""))),
         );
-        // The tool has to resolve, and the step has to come back with the ref's
-        // hash despite the empty workflow id.
+        // The tool has to resolve for the pass to run at all, and the record
+        // still answers nothing because its ref names no workflow.
         let workflow = infojson_workflow();
         let step_outputs =
             resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
                 .await
-                .expect("an empty workflow id matches any workflow")
-                .expect("the migrated record answers for the step");
+                .expect("a ref that names no workflow is not an error");
 
+        assert!(
+            step_outputs.is_none(),
+            "a ref whose workflow id is empty names no workflow, so it answers for no step: \
+             {step_outputs:?}"
+        );
+    }
+
+    /// The refusal says why the strict pass could not settle the step, and names
+    /// the input that stopped it.
+    ///
+    /// A step whose input names a step output this traversal never resolved
+    /// derives no key, so the strict pass cannot answer it. The relaxed pass then
+    /// refuses the disagreement it found, and a reader who follows the advice and
+    /// re-runs lands in the same state. The message says that and names the
+    /// input.
+    #[tokio::test]
+    async fn relaxed_resolution_names_the_input_the_strict_pass_could_not_resolve() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let primary_hash =
+            cas.put(bytes::Bytes::from_static(b"primary-infojson")).await.expect("put primary");
+        let sidecar_hash =
+            cas.put(bytes::Bytes::from_static(b"sidecar-infojson")).await.expect("put sidecar");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            Hash::from_content(b"primary-instance"),
+            infojson_instance(
+                primary_hash,
+                2_000_000_000,
+                Some(infojson_step_ref("mediapm.media.test")),
+            ),
+        );
+        state.tool_call_instances.insert(
+            Hash::from_content(b"sidecar-instance"),
+            infojson_instance(
+                sidecar_hash,
+                1_000_000_000,
+                Some(infojson_step_ref("mediapm.media.test")),
+            ),
+        );
+
+        let mut workflow = infojson_workflow();
+        workflow.steps[0]
+            .inputs
+            .insert("url".to_string(), "${step_output.step-0-0-import.video_untagged}".to_string());
+
+        let error =
+            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
+                .await
+                .expect_err("two records that disagree must not be chosen between");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("The strict pass could not derive this step's key"),
+            "the refusal says the key never matched, rather than implying it did: {message}"
+        );
+        assert!(
+            message.contains("'url'")
+                && message.contains("step output this traversal did not resolve"),
+            "the refusal names the input that stopped the strict pass, and why: {message}"
+        );
+        assert!(
+            !message.contains("cannot mark"),
+            "the refusal no longer warns about a record the matcher cannot admit: {message}"
+        );
+    }
+
+    /// The refusal's second limit names every input that stopped the strict pass,
+    /// with the reason each failed, and stays silent when nothing did.
+    ///
+    /// A key that was never derived is the one case where the advice to re-run
+    /// lands in the same refusal, so the clause has to be exact about which
+    /// inputs stand in the way.
+    #[test]
+    fn describe_unresolved_inputs_names_each_input_and_its_reason() {
         assert_eq!(
-            step_outputs
-                .get(INFOJSON_STEP_ID)
-                .and_then(|outputs| outputs.get("yt_dlp_infojson_file"))
-                .copied(),
-            Some(hash),
+            describe_unresolved_inputs(&UnresolvedInputs::new()),
+            "",
+            "a strict pass that derived the key has no second limit to state"
+        );
+
+        let one = UnresolvedInputs::from([("url".to_string(), UnresolvedInput::PriorStepOutput)]);
+        let described = describe_unresolved_inputs(&one);
+        assert!(
+            described.contains("could not derive this step's key"),
+            "the clause says the key was never derived: {described}"
+        );
+        assert!(
+            described.contains("input 'url'")
+                && described.contains(UnresolvedInput::PriorStepOutput.reason()),
+            "one input is named as an input, with the reason it failed: {described}"
+        );
+
+        let two = UnresolvedInputs::from([
+            ("archive".to_string(), UnresolvedInput::MaterializedStepOutput),
+            ("url".to_string(), UnresolvedInput::PriorStepOutput),
+        ]);
+        let described = describe_unresolved_inputs(&two);
+        for expected in [
+            "inputs 'archive' (names bytes the store does not hold)",
+            "'url' (names a step output this traversal did not resolve)",
+        ] {
+            assert!(
+                described.contains(expected),
+                "{expected} missing from the clause: {described}"
+            );
+        }
+    }
+
+    /// A record that served two workflows answers both, and no third.
+    ///
+    /// The record's refs are its provenance: it served each step it names. A
+    /// request for either workflow is answered by the bytes it recorded, and a
+    /// request for a workflow it never served is a miss rather than a refusal.
+    #[tokio::test]
+    async fn relaxed_resolution_answers_for_a_record_that_served_two_workflows() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let hash = cas.put(bytes::Bytes::from_static(b"shared-work-infojson")).await.expect("put");
+
+        let mut instance =
+            infojson_instance(hash, 1, Some(infojson_step_ref("mediapm.media.first")));
+        instance.step_ids.insert(infojson_step_ref("mediapm.media.second"));
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(Hash::from_content(b"two-workflow-instance"), instance);
+
+        let named = |name: &str| {
+            let mut workflow = infojson_workflow();
+            workflow.name = name.to_string();
+            workflow
+        };
+
+        for served in ["mediapm.media.first", "mediapm.media.second"] {
+            let step_outputs = resolve_workflow_step_output_hashes(
+                &cas,
+                &relaxed_generated_doc(),
+                &state,
+                &named(served),
+            )
+            .await
+            .expect("a workflow the record served is not an error")
+            .expect("the record served this workflow, so it answers for it");
+
+            assert_eq!(
+                step_outputs
+                    .get(INFOJSON_STEP_ID)
+                    .and_then(|outputs| outputs.get("yt_dlp_infojson_file"))
+                    .copied(),
+                Some(hash),
+                "the record answers for {served}, which it served",
+            );
+        }
+
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &state,
+            &named("mediapm.media.third"),
+        )
+        .await
+        .expect("a workflow the record never served is not an error");
+
+        assert!(
+            step_outputs.is_none(),
+            "the record served two workflows and no third: {step_outputs:?}"
         );
     }
 
