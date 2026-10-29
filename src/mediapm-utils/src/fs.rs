@@ -5,6 +5,10 @@
 //! over the target, so the only version of the document that ever exists at the
 //! path is a whole one: a reader sees the previous document or the new one, and a
 //! crash between the two leaves the previous one intact.
+//!
+//! Each save also removes the temporaries a dead writer left beside the same
+//! target, so an interrupted publish costs one stale name rather than a growing
+//! pile of them.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -29,15 +33,26 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// carries the process id and a per-call counter, so no two writers of one path
 /// share a temporary: another process differs in the id, and another save in
 /// this one differs in the counter. A save that fails removes its own temporary.
-/// A killed writer cannot, so it leaves `.tmp-<pid>-<n>` beside the target;
-/// nothing sweeps that file, and the next save names a different one and ignores
-/// it.
+/// A killed writer cannot, so it leaves `.tmp-<pid>-<n>` beside the target; the
+/// next save of that target removes it, because it is older than
+/// [`STALE_TEMPORARY_AGE`]. The sweep is best effort: a temporary that cannot be
+/// removed leaves the save that was beside it unaffected.
 ///
 /// A save keeps the target's permissions. The rename replaces the target's
 /// inode with the temporary's, so without copying the mode across, a document a
-/// user restricted would come back with the mode a fresh file gets. The copy is
-/// best-effort: a target whose metadata cannot be read is not a reason to lose
-/// the document the caller asked to publish, and the save proceeds.
+/// user restricted would come back with the mode a fresh file gets. Both halves
+/// of the copy are best effort: a target whose metadata cannot be read is
+/// published at the mode a fresh file gets, and a mode that cannot be applied
+/// leaves the document published the same way. A document the caller asked to
+/// publish is worth more than the mode it lands with, and a filesystem that
+/// refuses a chmod would otherwise refuse every save of a document it lets us
+/// write.
+///
+/// Windows refuses to rename over a file whose read-only attribute is set, so a
+/// document a user protected would refuse every later save. The rename is tried
+/// first and, when it fails with a permission error, the target's attribute is
+/// cleared and the rename is tried once more. POSIX needs only write permission
+/// on the containing directory, so the clear touches nothing there.
 ///
 /// After the rename the parent directory is synced, which makes the new name
 /// durable rather than only the bytes it points at. That sync is best-effort
@@ -64,6 +79,7 @@ pub fn write_atomically(
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
     let temporary = temporary_path(path)?;
+    sweep_stale_temporaries(path);
 
     let publish = |temporary: &Path| -> io::Result<()> {
         let existing_permissions = std::fs::metadata(path).ok().map(|meta| meta.permissions());
@@ -73,7 +89,8 @@ pub fn write_atomically(
         if let Some(permissions) = existing_permissions {
             drop(file.set_permissions(permissions));
         }
-        std::fs::rename(temporary, path)?;
+        drop(file);
+        replace(temporary, path)?;
         if let Some(parent) = path.parent()
             && let Ok(directory) = File::open(parent)
         {
@@ -113,6 +130,144 @@ fn temporary_path(path: &Path) -> io::Result<PathBuf> {
 /// Counts the temporaries this process has named, so two saves of one path in
 /// one process never share a temporary file.
 static TEMPORARY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How old a sibling temporary must be before a later save removes it.
+///
+/// A save holds its temporary for one write and one rename, which is
+/// milliseconds, so an hour of sitting untouched is what separates a temporary a
+/// dead writer left from one a running save is still using. The threshold is
+/// what protects a concurrent writer: its temporary is younger, so a save by
+/// another process leaves it alone. A writer whose temporary is removed anyway —
+/// one stopped for over an hour, or one whose clock went backwards — fails its
+/// rename with `NotFound` and reports that error, and the target keeps the
+/// document it had. Removing by process liveness would need a per-platform probe
+/// and still could not see a process on another host, so the age test is the
+/// whole rule.
+const STALE_TEMPORARY_AGE: std::time::Duration = std::time::Duration::from_hours(1);
+
+/// Removes the temporaries a dead writer left beside `path`.
+///
+/// Only names [`temporary_path`] produces for this target are candidates, so a
+/// sibling document is never a candidate. Everything here is best effort: an
+/// unreadable directory, an entry that cannot be stat'd, and a temporary that
+/// cannot be removed all leave the save that follows them to proceed, because
+/// the save's own work is the document and this is housekeeping beside it.
+///
+/// A path whose final component is not valid UTF-8 is skipped rather than
+/// mangled, and a temporary of such a document stays where it is. A temporary
+/// whose modification time is in the future is skipped too: its age cannot be
+/// subtracted, and a clock ahead of this one is not evidence of a dead writer.
+fn sweep_stale_temporaries(path: &Path) {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let prefix = format!("{file_name}.tmp-");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(tail) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        if !is_temporary_suffix(tail) {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age < STALE_TEMPORARY_AGE {
+            continue;
+        }
+        drop(std::fs::remove_file(entry.path()));
+    }
+}
+
+/// Whether the part of a name after `.tmp-` is the `<pid>-<sequence>` pair
+/// [`temporary_path`] appends.
+///
+/// A name that does not have this shape belongs to something other than this
+/// helper, and the sweep must not remove it.
+fn is_temporary_suffix(tail: &str) -> bool {
+    let mut parts = tail.split('-');
+    let (Some(process_id), Some(sequence), None) = (parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    digits(process_id) && digits(sequence)
+}
+
+/// Renames `temporary` over `path`, clearing a read-only target on Windows.
+///
+/// Windows refuses the rename when the target carries the read-only attribute,
+/// so the failure a protected document produces is retried once the attribute is
+/// cleared. POSIX replaces the target with the directory's write permission
+/// alone; a permission error there is reported unchanged, because the retry
+/// clears nothing and fails the same way.
+///
+/// A retry that clears the attribute and then fails leaves the target writable.
+/// The alternative is to clear before the first attempt, which would widen the
+/// mode of every protected document on a save that never lands.
+fn replace(temporary: &Path, path: &Path) -> io::Result<()> {
+    match std::fs::rename(temporary, path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            clear_read_only_attribute(path)?;
+            std::fs::rename(temporary, path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Clears the read-only attribute so `path` can be replaced.
+///
+/// Windows refuses to replace a read-only file, so the attribute has to go. On
+/// POSIX the containing directory's write permission is what governs a replace,
+/// and the target's own mode only decides what can be written through it, so the
+/// body is empty there. Clearing bits on POSIX would rewrite a mode this helper
+/// has no reason to touch.
+///
+/// A missing target is success: the caller is about to create it.
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the fallible signature is shared with the Windows body, where clearing the attribute can fail"
+    )
+)]
+fn clear_read_only_attribute(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if !metadata.permissions().readonly() {
+            return Ok(());
+        }
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -256,6 +411,120 @@ mod tests {
             .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
             .collect();
         assert!(names.is_empty(), "the refused write left {names:?} behind");
+    }
+
+    /// A file named as this helper's temporary for `path`, sitting `age` in the
+    /// past.
+    ///
+    /// The name is built the way [`temporary_path`] builds one, so a test can
+    /// plant the leftover a killed writer leaves without killing anything. The
+    /// age comes from `File::set_modified` rather than from sleeping, because
+    /// [`STALE_TEMPORARY_AGE`] is an hour.
+    fn temporary_of_age(
+        path: &Path,
+        process_id: u32,
+        sequence: u64,
+        age: std::time::Duration,
+    ) -> PathBuf {
+        let file_name = path.file_name().expect("the document has a name").to_string_lossy();
+        let leftover = path.with_file_name(format!("{file_name}.tmp-{process_id}-{sequence}"));
+        std::fs::write(&leftover, b"half a document").expect("plant the leftover");
+        let handle =
+            std::fs::OpenOptions::new().write(true).open(&leftover).expect("open the leftover");
+        handle.set_modified(std::time::SystemTime::now() - age).expect("age the leftover");
+        leftover
+    }
+
+    /// A save removes the temporary a dead writer left beside its own target,
+    /// and leaves every other name alone.
+    ///
+    /// The leftover is the one file a killed publish costs that a rename cannot
+    /// clean up itself, so without this a directory that had a crash collects one
+    /// stale name per save. The second assertion is what keeps the sweep from
+    /// becoming a directory-wide delete: only names built for this target are
+    /// candidates.
+    #[test]
+    fn a_stale_temporary_beside_the_target_is_removed() {
+        let (root, path) = document_with(b"previous");
+        let two_hours = std::time::Duration::from_hours(2);
+        let leftover = temporary_of_age(&path, 999_999, 0, two_hours);
+        let stranger = temporary_of_age(&root.path().join("other.json"), 999_999, 0, two_hours);
+
+        write_bytes_atomically(&path, b"fresh").expect("publish the document");
+
+        assert!(!leftover.exists(), "the stale temporary of this target must be gone");
+        assert!(
+            stranger.exists(),
+            "the sweep removed a temporary that belongs to another document",
+        );
+        assert_eq!(std::fs::read(&path).expect("read the document"), b"fresh");
+        drop(root);
+    }
+
+    /// A save leaves a temporary younger than the threshold alone.
+    ///
+    /// That temporary can only belong to a save that is running, and removing it
+    /// would make that save's rename fail. The test publishes into a document
+    /// whose fresh temporary is present, which is exactly the state two processes
+    /// saving one path are in.
+    #[test]
+    fn a_live_temporary_beside_the_target_is_kept() {
+        let (root, path) = document_with(b"previous");
+        let live = temporary_of_age(&path, 999_999, 0, std::time::Duration::from_secs(0));
+
+        write_bytes_atomically(&path, b"fresh").expect("publish the document");
+
+        assert!(live.exists(), "a temporary a live save may still be writing must survive");
+        assert_eq!(std::fs::read(&path).expect("read the document"), b"fresh");
+        drop(root);
+    }
+
+    /// A document a user made read-only is still replaceable, and comes back
+    /// read-only.
+    ///
+    /// Windows refuses to rename over a read-only file, so without clearing the
+    /// attribute first a protected document refuses every later save while a
+    /// reader can still open it. The mode has to survive both halves: the copy
+    /// puts it on the temporary, and the replace has to leave it in place.
+    #[test]
+    fn a_publish_replaces_a_read_only_target() {
+        let (root, path) = document_with(b"previous");
+        let mut permissions = std::fs::metadata(&path).expect("read the document").permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).expect("protect the document");
+
+        write_bytes_atomically(&path, b"fresh").expect("a protected document must be replaceable");
+
+        assert_eq!(std::fs::read(&path).expect("read the document"), b"fresh");
+        assert!(
+            std::fs::metadata(&path).expect("read the document").permissions().readonly(),
+            "the save widened a document the user protected",
+        );
+        drop(root);
+    }
+
+    /// The read-only clear does nothing on POSIX.
+    ///
+    /// POSIX replaces a target with the containing directory's write permission,
+    /// so the clear exists for Windows alone. A clear here would rewrite the mode
+    /// of a file this helper only ever replaces, and `set_readonly(false)` on
+    /// POSIX grants write permission to every account instead of restoring the
+    /// owner's.
+    #[cfg(unix)]
+    #[test]
+    fn clearing_a_read_only_target_leaves_a_posix_mode_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (root, path) = document_with(b"previous");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
+            .expect("restrict the document");
+
+        clear_read_only_attribute(&path).expect("clearing is a no-op on POSIX");
+
+        let mode =
+            std::fs::metadata(&path).expect("read the document").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o400, "the POSIX path rewrote the document's mode");
+        drop(root);
     }
 
     /// A write into a directory that does not exist fails and creates nothing.
