@@ -78,6 +78,10 @@ pub fn runtime_generated_dotenv_path(conductor_dir: &Path) -> PathBuf {
 
 /// Ensures runtime dotenv template files exist.
 ///
+/// Each file is published through a sibling temporary, so a reader of the
+/// conductor runtime root never opens half a template. The write happens only
+/// when the file is absent, so an existing file is never replaced.
+///
 /// # Errors
 ///
 /// Returns [`ConductorError`] when directory creation or file writes fail.
@@ -90,24 +94,25 @@ pub fn ensure_runtime_env_files(conductor_dir: &Path) -> Result<(), ConductorErr
 
     let dotenv_path = runtime_dotenv_path(conductor_dir);
     if !dotenv_path.exists() {
-        fs::write(&dotenv_path, RUNTIME_DOTENV_TEMPLATE.as_bytes()).map_err(|source| {
-            ConductorError::Io {
+        mediapm_utils::fs::write_bytes_atomically(&dotenv_path, RUNTIME_DOTENV_TEMPLATE.as_bytes())
+            .map_err(|source| ConductorError::Io {
                 operation: "writing conductor runtime .env template".to_string(),
                 path: dotenv_path.clone(),
                 source,
-            }
-        })?;
+            })?;
     }
 
     let generated_dotenv_path = runtime_generated_dotenv_path(conductor_dir);
     if !generated_dotenv_path.exists() {
-        fs::write(&generated_dotenv_path, RUNTIME_DOTENV_GENERATED_TEMPLATE.as_bytes()).map_err(
-            |source| ConductorError::Io {
-                operation: "writing conductor runtime .env.generated template".to_string(),
-                path: generated_dotenv_path.clone(),
-                source,
-            },
-        )?;
+        mediapm_utils::fs::write_bytes_atomically(
+            &generated_dotenv_path,
+            RUNTIME_DOTENV_GENERATED_TEMPLATE.as_bytes(),
+        )
+        .map_err(|source| ConductorError::Io {
+            operation: "writing conductor runtime .env.generated template".to_string(),
+            path: generated_dotenv_path.clone(),
+            source,
+        })?;
     }
 
     Ok(())
@@ -351,11 +356,13 @@ pub fn write_generated_dotenv(
         }
     }
 
-    fs::write(&generated_path, content.as_bytes()).map_err(|source| ConductorError::Io {
-        operation: "writing generated runtime dotenv values".to_string(),
-        path: generated_path,
-        source,
-    })
+    mediapm_utils::fs::write_bytes_atomically(&generated_path, content.as_bytes()).map_err(
+        |source| ConductorError::Io {
+            operation: "writing generated runtime dotenv values".to_string(),
+            path: generated_path,
+            source,
+        },
+    )
 }
 
 /// Ensures a `.gitignore` exists in the conductor runtime root.
@@ -371,12 +378,14 @@ pub fn ensure_runtime_gitignore(conductor_dir: &Path) -> Result<(), ConductorErr
     if gitignore_path.exists() {
         return Ok(());
     }
-    fs::write(&gitignore_path, CONDUCTOR_GITIGNORE_CONTENT.as_bytes()).map_err(|source| {
-        ConductorError::Io {
-            operation: "writing conductor runtime .gitignore".to_string(),
-            path: gitignore_path,
-            source,
-        }
+    mediapm_utils::fs::write_bytes_atomically(
+        &gitignore_path,
+        CONDUCTOR_GITIGNORE_CONTENT.as_bytes(),
+    )
+    .map_err(|source| ConductorError::Io {
+        operation: "writing conductor runtime .gitignore".to_string(),
+        path: gitignore_path,
+        source,
     })?;
     Ok(())
 }
@@ -402,11 +411,13 @@ pub fn extend_runtime_gitignore(conductor_dir: &Path, extra: &str) -> Result<(),
         return Ok(());
     }
     let new_content = format!("{content}{extra}");
-    fs::write(&gitignore_path, new_content.as_bytes()).map_err(|source| ConductorError::Io {
-        operation: "extending conductor runtime .gitignore".to_string(),
-        path: gitignore_path,
-        source,
-    })?;
+    mediapm_utils::fs::write_bytes_atomically(&gitignore_path, new_content.as_bytes()).map_err(
+        |source| ConductorError::Io {
+            operation: "extending conductor runtime .gitignore".to_string(),
+            path: gitignore_path,
+            source,
+        },
+    )?;
     Ok(())
 }
 

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -129,6 +129,11 @@ impl MetadataCache {
 
     /// Persists the cache to disk if dirty.
     ///
+    /// The bytes are published through a sibling temporary and a rename, so a
+    /// reader — this process or the next run — sees the whole cache or the
+    /// previous one. A save that cannot finish leaves the previous file in
+    /// place, which reads as the entries it holds rather than as none.
+    ///
     /// # Errors
     ///
     /// Returns an I/O error if the cache file cannot be written.
@@ -142,16 +147,7 @@ impl MetadataCache {
         let entries = self.entries.lock().unwrap();
         let file = CacheFile { version: CACHE_VERSION, entries: entries.clone() };
         let json_bytes = serde_json::to_vec_pretty(&file)?;
-        // Atomic write: tempfile + rename
-        let tmp_path = self.cache_path.with_extension("tmp");
-        {
-            let mut tmp = tempfile::NamedTempFile::new_in(
-                self.cache_path.parent().unwrap_or(Path::new(".")),
-            )?;
-            tmp.write_all(&json_bytes)?;
-            tmp.persist(&tmp_path).map_err(|e| e.error)?;
-        }
-        fs::rename(&tmp_path, &self.cache_path)?;
+        mediapm_utils::fs::write_bytes_atomically(&self.cache_path, &json_bytes)?;
 
         *dirty = false;
         Ok(())

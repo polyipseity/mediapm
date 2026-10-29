@@ -36,6 +36,9 @@ pub(crate) fn load_document(path: &Path) -> Result<NickelDocument, ConductorErro
 /// overwritten (per hash / per name), so re-saving a rebuilt document does not
 /// lose them.  Fresh entries stay `None` and are omitted from the output.
 ///
+/// The bytes are published through a sibling temporary and a rename, so a save
+/// that cannot finish leaves the previous document where the next run loads it.
+///
 /// # Errors
 ///
 /// Returns [`ConductorError::Io`] when the file cannot be written, or wraps
@@ -46,7 +49,7 @@ pub(crate) fn save_document(path: &Path, document: &NickelDocument) -> Result<()
     // are no human-readable fields to carry forward; the save itself proceeds.
     let _ = crate::config::versions::restore_readable_fields(&mut outgoing, path);
     let bytes = crate::config::versions::encode_document(outgoing)?;
-    std::fs::write(path, &bytes).map_err(|source| ConductorError::Io {
+    mediapm_utils::fs::write_bytes_atomically(path, &bytes).map_err(|source| ConductorError::Io {
         operation: "writing config document".to_string(),
         path: path.to_path_buf(),
         source,

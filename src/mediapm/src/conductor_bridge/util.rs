@@ -6,6 +6,10 @@ use std::path::Path;
 use crate::error::MediaPmError;
 
 /// Writes bytes to disk with parent-directory creation and IO context.
+///
+/// The bytes are published through a sibling temporary and a rename, so a
+/// document this workspace later parses is either the previous one or the new
+/// one. A save that cannot finish leaves the previous document at the path.
 pub(super) fn write_bytes(path: &Path, bytes: &[u8], operation: &str) -> Result<(), MediaPmError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| MediaPmError::Io {
@@ -15,7 +19,7 @@ pub(super) fn write_bytes(path: &Path, bytes: &[u8], operation: &str) -> Result<
         })?;
     }
 
-    fs::write(path, bytes).map_err(|source| MediaPmError::Io {
+    mediapm_utils::fs::write_bytes_atomically(path, bytes).map_err(|source| MediaPmError::Io {
         operation: operation.to_string(),
         path: path.to_path_buf(),
         source,
@@ -96,5 +100,50 @@ mod tests {
         assert!(path.exists(), "file should exist after write to nested path");
         assert_eq!(fs::read(&path).unwrap(), b"nested", "content mismatch for nested path");
         assert!(path.parent().unwrap().exists(), "parent directory should have been created");
+    }
+
+    /// A publish that cannot finish leaves the previous document where the
+    /// next run reads it, and that document's own reader still accepts it.
+    ///
+    /// The directory holding the document loses its write permission, so the
+    /// temporary file cannot be created. A writer that opened the target
+    /// directly would have truncated the previous document before discovering
+    /// it could not write the new one, and a torn document is what the next
+    /// run refuses to load.
+    ///
+    /// The document here is `mediapm.ncl` rather than the generated conductor
+    /// document, because the conductor's document type is private to its own
+    /// crate and this test lives in mediapm. The writer is the same one, so the
+    /// property it states is the same property.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_publish_leaves_a_document_the_decoder_accepts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+        let path = tmp.path().join("mediapm.ncl");
+        let previous = crate::config::MediaPmDocument::default();
+        crate::config::nickel_io::save_mediapm_document(&path, &previous)
+            .expect("publish the document the test starts from");
+        let expected =
+            mediapm_utils::nickel::render_document_as_nickel(&previous, "mediapm document")
+                .expect("render the document the test starts from");
+
+        let directory = path.parent().expect("the document's directory").to_path_buf();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o500))
+            .expect("make the document's directory unwritable");
+        let failed = write_bytes(&path, b"a document that never finishes", "test");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("restore the document's directory");
+
+        let error = failed.expect_err("a publish into an unwritable directory must be reported");
+        assert_eq!(error.code(), "MPM-E007", "the failure is an IO error the caller can act on");
+        assert_eq!(
+            fs::read(&path).expect("read the document back"),
+            expected,
+            "the previous document must survive a publish that never finished",
+        );
+        crate::config::nickel_io::load_mediapm_document(&path)
+            .expect("the document left behind must be one the loader accepts");
     }
 }

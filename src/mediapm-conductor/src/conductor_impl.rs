@@ -588,11 +588,13 @@ where
         // it imports cannot be evaluated, which is the only reason to write it.
         for (filename, source) in versions::contract_sources() {
             let dest = output.join(filename);
-            std::fs::write(&dest, source).map_err(|source| ConductorError::Io {
-                operation: "writing schema file".to_string(),
-                path: dest,
-                source,
-            })?;
+            mediapm_utils::fs::write_bytes_atomically(&dest, source.as_bytes()).map_err(
+                |source| ConductorError::Io {
+                    operation: "writing schema file".to_string(),
+                    path: dest,
+                    source,
+                },
+            )?;
         }
         Ok(())
     }

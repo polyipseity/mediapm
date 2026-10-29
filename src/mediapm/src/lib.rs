@@ -302,7 +302,9 @@ pub fn export_config_contracts(
 /// Writes one set of contract sources into `dir`, creating it first.
 ///
 /// Each source is written under the file name the registry imports it by, so
-/// the exported set is evaluable on its own.
+/// the exported set is evaluable on its own. Each file is published through a
+/// sibling temporary, so a reader that lists the directory while a refresh runs
+/// never reads half a contract.
 fn write_contract_sources(
     dir: &Path,
     sources: &[(&'static str, &'static str)],
@@ -314,10 +316,8 @@ fn write_contract_sources(
     })?;
     for (name, source) in sources {
         let path = dir.join(name);
-        std::fs::write(&path, source).map_err(|error| MediaPmError::Io {
-            operation: "write contract source".to_string(),
-            path,
-            source: error,
+        mediapm_utils::fs::write_bytes_atomically(&path, source.as_bytes()).map_err(|error| {
+            MediaPmError::Io { operation: "write contract source".to_string(), path, source: error }
         })?;
     }
     Ok(())

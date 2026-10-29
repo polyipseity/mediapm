@@ -61,7 +61,6 @@
 
 use std::collections::BTreeMap;
 use std::fs::Metadata;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
@@ -285,7 +284,11 @@ impl OutputCache {
         Self::write_file(&self.file, &confirmed)
     }
 
-    /// Writes `records` to `file`, beside it and renamed over it.
+    /// Writes `records` to `file`, through the shared atomic publish.
+    ///
+    /// A run killed mid-write leaves the previous records rather than half of
+    /// this run's. The parent is created here, because the publish creates
+    /// nothing.
     ///
     /// # Errors
     ///
@@ -311,30 +314,11 @@ impl OutputCache {
             MediaPmError::Workflow(format!("encoding the materialization cache failed: {error}"))
         })?;
 
-        // Write beside the target and rename over it, so a run that is killed
-        // mid-write leaves the previous records rather than half of this run's.
-        let mut staging =
-            tempfile::NamedTempFile::new_in(directory).map_err(|source| MediaPmError::Io {
-                operation: "creating the materialization cache staging file".to_string(),
-                path: directory.to_path_buf(),
-                source,
-            })?;
-        staging.write_all(&bytes).map_err(|source| MediaPmError::Io {
-            operation: "writing the materialization cache staging file".to_string(),
-            path: directory.to_path_buf(),
-            source,
-        })?;
-        staging.as_file().sync_all().map_err(|source| MediaPmError::Io {
-            operation: "flushing the materialization cache staging file".to_string(),
-            path: directory.to_path_buf(),
-            source,
-        })?;
-        staging.persist(file).map_err(|error| MediaPmError::Io {
-            operation: "renaming the materialization cache into place".to_string(),
+        mediapm_utils::fs::write_bytes_atomically(file, &bytes).map_err(|source| MediaPmError::Io {
+            operation: "publishing the materialization cache".to_string(),
             path: file.to_path_buf(),
-            source: error.error,
-        })?;
-        Ok(())
+            source,
+        })
     }
 }
 

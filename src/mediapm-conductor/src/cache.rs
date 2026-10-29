@@ -18,7 +18,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -695,11 +694,24 @@ fn collect_referenced_hashes_from_indexes(cache_root: &Path) -> BTreeSet<String>
     referenced
 }
 
-/// Writes one index envelope to disk with replace-on-rename semantics.
+/// Writes one index envelope through the shared atomic publish.
 ///
-/// The replacement is a single atomic rename: readers observe either the
-/// previous index or the new one, never a missing file. See the comment at
-/// the persist call below for why that holds on every supported platform.
+/// The replacement is a single rename, so a reader observes either the previous
+/// index or the new one and never a missing file. That matters beyond this
+/// writer: `collect_referenced_hashes_from_indexes` reads only the `*.json`
+/// files under the cache root and maps a missing one to an empty index, so a
+/// window in which the file does not exist makes a prune scan treat a live
+/// reference as absent and delete a payload that is still indexed. Removing the
+/// destination before the rename would open exactly that window, and
+/// `mediapm_utils::fs::write_bytes_atomically` does not: it renames the
+/// temporary over the target in one step, from the target's own directory, so
+/// the replacement never crosses a filesystem boundary.
+///
+/// The window is reachable in normal operation, not only under a foreground
+/// prune: `prune_expired_inner_core` rewrites the index of every domain on every
+/// pass, before its `expired_keys.is_empty()` early return, and the background
+/// maintenance loop walks all domains with no cooldown gate. Guarded by
+/// `index_rewrite_never_hides_a_live_reference_from_the_prune_scan`.
 fn write_index_file(index_path: &Path, index: &CacheIndex) -> Result<(), ConductorError> {
     let parent = index_path.parent().ok_or_else(|| {
         ConductorError::Workflow(format!(
@@ -714,47 +726,12 @@ fn write_index_file(index_path: &Path, index: &CacheIndex) -> Result<(), Conduct
     })?;
     let rendered = serde_json::to_string_pretty(index)
         .map_err(|error| ConductorError::Serialization(format!("encoding cache index: {error}")))?;
-    let mut temp_file =
-        tempfile::NamedTempFile::new_in(parent).map_err(|source| ConductorError::Io {
-            operation: "creating temporary cache index file".to_string(),
-            path: parent.to_path_buf(),
+    mediapm_utils::fs::write_bytes_atomically(index_path, format!("{rendered}\n").as_bytes())
+        .map_err(|source| ConductorError::Io {
+            operation: "replacing cache index".to_string(),
+            path: index_path.to_path_buf(),
             source,
-        })?;
-    temp_file.write_all(format!("{rendered}\n").as_bytes()).map_err(|source| {
-        ConductorError::Io {
-            operation: "writing temporary cache index".to_string(),
-            path: temp_file.path().to_path_buf(),
-            source,
-        }
-    })?;
-    // Replace the destination with one rename, with no `remove_file` first.
-    //
-    // `NamedTempFile::persist` is the atomic replace-the-destination
-    // operation on every supported platform: it resolves to `rename(2)` on
-    // Unix, and on Windows to `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`
-    // — which is exactly the flag `tempfile`'s Windows `persist` passes, and
-    // the one `std::fs::rename` passes there too. So overwriting an existing
-    // index needs no pre-removal to work on Windows, and the temp file is
-    // created in the destination's own directory, so the rename never crosses
-    // a filesystem boundary and cannot fail with `EXDEV`.
-    //
-    // Removing the destination beforehand would open a window in which the
-    // index file does not exist, and `collect_referenced_hashes_from_indexes`
-    // reads only the `*.json` files under the cache root, with
-    // `load_index_file_sync` mapping a missing file to an empty index. A prune
-    // scan overlapping that window sees a live reference as absent and issues
-    // a `cas.delete` for a payload that is still indexed. The window is
-    // reachable in normal operation, not only under a foreground prune:
-    // `prune_expired_inner_core` rewrites the index of every domain on every
-    // pass, before its `expired_keys.is_empty()` early return, and the
-    // background maintenance loop walks all domains with no cooldown gate.
-    // Guarded by `index_rewrite_never_hides_a_live_reference_from_the_prune_scan`.
-    temp_file.persist(index_path).map_err(|error| ConductorError::Io {
-        operation: "replacing cache index".to_string(),
-        path: index_path.to_path_buf(),
-        source: error.error,
-    })?;
-    Ok(())
+        })
 }
 
 /// Returns current Unix timestamp in seconds.

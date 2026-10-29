@@ -114,6 +114,10 @@ pub fn load_mediapm_document(path: &Path) -> Result<crate::config::MediaPmDocume
 /// via Nickel evaluation — JSON record syntax (`"key": value`) would parse as
 /// contract annotations and fail.
 ///
+/// The bytes are published through a sibling temporary and a rename, so a save
+/// that cannot finish leaves the previous document where the next sync loads
+/// it.
+///
 /// # Errors
 ///
 /// Returns an error when the document cannot be serialized or written.
@@ -123,7 +127,7 @@ pub fn save_mediapm_document(
 ) -> Result<(), MediaPmError> {
     let bytes = mediapm_utils::nickel::render_document_as_nickel(doc, "mediapm document")
         .map_err(MediaPmError::Serialization)?;
-    std::fs::write(path, bytes).map_err(|err| MediaPmError::Io {
+    mediapm_utils::fs::write_bytes_atomically(path, &bytes).map_err(|err| MediaPmError::Io {
         operation: "write mediapm document".to_string(),
         path: path.to_path_buf(),
         source: err,
