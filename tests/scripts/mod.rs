@@ -10,28 +10,28 @@
 //! Sandboxes use the managed `mediapm-` prefix under the real temp dir and
 //! are removed on drop.
 //!
-//! The bash janitor tests additionally need an `rm` that deletes. Some hosts
-//! put a safe-delete wrapper first on `PATH`, and when its trash step is
-//! denied (macOS Finder automation is the sandbox case) it exits non-zero
+//! The bash janitor tests additionally need an `rm` that clears its argument.
+//! Some hosts put a safe-delete wrapper first on `PATH`, and when its trash step
+//! is denied (macOS Finder automation is the sandbox case) it exits non-zero
 //! and leaves the tree in place, so the sweep cannot run there at all. The
-//! harness probes for a deleting `rm`, hands the children a `PATH` whose
-//! first `rm` is that one, and skips with a message when the host has none,
-//! so an environment limitation is never reported as a janitor defect.
+//! harness probes for a working `rm`, hands the children a `PATH` whose first
+//! `rm` is that one, and fails the suite when the host has none: a host that
+//! cannot run the janitor has not proven the janitor, so a green run must never
+//! stand for a sweep that never happened. The failure names the environment it
+//! could not use.
 //! Running `tests/scripts/test-clean-mediapm-temp.sh` by hand on such a host
-//! still fails at the janitor's non-zero exit for the same reason; the
-//! harness is what supplies the working `rm`.
-//! A trash-based `rm` that moves rather than deletes can still satisfy the
-//! probe, in which case swept trees land in the user's Trash instead of
-//! vanishing — an observed consequence, not a false pass. A host with no
-//! working `rm` at all prints `skipped:` on stdout rather than skipping at
-//! the harness level, so nextest reports it as passed: a known trade-off,
-//! matching the file's existing interpreter-skip convention.
+//! still fails at the janitor's non-zero exit for the same reason; the harness
+//! is what supplies the working `rm`.
+//! The probe asserts only that the probe directory's source path is gone, which
+//! a trash move also satisfies, so the harness needs no special case for a
+//! trash-moving `rm`: the janitor's sweep depends on the path being gone, not on
+//! how it got there.
 
+use std::any::Any;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Sequence number for sandbox names (unique per process).
@@ -123,38 +123,43 @@ fn capture_output(mut cmd: Command, sandbox: &Path) -> RunOutcome {
     }
 }
 
-/// Skip line for a host whose `rm` cannot delete.
-const NO_WORKING_RM: &str = "no working rm on this host; the janitor's sweep cannot be proven here";
-
-/// The `rm` the bash janitor tests hand their children, or `None` after
-/// printing the skip line. See [`working_rm`] for why the host's own `rm`
-/// cannot be assumed.
-fn skip_unless_real_rm() -> Option<&'static Path> {
-    let rm = working_rm();
-    if rm.is_none() {
-        println!("skipped: {NO_WORKING_RM}");
-    }
-    rm
+/// The `rm` the bash janitor tests hand their children.
+///
+/// See [`path_with_real_rm_with_candidates`] for what makes a candidate usable
+/// and for why the host's own `rm` cannot be assumed.
+fn path_with_real_rm() -> PathBuf {
+    path_with_real_rm_with_candidates(&candidate_list())
 }
 
-/// A real `rm` on this host: one that deletes and exits 0.
+/// The first candidate whose probe directory's source path is gone afterwards,
+/// or a panic when no candidate clears it.
 ///
-/// Probed once per process and verified by deleting, not by name or path:
-/// the wrapper this probe exists for is called `rm` too, and one exists on
-/// this host that reports a non-zero status while leaving the tree in place.
-fn working_rm() -> Option<&'static Path> {
-    static WORKING: OnceLock<Option<PathBuf>> = OnceLock::new();
-    WORKING
-        .get_or_init(|| rm_candidates().into_iter().find(|candidate| rm_deletes(candidate)))
-        .as_deref()
+/// Probed and verified by clearing, not by name or path: the wrapper this probe
+/// exists for is called `rm` too, and one exists on hosts that report a non-zero
+/// status while leaving the tree in place. A host with no candidate that clears
+/// the path fails the suite rather than passing quietly, because the janitor's
+/// sweep cannot be proven there and an unproven sweep must not look green.
+///
+/// The candidate list is a parameter so a test can hand in none and observe
+/// that failure.
+fn path_with_real_rm_with_candidates(candidates: &[PathBuf]) -> PathBuf {
+    if let Some(found) = candidates.iter().find(|candidate| rm_deletes(candidate)) {
+        return found.clone();
+    }
+    panic!(
+        "no working rm on this host: every candidate left the probe directory's source path \
+         in place ({candidates:?}). The janitor sweeps with `rm`, so `clean-mediapm-temp` \
+         cannot be proven here. Fix the host's rm (a safe-delete wrapper whose trash step is \
+         denied is the usual cause) or run the suite where rm clears the path."
+    )
 }
 
 /// Candidate real `rm`s, most specific first.
 ///
 /// `command -v rm` is last because it is whatever the host resolves, which
-/// is the wrapper on the hosts this probe exists for; the delete check is
-/// what makes the order safe rather than the paths themselves.
-fn rm_candidates() -> Vec<PathBuf> {
+/// is the wrapper on the hosts this probe exists for; the probe is what makes
+/// the order safe rather than the paths themselves.
+fn candidate_list() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> =
         ["/bin/rm", "/usr/bin/rm", "/usr/local/rm", "/usr/local/bin/rm"]
             .into_iter()
@@ -168,8 +173,8 @@ fn rm_candidates() -> Vec<PathBuf> {
 /// Whether `path` sits in `~/.local/bin`, where hosts install wrappers that
 /// shadow the system `rm`.
 ///
-/// The delete check already rejects a broken wrapper; this keeps a working
-/// one out of the probe, so a test never fills the user's Trash.
+/// The probe already rejects a broken wrapper; this keeps a working one out of
+/// the set, so a test never fills the user's Trash.
 fn is_local_bin_shim(path: &Path) -> bool {
     let Some(home) = std::env::var_os("HOME") else {
         return false;
@@ -187,15 +192,20 @@ fn command_v(name: &str) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
-/// Whether `candidate` deletes a non-empty directory: exit 0 with the tree gone.
+/// Whether `candidate` clears a non-empty probe directory: exit 0 with the
+/// source path gone.
 ///
-/// Both halves matter: a trash wrapper that is denied exits non-zero and
-/// leaves the tree, and a candidate that cannot delete cannot prove the
-/// janitor's sweep. The probe dir carries the managed `mediapm-` prefix, so
-/// a crash leak is reclaimed by the janitor like any other.
+/// The source path is the whole assertion: whether the tree was unlinked or
+/// moved to the Trash is not something the janitor's sweep depends on, so the
+/// probe does not distinguish them.
 ///
-/// The probe tree holds a file, because the sweeps it vouches for delete trees
-/// that hold files too: a wrapper that deletes an empty directory but refuses a
+/// Both halves matter: a trash wrapper that is denied exits non-zero and leaves
+/// the source path, and a candidate that leaves it cannot prove the janitor's
+/// sweep. The probe dir carries the managed `mediapm-` prefix, so a crash leak
+/// is reclaimed by the janitor like any other.
+///
+/// The probe tree holds a file, because the sweeps it vouches for clear trees
+/// that hold files too: a wrapper that clears an empty directory but refuses a
 /// non-empty one would pass an empty probe and then fail the janitor's real
 /// run, which is the false defect this probe exists to prevent.
 fn rm_deletes(candidate: &Path) -> bool {
@@ -241,7 +251,7 @@ fn path_with_rm_shim(sandbox: &Path, body: &str) -> OsString {
 }
 
 /// A `PATH` value whose first `rm` is `real_rm`.
-fn path_with_real_rm(sandbox: &Path, real_rm: &Path) -> OsString {
+fn path_with_rm_exec(sandbox: &Path, real_rm: &Path) -> OsString {
     path_with_rm_shim(sandbox, &format!("exec {} \"$@\"\n", shell_quote(real_rm)))
 }
 
@@ -261,7 +271,7 @@ fn run_script(
 ) -> RunOutcome {
     let mut cmd = Command::new(program);
     cmd.arg(script).args(flags);
-    cmd.env("PATH", path_with_real_rm(sandbox, real_rm));
+    cmd.env("PATH", path_with_rm_exec(sandbox, real_rm));
     capture_output(cmd, sandbox)
 }
 
@@ -386,11 +396,9 @@ fn bash_janitor_dry_run_and_real_run() {
     if !skip_unless("bash", &["--version"]) {
         return;
     }
-    let Some(rm) = skip_unless_real_rm() else {
-        return;
-    };
+    let rm = path_with_real_rm();
     assert_janitor_sequence("clean-mediapm-temp.sh", |script, sandbox, flags| {
-        run_script("bash", script, sandbox, flags, rm)
+        run_script("bash", script, sandbox, flags, &rm)
     });
 }
 
@@ -475,16 +483,45 @@ fn assert_self_test(
 
 #[test]
 fn bash_janitor_self_test() {
-    let Some(rm) = skip_unless_real_rm() else {
-        return;
-    };
+    let rm = path_with_real_rm();
     assert_self_test(
         &test_script_path("test-clean-mediapm-temp.sh"),
         "test-clean-mediapm-temp: OK",
         "sh",
         &["-c", "exit 0"],
-        |script, sandbox, flags| run_script("sh", script, sandbox, flags, rm),
+        |script, sandbox, flags| run_script("sh", script, sandbox, flags, &rm),
     );
+}
+
+/// A host whose every `rm` candidate leaves the probe in place must fail the
+/// suite, naming the environment. A green run must never stand for a sweep that
+/// never happened.
+#[test]
+fn no_working_rm_fails_the_harness() {
+    let outcome = std::panic::catch_unwind(|| path_with_real_rm_with_candidates(&[]));
+    let panic = outcome.expect_err("an empty candidate list must not resolve an rm");
+    let message = panic_message(&panic);
+    assert!(
+        message.contains("no working rm"),
+        "the failure names the environment, not just an index: {message}"
+    );
+    assert!(
+        message.contains("clean-mediapm-temp"),
+        "the failure says what could not be proven: {message}"
+    );
+}
+
+/// The text of a caught panic, which is boxed as a `&str` or a `String`.
+///
+/// The receiver is the box, not `&(dyn Any + Send)`: coercing the box away first
+/// makes the box itself the payload the downcast compares against, and every
+/// panic then reports as a non-string payload.
+fn panic_message(panic: &Box<dyn Any + Send>) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .expect("a panic payload is a string")
 }
 
 #[test]
