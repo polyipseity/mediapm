@@ -43,9 +43,9 @@
 //!
 //! So the compile records a fingerprint of the source it used beside the
 //! executable, and [`stub_tool_path`] accepts a stub in the fallback slot only
-//! when [`compiled_from`] finds that record naming the embedded source. A changed
+//! when `compiled_from` finds that record naming the embedded source. A changed
 //! source leaves the record mismatched, the search skips the artifact, and the run
-//! reaches [`compile_stub_into`] again. Nothing but the file's content is
+//! reaches `compile_stub_into` again. Nothing but the file's content is
 //! inspected, so the verdict does not depend on clock skew, and it costs one small
 //! read per search.
 //!
@@ -87,7 +87,7 @@ const SOURCE_FINGERPRINT_SUFFIX: &str = ".source-fingerprint";
 /// Separates the compiles one process makes.
 ///
 /// A process id does not name a compile. Cargo runs a test binary's tests as
-/// threads of one process, so several tests reach [`compile_stub_into`] at once
+/// threads of one process, so several tests reach `compile_stub_into` at once
 /// under one pid — `cargo test -p mediapm-test-support` is exactly that — and a
 /// work directory keyed on the pid alone would be shared by all of them, one
 /// thread removing the codegen objects or the staged executable another thread is
@@ -107,7 +107,7 @@ static COMPILE_INVOCATION: AtomicU64 = AtomicU64::new(0);
 /// filesystems, and the move into place must be atomic.
 ///
 /// The name of that directory carries the process id **and** a per-call counter
-/// ([`COMPILE_INVOCATION`]) because the id alone does not separate two compiles:
+/// (`COMPILE_INVOCATION`) because the id alone does not separate two compiles:
 /// a test binary runs its tests as threads of one process, so two tests can enter
 /// this function at the same instant under the same pid and would then share the
 /// directory the cleanup removes — one thread deleting the objects, or the staged
@@ -125,7 +125,7 @@ static COMPILE_INVOCATION: AtomicU64 = AtomicU64::new(0);
 /// The move into place tolerates one failure. Windows refuses to replace a file
 /// another process is executing, and a failed move is then not a lost build: the
 /// file already at the destination answers what the move wanted, because another
-/// compile in this run wrote it from the same source. [`compiled_from`] is what
+/// compile in this run wrote it from the same source. `compiled_from` is what
 /// separates that case from a move that left no build of this source behind,
 /// which still panics.
 ///
@@ -260,15 +260,15 @@ fn behaves_like_the_stub(path: &Path) -> bool {
 /// copy into `target/<profile>/deps/` and leaves the unhashed path alone. Those
 /// are accepted on **Cargo's** provenance — Cargo's own fingerprint decides
 /// whether they are current — and they must be a file that passes
-/// [`behaves_like_the_stub`], because `--all-targets` also leaves a libtest
+/// `behaves_like_the_stub`, because `--all-targets` also leaves a libtest
 /// harness under a name of that shape.
 ///
-/// The fallback [`compile_stub_into`] writes is accepted on **its record**
+/// The fallback `compile_stub_into` writes is accepted on **its record**
 /// instead: it sits in the running executable's own directory, which is `deps/`
 /// for a test binary and so holds no plain-named target of Cargo's, and
-/// [`compiled_from`] says whether the embedded source is still the one that built
+/// `compiled_from` says whether the embedded source is still the one that built
 /// it. A fallback whose record does not match is skipped, and the search ends in
-/// [`compile_stub_into`] replacing it. That directory is Cargo's profile directory
+/// `compile_stub_into` replacing it. That directory is Cargo's profile directory
 /// when the running binary is not a test binary; the fallback replaces the
 /// unhashed stub there, which is the same executable built from the same source,
 /// and the replacement is what puts the file under a recorded fingerprint.
@@ -276,7 +276,7 @@ fn behaves_like_the_stub(path: &Path) -> bool {
 /// # Panics
 ///
 /// Panics when the fallback cannot be produced: the running executable's
-/// directory is missing, or [`compile_stub_into`] fails to write, compile, move
+/// directory is missing, or `compile_stub_into` fails to write, compile, move
 /// the executable into place, or record the source it used. Both mean no stub can
 /// be run, which is the one outcome that must not reach a caller as a silently
 /// absent tool.
@@ -496,15 +496,19 @@ mod tests {
     /// carries no record of ours and needs none, so the assertion is the property
     /// that holds either way: the answer is never the artifact whose record
     /// disagrees with the embedded source.
+    ///
+    /// Nothing is asserted between writing the record and running the search, and
+    /// that gap is deliberate: the record belongs to the one fallback the whole
+    /// process shares, so a test running concurrently in this process can rebuild
+    /// and rewrite it inside the window. An assertion there would fail a correct
+    /// locator for another test's work, which is the flake this test must not
+    /// reintroduce. What has to hold is the property after the search, and that is
+    /// what is asserted.
     #[test]
     fn a_stale_record_makes_the_locator_rebuild_the_stub() {
         let stale = stub_tool_path();
         let record = record_path(&stale);
         std::fs::write(&record, "0000000000000000").expect("the record must be writable");
-        assert!(
-            !compiled_from(&stale, STUB_TOOL_SOURCE),
-            "the rewritten record must make the artifact stale before the search runs",
-        );
 
         let answer = stub_tool_path();
 
