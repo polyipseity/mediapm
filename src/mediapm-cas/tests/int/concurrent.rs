@@ -9,6 +9,7 @@
 //! - Two concurrent puts that share one fan-out directory, repeated in-process
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use bytes::Bytes;
 
@@ -409,8 +410,12 @@ async fn file_system_cas_concurrent_puts_are_safe() {
 ///
 /// The failure this covers appeared once in five isolated runs, so one round per
 /// process is the shape that hid it: repetition in one process is what turns
-/// "seen once" into a count.
-const FAN_OUT_ROUNDS: usize = 50;
+/// "seen once" into a count. Twenty-five rounds is five such five-run windows in
+/// one process, which reaches that shape five times over while halving what each
+/// run costs: 25 rounds × 1048577-byte payload × 2 puts is 52.4 MB of blobs per
+/// run, and the round's pair holds those same bytes in memory until the round is
+/// done.
+const FAN_OUT_ROUNDS: usize = 25;
 
 /// Length of each probe payload: one byte over the WAL inline limit.
 ///
@@ -441,9 +446,12 @@ const FAN_OUT_PREFIX_LEN: usize = 4;
 /// probability 1/65536 per pair and the birthday bound puts the first collision
 /// within a few hundred probes. Rounds need one collision each, though: a sweep
 /// of this many probes gives each of the 65536 prefixes 0.0625 probes on
-/// average, so about 128 prefixes are hit twice, which leaves
-/// [`FAN_OUT_ROUNDS`] a wide margin. The bound is checked, not trusted — the
-/// search panics if the sweep yields fewer pairs than were asked for.
+/// average, and 125 of them are hit at least twice — measured from this sweep,
+/// which is deterministic, so the count cannot drift between runs of a given
+/// build. Each such prefix supplies one pair and no more, which leaves
+/// [`FAN_OUT_ROUNDS`] five times the pairs it asks for. The bound is checked,
+/// not trusted — the search panics if the sweep yields fewer pairs than were
+/// asked for.
 const FAN_OUT_PROBES: u32 = 4096;
 
 /// Builds probe payload `index`: a filled body whose last four bytes are the
@@ -461,17 +469,33 @@ fn fan_out_prefix(payload: &Bytes) -> String {
     hex[..FAN_OUT_PREFIX_LEN].to_string()
 }
 
+/// Fan-out directories that have already produced a pair.
+///
+/// The promise is one pair per directory for the whole test binary, so the set
+/// outlives a call: a per-call set is satisfied by construction and would still
+/// let two calls return the same directory, because every call restarts the
+/// sweep at probe 0 and the first collision is the same one each time. Nothing
+/// that can panic runs while the lock is held, so the set cannot poison.
+static PAIRED_PREFIXES: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// The directories [`shared_fan_out_pairs`] has already paired a payload in.
+fn paired_prefixes() -> MutexGuard<'static, BTreeSet<String>> {
+    PAIRED_PREFIXES.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Up to `count` pairs of payloads whose hashes share a fan-out directory, with
-/// distinct payloads in every pair.
+/// distinct payloads in every pair and one pair per directory.
 ///
 /// The blob store lays a blob out under `v1/blake3/<hex[0..2]>/<hex[2..4]>/`
 /// (`storage::blob_store::versions::v1::hash_to_path`) and the metadata store
 /// snapshots one file per `to_hex()[..4]` prefix
 /// (`FileSystemMetadataStore::flush_dir`), so agreement on the first four hex
 /// digits is what puts both payloads in one directory. Each payload appears in
-/// exactly one pair: a caller that reused a payload would put a blob whose
-/// target is already on disk, and `FileSystemBlobStore::write` skips the commit
-/// for a target that is present, so that round would exercise nothing.
+/// exactly one pair, and each directory supplies exactly one pair for the whole
+/// test binary, so no round reuses a directory an earlier round staged into: a
+/// caller that reused a payload would put a blob whose target is already on
+/// disk, and `FileSystemBlobStore::write` skips the commit for a target that is
+/// present, so that round would exercise nothing.
 ///
 /// The sweep is bounded and fails loudly in both directions it can fail: a
 /// probe bound that yielded fewer pairs than were asked for, and an incremental
@@ -487,17 +511,18 @@ fn shared_fan_out_pairs(count: usize) -> Vec<(Bytes, Bytes)> {
     let mut shared = blake3::Hasher::new();
     shared.update(&body);
 
-    // A prefix leaves the map when it becomes a pair, so no probe index is
-    // handed out twice. Distinct payloads are what the round needs, not distinct
-    // directories: a reused payload would put a blob whose target is already on
-    // disk, and `write` skips the commit for a target that is present.
-    //
-    // One pair per directory is statistical, not structural: a prefix that has
-    // already produced a pair is re-inserted when a third probe shares it, and
-    // two later probes can then form a second pair in that directory. Cheap to
-    // leave as it is, because the second pair costs a directory whose leaf
-    // `create_dir_all` finds present and nothing else — both its payloads are
-    // fresh, so both blob commits are still writes.
+    // One pair per directory, structurally. A prefix that has produced a pair is
+    // claimed in `PAIRED_PREFIXES` for the rest of the process, so a later probe
+    // that shares it — in this call or any other — contributes nothing and a
+    // second pair in that directory cannot form however the probes fall. A
+    // prefix also leaves the map when it becomes a pair and is never re-inserted
+    // there, so no probe index is handed out twice. Distinct payloads are what a
+    // round needs, not merely distinct directories, because a reused payload
+    // would put a blob whose target is already on disk and `write` skips the
+    // commit for a target that is present. The cost is probe budget — a prefix
+    // hit four times supplies one pair rather than two — which the measured
+    // supply still covers: this sweep yields 125 pairs against the 25 rounds
+    // that ask for them.
     let mut unpaired: HashMap<String, u32> = HashMap::new();
     let mut pairs = Vec::with_capacity(count);
     for index in 0..FAN_OUT_PROBES {
@@ -505,10 +530,14 @@ fn shared_fan_out_pairs(count: usize) -> Vec<(Bytes, Bytes)> {
         hasher.update(&index.to_be_bytes());
         let hex = Hash::from_bytes(*hasher.finalize().as_bytes()).to_hex();
         let prefix = &hex[..FAN_OUT_PREFIX_LEN];
+        if paired_prefixes().contains(prefix) {
+            continue;
+        }
         let Some(twin) = unpaired.remove(prefix) else {
             unpaired.insert(prefix.to_string(), index);
             continue;
         };
+        paired_prefixes().insert(prefix.to_string());
         let pair = (fan_out_probe(twin), fan_out_probe(index));
         for payload in [&pair.0, &pair.1] {
             assert_eq!(
@@ -533,12 +562,17 @@ fn shared_fan_out_pairs(count: usize) -> Vec<(Bytes, Bytes)> {
 ///
 /// The pair is repeated in one process because the failure this covers appeared
 /// once in five isolated runs: a single round is the shape that hid it. Every
-/// round draws its own pair from [`shared_fan_out_pairs`], so every round stages
-/// two blobs the store has never seen into its directory: the leaf's
-/// `create_dir_all` (usually the directory's first write), the two blobs staged
-/// as `<hex>.tmp` and renamed beside each other, and the one snapshot file the
+/// round draws its own pair from [`shared_fan_out_pairs`], and that helper hands
+/// out one pair per directory, so every round stages two blobs the store has
+/// never seen into a directory no other round touches: the leaf's
+/// `create_dir_all` (the directory's first write), the two blobs staged as
+/// `<hex>.tmp` and renamed beside each other, and the one snapshot file the
 /// directory holds. The payloads exceed the WAL inline limit, so both puts take
 /// the eager path and reach those writes before returning.
+///
+/// The pairing being structural is what lets a round's directory count as its
+/// own: while the helper could re-form a pair in a used directory, two rounds
+/// could land in one, and the second would find the leaf already present.
 ///
 /// The cause is unproven: no repetition here has reproduced the failure seen
 /// once in five isolated runs, so this pins the property that must hold rather
@@ -613,5 +647,21 @@ async fn two_puts_into_one_fan_out_directory_both_land() {
             right,
             "round {round}: the right object must survive its neighbour",
         );
+    }
+}
+
+/// The helper promises one pair per directory. With prefixes re-inserted after a
+/// pair forms, that promise was statistical; it is structural only when a prefix
+/// that produced a pair is never offered again.
+#[test]
+fn shared_pairs_never_reuse_a_directory() {
+    let pairs: Vec<_> = (0..8).map(|_| shared_fan_out_pairs(1)).collect();
+    let mut prefixes = BTreeSet::new();
+    for batch in pairs {
+        for (first, second) in batch {
+            let prefix = fan_out_prefix(&first);
+            assert_eq!(prefix, fan_out_prefix(&second), "a pair shares its directory");
+            assert!(prefixes.insert(prefix), "a directory produced two pairs");
+        }
     }
 }
