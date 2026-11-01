@@ -19,7 +19,10 @@
 //! | MPM-E004 | Config parse failure | A config value failed to deserialize | Check the expected shape and available fields |
 //! | MPM-E009 | Managed namespace conflict | The user conductor document declares a tool key or workflow name inside a namespace reserved for mediapm-managed entries | Remove or rename the conflicting entry; mediapm owns the managed namespace |
 //! | MPM-E010 | Unsaved materialized variant | A variant the hierarchy materializes is declared with `save = false`, so the library would hold a file whose bytes nothing keeps | Keep it (`save = "full"`, `true` or `"auto"`), or drop the hierarchy entry that selects it |
-//! | MPM-W001 | Silenced serde error (no site) | Nothing is silenced: `decode_tool_requirements` decodes each requirement once, before any reader of the desired tools, and aborts naming the tool, so no `ToolRequirement` is dropped and no MPM-W001 is emitted | Fix the declared requirement's shape |
+//!
+//! A `ToolRequirement` that fails to deserialize answers `MPM-E004` at both
+//! sites: at document load for a user-supplied document, and again in
+//! `decode_tool_requirements` for the in-crate path.
 
 use std::path::PathBuf;
 

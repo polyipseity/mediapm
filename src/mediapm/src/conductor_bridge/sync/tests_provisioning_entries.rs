@@ -260,19 +260,20 @@ fn decode_tool_requirements_aborts_naming_a_malformed_requirement() {
     // object, so `ConfigVersionSpec`'s visitor rejects it.
     desired.insert("zzz-tool".to_string(), serde_json::json!({ "version_spec": "not-a-spec" }));
 
-    let Err(error) = decode_tool_requirements(&desired) else {
-        panic!("a malformed requirement must abort the decode");
-    };
-    let message = error.to_string();
-    assert!(
-        message.contains("invalid tool requirement for zzz-tool"),
-        "the abort must name the tool whose requirement does not decode: {message}"
-    );
+    let error = decode_tool_requirements(&desired).expect_err("a malformed requirement aborts");
     assert_eq!(
         error.code(),
-        "MPM-E006",
-        "a malformed requirement is the workflow-level abort, not the config-validation \
-         gap a dropped entry would produce: {message}"
+        "MPM-E004",
+        "a value that failed to deserialize is a config parse failure"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("zzz-tool"),
+        "the abort must name the tool whose requirement does not decode: {message}"
+    );
+    assert!(
+        message.contains("suggestion:"),
+        "the catalogue's ConfigValidation carries a fix: {message}"
     );
     assert!(
         !message.contains("not configured in the tools section"),

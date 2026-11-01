@@ -22,7 +22,6 @@ Crate-prefixed error codes across the workspace. Format: `<CRATE-PREFIX>-<TYPE><
 | MPM-E008 | Conductor document error | Conductor document loading or validation failed | Check the conductor-generated NCL document |
 | MPM-E009 | Managed namespace conflict | User conductor document declares a tool key or workflow name in the mediapm-managed namespace | Remove or rename the conflicting entry; mediapm owns the managed namespace |
 | MPM-E010 | Unsaved materialized variant | A variant the hierarchy materializes is declared with `save = false` | Keep it (`save = "full"`, `true` or `"auto"`), or drop the hierarchy entry that selects it |
-| MPM-W001 | Silenced serde error (no site) | Nothing is silenced: `decode_tool_requirements` decodes each `ToolRequirement` once, before the sync reads any, and aborts naming the tool (`invalid tool requirement for <id>: <error>`), so no requirement is dropped and no MPM-W001 is emitted. The code stays catalogued as a reserved warning. The abort answers `MPM-E006`, while the catalog assigns config-shape failures to `MPM-E004`, and `MPM-E004` is what a user sees: `desired_tools` is serialized from an already-typed `ToolRequirement`, so a malformed requirement in a document fails earlier, at load, with `MPM-E004` (`config/nickel_io.rs`). The `MPM-E006` abort guards the in-crate path, where a value that does not decode can only come from a bug in this workspace | Fix the declared requirement's shape |
 
 ## CAS — mediapm-cas
 

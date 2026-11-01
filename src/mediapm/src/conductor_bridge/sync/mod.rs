@@ -1091,8 +1091,9 @@ pub(crate) fn index_managed_tools(
 ///
 /// # Errors
 ///
-/// [`MediaPmError::Workflow`] (`MPM-E006`) naming the tool whose requirement
-/// does not decode.
+/// [`MediaPmError::ConfigValidation`] (`MPM-E004`) naming the tool whose
+/// requirement does not decode. A value that does not deserialize is a config
+/// parse failure, the same code the catalogue assigns at document load.
 fn decode_tool_requirements(
     desired_tools: &BTreeMap<String, serde_json::Value>,
 ) -> Result<BTreeMap<String, ToolRequirement>, MediaPmError> {
@@ -1100,7 +1101,14 @@ fn decode_tool_requirements(
     for (tool_id, tool_value) in desired_tools {
         let requirement =
             serde_json::from_value::<ToolRequirement>(tool_value.clone()).map_err(|error| {
-                MediaPmError::Workflow(format!("invalid tool requirement for {tool_id}: {error}"))
+                MediaPmError::ConfigValidation {
+                    code: "MPM-E004",
+                    context: format!("tool requirement '{tool_id}'"),
+                    detail: format!("failed to deserialize: {error}"),
+                    suggestion: "check the requirement's fields against the tool configuration \
+                                 schema"
+                        .to_string(),
+                }
             })?;
         decoded.insert(tool_id.clone(), requirement);
     }
