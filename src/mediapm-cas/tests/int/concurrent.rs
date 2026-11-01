@@ -6,8 +6,9 @@
 //! - In-flight dedup concurrent stress test
 //! - Clone-sharing across concurrent tasks
 //! - `BackgroundEngine` cancellation safety
+//! - Two concurrent puts that share one fan-out directory, repeated in-process
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use bytes::Bytes;
 
@@ -402,4 +403,169 @@ async fn file_system_cas_concurrent_puts_are_safe() {
     assert_eq!(re_read_phase1, Bytes::from("unique-payload-0"));
     let re_read_phase2 = cas.get(expected_phase2).await.unwrap();
     assert_eq!(re_read_phase2, shared_content);
+}
+
+/// Rounds the shared-directory pair is repeated for.
+///
+/// The failure this covers appeared once in five isolated runs, so one round per
+/// process is the shape that hid it: repetition in one process is what turns
+/// "seen once" into a count.
+const FAN_OUT_ROUNDS: usize = 50;
+
+/// Length of each probe payload: one byte over the WAL inline limit.
+///
+/// The length is load-bearing. A `put` at or below the limit only appends a
+/// `Put` entry and leaves the blob and its fan-out snapshot to the WAL consumer,
+/// so a pair of small payloads would never reach the writes that share the
+/// directory. Deriving the length from the limit rather than repeating `1 MiB`
+/// keeps the probe on the eager path if the limit moves.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the inline limit is 1 MiB, far below the smallest usize of any target this workspace \
+              builds for"
+)]
+const FAN_OUT_PAYLOAD_LEN: usize = mediapm_cas::defaults::WAL_INLINE_LIMIT as usize + 1;
+
+/// Width of the per-probe index suffix, in bytes.
+const PROBE_INDEX_WIDTH: usize = std::mem::size_of::<u32>();
+
+/// Byte every probe body is filled with.
+const PROBE_FILL: u8 = 0x5a;
+
+/// Number of hex digits that name a fan-out directory.
+const FAN_OUT_PREFIX_LEN: usize = 4;
+
+/// How many probe payloads the search may hash before it gives up.
+///
+/// A leaf directory is named by four hex digits, so two probes collide with
+/// probability 1/65536 per pair and the birthday bound puts the first collision
+/// within a few hundred probes. This bound leaves a wide margin.
+const FAN_OUT_PROBES: u32 = 4096;
+
+/// Builds probe payload `index`: a filled body whose last four bytes are the
+/// index.
+fn fan_out_probe(index: u32) -> Bytes {
+    let mut payload = vec![PROBE_FILL; FAN_OUT_PAYLOAD_LEN];
+    let suffix = FAN_OUT_PAYLOAD_LEN - PROBE_INDEX_WIDTH;
+    payload[suffix..].copy_from_slice(&index.to_be_bytes());
+    Bytes::from(payload)
+}
+
+/// The four hex digits that name `payload`'s fan-out directory.
+fn fan_out_prefix(payload: &Bytes) -> String {
+    let hex = Hash::from_content(payload).to_hex();
+    hex[..FAN_OUT_PREFIX_LEN].to_string()
+}
+
+/// Two payloads whose hashes share a fan-out directory.
+///
+/// The blob store lays a blob out under `v1/blake3/<hex[0..2]>/<hex[2..4]>/`
+/// (`storage::blob_store::versions::v1::hash_to_path`) and the metadata store
+/// snapshots one file per `to_hex()[..4]` prefix
+/// (`FileSystemMetadataStore::flush_dir`), so agreement on the first four hex
+/// digits is what puts both payloads in one directory. The search is bounded and
+/// fails loudly: a pair that did not share a directory would leave the test
+/// above exercising nothing.
+fn shared_fan_out_payloads() -> (Bytes, Bytes) {
+    // Every probe shares its body, so the body is hashed once and the chaining
+    // state is cloned per candidate: a body is a mebibyte, and re-hashing it for
+    // every index would cost seconds in an unoptimized build for no more
+    // information. `blake3`'s streaming digest is the same value as its one-shot
+    // digest over the same bytes; the assertions below pin that for the pair
+    // this returns, because the store derives paths with the one-shot form.
+    let body = vec![PROBE_FILL; FAN_OUT_PAYLOAD_LEN - PROBE_INDEX_WIDTH];
+    let mut shared = blake3::Hasher::new();
+    shared.update(&body);
+
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    for index in 0..FAN_OUT_PROBES {
+        let mut hasher = shared.clone();
+        hasher.update(&index.to_be_bytes());
+        let hex = Hash::from_bytes(*hasher.finalize().as_bytes()).to_hex();
+        let prefix = &hex[..FAN_OUT_PREFIX_LEN];
+        if let Some(&twin) = seen.get(prefix) {
+            let pair = (fan_out_probe(twin), fan_out_probe(index));
+            for payload in [&pair.0, &pair.1] {
+                assert_eq!(
+                    fan_out_prefix(payload),
+                    prefix,
+                    "the incremental search must agree with Hash::from_content",
+                );
+            }
+            return pair;
+        }
+        seen.insert(prefix.to_string(), index);
+    }
+    panic!(
+        "no two of {FAN_OUT_PROBES} probes shared a fan-out directory; the pair is not constructed"
+    );
+}
+
+/// Two puts whose fan-out directory is shared both land and both read back.
+///
+/// The pair is repeated in one process because the failure this covers appeared
+/// once in five isolated runs: a single round is the shape that hid it. The
+/// directory is shared by construction — see [`shared_fan_out_payloads`]. The
+/// payloads exceed the WAL inline limit so both puts write the directory now:
+/// the leaf's `create_dir_all`, the two blobs staged and renamed beside each
+/// other, and the one snapshot file the directory holds.
+///
+/// The cause is unproven: fifty rounds in one process did not reproduce the
+/// failure seen once in five isolated runs, and neither did five such runs nor
+/// a single run of five hundred rounds, so this pins the property that must
+/// hold rather than a mechanism that breaks it. It also guards the property
+/// directly: each round asserts the two blobs share a parent directory and are
+/// on disk, so a store that stopped writing either eagerly would fail here
+/// instead of passing while covering nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_puts_into_one_fan_out_directory_both_land() {
+    let fixture = open_file_cas().await;
+    let cas = (*fixture).clone();
+
+    let (left, right) = shared_fan_out_payloads();
+    for round in 0..FAN_OUT_ROUNDS {
+        let left_cas = cas.clone();
+        let right_cas = cas.clone();
+        // Each task owns its payload; `Bytes` is not `Copy`, so the round keeps
+        // its own handle for the read-back below.
+        let left_data = left.clone();
+        let right_data = right.clone();
+        let (left_hash, right_hash) = tokio::join!(
+            tokio::spawn(async move { left_cas.put(left_data).await }),
+            tokio::spawn(async move { right_cas.put(right_data).await }),
+        );
+        let left_hash = left_hash.expect("left task must not panic").expect("left put must land");
+        let right_hash =
+            right_hash.expect("right task must not panic").expect("right put must land");
+
+        // The claim this test covers is that the two puts write ONE directory,
+        // and that they write it at all: a store that deferred a mebibyte to the
+        // WAL consumer would leave the pair landing in one directory in name
+        // only.
+        let left_path =
+            cas.object_path_for_hash(left_hash).expect("a file-system store exposes object paths");
+        let right_path =
+            cas.object_path_for_hash(right_hash).expect("a file-system store exposes object paths");
+        assert_eq!(
+            left_path.parent(),
+            right_path.parent(),
+            "round {round}: the pair must share a fan-out directory",
+        );
+        assert!(
+            left_path.is_file() && right_path.is_file(),
+            "round {round}: both puts must have written their blob, not deferred it to the WAL \
+             consumer",
+        );
+
+        assert_eq!(
+            cas.get(left_hash).await.expect("left object must read back"),
+            left,
+            "round {round}: the left object must survive its neighbour",
+        );
+        assert_eq!(
+            cas.get(right_hash).await.expect("right object must read back"),
+            right,
+            "round {round}: the right object must survive its neighbour",
+        );
+    }
 }
