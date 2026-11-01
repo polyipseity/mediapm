@@ -209,10 +209,9 @@ pub fn print_sync_summary(summary: &SyncSummary) {
 mod tests {
     use crate::SyncSummary;
 
-    /// The field name promises what the field counts. `cached_steps` is fed by the
-    /// conductor's cache-hit step count, and the online demo compares it against
-    /// `executed_steps` from the previous run — a comparison that only makes sense
-    /// when both sides count steps.
+    /// This test is a compile gate. It exists so that a rename of either field
+    /// that leaves a reader behind fails to build, and the two assertions below
+    /// only restate the literals assigned here.
     #[test]
     fn cached_steps_is_named_for_what_it_counts() {
         let summary = SyncSummary { cached_steps: 1, executed_steps: 2, ..SyncSummary::default() };

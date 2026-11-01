@@ -104,9 +104,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// no thread enforces the bound of the wait: a thread that waited would have to be
 /// abandoned when the bound expired, and an abandoned thread is a leak in a test
 /// process that lives until the whole suite finishes. The one thread this module
-/// does start is the reader that takes the candidate's stderr, which is bounded by
-/// [`PROBE_TIMEOUT`] as well; the read's own comment states what a candidate that
-/// leaves a writer behind costs.
+/// does start is the reader that takes the candidate's stderr, and the probe
+/// waits on that reader for at most [`PROBE_TIMEOUT`]; the read's own comment
+/// states what a candidate that leaves a writer behind costs.
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Separates the compiles one process makes.
