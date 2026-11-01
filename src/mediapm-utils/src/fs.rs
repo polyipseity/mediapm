@@ -8,7 +8,7 @@
 //!
 //! Each save also removes the temporaries a dead writer left beside the same
 //! target, so an interrupted publish costs one stale name rather than a growing
-//! pile of them. The name carries [`TEMPORARY_MARKER`], which narrows what counts
+//! pile of them. The name carries `TEMPORARY_MARKER`, which narrows what counts
 //! as a leftover of this helper from what another program put there.
 
 use std::fs::File;
@@ -35,11 +35,11 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// share a temporary: another process differs in the id, and another save in
 /// this one differs in the counter. A save that fails removes its own temporary.
 /// A killed writer cannot, so it leaves one beside the target; the next save of
-/// that target removes it, because it is older than [`STALE_TEMPORARY_AGE`]. The
+/// that target removes it, because it is older than `STALE_TEMPORARY_AGE`. The
 /// sweep is best effort: a temporary that cannot be removed leaves the save that
 /// was beside it unaffected.
 ///
-/// A leftover named the old way, without [`TEMPORARY_MARKER`], is not swept: the
+/// A leftover named the old way, without `TEMPORARY_MARKER`, is not swept: the
 /// sweep removes only names this version of the helper builds. That is a fixed
 /// set only while every writer is this version. An older installed binary keeps
 /// writing the old name, and nothing reclaims what it leaves. Matching a name a
