@@ -691,10 +691,8 @@ mod tests {
     /// resolved row red — telling the operator that resolution failed when it
     /// had already succeeded.
     ///
-    /// The assertion reads a real terminal's frame rather than a recording
-    /// tracker: the recording harness answers a handle's `is_finished()` from
-    /// the whole shared op log, so every bar it hands out reads finished as
-    /// soon as one bar finishes, which is not the production guard.
+    /// The assertion reads a real terminal's frame because it pins the row's
+    /// rendered status, not only the recorded op.
     #[tokio::test]
     async fn a_fetch_failure_does_not_fail_the_finished_resolve_bar() {
         let cas = new_in_memory_cas();

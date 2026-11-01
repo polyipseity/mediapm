@@ -112,7 +112,9 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
     /// unfiltered scan reports every bar finished as soon as one bar finishes.
     /// The answer is therefore scoped to the entries tagged with this handle's
     /// own [`BarId`], which also means a [`recording::BarId::Standalone`] handle
-    /// answers from the entries in its private log.
+    /// answers from the entries in its private log. `restart()` is not
+    /// modelled, so a restarted recording handle still reports finished while
+    /// the tracked handle's state marker has been cleared.
     fn is_finished(&self) -> bool {
         let mine = recording::RecordingTrackedHandle::bar(self);
         recording::RecordingTrackedHandle::recorded(self).iter().any(|entry| {

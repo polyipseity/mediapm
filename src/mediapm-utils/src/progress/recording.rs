@@ -432,8 +432,8 @@ impl RecordingTrackedHandle {
         *self.start_time.write().expect("recording start_time lock") = Instant::now();
     }
 
-    /// Return a snapshot of recorded operations for this handle with the bar
-    /// identity dropped.
+    /// Return a snapshot of recorded operations for the log this handle
+    /// shares, with the bar identity dropped.
     ///
     /// When created via [`RecordingProgressTracker::add_bar`], this
     /// returns the same shared log as all handles from that tracker, so it
