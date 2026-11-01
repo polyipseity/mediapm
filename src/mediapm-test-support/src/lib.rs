@@ -19,8 +19,14 @@
 //! [`stub_tool_path`] resolves the `mediapm-stub-tool` binary this crate ships,
 //! which stands in for a managed tool a test cannot download. It is located by
 //! path rather than through `CARGO_BIN_EXE_*`, which names the current package's
-//! binaries alone, and it panics when absent rather than letting an execution
-//! assertion pass vacuously.
+//! binaries alone. Absence is no longer a panic: a consumer's `cargo test-pkg`
+//! builds no binary target from this crate, so absence is the normal case there,
+//! and [`stub_tool`] compiles the stub from the source it embeds into the running
+//! test binary's directory. The panic remains for the runs that can produce no
+//! runnable executable at all: a directory that cannot be written, a `rustc` that
+//! is missing from `PATH`, and a `rustc` that rejects the source — which is where
+//! a candidate failing the behaviour probe ends up in a run with no compiler to
+//! replace it.
 //!
 //! # Seams
 //!

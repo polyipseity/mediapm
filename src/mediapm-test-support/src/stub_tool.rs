@@ -9,35 +9,240 @@
 //! directory, and `CARGO_BIN_EXE_<name>` is defined for the current package
 //! alone, so a dev-dependency's binary is reachable only by path.
 //!
-//! # Why absence is a panic
+//! # Why a located candidate must prove itself
 //!
 //! A stub that cannot be found would turn a step-execution assertion into a
 //! no-op that passes, which is the failure class these tests exist to remove.
-//! [`stub_tool_path`] therefore panics, naming the command that builds it.
+//! So [`stub_tool_path`] returns neither a path it has not seen run nor a panic
+//! for a run that can build the stub itself.
+//!
+//! The search cannot trust a file name. `cargo test --all-targets` compiles the
+//! bin target a second time as a libtest harness under `deps/`, and Cargo names
+//! that copy the way it names the executable, so `mediapm_stub_tool-<hash>` is
+//! either. A search that accepted the first file with the right name handed
+//! every stub-based test a harness, which answered `running 0 tests` and exit 0
+//! to the bare invocation the test expected to be a usage failure. Each candidate
+//! is therefore spawned through `behaves_like_the_stub`, and one that answers
+//! like a harness is skipped as the search continues.
+//!
+//! Absence is answered by compiling the stub from the source embedded in this
+//! module (`STUB_TOOL_SOURCE`) into the running test binary's directory: a
+//! consumer's `cargo test-pkg` selects that consumer's package alone, so this
+//! dev-dependency's binary target is not among the targets Cargo builds and the
+//! search legitimately finds nothing. The panic remains for the case no
+//! executable can be produced from — a directory that cannot be written.
+//!
+//! # How a compiled fallback knows it is current
+//!
+//! A compiled fallback carries no Cargo fingerprint: Cargo never builds it, so
+//! nothing else on the machine notices when `src/bin/mediapm-stub-tool.rs`
+//! changes. Trusting the file because it exists would keep testing whatever the
+//! source said when it was first compiled — across an edit, a checkout, or a
+//! `git bisect` — and every stub-based test in the workspace would then test the
+//! previous build while reporting the current one.
+//!
+//! So the compile records a fingerprint of the source it used beside the
+//! executable, and [`stub_tool_path`] accepts a stub in the fallback slot only
+//! when [`compiled_from`] finds that record naming the embedded source. A changed
+//! source leaves the record mismatched, the search skips the artifact, and the run
+//! reaches [`compile_stub_into`] again. Nothing but the file's content is
+//! inspected, so the verdict does not depend on clock skew, and it costs one small
+//! read per search.
+//!
+//! Cargo's own copies need no record: Cargo's fingerprint already decides whether
+//! its binary target is current, and the copies it leaves in `deps/` are named per
+//! build.
 
-use std::path::PathBuf;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
+use std::path::{Path, PathBuf};
 
 /// File name of the stub binary, without the platform executable suffix.
 pub const STUB_TOOL_BIN_NAME: &str = "mediapm-stub-tool";
 
-/// Resolves the path to the `mediapm-stub-tool` binary.
+/// The stub's source, embedded so a test process can build it without Cargo.
 ///
-/// Cargo writes a binary target to two different shapes, so both are searched.
-/// `cargo build --bins` writes `target/<profile>/mediapm-stub-tool`; a test run
-/// writes a hash-suffixed copy into `target/<profile>/deps/` and leaves the
-/// unhashed path alone, which is the shape a consumer's test binary sees. The
-/// search therefore covers the running executable's own directory, the target
-/// directory above it, and the `deps/` directories beside both — the hashed
-/// copies are matched by name prefix because the hash is not predictable.
+/// Embedding rather than locating the file keeps the compile fallback free of a
+/// workspace-layout assumption: the bytes travel with the compiled test binary,
+/// so a test process in any directory still has the source it must compile. It is
+/// also the reference a fallback's recorded fingerprint is compared against, so
+/// the bytes that build the stub and the bytes that decide its freshness are the
+/// same bytes rather than two files that could disagree.
+const STUB_TOOL_SOURCE: &str = include_str!("bin/mediapm-stub-tool.rs");
+
+/// Suffix of the record that says which source a fallback was compiled from.
+///
+/// It begins with a dot for two reasons: the record's path is derived by
+/// appending it to the executable's whole path, and Cargo's hashed-name rule
+/// rejects any name with a dot in what follows the build hash, so a record can
+/// never pass for a target.
+const SOURCE_FINGERPRINT_SUFFIX: &str = ".source-fingerprint";
+
+/// Compiles the stub into `directory` and returns the executable's path.
+///
+/// Each compile works in a directory of its own, and the finished executable is
+/// moved into place by rename, so two test processes that both find no stub
+/// neither observe each other's half-written binary nor collide while building
+/// it: `rustc` names its codegen objects after the crate rather than after the
+/// `-o` path, so two compiles sharing an output directory sign the same object
+/// names and the loser fails to link. The work directory sits under `directory`
+/// instead of in the system temporary directory because a rename cannot cross
+/// filesystems, and the move into place must be atomic.
+///
+/// The compile writes the source's fingerprint to the record beside the
+/// executable, because nothing else tracks this file's input: Cargo does not know
+/// it exists, so its own fingerprint can never say whether the file still matches
+/// `src/bin/mediapm-stub-tool.rs`. The record is written *after* the executable is
+/// in place, which is the safe order — a record written first could describe a
+/// binary a concurrent compile is about to replace, and the search would then
+/// trust the older file, while an interrupted compile leaves a record that does
+/// not match and is rebuilt.
+///
+/// The compiler is the one already running these tests: `rustc` is resolved from
+/// `PATH`, and that resolution relies on the environment Cargo sets for a test
+/// run. Invoked outside a Cargo test run, a rustup proxy with no default toolchain
+/// configured refuses to start rather than choosing one, so a caller that reaches
+/// this outside Cargo has to provide the toolchain environment Cargo would have.
 ///
 /// # Panics
 ///
-/// Panics when the stub is absent from every candidate. The message names the
-/// searched paths and `cargo build-pkg mediapm-test-support`, the cheapest
-/// command that builds it, because `cargo test-pkg <consumer>` selects that
-/// consumer's package alone and a dev-dependency's binary target is not among
-/// the targets Cargo builds for it. The workspace gate (`cargo test-all`) passes
-/// `--workspace --all-targets` and needs no such step.
+/// Panics when the work directory, the source or the record cannot be written,
+/// when `rustc` cannot be spawned or rejects the source, or when the executable
+/// cannot be moved into place. Every one of those leaves no runnable executable,
+/// and a path that does not run is exactly the vacuous pass the locator exists to
+/// prevent.
+#[must_use]
+fn compile_stub_into(directory: &Path) -> PathBuf {
+    let file_name = format!("{STUB_TOOL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+    let target = directory.join(&file_name);
+    let record = record_path(&target);
+    let build = directory.join(format!("{file_name}.mediapm-build-{}", std::process::id()));
+    let source = build.join(format!("{STUB_TOOL_BIN_NAME}.rs"));
+    let staged = build.join(&file_name);
+
+    std::fs::create_dir_all(&build).unwrap_or_else(|error| {
+        panic!("the stub's build directory must be writable at {}: {error}", build.display())
+    });
+    std::fs::write(&source, STUB_TOOL_SOURCE).unwrap_or_else(|error| {
+        panic!("the embedded stub source must be writable at {}: {error}", source.display())
+    });
+    let output = std::process::Command::new("rustc")
+        .args(["--edition", "2024", "--crate-name", "mediapm_stub_tool", "-o"])
+        .arg(&staged)
+        .arg(&source)
+        .output()
+        .unwrap_or_else(|error| panic!("rustc must be on PATH for a Cargo test run: {error}"));
+    if !output.status.success() {
+        // The work directory holds nothing worth keeping once the compile has
+        // failed, and leaving it behind would put the compiler's objects in
+        // `target/` for a run that never produced an executable.
+        let _ = std::fs::remove_dir_all(&build);
+        panic!("compiling the stub failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    std::fs::rename(&staged, &target).unwrap_or_else(|error| {
+        panic!("the staged stub must move into place at {}: {error}", target.display())
+    });
+    std::fs::write(&record, source_fingerprint(STUB_TOOL_SOURCE)).unwrap_or_else(|error| {
+        panic!("the fallback's source record must be writable at {}: {error}", record.display())
+    });
+    let _ = std::fs::remove_dir_all(&build);
+    target
+}
+
+/// Path of the record beside `executable` that says which source built it.
+///
+/// The suffix is appended to the executable's whole path rather than to its last
+/// component, which is the same file for a suffix that begins with a dot and
+/// needs no name-splitting: a caller has the executable's path and nothing else.
+/// The record lives beside the file it describes, so removing the artifact
+/// removes the claim about it as well.
+fn record_path(executable: &Path) -> PathBuf {
+    let mut record = executable.as_os_str().to_os_string();
+    record.push(SOURCE_FINGERPRINT_SUFFIX);
+    PathBuf::from(record)
+}
+
+/// Fingerprint of `source`, the value recorded beside a compiled fallback.
+///
+/// A fingerprint rather than the source itself keeps the record small and its
+/// comparisons exact. Sixteen hex digits is the whole output of the hasher the
+/// workspace already keys content-derived names with (`mediapm_utils::temp`'s
+/// runtime directory), so a fingerprint reads the same way wherever it appears.
+///
+/// The hasher's algorithm is unspecified and may change between Rust releases,
+/// which costs at most one recompile per toolchain change: a record that no
+/// longer matches is a fallback the search rebuilds, never one it trusts.
+#[must_use]
+fn source_fingerprint(source: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(source.as_bytes());
+    format!("{:016x}", hasher.finish())
+}
+
+/// Reports whether `executable` was compiled from `source`.
+///
+/// This is the invalidation check the locator runs before it trusts a fallback:
+/// the answer is `false` for a source that changed and for a file that carries no
+/// record at all, so a stub nobody compiled here is never taken to be the
+/// fallback. It reads the record and nothing else, so the verdict depends on the
+/// source it is asked about rather than on the file's age or on the timing of the
+/// run, and it answers without executing or rebuilding anything.
+fn compiled_from(executable: &Path, source: &str) -> bool {
+    std::fs::read_to_string(record_path(executable))
+        .is_ok_and(|recorded| recorded.trim() == source_fingerprint(source))
+}
+
+/// Reports whether `path` answers like the stub rather than like a test harness.
+///
+/// `cargo test --all-targets` compiles the bin target a second time as a libtest
+/// harness under `deps/`, and Cargo names that copy the same way it names the
+/// executable, so no file name tells them apart. The stub answers a bare
+/// invocation with its usage failure — exit 2 and a `--mode is required` line —
+/// while the harness answers `running 0 tests` and exits 0. Spawning the
+/// candidate is the only check that separates them, and it costs one process
+/// launch per candidate tested.
+///
+/// A candidate that cannot be spawned is not the stub either: handing a caller a
+/// path that exists and cannot be executed moves the failure away from the
+/// locator, which is the one place that can still act on it.
+fn behaves_like_the_stub(path: &Path) -> bool {
+    let Ok(output) = std::process::Command::new(path).output() else {
+        return false;
+    };
+    output.status.code() == Some(2)
+        && String::from_utf8_lossy(&output.stderr).contains("--mode is required")
+}
+
+/// Resolves the path to the `mediapm-stub-tool` binary.
+///
+/// Two kinds of stub can be on disk, written by two builders, and they are
+/// trusted for different reasons.
+///
+/// Cargo writes a binary target to two shapes: `cargo build --bins` writes
+/// `target/<profile>/mediapm-stub-tool`, and a test run writes a hash-suffixed
+/// copy into `target/<profile>/deps/` and leaves the unhashed path alone. Those
+/// are accepted on **Cargo's** provenance — Cargo's own fingerprint decides
+/// whether they are current — and they must be a file that passes
+/// [`behaves_like_the_stub`], because `--all-targets` also leaves a libtest
+/// harness under a name of that shape.
+///
+/// The fallback [`compile_stub_into`] writes is accepted on **its record**
+/// instead: it sits in the running executable's own directory, which is `deps/`
+/// for a test binary and so holds no plain-named target of Cargo's, and
+/// [`compiled_from`] says whether the embedded source is still the one that built
+/// it. A fallback whose record does not match is skipped, and the search ends in
+/// [`compile_stub_into`] replacing it. That directory is Cargo's profile directory
+/// when the running binary is not a test binary; the fallback replaces the
+/// unhashed stub there, which is the same executable built from the same source,
+/// and the replacement is what puts the file under a recorded fingerprint.
+///
+/// # Panics
+///
+/// Panics when the fallback cannot be produced: the running executable's
+/// directory is missing, or [`compile_stub_into`] fails to write, compile, move
+/// the executable into place, or record the source it used. Both mean no stub can
+/// be run, which is the one outcome that must not reach a caller as a silently
+/// absent tool.
 #[must_use]
 pub fn stub_tool_path() -> PathBuf {
     let suffix = std::env::consts::EXE_SUFFIX;
@@ -45,11 +250,26 @@ pub fn stub_tool_path() -> PathBuf {
     let current = std::env::current_exe().unwrap_or_else(|error| {
         panic!("the running executable's path must be readable to locate {file_name}: {error}")
     });
+    let stub_directory = current.parent().filter(|parent| parent.is_dir());
 
+    // The fallback slot, checked first because it is this module's own file: the
+    // artifact is the stub only when the record beside it names the source this
+    // module embeds, so an edited stub source cannot be answered by the previous
+    // build.
+    if let Some(directory) = stub_directory {
+        let fallback = directory.join(&file_name);
+        if fallback.is_file()
+            && compiled_from(&fallback, STUB_TOOL_SOURCE)
+            && behaves_like_the_stub(&fallback)
+        {
+            return fallback;
+        }
+    }
+
+    // Cargo's shapes, accepted on the fingerprint Cargo keeps for them.
     let mut candidates: Vec<PathBuf> = Vec::new();
     let mut hashed_directories: Vec<PathBuf> = Vec::new();
     if let Some(directory) = current.parent() {
-        candidates.push(directory.join(&file_name));
         hashed_directories.push(directory.to_path_buf());
         if let Some(target_directory) = directory.parent() {
             candidates.push(target_directory.join(&file_name));
@@ -58,16 +278,19 @@ pub fn stub_tool_path() -> PathBuf {
     }
     candidates.extend(hashed_candidates(&hashed_directories, &file_name));
 
-    if let Some(found) = candidates.iter().find(|candidate| candidate.is_file()) {
+    if let Some(found) =
+        candidates.iter().find(|candidate| candidate.is_file() && behaves_like_the_stub(candidate))
+    {
         return found.clone();
     }
-    let searched = candidates.iter().map(|path| path.display().to_string()).collect::<Vec<_>>();
-    panic!(
-        "{file_name} was not found at {}; build it with `cargo build-pkg mediapm-test-support` (or \
-         `cargo test-pkg mediapm-test-support`, which builds it too) — `cargo test-pkg <consumer>` \
-         selects that package alone and does not build a dev-dependency's binary target",
-        searched.join(" or ")
-    )
+    // A consumer's `cargo test-pkg` builds no binary target of this crate, so the
+    // search legitimately finds nothing — or found only a fallback its record
+    // called stale. Compiling beside the running test binary leaves the stub where
+    // the next search looks, so the run pays this once.
+    let directory = stub_directory.unwrap_or_else(|| {
+        panic!("the running executable's directory must exist: {}", current.display())
+    });
+    compile_stub_into(directory)
 }
 
 /// Lists the hash-suffixed copies of the stub in `directories`.
@@ -117,9 +340,9 @@ fn hashed_candidates(directories: &[PathBuf], file_name: &str) -> Vec<PathBuf> {
 /// is the empty string on Unix, every string ends with the empty string, and the
 /// `.d` and `.rmeta` sidecars Cargo writes for every target would pass as the
 /// executable. Returning one of those is worse than finding nothing, because the
-/// caller receives a path that exists and cannot be executed instead of the
-/// panic that names the build command, so the failure moves from the build step
-/// to wherever the stub is spawned.
+/// caller receives a path that exists and cannot be executed in place of one the
+/// locator has seen run, so the failure moves from the locator to wherever the
+/// stub is spawned.
 ///
 /// A rejected name is not an error: `deps/` holds sidecars beside every target,
 /// and skipping them is the purpose here. The emptiness check covers a prefix with
@@ -170,6 +393,86 @@ mod tests {
         assert!(
             name.starts_with(&expected_prefix) || name.starts_with(STUB_TOOL_BIN_NAME),
             "the located path must be the stub, found {name}",
+        );
+    }
+
+    /// An executable that is not the stub is rejected by the same probe that accepts it.
+    ///
+    /// The user-level guarantee: `--all-targets` compiles the bin target again as a
+    /// libtest harness and Cargo names that copy the way it names the executable, so
+    /// acceptance by file name picks a harness. A harness exits 0 to a bare
+    /// invocation; the stub exits 2 with its usage message. Without this rejection
+    /// every stub-based test in the workspace tests a harness.
+    #[cfg(unix)]
+    #[test]
+    fn a_candidate_that_is_not_the_stub_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let impostor = dir.path().join(format!("{STUB_TOOL_BIN_NAME}-impostor"));
+        std::fs::write(&impostor, "#!/bin/sh\nexit 0\n").expect("the impostor must be writable");
+        std::fs::set_permissions(&impostor, std::fs::Permissions::from_mode(0o755))
+            .expect("the impostor must be executable");
+
+        assert!(
+            !behaves_like_the_stub(&impostor),
+            "a process that exits 0 to a bare invocation is a test harness, not the stub",
+        );
+        assert!(
+            behaves_like_the_stub(&stub_tool_path()),
+            "the located stub must pass the same probe that rejects the impostor",
+        );
+    }
+
+    /// A directory with no Cargo-built stub receives one that runs.
+    ///
+    /// The user-level guarantee: `cargo test-pkg <consumer>` builds no binary target
+    /// from this crate, so a test that needs the stub must still get an executable.
+    /// Compiling from the embedded source is what makes that run pass instead of
+    /// panicking.
+    #[test]
+    fn a_stub_compiles_into_a_directory_that_has_none() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let path = compile_stub_into(dir.path());
+
+        assert!(path.is_file(), "the compile must produce the executable at {}", path.display());
+        let output = Command::new(&path)
+            .args(["--mode", "copy"])
+            .output()
+            .expect("the compiled stub must be executable");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "the compiled stub must behave like the built one"
+        );
+    }
+
+    /// A change to the stub's source is noticed by the compiled fallback.
+    ///
+    /// The user-level guarantee: nothing else rebuilds the fallback — Cargo does not
+    /// know the file exists, so its fingerprint never covers it — and a fallback
+    /// trusted by its name alone would keep testing the stub as it read when it was
+    /// first compiled, across an edit, a checkout that reverted the file, or a
+    /// `git bisect` step. The record the compile writes is what answers instead, and
+    /// it answers against a source string rather than against the clock, so this
+    /// asserts the verdict either way without touching the executable.
+    #[test]
+    fn a_changed_source_makes_the_compiled_stub_stale() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let path = compile_stub_into(dir.path());
+
+        assert!(
+            behaves_like_the_stub(&path),
+            "the compile must produce a stub that runs, found {}",
+            path.display(),
+        );
+        assert!(
+            compiled_from(&path, STUB_TOOL_SOURCE),
+            "the compiled stub must record the source it was built from",
+        );
+        assert!(
+            !compiled_from(&path, "// the stub's source, one edit later\n"),
+            "a different source must leave the compiled stub stale, so the search rebuilds it",
         );
     }
 
