@@ -321,17 +321,102 @@ fn trailing_identifier(prefix: &str) -> String {
 
 /// Returns whether a binding source participates in instance-key material,
 /// matching step-worker `is_deterministic_command_part` semantics.
-#[must_use]
-pub fn is_deterministic_binding_source(raw_binding_source: &str) -> bool {
+///
+/// Crate-private: the only reader is the hash helper below, and a second reader
+/// outside this module would be a caller deciding key material by a rule that
+/// lives here.
+fn is_deterministic_binding_source(raw_binding_source: &str) -> bool {
     is_deterministic_command_part(raw_binding_source)
 }
 
 /// Encodes one tool default binding as the string form used in step inputs.
+///
+/// A list binding becomes a JSON array, which is what a step's own binding means
+/// when it spells one out. The encoding is written here rather than delegated to
+/// `serde_json`, because serializing a list of strings cannot fail and a
+/// serializer's error arm would have to answer with something: an empty string
+/// would read as "this binding names no work", which is a different fact and a
+/// silently wrong key. Escaping follows JSON for the characters a string can
+/// carry, and a test pins this output against `serde_json`'s.
 #[must_use]
 pub fn input_binding_to_string(binding: &InputBinding) -> String {
     match binding {
         InputBinding::String(value) => value.clone(),
-        InputBinding::Vec(values) => serde_json::to_string(values).unwrap_or_default(),
+        InputBinding::Vec(values) => {
+            let mut encoded = String::from("[");
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    encoded.push(',');
+                }
+                encoded.push('"');
+                for character in value.chars() {
+                    match character {
+                        '"' => encoded.push_str("\\\""),
+                        '\\' => encoded.push_str("\\\\"),
+                        '\n' => encoded.push_str("\\n"),
+                        '\r' => encoded.push_str("\\r"),
+                        '\t' => encoded.push_str("\\t"),
+                        control if control.is_control() => {
+                            // Lowercase hex, four digits, without a formatter: a
+                            // `write!` to a `String` cannot fail, and its
+                            // `Result` would have to be discarded to say so.
+                            encoded.push_str("\\u");
+                            let code = control as u32;
+                            for shift in [12, 8, 4, 0] {
+                                let nibble = ((code >> shift) & 0xF) as u8;
+                                let digit =
+                                    if nibble < 10 { b'0' + nibble } else { b'a' + (nibble - 10) };
+                                encoded.push(char::from(digit));
+                            }
+                        }
+                        other => encoded.push(other),
+                    }
+                }
+                encoded.push('"');
+            }
+            encoded.push(']');
+            encoded
+        }
+    }
+}
+
+#[cfg(test)]
+mod binding_string_tests {
+    use super::*;
+
+    /// The list encoding the module writes itself agrees with `serde_json`.
+    ///
+    /// The encoding exists because a serializer's error arm would have to answer
+    /// with a value, and any value it chose would be a wrong key. Writing it by
+    /// hand is only safe while it matches the format every reader already
+    /// expects, so this pins the hand-written output against the serializer's
+    /// across the characters that need escaping.
+    #[test]
+    fn a_list_binding_encodes_as_the_serializer_would() {
+        let cases: [&[&str]; 6] = [
+            &[],
+            &["plain"],
+            &["two", "entries"],
+            &["quote\"inside"],
+            &["back\\slash"],
+            &["new\nline", "tab\there", "carriage\rreturn", "control\u{1}char"],
+        ];
+        for case in cases {
+            let values: Vec<String> = case.iter().map(|value| (*value).to_string()).collect();
+            let encoded = input_binding_to_string(&InputBinding::Vec(values.clone()));
+            let expected = serde_json::to_string(&values).expect("serialize a list of strings");
+            assert_eq!(
+                encoded, expected,
+                "the hand-written encoding must match the serializer for {values:?}",
+            );
+        }
+    }
+
+    /// A string binding passes through unchanged.
+    #[test]
+    fn a_string_binding_is_its_own_text() {
+        let binding = InputBinding::String("${env.HOME}/bin".to_string());
+        assert_eq!(input_binding_to_string(&binding), "${env.HOME}/bin");
     }
 }
 
@@ -386,27 +471,6 @@ pub fn instance_key_hash_from_resolved_value_bytes(
     is_deterministic_binding_source(raw_binding_source).then(|| {
         Hash::composite(&[Hash::from_content(key.as_bytes()), Hash::from_content(resolved_value)])
     })
-}
-
-/// Collects deterministic input hashes from merged bindings and resolved value
-/// bytes (mediapm materializer path).
-#[must_use]
-pub fn deterministic_input_hashes_from_resolved_value_bytes(
-    merged_bindings: &BTreeMap<String, String>,
-    resolved_values: &BTreeMap<String, Vec<u8>>,
-) -> Vec<Hash> {
-    let mut input_hashes = Vec::new();
-    for (key, raw_source) in merged_bindings {
-        let Some(value_bytes) = resolved_values.get(key) else {
-            continue;
-        };
-        if let Some(hash) =
-            instance_key_hash_from_resolved_value_bytes(key, raw_source, value_bytes)
-        {
-            input_hashes.push(hash);
-        }
-    }
-    input_hashes
 }
 
 /// Returns true when `stored_key` — the key `instance` is filed under — matches

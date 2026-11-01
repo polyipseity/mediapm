@@ -47,11 +47,10 @@ pub use config::{
 };
 pub use error::ConductorError;
 pub use instance_key::{
-    deterministic_input_hashes_from_resolved_value_bytes, input_binding_to_string,
-    instance_key_hash_from_resolved_value_bytes, instance_key_value_bytes_for_context_only_binding,
-    instance_matches_stored_key, is_deterministic_binding_source, key_material_for_builtin,
-    key_material_for_command_parts, key_material_for_tool, merge_step_input_bindings,
-    references_environment,
+    input_binding_to_string, instance_key_hash_from_resolved_value_bytes,
+    instance_key_value_bytes_for_context_only_binding, instance_matches_stored_key,
+    key_material_for_builtin, key_material_for_command_parts, key_material_for_tool,
+    merge_step_input_bindings, references_environment,
 };
 pub use orchestration::step_worker::inputs::{
     InstanceKeyInputValues, resolve_instance_key_input_values,
