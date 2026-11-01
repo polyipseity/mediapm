@@ -101,9 +101,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often a probe re-asks whether its candidate has exited.
 ///
 /// The probe polls because `std::process::Child` offers no timeout of its own, and
-/// this module starts no thread to enforce one: a thread that waited would have to
-/// be abandoned when the bound expired, and an abandoned thread is a leak in a test
-/// process that lives until the whole suite finishes.
+/// no thread enforces the bound of the wait: a thread that waited would have to be
+/// abandoned when the bound expired, and an abandoned thread is a leak in a test
+/// process that lives until the whole suite finishes. The one thread this module
+/// does start is the reader that takes the candidate's stderr, which is bounded by
+/// [`PROBE_TIMEOUT`] as well; the read's own comment states what a candidate that
+/// leaves a writer behind costs.
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Separates the compiles one process makes.
@@ -268,9 +271,11 @@ fn compiled_from(executable: &Path, source: &str) -> bool {
 /// The wait is bounded by [`PROBE_TIMEOUT`], and a candidate still running when
 /// the bound expires is killed and reaped before the probe answers `false`: the
 /// answer for a program that never exits is the same one this probe gives a
-/// program that exits wrongly, and no candidate outlives its own probe. The
-/// candidate's stdin is closed, so one that reads it gets end of input instead of
-/// waiting for a caller that is not there.
+/// program that exits wrongly, and no candidate outlives its own probe. The same
+/// bound covers reading the candidate's stderr, because a candidate can exit and
+/// still leave a descendant holding that pipe open. The candidate's stdin is
+/// closed, so one that reads it gets end of input instead of waiting for a caller
+/// that is not there.
 fn behaves_like_the_stub(path: &Path) -> bool {
     let Ok(mut candidate) = std::process::Command::new(path)
         .stdin(Stdio::null())
@@ -299,15 +304,30 @@ fn behaves_like_the_stub(path: &Path) -> bool {
         return false;
     };
     // The candidate has exited, so the bytes it wrote itself are already in the
-    // pipe and this read does not wait on the candidate. It waits on anything the
-    // candidate left holding the write end: a descendant that inherited stderr
-    // keeps the pipe open after its parent exits, and this read then blocks until
-    // that descendant closes it. The stub prints one line and spawns nothing, so a
-    // candidate answering like the stub leaves no writer behind; the bound covers
-    // the candidate's own lifetime, not a descendant's.
+    // pipe; what this read can still wait on is anything the candidate left
+    // holding the write end. A descendant that inherited stderr keeps the pipe
+    // open after its parent exits, and an unbounded read then waits on that
+    // descendant rather than on the candidate the bound was meant to cover. So the
+    // read is bounded by [`PROBE_TIMEOUT`] too, and a read that reaches the bound
+    // is a candidate that left a writer behind — the stub prints one line and
+    // spawns nothing, so a lingering writer is not the stub and the probe answers
+    // `false`. The cost of answering that way is the reader thread: it stays
+    // parked on the pipe its descendant still holds. It is detached and owns
+    // nothing else, and it lives no longer than this process, which ends with the
+    // test run, so a misbehaving candidate costs one parked thread instead of the
+    // locator's whole search.
     let mut stderr = Vec::new();
     if let Some(mut pipe) = candidate.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            let _ = sender.send(bytes);
+        });
+        match receiver.recv_timeout(PROBE_TIMEOUT) {
+            Ok(bytes) => stderr = bytes,
+            Err(_) => return false,
+        }
     }
     status.code() == Some(2) && String::from_utf8_lossy(&stderr).contains("--mode is required")
 }
@@ -569,6 +589,28 @@ mod tests {
             elapsed < PROBE_TIMEOUT * 2,
             "the probe must answer within about twice its bound, took {elapsed:?}",
         );
+    }
+
+    /// A candidate that leaves a child holding its stderr keeps the pipe open after
+    /// it exits, so an unbounded read waits on the child rather than on the
+    /// candidate. The bound has to cover the read, not only the wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_candidate_whose_child_holds_stderr_is_rejected_within_the_bound() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let path = dir.path().join("mediapm-stub-tool");
+        std::fs::write(&path, "#!/bin/sh\n( sleep 20 ) &\necho '--mode is required' >&2\nexit 2\n")
+            .expect("write impostor");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make executable");
+
+        let started = Instant::now();
+        assert!(!behaves_like_the_stub(&path), "a lingering writer must not pass");
+        let elapsed = started.elapsed();
+        assert!(elapsed >= PROBE_TIMEOUT, "the wait must have run: {elapsed:?}");
+        assert!(elapsed < PROBE_TIMEOUT * 2, "the read must be bounded: {elapsed:?}");
     }
 
     /// A candidate the platform cannot spawn is rejected without a permission bit.
