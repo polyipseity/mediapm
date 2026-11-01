@@ -14,7 +14,9 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use dashmap::DashMap;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::Arc;
 
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -49,6 +51,15 @@ use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 pub struct FileSystemMetadataStore {
     inner: InMemoryMetadataStore,
     blob_store: FileSystemBlobStore,
+    /// One writer per fan-out directory, keyed by the directory's prefix.
+    ///
+    /// A clone shares this map rather than copying it: two stores over the same
+    /// blob store are two writers to the same file, so they have to take turns.
+    ///
+    /// `DashMap` rather than a map behind one mutex, because a lookup has to
+    /// hand out an owned `Arc`: a guard held across the wait for this
+    /// directory's turn would otherwise pin the whole map.
+    dir_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl FileSystemMetadataStore {
@@ -57,7 +68,17 @@ impl FileSystemMetadataStore {
     /// The per-directory snapshots are not loaded until [`rebuild_from_wal`](MetadataStore::rebuild_from_wal)
     /// is called.
     pub fn new(blob_store: FileSystemBlobStore) -> Self {
-        Self { inner: InMemoryMetadataStore::new(), blob_store }
+        Self { inner: InMemoryMetadataStore::new(), blob_store, dir_locks: Arc::default() }
+    }
+
+    /// Take the handle that serializes this directory's recompute and install.
+    ///
+    /// The caller holds that mutex for the whole span in which it collects the
+    /// directory's facts and installs the files derived from them. Nothing
+    /// awaits here on purpose: the handle leaves the map before the caller
+    /// awaits, so no map guard is held across a suspension point.
+    fn lock_dir(&self, prefix: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&*self.dir_locks.entry(prefix.to_owned()).or_default())
     }
 
     /// Flush everything whose hash falls into the same fan-out directory as
@@ -68,8 +89,25 @@ impl FileSystemMetadataStore {
     /// when the facts it holds are empty. After writing, any older format files
     /// of the same ladder in the same directory are cleaned up (future-proof for
     /// format bumps).
+    ///
+    /// # One critical section per directory
+    ///
+    /// The facts collected here and the files installed from them are one
+    /// critical section for the directory, so an installed snapshot can never
+    /// omit an entry that was inserted before it. Collecting outside the
+    /// install would let two writers into one directory interleave as
+    /// *insert, collect, insert, collect, install, install*: the writer that
+    /// installed last would then install the snapshot it took before its
+    /// sibling's insert, and that sibling's entry would be gone from the file.
+    ///
+    /// The lock is taken before any blob-store commit lock and released after
+    /// the last write or delete returns, which is this module's only lock order
+    /// (`dir` then `file`). A store holds an exclusive `flock`, so the directory
+    /// needs no cross-process counterpart.
     async fn flush_dir(&self, hash: &Hash) -> Result<(), CasError> {
         let prefix = &hash.to_hex()[..4];
+        let dir = self.lock_dir(prefix);
+        let _dir = dir.lock().await;
 
         // Collect constraints for targets sharing this prefix.
         let mut constraints = BTreeMap::new();
@@ -406,53 +444,85 @@ mod tests {
         assert!(index.is_empty().await);
     }
 
-    /// Concurrent writes of two entries in one fan-out directory both land.
+    /// Two puts into one fan-out directory must both survive in that directory's
+    /// snapshot file.
     ///
-    /// A fan-out directory holds one snapshot file, so two entries that share its
-    /// prefix write the same target. Without a commit lock the second writer
-    /// stages under the name the first is about to rename, and one of them loses
-    /// the file: the store reports `ENOENT` for a hash it just accepted. The
-    /// materializer and the workflow import hit this on the ordinary path, because
-    /// the object they share a directory with is flushed at the same time.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    /// The file is derived: each writer collects the store's facts and installs
+    /// them. Collecting outside the install's critical section lets a writer
+    /// install a snapshot taken before its sibling's insert, and the file then
+    /// omits the sibling. One pair reproduces that rarely, so the test drives
+    /// [`RACE_ROUNDS`] pairs, each in its own directory so a round cannot be
+    /// rescued by the previous round's file.
+    ///
+    /// Both entries are read back through a store rebuilt from disk: the
+    /// in-memory layer holds both whatever the file says, so reading it would
+    /// pass even when the snapshot on disk dropped one of them.
+    ///
+    /// The runtime is single-threaded because that is where the window opens
+    /// dependably: `write_aux` hands its directory creation and its rename to
+    /// the blocking pool (`FileSystemBlobStore::write_aux`), so the two writers'
+    /// installs complete in an order that need not match their inserts.
+    /// Measured at eleven lost rounds in a hundred while the defect existed.
+    #[tokio::test]
     async fn concurrent_entries_in_one_directory_both_persist() {
-        let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob.clone());
+        /// Rounds needed to reach the window. A pair loses its sibling in about
+        /// one round in nine, so a hundred rounds leave a false green at
+        /// roughly one run in a hundred thousand.
+        const RACE_ROUNDS: usize = 100;
 
-        // Two hashes whose fan-out directory is the same one, found rather than
-        // assumed so the test keeps colliding if the layout changes.
-        let mut first = None;
-        let mut pair = None;
+        let (blob, _dir) = test_blob_store().await;
+        let index = std::sync::Arc::new(FileSystemMetadataStore::new(blob.clone()));
+        let entry = || MetadataEntry { len: 1, encoding: ObjectEncoding::Full };
+
+        let mut used: BTreeSet<String> = BTreeSet::new();
+        for round in 0..RACE_ROUNDS {
+            let (left, right) = fresh_pair(&mut used, round);
+            let (left_index, right_index) =
+                (std::sync::Arc::clone(&index), std::sync::Arc::clone(&index));
+            let (left_entry, right_entry) = (entry(), entry());
+            let (left_task, right_task) = tokio::join!(
+                tokio::spawn(async move { left_index.put(left, left_entry).await }),
+                tokio::spawn(async move { right_index.put(right, right_entry).await }),
+            );
+            left_task.expect("left put joined").expect("left put");
+            right_task.expect("right put joined").expect("right put");
+
+            let reloaded = FileSystemMetadataStore::new(blob.clone());
+            reloaded.rebuild_from_wal(&InMemoryWal::new()).await.expect("reload the snapshots");
+            assert!(
+                reloaded.get(&left).await.expect("read left").is_some(),
+                "round {round}: {left:?} lost"
+            );
+            assert!(
+                reloaded.get(&right).await.expect("read right").is_some(),
+                "round {round}: {right:?} lost"
+            );
+        }
+    }
+
+    /// Find two hashes that share a fan-out directory and that no earlier round
+    /// used.
+    ///
+    /// Found rather than assumed, so the test keeps colliding if the layout
+    /// changes; `used` keeps the rounds from reusing a directory, which would let
+    /// a later round pass on an earlier round's snapshot. One pass over the
+    /// candidates is enough: a four-hex-digit fan-out collides within a few
+    /// hundred, and a scan that followed each candidate until a partner appeared
+    /// would cost a full directory of probes per round instead.
+    fn fresh_pair(used: &mut BTreeSet<String>, round: usize) -> (Hash, Hash) {
+        let mut seen: BTreeMap<String, Hash> = BTreeMap::new();
         for counter in 0u32.. {
-            let hash = Hash::from_content(format!("entry-{counter}").as_bytes());
-            match first {
-                None => first = Some(hash),
-                Some(seen) => {
-                    if hash.to_hex()[..4] == seen.to_hex()[..4] {
-                        pair = Some((seen, hash));
-                        break;
-                    }
-                }
+            let hash = Hash::from_content(format!("entry-{round}-{counter}").as_bytes());
+            let prefix = hash.to_hex()[..4].to_string();
+            if used.contains(&prefix) {
+                continue;
+            }
+            if let Some(first) = seen.insert(prefix.clone(), hash) {
+                used.insert(prefix);
+                return (first, hash);
             }
         }
-        let (left, right) = pair.expect("two hashes share a fan-out directory");
-
-        let entry = || MetadataEntry { len: 1, encoding: ObjectEncoding::Full };
-        let (left_entry, right_entry) = (entry(), entry());
-        let index = std::sync::Arc::new(index);
-        let (left_index, right_index) =
-            (std::sync::Arc::clone(&index), std::sync::Arc::clone(&index));
-        let (left_task, right_task) = tokio::join!(
-            tokio::spawn(async move { left_index.put(left, left_entry).await }),
-            tokio::spawn(async move { right_index.put(right, right_entry).await }),
-        );
-        left_task.expect("the writer task runs").expect("the first entry commits");
-        right_task.expect("the writer task runs").expect("the second entry commits");
-
-        let reloaded = FileSystemMetadataStore::new(blob);
-        reloaded.rebuild_from_wal(&InMemoryWal::new()).await.expect("reload the snapshots");
-        assert!(reloaded.get(&left).await.expect("read the first entry").is_some());
-        assert!(reloaded.get(&right).await.expect("read the second entry").is_some());
+        unreachable!("two of a few hundred hashes share a four-hex-digit fan-out")
     }
 
     /// A fan-out prefix is derived from stored hashes, so a malformed one is a
