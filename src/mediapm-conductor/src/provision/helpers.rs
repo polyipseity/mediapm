@@ -203,15 +203,23 @@ pub(crate) fn persist_cache_metadata(
 /// it already held, so the expiry sweep reclaims a tool that is in daily use. The
 /// next run extracts it again instead of finding it, and an extraction into a
 /// directory that still refuses writes reports the failure this save reported.
-pub(crate) fn record_cache_hit(
-    metadata_path: &Path,
-    content_map: &BTreeMap<String, Hash>,
-    now: u64,
-) {
+///
+/// "Reported" means what `tracing` means by it, which is not the same across the
+/// processes that reach this code. `mediapm` installs a subscriber whose default
+/// filter carries `warn`, so the line is visible there. `mediapm-conductor`'s own
+/// binary installs none, so the same hit driven by the conductor CLI is silent:
+/// the payload is served and the loss of the use-time refresh goes unrecorded.
+/// Reading this function's name as a guarantee of output would be wrong in that
+/// case.
+pub(crate) fn record_cache_hit(metadata_path: &Path, content_map: &BTreeMap<String, Hash>) {
+    // The clock is read here rather than taken from the caller. A caller reads it
+    // before it may wait on the entry lock, and the wait is unbounded: a use time
+    // taken then can be minutes old by the time the entry is refreshed, which
+    // shortens the life of the payload the hit just proved is current.
     let metadata = Metadata {
         version: crate::provision::VERSION,
         content_map: content_map.clone(),
-        last_used_unix_seconds: now,
+        last_used_unix_seconds: now_unix_seconds(),
         execute_bits_verified: true,
     };
     if let Err(error) = persist_cache_metadata(metadata_path, &metadata) {
@@ -458,16 +466,19 @@ mod tests {
         names
     }
 
-    /// A leftover temporary an older build wrote neither blocks the save nor is
-    /// swept by it.
+    /// A leftover temporary an older build wrote is not swept by this save.
     ///
     /// Older builds named the temporary from the target alone, so every writer of
     /// one directory shared it. This plants that name, aged past the sweep's
     /// threshold and read-only, to stand for such a build. The current rule is the
     /// helper's own marker: a name it does not produce is not a name it removes,
     /// so the file stays where whoever left it can find it.
+    ///
+    /// The save runs as the setup, not as the claim. It cannot fail over a
+    /// leftover name — it publishes on a name of its own — so asserting that it
+    /// succeeded would assert nothing this test's subject decides.
     #[test]
-    fn a_leftover_temporary_from_an_older_build_neither_blocks_nor_is_swept() {
+    fn a_leftover_temporary_from_an_older_build_is_not_swept() {
         let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let metadata_path = root.path().join("metadata.json");
         let leftover = root.path().join("metadata.json.tmp");

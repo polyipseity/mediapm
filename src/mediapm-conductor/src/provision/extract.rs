@@ -145,8 +145,6 @@ pub(crate) fn extract_sync(
     content_map: &BTreeMap<String, Hash>,
     entries_with_bytes: &[(String, ContentMapKeyKind, Vec<u8>)],
 ) -> Result<ProvisionedTool, ConductorError> {
-    let now = now_unix_seconds();
-
     // Ensure the entry directory exists before opening the lock file.
     fs::create_dir_all(&paths.entry_dir).map_err(|source| ConductorError::Io {
         operation: "creating tool-content cache entry directory".to_string(),
@@ -181,7 +179,6 @@ pub(crate) fn extract_sync(
         &paths.lock_path,
         &excl_file,
         content_map,
-        now,
     )? {
         drop(excl_file);
         return Ok(guard);
@@ -216,7 +213,10 @@ pub(crate) fn extract_sync(
         &Metadata {
             version: VERSION,
             content_map: content_map.clone(),
-            last_used_unix_seconds: now,
+            // Read where the entry is published: an extraction that waited on
+            // the lock has just finished writing, and the time it was queued is
+            // not when the payload became usable.
+            last_used_unix_seconds: now_unix_seconds(),
             execute_bits_verified: true,
         },
     )?;
@@ -284,7 +284,6 @@ fn double_check_hit(
     lock_path: &Path,
     excl_file: &std::fs::File,
     content_map: &BTreeMap<String, Hash>,
-    now: u64,
 ) -> Result<Option<ProvisionedTool>, ConductorError> {
     if !payload_dir.is_dir() {
         return Ok(None);
@@ -303,7 +302,7 @@ fn double_check_hit(
     if !metadata.execute_bits_verified {
         ensure_payload_tree_user_execute_bits(payload_dir)?;
     }
-    record_cache_hit(metadata_path, content_map, now);
+    record_cache_hit(metadata_path, content_map);
     // Clone fd and downgrade to shared.
     let shared_file = excl_file.try_clone().map_err(|source| ConductorError::Io {
         operation: "duplicating lock fd for shared downgrade".to_string(),
@@ -316,4 +315,58 @@ fn double_check_hit(
         source,
     })?;
     Ok(Some(ProvisionedTool { payload_dir: payload_dir.to_path_buf(), _lock_file: shared_file }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A second extraction of an entry another call already completed is a hit.
+    ///
+    /// The double-check exists because the exclusive lock can be won by a caller
+    /// whose entry was populated while it waited. Nothing tested it, and the path
+    /// is reachable without a race: `extract_sync` is crate-visible, so a second
+    /// call with matching metadata arrives at it directly. The sentinel is what
+    /// tells a hit from a miss — a miss removes the entry directory, so a file
+    /// planted there survives only if nothing re-extracted.
+    #[test]
+    fn a_second_extraction_of_a_completed_entry_is_a_hit() {
+        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let entry_dir = root.path().join("entry");
+        let paths = ExtractPaths {
+            entry_dir: entry_dir.clone(),
+            lock_path: entry_dir.join("lock"),
+            payload_dir: entry_dir.join("payload"),
+            metadata_path: entry_dir.join("metadata.json"),
+        };
+        let content_map =
+            BTreeMap::from([("payload/tool".to_string(), Hash::from_content(b"payload bytes"))]);
+        let entries = vec![(
+            "payload/tool".to_string(),
+            ContentMapKeyKind::File { relative_path: PathBuf::from("tool") },
+            b"payload bytes".to_vec(),
+        )];
+
+        let first = extract_sync(&paths, &content_map, &entries).expect("first extraction");
+        let payload_dir = first.payload_dir.clone();
+        assert!(payload_dir.join("tool").is_file(), "the first call writes the payload");
+        // The guard holds a shared lock on the entry, and the second call asks for
+        // the exclusive one, so a guard still alive here would wait for itself.
+        drop(first);
+
+        let sentinel = payload_dir.join("sentinel");
+        fs::write(&sentinel, b"still here").expect("plant the sentinel");
+
+        let second = extract_sync(&paths, &content_map, &entries).expect("second extraction");
+
+        assert!(
+            sentinel.is_file(),
+            "a completed entry is served as it stands, so nothing removed the sentinel",
+        );
+        assert!(second.payload_dir.join("tool").is_file(), "the hit still serves the payload");
+        assert_eq!(second.payload_dir, payload_dir, "the hit names the entry it found");
+        let metadata = fs::read_to_string(&paths.metadata_path).expect("read metadata");
+        let decoded: Metadata = serde_json::from_str(&metadata).expect("parse metadata");
+        assert_eq!(decoded.content_map, content_map, "the hit records the content map it served");
+    }
 }

@@ -171,13 +171,9 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         // back and re-check the fast path.
         loop {
             // Fast path: non-blocking shared lock + freshness check.
-            if let Some(guard) = Self::try_lock_fast_path(
-                &lock_path,
-                &payload_dir,
-                &metadata_path,
-                content_map,
-                now,
-            )? {
+            if let Some(guard) =
+                Self::try_lock_fast_path(&lock_path, &payload_dir, &metadata_path, content_map)?
+            {
                 return Ok(guard);
             }
 
@@ -338,7 +334,6 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         payload_dir: &Path,
         metadata_path: &Path,
         content_map: &BTreeMap<String, Hash>,
-        now: u64,
     ) -> Result<Option<ProvisionedTool>, ConductorError> {
         // Fast bail-out when no entry exists at all.
         if !lock_path.exists() {
@@ -373,7 +368,7 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
                 if !metadata.execute_bits_verified {
                     ensure_payload_tree_user_execute_bits(payload_dir)?;
                 }
-                record_cache_hit(metadata_path, content_map, now);
+                record_cache_hit(metadata_path, content_map);
                 Ok(Some(ProvisionedTool {
                     payload_dir: payload_dir.to_path_buf(),
                     _lock_file: lock_file,
