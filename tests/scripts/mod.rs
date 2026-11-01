@@ -22,10 +22,10 @@
 //! Running `tests/scripts/test-clean-mediapm-temp.sh` by hand on such a host
 //! still fails at the janitor's non-zero exit for the same reason; the harness
 //! is what supplies the working `rm`.
-//! The probe asserts only that the probe directory's source path is gone, which
-//! a trash move also satisfies, so the harness needs no special case for a
-//! trash-moving `rm`: the janitor's sweep depends on the path being gone, not on
-//! how it got there.
+//! The probe requires a candidate to exit 0 with its probe directory's source
+//! path gone, which a trash move also satisfies, so the harness needs no special
+//! case for a trash-moving `rm`: the janitor's sweep depends on the path being
+//! gone, not on how it got there.
 
 use std::any::Any;
 use std::ffi::OsString;
@@ -131,26 +131,28 @@ fn path_with_real_rm() -> PathBuf {
     path_with_real_rm_with_candidates(&candidate_list())
 }
 
-/// The first candidate whose probe directory's source path is gone afterwards,
-/// or a panic when no candidate clears it.
+/// The first candidate that exits 0 with its probe directory's source path gone
+/// afterwards, or a panic when no candidate does both.
 ///
 /// Probed and verified by clearing, not by name or path: the wrapper this probe
 /// exists for is called `rm` too, and one exists on hosts that report a non-zero
-/// status while leaving the tree in place. A host with no candidate that clears
-/// the path fails the suite rather than passing quietly, because the janitor's
-/// sweep cannot be proven there and an unproven sweep must not look green.
+/// status while leaving the tree in place. A host with no candidate that exits 0
+/// with the path gone fails the suite rather than passing quietly, because the
+/// janitor's sweep cannot be proven there and an unproven sweep must not look
+/// green.
 ///
-/// The candidate list is a parameter so a test can hand in none and observe
-/// that failure.
+/// The candidate list is a parameter so a test can hand in a candidate that
+/// cannot run and observe that failure.
 fn path_with_real_rm_with_candidates(candidates: &[PathBuf]) -> PathBuf {
     if let Some(found) = candidates.iter().find(|candidate| rm_deletes(candidate)) {
         return found.clone();
     }
     panic!(
-        "no working rm on this host: every candidate left the probe directory's source path \
-         in place ({candidates:?}). The janitor sweeps with `rm`, so `clean-mediapm-temp` \
-         cannot be proven here. Fix the host's rm (a safe-delete wrapper whose trash step is \
-         denied is the usual cause) or run the suite where rm clears the path."
+        "no working rm on this host: every candidate failed to exit 0 with the probe \
+         directory's source path gone ({candidates:?}). The janitor sweeps with `rm`, so \
+         `clean-mediapm-temp` cannot be proven here. Fix the host's rm (a safe-delete wrapper \
+         whose trash step is denied is the usual cause) or run the suite where rm exits 0 \
+         and clears the path."
     )
 }
 
@@ -173,8 +175,11 @@ fn candidate_list() -> Vec<PathBuf> {
 /// Whether `path` sits in `~/.local/bin`, where hosts install wrappers that
 /// shadow the system `rm`.
 ///
-/// The probe already rejects a broken wrapper; this keeps a working one out of
-/// the set, so a test never fills the user's Trash.
+/// The probe already rejects a wrapper that cannot clear the path; this keeps a
+/// working one out of the set. It is not a guard against a trash move: a working
+/// trash-moving `rm` installed outside `~/.local/bin` (the list names
+/// `/usr/local/bin/rm` and `/usr/local/rm`) is still selected, and the probe and
+/// the janitor runs would then move their trees to the Trash.
 fn is_local_bin_shim(path: &Path) -> bool {
     let Some(home) = std::env::var_os("HOME") else {
         return false;
@@ -493,13 +498,19 @@ fn bash_janitor_self_test() {
     );
 }
 
-/// A host whose every `rm` candidate leaves the probe in place must fail the
-/// suite, naming the environment. A green run must never stand for a sweep that
-/// never happened.
+/// A host whose only `rm` candidate cannot run must fail the suite, naming the
+/// environment and what could not be proven.
+///
+/// The list holds one path that cannot exist, so the rejection travels the real
+/// route: [`rm_deletes`] spawns the candidate, `Command::status()` fails, and the
+/// panic is composed the way production composes it. A green run must never
+/// stand for a sweep that never happened.
 #[test]
 fn no_working_rm_fails_the_harness() {
-    let outcome = std::panic::catch_unwind(|| path_with_real_rm_with_candidates(&[]));
-    let panic = outcome.expect_err("an empty candidate list must not resolve an rm");
+    let outcome = std::panic::catch_unwind(|| {
+        path_with_real_rm_with_candidates(&[PathBuf::from("/nonexistent/rm-that-cannot-exist")])
+    });
+    let panic = outcome.expect_err("a candidate that cannot run must not resolve an rm");
     let message = panic_message(&panic);
     assert!(
         message.contains("no working rm"),

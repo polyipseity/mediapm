@@ -53,8 +53,13 @@ pub struct FileSystemMetadataStore {
     blob_store: FileSystemBlobStore,
     /// One writer per fan-out directory, keyed by the directory's prefix.
     ///
-    /// A clone shares this map rather than copying it: two stores over the same
-    /// blob store are two writers to the same file, so they have to take turns.
+    /// A clone shares this map rather than copying it: two clones of one store
+    /// are two writers to the same file, so they have to take turns. A second
+    /// store built by `new` over the same blob store gets its own map, and this
+    /// field does not order that pair. Production is safe without that ordering
+    /// because opening a store takes the directory lock
+    /// (`DirectoryLockGuard::lock` in `storage/directory_lock.rs`), which
+    /// refuses a second opener of one directory.
     ///
     /// `DashMap` rather than a map behind one mutex, because a lookup has to
     /// hand out an owned `Arc`: a guard held across the wait for this
