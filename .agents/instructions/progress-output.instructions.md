@@ -309,9 +309,9 @@ A missing hierarchy path is one the run could not produce, so the library does n
 - Icon: `Error` when `missing_paths > 0 || workflow_failed_steps > 0`, ahead of every count; `Warning` when the run carried warnings; `Success` when `executed > 0 || materialized > 0`; `NoChange` otherwise. `skipped_paths` is read by none of these, so an entry that was already correct leaves the icon alone.
 - Exit status: `0` clean, `3` a finished run that warned, `4` a finished run that left the library short, so the summary and its `print_error` counts line are printed (the warning path adds nothing, since the `Δ` lines already said it); `1` is the failure band and never passes through `sync_outcome` — a usage or feature problem, an entry that raised, and a lost CAS object, which is fatal and prints no summary at all because the entry raised before the run reached its outcome. `sync_exit_status` in `src/mediapm/src/main.rs` holds the `0`/`3`/`4` mapping and reads [`sync_outcome`](../../src/mediapm/src/output/mod.rs), which is the same function `sync_summary_icon` reads, so the line a user sees and the status a script sees come from one rule; `2` is unused because POSIX reserves it for shell misuse. The band-by-band contract, including a test that spawns the binary for each band reachable offline, is the module doc of `src/mediapm/tests/e2e/sync_exit_status.rs`.
 - Fields: `executed` always shown; `cached`, `materialized`, `skipped`, `missing`, `removed`, `removed_empty`, `added_tools`, `updated_tools`, `pruned_tools`, `removed_tools`, `skipped_tools`, `failed` shown only when >0.
-- Warnings: one `print_warning` line per warning.
+- Warnings: one `print_warning` line per warning, in run order — the tool phase's notices first, then the workflow's and the materialization's, because `SyncSummary::warnings` collects them as each phase returns and the summary is the one place that prints them. The tool phase's phase line prints counts only (`CliSyncObserver::on_phase` renders `✓ tools synced` and nothing else), so a notice that phase reported reaches the screen once, not twice.
 
-**Screen A: `mediapm tool sync`** (via `CliSyncObserver::on_phase` in `output/observer.rs`, which calls `print_result` with the `ToolsSyncSummary` fields):
+**Screen A: `mediapm tool sync`** (printed by the `ToolCommand::Sync` arm in `src/mediapm/src/main.rs` from `tool_sync_icon` and the `ToolsSyncSummary` fields; `CliSyncObserver::on_phase` renders the same counts line for the tool phase of `mediapm sync`):
 
 ```text
 ✓ tools synced    added=2  updated=1  pruned=0  removed=0
@@ -320,7 +320,7 @@ A missing hierarchy path is one the run could not produce, so the library does n
 
 - Fields: `added`, `updated`, `pruned`, `removed` (all always shown).
 - `added` counts a tool the recorded registry has no entry for; `updated` counts a tool whose identity changed against the newest recorded entry, and identity is the canonical version plus the content-map hash. A pass that reproduces an entry already recorded — re-registering the no-payload `import` builtin, for instance — counts it in `skipped_tools`, which this line does not print, so `updated` answers "did the backing conductor tool change" rather than "did the pass touch it".
-- Warnings: one `print_warning` line per warning.
+- Warnings: one `print_warning` line per warning, printed by `mediapm tool sync`'s own command arm. The observer prints none: under `mediapm sync` the same notices are carried into the run summary and printed once by the section above.
 
 **Screen B: workflow** (via `CliSyncObserver` in `output/observer.rs`):
 

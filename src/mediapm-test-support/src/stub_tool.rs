@@ -298,11 +298,13 @@ fn behaves_like_the_stub(path: &Path) -> bool {
         let _ = candidate.wait();
         return false;
     };
-    // The candidate has exited, so no writer is left on the pipe and this reads to
-    // its end without waiting on a live process. The stub's answer is one line,
-    // far below the pipe's capacity, so a candidate answering like the stub can
-    // never be blocked here; one that floods the pipe is rejected by the bound and
-    // is not the stub in any case.
+    // The candidate has exited, so the bytes it wrote itself are already in the
+    // pipe and this read does not wait on the candidate. It waits on anything the
+    // candidate left holding the write end: a descendant that inherited stderr
+    // keeps the pipe open after its parent exits, and this read then blocks until
+    // that descendant closes it. The stub prints one line and spawns nothing, so a
+    // candidate answering like the stub leaves no writer behind; the bound covers
+    // the candidate's own lifetime, not a descendant's.
     let mut stderr = Vec::new();
     if let Some(mut pipe) = candidate.stderr.take() {
         let _ = pipe.read_to_end(&mut stderr);

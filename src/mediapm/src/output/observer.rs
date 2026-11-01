@@ -71,6 +71,10 @@ impl SyncPhaseObserver for CliSyncObserver {
     fn on_phase(&self, report: SyncPhaseReport) {
         match report {
             SyncPhaseReport::Tools(s) => {
+                // The counts line only. This phase's notices travel into the run
+                // summary's warning list (`SyncSummary::warnings`), which
+                // `print_sync_summary` prints as one `Δ` line each, so printing
+                // them here too would put every notice on the screen twice.
                 let icon =
                     if has_tool_changes(&s) { StatusIcon::Success } else { StatusIcon::NoChange };
                 print_result(
@@ -84,9 +88,6 @@ impl SyncPhaseObserver for CliSyncObserver {
                     ],
                     None,
                 );
-                for warning in &s.warnings {
-                    mediapm_utils::report::print_warning(warning);
-                }
             }
             SyncPhaseReport::Workflow(s) => {
                 print_result(

@@ -21,9 +21,13 @@
 //! | 4 | the run finished and left the library short of what the config asked for |
 //! | 1 | the run failed without a summary, a lost CAS object included |
 //!
-//! Nothing here reaches 3. Every warning the CLI can carry needs a tool
-//! download to reach, and these workspaces are offline. The unit test
-//! `sync_exits_three_when_the_run_only_warned` holds that half.
+//! Nothing in this file needs a tool download to reach its status, status 3
+//! included. A finished run warns when it carried a notice, and the tool phase's
+//! prune sweep reports every entry directory under `paths.tools_dir` it can
+//! neither claim nor remove — an entry directory with no `lock` file is exactly
+//! that. Planting one in the workspace's tools directory before the run is what
+//! makes the warning band reachable offline, so it is pinned here in process and
+//! not only by the unit test `sync_exits_three_when_the_run_only_warned`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,7 +36,7 @@ use super::subprocess::run_sync;
 use crate::common::seed_cas;
 use bytes::Bytes;
 use mediapm::{
-    HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaPmDocument, MediaPmService,
+    HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaPmDocument, MediaPmPaths, MediaPmService,
     MediaRuntimeStorage, MediaSourceSpec, PlaylistFormat, save_mediapm_document,
 };
 
@@ -65,6 +69,19 @@ const SKIPPED_FIELD: &str = "skipped=";
 
 /// Substring the post-sync summary prints on stdout once the sync finishes.
 const SYNC_COMPLETE_MARKER: &str = "sync complete";
+
+/// Glyph `print_warning` leads every warning line with.
+const WARNING_GLYPH: char = '\u{0394}';
+
+/// Entry directory under the workspace's tools directory that the prune sweep
+/// reports instead of removing.
+///
+/// The sweep takes an entry's `lock` file before it removes the entry, so a
+/// directory carrying no lock file is one it can neither claim nor reclaim: it
+/// answers a warning naming the path. That makes the notice reachable with no
+/// network and no tool download, which is what lets the warning band be pinned
+/// by a run of the binary.
+const STALE_TOOL_PAYLOAD_DIR: &str = "stale-tool-payload";
 
 /// Builds the document whose single entry declares no step.
 ///
@@ -198,6 +215,19 @@ fn workspace_without_content() -> tempfile::TempDir {
     workspace
 }
 
+/// Creates a workspace whose entry lands and whose run carries one notice from
+/// the tool phase.
+///
+/// Built on [`workspace_holding_payload`], so the only way this workspace
+/// differs from the clean one is the planted directory: the run has its content
+/// and writes it, and the notice is the whole difference in how the run ends.
+async fn workspace_with_one_tool_phase_notice() -> tempfile::TempDir {
+    let workspace = workspace_holding_payload().await;
+    let stale = MediaPmPaths::from_root(workspace.path()).tools_dir.join(STALE_TOOL_PAYLOAD_DIR);
+    std::fs::create_dir_all(&stale).expect("an entry directory without its lock file");
+    workspace
+}
+
 /// Absolute path the single entry materializes to.
 fn materialized(workspace: &Path) -> PathBuf {
     workspace.join(MEDIA_ID).join("track.bin")
@@ -218,6 +248,15 @@ fn describe(what: &str, output: &std::process::Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     )
+}
+
+/// Counts the warning lines in `stderr`.
+///
+/// [`mediapm_utils::report::print_warning`] writes one line per notice, led by
+/// the `Δ` glyph. Color is off on a pipe, so the glyph is the whole marker, and
+/// nothing else this run prints carries it.
+fn warning_line_count(stderr: &str) -> usize {
+    stderr.lines().filter(|line| line.trim_start().starts_with(WARNING_GLYPH)).count()
 }
 
 /// A run that lands every entry the config asked for exits zero.
@@ -285,6 +324,79 @@ async fn sync_exits_zero_when_every_entry_was_already_correct() {
         std::fs::read(&target).ok(),
         Some(landed),
         "the declined entry must still hold the bytes the first run put there"
+    );
+}
+
+/// A run that only warned finishes on the warning status.
+///
+/// Every entry the config asked for lands here, so the status cannot come from
+/// the incomplete band: the run's one notice is the whole reason it ends `3`.
+/// The notice is planted rather than downloaded — see
+/// [`workspace_with_one_tool_phase_notice`] — which is what makes this band
+/// reachable in a test that has no network.
+#[tokio::test]
+async fn sync_exits_three_when_a_tool_phase_warned() {
+    let workspace = workspace_with_one_tool_phase_notice().await;
+    let cache_home = mediapm_utils::temp::cache_dir().expect("cache dir");
+
+    let output = sync(workspace.path(), cache_home.path());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}",
+        describe(
+            "a finished run that only warned is the warning band, not a failure and not a clean \
+             run",
+            &output
+        )
+    );
+    assert_eq!(
+        warning_line_count(&stderr),
+        1,
+        "the run has to have reported the notice, or the status is the only evidence it warned; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains(SYNC_COMPLETE_MARKER),
+        "the status belongs to a run that reached its summary, not to one that stopped earlier; \
+         stdout:\n{stdout}"
+    );
+    assert_eq!(
+        std::fs::read(materialized(workspace.path())).ok(),
+        Some(PAYLOAD.to_vec()),
+        "the notice must not have cost the run its entry, or a warned run and a short library \
+         would be the same status"
+    );
+}
+
+/// A warning-bearing run prints that warning once.
+///
+/// The tool phase reports its notices in `ToolsSyncSummary::warnings`, and the
+/// same list reaches `SyncSummary::warnings`, which the whole-run summary
+/// prints. Two print sites would show a reader one notice twice, so the count is
+/// the assertion: the phase line carries counts, and the summary is the one
+/// surface that writes the `Δ` lines.
+#[tokio::test]
+async fn sync_prints_a_tool_phase_warning_once() {
+    let workspace = workspace_with_one_tool_phase_notice().await;
+    let cache_home = mediapm_utils::temp::cache_dir().expect("cache dir");
+
+    let output = sync(workspace.path(), cache_home.path());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        warning_line_count(&stderr),
+        1,
+        "one notice is one Δ line; a second line means the tool phase's warning was printed by \
+         its phase line and again by the summary. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(STALE_TOOL_PAYLOAD_DIR),
+        "the one line has to be the planted notice, or the count is measuring something else; \
+         stderr:\n{stderr}"
     );
 }
 

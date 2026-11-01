@@ -79,10 +79,10 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
 
     let summary = sync_library_with_test_terminal(&mut service, false).await?;
 
-    // The managed import workflow executed: at least one conductor instance.
+    // The managed import workflow executed: at least one workflow step.
     assert!(
         summary.executed_steps >= 1,
-        "import workflow should execute at least one conductor instance"
+        "import workflow should execute at least one workflow step"
     );
     assert!(
         summary.warnings.iter().all(|warning| !warning.contains("failed step")),

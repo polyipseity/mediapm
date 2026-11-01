@@ -115,7 +115,8 @@ pub struct SyncSummary {
     /// Number of workflow steps that ran during sync. A step whose instance
     /// the cache served did not run, so cached work is excluded.
     pub executed_steps: usize,
-    /// Number of conductor instances served from cache.
+    /// Number of workflow steps the conductor served from its instance cache
+    /// instead of running. Counted from the run summary's `cached_steps`.
     pub cached_instances: usize,
     /// Number of hierarchy paths materialized to the resolved library root.
     pub materialized_paths: usize,
@@ -160,7 +161,8 @@ pub struct WorkflowSyncSummary {
     /// Workflow steps that ran in this sync. A step whose instance the cache
     /// served did not run, so cached work is excluded.
     pub executed_steps: usize,
-    /// Conductor instances served from cache.
+    /// Workflow steps the conductor served from its instance cache instead of
+    /// running. Counted from the run summary's `cached_steps`.
     pub cached_instances: usize,
     /// Steps that failed after exhausting retries across all workflows.
     pub failed_steps: usize,
