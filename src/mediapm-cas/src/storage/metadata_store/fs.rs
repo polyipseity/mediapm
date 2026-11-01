@@ -56,10 +56,11 @@ pub struct FileSystemMetadataStore {
     /// A clone shares this map rather than copying it: two clones of one store
     /// are two writers to the same file, so they have to take turns. A second
     /// store built by `new` over the same blob store gets its own map, and this
-    /// field does not order that pair. Production is safe without that ordering
-    /// because opening a store takes the directory lock
+    /// field does not order that pair. Opening a `FileSystemCas` is safe
+    /// without that ordering because it takes the directory lock
     /// (`DirectoryLockGuard::lock` in `storage/directory_lock.rs`), which
-    /// refuses a second opener of one directory.
+    /// refuses a second opener of one directory. A consumer that builds two
+    /// stores over one blob store gets no ordering from this field.
     ///
     /// `DashMap` rather than a map behind one mutex, because a lookup has to
     /// hand out an owned `Arc`: a guard held across the wait for this

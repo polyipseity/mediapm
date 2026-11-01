@@ -149,10 +149,10 @@ fn path_with_real_rm_with_candidates(candidates: &[PathBuf]) -> PathBuf {
     }
     panic!(
         "no working rm on this host: every candidate failed to exit 0 with the probe \
-         directory's source path gone ({candidates:?}). The janitor sweeps with `rm`, so \
-         `clean-mediapm-temp` cannot be proven here. Fix the host's rm (a safe-delete wrapper \
-         whose trash step is denied is the usual cause) or run the suite where rm exits 0 \
-         and clears the path."
+         directory's source path gone, or could not run at all ({candidates:?}). The \
+         janitor sweeps with `rm`, so `clean-mediapm-temp` cannot be proven here. Fix the \
+         host's rm (a safe-delete wrapper whose trash step is denied is the usual cause) or \
+         run the suite where rm exits 0 and clears the path."
     )
 }
 
@@ -520,6 +520,8 @@ fn no_working_rm_fails_the_harness() {
         message.contains("clean-mediapm-temp"),
         "the failure says what could not be proven: {message}"
     );
+    assert!(message.contains("rm-that-cannot-exist"), "the message names the candidate: {message}");
+    assert!(message.contains("exit 0"), "the message states the predicate: {message}");
 }
 
 /// The text of a caught panic, which is boxed as a `&str` or a `String`.
