@@ -126,15 +126,16 @@ fn capture_output(mut cmd: Command, sandbox: &Path) -> RunOutcome {
     }
 }
 
-/// The `rm` the bash janitor tests hand their children.
+/// The `rm` the bash janitor tests hand their children: the first candidate that
+/// exited 0 with the probe directory's source path gone.
 ///
-/// See [`path_with_real_rm_with_candidates`] for what makes a candidate usable
-/// and for why the host's own `rm` cannot be assumed.
-fn path_with_real_rm() -> PathBuf {
-    path_with_real_rm_with_candidates(&candidate_list())
+/// See [`path_with_clearing_rm_with_candidates`] for what makes a candidate
+/// usable and for why the host's own `rm` cannot be assumed.
+fn path_with_clearing_rm() -> PathBuf {
+    path_with_clearing_rm_with_candidates(&candidate_list())
 }
 
-/// The first candidate that exits 0 with its probe directory's source path gone
+/// The first candidate that exited 0 with the probe directory's source path gone
 /// afterwards, or a panic when no candidate does both.
 ///
 /// Probed and verified by clearing, not by name or path: the wrapper this probe
@@ -146,8 +147,8 @@ fn path_with_real_rm() -> PathBuf {
 ///
 /// The candidate list is a parameter so a test can hand in a candidate that
 /// cannot run and observe that failure.
-fn path_with_real_rm_with_candidates(candidates: &[PathBuf]) -> PathBuf {
-    if let Some(found) = candidates.iter().find(|candidate| rm_deletes(candidate)) {
+fn path_with_clearing_rm_with_candidates(candidates: &[PathBuf]) -> PathBuf {
+    if let Some(found) = candidates.iter().find(|candidate| rm_clears_probe(candidate)) {
         return found.clone();
     }
     panic!(
@@ -200,12 +201,13 @@ fn command_v(name: &str) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
-/// Whether `candidate` clears a non-empty probe directory: exit 0 with the
-/// source path gone.
+/// Whether `candidate` clears a non-empty probe directory: exited 0 with the
+/// probe directory's source path gone.
 ///
 /// The source path is the whole assertion: whether the tree was unlinked or
-/// moved to the Trash is not something the janitor's sweep depends on, so the
-/// probe does not distinguish them.
+/// moved to the Trash is not something the janitor's sweep depends on, so a
+/// trash move satisfies this predicate and the harness needs no special case
+/// for one.
 ///
 /// Both halves matter: a trash wrapper that is denied exits non-zero and leaves
 /// the source path, and a candidate that leaves it cannot prove the janitor's
@@ -216,7 +218,7 @@ fn command_v(name: &str) -> Option<PathBuf> {
 /// that hold files too: a wrapper that clears an empty directory but refuses a
 /// non-empty one would pass an empty probe and then fail the janitor's real
 /// run, which is the false defect this probe exists to prevent.
-fn rm_deletes(candidate: &Path) -> bool {
+fn rm_clears_probe(candidate: &Path) -> bool {
     let seq = SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed);
     let probe = std::env::temp_dir().join(format!("mediapm-rm-probe-{}-{seq}", std::process::id()));
     if fs::create_dir_all(&probe).is_err() {
@@ -306,8 +308,8 @@ fn skip_unless(program: &str, args: &[&str]) -> bool {
 /// path.
 ///
 /// The first named dir also holds a `probe-file`, so the sweep is handed a tree
-/// that is not empty: the shape [`rm_deletes`] probes for and the janitor's real
-/// run has to delete.
+/// that is not empty: the shape [`rm_clears_probe`] probes for and the janitor's
+/// real run has to delete.
 ///
 /// The janitor scans with `find "$tmp_root" -maxdepth 1 -name 'mediapm-*'`,
 /// which also matches the starting point itself. The sandbox root carries
@@ -439,7 +441,7 @@ fn bash_janitor_dry_run_and_real_run() {
     if !skip_unless("bash", &["--version"]) {
         return;
     }
-    let rm = path_with_real_rm();
+    let rm = path_with_clearing_rm();
     assert_janitor_sequence("clean-mediapm-temp.sh", |script, sandbox, flags| {
         run_script("bash", script, sandbox, flags, &rm)
     });
@@ -585,7 +587,7 @@ fn bash_janitor_reports_a_per_path_failure() {
         return;
     }
 
-    let rm = path_with_real_rm();
+    let rm = path_with_clearing_rm();
     let (sandbox, scope) = seeded_scope(&FAKE_MEDIAPM_DIRS[..2]);
     let janitor = script_path("clean-mediapm-temp.sh");
     let sealed = scope.join(FAKE_MEDIAPM_DIRS[0]);
@@ -642,7 +644,7 @@ fn assert_self_test(
 
 #[test]
 fn bash_janitor_self_test() {
-    let rm = path_with_real_rm();
+    let rm = path_with_clearing_rm();
     assert_self_test(
         &test_script_path("test-clean-mediapm-temp.sh"),
         "test-clean-mediapm-temp: OK",
@@ -656,13 +658,13 @@ fn bash_janitor_self_test() {
 /// environment and what could not be proven.
 ///
 /// The list holds one path that cannot exist, so the rejection travels the real
-/// route: [`rm_deletes`] spawns the candidate, `Command::status()` fails, and the
-/// panic is composed the way production composes it. A green run must never
-/// stand for a sweep that never happened.
+/// route: [`rm_clears_probe`] spawns the candidate, `Command::status()` fails,
+/// and the panic is composed the way production composes it. A green run must
+/// never stand for a sweep that never happened.
 #[test]
 fn no_working_rm_fails_the_harness() {
     let outcome = std::panic::catch_unwind(|| {
-        path_with_real_rm_with_candidates(&[PathBuf::from("/nonexistent/rm-that-cannot-exist")])
+        path_with_clearing_rm_with_candidates(&[PathBuf::from("/nonexistent/rm-that-cannot-exist")])
     });
     let panic = outcome.expect_err("a candidate that cannot run must not resolve an rm");
     let message = panic_message(&panic);
