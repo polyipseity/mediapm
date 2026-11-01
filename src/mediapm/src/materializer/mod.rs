@@ -952,19 +952,35 @@ async fn materialize_file_entry(
             path: target_path.to_path_buf(),
             source,
         })?;
-        let actual_hash = Hash::from_content(&data);
-        if actual_hash != *hash {
-            return Err(MediaPmError::Workflow(format!(
-                "materialized file '{relative_path}' verification failed: \
-                 expected {hash}, got {actual_hash}"
-            )));
-        }
+        verify_materialized_hash(relative_path, hash, &data)?;
     }
 
     // Mark output as read-only.
     crate::materializer::commit::ensure_managed_path_readonly(target_path)?;
     shared.confirm(relative_path, target_path, hash).await;
 
+    Ok(())
+}
+
+/// Fails when the bytes read back from a written entry name another object.
+///
+/// The comparison is its own function so it can be driven with two hashes. The
+/// check runs immediately after the write, from the same CAS object it hashed,
+/// so a mismatch needs something between the two — which a test cannot stage
+/// without a seam. Lifting the comparison keeps the failure path tested without
+/// one, and the read and the write stay where they belong.
+fn verify_materialized_hash(
+    relative_path: &str,
+    expected: &Hash,
+    bytes: &[u8],
+) -> Result<(), MediaPmError> {
+    let actual_hash = Hash::from_content(bytes);
+    if actual_hash != *expected {
+        return Err(MediaPmError::Workflow(format!(
+            "materialized file '{relative_path}' verification failed: \
+             expected {expected}, got {actual_hash}"
+        )));
+    }
     Ok(())
 }
 
@@ -2166,6 +2182,8 @@ mod tests_progress_ops;
 mod tests_reserved_names;
 #[cfg(test)]
 mod tests_unchanged_targets;
+#[cfg(test)]
+mod tests_verification;
 #[cfg(test)]
 mod tests_yt_dlp_sandbox_paths;
 #[cfg(test)]

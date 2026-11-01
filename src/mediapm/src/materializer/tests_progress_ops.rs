@@ -7,7 +7,9 @@ use crate::config::source_types::{MediaStep, MediaStepTool};
 use crate::config::{GenericOutputVariantConfig, OutputVariantValue};
 use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
-use super::tests_common::{open_hierarchy_cas, single_media_document};
+use super::tests_common::{
+    open_hierarchy_cas, resolvable_media_document, run_sync, single_media_document,
+};
 
 use super::*;
 
@@ -174,11 +176,11 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
 /// The label installed immediately before a warning finish carries `[W]`.
 ///
 /// `finish_warning` on its own only changes the bar's colour, and the
-/// materialization label has no marker, so a skipped entry and a failed
+/// materialization label has no marker, so a missing entry and a failed
 /// one used to be indistinguishable in the text. The marker sits on the
 /// row's identity, so it adds a fact to what the row already shows.
 #[tokio::test]
-async fn sync_hierarchy_marks_a_skipped_entry_warning() {
+async fn sync_hierarchy_marks_a_missing_entry_warning() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
@@ -215,6 +217,53 @@ async fn sync_hierarchy_marks_a_skipped_entry_warning() {
             suffix: String::new(),
         }),
         "the label installed before the warning finish must carry [W]; got {ops:?}",
+    );
+}
+
+/// A skipped entry finishes without a warning or an error.
+///
+/// A skip is neither: the recorded hash is the one the run resolved and the
+/// length matches the object that hash names, so the run wrote nothing and owes
+/// no marker. The first run writes the entry and the second finds it already
+/// correct, which is the difference between `skipped_paths` and
+/// `materialized_paths` rather than a matter of naming.
+#[tokio::test]
+async fn sync_hierarchy_marks_nothing_on_a_skipped_entry() {
+    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(workspace.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let payload = b"an entry the second run finds already written";
+    let hash = cas.put(bytes::Bytes::from_static(payload)).await.unwrap();
+    let document = resolvable_media_document(&hash.to_string());
+    let mut state = MediaPmState::default();
+
+    let first = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    assert_eq!(
+        (first.materialized_paths, first.skipped_paths, first.missing_paths),
+        (1, 0, 0),
+        "the first run has nothing recorded, so it must write the entry: {first:?}",
+    );
+
+    let (recording, overall) = RecordingProgressTracker::with_overall("materializing", 1);
+    let second = run_sync(
+        &paths,
+        &document,
+        &mut state,
+        &cas,
+        Some(Arc::new(recording.clone())),
+        Some(Arc::new(overall)),
+    )
+    .await;
+
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths, second.missing_paths),
+        (0, 1, 0),
+        "the second run resolves the recorded hash and finds the file correct: {second:?}",
+    );
+    let ops = recording.ops();
+    assert!(
+        !ops.iter().any(|op| matches!(op, ProgressOp::FinishWarning | ProgressOp::FinishError)),
+        "a skipped entry is neither a warning nor a failure, got {ops:?}",
     );
 }
 
