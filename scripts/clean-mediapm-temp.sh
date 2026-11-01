@@ -55,10 +55,15 @@ remove_if_exists() {
 # removed, so a failed scan leaves every entry in place instead of sweeping
 # the part it happened to see. The listing is named `tmp.*`, which the
 # `mediapm-*` glob below cannot match, so the scan never sees its own file.
-# The EXIT trap covers every exit after this point, including the one `set -e`
-# takes when `rm -rf` refuses a tree part way down.
+# The trap covers every exit after this point, including the one `set -e`
+# takes when `rm -rf` refuses a tree part way down. A missing or failing `rm`
+# must not change the sweep's verdict: the listing is one file under the temp
+# root the sweep itself reports on, and an environment that shims `rm` (some
+# hosts ship a safe-delete wrapper that exits non-zero) would otherwise turn a
+# clean pass into exit 1.
 listing="$(mktemp)"
-trap 'rm -f "$listing"' EXIT
+# check-suppress:suppression_doc: the listing is a single temp file and a failed unlink must not mask the sweep's exit status
+trap 'rm -f "$listing" || true' EXIT
 
 if ! find "$tmp_root" -maxdepth 1 -type d -name 'mediapm-*' -print0 >"$listing"; then
     exit 1

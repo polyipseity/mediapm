@@ -9,10 +9,23 @@
 //! missing the test prints `skipped: ...` and passes without running.
 //! Sandboxes use the managed `mediapm-` prefix under the real temp dir and
 //! are removed on drop.
+//!
+//! The bash janitor tests additionally need an `rm` that deletes. Some hosts
+//! put a safe-delete wrapper first on `PATH`, and when its trash step is
+//! denied (macOS Finder automation is the sandbox case) it exits non-zero
+//! and leaves the tree in place, so the sweep cannot run there at all. The
+//! harness probes for a deleting `rm`, hands the children a `PATH` whose
+//! first `rm` is that one, and skips with a message when the host has none,
+//! so an environment limitation is never reported as a janitor defect.
+//! Running `tests/scripts/test-clean-mediapm-temp.sh` by hand on such a host
+//! still fails at the janitor's non-zero exit for the same reason; the
+//! harness is what supplies the working `rm`.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Sequence number for sandbox names (unique per process).
@@ -104,10 +117,127 @@ fn capture_output(mut cmd: Command, sandbox: &Path) -> RunOutcome {
     }
 }
 
-/// Runs a script under `program` (e.g. `bash` or `sh`) inside a sandbox.
-fn run_script(program: &str, script: &Path, sandbox: &Path, flags: &[&str]) -> RunOutcome {
+/// Skip line for a host whose `rm` cannot delete.
+const NO_WORKING_RM: &str = "no working rm on this host; the janitor's sweep cannot be proven here";
+
+/// The `rm` the bash janitor tests hand their children, or `None` after
+/// printing the skip line. See [`working_rm`] for why the host's own `rm`
+/// cannot be assumed.
+fn skip_unless_real_rm() -> Option<&'static Path> {
+    let rm = working_rm();
+    if rm.is_none() {
+        println!("skipped: {NO_WORKING_RM}");
+    }
+    rm
+}
+
+/// A real `rm` on this host: one that deletes and exits 0.
+///
+/// Probed once per process and verified by deleting, not by name or path:
+/// the wrapper this probe exists for is called `rm` too, and one exists on
+/// this host that reports a non-zero status while leaving the tree in place.
+fn working_rm() -> Option<&'static Path> {
+    static WORKING: OnceLock<Option<PathBuf>> = OnceLock::new();
+    WORKING
+        .get_or_init(|| rm_candidates().into_iter().find(|candidate| rm_deletes(candidate)))
+        .as_deref()
+}
+
+/// Candidate real `rm`s, most specific first.
+///
+/// `command -v rm` is last because it is whatever the host resolves, which
+/// is the wrapper on the hosts this probe exists for; the delete check is
+/// what makes the order safe rather than the paths themselves.
+fn rm_candidates() -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> =
+        ["/bin/rm", "/usr/bin/rm", "/usr/local/rm", "/usr/local/bin/rm"]
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|candidate| !is_local_bin_shim(candidate))
+            .collect();
+    candidates.extend(command_v("rm").filter(|rm| !is_local_bin_shim(rm)));
+    candidates
+}
+
+/// Whether `path` sits in `~/.local/bin`, where hosts install wrappers that
+/// shadow the system `rm`.
+///
+/// The delete check already rejects a broken wrapper; this keeps a working
+/// one out of the probe, so a test never fills the user's Trash.
+fn is_local_bin_shim(path: &Path) -> bool {
+    let Some(home) = std::env::var_os("HOME") else {
+        return false;
+    };
+    path.parent() == Some(Path::new(&home).join(".local").join("bin").as_path())
+}
+
+/// `sh -c 'command -v <name>'` output, or `None` when the shell cannot answer.
+fn command_v(name: &str) -> Option<PathBuf> {
+    let output = Command::new("sh").args(["-c", &format!("command -v {name}")]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = std::str::from_utf8(&output.stdout).ok()?.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// Whether `candidate` deletes a directory: exit 0 with the directory gone.
+///
+/// Both halves matter: a trash wrapper that is denied exits non-zero and
+/// leaves the tree, and a candidate that cannot delete cannot prove the
+/// janitor's sweep. The probe dir carries the managed `mediapm-` prefix, so
+/// a crash leak is reclaimed by the janitor like any other.
+fn rm_deletes(candidate: &Path) -> bool {
+    let seq = SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed);
+    let probe = std::env::temp_dir().join(format!("mediapm-rm-probe-{}-{seq}", std::process::id()));
+    if fs::create_dir_all(&probe).is_err() {
+        return false;
+    }
+    let status = Command::new(candidate).arg("-rf").arg(&probe).status();
+    let gone = !probe.exists();
+    let _ = fs::remove_dir_all(&probe);
+    matches!(status, Ok(status) if status.success()) && gone
+}
+
+/// Single-quotes `path` for the shim's `exec` line.
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// A `PATH` value whose first `rm` is `real_rm`.
+///
+/// The shim lives inside the test's sandbox so it is removed with it: a
+/// `mediapm-`-prefixed dir that outlived the test would trip the orphan gate.
+fn path_with_real_rm(sandbox: &Path, real_rm: &Path) -> OsString {
+    let bin = sandbox.join("rm-bin");
+    fs::create_dir_all(&bin).expect("create rm shim dir");
+    let shim = bin.join("rm");
+    fs::write(&shim, format!("#!/bin/sh\nexec {} \"$@\"\n", shell_quote(real_rm)))
+        .expect("write rm shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&shim, permissions).expect("make rm shim executable");
+    }
+    let mut path = OsString::from(&bin);
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    path
+}
+
+/// Runs a script under `program` (e.g. `bash` or `sh`) inside a sandbox,
+/// with `rm` resolving to `real_rm`.
+fn run_script(
+    program: &str,
+    script: &Path,
+    sandbox: &Path,
+    flags: &[&str],
+    real_rm: &Path,
+) -> RunOutcome {
     let mut cmd = Command::new(program);
     cmd.arg(script).args(flags);
+    cmd.env("PATH", path_with_real_rm(sandbox, real_rm));
     capture_output(cmd, sandbox)
 }
 
@@ -217,8 +347,11 @@ fn bash_janitor_dry_run_and_real_run() {
     if !skip_unless("bash", &["--version"]) {
         return;
     }
+    let Some(rm) = skip_unless_real_rm() else {
+        return;
+    };
     assert_janitor_sequence("clean-mediapm-temp.sh", |script, sandbox, flags| {
-        run_script("bash", script, sandbox, flags)
+        run_script("bash", script, sandbox, flags, rm)
     });
 }
 
@@ -241,12 +374,15 @@ fn assert_self_test(
 
 #[test]
 fn bash_janitor_self_test() {
+    let Some(rm) = skip_unless_real_rm() else {
+        return;
+    };
     assert_self_test(
         &test_script_path("test-clean-mediapm-temp.sh"),
         "test-clean-mediapm-temp: OK",
         "sh",
         &["-c", "exit 0"],
-        |script, sandbox, flags| run_script("sh", script, sandbox, flags),
+        |script, sandbox, flags| run_script("sh", script, sandbox, flags, rm),
     );
 }
 
