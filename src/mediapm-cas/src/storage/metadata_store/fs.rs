@@ -57,12 +57,22 @@ impl FileSystemMetadataStore {
     /// The per-directory snapshots are not loaded until [`rebuild_from_wal`](MetadataStore::rebuild_from_wal)
     /// is called.
     ///
-    /// Build one store per blob store and clone it: `flush_dir` orders the
-    /// writers of one directory without merging their facts, so two stores built
-    /// here over one blob store would each install a snapshot holding only the
-    /// facts its own store collected.
-    pub fn new(blob_store: FileSystemBlobStore) -> Self {
-        Self { inner: InMemoryMetadataStore::new(), blob_store }
+    /// # One store per blob store
+    ///
+    /// A blob store backs one metadata store, and this is where that is
+    /// claimed: a second store built over a clone or any other handle of the
+    /// same open blob store returns an error, because each store would install
+    /// snapshots holding only the facts it collected. Clone the store instead —
+    /// a clone shares the index a snapshot is taken from. A restart opens a new
+    /// blob store over the same root, which is a new claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::InvalidArgument`] if this blob store already backs a
+    /// metadata store.
+    pub fn new(blob_store: FileSystemBlobStore) -> Result<Self, CasError> {
+        blob_store.claim_metadata_owner()?;
+        Ok(Self { inner: InMemoryMetadataStore::new(), blob_store })
     }
 
     /// Flush everything whose hash falls into the same fan-out directory as
@@ -94,12 +104,13 @@ impl FileSystemMetadataStore {
     /// because the file is the blob store's: clones of a blob store share the
     /// lock, so the guarantee follows the file rather than the caller.
     ///
-    /// What the lock does not do is merge facts. It orders writers of one
-    /// directory, so whichever writer flushes last installs a file holding only
-    /// the facts its own store collected. Two metadata stores built by
-    /// [`new`](Self::new) over one blob store hold separate in-memory indexes
-    /// and must therefore not be built; only clones of one metadata store are
-    /// supported, because a clone shares the index the snapshot is taken from.
+    /// What the lock does not do is merge facts: it orders the writers of one
+    /// directory, and each installs the facts its own store collected. Two
+    /// metadata stores over one blob store would therefore each install a file
+    /// holding only their own facts, so [`new`](Self::new) refuses the second
+    /// store, and the divergent fact sets this would otherwise order cannot
+    /// exist. Clones of one metadata store share the index the snapshot is
+    /// taken from, so they hold one fact set between them.
     async fn flush_dir(&self, hash: &Hash) -> Result<(), CasError> {
         let _dir = self.blob_store.lock_aux_dir(hash).await;
         let prefix = &hash.to_hex()[..4];
@@ -361,6 +372,19 @@ mod tests {
     use crate::storage::wal::WalEntry;
     use bytes::Bytes;
 
+    /// Open a [`FileSystemBlobStore`] over `root` for testing
+    /// [`FileSystemMetadataStore`].
+    ///
+    /// A test that rebuilds a store from disk opens a blob store over the same
+    /// root through this, because a blob store backs one metadata store: the
+    /// rebuild is a restart, and a restart is a new open rather than a second
+    /// store over the first handle.
+    async fn test_blob_store_at(root: std::path::PathBuf) -> FileSystemBlobStore {
+        FileSystemBlobStore::create(root, Vec::new())
+            .await
+            .expect("open a blob store over the test root")
+    }
+
     /// Create a [`FileSystemBlobStore`] in a temp directory for testing
     /// [`FileSystemMetadataStore`].
     ///
@@ -370,22 +394,25 @@ mod tests {
     /// ownership and leak `$TMPDIR/mediapm-artifact-*` dirs.
     async fn test_blob_store() -> (FileSystemBlobStore, tempfile::TempDir) {
         let dir = mediapm_utils::temp::artifact_dir().unwrap();
-        let blob = FileSystemBlobStore::create(dir.path().join("blobs"), Vec::new()).await.unwrap();
+        let blob = test_blob_store_at(dir.path().join("blobs")).await;
         (blob, dir)
     }
 
     #[tokio::test]
     async fn persists_and_restores_constraint() {
         let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob.clone());
+        let root = blob.root().to_path_buf();
+        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
 
         let target = Hash::from_content(b"t");
         let base = Hash::from_content(b"b");
         index.set_constraint(target, BTreeSet::from([base])).await.unwrap();
         // Already flushed by set_constraint.
 
-        // Create a new metadata store from the same blob store and rebuild.
-        let index2 = FileSystemMetadataStore::new(blob.clone());
+        // Reopen the blobs and build a new metadata store over them; that is a
+        // restart, so it reads whatever the first store left on disk.
+        let index2 = FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
         let journal = InMemoryWal::new();
         index2.rebuild_from_wal(&journal).await.unwrap();
 
@@ -398,9 +425,10 @@ mod tests {
     #[tokio::test]
     async fn rebuild_from_wal_merges_persisted() {
         let (blob, _dir) = test_blob_store().await;
+        let root = blob.root().to_path_buf();
 
         // Create a metadata store, add constraint via persisted flush.
-        let index = FileSystemMetadataStore::new(blob.clone());
+        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
         index
             .set_constraint(Hash::from_content(b"p"), BTreeSet::from([Hash::from_content(b"b")]))
             .await
@@ -422,7 +450,9 @@ mod tests {
             .await
             .unwrap();
 
-        let index2 = FileSystemMetadataStore::new(blob.clone());
+        // A restart reopens the blobs under the same root.
+        let index2 = FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
         index2.rebuild_from_wal(&journal).await.unwrap();
 
         // Assert both persisted and WAL constraints survive.
@@ -433,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_blob_store_starts_empty() {
         let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob);
+        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
         let journal = InMemoryWal::new();
         index.rebuild_from_wal(&journal).await.unwrap();
         assert!(index.is_empty().await);
@@ -466,7 +496,9 @@ mod tests {
         const RACE_ROUNDS: usize = 100;
 
         let (blob, _dir) = test_blob_store().await;
-        let index = std::sync::Arc::new(FileSystemMetadataStore::new(blob.clone()));
+        let root = blob.root().to_path_buf();
+        let index =
+            std::sync::Arc::new(FileSystemMetadataStore::new(blob).expect("the metadata store"));
         let entry = || MetadataEntry { len: 1, encoding: ObjectEncoding::Full };
 
         let mut used: BTreeSet<String> = BTreeSet::new();
@@ -482,7 +514,10 @@ mod tests {
             left_task.expect("left put joined").expect("left put");
             right_task.expect("right put joined").expect("right put");
 
-            let reloaded = FileSystemMetadataStore::new(blob.clone());
+            // Each round reads the directory back through its own open of the
+            // blobs, which is the restart the snapshot has to survive.
+            let reloaded = FileSystemMetadataStore::new(test_blob_store_at(root.clone()).await)
+                .expect("a reopened blob store backs a metadata store");
             reloaded.rebuild_from_wal(&InMemoryWal::new()).await.expect("reload the snapshots");
             assert!(
                 reloaded.get(&left).await.expect("read left").is_some(),
@@ -540,7 +575,8 @@ mod tests {
     #[tokio::test]
     async fn prune_also_flushes() {
         let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob.clone());
+        let root = blob.root().to_path_buf();
+        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
 
         let live = Hash::from_content(b"live");
         index.set_constraint(live, BTreeSet::from([Hash::from_content(b"dead")])).await.unwrap();
@@ -548,7 +584,8 @@ mod tests {
         index.prune_targets(&HashSet::from([live])).await.unwrap();
 
         // Reload and verify.
-        let index2 = FileSystemMetadataStore::new(blob);
+        let index2 = FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
         let journal = InMemoryWal::new();
         index2.rebuild_from_wal(&journal).await.unwrap();
         assert_eq!(index2.get_constraint(&live).await.unwrap(), BTreeSet::new());
@@ -564,7 +601,8 @@ mod tests {
     #[tokio::test]
     async fn prune_removes_the_marker_file_of_an_object_that_is_gone() {
         let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob.clone());
+        let root = blob.root().to_path_buf();
+        let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
 
         let live = Hash::from_content(b"live entry");
         index.put(live, MetadataEntry { len: 10, encoding: ObjectEncoding::Full }).await.unwrap();
@@ -590,7 +628,8 @@ mod tests {
             "the marker file must be gone from disk, not only from the in-memory map",
         );
 
-        let reopened = FileSystemMetadataStore::new(blob);
+        let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
         reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
         assert!(
             !reopened.is_keep_full(&ghost).await.unwrap(),
@@ -610,7 +649,8 @@ mod tests {
     #[tokio::test]
     async fn prune_removes_the_constraint_file_of_a_target_that_is_gone() {
         let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob.clone());
+        let root = blob.root().to_path_buf();
+        let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
 
         let ghost = Hash::from_content(b"ghost target");
         let base = Hash::from_content(b"ghost base");
@@ -631,7 +671,8 @@ mod tests {
             blob.read_aux(&ghost, LATEST_METADATA_FORMAT).await.is_err(),
             "the constraint file of a dropped target must be gone from disk",
         );
-        let reopened = FileSystemMetadataStore::new(blob);
+        let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
         reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
         assert!(
             reopened.get_constraint(&ghost).await.unwrap().is_empty(),
@@ -649,13 +690,15 @@ mod tests {
     #[tokio::test]
     async fn a_keep_full_marker_survives_a_reopen() {
         let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob.clone());
+        let root = blob.root().to_path_buf();
+        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
 
         let hash = Hash::from_content(b"kept object");
         index.put(hash, MetadataEntry { len: 11, encoding: ObjectEncoding::Full }).await.unwrap();
         index.mark_keep_full(hash).await.unwrap();
 
-        let reopened = FileSystemMetadataStore::new(blob);
+        let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
         reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
         assert!(reopened.is_keep_full(&hash).await.unwrap(), "the marker survives a reopen");
     }
@@ -669,7 +712,8 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_keep_full_version_is_ignored() {
         let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob.clone());
+        let root = blob.root().to_path_buf();
+        let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
 
         let hash = Hash::from_content(b"kept by a newer build");
         index.put(hash, MetadataEntry { len: 22, encoding: ObjectEncoding::Full }).await.unwrap();
@@ -677,7 +721,8 @@ mod tests {
             .await
             .unwrap();
 
-        let reopened = FileSystemMetadataStore::new(blob);
+        let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
         reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
         assert!(
             reopened.get(&hash).await.unwrap().is_some(),
@@ -689,12 +734,42 @@ mod tests {
         );
     }
 
+    /// A blob store backs one metadata store; the second claim is refused.
+    ///
+    /// The pair is what a flush would silently break: each store installs only
+    /// its own facts, so the last writer drops the other's entry. The claim turns
+    /// that into an error at construction instead of a loss at write time.
+    #[tokio::test]
+    async fn a_blob_store_backs_one_metadata_store() {
+        let (blob, _dir) = test_blob_store().await;
+        let root = blob.root().to_path_buf();
+
+        FileSystemMetadataStore::new(blob.clone())
+            .expect("the first metadata store owns the blobs");
+
+        let second = FileSystemMetadataStore::new(blob.clone());
+        let message = match second {
+            Ok(_) => panic!("a second metadata store over one blob store must be refused"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.contains("one metadata store"),
+            "the refusal names the invariant, got {message:?}"
+        );
+
+        // A restart opens a new blob store over the same root, which is a new
+        // claim rather than a second store over the first one.
+        FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
+    }
+
     /// Deleting an object drops its keep-full marker, so the marker file cannot
     /// outlive the objects it describes.
     #[tokio::test]
     async fn a_deleted_object_loses_its_keep_full_marker() {
         let (blob, _dir) = test_blob_store().await;
-        let index = FileSystemMetadataStore::new(blob.clone());
+        let root = blob.root().to_path_buf();
+        let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
 
         let hash = Hash::from_content(b"kept then deleted");
         index.put(hash, MetadataEntry { len: 17, encoding: ObjectEncoding::Full }).await.unwrap();
@@ -707,7 +782,8 @@ mod tests {
             "no marker file is left behind in the deleted object's directory"
         );
 
-        let reopened = FileSystemMetadataStore::new(blob);
+        let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
+            .expect("a reopened blob store backs a metadata store");
         reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
         assert!(!reopened.is_keep_full(&hash).await.unwrap(), "the marker is not resurrected");
     }

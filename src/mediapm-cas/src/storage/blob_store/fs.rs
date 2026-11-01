@@ -25,7 +25,7 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -145,6 +145,13 @@ pub struct FileSystemBlobStore {
     /// Clones share this map. Two stores opened independently over one root do
     /// not, and the directory lock a `FileSystemCas` takes is what rules that out.
     aux_dir_locks: Arc<DashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    /// The one metadata store these blobs may back.
+    ///
+    /// A metadata store keeps its facts in memory and installs whole-directory
+    /// snapshots from them, so two stores over one blob store would each write a
+    /// file holding only its own facts. The flag is claimed once, and clones of
+    /// this store share it because they are handles on the same blobs.
+    metadata_owner: Arc<AtomicBool>,
 }
 
 impl FileSystemBlobStore {
@@ -178,6 +185,7 @@ impl FileSystemBlobStore {
             root,
             verify_evaluator: VerifyEvaluator::new(&verify_strategies),
             io_gate,
+            metadata_owner: Arc::new(AtomicBool::new(false)),
             commit_locks: Arc::new(Mutex::new(HashMap::new())),
             aux_dir_locks: Arc::new(DashMap::new()),
         })
@@ -196,6 +204,26 @@ impl FileSystemBlobStore {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Claim this blob store's right to back a metadata store, once.
+    ///
+    /// A metadata store keeps its facts in memory and installs whole-directory
+    /// snapshots from them, so two stores over one blob store would each write a
+    /// file holding only its own facts. Claiming makes the second one an error
+    /// rather than a silent overwrite; reading the same blobs after a restart is
+    /// a new blob store (a new open), which is what a restart is.
+    pub(crate) fn claim_metadata_owner(&self) -> Result<(), CasError> {
+        self.metadata_owner
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| {
+                CasError::InvalidArgument(
+                    "a blob store backs one metadata store; open another blob store to read these \
+                     blobs again"
+                        .to_string(),
+                )
+            })
     }
 
     /// Buffer size for streaming I/O.

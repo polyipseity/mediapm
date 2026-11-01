@@ -131,7 +131,7 @@ impl FileSystemCas {
             Arc::clone(&io_gate),
         )
         .await?;
-        let metadata = FileSystemMetadataStore::new(blob.clone());
+        let metadata = FileSystemMetadataStore::new(blob.clone())?;
         metadata.rebuild_from_wal(&wal).await?;
         let store = Arc::new(CasStore::new(wal, metadata, blob, start_pos, defaults::CACHE_TTL));
 
