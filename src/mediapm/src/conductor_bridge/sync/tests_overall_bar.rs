@@ -261,6 +261,60 @@ fn finish_overall_bar_ends_success_without_warnings() {
     );
 }
 
+/// A run whose tail failed ends its overall bar red, not animating forever.
+///
+/// The steps after provisioning — materialize, the env-file write, the document
+/// save, the prune sweep — share one error route, and that route finishes the
+/// bar red exactly as a resolve or fetch failure does. A pass that unwound with
+/// the caller's row still animating would hide its own failure from the screen
+/// the caller is about to commit (`service.rs` returns before joining it).
+#[tokio::test]
+async fn reconcile_desired_tools_finish_overall_bar_red_when_tail_fails() {
+    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+    let paths = MediaPmPaths::from_root(tmp.path());
+    let tracker = RecordingProgressTracker::new();
+    let state = MediaPmState::default();
+    let workspace_cas = super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+
+    // A regular file where the tools directory belongs fails the tail's first
+    // filesystem step with a real IO error, so the route is exercised end to end
+    // without a mocked upstream.
+    std::fs::create_dir_all(&paths.runtime_root).expect("create runtime root");
+    std::fs::write(&paths.tools_dir, b"not a directory").expect("plant the conflicting file");
+
+    let result = reconcile_desired_tools(
+        workspace_cas,
+        &paths,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        PayloadStaging::InPlace,
+        RecheckPolicy::default(),
+        &state,
+        Some(cache_root.path()),
+        &tracker,
+        None,
+    )
+    .await
+    .map(ToolSyncOutcome::into_report);
+
+    assert!(
+        result.is_err(),
+        "a file where the tools directory belongs must fail the sync: {:?}",
+        result.ok()
+    );
+    let ops = tracker.ops();
+    assert_eq!(
+        ops.iter().filter(|op| matches!(op, ProgressOp::FinishError)).count(),
+        1,
+        "a failing tail must end the overall bar red exactly once; got {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|op| matches!(op, ProgressOp::FinishSuccess | ProgressOp::FinishWarning)),
+        "a failed pass must not end green or yellow; got {ops:?}"
+    );
+}
+
 /// The `Skipped` arm may re-assert an entry the pool already counted without
 /// counting it twice.
 ///

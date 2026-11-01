@@ -1700,7 +1700,6 @@ pub(crate) async fn reconcile_desired_tools(
         }
     }
 
-    finish_overall_bar(pb.as_ref(), &report.warnings);
     // The generated document is a pure machine artifact: drop any tool
     // entries mediapm did not produce this sync (hand-added manual entries).
     // Retain everything the provisioning pipeline manages — explicit tools
@@ -1799,73 +1798,105 @@ pub(crate) async fn reconcile_desired_tools(
     }
     generated_doc.external_data = rebuilt;
 
-    // 4. Ensure the tools runtime directory exists.
-    std::fs::create_dir_all(&paths.tools_dir).map_err(|source| MediaPmError::Io {
-        operation: "creating tools directory".to_string(),
-        path: paths.tools_dir.clone(),
-        source,
-    })?;
-
-    // 4b. Materialize active tool payloads into tools_dir via the provision
-    // cache so `.env.generated` paths and workflow execution share one layout.
-    // The guards go back to the caller, which holds them for the phases that
-    // execute from these payloads: everything below, including this phase's own
-    // prune pass, runs while the payloads it names are locked.
-    let payload_guards = materialize_active_tool_runtimes(
-        &paths.tools_dir,
-        Arc::clone(&workspace_cas),
-        &generated_doc,
-        &tool_runtimes,
-    )
-    .await?;
-
-    // 4c. Record where each payload actually landed and how a step stages it, so
-    // the document names the directory the provisioner filled instead of one a
-    // reader has to reconstruct.
-    stamp_payload_roots(
-        paths,
-        &mut generated_doc,
-        &mut tool_runtimes,
-        &tool_staging_choices,
-        library_payload_staging,
-    );
-
-    // 5. Write generated runtime env file from tool runtimes (keyed by
-    //    conductor tool id — env names derive from the stripped mediapm id,
-    //    path values from the sanitized conductor id).
-    write_generated_dotenv(&paths.runtime_root, &paths.tools_dir, &tool_runtimes)?;
-
-    // 5. Save generated document.
+    // 4-6. Everything the tail of the pass writes: the tools runtime directory,
+    // the materialized payloads, the generated env file and document, and the
+    // removal of the tool directories no active tool claims.
     //
-    // The media workflows are reconciled after this returns and save again, so a
-    // concurrent reader can observe this intermediate document: it declares what
-    // the tools phase knows, and not yet what the media plan adds. The
-    // external-data invariant can reject a merge of it against a user document
-    // that names a hash only the media plan declares; the reader's next attempt
-    // succeeds once the second save lands.
-    save_conductor_generated_document(paths, &generated_doc)?;
+    // One fallible block, because the only thing its steps share is a single
+    // error route, and the ending that route needs is chosen where the bar is:
+    // a tail that fails ends the overall bar red, exactly as a resolve or fetch
+    // failure above does, instead of leaving the caller's row animating while
+    // an error unwinds past it. The bar is never finished inside the block.
+    let tail_result: Result<Vec<ProvisionedTool>, MediaPmError> = async {
+        // 4. Ensure the tools runtime directory exists.
+        std::fs::create_dir_all(&paths.tools_dir).map_err(|source| MediaPmError::Io {
+            operation: "creating tools directory".to_string(),
+            path: paths.tools_dir.clone(),
+            source,
+        })?;
 
-    // 6. Prune filesystem tool directories not in the active set. The
-    //    provision cache keys directories by the sanitized conductor tool
-    //    id (`tools_dir/<sanitize_tool_id(conductor_tool_id)>/payload/`),
-    //    so the retain set must be conductor tool ids (the `tool_runtimes`
-    //    keys), never mediapm tool ids — a mediapm-id set would prune every
-    //    provisioned directory.
-    let active_conductor_ids: HashSet<String> = tool_runtimes.keys().cloned().collect();
-    // A directory that survives its own removal is still on disk, and the run
-    // that asked for it to go is the only place a reader can learn that, so the
-    // failure joins the sync warnings instead of ending the pass. The sweep
-    // continues past it either way.
-    report
-        .warnings
-        .extend(retain_only_tool_dirs(paths.tools_dir.clone(), active_conductor_ids).await?);
+        // 4b. Materialize active tool payloads into tools_dir via the provision
+        // cache so `.env.generated` paths and workflow execution share one
+        // layout. The guards go back to the caller, which holds them for the
+        // phases that execute from these payloads: everything below, including
+        // this phase's own prune pass, runs while the payloads it names are
+        // locked.
+        let payload_guards = materialize_active_tool_runtimes(
+            &paths.tools_dir,
+            Arc::clone(&workspace_cas),
+            &generated_doc,
+            &tool_runtimes,
+        )
+        .await?;
 
-    if let Some(ref bar) = prn_bar {
-        bar.advance(1);
-        bar.finish_success();
+        // 4c. Record where each payload actually landed and how a step stages it,
+        // so the document names the directory the provisioner filled instead of
+        // one a reader has to reconstruct.
+        stamp_payload_roots(
+            paths,
+            &mut generated_doc,
+            &mut tool_runtimes,
+            &tool_staging_choices,
+            library_payload_staging,
+        );
+
+        // 5. Write generated runtime env file from tool runtimes (keyed by
+        //    conductor tool id — env names derive from the stripped mediapm id,
+        //    path values from the sanitized conductor id).
+        write_generated_dotenv(&paths.runtime_root, &paths.tools_dir, &tool_runtimes)?;
+
+        // 5. Save generated document.
+        //
+        // The media workflows are reconciled after this returns and save again,
+        // so a concurrent reader can observe this intermediate document: it
+        // declares what the tools phase knows, and not yet what the media plan
+        // adds. The external-data invariant can reject a merge of it against a
+        // user document that names a hash only the media plan declares; the
+        // reader's next attempt succeeds once the second save lands.
+        save_conductor_generated_document(paths, &generated_doc)?;
+
+        // 6. Prune filesystem tool directories not in the active set. The
+        //    provision cache keys directories by the sanitized conductor tool
+        //    id (`tools_dir/<sanitize_tool_id(conductor_tool_id)>/payload/`),
+        //    so the retain set must be conductor tool ids (the `tool_runtimes`
+        //    keys), never mediapm tool ids — a mediapm-id set would prune every
+        //    provisioned directory.
+        let active_conductor_ids: HashSet<String> = tool_runtimes.keys().cloned().collect();
+        // A directory that survives its own removal is still on disk, and the
+        // run that asked for it to go is the only place a reader can learn
+        // that, so the failure joins the sync warnings instead of ending the
+        // pass. The sweep continues past it either way.
+        report
+            .warnings
+            .extend(retain_only_tool_dirs(paths.tools_dir.clone(), active_conductor_ids).await?);
+
+        if let Some(ref bar) = prn_bar {
+            bar.advance(1);
+            bar.finish_success();
+        }
+
+        Ok(payload_guards)
     }
+    .await;
+
+    let payload_guards = match tail_result {
+        Ok(payload_guards) => payload_guards,
+        Err(error) => {
+            // The tail is where the pass writes, so a failure there leaves the
+            // caller nothing it can execute from and the pass is over: the bar
+            // ends red rather than animating under an error that the caller
+            // propagates without finishing it.
+            pb.finish_error();
+            return Err(error);
+        }
+    };
 
     report.pruned_tools = pruned_tools;
+
+    // Finish the overall bar last, once every warning the pass can produce is
+    // in: the prune sweep above appends its own warnings, so a run whose only
+    // notice is a tool directory that survived removal must not end green.
+    finish_overall_bar(pb.as_ref(), &report.warnings);
 
     Ok(ToolSyncOutcome { report, payload_guards })
 }
