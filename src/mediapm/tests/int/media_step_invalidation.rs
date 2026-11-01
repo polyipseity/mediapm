@@ -430,3 +430,95 @@ async fn unknown_media_and_absent_step_indexes_are_errors() -> Result<(), MediaP
     drop(service);
     Ok(())
 }
+
+/// Invalidating one media step marks every step id that step synthesized, and
+/// nothing else in the same media.
+///
+/// The user-level guarantee: `mediapm media invalidate` targets one step index,
+/// and a step that fanned out into several conductor steps is one request. One
+/// import step with two output variants writes two step ids on a single
+/// recorded instance. A second step in the same media writes its own instance,
+/// which stays unmarked: an invalidation that marked everything the media ran
+/// would silently re-fetch a payload the caller did not ask about.
+#[tokio::test]
+async fn invalidating_a_fan_out_step_marks_every_id_it_wrote() -> Result<(), MediaPmError> {
+    let (mut service, _root, _cache) = service_with_cache(MediaRuntimeStorage::default()).await?;
+    let uri = Url::parse(SOURCE_URI).expect("source URI must parse");
+    let media_id = media_id_from_uri(&uri);
+    let fan_out_hash = crate::common::seed_cas(
+        &service,
+        bytes::Bytes::copy_from_slice(b"a fan-out probe payload nothing else ingests"),
+        "fan-out probe payload",
+    )
+    .await?;
+    let neighbour_hash = crate::common::seed_cas(
+        &service,
+        bytes::Bytes::copy_from_slice(b"the neighbour payload the invalidation must leave alone"),
+        "neighbour payload",
+    )
+    .await?;
+
+    let mut spec = import_source_spec(&fan_out_hash.to_string());
+    spec.steps[0].output_variants = std::collections::BTreeMap::from([
+        (
+            "default".to_string(),
+            mediapm::OutputVariantValue::YtDlp(mediapm::YtDlpOutputVariantConfig::default()),
+        ),
+        (
+            "extra".to_string(),
+            mediapm::OutputVariantValue::YtDlp(mediapm::YtDlpOutputVariantConfig::default()),
+        ),
+    ]);
+    let mut neighbour = import_source_spec_with_variant(&neighbour_hash.to_string(), "tertiary");
+    spec.steps.push(neighbour.steps.remove(0));
+    service.add_media_source(&spec, media_id.clone(), &uri, None, None)?;
+    let other_media_id = seed_other_workspace(&mut service, "secondary").await?;
+    assert_ne!(other_media_id, media_id, "the isolation check needs two different media");
+
+    let first = sync_library_with_test_terminal(&mut service, false).await?;
+    // Four synthesized steps run: the fan-out step's two, the neighbour step and
+    // the other media's one. The fan-out pair settles into a single recorded
+    // instance, which is why the invalidation below reports one changed instance
+    // for two ids rather than two.
+    assert_eq!(
+        first.executed_instances, 4,
+        "the fan-out step's two steps, the neighbour step and the other media: {first:?}",
+    );
+
+    let summary = service.invalidate_media_step_tool_calls(&media_id, 0).await?;
+    assert_eq!(
+        summary.targeted_step_ids.len(),
+        2,
+        "one media step with two variants synthesizes two steps: {summary:?}",
+    );
+    assert_eq!(
+        summary.changed_instances, 1,
+        "both ids live on one recorded instance, and the neighbour is untouched: {summary:?}",
+    );
+
+    let marked = conductor_state_on_disk(&service.paths().clone());
+    for step_id in &summary.targeted_step_ids {
+        assert_step_instances_marked(&marked, step_id, true, "after the fan-out invalidate");
+    }
+    // The neighbour step and the other media are found by their own ids in the
+    // state, not by the summary's promise, so the assertion holds for what was
+    // written.
+    let untouched: Vec<String> = marked
+        .tool_call_instances
+        .values()
+        .flat_map(|instance| instance.step_ids.iter())
+        .map(|step| step.step_id.clone())
+        .filter(|step_id| step_id.contains("tertiary") || step_id.contains("secondary"))
+        .collect();
+    assert_eq!(
+        untouched.len(),
+        2,
+        "the neighbour step and the other media's step must both be recorded: {untouched:?}",
+    );
+    for step_id in &untouched {
+        assert_step_instances_marked(&marked, step_id, false, "only the targeted step is marked");
+    }
+
+    drop(service);
+    Ok(())
+}
