@@ -58,6 +58,21 @@ pub(crate) async fn open_file_cas() -> FileCasFixture {
     FileCasFixture { cas, _dir: dir }
 }
 
+impl FileCasFixture {
+    /// Drops the store and opens a new one on the same directory.
+    ///
+    /// A test that asserts what survives a restart needs the store's findings to
+    /// come from disk, not from the memory the first handle held, and a second
+    /// handle on the same root would hit the store lock. The directory outlives
+    /// both handles, so it is the fixture that reopens and not the caller.
+    pub(crate) async fn reopen(self) -> FileCasFixture {
+        let FileCasFixture { cas, _dir: dir } = self;
+        drop(cas);
+        let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+        FileCasFixture { cas, _dir: dir }
+    }
+}
+
 /// Creates a fresh artifact tempdir and opens a `FileSystemCas` whose background
 /// WAL consumer is stopped before the caller writes anything.
 ///

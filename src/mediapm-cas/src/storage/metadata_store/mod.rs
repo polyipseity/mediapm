@@ -92,6 +92,15 @@ pub trait MetadataStore: Send + Sync {
     /// [`MetadataStore::prune_targets`] has to close by hand: a prune drops
     /// facts about hashes the caller does not name, so it has to know which
     /// directories those facts lived in, while a delete names its own hash.
+    ///
+    /// Flushing is not what makes the removal survive a restart, and a caller
+    /// must not read it that way. A store's own delete appends to the journal
+    /// and returns; this method runs when the consumer drains that entry, so a
+    /// store reopened in between has a snapshot that still names the deleted
+    /// hash. What makes the removal durable is the reload order: snapshots are
+    /// overlaid first and the journal replays over them, so the newer delete
+    /// wins. `a_deleted_target_leaves_no_constraint_behind_for_the_next_run`
+    /// pins it.
     async fn delete(&self, hash: &Hash) -> Result<(), CasError>;
 
     /// List all hashes with entries.

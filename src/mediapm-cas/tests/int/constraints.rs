@@ -153,6 +153,29 @@ async fn prune_target_removes_entire_entry() {
     );
 }
 
+/// Deleting a target leaves no snapshot behind that brings the constraint back.
+///
+/// A delete names its own hash, so it removes that hash's facts rather than the
+/// directories the store believes are occupied. The harm this rules out is a
+/// restart, not the current run: a snapshot still holding the deleted target's
+/// constraint would be overlaid on the reloaded store, and a fact about an
+/// object nobody holds would reappear.
+#[tokio::test]
+async fn a_deleted_target_leaves_no_constraint_behind_for_the_next_run() {
+    let cas = open_file_cas().await;
+    let target = put_static(&*cas, b"target-deleted").await;
+    let base = put_static(&*cas, b"base-for-delete").await;
+
+    cas.set_constraint(target, [base].into()).await.unwrap();
+    cas.delete(target).await.unwrap();
+
+    let reopened = cas.reopen().await;
+    assert!(
+        reopened.get_constraint(target).await.unwrap().is_empty(),
+        "a deleted target's constraint must not survive a reopen",
+    );
+}
+
 /// Per-base pruning: deleting all bases leaves constraint with empty bases
 /// (no effective constraint = any base or full allowed).
 #[tokio::test]
@@ -244,9 +267,22 @@ async fn patch_constraint_refuses_a_target_the_store_does_not_hold() {
 
     let refused = cas.patch_constraint(absent, patch).await;
 
+    match refused {
+        Err(CasError::InvalidArgument(message)) => {
+            assert!(
+                message.contains(&absent.to_hex()),
+                "the refusal must name the hash it refuses: {message}"
+            );
+            assert!(
+                message.contains("not held"),
+                "the refusal must say what is wrong with the target: {message}"
+            );
+        }
+        other => panic!("a patch on an unheld target must be refused, got {other:?}"),
+    }
     assert!(
-        matches!(refused, Err(CasError::InvalidArgument(_))),
-        "a patch on an unheld target must be refused, got {refused:?}",
+        cas.get_constraint(absent).await.unwrap().is_empty(),
+        "a refused patch must not record a constraint",
     );
 }
 
@@ -266,4 +302,30 @@ async fn set_constraint_accepts_a_target_pending_in_the_wal() {
     cas.set_constraint(target, [base].into())
         .await
         .expect("a target whose bytes are pending in the WAL is held");
+}
+
+/// A target the guard accepted survives the prune that follows it.
+///
+/// The guard asks `stat`, whose answer includes a put still pending in the WAL,
+/// while both prune paths ask `list_hashes()`. A target accepted through the
+/// pending-WAL arm would be dropped by an immediate prune, which would make the
+/// acceptance a fact that lasts until the next sweep. This is the test that
+/// keeps the two answers about the same target in step.
+#[tokio::test]
+async fn a_target_accepted_with_pending_bytes_survives_a_prune() {
+    let cas = open_file_cas().await;
+    let base = put_static(&*cas, b"base").await;
+    let target = put_static(&*cas, b"target-for-prune").await;
+
+    cas.set_constraint(target, [base].into())
+        .await
+        .expect("a target whose bytes are pending in the WAL is held");
+    cas.prune_constraints().await.expect("prune constraints");
+
+    let bases = cas.get_constraint(target).await.expect("read the constraint back");
+    assert_eq!(
+        bases,
+        [base].into(),
+        "a constraint accepted for a held target must survive the prune that follows it",
+    );
 }

@@ -154,6 +154,18 @@ pub trait CasApi: Send + Sync {
 #[async_trait]
 pub trait ConstraintApi: Send + Sync {
     /// Record that `target` may compress well against `bases`.
+    ///
+    /// # Errors
+    ///
+    /// A constraint is a recipe for rebuilding the target's bytes, so the store
+    /// requires them: a target it does not hold is refused with
+    /// [`CasError::InvalidArgument`], naming the hash. "Held" means the read path
+    /// answers for the target, which includes bytes still pending in the journal
+    /// and bytes recovered from an orphan scan, so the ordinary sequence of a
+    /// put followed by a constraint on it is accepted without waiting for a
+    /// maintenance pass.
+    ///
+    /// `bases` must be distinct and must not contain `target` itself.
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
 
     /// Retrieve the bases recorded for `target`. Returns an empty set when
@@ -161,6 +173,12 @@ pub trait ConstraintApi: Send + Sync {
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError>;
 
     /// Atomically modify the bases for `target`.
+    ///
+    /// # Errors
+    ///
+    /// The same precondition [`Self::set_constraint`] applies, because this
+    /// records a constraint by another name: a target the store does not hold is
+    /// refused with [`CasError::InvalidArgument`] naming the hash.
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
 
     /// Record that `target` must never be stored as a delta against another

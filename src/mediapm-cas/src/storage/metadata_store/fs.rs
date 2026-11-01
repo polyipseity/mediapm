@@ -271,9 +271,20 @@ impl MetadataStore for FileSystemMetadataStore {
         Ok(pruned)
     }
 
+    /// # Ordering: the journal is newer than a snapshot
+    ///
+    /// A snapshot is a per-directory capture of an older state, and the journal
+    /// holds the operations recorded since. Overlaying a snapshot on top of the
+    /// journal lets a capture that predates a delete resurrect the fact the
+    /// delete removed. That is the ordinary case rather than a race: a delete
+    /// only appends to the journal, and the capture is rewritten when the
+    /// consumer drains that entry, so a store reopened in between has a stale
+    /// snapshot beside a fresh delete.
+    ///
+    /// The snapshots therefore go in first and the journal replays over them.
+    /// Both properties hold that way: a fact the journal never mentions survives
+    /// a trim, and a fact the journal removed stays removed.
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
-        self.inner.rebuild_from_wal(wal).await?;
-
         // Overlay per-directory snapshots from all known format names.
         // This transparently handles both current and legacy format files.
         for name in METADATA_FORMAT_NAMES {
@@ -299,6 +310,10 @@ impl MetadataStore for FileSystemMetadataStore {
                 }
             }
         }
+
+        // Replay the journal last, so an operation recorded since a snapshot was
+        // captured wins over that snapshot.
+        self.inner.rebuild_from_wal(wal).await?;
 
         Ok(())
     }

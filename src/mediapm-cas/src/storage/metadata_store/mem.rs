@@ -179,7 +179,13 @@ impl MetadataStore for InMemoryMetadataStore {
                     );
                 }
                 WalEntry::Delete { hash } => {
+                    // A replay is the same removal a live delete performs, so it
+                    // drops the facts about the object as well as the object: a
+                    // constraint or a keep-full marker that outlived its subject
+                    // is what the live path already refuses to leave behind.
                     self.data.remove(&hash);
+                    self.constraints.remove(&hash);
+                    self.keep_full.remove(&hash);
                 }
                 WalEntry::Constraint { target, bases } => {
                     self.constraints.insert(target, bases);
