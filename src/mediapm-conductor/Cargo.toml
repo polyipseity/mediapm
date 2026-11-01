@@ -75,6 +75,9 @@ zip = { workspace = true }
 [dev-dependencies]
 mediapm-test-support = { path = "../mediapm-test-support", features = ["test-seams"] }
 proptest.workspace = true
+# Paused-time tests: `#[tokio::test(start_paused = true)]` plus `tokio::time::advance`
+# drive the background prune interval without waiting a real tick.
+tokio = { workspace = true, features = ["test-util"] }
 wiremock = "0.6"
 
 [build-dependencies]

@@ -882,6 +882,58 @@ impl Cache {
         }
     }
 
+    /// Test-only: opens a cache at `root` over `clock` and starts the real
+    /// background prune loop on that same clock, so the loop's
+    /// [`CACHE_PRUNE_INTERVAL_SECONDS`] sleep runs on tokio's timer.
+    ///
+    /// That is what lets a paused-time test step to the next maintenance tick:
+    /// the loop reads the test clock for expiry and tokio's (frozen) clock for
+    /// its interval. `prune_passes` counts completed passes, so a test can wait
+    /// for a pass instead of assuming one ran.
+    async fn with_test_clock_and_loop(
+        root: &Path,
+        domains: &[CacheDomainConfig],
+        clock: &TestClock,
+        prune_passes: Arc<AtomicU64>,
+    ) -> Self {
+        let (cas, domains_map) =
+            open_domain_setup(root, domains, Vec::new()).await.expect("open cache");
+        let mut cache = Self {
+            cas,
+            domains: domains_map,
+            bg_guard: None,
+            root: root.to_path_buf(),
+            clock: clock.handle(),
+        };
+        // Same capture pattern as `Cache::open`: owned clones of the CAS,
+        // domain map and clock, so the task never keeps a `Cache` alive past
+        // its owning scope (see `Cache::open` for the leak rationale).
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+        let bg_cas = cache.cas.clone();
+        let bg_domains = cache.domains.clone();
+        let bg_clock = cache.clock.clone();
+        let domain_names: Vec<String> = bg_domains.keys().cloned().collect();
+        let handle = tokio::spawn(async move {
+            loop {
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                for domain in &domain_names {
+                    let _ = prune_expired_inner_core(&bg_cas, &bg_domains, domain, bg_clock.now())
+                        .await;
+                }
+                prune_passes.fetch_add(1, Ordering::SeqCst);
+                if cancelled_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(CACHE_PRUNE_INTERVAL_SECONDS)).await;
+            }
+        });
+        cache.bg_guard = Some(Arc::new(BackgroundMaintenanceGuard::new(cancelled, handle)));
+        cache
+    }
+
     /// Test-only: opens cache with a configurable background maintenance
     /// interval for a single domain named `"test"`, using the given verify
     /// strategies for the underlying CAS.
@@ -990,13 +1042,15 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cache, CacheDomainConfig, ENTRY_TTL_SECONDS, PRUNE_INTERVAL_SECONDS,
-        TOUCH_PERSIST_INTERVAL_SECONDS, TestClock,
+        CACHE_PRUNE_INTERVAL_SECONDS, Cache, CacheDomainConfig, ENTRY_TTL_SECONDS,
+        PRUNE_INTERVAL_SECONDS, TOUCH_PERSIST_INTERVAL_SECONDS, TestClock,
     };
     use mediapm_cas::{CasApi, FileSystemCas, Hash, VerifyTriggerStrategy};
     use std::collections::BTreeSet;
     use std::str::FromStr;
-    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     // Compile-time assertions: TTL constants must be at least one day/hour/minute.
     const _: () = assert!(ENTRY_TTL_SECONDS >= 24 * 60 * 60);
@@ -2060,47 +2114,94 @@ mod tests {
     }
 
     /// Verifies that the background prune loop removes expired entries.
-    #[tokio::test]
+    ///
+    /// The loop's interval is virtual: the test pauses tokio's clock and
+    /// advances one maintenance tick, so no real second passes.
+    #[tokio::test(start_paused = true)]
     async fn background_prune_removes_expired_entries() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
-        let cache = Cache::open_with_ttl_and_maintenance_interval(
+        let clock = TestClock::new(1_000);
+        let prune_passes = Arc::new(AtomicU64::new(0));
+        let cache = Cache::with_test_clock_and_loop(
             root.path(),
-            "tools.json",
-            0, // TTL = 0: entries expire immediately
-            1, // maintenance interval = 1s
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 1,
+            }],
+            &clock,
+            Arc::clone(&prune_passes),
         )
-        .await
-        .expect("open cache");
+        .await;
         cache.store_bytes("test", "expiring-key", b"ephemeral").await;
-        // Wait for background prune to run (interval is 1s). The clock cannot
-        // replace this wait: it fires the loop's real timer, not a second the
-        // test picks, and with TTL = 0 the entry's expiry does not depend on
-        // which second the loop reads.
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // `lookup_bytes` does not consult the ttl, so this row is visible until
+        // a prune pass removes it: the row going missing below is the loop's
+        // work, not an expiry-aware read.
+        assert!(
+            cache.lookup_bytes("test", "expiring-key").await.is_some(),
+            "entry must exist before the maintenance tick"
+        );
+        // One second past the store puts the row past its ttl.
+        clock.set(1_001);
+        // Drive the loop's sleep to its next deadline. The loop prunes before
+        // it sleeps, so a tick that lands before that sleep exists advances
+        // nothing it waits on; two advances cover either position.
+        tokio::time::advance(Duration::from_secs(CACHE_PRUNE_INTERVAL_SECONDS)).await;
+        tokio::time::advance(Duration::from_secs(CACHE_PRUNE_INTERVAL_SECONDS)).await;
+        // Bounded wait for the pass: the prune's index write runs on a blocking
+        // thread, so the advance's single yield does not always reach it. Each
+        // virtual millisecond is instant.
+        for _ in 0..128 {
+            if cache.lookup_bytes("test", "expiring-key").await.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
         assert!(
             cache.lookup_bytes("test", "expiring-key").await.is_none(),
-            "expired entry must be pruned by background task"
+            "expired entry must be pruned by background task within 128 virtual waits"
         );
     }
 
     /// Verifies that the background prune loop preserves fresh entries.
-    #[tokio::test]
+    ///
+    /// The loop's interval is virtual: the test pauses tokio's clock and
+    /// advances one maintenance tick, so no real second passes.
+    #[tokio::test(start_paused = true)]
     async fn background_prune_preserves_fresh_entries() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
-        let cache = Cache::open_with_ttl_and_maintenance_interval(
+        let clock = TestClock::new(1_000);
+        let prune_passes = Arc::new(AtomicU64::new(0));
+        let cache = Cache::with_test_clock_and_loop(
             root.path(),
-            "tools.json",
-            86400, // normal TTL
-            1,     // maintenance interval = 1s
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 86_400,
+            }],
+            &clock,
+            Arc::clone(&prune_passes),
         )
-        .await
-        .expect("open cache");
+        .await;
         cache.store_bytes("test", "fresh-key", b"fresh").await;
-        // Wait for background prune to run (interval is 1s). The clock cannot
-        // replace this wait: it fires the loop's real timer, not a second the
-        // test picks, and a 24-hour ttl keeps the entry live at any second the
-        // loop reads.
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // A second of movement, still 86_399 inside the ttl.
+        clock.set(1_001);
+        let passes_before = prune_passes.load(Ordering::SeqCst);
+        // Same two-advance reasoning as `background_prune_removes_expired_entries`.
+        tokio::time::advance(Duration::from_secs(CACHE_PRUNE_INTERVAL_SECONDS)).await;
+        tokio::time::advance(Duration::from_secs(CACHE_PRUNE_INTERVAL_SECONDS)).await;
+        // Wait for a pass that started after the store, so the surviving entry
+        // below was actually seen by a prune rather than never examined.
+        for _ in 0..128 {
+            if prune_passes.load(Ordering::SeqCst) > passes_before {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            prune_passes.load(Ordering::SeqCst) > passes_before,
+            "a background prune pass must run within 128 virtual waits"
+        );
         assert!(
             cache.lookup_bytes("test", "fresh-key").await.is_some(),
             "fresh entry must survive background prune"
