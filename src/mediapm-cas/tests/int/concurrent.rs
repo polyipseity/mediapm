@@ -513,16 +513,16 @@ fn shared_fan_out_pairs(count: usize) -> Vec<(Bytes, Bytes)> {
 
     // One pair per directory, structurally. A prefix that has produced a pair is
     // claimed in `PAIRED_PREFIXES` for the rest of the process, so a later probe
-    // that shares it — in this call or any other — contributes nothing and a
-    // second pair in that directory cannot form however the probes fall. A
-    // prefix also leaves the map when it becomes a pair and is never re-inserted
-    // there, so no probe index is handed out twice. Distinct payloads are what a
-    // round needs, not merely distinct directories, because a reused payload
-    // would put a blob whose target is already on disk and `write` skips the
-    // commit for a target that is present. The cost is probe budget — a prefix
-    // hit four times supplies one pair rather than two — which the measured
-    // supply still covers: this sweep yields 125 pairs against the 25 rounds
-    // that ask for them.
+    // that shares it — in this call or any other — contributes nothing: while
+    // every caller in this process goes through that one guard, a prefix that
+    // produced a pair is never offered again. A prefix also leaves the map when
+    // it becomes a pair and is never re-inserted there, so no probe index is
+    // handed out twice. Distinct payloads are what a round needs, not merely
+    // distinct directories, because a reused payload would put a blob whose
+    // target is already on disk and `write` skips the commit for a target that
+    // is present. The cost is probe budget — a prefix hit four times supplies one
+    // pair rather than two — which the measured supply still covers: this sweep
+    // yields 125 pairs against the 25 rounds that ask for them.
     let mut unpaired: HashMap<String, u32> = HashMap::new();
     let mut pairs = Vec::with_capacity(count);
     for index in 0..FAN_OUT_PROBES {
@@ -530,14 +530,21 @@ fn shared_fan_out_pairs(count: usize) -> Vec<(Bytes, Bytes)> {
         hasher.update(&index.to_be_bytes());
         let hex = Hash::from_bytes(*hasher.finalize().as_bytes()).to_hex();
         let prefix = &hex[..FAN_OUT_PREFIX_LEN];
-        if paired_prefixes().contains(prefix) {
+        // One guard spans the check and the claim. Two acquisitions would leave a
+        // window in which two callers in this process both see the prefix
+        // unpaired and both form a pair in that directory, which `cargo test` can
+        // reach because it runs a binary's tests as threads of one process. The
+        // guard is dropped before the assertions below, which can panic.
+        let mut paired = paired_prefixes();
+        if paired.contains(prefix) {
             continue;
         }
         let Some(twin) = unpaired.remove(prefix) else {
             unpaired.insert(prefix.to_string(), index);
             continue;
         };
-        paired_prefixes().insert(prefix.to_string());
+        paired.insert(prefix.to_string());
+        drop(paired);
         let pair = (fan_out_probe(twin), fan_out_probe(index));
         for payload in [&pair.0, &pair.1] {
             assert_eq!(
