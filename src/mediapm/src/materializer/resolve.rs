@@ -93,16 +93,21 @@ pub(super) async fn resolve_variant_hash(
     }
 }
 
-/// Reports a variant whose resolved hash names bytes the store does not hold.
+/// Reports a variant whose resolved hash names bytes the store could not read.
 ///
 /// The distinction this message carries is the one the caller acts on: a variant
 /// no producer has supplied is a workflow that has not run, while a hash that
 /// resolved and then could not be read means the document and the recorded state
 /// both promise bytes the library cannot hold. Only the second is this error.
+///
+/// "Could not read" and not "does not hold", because the cause is any failed
+/// store read: a miss, a corrupted object the store refuses to verify, and an
+/// I/O failure all arrive here, and only the first is an absence. The store's own
+/// error says which of the three it was.
 fn missing_object_error(media_id: &str, variant: &str, hash: Hash) -> MediaPmError {
     MediaPmError::Workflow(format!(
-        "media '{media_id}' variant '{variant}' resolved to CAS object {hash}, and the store does \
-         not hold it"
+        "media '{media_id}' variant '{variant}' resolved to CAS object {hash}, and the store could \
+         not read it"
     ))
 }
 
@@ -4056,14 +4061,124 @@ mod tests {
             VariantResolveFailure::Fatal(error) => {
                 let message = error.to_string();
                 assert!(
-                    message.contains("store does not hold"),
-                    "the failure names the lost object rather than a step that produced nothing: \
-                     {message}"
+                    message.contains("could not read"),
+                    "the failure names the object the store could not read rather than a step that \
+                     produced nothing: {message}"
                 );
                 assert!(message.contains(&lost_hash.to_string()), "{message}");
             }
             VariantResolveFailure::NotProduced(error) => panic!(
                 "a lone record whose object is gone must not read as a step that produced nothing: {error}"
+            ),
+        }
+    }
+
+    /// A record whose object the store holds and cannot read is not a lost file.
+    ///
+    /// The variant path asks the store for the bytes and treats any failure as a
+    /// lost object. When the object is there and its bytes no longer hash to
+    /// their name, the store says so, and the run's failure has to repeat that
+    /// rather than sending a reader to look for a file that is present.
+    #[tokio::test]
+    async fn a_record_whose_object_the_store_cannot_read_is_not_reported_as_missing() {
+        use crate::config::{
+            MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, OutputVariantValue,
+            TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
+        };
+        use crate::materializer::metadata::MaterializationLookupContext;
+        use crate::tools::workflows::{managed_workflow_name, resolve_ffmpeg_slot_limits};
+
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open_with_strategies(
+            cas_root.path(),
+            vec![mediapm_cas::VerifyTriggerStrategy::Always],
+        )
+        .await
+        .expect("open a verifying cas");
+        // Larger than the WAL's inline limit, so the bytes live in the blob store
+        // and a read has to verify them. A smaller object stays inline in the log,
+        // and the read answers from there without touching what this test replaced.
+        let unreadable = cas
+            .put(bytes::Bytes::from(vec![0x42_u8; 1_200_000]))
+            .await
+            .expect("put a payload the store keeps out of the log");
+        let path =
+            cas.object_path_for_hash(unreadable).expect("a file store names the object's path");
+        assert!(path.is_file(), "the payload is stored as a blob: {}", path.display());
+        make_blob_replaceable(&path);
+        std::fs::remove_file(&path).expect("remove the committed blob");
+        std::fs::write(&path, b"bytes the store never hashed")
+            .expect("write bytes under that name");
+
+        let media_id = "youtube.dQw4w9WgXcQ";
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            Hash::from_content(b"corrupt-instance"),
+            infojson_instance(
+                unreadable,
+                1,
+                Some(infojson_step_ref(&managed_workflow_name(media_id))),
+            ),
+        );
+
+        let mut generated_doc = relaxed_generated_doc();
+        let mut workflow = infojson_workflow();
+        workflow.name = managed_workflow_name(media_id);
+        generated_doc.workflows.push(workflow);
+
+        let mut document = MediaPmDocument::default();
+        document.media.insert(
+            media_id.to_string(),
+            MediaSourceSpec {
+                steps: vec![MediaStep {
+                    tool: MediaStepTool::YtDlp,
+                    input_variants: Vec::new(),
+                    output_variants: BTreeMap::from([(
+                        "infojson".to_string(),
+                        OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                            kind: YtDlpOutputKind::Infojson,
+                            ..Default::default()
+                        }),
+                    )]),
+                    options: BTreeMap::from([(
+                        "uri".to_string(),
+                        TransformInputValue::String(
+                            "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
+                        ),
+                    )]),
+                }],
+                ..MediaSourceSpec::default()
+            },
+        );
+
+        let lookup = MaterializationLookupContext::new(
+            cas.clone(),
+            Some(state),
+            generated_doc,
+            resolve_ffmpeg_slot_limits(&document),
+        );
+        let source = document.media.get(media_id).expect("source");
+        let Err(failure) =
+            resolve_variant_source_bytes(&lookup, media_id, source, "infojson", true).await
+        else {
+            panic!("an object the store cannot read is the run's failure");
+        };
+
+        match failure {
+            VariantResolveFailure::Fatal(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("could not read"),
+                    "the failure names a read the store could not do: {message}"
+                );
+                assert!(
+                    !message.contains("does not hold"),
+                    "bytes the store holds are not reported as missing from it: {message}"
+                );
+                assert!(message.contains(&unreadable.to_string()), "{message}");
+            }
+            VariantResolveFailure::NotProduced(error) => panic!(
+                "an object the store cannot read must not read as a step that produced nothing: {error}"
             ),
         }
     }
