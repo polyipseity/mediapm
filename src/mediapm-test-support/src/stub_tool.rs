@@ -55,8 +55,11 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// File name of the stub binary, without the platform executable suffix.
 pub const STUB_TOOL_BIN_NAME: &str = "mediapm-stub-tool";
@@ -83,6 +86,25 @@ const STUB_TOOL_SOURCE: &str = include_str!("bin/mediapm-stub-tool.rs");
 /// part in that, because the prefix check rejects the name before the shape of
 /// the hash is examined.
 const SOURCE_FINGERPRINT_SUFFIX: &str = ".source-fingerprint";
+
+/// How long a candidate may take to answer before it is judged not the stub.
+///
+/// The stub prints a usage line and exits, so a candidate still running this long
+/// after its launch is not answering at all. Without the bound such a candidate
+/// holds the locator — and with it the whole test run — for as long as it lives: an
+/// impostor that sleeps, or a program that waits on something no one will send, is
+/// the shape that turns one search into a hang. The bound is generous for a process
+/// that prints one line, because the cost of a false rejection is a stub that
+/// cannot be located.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often a probe re-asks whether its candidate has exited.
+///
+/// The probe polls because `std::process::Child` offers no timeout of its own, and
+/// this module starts no thread to enforce one: a thread that waited would have to
+/// be abandoned when the bound expired, and an abandoned thread is a leak in a test
+/// process that lives until the whole suite finishes.
+const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Separates the compiles one process makes.
 ///
@@ -242,12 +264,50 @@ fn compiled_from(executable: &Path, source: &str) -> bool {
 /// A candidate that cannot be spawned is not the stub either: handing a caller a
 /// path that exists and cannot be executed moves the failure away from the
 /// locator, which is the one place that can still act on it.
+///
+/// The wait is bounded by [`PROBE_TIMEOUT`], and a candidate still running when
+/// the bound expires is killed and reaped before the probe answers `false`: the
+/// answer for a program that never exits is the same one this probe gives a
+/// program that exits wrongly, and no candidate outlives its own probe. The
+/// candidate's stdin is closed, so one that reads it gets end of input instead of
+/// waiting for a caller that is not there.
 fn behaves_like_the_stub(path: &Path) -> bool {
-    let Ok(output) = std::process::Command::new(path).output() else {
+    let Ok(mut candidate) = std::process::Command::new(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
         return false;
     };
-    output.status.code() == Some(2)
-        && String::from_utf8_lossy(&output.stderr).contains("--mode is required")
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        match candidate.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(PROBE_POLL_INTERVAL),
+            // A candidate that outlived the bound and one whose wait failed are the
+            // same answer here: nothing about it says it is the stub.
+            _ => break None,
+        }
+    };
+    let Some(status) = status else {
+        // The kill is what keeps the bound a bound, and the wait reaps the child
+        // either way, so a rejected candidate leaves no process behind and no
+        // zombie for this test process to carry.
+        let _ = candidate.kill();
+        let _ = candidate.wait();
+        return false;
+    };
+    // The candidate has exited, so no writer is left on the pipe and this reads to
+    // its end without waiting on a live process. The stub's answer is one line,
+    // far below the pipe's capacity, so a candidate answering like the stub can
+    // never be blocked here; one that floods the pipe is rejected by the bound and
+    // is not the stub in any case.
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = candidate.stderr.take() {
+        let _ = pipe.read_to_end(&mut stderr);
+    }
+    status.code() == Some(2) && String::from_utf8_lossy(&stderr).contains("--mode is required")
 }
 
 /// Resolves the path to the `mediapm-stub-tool` binary.
@@ -458,6 +518,54 @@ mod tests {
         assert!(
             behaves_like_the_stub(&stub_tool_path()),
             "the located stub must pass the same probe that rejects the impostor",
+        );
+    }
+
+    /// A candidate that never answers is rejected within the probe's bound.
+    ///
+    /// The user-level guarantee: the probe runs every candidate it is offered, so
+    /// one that never exits — a program reading stdin that never arrives, or an
+    /// impostor that sleeps — would hold the locator, and with it every stub-based
+    /// test's search, for as long as it lives. The bound turns that into the verdict
+    /// the probe already gives a program that answers wrongly, and a wait that is
+    /// polled rather than threaded leaves nothing behind to leak.
+    ///
+    /// The fixture `exec`s the sleep, so the process the probe kills is the one that
+    /// sleeps rather than a shell whose child keeps running. Both timing assertions
+    /// matter: less than twice the bound fails a probe that waits for the process,
+    /// and at least the bound fails a probe that answered without ever running the
+    /// fixture — a broken fixture spawn and a rejection by file name look the same
+    /// from the outside otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn a_candidate_that_outlives_the_probe_bound_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sleeper = dir.path().join(format!("{STUB_TOOL_BIN_NAME}-sleeper"));
+        let seconds = PROBE_TIMEOUT.as_secs().saturating_mul(4);
+        std::fs::write(&sleeper, format!("#!/bin/sh\nexec sleep {seconds}\n"))
+            .expect("the sleeper must be writable");
+        std::fs::set_permissions(&sleeper, std::fs::Permissions::from_mode(0o755))
+            .expect("the sleeper must be executable");
+
+        let started = Instant::now();
+        let accepted = behaves_like_the_stub(&sleeper);
+        let elapsed = started.elapsed();
+
+        assert!(
+            !accepted,
+            "a candidate that never answers is not the stub, and answering `false` is what keeps \
+             the search going",
+        );
+        assert!(
+            elapsed >= PROBE_TIMEOUT,
+            "the probe answers only after its bound, so the fixture it killed was still running: \
+             {elapsed:?}",
+        );
+        assert!(
+            elapsed < PROBE_TIMEOUT * 2,
+            "the probe must answer within about twice its bound, took {elapsed:?}",
         );
     }
 
