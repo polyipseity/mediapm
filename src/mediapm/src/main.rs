@@ -1203,7 +1203,7 @@ mod tests {
     /// did not mean to change cannot carry a count into the assertion.
     fn sync_summary() -> mediapm::SyncSummary {
         mediapm::SyncSummary {
-            executed_instances: 0,
+            executed_steps: 0,
             cached_instances: 0,
             materialized_paths: 0,
             skipped_paths: 0,
@@ -1238,7 +1238,7 @@ mod tests {
     #[test]
     fn sync_exits_zero_when_every_entry_was_already_correct() {
         let summary =
-            mediapm::SyncSummary { executed_instances: 2, skipped_paths: 3, ..sync_summary() };
+            mediapm::SyncSummary { executed_steps: 2, skipped_paths: 3, ..sync_summary() };
         assert_eq!(
             sync_exit_status(&summary),
             None,

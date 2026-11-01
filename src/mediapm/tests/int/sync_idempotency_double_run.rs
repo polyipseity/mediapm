@@ -3,7 +3,7 @@
 //! The double-run idempotency contract: running `sync_library()` twice back to
 //! back over an unchanged library must do the work once. The first run executes
 //! the synthesized import workflow and materializes its output; the second must
-//! serve every workflow instance from cache (`executed_instances == 0`,
+//! serve every workflow instance from cache (`executed_steps == 0`,
 //! `cached_instances` equal to the first run's total), write no new path
 //! (`materialized_paths == 0`), and decline the entries the first run produced
 //! (`skipped_paths` equal to the first run's materialized count).
@@ -185,7 +185,7 @@ async fn an_immediate_second_sync_executes_nothing_and_rematerializes_nothing()
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
     assert!(
-        first.executed_instances >= 1,
+        first.executed_steps >= 1,
         "the first sync must execute the import workflow before the re-run means anything: {first:?}"
     );
     assert_eq!(
@@ -216,12 +216,12 @@ async fn an_immediate_second_sync_executes_nothing_and_rematerializes_nothing()
 
     // Workflow half: every instance is served from cache, none re-executed.
     assert_eq!(
-        second.executed_instances, 0,
+        second.executed_steps, 0,
         "an immediate re-run over an unchanged library must not re-execute any workflow step: \
          {second:?} (first run: {first:?})"
     );
     assert_eq!(
-        second.cached_instances, first.executed_instances,
+        second.cached_instances, first.executed_steps,
         "every instance the first run executed must be served from cache on the re-run: {second:?}"
     );
 
@@ -288,7 +288,7 @@ async fn force_rerun_reexecutes_the_cached_workflow() -> Result<(), MediaPmError
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
     assert!(
-        first.executed_instances >= 1,
+        first.executed_steps >= 1,
         "the first sync must execute the import workflow before the forced re-run means anything: {first:?}"
     );
 
@@ -297,7 +297,7 @@ async fn force_rerun_reexecutes_the_cached_workflow() -> Result<(), MediaPmError
     // first run left undone.
     let second = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        second.executed_instances, 0,
+        second.executed_steps, 0,
         "the unforced re-run must be a cache hit before force is exercised: {second:?}"
     );
 
@@ -317,7 +317,7 @@ async fn force_rerun_reexecutes_the_cached_workflow() -> Result<(), MediaPmError
         )
         .await?;
     assert!(
-        forced.executed_instances >= 1,
+        forced.executed_steps >= 1,
         "force_rerun must re-execute the cached import step: {forced:?} (unforced re-run: {second:?})"
     );
 
@@ -325,7 +325,7 @@ async fn force_rerun_reexecutes_the_cached_workflow() -> Result<(), MediaPmError
     // instance serves the cache again.
     let third = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        third.executed_instances, 0,
+        third.executed_steps, 0,
         "a sync after the forced one must be free again: {third:?}"
     );
 

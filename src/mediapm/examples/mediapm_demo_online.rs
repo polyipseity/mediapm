@@ -326,7 +326,7 @@ impl Error for DemoOnlineTimeoutError {}
 /// reconciles to an unchanged entry and is counted as skipped instead.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct SecondRunTally {
-    executed_instances: usize,
+    executed_steps: usize,
     cached_instances: usize,
     materialized_paths: usize,
     skipped_paths: usize,
@@ -382,7 +382,7 @@ struct DemoManifest {
     /// reader can verify a materialized file against the store without
     /// recomputing anything.
     materialized_file_hashes: BTreeMap<String, String>,
-    executed_instances: usize,
+    executed_steps: usize,
     cached_instances: usize,
     materialized_paths: usize,
     removed_paths: usize,
@@ -886,16 +886,16 @@ fn assert_second_sync_did_no_work(
     files_after: &[(String, u64, std::time::SystemTime)],
 ) -> ExampleResult<()> {
     let mut problems = Vec::new();
-    if second.executed_instances != 0 {
+    if second.executed_steps != 0 {
         problems.push(format!(
-            "executed_instances={} (expected 0: all steps must come from cache)",
-            second.executed_instances
+            "executed_steps={} (expected 0: all steps must come from cache)",
+            second.executed_steps
         ));
     }
-    if second.cached_instances != first.executed_instances {
+    if second.cached_instances != first.executed_steps {
         problems.push(format!(
             "cached_instances={} (expected {}: the first run's executed steps)",
-            second.cached_instances, first.executed_instances
+            second.cached_instances, first.executed_steps
         ));
     }
     if second.materialized_paths != 0 {
@@ -3451,7 +3451,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         .map_err(|error| format!("online demo second sync failed: {error}"))?;
     let materialized_after = snapshot_materialized_files(&hierarchy_root)?;
     let second_run = SecondRunTally {
-        executed_instances: second.executed_instances,
+        executed_steps: second.executed_steps,
         cached_instances: second.cached_instances,
         materialized_paths: second.materialized_paths,
         skipped_paths: second.skipped_paths,
@@ -3505,7 +3505,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             .iter()
             .map(|(path, record)| (path.clone(), record.hash.clone()))
             .collect(),
-        executed_instances: summary.executed_instances,
+        executed_steps: summary.executed_steps,
         cached_instances: summary.cached_instances,
         materialized_paths: summary.materialized_paths,
         removed_paths: summary.removed_paths,
@@ -4239,7 +4239,7 @@ mod tests {
     #[test]
     fn second_run_tally_serializes_the_documented_schema() {
         let tally = super::SecondRunTally {
-            executed_instances: 0,
+            executed_steps: 0,
             cached_instances: 16,
             materialized_paths: 0,
             skipped_paths: 16,
@@ -4261,7 +4261,7 @@ mod tests {
         // not an order.
         keys.sort();
         let mut expected = vec![
-            "executed_instances",
+            "executed_steps",
             "cached_instances",
             "materialized_paths",
             "skipped_paths",

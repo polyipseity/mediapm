@@ -150,7 +150,7 @@ struct DemoManifest {
     sync_executed: bool,
     lock_managed_files_count: usize,
     lock_managed_tools_count: usize,
-    executed_instances: usize,
+    executed_steps: usize,
     cached_instances: usize,
     materialized_paths: usize,
     removed_paths: usize,
@@ -1002,7 +1002,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         sync_executed: maybe_summary.is_some(),
         lock_managed_files_count: lock.managed_files.len(),
         lock_managed_tools_count: lock.managed_tools.len(),
-        executed_instances: maybe_summary.as_ref().map_or(0, |summary| summary.executed_instances),
+        executed_steps: maybe_summary.as_ref().map_or(0, |summary| summary.executed_steps),
         cached_instances: maybe_summary.as_ref().map_or(0, |summary| summary.cached_instances),
         materialized_paths: maybe_summary.as_ref().map_or(0, |summary| summary.materialized_paths),
         removed_paths: maybe_summary.as_ref().map_or(0, |summary| summary.removed_paths),
@@ -1179,7 +1179,7 @@ mod tests {
         );
         assert!(
             manifest_json
-                .get("executed_instances")
+                .get("executed_steps")
                 .and_then(serde_json::Value::as_u64)
                 .is_some_and(|count| count > 0),
             "full-sync demo should execute managed workflow steps"
@@ -1286,9 +1286,9 @@ mod tests {
         let manifest_json: serde_json::Value =
             serde_json::from_str(&manifest_text).expect("manifest JSON");
         let first_executed = manifest_json
-            .get("executed_instances")
+            .get("executed_steps")
             .and_then(serde_json::Value::as_u64)
-            .expect("first-run executed_instances");
+            .expect("first-run executed_steps");
         let first_materialized = manifest_json
             .get("materialized_paths")
             .and_then(serde_json::Value::as_u64)
@@ -1326,7 +1326,7 @@ mod tests {
             .expect("second demo sync");
 
         assert_eq!(
-            second.executed_instances, 0,
+            second.executed_steps, 0,
             "second sync must serve every conductor instance from cache; warnings: {:?}",
             second.warnings
         );

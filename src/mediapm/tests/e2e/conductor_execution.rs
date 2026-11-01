@@ -81,7 +81,7 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
 
     // The managed import workflow executed: at least one conductor instance.
     assert!(
-        summary.executed_instances >= 1,
+        summary.executed_steps >= 1,
         "import workflow should execute at least one conductor instance"
     );
     assert!(
@@ -124,7 +124,7 @@ async fn sync_executes_import_workflow() -> Result<(), mediapm::MediaPmError> {
 ///
 /// Under the time-free key scheme this is the sharpest persistence proof
 /// available: the second sync's cache hit can only come from the first run's
-/// instances having been persisted and re-loaded, so `executed_instances`
+/// instances having been persisted and re-loaded, so `executed_steps`
 /// drops to zero, the cached count matches the first run, and the state file
 /// keeps the same instances instead of accumulating fresh per-run copies.
 #[tokio::test]
@@ -140,8 +140,8 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
         seed_and_add_import_source(&mut service, &uri, b"phase2 conductor execution fixture")
             .await?;
         let summary = sync_library_with_test_terminal(&mut service, false).await?;
-        assert!(summary.executed_instances >= 1, "first sync should execute the import workflow");
-        first_executed = summary.executed_instances;
+        assert!(summary.executed_steps >= 1, "first sync should execute the import workflow");
+        first_executed = summary.executed_steps;
         state_path = service.paths().conductor_state_config.clone();
     }
 
@@ -153,7 +153,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
     let mut service = service_at(root.path(), None).await?;
     let second_summary = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        second_summary.executed_instances, 0,
+        second_summary.executed_steps, 0,
         "the second sync must be served from the persisted instance state: {second_summary:?}"
     );
     assert_eq!(

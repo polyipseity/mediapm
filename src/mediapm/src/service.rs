@@ -1382,7 +1382,7 @@ impl MediaPmService<FileSystemCas> {
             .filter(|workflow| workflow.name.starts_with(MANAGED_WORKFLOW_PREFIX))
             .map(|workflow| workflow.name.clone())
             .collect();
-        let mut executed_instances: usize = 0;
+        let mut executed_steps: usize = 0;
         let mut cached_instances: usize = 0;
         let mut workflow_failed_steps: usize = 0;
         // Loaded *after* tool sync because that phase rewrites the managed-tool
@@ -1429,7 +1429,7 @@ impl MediaPmService<FileSystemCas> {
             // re-lands on its existing key — counting "new keys in state"
             // would report that run as cached. Executed = steps that actually
             // ran this run; cached = steps served from the instance cache.
-            executed_instances += summary.executed_steps;
+            executed_steps += summary.executed_steps;
             cached_instances += summary.cached_steps;
             if summary.failed_steps > 0 {
                 workflow_failed_steps += summary.failed_steps;
@@ -1449,7 +1449,7 @@ impl MediaPmService<FileSystemCas> {
         // Notify observer: workflow phase complete.
         if let Some(ref obs) = observer {
             obs.on_phase(crate::SyncPhaseReport::Workflow(crate::WorkflowSyncSummary {
-                executed_instances,
+                executed_steps,
                 cached_instances,
                 failed_steps: workflow_failed_steps,
             }));
@@ -1520,7 +1520,7 @@ impl MediaPmService<FileSystemCas> {
         warnings.extend(materialize_report.notices);
 
         Ok(SyncSummary {
-            executed_instances,
+            executed_steps,
             cached_instances,
             materialized_paths: materialize_report.materialized_paths,
             skipped_paths: materialize_report.skipped_paths,

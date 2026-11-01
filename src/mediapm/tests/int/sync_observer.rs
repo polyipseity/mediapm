@@ -89,16 +89,14 @@ mod tests {
     /// The icon comes from `workflow_icon`, the function the observer calls.
     #[test]
     fn workflow_phase_line_is_an_error_when_a_step_failed() {
-        let s = WorkflowSyncSummary { executed_instances: 3, cached_instances: 0, failed_steps: 1 };
+        let s = WorkflowSyncSummary { executed_steps: 3, cached_instances: 0, failed_steps: 1 };
         let icon = workflow_icon(&s);
         assert_eq!(icon, StatusIcon::Error, "summary: {s:?}");
 
-        let idle =
-            WorkflowSyncSummary { executed_instances: 0, cached_instances: 0, failed_steps: 0 };
+        let idle = WorkflowSyncSummary { executed_steps: 0, cached_instances: 0, failed_steps: 0 };
         assert_eq!(workflow_icon(&idle), StatusIcon::NoChange, "summary: {idle:?}");
 
-        let ran =
-            WorkflowSyncSummary { executed_instances: 2, cached_instances: 1, failed_steps: 0 };
+        let ran = WorkflowSyncSummary { executed_steps: 2, cached_instances: 1, failed_steps: 0 };
         assert_eq!(workflow_icon(&ran), StatusIcon::Success, "summary: {ran:?}");
     }
 
@@ -161,7 +159,7 @@ mod tests {
         failed_steps: usize,
     ) -> SyncSummary {
         SyncSummary {
-            executed_instances: executed,
+            executed_steps: executed,
             cached_instances: 0,
             materialized_paths: materialized,
             skipped_paths: skipped,
@@ -447,7 +445,7 @@ mod tests {
             warnings: vec![],
         }));
         obs.on_phase(SyncPhaseReport::Workflow(WorkflowSyncSummary {
-            executed_instances: 2,
+            executed_steps: 2,
             cached_instances: 0,
             failed_steps: 0,
         }));

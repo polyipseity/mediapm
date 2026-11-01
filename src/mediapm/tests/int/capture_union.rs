@@ -118,7 +118,7 @@ async fn two_steps_over_identical_work_share_one_instance_and_both_names_materia
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        (first.executed_instances, first.missing_paths),
+        (first.executed_steps, first.missing_paths),
         (2, 0),
         "both steps execute once and both paths resolve from the one recorded instance: {first:?}",
     );
@@ -162,7 +162,7 @@ async fn two_steps_over_identical_work_share_one_instance_and_both_names_materia
 
     let second = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        (second.executed_instances, second.materialized_paths, second.missing_paths),
+        (second.executed_steps, second.materialized_paths, second.missing_paths),
         (0, 0, 0),
         "an unchanged re-run must execute and materialize nothing: {second:?}",
     );

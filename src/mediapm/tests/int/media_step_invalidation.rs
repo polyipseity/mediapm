@@ -133,7 +133,7 @@ async fn invalidating_marks_the_instances_and_leaves_recorded_progress_alone()
     seed_probe_workspace(&mut service, &uri).await?;
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
-    assert!(first.executed_instances >= 1, "the first sync must execute the workflow: {first:?}");
+    assert!(first.executed_steps >= 1, "the first sync must execute the workflow: {first:?}");
 
     // Capture the records the sync wrote, so "untouched" is an assertion about a
     // value that is actually there.
@@ -193,13 +193,10 @@ async fn invalidating_one_workflow_leaves_the_other_cached() -> Result<(), Media
     let other_media_id = seed_other_workspace(&mut service, "secondary").await?;
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
-    assert_eq!(
-        first.executed_instances, 2,
-        "two media sources must execute one step each: {first:?}"
-    );
+    assert_eq!(first.executed_steps, 2, "two media sources must execute one step each: {first:?}");
     let cached = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        cached.executed_instances, 0,
+        cached.executed_steps, 0,
         "an unchanged re-run must be served from cache before invalidation: {cached:?}"
     );
     assert_eq!(cached.cached_instances, 2, "both steps must be cache hits: {cached:?}");
@@ -209,7 +206,7 @@ async fn invalidating_one_workflow_leaves_the_other_cached() -> Result<(), Media
 
     let forced = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        forced.executed_instances, 1,
+        forced.executed_steps, 1,
         "exactly the invalidated workflow must re-execute: {forced:?}",
     );
     assert_eq!(
@@ -225,7 +222,7 @@ async fn invalidating_one_workflow_leaves_the_other_cached() -> Result<(), Media
 
     let free = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        free.executed_instances, 0,
+        free.executed_steps, 0,
         "the sync after the re-run must be cache-first again: {free:?}"
     );
 
@@ -246,9 +243,9 @@ async fn undo_clears_the_marker_so_the_next_sync_is_free() -> Result<(), MediaPm
     seed_probe_workspace(&mut service, &uri).await?;
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
-    assert!(first.executed_instances >= 1, "the first sync must execute: {first:?}");
+    assert!(first.executed_steps >= 1, "the first sync must execute: {first:?}");
     let cached = sync_library_with_test_terminal(&mut service, false).await?;
-    assert_eq!(cached.executed_instances, 0, "the step must be cached: {cached:?}");
+    assert_eq!(cached.executed_steps, 0, "the step must be cached: {cached:?}");
 
     let marked = service.invalidate_media_step_tool_calls(&media_id, 0).await?;
     assert_eq!(marked.changed_instances, 1, "the invalidation must mark: {marked:?}");
@@ -267,7 +264,7 @@ async fn undo_clears_the_marker_so_the_next_sync_is_free() -> Result<(), MediaPm
 
     let free = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        free.executed_instances, 0,
+        free.executed_steps, 0,
         "undoing before the sync must let the recorded instance serve the run: {free:?}"
     );
 
@@ -289,7 +286,7 @@ async fn a_failed_run_leaves_the_marker_set() -> Result<(), MediaPmError> {
     seed_probe_workspace(&mut service, &uri).await?;
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
-    assert!(first.executed_instances >= 1, "the first sync must execute: {first:?}");
+    assert!(first.executed_steps >= 1, "the first sync must execute: {first:?}");
 
     let summary = service.invalidate_media_step_tool_calls(&media_id, 0).await?;
     assert_eq!(summary.changed_instances, 1, "the invalidation must mark: {summary:?}");
@@ -339,7 +336,7 @@ async fn marking_a_shared_step_leaves_another_media_that_reuses_it_alone()
     seed_other_workspace(&mut service, "primary").await?;
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
-    assert_eq!(first.executed_instances, 2, "both sources must execute: {first:?}");
+    assert_eq!(first.executed_steps, 2, "both sources must execute: {first:?}");
 
     let summary = service.invalidate_media_step_tool_calls(&media_id, 0).await?;
     assert_eq!(
@@ -369,7 +366,7 @@ async fn marking_a_shared_step_leaves_another_media_that_reuses_it_alone()
 
     let forced = sync_library_with_test_terminal(&mut service, false).await?;
     assert_eq!(
-        forced.executed_instances, 1,
+        forced.executed_steps, 1,
         "the named media re-executes while the other is served from cache: {forced:?}",
     );
 
@@ -408,7 +405,7 @@ async fn unknown_media_and_absent_step_indexes_are_errors() -> Result<(), MediaP
     );
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
-    assert!(first.executed_instances >= 1, "the first sync must execute: {first:?}");
+    assert!(first.executed_steps >= 1, "the first sync must execute: {first:?}");
 
     let absent = service.invalidate_media_step_tool_calls(&media_id, 7).await;
     let error = absent.expect_err("a step index the workflow lacks must fail");
@@ -481,7 +478,7 @@ async fn invalidating_a_fan_out_step_marks_every_id_it_wrote() -> Result<(), Med
 
     let first = sync_library_with_test_terminal(&mut service, false).await?;
     assert!(
-        first.executed_instances >= 3,
+        first.executed_steps >= 3,
         "the fixture must run the fan-out pair, the neighbour and the other media: {first:?}",
     );
 

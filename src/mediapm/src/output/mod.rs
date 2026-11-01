@@ -98,7 +98,7 @@ pub fn sync_summary_icon(summary: &SyncSummary) -> StatusIcon {
     match sync_outcome(summary) {
         SyncOutcome::Error => StatusIcon::Error,
         SyncOutcome::Warning => StatusIcon::Warning,
-        SyncOutcome::Clean if summary.executed_instances > 0 || summary.materialized_paths > 0 => {
+        SyncOutcome::Clean if summary.executed_steps > 0 || summary.materialized_paths > 0 => {
             StatusIcon::Success
         }
         SyncOutcome::Clean => StatusIcon::NoChange,
@@ -156,7 +156,7 @@ pub fn print_sync_summary(summary: &SyncSummary) {
     let icon = sync_summary_icon(summary);
 
     let mut fields: Vec<(&str, Box<dyn std::fmt::Display>)> = Vec::new();
-    fields.push(("executed", Box::new(summary.executed_instances)));
+    fields.push(("executed", Box::new(summary.executed_steps)));
 
     if summary.cached_instances > 0 {
         fields.push(("cached", Box::new(summary.cached_instances)));

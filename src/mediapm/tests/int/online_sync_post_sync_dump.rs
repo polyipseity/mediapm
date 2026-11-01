@@ -149,7 +149,7 @@ async fn online_sync_post_sync_dump() {
     panic!(
         "ONLINE_SYNC_POST_SYNC_DUMP\n\
 warnings: {warnings:?}\n\
-executed_instances: {executed_instances}\n\
+executed_steps: {executed_steps}\n\
 cached_instances: {cached_instances}\n\
 added_tools: {added_tools}\n\
 updated_tools: {updated_tools}\n\
@@ -169,7 +169,7 @@ yt-dlp instance output keys: {yt_dlp_instances:#?}\n\
 sidecars/info.json exists: {sidecar_exists}\n\
 files under hierarchy ({file_count}):\n{files:#?}",
         warnings = summary.warnings,
-        executed_instances = summary.executed_instances,
+        executed_steps = summary.executed_steps,
         cached_instances = summary.cached_instances,
         added_tools = summary.added_tools,
         updated_tools = summary.updated_tools,

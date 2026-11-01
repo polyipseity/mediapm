@@ -60,7 +60,7 @@ pub fn materialization_icon(summary: &MaterializationSyncSummary) -> StatusIcon 
 pub fn workflow_icon(summary: &WorkflowSyncSummary) -> StatusIcon {
     if summary.failed_steps > 0 {
         StatusIcon::Error
-    } else if summary.executed_instances == 0 && summary.cached_instances == 0 {
+    } else if summary.executed_steps == 0 && summary.cached_instances == 0 {
         StatusIcon::NoChange
     } else {
         StatusIcon::Success
@@ -93,7 +93,7 @@ impl SyncPhaseObserver for CliSyncObserver {
                     workflow_icon(&s),
                     "workflow",
                     &[
-                        ("executed", &s.executed_instances as &dyn std::fmt::Display),
+                        ("executed", &s.executed_steps as &dyn std::fmt::Display),
                         ("cached", &s.cached_instances),
                         ("failed", &s.failed_steps),
                     ],

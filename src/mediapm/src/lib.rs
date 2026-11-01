@@ -112,8 +112,9 @@ pub struct MediaPackage {
 /// neither raise nor lower an outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSummary {
-    /// Number of conductor instances executed during sync.
-    pub executed_instances: usize,
+    /// Number of workflow steps that ran during sync. A step whose instance
+    /// the cache served did not run, so cached work is excluded.
+    pub executed_steps: usize,
     /// Number of conductor instances served from cache.
     pub cached_instances: usize,
     /// Number of hierarchy paths materialized to the resolved library root.
@@ -156,8 +157,9 @@ pub struct SyncSummary {
 /// Aggregate result of the managed-workflow phase.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkflowSyncSummary {
-    /// Conductor instances newly executed in this sync.
-    pub executed_instances: usize,
+    /// Workflow steps that ran in this sync. A step whose instance the cache
+    /// served did not run, so cached work is excluded.
+    pub executed_steps: usize,
     /// Conductor instances served from cache.
     pub cached_instances: usize,
     /// Steps that failed after exhausting retries across all workflows.
