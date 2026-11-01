@@ -179,9 +179,20 @@ impl MetadataCache {
 }
 
 impl Drop for MetadataCache {
+    /// Persists whatever the handle still holds unsaved.
+    ///
+    /// A drop cannot fail a run and cannot retry, so the only useful thing left
+    /// is to say that the write was attempted and lost. The cost is bounded: a
+    /// cache that misses its flush is rebuilt from the upstream the next time a
+    /// key is read, which is the same outcome as a cold cache and never a wrong
+    /// answer.
     fn drop(&mut self) {
-        if let Ok(true) = self.dirty.lock().map(|d| *d) {
-            let _ = self.flush();
+        if let Ok(true) = self.dirty.lock().map(|d| *d)
+            && let Err(error) = self.flush()
+        {
+            tracing::warn!(
+                "metadata cache flush on drop failed, so this run's lookups are lost: {error}"
+            );
         }
     }
 }
@@ -472,6 +483,57 @@ mod tests {
             let retrieved = cache.get(&format!("key{i}"));
             assert_eq!(retrieved, Some(serde_json::json!({"index": i})));
         }
+    }
+
+    /// A drop that cannot persist says so instead of discarding the loss.
+    ///
+    /// The write is best effort by nature: a drop cannot fail a run and cannot
+    /// retry. Silence is the one disposition it must not choose, because a cache
+    /// that never persists is visible only as repeated upstream lookups. A
+    /// directory sits where the cache file belongs, which denies the write for
+    /// every user including root, so the failure does not depend on the mode the
+    /// process runs under.
+    #[test]
+    fn a_drop_that_cannot_flush_reports_the_loss() {
+        use std::sync::{Arc, Mutex};
+
+        /// Collects what the subscriber formats so the test can read it back.
+        #[derive(Clone)]
+        struct Collected(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Collected {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("buffer").write(bytes)
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        std::fs::create_dir_all(dir.path().join(CACHE_FILE_NAME))
+            .expect("a directory where the cache file belongs");
+        let cache = MetadataCache::open(dir.path());
+        cache.set("unpersistable".to_string(), serde_json::json!({"key": "value"}));
+
+        let collected = Collected(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let sink = collected.clone();
+                move || sink.clone()
+            })
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || drop(cache));
+
+        let logged = String::from_utf8(collected.0.lock().expect("buffer").clone())
+            .expect("the subscriber writes UTF-8");
+        assert!(
+            logged.contains("metadata cache flush on drop failed"),
+            "a flush lost at drop names itself rather than leaving the run to look like a cache \
+             miss: {logged}"
+        );
     }
 
     #[test]

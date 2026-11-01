@@ -274,7 +274,21 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         }
 
         let tools_dir = self.tools_dir.clone();
-        let _ = tokio::task::spawn_blocking(move || sweep_expired_entries(&tools_dir, now)).await;
+        // The automatic sweep is best effort: a failure leaves entries on disk for
+        // the next run rather than failing the provision that triggered it. It is
+        // still reported, because a sweep that fails every time is a tools root
+        // that only grows, and nothing else would say so.
+        match tokio::task::spawn_blocking(move || sweep_expired_entries(&tools_dir, now)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    "automatic provision sweep failed, entries stay until the next run: {error}"
+                );
+            }
+            Err(join_error) => {
+                tracing::warn!("automatic provision sweep task panicked: {join_error}");
+            }
+        }
     }
 
     /// Prunes expired entries unconditionally (no cooldown check).

@@ -152,7 +152,21 @@ async fn open_domain_setup(
         if !index_path.exists() {
             let ip = index_path.clone();
             let idx = index.clone();
-            let _ = tokio::task::spawn_blocking(move || write_index_file(&ip, &idx)).await;
+            match tokio::task::spawn_blocking(move || write_index_file(&ip, &idx)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        "cache index '{}' could not be created at open, so this run starts empty: {error}",
+                        index_path.display()
+                    );
+                }
+                Err(join_error) => {
+                    tracing::warn!(
+                        "cache index '{}' creation task panicked: {join_error}",
+                        index_path.display()
+                    );
+                }
+            }
         }
         domains_map.insert(
             config.domain.clone(),
