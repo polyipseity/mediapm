@@ -57,9 +57,6 @@ use self::zip_reader::extract_zip_member_bytes;
 /// Per-workflow required step output names (`step_id -> output_name[]`).
 pub(super) type RequiredStepOutputNames = BTreeMap<String, BTreeSet<String>>;
 
-/// Per-workflow required ZIP member selectors (`step_id -> output_name -> zip_member[]`).
-pub(super) type RequiredStepZipMembers = BTreeMap<String, BTreeMap<String, BTreeSet<String>>>;
-
 /// Per-step expected inputs used to match runtime workflow instances.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct ExpectedStepInputs {

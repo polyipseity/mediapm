@@ -1,6 +1,5 @@
 //! Conductor-state-first variant hash/bytes resolution and instance matching.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -23,7 +22,7 @@ use super::zip_reader::{
 };
 use super::{
     ExpectedStepInputs, InputBindingHashResolution, MaterializationLookupContext,
-    RequiredStepOutputNames, RequiredStepZipMembers, StepOutputHashes, VariantSourceBytes,
+    RequiredStepOutputNames, StepOutputHashes, VariantSourceBytes,
 };
 
 /// Resolves the [`MediaSourceSpec`] for one hierarchy entry's media id.
@@ -414,7 +413,6 @@ pub(super) async fn resolve_workflow_step_output_hashes(
 ) -> Result<Option<StepOutputHashes>, MediaPmError> {
     let mut step_outputs = StepOutputHashes::new();
     let required_step_output_names = collect_required_step_output_names(workflow);
-    let required_step_zip_members = collect_required_step_zip_members(workflow);
     let mut unresolved_inputs_by_step: BTreeMap<String, UnresolvedInputs> = BTreeMap::new();
 
     for step in &workflow.steps {
@@ -424,7 +422,6 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             state,
             step,
             &required_step_output_names,
-            &required_step_zip_members,
             &step_outputs,
         )
         .await?;
@@ -575,7 +572,6 @@ async fn resolve_single_step_output_hashes_strict(
     state: &ConductorState,
     step: &mediapm_conductor::WorkflowStepSpec,
     required_step_output_names: &RequiredStepOutputNames,
-    required_step_zip_members: &RequiredStepZipMembers,
     prior_step_outputs: &StepOutputHashes,
 ) -> Result<StrictStepResolution, MediaPmError> {
     let merged_step_inputs =
@@ -599,7 +595,6 @@ async fn resolve_single_step_output_hashes_strict(
 
     let required_output_names =
         required_step_output_names.get(&step.id).cloned().unwrap_or_default();
-    let required_zip_members = required_step_zip_members.get(&step.id);
 
     let resolved_values = build_instance_key_resolved_value_bytes(
         cas,
@@ -623,45 +618,29 @@ async fn resolve_single_step_output_hashes_strict(
         &resolved_values.values,
     )?;
 
-    let mut matching_instances = state
-        .tool_call_instances
-        .iter()
-        .filter_map(|(instance_key, instance)| {
-            (instance.tool_call_id == conductor_tool_key
-                && instance_matches_expected_inputs(
-                    instance_key,
-                    instance,
-                    &expected_inputs,
-                    &key_material,
-                )
-                && instance_matches_expected_output_names(instance, &step.outputs)
-                && instance_matches_required_output_names(instance, &required_output_names))
-            .then_some((instance_key, instance))
-        })
-        .collect::<Vec<_>>();
-
-    matching_instances.sort_by(|(left_key, left_instance), (right_key, right_instance)| {
-        compare_instance_recency(left_key, left_instance, right_key, right_instance)
+    // At most one instance can match, so there is nothing to choose between.
+    // The filter's second clause is [`instance_matches_expected_inputs`], which
+    // re-derives the key from this step's material and compares it to the key the
+    // record is filed under; the map holds one record per key. A second matching
+    // record would need the same derived key under a different stored key, which
+    // the map cannot hold. The recency ordering and the preference for an
+    // instance whose bytes are still present both outlived the reason they were
+    // written: they chose between candidates that cannot coexist, and the
+    // preference could not change the answer, because the fallback picked the
+    // same instance when nothing was materializable.
+    let matched = state.tool_call_instances.iter().find(|(instance_key, instance)| {
+        instance.tool_call_id == conductor_tool_key
+            && instance_matches_expected_inputs(
+                instance_key,
+                instance,
+                &expected_inputs,
+                &key_material,
+            )
+            && instance_matches_expected_output_names(instance, &step.outputs)
+            && instance_matches_required_output_names(instance, &required_output_names)
     });
 
-    let mut selected_instance = None;
-    for (_, instance) in &matching_instances {
-        if instance_has_materializable_required_outputs(
-            cas,
-            instance,
-            &required_output_names,
-            required_zip_members,
-        )
-        .await
-        {
-            selected_instance = Some(*instance);
-            break;
-        }
-    }
-
-    let Some(instance) =
-        selected_instance.or_else(|| matching_instances.first().map(|(_, instance)| *instance))
-    else {
+    let Some((_, instance)) = matched else {
         return Ok(StrictStepResolution { outputs: None, unresolved_inputs: unresolved });
     };
 
@@ -968,33 +947,6 @@ fn collect_required_step_output_names(
     required
 }
 
-fn collect_required_step_zip_members(
-    workflow: &mediapm_conductor::WorkflowSpec,
-) -> RequiredStepZipMembers {
-    let mut required = RequiredStepZipMembers::new();
-
-    for step in &workflow.steps {
-        for value in step.inputs.values() {
-            let Some(reference) = parse_step_output_reference(value) else {
-                continue;
-            };
-
-            let Some(zip_member) = reference.zip_member else {
-                continue;
-            };
-
-            required
-                .entry(reference.step_id.to_string())
-                .or_default()
-                .entry(reference.output_name.to_string())
-                .or_default()
-                .insert(zip_member.to_string());
-        }
-    }
-
-    required
-}
-
 /// Returns the record this instance holds under `output_name`, if any.
 ///
 /// The name is the whole address: the record carries the capture spec beside
@@ -1014,55 +966,6 @@ fn instance_matches_required_output_names(
     required_output_names
         .iter()
         .all(|output_name| instance_output_ref(instance, output_name).is_some())
-}
-
-fn compare_instance_recency(
-    left_key: &Hash,
-    left_instance: &ToolCallInstance,
-    right_key: &Hash,
-    right_instance: &ToolCallInstance,
-) -> Ordering {
-    let left_rank = instance_recency_rank(left_key, left_instance);
-    let right_rank = instance_recency_rank(right_key, right_instance);
-    right_rank.cmp(&left_rank)
-}
-
-fn instance_recency_rank(instance_key: &Hash, instance: &ToolCallInstance) -> (bool, u64, String) {
-    if instance.impure {
-        (true, instance.executed_at.as_unix_nanos(), instance_key.to_hex())
-    } else {
-        (false, 0, instance_key.to_hex())
-    }
-}
-
-async fn instance_has_materializable_required_outputs(
-    cas: &FileSystemCas,
-    instance: &ToolCallInstance,
-    required_output_names: &BTreeSet<String>,
-    required_zip_members: Option<&BTreeMap<String, BTreeSet<String>>>,
-) -> bool {
-    for output_name in required_output_names {
-        let Some(output_ref) = instance_output_ref(instance, output_name) else {
-            return false;
-        };
-
-        let Ok(output_bytes) = cas.get(output_ref.hash).await else {
-            return false;
-        };
-
-        let Some(members) = required_zip_members.and_then(|by_output| by_output.get(output_name))
-        else {
-            continue;
-        };
-
-        for member in members {
-            if extract_zip_member_bytes(output_bytes.as_ref(), member).is_err() {
-                return false;
-            }
-        }
-    }
-
-    true
 }
 
 /// Returns the clause that names the inputs which stopped the strict pass.
@@ -1396,6 +1299,58 @@ mod tests {
             step_outputs.contains_key("step-3-0-media-tagger-audio-to-audio-apply"),
             "expected media-tagger apply step outputs, got: {:?}",
             step_outputs.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// A second record of one tool cannot make the strict pass choose.
+    ///
+    /// The strict pass refuses to pick between candidates by construction: its
+    /// filter re-derives the step's key from that step's material and compares it
+    /// to the key the record is filed under, and the map holds one record per
+    /// key. This test pins the consequence — a duplicate record of the same tool,
+    /// carrying the same outputs under a key that is not the derived one, leaves
+    /// every resolved hash exactly as it was.
+    #[tokio::test]
+    async fn a_second_record_of_the_same_tool_cannot_change_a_strict_resolution() {
+        let generated = load_generated_doc();
+        let state = load_conductor_state();
+        let workflow = generated
+            .workflows
+            .iter()
+            .find(|workflow| workflow.name == "mediapm.media.demo.local.dQw4w9WgXcQ")
+            .expect("demo workflow");
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        for instance in state.tool_call_instances.values() {
+            for output in instance.outputs.values() {
+                if cas.get(output.hash).await.is_err() {
+                    let _ = cas.put(bytes::Bytes::from_static(b"fixture-bytes")).await;
+                }
+            }
+        }
+
+        let before = resolve_workflow_step_output_hashes(&cas, &generated, &state, workflow)
+            .await
+            .expect("resolve workflow step outputs without the duplicate");
+
+        let mut duplicated = state.clone();
+        let recorded = duplicated
+            .tool_call_instances
+            .iter()
+            .find(|(_, instance)| instance.tool_call_id == "import@v1")
+            .map(|(_, instance)| instance.clone())
+            .expect("recorded import instance");
+        duplicated
+            .tool_call_instances
+            .insert(Hash::from_content(b"a-second-record-for-the-same-tool"), recorded);
+
+        let after = resolve_workflow_step_output_hashes(&cas, &generated, &duplicated, workflow)
+            .await
+            .expect("resolve workflow step outputs with the duplicate");
+
+        assert_eq!(
+            before, after,
+            "a duplicate record that does not carry the derived key must not change any answer",
         );
     }
 
