@@ -439,7 +439,11 @@ const FAN_OUT_PREFIX_LEN: usize = 4;
 ///
 /// A leaf directory is named by four hex digits, so two probes collide with
 /// probability 1/65536 per pair and the birthday bound puts the first collision
-/// within a few hundred probes. This bound leaves a wide margin.
+/// within a few hundred probes. Rounds need one collision each, though: a sweep
+/// of this many probes gives each of the 65536 prefixes 0.0625 probes on
+/// average, so about 128 prefixes are hit twice, which leaves
+/// [`FAN_OUT_ROUNDS`] a wide margin. The bound is checked, not trusted — the
+/// search panics if the sweep yields fewer pairs than were asked for.
 const FAN_OUT_PROBES: u32 = 4096;
 
 /// Builds probe payload `index`: a filled body whose last four bytes are the
@@ -457,73 +461,99 @@ fn fan_out_prefix(payload: &Bytes) -> String {
     hex[..FAN_OUT_PREFIX_LEN].to_string()
 }
 
-/// Two payloads whose hashes share a fan-out directory.
+/// Up to `count` pairs of payloads whose hashes share a fan-out directory, at
+/// most one pair per directory.
 ///
 /// The blob store lays a blob out under `v1/blake3/<hex[0..2]>/<hex[2..4]>/`
 /// (`storage::blob_store::versions::v1::hash_to_path`) and the metadata store
 /// snapshots one file per `to_hex()[..4]` prefix
 /// (`FileSystemMetadataStore::flush_dir`), so agreement on the first four hex
-/// digits is what puts both payloads in one directory. The search is bounded and
-/// fails loudly: a pair that did not share a directory would leave the test
-/// above exercising nothing.
-fn shared_fan_out_payloads() -> (Bytes, Bytes) {
+/// digits is what puts both payloads in one directory. Each payload appears in
+/// exactly one pair: a caller that reused a payload would put a blob whose
+/// target is already on disk, and `FileSystemBlobStore::write` skips the commit
+/// for a target that is present, so that round would exercise nothing.
+///
+/// The sweep is bounded and fails loudly in both directions it can fail: a
+/// probe bound that yielded fewer pairs than were asked for, and an incremental
+/// prefix that disagrees with the one-shot hash the store derives paths with.
+fn shared_fan_out_pairs(count: usize) -> Vec<(Bytes, Bytes)> {
     // Every probe shares its body, so the body is hashed once and the chaining
     // state is cloned per candidate: a body is a mebibyte, and re-hashing it for
     // every index would cost seconds in an unoptimized build for no more
     // information. `blake3`'s streaming digest is the same value as its one-shot
-    // digest over the same bytes; the assertions below pin that for the pair
+    // digest over the same bytes; the assertions below pin that for every pair
     // this returns, because the store derives paths with the one-shot form.
     let body = vec![PROBE_FILL; FAN_OUT_PAYLOAD_LEN - PROBE_INDEX_WIDTH];
     let mut shared = blake3::Hasher::new();
     shared.update(&body);
 
-    let mut seen: HashMap<String, u32> = HashMap::new();
+    // A prefix leaves the map when it becomes a pair, so no probe index is
+    // handed out twice and no directory contributes more than one pair.
+    let mut unpaired: HashMap<String, u32> = HashMap::new();
+    let mut pairs = Vec::with_capacity(count);
     for index in 0..FAN_OUT_PROBES {
         let mut hasher = shared.clone();
         hasher.update(&index.to_be_bytes());
         let hex = Hash::from_bytes(*hasher.finalize().as_bytes()).to_hex();
         let prefix = &hex[..FAN_OUT_PREFIX_LEN];
-        if let Some(&twin) = seen.get(prefix) {
-            let pair = (fan_out_probe(twin), fan_out_probe(index));
-            for payload in [&pair.0, &pair.1] {
-                assert_eq!(
-                    fan_out_prefix(payload),
-                    prefix,
-                    "the incremental search must agree with Hash::from_content",
-                );
-            }
-            return pair;
+        let Some(twin) = unpaired.remove(prefix) else {
+            unpaired.insert(prefix.to_string(), index);
+            continue;
+        };
+        let pair = (fan_out_probe(twin), fan_out_probe(index));
+        for payload in [&pair.0, &pair.1] {
+            assert_eq!(
+                fan_out_prefix(payload),
+                prefix,
+                "the incremental search must agree with Hash::from_content",
+            );
         }
-        seen.insert(prefix.to_string(), index);
+        pairs.push(pair);
+        if pairs.len() == count {
+            return pairs;
+        }
     }
+    let found = pairs.len();
     panic!(
-        "no two of {FAN_OUT_PROBES} probes shared a fan-out directory; the pair is not constructed"
+        "{count} distinct shared-directory pairs are required and {FAN_OUT_PROBES} probes yielded \
+         only {found}; reduce FAN_OUT_ROUNDS or raise FAN_OUT_PROBES"
     );
 }
 
 /// Two puts whose fan-out directory is shared both land and both read back.
 ///
 /// The pair is repeated in one process because the failure this covers appeared
-/// once in five isolated runs: a single round is the shape that hid it. The
-/// directory is shared by construction — see [`shared_fan_out_payloads`]. The
-/// payloads exceed the WAL inline limit so both puts write the directory now:
-/// the leaf's `create_dir_all`, the two blobs staged and renamed beside each
-/// other, and the one snapshot file the directory holds.
+/// once in five isolated runs: a single round is the shape that hid it. Every
+/// round draws its own pair from [`shared_fan_out_pairs`], so every round writes
+/// its directory for the first time: the leaf's `create_dir_all`, the two blobs
+/// staged as `<hex>.tmp` and renamed beside each other, and the one snapshot
+/// file the directory holds. The payloads exceed the WAL inline limit, so both
+/// puts take the eager path and reach those writes before returning.
 ///
-/// The cause is unproven: fifty rounds in one process did not reproduce the
-/// failure seen once in five isolated runs, and neither did five such runs nor
-/// a single run of five hundred rounds, so this pins the property that must
-/// hold rather than a mechanism that breaks it. It also guards the property
-/// directly: each round asserts the two blobs share a parent directory and are
-/// on disk, so a store that stopped writing either eagerly would fail here
-/// instead of passing while covering nothing.
+/// The cause is unproven: no repetition here has reproduced the failure seen
+/// once in five isolated runs, so this pins the property that must hold rather
+/// than a mechanism that breaks it. The rounds are a reach limit in that
+/// respect, not proof of absence: both writes that touch one directory are
+/// commit-locked — the blob target, by `FileSystemBlobStore::write`, and the
+/// shared snapshot file, by `FileSystemBlobStore::write_aux` — and the two
+/// candidate causes the brief lists — a `create_dir_all` racing a completed
+/// directory creation, and a staging name two writers share — are exactly what
+/// those locks serialise. And if the original one-in-five failure involved the
+/// brief's small payloads, it could only have lived on the WAL-only path, which
+/// this test does not touch: below the inline limit a `put` only appends its WAL
+/// entry, and the blob and the snapshot are written later by the WAL consumer.
+///
+/// Each round also asserts the coverage rather than assuming it: the two blobs
+/// share a parent directory and both are on disk, so a store that stopped
+/// writing either eagerly, or a pair that did not share a directory, would fail
+/// here instead of passing while covering nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn two_puts_into_one_fan_out_directory_both_land() {
     let fixture = open_file_cas().await;
     let cas = (*fixture).clone();
 
-    let (left, right) = shared_fan_out_payloads();
-    for round in 0..FAN_OUT_ROUNDS {
+    let pairs = shared_fan_out_pairs(FAN_OUT_ROUNDS);
+    for (round, (left, right)) in pairs.into_iter().enumerate() {
         let left_cas = cas.clone();
         let right_cas = cas.clone();
         // Each task owns its payload; `Bytes` is not `Copy`, so the round keeps
