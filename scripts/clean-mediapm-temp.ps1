@@ -9,6 +9,7 @@ $tempRoot = ([System.IO.Path]::GetTempPath()).TrimEnd(
 )
 $dryRun = $false
 $removed = 0
+$failed = 0
 
 foreach ($arg in $args) {
     switch ($arg) {
@@ -62,7 +63,11 @@ function Clear-ReadOnlyAttributes {
 function Remove-JunkDirectory {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Path
+        [string]$Path,
+        # The preflight removes its probe through this same function, but a
+        # probe is not a swept directory: it must add no `removed:` line and no
+        # count to the summary a caller reads.
+        [switch]$Quiet
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -70,7 +75,9 @@ function Remove-JunkDirectory {
     }
 
     if ($dryRun) {
-        Write-Output "would remove: $Path"
+        if (-not $Quiet) {
+            Write-Output "would remove: $Path"
+        }
     } else {
         # Clear read-only attributes first: stale artifact trees can contain
         # read-only dirs/files (mirrors clear_readonly_bits_recursively in
@@ -81,27 +88,46 @@ function Remove-JunkDirectory {
         # src/mediapm-utils/src/temp.rs (6 attempts, 40 ms backoff): Windows
         # Remove-Item -Recurse -Force can transiently fail with
         # ERROR_SHARING_VIOLATION while a lingering process holds a handle.
-        # After retries the error propagates — fail fast, matching the
-        # bash twin's `set -e` abort.
+        # A path that survives the retries is reported and the sweep moves on —
+        # one stuck tree must not hide the verdict for the others.
         $attempt = 0
-        $lastError = $null
         while ($attempt -lt 6) {
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-                $lastError = $null
                 break
             } catch {
-                $lastError = $_
                 Start-Sleep -Milliseconds 40
             }
             $attempt++
         }
-        if ($null -ne $lastError) {
-            throw $lastError
+        if (Test-Path -LiteralPath $Path) {
+            if (-not $Quiet) {
+                [Console]::Error.WriteLine("failed to remove: $Path")
+                $script:failed++
+            }
+            return
         }
-        Write-Output "removed: $Path"
+        if (-not $Quiet) {
+            Write-Output "removed: $Path"
+        }
     }
-    $script:removed++
+    if (-not $Quiet) {
+        $script:removed++
+    }
+}
+
+# A sweep must not report what it did not do. Before touching any path, remove a
+# directory the sweep itself created, through the same call the sweep uses. A
+# host that shims removal (a safe-delete wrapper whose trash step is denied, for
+# one) fails here instead of printing `removed:` for trees it left in place.
+if (-not $dryRun) {
+    $probeDir = Join-Path $tempRoot ('mediapm-probe-' + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $probeDir | Out-Null
+    Remove-JunkDirectory -Path $probeDir -Quiet
+    if (Test-Path -LiteralPath $probeDir) {
+        [Console]::Error.WriteLine("cannot remove directories under ${tempRoot}: the probe ${probeDir} survived")
+        exit 1
+    }
 }
 
 # Single mediapm-* glob at depth 1 under the OS temp dir.
@@ -119,4 +145,9 @@ if ($removed -eq 0) {
     } else {
         Write-Output "removed $removed mediapm temp director(ies)"
     }
+}
+
+if ($failed -gt 0) {
+    [Console]::Error.WriteLine("$failed director(ies) could not be removed")
+    exit 1
 }

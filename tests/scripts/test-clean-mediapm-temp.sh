@@ -13,6 +13,10 @@
 #      empty one must report a clean sweep.
 #   4. Scan failure: a `find` that dies part way through must fail the
 #      janitor, sweep nothing, and leave no listing file behind.
+#   5. Refusal: an `rm` that removes nothing must fail the janitor at its
+#      preflight, before it reports any removal, leaving every seeded path.
+#   6. Per-path failure: a directory the sweep cannot remove is named on
+#      stderr, still fails the run, and does not stop the rest of the sweep.
 #
 # POSIX sh (driven by the `mediapm-tests` crate via `cargo test-all`; also
 # runnable standalone).
@@ -28,6 +32,30 @@ fail() {
 
 # --- Runtime part: sandboxed $TMPDIR with fake mediapm-* dirs and controls.
 tmpdir="$(mktemp -d)"
+
+# The janitor removes with `rm`, so every sweep case below needs an `rm` that
+# deletes. Hosts that front `~/.local/bin/rm` with a safe-delete wrapper make
+# the janitor refuse before it touches a path, and that refusal is pinned by
+# the refusal case below; here it would otherwise turn the sweep cases into
+# more copies of it. Probe by clearing rather than by name: the wrapper this
+# probe exists for is called `rm` too. Put the winner first on `PATH` so the
+# sweep cases run and the EXIT trap can clean up.
+real_rm=""
+for candidate in /bin/rm /usr/bin/rm; do
+    probe_dir="$tmpdir/rm-probe"
+    mkdir -p "$probe_dir/child"
+    if "$candidate" -rf "$probe_dir" 2>/dev/null && [ ! -e "$probe_dir" ]; then
+        real_rm="$candidate"
+        break
+    fi
+done
+[ -n "$real_rm" ] || fail "no rm on this host clears a directory, so the janitor's sweep cannot be proven here"
+real_rm_bin="$tmpdir/real-rm-bin"
+mkdir -p "$real_rm_bin"
+printf '#!/bin/sh\nexec %s "$@"\n' "$real_rm" >"$real_rm_bin/rm"
+chmod +x "$real_rm_bin/rm"
+PATH="$real_rm_bin:$PATH"
+export PATH
 trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
 mkdir -p "$tmpdir/mediapm-artifact-fake1"
@@ -160,10 +188,10 @@ if [ -e "$(cat "$capture")" ]; then
     fail "a failed sweep left its listing behind: $(cat "$capture")"
 fi
 
-# The other way out of the loop is `rm -rf` refusing a tree, which `set -e`
-# turns into an immediate abort with the listing still on disk. Only macOS
-# offers a non-privileged way to make rm refuse (a BSD file flag), so this
-# case is Darwin-only.
+# The other way out of the loop is `rm -rf` refusing a tree. Only macOS offers
+# a non-privileged way to make rm refuse (a BSD file flag), so this case is
+# Darwin-only. The sweep now reports the refusal and continues, and the trap's
+# unlink of the listing is what must not be affected.
 if [ "$(uname -s)" = "Darwin" ] && [ "$(id -u)" -ne 0 ] && command -v chflags >/dev/null 2>&1; then
     stuck_root="$tmpdir/stuck-root"
     mkdir -p "$stuck_root/mediapm-artifact-stuck/inner"
@@ -180,6 +208,69 @@ if [ "$(uname -s)" = "Darwin" ] && [ "$(id -u)" -ne 0 ] && command -v chflags >/
     if [ -e "$(cat "$capture")" ]; then
         fail "an aborted sweep left its listing behind: $(cat "$capture")"
     fi
+fi
+
+# --- Refusal contract: a host whose `rm` cannot remove a directory it just
+# created must fail the janitor before any removal is reported, and leave every
+# seeded path where it was. The shim is what such a host looks like from the
+# janitor's side, and it is the reason the preflight exists.
+refuse_root="$tmpdir/refuse-root"
+mkdir -p "$refuse_root/mediapm-artifact-refuse1" "$refuse_root/mediapm-cache-refuse2"
+failing_rm_bin="$tmpdir/failing-rm-bin"
+mkdir -p "$failing_rm_bin"
+printf '#!/bin/sh\nexit 1\n' >"$failing_rm_bin/rm"
+chmod +x "$failing_rm_bin/rm"
+
+# Prove the shim shadows the host's `rm` before trusting the run below: if the
+# host's `rm` resolved instead, this case would pass either way.
+case "$(PATH="$failing_rm_bin:$PATH" command -v rm)" in
+    "$failing_rm_bin/rm") ;;
+    *) fail "the failing rm shim did not shadow the host rm, so the refusal case proves nothing" ;;
+esac
+
+if PATH="$failing_rm_bin:$PATH" TMPDIR="$refuse_root" "$janitor" >"$tmpdir/refuse.out" 2>"$tmpdir/refuse.err"; then
+    fail "janitor exited 0 with an rm that removes nothing ($refuse_root)"
+fi
+case "$(cat "$tmpdir/refuse.out")" in
+    *'removed:'*) fail "janitor reported a removal it did not perform: $(cat "$tmpdir/refuse.out")" ;;
+    *) ;;
+esac
+case "$(cat "$tmpdir/refuse.err")" in
+    *"cannot remove directories under $refuse_root"*) ;;
+    *) fail "refusal did not name $refuse_root: $(cat "$tmpdir/refuse.err")" ;;
+esac
+case "$(cat "$tmpdir/refuse.err")" in
+    *' survived'*) ;;
+    *) fail "refusal did not say the probe survived: $(cat "$tmpdir/refuse.err")" ;;
+esac
+test -d "$refuse_root/mediapm-artifact-refuse1" || fail "a refused sweep removed mediapm-artifact-refuse1"
+test -d "$refuse_root/mediapm-cache-refuse2" || fail "a refused sweep removed mediapm-cache-refuse2"
+
+# --- Per-path failure: the preflight passes, then one seeded directory cannot
+# be removed. It must be named on stderr, must still fail the run, and must not
+# stop the sweep from removing the rest. The obstacle is a sealed directory
+# (mode 000 holding a child): `chmod -R u+w` cannot reach inside it, so `rm -rf`
+# cannot empty it. Sealing the temp root instead would break the sweep's own
+# `mktemp`, which writes its probe and its listing there.
+if [ "$(id -u)" -ne 0 ]; then
+    fail_root="$tmpdir/fail-root"
+    mkdir -p "$fail_root/mediapm-artifact-sealed/inner" "$fail_root/mediapm-cache-ok"
+    chmod 000 "$fail_root/mediapm-artifact-sealed"
+    if TMPDIR="$fail_root" "$janitor" >"$tmpdir/fail.out" 2>"$tmpdir/fail.err"; then
+        fail "janitor exited 0 for a directory it cannot remove ($fail_root)"
+    fi
+    # Restore the mode so the EXIT trap can reach inside the tree.
+    chmod -R 700 "$fail_root/mediapm-artifact-sealed"
+    case "$(cat "$tmpdir/fail.err")" in
+        *"failed to remove: $fail_root/mediapm-artifact-sealed"*) ;;
+        *) fail "per-path failure did not name the sealed dir: $(cat "$tmpdir/fail.err")" ;;
+    esac
+    case "$(cat "$tmpdir/fail.out")" in
+        *"removed: $fail_root/mediapm-cache-ok"*) ;;
+        *) fail "a per-path failure stopped the sweep before the removable dir: $(cat "$tmpdir/fail.out")" ;;
+    esac
+    test -d "$fail_root/mediapm-artifact-sealed" || fail "the sealed dir vanished, so the case proves nothing"
+    test ! -e "$fail_root/mediapm-cache-ok" || fail "the removable dir survived next to a sealed one"
 fi
 
 # --- Static part: migration-era workspace globs must be gone.

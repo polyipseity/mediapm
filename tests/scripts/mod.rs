@@ -20,8 +20,11 @@
 //! stand for a sweep that never happened. The failure names the environment it
 //! could not use.
 //! Running `tests/scripts/test-clean-mediapm-temp.sh` by hand on such a host
-//! still fails at the janitor's non-zero exit for the same reason; the harness
-//! is what supplies the working `rm`.
+//! still works: the self-test supplies its own working `rm` for its sweep cases
+//! and pins the janitor's refusal with a shim that removes nothing. The janitor
+//! itself refuses such a host before it touches a path, so a real run there
+//! reports no removal and exits non-zero; [`bash_janitor_refuses_a_failing_rm`]
+//! pins that.
 //! The probe requires a candidate to exit 0 with its probe directory's source
 //! path gone, which a trash move also satisfies, so the harness needs no special
 //! case for a trash-moving `rm`: the janitor's sweep depends on the path being
@@ -325,6 +328,41 @@ fn seeded_scope(names: &[&str]) -> (Sandbox, PathBuf) {
     (sandbox, scope)
 }
 
+/// Whether the test process runs as root, where Unix permission bits are
+/// advisory and a sealed directory does not block removal.
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    Command::new("sh")
+        .args(["-c", "id -u"])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| stdout.trim().parse::<u32>().ok())
+        .is_some_and(|uid| uid == 0)
+}
+
+/// Seals `path` so a sweep cannot empty it: mode `000` with a child inside.
+///
+/// `rm -rf` fails on it even after the janitor's `chmod -R u+w`, because that
+/// chmod cannot open a directory it may not traverse. Sealing the sweep root
+/// instead would break the sweep's own `mktemp`, which writes its probe and its
+/// listing there.
+#[cfg(unix)]
+fn seal_with_child(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::create_dir_all(path.join("inner")).expect("create sealed tree");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o000)).expect("seal the tree");
+}
+
+/// Restores a tree sealed by [`seal_with_child`] so the sandbox can be removed.
+#[cfg(unix)]
+fn unseal(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("unseal the tree");
+}
+
 /// Exercises the full janitor sequence (dry-run, real run, empty dry-run,
 /// help, bogus arg) against a sandbox seeded with fake dirs.
 fn assert_janitor_sequence(script_name: &str, run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome) {
@@ -407,9 +445,10 @@ fn bash_janitor_dry_run_and_real_run() {
     });
 }
 
-/// A `--dry-run` never reaches `rm` in the sweep loop, so this pins the exit
-/// trap and nothing else: the shimmed `rm` fails the trap's unlink of the
-/// listing, and the dry run must still report its sweep and exit 0.
+/// A `--dry-run` reaches no removal at all: the preflight is guarded on a real
+/// run and the sweep loop only prints, so this pins the exit trap and nothing
+/// else. The shimmed `rm` fails the trap's unlink of the listing, and the dry
+/// run must still report its sweep and exit 0.
 ///
 /// The host's own `rm` is irrelevant here, so this test does not ask for one:
 /// what it needs is a `PATH` whose `rm` fails. It proves that `PATH` shadows the
@@ -467,6 +506,121 @@ fn bash_janitor_dry_run_survives_a_failing_rm() {
             "dry-run did not report {name}: {reported:?}"
         );
     }
+}
+
+/// A real run whose `rm` cannot remove a directory the janitor itself created
+/// must refuse before it reports anything. `removed:` is a claim about a tree,
+/// and a host that shims `rm` (a safe-delete wrapper whose trash step is denied)
+/// would otherwise print it for trees left in place.
+#[test]
+fn bash_janitor_refuses_a_failing_rm() {
+    if !skip_unless("bash", &["--version"]) {
+        return;
+    }
+    let seeded = &FAKE_MEDIAPM_DIRS[..2];
+    let (sandbox, scope) = seeded_scope(seeded);
+    let janitor = script_path("clean-mediapm-temp.sh");
+
+    let path = path_with_failing_rm(&sandbox.path);
+
+    // Prove the shim still shadows `rm` before trusting the run below: if the
+    // host's `rm` resolved instead, the refusal would be untested and the sweep
+    // would look like the thing that produced the exit status.
+    let scratch = sandbox.path.join("rm-shadow-probe");
+    fs::create_dir_all(&scratch).expect("create rm shadow probe dir");
+    let shadow_shim = Command::new("sh")
+        .args(["-c", r#"rm -rf "$1""#, "_"])
+        .arg(&scratch)
+        .env("PATH", &path)
+        .status()
+        .expect("spawn rm shadow probe");
+    assert!(
+        !shadow_shim.success(),
+        "the failing rm shim did not shadow the host rm, so the refusal below proves nothing"
+    );
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(&janitor);
+    cmd.env("PATH", &path);
+    let refused = capture_output(cmd, &scope);
+
+    assert!(
+        !refused.status.success(),
+        "a failing rm did not fail the run: stdout {}, stderr {}",
+        refused.stdout,
+        refused.stderr
+    );
+    assert!(
+        !refused.stdout.lines().any(|line| line.starts_with("removed:")),
+        "the janitor reported removals it did not perform: {}",
+        refused.stdout
+    );
+    let diagnostic = format!("cannot remove directories under {}", scope.display());
+    assert!(
+        refused.stderr.contains(&diagnostic),
+        "the refusal does not name the sweep root: {}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains(" survived"),
+        "the refusal does not say the probe survived: {}",
+        refused.stderr
+    );
+    for name in seeded {
+        assert!(scope.join(name).is_dir(), "{name} is gone after a refused sweep");
+    }
+}
+
+/// A real run whose preflight passes but whose sweep cannot empty one tree must
+/// name that tree on stderr and still fail, while the rest of the sweep proceeds:
+/// one stuck tree must not hide the verdict for the others.
+#[cfg(unix)]
+#[test]
+fn bash_janitor_reports_a_per_path_failure() {
+    if !skip_unless("bash", &["--version"]) {
+        return;
+    }
+    if running_as_root() {
+        println!("skipped: the sealed-tree case needs a non-root user");
+        return;
+    }
+
+    let rm = path_with_real_rm();
+    let (sandbox, scope) = seeded_scope(&FAKE_MEDIAPM_DIRS[..2]);
+    let janitor = script_path("clean-mediapm-temp.sh");
+    let sealed = scope.join(FAKE_MEDIAPM_DIRS[0]);
+    let removable = scope.join(FAKE_MEDIAPM_DIRS[1]);
+    seal_with_child(&sealed);
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(&janitor);
+    cmd.env("PATH", path_with_rm_exec(&sandbox.path, &rm));
+    let partial = capture_output(cmd, &scope);
+    unseal(&sealed);
+
+    assert!(
+        !partial.status.success(),
+        "a tree the sweep cannot remove did not fail the run: stdout {}, stderr {}",
+        partial.stdout,
+        partial.stderr
+    );
+    assert!(
+        partial.stderr.contains(&format!("failed to remove: {}", sealed.display())),
+        "the stuck tree is not named on stderr: {}",
+        partial.stderr
+    );
+    assert!(
+        partial.stderr.contains("1 director(ies) could not be removed"),
+        "the failure summary is missing: {}",
+        partial.stderr
+    );
+    assert!(
+        partial.stdout.contains(&format!("removed: {}", removable.display())),
+        "the sweep stopped before the removable tree: {}",
+        partial.stdout
+    );
+    assert!(sealed.is_dir(), "the stuck tree vanished, so the case proves nothing");
+    assert!(!removable.exists(), "the removable tree survived next to a stuck one");
 }
 
 /// Runs a janitor self-test, skipping when its interpreter is absent.
