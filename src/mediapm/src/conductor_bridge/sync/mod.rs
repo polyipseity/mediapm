@@ -1415,8 +1415,17 @@ pub(crate) async fn open_workspace_cas_store(
 /// Warnings present means `finish_warning()` (a yellow `[W]`), an empty list
 /// means `finish_success()` (green `[S]`). A run that carried a notice is not
 /// a clean run, so the bar must not report green for it — the ending is the
-/// reader's only in-flight signal that something was left un-done, and the
-/// run summary's exit status reads the same fact.
+/// reader's in-flight signal, on the screen below the tool rows, that something
+/// was left un-done.
+///
+/// The list is this phase's own observations, and it is narrower than the run's:
+/// a tool-phase warning — a fetch whose first candidate failed and a later one
+/// served it, a payload directory that survived its own removal — reaches this
+/// bar and the observer that prints it, and never enters the run summary's
+/// `warnings`, which is built from the requires-sync check, workflow failures and
+/// materialization notices. So this bar can end yellow on a run whose summary
+/// icon and exit status stay clean: the phase bar is the only place that signal
+/// appears, and the exit status is decided by a different list.
 ///
 /// One function rather than the branch at its call site so both endings are
 /// assertable: the sync path that reaches them needs a mocked provisioning

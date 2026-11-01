@@ -226,9 +226,12 @@ fn overall_progress_advances_once_per_entry() {
 
 /// A run that carried a notice ends its overall bar yellow, not green.
 ///
-/// The ending is a status, not a decoration: `[W]` tells a reader the run
-/// finished with something they should look at, and the summary's exit
-/// status reads the same fact. Swapping the two branches of
+/// The ending is a status, not a decoration: `[W]` tells a reader the phase
+/// finished with something they should look at. It is the phase's signal and not
+/// the run's — the summary's `warnings` list is built from the requires-sync
+/// check, workflow failures and materialization notices, so a tool-phase warning
+/// such as the prune sweep's surviving directory turns this bar yellow while the
+/// summary icon and exit status stay clean. Swapping the two branches of
 /// `finish_overall_bar` fails this test.
 #[test]
 fn finish_overall_bar_ends_warning_when_warnings_present() {

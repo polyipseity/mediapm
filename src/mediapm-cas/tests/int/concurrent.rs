@@ -461,8 +461,8 @@ fn fan_out_prefix(payload: &Bytes) -> String {
     hex[..FAN_OUT_PREFIX_LEN].to_string()
 }
 
-/// Up to `count` pairs of payloads whose hashes share a fan-out directory, at
-/// most one pair per directory.
+/// Up to `count` pairs of payloads whose hashes share a fan-out directory, with
+/// distinct payloads in every pair.
 ///
 /// The blob store lays a blob out under `v1/blake3/<hex[0..2]>/<hex[2..4]>/`
 /// (`storage::blob_store::versions::v1::hash_to_path`) and the metadata store
@@ -488,7 +488,16 @@ fn shared_fan_out_pairs(count: usize) -> Vec<(Bytes, Bytes)> {
     shared.update(&body);
 
     // A prefix leaves the map when it becomes a pair, so no probe index is
-    // handed out twice and no directory contributes more than one pair.
+    // handed out twice. Distinct payloads are what the round needs, not distinct
+    // directories: a reused payload would put a blob whose target is already on
+    // disk, and `write` skips the commit for a target that is present.
+    //
+    // One pair per directory is statistical, not structural: a prefix that has
+    // already produced a pair is re-inserted when a third probe shares it, and
+    // two later probes can then form a second pair in that directory. Cheap to
+    // leave as it is, because the second pair costs a directory whose leaf
+    // `create_dir_all` finds present and nothing else — both its payloads are
+    // fresh, so both blob commits are still writes.
     let mut unpaired: HashMap<String, u32> = HashMap::new();
     let mut pairs = Vec::with_capacity(count);
     for index in 0..FAN_OUT_PROBES {
@@ -524,24 +533,31 @@ fn shared_fan_out_pairs(count: usize) -> Vec<(Bytes, Bytes)> {
 ///
 /// The pair is repeated in one process because the failure this covers appeared
 /// once in five isolated runs: a single round is the shape that hid it. Every
-/// round draws its own pair from [`shared_fan_out_pairs`], so every round writes
-/// its directory for the first time: the leaf's `create_dir_all`, the two blobs
-/// staged as `<hex>.tmp` and renamed beside each other, and the one snapshot
-/// file the directory holds. The payloads exceed the WAL inline limit, so both
-/// puts take the eager path and reach those writes before returning.
+/// round draws its own pair from [`shared_fan_out_pairs`], so every round stages
+/// two blobs the store has never seen into its directory: the leaf's
+/// `create_dir_all` (usually the directory's first write), the two blobs staged
+/// as `<hex>.tmp` and renamed beside each other, and the one snapshot file the
+/// directory holds. The payloads exceed the WAL inline limit, so both puts take
+/// the eager path and reach those writes before returning.
 ///
 /// The cause is unproven: no repetition here has reproduced the failure seen
 /// once in five isolated runs, so this pins the property that must hold rather
 /// than a mechanism that breaks it. The rounds are a reach limit in that
-/// respect, not proof of absence: both writes that touch one directory are
-/// commit-locked — the blob target, by `FileSystemBlobStore::write`, and the
-/// shared snapshot file, by `FileSystemBlobStore::write_aux` — and the two
-/// candidate causes the brief lists — a `create_dir_all` racing a completed
-/// directory creation, and a staging name two writers share — are exactly what
-/// those locks serialise. And if the original one-in-five failure involved the
-/// brief's small payloads, it could only have lived on the WAL-only path, which
-/// this test does not touch: below the inline limit a `put` only appends its WAL
-/// entry, and the blob and the snapshot are written later by the WAL consumer.
+/// respect, not proof of absence. The locks are narrower than "both writes that
+/// touch one directory are commit-locked" would suggest: `FileSystemBlobStore::write`
+/// locks the object path it is about to install (`fs.rs:413`, keyed by
+/// `hash_to_path`), so two blobs of different hashes in one directory never wait
+/// on each other, and both `ensure_parent` (`fs.rs:407`, `:227-233`) and
+/// `write_aux` (`:694-702`) create the directory before taking any lock. The one
+/// lock the pair shares is the snapshot file's, in `write_aux` (`fs.rs:701`),
+/// because `aux_path` (`fs.rs:364-368`) puts that file in the fan-out directory
+/// rather than in the hash's own path. So a `create_dir_all` racing a completed
+/// directory creation is not serialized by these locks at all, and a staging
+/// name two writers share can only be the shared snapshot's. And if the original
+/// one-in-five failure involved the brief's small payloads, it could only have
+/// lived on the WAL-only path, which this test does not touch: below the inline
+/// limit a `put` only appends its WAL entry, and the blob and the snapshot are
+/// written later by the WAL consumer.
 ///
 /// Each round also asserts the coverage rather than assuming it: the two blobs
 /// share a parent directory and both are on disk, so a store that stopped

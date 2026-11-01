@@ -461,6 +461,42 @@ mod tests {
         );
     }
 
+    /// A candidate the platform cannot spawn is rejected without a permission bit.
+    ///
+    /// The user-level guarantee: the harness-rejection rule has two halves, and
+    /// only the "answers like a harness" half has a portable impostor —
+    /// `a_candidate_that_is_not_the_stub_is_rejected` needs an executable bit, so
+    /// it is `unix`-only. The "cannot be spawned" half needs no permission bit: a
+    /// text file is not a program on either platform, so the launch fails — on the
+    /// missing execute bit, or on the bytes the loader will not start. The name
+    /// carries the platform's executable suffix either way, so what the probe
+    /// tries to launch is the file that was written, and the test asserts the
+    /// refusal itself before it asserts the rejection: a platform that did launch
+    /// the file would fail on the fixture rather than pass silently.
+    ///
+    /// The mutation this pins: returning `true` from the launch-failure arm of
+    /// `behaves_like_the_stub` accepts a candidate that never ran, and the locator
+    /// then hands a caller a path that cannot execute.
+    #[test]
+    fn a_candidate_that_cannot_be_spawned_is_rejected() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let unexecutable = dir
+            .path()
+            .join(format!("{STUB_TOOL_BIN_NAME}-unexecutable{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&unexecutable, "not an executable image\n")
+            .expect("the impostor must be writable");
+
+        assert!(
+            Command::new(&unexecutable).output().is_err(),
+            "the fixture must be a file the platform will not launch: {}",
+            unexecutable.display(),
+        );
+        assert!(
+            !behaves_like_the_stub(&unexecutable),
+            "a file that cannot be spawned must not be accepted as the stub",
+        );
+    }
+
     /// A directory with no Cargo-built stub receives one that runs.
     ///
     /// The user-level guarantee: `cargo test-pkg <consumer>` builds no binary target
