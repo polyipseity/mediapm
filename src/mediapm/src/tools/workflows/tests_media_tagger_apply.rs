@@ -31,13 +31,14 @@
 //! would need a stub that identifies its metadata input by content rather than by
 //! position.
 //!
-//! # Prerequisite: the stub binary must be built first
+//! # The stub needs no build step of its own
 //!
 //! `cargo test-pkg mediapm` selects the `mediapm` package alone, and Cargo does
-//! not build a dev-dependency's binary target for it, so this module's test needs
-//! `cargo build-pkg mediapm-test-support` to have run. The workspace gate
-//! (`cargo test-all`) passes `--workspace --all-targets` and builds the stub
-//! itself, so only the selective per-crate command needs the extra step.
+//! not build a dev-dependency's binary target for it. `stub_tool_path()` compiles
+//! the stub from the source `mediapm-test-support` embeds when Cargo built none, so
+//! the selective per-crate command runs on a clean `target/` with no prior
+//! `cargo build-pkg` step. The workspace gate (`cargo test-all`) passes
+//! `--workspace --all-targets` and reaches the stub Cargo built itself.
 
 use std::collections::BTreeMap;
 

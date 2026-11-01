@@ -11,15 +11,16 @@
 //! budget and the knob that set it so the caller learns which policy layer
 //! fired rather than a bare transport failure.
 //!
-//! # Prerequisite
+//! # The stub needs no build step of its own
 //!
 //! Every test in this module runs the stub tool from `mediapm-test-support`,
-//! which is a dev-dependency. `cargo test-pkg
-//! mediapm-conductor` selects that package alone and does not build a
-//! dev-dependency's binary target, so run `cargo build-pkg mediapm-test-support`
-//! once first — on a clean `target/` the test panics inside `stub_tool_path()`
-//! with that command in its message rather than asserting. The workspace gate
-//! (`cargo test-all`) passes `--workspace --all-targets` and needs no such step.
+//! which is a dev-dependency, and `cargo test-pkg mediapm-conductor` selects that
+//! package alone, so Cargo builds no binary target from it. `stub_tool_path()`
+//! answers that absence by compiling the stub from the source the crate embeds,
+//! into the running test binary's directory, so this module runs on a clean
+//! `target/` without a prior `cargo build-pkg mediapm-test-support`. The workspace
+//! gate (`cargo test-all`) passes `--workspace --all-targets` and reaches the stub
+//! Cargo built itself.
 
 use std::collections::BTreeMap;
 
