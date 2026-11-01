@@ -17,15 +17,15 @@
 //! harness probes for a deleting `rm`, hands the children a `PATH` whose
 //! first `rm` is that one, and skips with a message when the host has none,
 //! so an environment limitation is never reported as a janitor defect.
+//! Running `tests/scripts/test-clean-mediapm-temp.sh` by hand on such a host
+//! still fails at the janitor's non-zero exit for the same reason; the
+//! harness is what supplies the working `rm`.
 //! A trash-based `rm` that moves rather than deletes can still satisfy the
 //! probe, in which case swept trees land in the user's Trash instead of
 //! vanishing — an observed consequence, not a false pass. A host with no
 //! working `rm` at all prints `skipped:` on stdout rather than skipping at
 //! the harness level, so nextest reports it as passed: a known trade-off,
 //! matching the file's existing interpreter-skip convention.
-//! Running `tests/scripts/test-clean-mediapm-temp.sh` by hand on such a host
-//! still fails at the janitor's non-zero exit for the same reason; the
-//! harness is what supplies the working `rm`.
 
 use std::ffi::OsString;
 use std::fs;
@@ -287,6 +287,10 @@ fn skip_unless(program: &str, args: &[&str]) -> bool {
 /// A sandbox whose `scope` subdir holds the dirs named `names`, plus that scope
 /// path.
 ///
+/// The first named dir also holds a `probe-file`, so the sweep is handed a tree
+/// that is not empty: the shape [`rm_deletes`] probes for and the janitor's real
+/// run has to delete.
+///
 /// The janitor scans with `find "$tmp_root" -maxdepth 1 -name 'mediapm-*'`,
 /// which also matches the starting point itself. The sandbox root carries
 /// the managed `mediapm-` prefix (so a leaked sandbox is reclaimed by the
@@ -299,6 +303,9 @@ fn seeded_scope(names: &[&str]) -> (Sandbox, PathBuf) {
     fs::create_dir_all(&scope).expect("create janitor scope dir");
     for name in names {
         fs::create_dir_all(scope.join(name)).expect("create seeded sandbox dir");
+    }
+    if let Some(first) = names.first() {
+        fs::write(scope.join(first).join("probe-file"), b"probe").expect("seed probe file");
     }
     (sandbox, scope)
 }
@@ -392,7 +399,9 @@ fn bash_janitor_dry_run_and_real_run() {
 /// listing, and the dry run must still report its sweep and exit 0.
 ///
 /// The host's own `rm` is irrelevant here, so this test does not ask for one:
-/// what it needs is a `PATH` whose `rm` fails.
+/// what it needs is a `PATH` whose `rm` fails. It proves that `PATH` shadows the
+/// host's `rm` before running the janitor, so a shim that stopped shadowing
+/// fails the test rather than leaving it green and pinning nothing.
 #[test]
 fn bash_janitor_dry_run_survives_a_failing_rm() {
     if !skip_unless("bash", &["--version"]) {
@@ -402,12 +411,35 @@ fn bash_janitor_dry_run_survives_a_failing_rm() {
     let (sandbox, scope) = seeded_scope(seeded);
     let janitor = script_path("clean-mediapm-temp.sh");
 
+    let path = path_with_failing_rm(&sandbox.path);
+
+    // Prove the shim still shadows `rm` before trusting the run below: if the
+    // host's `rm` resolved instead, the trap would pass either way and this
+    // test would pin nothing.
+    let scratch = sandbox.path.join("rm-shadow-probe");
+    fs::create_dir_all(&scratch).expect("create rm shadow probe dir");
+    let shadow_shim = Command::new("sh")
+        .args(["-c", r#"rm -rf "$1""#, "_"])
+        .arg(&scratch)
+        .env("PATH", &path)
+        .status()
+        .expect("spawn rm shadow probe");
+    assert!(
+        !shadow_shim.success(),
+        "the failing rm shim did not shadow the host rm, so the dry run below proves nothing"
+    );
+
     let mut cmd = Command::new("bash");
     cmd.arg(&janitor).arg("--dry-run");
-    cmd.env("PATH", path_with_failing_rm(&sandbox.path));
+    cmd.env("PATH", &path);
     let dry = capture_output(cmd, &scope);
 
-    assert!(dry.status.success(), "a failing rm failed the dry run: {}", dry.stderr);
+    assert!(
+        dry.status.success(),
+        "a failing rm failed the dry run: stdout {}, stderr {}",
+        dry.stdout,
+        dry.stderr
+    );
     let reported: Vec<&str> =
         dry.stdout.lines().filter(|line| line.starts_with("would remove: ")).collect();
     assert_eq!(
