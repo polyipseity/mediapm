@@ -534,6 +534,7 @@ mod tests {
     use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
     use mediapm_conductor::cache_user_level::UserLevelCache;
     use mediapm_conductor::tools::provider::{VersionSpec, host_arch_label};
+    use mediapm_utils::progress::ProgressTerminal;
     use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -680,6 +681,85 @@ mod tests {
             Ok(None) => panic!("media-tagger should return Ok(Some(...)), got Ok(None)"),
             Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
         }
+    }
+
+    /// A bar that already finished keeps its status when a later phase fails.
+    ///
+    /// The resolve bar is finished success before the fetch begins, and
+    /// `finish_error_bars` walks every bar the pass created. Without its
+    /// `is_finished()` guard, the fetch failure below would repaint the
+    /// resolved row red — telling the operator that resolution failed when it
+    /// had already succeeded.
+    ///
+    /// The assertion reads a real terminal's frame rather than a recording
+    /// tracker: the recording harness answers a handle's `is_finished()` from
+    /// the whole shared op log, so every bar it hands out reads finished as
+    /// soon as one bar finishes, which is not the production guard.
+    #[tokio::test]
+    async fn a_fetch_failure_does_not_fail_the_finished_resolve_bar() {
+        let cas = new_in_memory_cas();
+        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
+        let cache = Cache::open(
+            tmp.path(),
+            &[CacheDomainConfig {
+                domain: "tools".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("cache open");
+        let cache = UserLevelCache::from_cache(cache);
+
+        let term = indicatif::InMemoryTerm::new(24, 100);
+        let terminal = ProgressTerminal::builder()
+            .with_term_like(Box::new(term.clone()))
+            .with_pre_roll_capture(Box::new(indicatif::InMemoryTerm::new(24, 100)))
+            .with_ticker_enabled(false)
+            .capacity(4)
+            .build();
+        let screen = terminal.screen().build();
+
+        // A port nothing listens on: the fetch leg fails at once, with no
+        // server to start and nothing to reach over the network.
+        let fetch = ResolvedToolFetch {
+            tool_id: "yt-dlp".to_string(),
+            sources: vec![ResolvedSource {
+                os: "linux".to_string(),
+                arch: host_arch_label(),
+                producer: SourceProducer::Fetch {
+                    urls: vec!["http://127.0.0.1:9/yt-dlp_linux".to_string()],
+                },
+                expected_size: None,
+                size_hint_bytes: None,
+                identity: None,
+            }],
+        };
+        let outcome =
+            PreResolveOutcome::Resolved(fetch, test_metadata("2025.07.15", "abc", true, 1));
+
+        let failure = fetch_and_import_tool_payload(&cas, "yt-dlp", &cache, &screen, outcome)
+            .await
+            .expect_err("an unreachable candidate must fail the pass");
+        assert_eq!(failure.phase, ProvisionPhase::Fetch, "the failure names its phase");
+
+        screen.tick();
+        let contents = term.contents();
+        let row = |phase: &str| {
+            contents
+                .lines()
+                .find(|line| line.contains(phase))
+                .unwrap_or_else(|| panic!("no {phase} row in:\n{contents}"))
+                .to_string()
+        };
+        assert!(
+            !row("[res]").contains("[F]"),
+            "the resolved row succeeded before the fetch ran and must keep that status:\n{contents}"
+        );
+        assert!(
+            row("[fch]").contains("[F]"),
+            "the fetch row is the one that failed, so it carries the red marker:\n{contents}"
+        );
     }
 
     #[tokio::test]

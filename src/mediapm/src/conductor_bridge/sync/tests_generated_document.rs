@@ -81,6 +81,11 @@ fn external_data_rebuilt_independently_from_tool_specs() {
 /// would name a release the workspace has no payload for. The registry
 /// entry this arm also pushes does carry the composite, which is the audit
 /// record; the document spec is what a step row reads, so it stays empty.
+///
+/// The key is asserted on both maps the arm writes: the generated document's
+/// `tools` keys, and the runtime map `.env.generated` derives its payload
+/// paths from. Both are conductor tool ids, and an empty content map gives the
+/// bare id — a content-hash suffix would show up as an `@` in either key.
 #[test]
 fn fetched_none_registers_a_spec_without_a_version() {
     let screen = ProgressScreen::disabled();
@@ -131,6 +136,12 @@ fn fetched_none_registers_a_spec_without_a_version() {
         !generated_doc.tools.keys().any(|key| key.contains('@')),
         "an empty content map yields the bare tool id as the document key: {keys:?}",
         keys = generated_doc.tools.keys().collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        tool_runtimes.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["media-tagger"],
+        "the runtime map .env.generated reads is keyed by the same bare conductor tool id",
     );
 
     let record =
