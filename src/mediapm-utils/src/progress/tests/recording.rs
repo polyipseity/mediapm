@@ -250,6 +250,24 @@ fn standalone_handle_has_no_bar_index() {
     assert_eq!(entries[0].bar, BarId::Standalone);
 }
 
+/// A tracker hands every handle the same log, so a tracker-wide answer makes one
+/// bar's finish report every bar finished. The handle's own ending is the only
+/// finish that counts for it.
+#[test]
+fn is_finished_answers_for_the_handle_not_the_tracker() {
+    use super::super::ProgressBarApi;
+
+    let tracker = RecordingProgressTracker::new();
+    let first = tracker.add_bar(3, "first");
+    let second = tracker.add_bar(3, "second");
+
+    assert!(!first.is_finished(), "a fresh handle has finished nothing");
+    first.finish_success();
+
+    assert!(first.is_finished(), "the handle that finished reports finished");
+    assert!(!second.is_finished(), "its sibling has not finished and must say so");
+}
+
 // ---- BarStyle selection (Stage 5 worker-slot generalization) ---------
 
 #[test]

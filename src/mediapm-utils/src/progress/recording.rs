@@ -436,14 +436,24 @@ impl RecordingTrackedHandle {
     /// identity dropped.
     ///
     /// When created via [`RecordingProgressTracker::add_bar`], this
-    /// returns the same shared log as all handles from that tracker.
+    /// returns the same shared log as all handles from that tracker, so it
+    /// holds every bar's operations and cannot answer what one bar did. Use
+    /// [`recorded`](Self::recorded) plus the bar id when the answer must be
+    /// about one bar.
     #[must_use]
     pub fn ops(&self) -> Vec<ProgressOp> {
         self.ops.lock().expect("recording lock").iter().map(|entry| entry.op.clone()).collect()
     }
 
-    /// Return a snapshot of recorded operations for this handle, each tagged
-    /// with this handle's [`BarId`].
+    /// Return a snapshot of recorded operations, each tagged with the bar it
+    /// came from.
+    ///
+    /// A tracker-created handle shares one log with every other handle from the
+    /// same tracker, so this is that tracker's whole history rather than this
+    /// handle's. Each entry carries its own [`BarId`] for exactly that reason:
+    /// an answer about one bar filters the entries on
+    /// [`bar`](Self::bar) instead of trusting the log to hold one bar's
+    /// operations.
     #[must_use]
     pub fn recorded(&self) -> Vec<RecordedProgressOp> {
         self.ops.lock().expect("recording lock").clone()

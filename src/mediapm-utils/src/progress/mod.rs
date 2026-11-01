@@ -105,16 +105,25 @@ impl ProgressBarApi for recording::RecordingTrackedHandle {
             suppress_rate_eta: false,
         }
     }
+
+    /// Whether this bar finished, not whether any bar of the tracker did.
+    ///
+    /// Every handle a tracker hands out records into the one log, so an
+    /// unfiltered scan reports every bar finished as soon as one bar finishes.
+    /// The answer is therefore scoped to the entries tagged with this handle's
+    /// own [`BarId`], which also means a [`recording::BarId::Standalone`] handle
+    /// answers from the entries in its private log.
     fn is_finished(&self) -> bool {
-        let ops = self.ops();
-        ops.iter().any(|op| {
-            matches!(
-                op,
-                recording::ProgressOp::FinishSuccess
-                    | recording::ProgressOp::FinishError
-                    | recording::ProgressOp::FinishWarning
-                    | recording::ProgressOp::FinishAndClear
-            )
+        let mine = recording::RecordingTrackedHandle::bar(self);
+        recording::RecordingTrackedHandle::recorded(self).iter().any(|entry| {
+            entry.bar == mine
+                && matches!(
+                    entry.op,
+                    recording::ProgressOp::FinishSuccess
+                        | recording::ProgressOp::FinishError
+                        | recording::ProgressOp::FinishWarning
+                        | recording::ProgressOp::FinishAndClear
+                )
         })
     }
     fn finish_warning(&self) {
