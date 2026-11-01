@@ -352,7 +352,15 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
 #[async_trait]
 impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M, B> {
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
-        #[allow(clippy::cast_possible_truncation)]
+        // The consumer returns the entries it drained, and a drain that could
+        // exceed `usize::MAX` entries would have to keep more than that many on
+        // disk: on a 64-bit target the cast cannot lose a bit, and on a 32-bit
+        // one the log itself would be larger than the address space.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a drained-entry count is bounded by entries the log held, which cannot exceed \
+                      the address space that holds them"
+        )]
         let count = self.bg_engine.run_wal_consumer().await? as usize;
         let maint_done = self.bg_engine.run_maintenance().await?;
         Ok(OptimizeReport { wal_entries_consumed: count, maintenance_done: maint_done })

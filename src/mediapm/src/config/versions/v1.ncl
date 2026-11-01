@@ -258,6 +258,20 @@ let ManagedFileRecordV1 = {
 }
 in
 
+# ||| Tool registry record (mirrors the V1 wire type `ToolRegistryRecordV1`).
+# |||
+# ||| Distinct from [`ToolRegistryEntryV1`], which is the V2-and-later entry the
+# ||| V2 migration writes: V1 keyed this record by a composed registry key and
+# ||| carried the source URL and the transition time, neither of which survives.
+let ToolRegistryRecordV1 = {
+  name | String,
+  version | String,
+  source | String,
+  registry_multihash | String,
+  last_transition_unix_seconds | IntegerNumberV1,
+}
+in
+
 # ||| Managed workflow step state (mirrors the V1 wire type `ManagedWorkflowStepStateV1`).
 let ManagedWorkflowStepStateV1 = {
   variant_hashes | { _ : String } | default = {},
@@ -296,16 +310,25 @@ let StateMarkerV1 = std.contract.from_predicate (
 )
 in
 
-# ||| mediapm V1 state document (mirrors the V1 shape only; later versions add
-# and, at V4, remove fields).  Closed: no open `..` tail.
+# ||| mediapm V1 state document, in the shape the V1 reader accepts.
+# ||| Closed: no open `..` tail.
+# |||
+# ||| The field names are the ones on the wire at V1, not the ones this build's
+# ||| state model uses: V2 renamed `tool_registry` to `managed_tools`, dropped
+# ||| `active_tools` and `last_materialized_state_hash`, and reduced each
+# ||| `workflow_states` entry from a history vec to one record. Describing V1 in
+# ||| V5's names would be a contract for a document no V1 writer produced, so the
+# ||| migration is what carries the rename, not this contract.
 # ||| The marker is required rather than defaulted: every writer emits it, so a
 # ||| payload that names none is foreign or damaged, and a default would accept
 # ||| a document no reader takes while supplying a number nothing wrote.
 let MediaPmStateV1 = {
   version | StateMarkerV1,
   managed_files | { _ : ManagedFileRecordV1 } | default = {},
-  managed_tools | Array ToolRegistryEntryV1 | default = [],
-  workflow_states | { _ : ManagedWorkflowStepStateV1 } | default = {},
+  tool_registry | { _ : ToolRegistryRecordV1 } | default = {},
+  active_tools | { _ : String } | default = {},
+  workflow_states | { _ : Array ManagedWorkflowStepStateV1 } | default = {},
+  last_materialized_state_hash | String | optional,
 }
 in
 

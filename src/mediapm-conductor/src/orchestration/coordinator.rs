@@ -1213,11 +1213,21 @@ where
             DEFAULT_CONDUCTOR_GC_TTL_SECONDS,
         )
         .await?;
-        tracing::info!(
-            "conductor GC completed: {} instances removed, {} orphans removed",
-            report.instances_removed,
-            report.orphans_removed,
-        );
+        // An abstained pass removed nothing because it judged nothing, and a line
+        // that says "completed" beside two zeroes reads as a library with nothing
+        // to do. The reason is what an operator acts on.
+        match &report.classification {
+            crate::gc::GcClassification::Abstained { reason } => {
+                tracing::info!("conductor GC abstained: {reason}");
+            }
+            crate::gc::GcClassification::Classified => {
+                tracing::info!(
+                    "conductor GC completed: {} instances removed, {} orphans removed",
+                    report.instances_removed,
+                    report.orphans_removed,
+                );
+            }
+        }
         Ok(report)
     }
 
