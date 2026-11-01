@@ -204,10 +204,10 @@ fn command_v(name: &str) -> Option<PathBuf> {
 /// Whether `candidate` clears a non-empty probe directory: exited 0 with the
 /// probe directory's source path gone.
 ///
-/// The source path is the whole assertion: whether the tree was unlinked or
-/// moved to the Trash is not something the janitor's sweep depends on, so a
-/// trash move satisfies this predicate and the harness needs no special case
-/// for one.
+/// Which way the path disappeared is not asserted: whether the tree was
+/// unlinked or moved to the Trash is not something the janitor's sweep depends
+/// on, so a trash move satisfies this predicate and the harness needs no special
+/// case for one.
 ///
 /// Both halves matter: a trash wrapper that is denied exits non-zero and leaves
 /// the source path, and a candidate that leaves it cannot prove the janitor's

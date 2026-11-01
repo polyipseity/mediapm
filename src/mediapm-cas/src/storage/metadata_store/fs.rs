@@ -56,6 +56,11 @@ impl FileSystemMetadataStore {
     ///
     /// The per-directory snapshots are not loaded until [`rebuild_from_wal`](MetadataStore::rebuild_from_wal)
     /// is called.
+    ///
+    /// Build one store per blob store and clone it: `flush_dir` orders the
+    /// writers of one directory without merging their facts, so two stores built
+    /// here over one blob store would each install a snapshot holding only the
+    /// facts its own store collected.
     pub fn new(blob_store: FileSystemBlobStore) -> Self {
         Self { inner: InMemoryMetadataStore::new(), blob_store }
     }

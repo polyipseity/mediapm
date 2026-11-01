@@ -1556,10 +1556,12 @@ mod tests {
     ///
     /// What this pins: a guard taken through one clone blocks a clone's
     /// acquisition of the same fan-out directory, the wait ends when the guard
-    /// drops, and a lock in another fan-out directory is not affected — so the
-    /// key is the directory and not the store. It also pins that two hashes in
-    /// one directory share the key, which is what lets a caller hold the lock
-    /// across a whole recompute rather than one file's write.
+    /// drops, and a lock in a sibling directory — one under the same 2-hex
+    /// ancestor, so a key that regressed to that ancestor would collide — stays
+    /// free, so the key is the directory and not the store or its parent. It
+    /// also pins that two hashes in one directory share the key, which is what
+    /// lets a caller hold the lock across a whole recompute rather than one
+    /// file's write.
     ///
     /// What it does not pin: two blob stores opened independently over one root
     /// share nothing here, and this test says nothing about them. That pair is
@@ -1572,7 +1574,7 @@ mod tests {
             .await
             .expect("blob store");
         let (left, right) = fan_out_pair();
-        let elsewhere = other_fan_out(&left);
+        let sibling = sibling_fan_out(&left);
 
         // The lock keys by the object's own fan-out directory, so this is the
         // premise the rest of the test rests on: that directory is where the aux
@@ -1586,6 +1588,11 @@ mod tests {
             hash_to_path(store.root(), &left).parent(),
             hash_to_path(store.root(), &right).parent(),
             "the pair has to share a fan-out directory, or the blocks below prove nothing"
+        );
+        assert_ne!(
+            hash_to_path(store.root(), &left).parent(),
+            hash_to_path(store.root(), &sibling).parent(),
+            "the sibling has to sit in another fan-out directory, or the last block proves nothing"
         );
 
         // One hash twice, then two hashes of one directory: both acquisitions
@@ -1609,13 +1616,15 @@ mod tests {
             );
         }
 
-        // A lock in another directory is a different key, so it is free while
-        // this one is held.
+        // A lock in a sibling directory is a different key, so it is free while
+        // this one is held. Sibling and not merely a different prefix: the two
+        // share the 2-hex ancestor, so a key that regressed to that ancestor
+        // would block this waiter and fail the assertion.
         let guard = store.lock_aux_dir(&left).await;
-        let waiter = start_aux_waiter(store.clone(), elsewhere);
+        let waiter = start_aux_waiter(store.clone(), sibling);
         assert!(
             waiter.settles().await,
-            "holding one fan-out directory's aux lock must not block another directory"
+            "holding one fan-out directory's aux lock must not block a sibling directory"
         );
         drop(guard);
     }
@@ -1698,17 +1707,26 @@ mod tests {
         unreachable!("two of a few hundred hashes share a four-hex-digit fan-out")
     }
 
-    /// Find a hash whose aux file lands in a fan-out directory other than
-    /// `hash`'s.
-    fn other_fan_out(hash: &Hash) -> Hash {
-        let prefix = &hash.to_hex()[..4];
+    /// Find a hash whose aux files land in a sibling of `hash`'s fan-out
+    /// directory: the same first two hex digits, so it shares the 2-hex
+    /// ancestor, but different third and fourth ones.
+    ///
+    /// A sibling rather than an unrelated prefix, because sharing the ancestor
+    /// is what makes the free-lock block of
+    /// [`aux_dir_lock_is_shared_by_clones`] fail if the lock key ever covers the
+    /// ancestor instead of the directory. A hash with any other prefix would
+    /// stay free under both keys and prove nothing.
+    fn sibling_fan_out(hash: &Hash) -> Hash {
+        let hex = hash.to_hex();
+        let (ancestor, directory) = (&hex[..2], &hex[2..4]);
         for counter in 0u32.. {
-            let candidate = Hash::from_content(format!("aux-dir-other-{counter}").as_bytes());
-            if &candidate.to_hex()[..4] != prefix {
+            let candidate = Hash::from_content(format!("aux-dir-sibling-{counter}").as_bytes());
+            let candidate_hex = candidate.to_hex();
+            if &candidate_hex[..2] == ancestor && &candidate_hex[2..4] != directory {
                 return candidate;
             }
         }
-        unreachable!("sixteen of sixteen prefixes cannot all equal one prefix")
+        unreachable!("a few hundred hashes cannot all miss the sibling directories of one ancestor")
     }
 
     #[cfg(unix)]

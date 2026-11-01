@@ -1262,23 +1262,29 @@ mod tests {
     }
 
     /// Verifies that `lookup_bytes()` does not update `last_access`.
+    ///
+    /// The stamp is whole seconds and the lookup is fast, so the clock is
+    /// stepped between the store and the lookup: a bump would then land on the
+    /// next second and be visible, rather than hiding behind an unchanged stamp.
     #[tokio::test]
     async fn lookup_bytes_does_not_bump_last_access() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
-        let cache = Cache::open(
+        let clock = TestClock::new(1_005);
+        let cache = Cache::with_test_clock(
             root.path(),
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
                 entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
+            &clock,
         )
-        .await
-        .expect("open cache");
+        .await;
 
         cache.store_bytes("test", "key", b"data").await;
         let before = cache.get_entry_last_access("test", "key").expect("entry exists");
 
+        clock.set(1_006);
         let _ = cache.lookup_bytes("test", "key").await;
         let after = cache.get_entry_last_access("test", "key").expect("entry still exists");
         assert_eq!(before, after, "lookup_bytes must not bump last_access");
