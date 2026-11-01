@@ -373,6 +373,22 @@ fn front_tail_preserves_a_path_tail() {
     assert!(short.ends_with("song.mkv"), "filename lost: {short:?}");
 }
 
+/// Clipping an already clipped tail at the same target returns it unchanged.
+///
+/// The clip is the primitive the ladder shrinks with, so a second pass over
+/// its own output is the only shape a repeat call can take, and it must be a
+/// no-op: a clip that kept eating columns would make the row depend on how
+/// many times it was fitted rather than on the width it was given.
+#[test]
+fn front_tail_is_idempotent() {
+    let text = "Music/Artist/Album/song.mkv";
+    for target in 0..=text.chars().count() {
+        let once = front_tail(text, target);
+        assert_eq!(front_tail(&once, target), once, "second clip at {target} changed the tail");
+        assert!(once.chars().count() <= target, "clip at {target} left {once:?} over target");
+    }
+}
+
 #[test]
 fn empty_input_yields_empty_output() {
     assert_eq!(fit_segments(&[], 40), "");

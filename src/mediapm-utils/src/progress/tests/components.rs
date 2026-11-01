@@ -544,6 +544,32 @@ fn semantic_truncate_prefix_version_shrinks_first_long_version() {
     assert_eq!(render_prefix(&result), "\x1b[0mffmpeg", "all optional components dropped");
 }
 
+/// Truncating an already truncated prefix at the same width must return it
+/// unchanged, and that holds at every width on the ladder, including the
+/// degenerate ones below a single component.
+///
+/// This is the idempotence half of the truncator's contract: it is a pure
+/// `&`-borrowed function, so it has no state to leave behind, and a second
+/// pass over its own output is the one shape a repeat call can take.
+#[test]
+fn semantic_truncate_prefix_is_idempotent() {
+    let parts = prefix_parts_wget();
+    for width in 0..=24 {
+        let once = super::super::inner::semantic_truncate_prefix(&parts, width);
+        let twice = super::super::inner::semantic_truncate_prefix(&once, width);
+        assert_eq!(
+            render_prefix(&twice),
+            render_prefix(&once),
+            "second truncation at width {width} changed the prefix"
+        );
+        assert!(
+            super::super::inner::visible_width(&render_prefix(&once)) <= width,
+            "truncation at width {width} left the prefix over budget: {:?}",
+            render_prefix(&once)
+        );
+    }
+}
+
 // ---- semantic_truncate_suffix tests (Phase 1) -----------------------
 
 /// Canonical test parts: auto components (33 visible) + custom (10).
@@ -686,6 +712,32 @@ fn semantic_truncate_suffix_custom_only() {
     let parts = SuffixComponents { custom: "custom".into(), ..Default::default() };
     let result = super::super::inner::semantic_truncate_suffix(&parts, 10);
     assert_eq!(render_suffix(&result), " custom", "custom appended after empty auto");
+}
+
+/// Truncating an already truncated suffix at the same width must return it
+/// unchanged, and that holds at every width on the ladder, including the
+/// widths where the auto fields go.
+///
+/// This is the idempotence half of the truncator's contract: it is a pure
+/// `&`-borrowed function, so it has no state to leave behind, and a second
+/// pass over its own output is the one shape a repeat call can take.
+#[test]
+fn semantic_truncate_suffix_is_idempotent() {
+    let parts = suffix_parts_full();
+    for width in 0..=43 {
+        let once = super::super::inner::semantic_truncate_suffix(&parts, width);
+        let twice = super::super::inner::semantic_truncate_suffix(&once, width);
+        assert_eq!(
+            render_suffix(&twice),
+            render_suffix(&once),
+            "second truncation at width {width} changed the suffix"
+        );
+        assert!(
+            super::super::inner::visible_width(&render_suffix(&once)) <= width,
+            "truncation at width {width} left the suffix over budget: {:?}",
+            render_suffix(&once)
+        );
+    }
 }
 
 #[test]
