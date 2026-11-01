@@ -466,6 +466,7 @@ pub(super) async fn resolve_workflow_step_output_hashes(
 /// object sends them to the store, an unreadable archive member sends them to the
 /// bytes the store holds, a binding's own template sends them to the document, and
 /// a prior step output sends them to the traversal or to the step that produced it.
+#[derive(Clone, Copy)]
 enum UnresolvedInputCause {
     /// The binding names a step output this traversal has not resolved.
     PriorStepOutput,
@@ -486,7 +487,7 @@ impl UnresolvedInputCause {
     ///
     /// Each phrase is true of every way its cause arises, because a phrase that
     /// fits one of two causes sends a reader to the wrong place.
-    fn phrase(&self) -> &'static str {
+    fn phrase(self) -> &'static str {
         match self {
             Self::PriorStepOutput => "names a step output this traversal did not resolve",
             Self::MissingObject => "names an object the store could not read",
@@ -533,6 +534,30 @@ fn record_unresolved_bindings(unresolved: &mut UnresolvedInputs, bindings: &BTre
         unresolved.insert(
             input_name.clone(),
             UnresolvedInput { cause: UnresolvedInputCause::UnresolvedBinding, detail: None },
+        );
+    }
+}
+
+/// Records the inputs whose `:zip(...)` selector the store could not answer.
+///
+/// Kept apart from [`record_unresolved_bindings`] because these carry a cause and
+/// the failing operation's words, which the binding failures do not. The same
+/// `contains_key` guard applies, for the same reason: a name reaches one path
+/// only, and a cause already recorded is the better one.
+fn record_unresolved_members(
+    unresolved: &mut UnresolvedInputs,
+    members: &BTreeMap<String, UnresolvedInput>,
+) {
+    for (input_name, unresolved_input) in members {
+        if unresolved.contains_key(input_name) {
+            continue;
+        }
+        unresolved.insert(
+            input_name.clone(),
+            UnresolvedInput {
+                cause: unresolved_input.cause,
+                detail: unresolved_input.detail.clone(),
+            },
         );
     }
 }
@@ -611,6 +636,7 @@ async fn resolve_single_step_output_hashes_strict(
     // the pass that recorded it. Only the binding's own failures are new here, and
     // the engine reports their names without the reason each failed.
     record_unresolved_bindings(&mut unresolved, &resolved_values.unresolved_bindings);
+    record_unresolved_members(&mut unresolved, &resolved_values.unresolved_members);
     let key_material = materializer_key_material(
         generated_doc,
         &step.tool,
@@ -838,12 +864,26 @@ struct ResolvedKeyValueBytes {
     unresolved_hashes: BTreeSet<String>,
     /// Inputs whose binding template did not resolve.
     unresolved_bindings: BTreeSet<String>,
+    /// Inputs whose `:zip(...)` selector the store could not answer, with the
+    /// failing operation's words.
+    ///
+    /// A `:zip(...)` selector is the one binding that needs the store here, so a
+    /// failed read or a missing member is a fact about the bytes rather than
+    /// about the document. It is recorded with its cause instead of aborting the
+    /// pass: the strict matcher's job is to decide whether a recorded instance
+    /// answers this step, and a step whose key cannot be derived is a miss. The
+    /// relaxed pass then names that instance, and the member's own read reports
+    /// the failure against the path it was materializing.
+    unresolved_members: BTreeMap<String, UnresolvedInput>,
 }
 
 impl ResolvedKeyValueBytes {
     /// Every input this pass could not turn into bytes, whichever cause applies.
     fn unresolved_names(&self) -> BTreeSet<String> {
-        self.unresolved_hashes.union(&self.unresolved_bindings).cloned().collect()
+        let mut names: BTreeSet<String> =
+            self.unresolved_hashes.union(&self.unresolved_bindings).cloned().collect();
+        names.extend(self.unresolved_members.keys().cloned());
+        names
     }
 }
 
@@ -887,19 +927,38 @@ async fn build_instance_key_resolved_value_bytes(
             resolved.unresolved_hashes.insert(key.clone());
             continue;
         };
-        let zip_bytes = cas.get(*resolved_hash).await.map_err(|source| {
-            MediaPmError::Workflow(format!(
-                "reading ZIP output '{resolved_hash}' for instance-key member '{}' failed: {source}",
-                zip_member.escape_debug()
-            ))
-        })?;
-        let member_bytes =
-            extract_zip_member_bytes(zip_bytes.as_ref(), zip_member).map_err(|error| {
-                MediaPmError::Workflow(format!(
-                    "extracting ZIP member '{}' for instance-key material failed: {error}",
-                    zip_member.escape_debug()
-                ))
-            })?;
+        let zip_bytes = match cas.get(*resolved_hash).await {
+            Ok(bytes) => bytes,
+            Err(source) => {
+                resolved.unresolved_members.insert(
+                    key.clone(),
+                    UnresolvedInput {
+                        cause: UnresolvedInputCause::MissingObject,
+                        detail: Some(format!(
+                            "reading ZIP output '{resolved_hash}' for member '{}' failed: {source}",
+                            zip_member.escape_debug()
+                        )),
+                    },
+                );
+                continue;
+            }
+        };
+        let member_bytes = match extract_zip_member_bytes(zip_bytes.as_ref(), zip_member) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                resolved.unresolved_members.insert(
+                    key.clone(),
+                    UnresolvedInput {
+                        cause: UnresolvedInputCause::MissingArchiveMember,
+                        detail: Some(format!(
+                            "extracting member '{}' from '{resolved_hash}' failed: {error}",
+                            zip_member.escape_debug()
+                        )),
+                    },
+                );
+                continue;
+            }
+        };
         resolved.values.insert(key.clone(), member_bytes);
     }
 
@@ -3488,6 +3547,57 @@ mod tests {
         }
     }
 
+    /// A member whose archive vanishes between the two reads is a miss, not an
+    /// abort.
+    ///
+    /// The strict pass reads the archive twice: once while resolving the input
+    /// hashes, and once while building the bytes the key hashes. The two reads
+    /// agree except when the bytes go away in between, and the earlier pass then
+    /// records the miss. This drives the later read alone, with a hash the store
+    /// does not hold, which is what that race leaves behind: the input is reported
+    /// as unresolved with the failed read's words, the way the earlier pass
+    /// reports it, instead of a hard error that would abandon every media in the
+    /// run.
+    #[tokio::test]
+    async fn a_member_whose_archive_is_gone_while_building_key_bytes_is_a_miss() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let never_stored = Hash::from_content(b"an archive that vanished");
+
+        let step_inputs = BTreeMap::from([(
+            "source".to_string(),
+            "${step_output.pack.pack:zip(payload.txt)}".to_string(),
+        )]);
+        let expected = ExpectedStepInputs {
+            resolved_hashes: BTreeMap::from([("source".to_string(), never_stored)]),
+            unresolved_input_names: BTreeSet::new(),
+        };
+
+        let resolved = build_instance_key_resolved_value_bytes(
+            &cas,
+            &step_inputs,
+            &step_inputs,
+            &expected,
+            &StepOutputHashes::new(),
+        )
+        .await
+        .expect("a vanished archive is an unresolved input, not a hard error");
+
+        let unresolved = resolved
+            .unresolved_members
+            .get("source")
+            .expect("the vanished archive's input is recorded as unresolved");
+        assert!(
+            unresolved.describe("source").contains("store could not read"),
+            "the failure names the read: {}",
+            unresolved.describe("source")
+        );
+        assert!(
+            !resolved.values.contains_key("source"),
+            "an unresolved input contributes no key material",
+        );
+    }
+
     /// Every cause says something different about what a reader should look at.
     #[test]
     fn each_unresolved_cause_has_its_own_phrase() {
@@ -3497,7 +3607,7 @@ mod tests {
             UnresolvedInputCause::MissingArchiveMember,
             UnresolvedInputCause::UnresolvedBinding,
         ]
-        .map(|cause| cause.phrase());
+        .map(UnresolvedInputCause::phrase);
         let distinct: BTreeSet<&str> = phrases.iter().copied().collect();
         assert_eq!(distinct.len(), phrases.len(), "two causes share a phrase: {phrases:?}");
     }
