@@ -227,12 +227,11 @@ fn overall_progress_advances_once_per_entry() {
 /// A run that carried a notice ends its overall bar yellow, not green.
 ///
 /// The ending is a status, not a decoration: `[W]` tells a reader the phase
-/// finished with something they should look at. It is the phase's signal and not
-/// the run's — the summary's `warnings` list is built from the requires-sync
-/// check, workflow failures and materialization notices, so a tool-phase warning
-/// such as the prune sweep's surviving directory turns this bar yellow while the
-/// summary icon and exit status stay clean. Swapping the two branches of
-/// `finish_overall_bar` fails this test.
+/// finished with something they should look at. It is the run's signal too, since
+/// the library sync copies this list into the summary's `warnings`: a tool-phase
+/// warning such as the prune sweep's surviving directory turns this bar yellow,
+/// the summary icon yellow, and the exit status into the warning one. Swapping the
+/// two branches of `finish_overall_bar` fails this test.
 #[test]
 fn finish_overall_bar_ends_warning_when_warnings_present() {
     let bar = RecordingTrackedHandle::new(3);

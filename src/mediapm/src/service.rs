@@ -1358,6 +1358,10 @@ impl MediaPmService<FileSystemCas> {
         // removing a payload a live step is executing out of.
         let _payload_guards = payload_guards;
 
+        // Tool-phase notices lead the list: that phase runs first, so the summary
+        // reads in run order.
+        warnings.extend(tools_report.warnings.iter().cloned());
+
         // Notify observer: tool sync phase complete.
         if let Some(ref obs) = observer {
             obs.on_phase(crate::SyncPhaseReport::Tools(tools_report.clone()));

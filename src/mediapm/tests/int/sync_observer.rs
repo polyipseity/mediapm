@@ -11,10 +11,12 @@ mod tests {
         tool_sync_icon, tool_sync_outcome,
     };
     use mediapm::{
-        MaterializationSyncSummary, SyncLibraryOptions, SyncPhaseObserver, SyncPhaseReport,
-        SyncSummary, ToolsSyncSummary, WorkflowSyncSummary,
+        MaterializationSyncSummary, MediaRuntimeStorage, SyncLibraryOptions, SyncPhaseObserver,
+        SyncPhaseReport, SyncSummary, ToolsSyncSummary, WorkflowSyncSummary,
     };
     use mediapm_utils::report::{StatusIcon, format_duration, format_result_line};
+
+    use crate::common::{service_with_cache, sync_library_with_test_terminal};
 
     /// Observer that records every phase report it receives, for assertion.
     struct RecordingObserver {
@@ -374,6 +376,60 @@ mod tests {
 
         let quiet = sync_summary(0, 0, 0, 0, 0);
         assert_eq!(sync_summary_icon(&quiet), StatusIcon::NoChange, "summary: {quiet:?}");
+    }
+
+    /// A warning the tool phase produced on its own makes the run a warning.
+    ///
+    /// The tool phase reports its own notices — a fetch chain a later candidate
+    /// served, a payload directory its prune sweep could not remove — in
+    /// [`ToolsSyncSummary::warnings`]. They are the run's notices too:
+    /// [`sync_outcome`] reads `SyncSummary::warnings` alone, so a run whose only
+    /// notice came from that phase has to carry it into the summary's list and
+    /// not only into the phase bar's ending.
+    #[tokio::test]
+    async fn sync_summary_carries_a_tool_phase_warning() {
+        let (mut service, _root, _cache) = service_with_cache(MediaRuntimeStorage::default())
+            .await
+            .expect("a service with a hermetic cache root");
+        let paths = service.resolve_effective_paths().expect("effective paths");
+
+        // The prune sweep removes every tool payload directory no active tool
+        // claims and reports the ones it cannot remove. This directory carries no
+        // `lock` file, so the sweep's probe cannot open one and the entry is a
+        // removal it has to report rather than one it can perform. The workspace
+        // desires no tools, so this notice is the run's only one.
+        std::fs::create_dir_all(paths.tools_dir.join("stale-tool-payload"))
+            .expect("an entry directory without its lock file");
+
+        let summary = sync_library_with_test_terminal(&mut service, false)
+            .await
+            .expect("a sync over a workspace with nothing to materialize");
+
+        assert_eq!(
+            summary.warnings.len(),
+            1,
+            "the tool phase's only notice has to reach the summary's list: {summary:?}"
+        );
+        assert!(
+            summary.warnings[0].contains("could not remove the tool payload directory"),
+            "the notice names the directory the sweep could not remove; warnings: {:?}",
+            summary.warnings
+        );
+        assert_eq!(
+            sync_outcome(&summary),
+            SyncOutcome::Warning,
+            "a run that only warned is a warning, whichever phase warned; summary: {summary:?}"
+        );
+        assert_eq!(
+            sync_summary_icon(&summary),
+            StatusIcon::Warning,
+            "the summary line has to end the way the run did; summary: {summary:?}"
+        );
+        assert!(
+            !sync_summary_is_incomplete(&summary),
+            "a warning is not a missing entry, so the run stays out of the error band; \
+             summary: {summary:?}"
+        );
     }
 
     /// `RecordingObserver` collects phases in order.
