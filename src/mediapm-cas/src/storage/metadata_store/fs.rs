@@ -14,9 +14,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use dashmap::DashMap;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::Arc;
 
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -51,21 +49,6 @@ use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 pub struct FileSystemMetadataStore {
     inner: InMemoryMetadataStore,
     blob_store: FileSystemBlobStore,
-    /// One writer per fan-out directory, keyed by the directory's prefix.
-    ///
-    /// A clone shares this map rather than copying it: two clones of one store
-    /// are two writers to the same file, so they have to take turns. A second
-    /// store built by `new` over the same blob store gets its own map, and this
-    /// field does not order that pair. Opening a `FileSystemCas` is safe
-    /// without that ordering because it takes the directory lock
-    /// (`DirectoryLockGuard::lock` in `storage/directory_lock.rs`), which
-    /// refuses a second opener of one directory. A consumer that builds two
-    /// stores over one blob store gets no ordering from this field.
-    ///
-    /// `DashMap` rather than a map behind one mutex, because a lookup has to
-    /// hand out an owned `Arc`: a guard held across the wait for this
-    /// directory's turn would otherwise pin the whole map.
-    dir_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl FileSystemMetadataStore {
@@ -74,17 +57,7 @@ impl FileSystemMetadataStore {
     /// The per-directory snapshots are not loaded until [`rebuild_from_wal`](MetadataStore::rebuild_from_wal)
     /// is called.
     pub fn new(blob_store: FileSystemBlobStore) -> Self {
-        Self { inner: InMemoryMetadataStore::new(), blob_store, dir_locks: Arc::default() }
-    }
-
-    /// Take the handle that serializes this directory's recompute and install.
-    ///
-    /// The caller holds that mutex for the whole span in which it collects the
-    /// directory's facts and installs the files derived from them. Nothing
-    /// awaits here on purpose: the handle leaves the map before the caller
-    /// awaits, so no map guard is held across a suspension point.
-    fn lock_dir(&self, prefix: &str) -> Arc<tokio::sync::Mutex<()>> {
-        Arc::clone(&*self.dir_locks.entry(prefix.to_owned()).or_default())
+        Self { inner: InMemoryMetadataStore::new(), blob_store }
     }
 
     /// Flush everything whose hash falls into the same fan-out directory as
@@ -110,10 +83,16 @@ impl FileSystemMetadataStore {
     /// the last write or delete returns, which is this module's only lock order
     /// (`dir` then `file`). A store holds an exclusive `flock`, so the directory
     /// needs no cross-process counterpart.
+    ///
+    /// The lock itself belongs to the blob store
+    /// ([`FileSystemBlobStore::lock_aux_dir`](super::super::blob_store::FileSystemBlobStore::lock_aux_dir)),
+    /// because the file is the blob store's: two metadata stores built by `new`
+    /// over one blob store are two writers to one file, and clones of a blob
+    /// store share the lock, so the guarantee follows the file rather than the
+    /// caller.
     async fn flush_dir(&self, hash: &Hash) -> Result<(), CasError> {
+        let _dir = self.blob_store.lock_aux_dir(hash).await;
         let prefix = &hash.to_hex()[..4];
-        let dir = self.lock_dir(prefix);
-        let _dir = dir.lock().await;
 
         // Collect constraints for targets sharing this prefix.
         let mut constraints = BTreeMap::new();

@@ -21,6 +21,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -133,6 +134,17 @@ pub struct FileSystemBlobStore {
     /// serializing here is what makes the fixed staging name safe rather than
     /// merely usually safe. Entries are removed once no commit holds them.
     commit_locks: Arc<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>,
+    /// One writer per auxiliary directory, for this store instance and its clones.
+    ///
+    /// The aux files of a fan-out directory are recomputed together, so a writer
+    /// that recomputes a directory's facts must finish installing them before
+    /// another writer recomputes the same directory. Keying by the directory is
+    /// what makes that span expressible: a file lock would order each write and
+    /// leave the recompute outside it.
+    ///
+    /// Clones share this map. Two stores opened independently over one root do
+    /// not, and the directory lock a `FileSystemCas` takes is what rules that out.
+    aux_dir_locks: Arc<DashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl FileSystemBlobStore {
@@ -167,6 +179,7 @@ impl FileSystemBlobStore {
             verify_evaluator: VerifyEvaluator::new(&verify_strategies),
             io_gate,
             commit_locks: Arc::new(Mutex::new(HashMap::new())),
+            aux_dir_locks: Arc::new(DashMap::new()),
         })
     }
 
@@ -202,6 +215,18 @@ impl FileSystemBlobStore {
         };
         let guard = Arc::clone(&lock).lock_owned().await;
         CommitGuard { store: self, key, lock, _guard: guard }
+    }
+
+    /// Hold this fan-out directory's aux lock until the returned guard is dropped.
+    ///
+    /// Taken before any [`Self::lock_commit`] guard for a file inside the
+    /// directory; that is the only order used in this crate (`dir` then `file`).
+    /// The guard is owned so a caller can hold it across `.await` without
+    /// borrowing the store.
+    pub(crate) async fn lock_aux_dir(&self, hash: &Hash) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = self.aux_path(hash, "").parent().map(Path::to_path_buf).unwrap_or_default();
+        let lock = Arc::clone(&*self.aux_dir_locks.entry(key).or_default());
+        lock.lock_owned().await
     }
 
     /// Drop a commit lock once no commit is waiting on it.
@@ -1517,6 +1542,157 @@ mod tests {
         }
 
         assert_eq!(store.read(&hash).await.expect("read the committed object"), data);
+    }
+
+    /// The aux-directory lock belongs to the blob store, so its clones share it.
+    ///
+    /// What this pins: a guard taken through one clone blocks a clone's
+    /// acquisition of the same fan-out directory, the wait ends when the guard
+    /// drops, and a lock in another fan-out directory is not affected — so the
+    /// key is the directory and not the store. It also pins that two hashes in
+    /// one directory share the key, which is what lets a caller hold the lock
+    /// across a whole recompute rather than one file's write.
+    ///
+    /// What it does not pin: two blob stores opened independently over one root
+    /// share nothing here, and this test says nothing about them. That pair is
+    /// outside the supported contract: opening a `FileSystemCas` takes the
+    /// directory lock, which refuses a second opener of one directory.
+    #[tokio::test]
+    async fn aux_dir_lock_is_shared_by_clones() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let store = FileSystemBlobStore::create(dir.path().to_path_buf(), Vec::new())
+            .await
+            .expect("blob store");
+        let (left, right) = fan_out_pair();
+        let elsewhere = other_fan_out(&left);
+
+        assert_eq!(
+            store.aux_path(&left, "probe").parent(),
+            store.aux_path(&right, "probe").parent(),
+            "the pair has to share a fan-out directory, or the blocks below prove nothing"
+        );
+
+        // One hash twice, then two hashes of one directory: both acquisitions
+        // have to wait for the guard the test holds.
+        for (held, wanted) in [(left, left), (left, right)] {
+            let holder = store.clone();
+            let guard = holder.lock_aux_dir(&held).await;
+            let waiter = start_aux_waiter(store.clone(), wanted);
+            assert!(
+                waiter.starts().await,
+                "the waiting writer has to reach the lock, or the block below proves nothing"
+            );
+            assert!(
+                !waiter.settles().await,
+                "a clone acquired the aux lock of a directory whose guard is held"
+            );
+            drop(guard);
+            assert!(
+                waiter.finishes().await,
+                "the clone did not acquire the aux lock after the guard dropped"
+            );
+        }
+
+        // A lock in another directory is a different key, so it is free while
+        // this one is held.
+        let guard = store.lock_aux_dir(&left).await;
+        let waiter = start_aux_waiter(store.clone(), elsewhere);
+        assert!(
+            waiter.settles().await,
+            "holding one fan-out directory's aux lock must not block another directory"
+        );
+        drop(guard);
+    }
+
+    /// Yields a waiter is polled for before the test reads its state as final.
+    ///
+    /// Polling rather than sleeping: a blocked acquisition stays blocked
+    /// however often it is polled, and a permitted one acquires on one of the
+    /// yields, so the same bound is a truthful answer in both directions.
+    const AUX_LOCK_POLL_STEPS: usize = 64;
+
+    /// An acquisition of one fan-out directory's aux lock, started on its own
+    /// task so the test can watch whether it gets the lock without awaiting it.
+    struct AuxWaiter {
+        /// Set before the task first awaits the lock.
+        started: Arc<std::sync::atomic::AtomicBool>,
+        /// Set once the task actually holds the lock.
+        acquired: Arc<std::sync::atomic::AtomicBool>,
+        /// The task, joined by [`finishes`](Self::finishes).
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl AuxWaiter {
+        /// Poll until the task has reached the lock, reporting whether it did.
+        async fn starts(&self) -> bool {
+            for _ in 0..AUX_LOCK_POLL_STEPS {
+                if self.started.load(Ordering::SeqCst) {
+                    return true;
+                }
+                tokio::task::yield_now().await;
+            }
+            false
+        }
+
+        /// Poll for a bounded number of yields, reporting whether the task ever
+        /// held the lock.
+        async fn settles(&self) -> bool {
+            for _ in 0..AUX_LOCK_POLL_STEPS {
+                if self.acquired.load(Ordering::SeqCst) {
+                    return true;
+                }
+                tokio::task::yield_now().await;
+            }
+            self.acquired.load(Ordering::SeqCst)
+        }
+
+        /// Wait for the task to end, reporting whether it held the lock first.
+        async fn finishes(self) -> bool {
+            self.task.await.expect("the waiting writer runs");
+            self.acquired.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Start an acquisition of `hash`'s aux lock through `store`, on its own task.
+    fn start_aux_waiter(store: FileSystemBlobStore, hash: Hash) -> AuxWaiter {
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let acquired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (task_started, task_acquired) = (Arc::clone(&started), Arc::clone(&acquired));
+        let task = tokio::spawn(async move {
+            task_started.store(true, Ordering::SeqCst);
+            let _guard = store.lock_aux_dir(&hash).await;
+            task_acquired.store(true, Ordering::SeqCst);
+        });
+        AuxWaiter { started, acquired, task }
+    }
+
+    /// Find two hashes whose aux files land in one fan-out directory.
+    ///
+    /// Found rather than assumed, so the test keeps colliding if the layout
+    /// changes; a four-hex-digit fan-out collides within a few hundred.
+    fn fan_out_pair() -> (Hash, Hash) {
+        let mut seen: HashMap<String, Hash> = HashMap::new();
+        for counter in 0u32.. {
+            let hash = Hash::from_content(format!("aux-dir-{counter}").as_bytes());
+            let prefix = hash.to_hex()[..4].to_string();
+            if let Some(first) = seen.insert(prefix, hash) {
+                return (first, hash);
+            }
+        }
+        unreachable!("two of a few hundred hashes share a four-hex-digit fan-out")
+    }
+
+    /// Find a hash whose aux file lands in a fan-out directory other than
+    /// `hash`'s.
+    fn other_fan_out(hash: &Hash) -> Hash {
+        let prefix = &hash.to_hex()[..4];
+        for counter in 0u32.. {
+            let candidate = Hash::from_content(format!("aux-dir-other-{counter}").as_bytes());
+            if &candidate.to_hex()[..4] != prefix {
+                return candidate;
+            }
+        }
+        unreachable!("sixteen of sixteen prefixes cannot all equal one prefix")
     }
 
     #[cfg(unix)]
