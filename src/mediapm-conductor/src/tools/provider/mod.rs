@@ -4118,7 +4118,7 @@ mod tests {
         );
         assert_eq!(downloaded.cached_count, 0, "a launcher is generated, never cache-served");
         let entry = downloaded.entries.first().expect("one source yields one entry");
-        assert_eq!(entry.actual_url, None, "nothing was fetched, so the entry names no URL",);
+        assert_eq!(entry.actual_url, None, "nothing was fetched, so the entry names no URL");
         assert_eq!(
             entry.bytes,
             generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]),

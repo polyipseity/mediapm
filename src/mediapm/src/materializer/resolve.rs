@@ -3576,7 +3576,7 @@ mod tests {
         );
 
         let described = describe_unresolved_inputs(&unresolved);
-        assert!(described.contains("output"), "the refusal names the binding: {described}",);
+        assert!(described.contains("output"), "the refusal names the binding: {described}");
         assert!(
             described.contains("unknown step 'missing_step'"),
             "the refusal carries the engine's reason: {described}",
