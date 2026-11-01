@@ -1410,6 +1410,25 @@ pub(crate) async fn open_workspace_cas_store(
     Ok(Arc::new(workspace_cas))
 }
 
+/// Ends the sync's overall bar with the status the run earned.
+///
+/// Warnings present means `finish_warning()` (a yellow `[W]`), an empty list
+/// means `finish_success()` (green `[S]`). A run that carried a notice is not
+/// a clean run, so the bar must not report green for it — the ending is the
+/// reader's only in-flight signal that something was left un-done, and the
+/// run summary's exit status reads the same fact.
+///
+/// One function rather than the branch at its call site so both endings are
+/// assertable: the sync path that reaches them needs a mocked provisioning
+/// chain, while this rule needs only a warning list.
+fn finish_overall_bar(bar: &dyn ProgressBarApi, warnings: &[String]) {
+    if warnings.is_empty() {
+        bar.finish_success();
+    } else {
+        bar.finish_warning();
+    }
+}
+
 /// Runs the full tool-reconciliation cycle for the current workspace.
 ///
 /// This phase owns no progress terminal and builds no screen: every bar it
@@ -1681,11 +1700,7 @@ pub(crate) async fn reconcile_desired_tools(
         }
     }
 
-    if report.warnings.is_empty() {
-        pb.finish_success();
-    } else {
-        pb.finish_warning();
-    }
+    finish_overall_bar(pb.as_ref(), &report.warnings);
     // The generated document is a pure machine artifact: drop any tool
     // entries mediapm did not produce this sync (hand-added manual entries).
     // Retain everything the provisioning pipeline manages — explicit tools

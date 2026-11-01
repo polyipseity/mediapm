@@ -400,25 +400,6 @@ fn glob_pattern_to_regex(pattern: &str) -> Result<Regex, String> {
     Regex::new(&regex).map_err(|error| format!("invalid glob pattern '{pattern}': {error}"))
 }
 
-/// Asserts that `bytes` starts with the `WebVTT` magic `WEBVTT` (ASCII) followed by a newline.
-pub fn assert_starts_with_webvtt(bytes: &[u8]) -> Result<(), String> {
-    let expected = b"WEBVTT\n";
-    if bytes.len() < expected.len() {
-        return Err(format!(
-            "expected WebVTT file to start with 'WEBVTT\\n' ({} bytes), got {} bytes",
-            expected.len(),
-            bytes.len()
-        ));
-    }
-    if &bytes[..expected.len()] != expected {
-        return Err(format!(
-            "expected WebVTT file to start with 'WEBVTT\\n', got '{:?}'",
-            &bytes[..expected.len().min(bytes.len())]
-        ));
-    }
-    Ok(())
-}
-
 /// Asserts that `path` exists and its first bytes match a known image format magic.
 ///
 /// Recognised signatures: JPEG `FF D8 FF`, PNG `89 50 4E 47`, WebP `RIFF????WEBP`,
@@ -453,40 +434,6 @@ pub fn assert_valid_image_magic_bytes(path: &Path) -> Result<(), String> {
             &bytes[..12]
         ))
     }
-}
-
-/// Asserts that `content` contains the online demo `YouTube` URL as a substring.
-pub fn assert_content_contains_youtube_url(content: &str) -> Result<(), String> {
-    if content.contains(ONLINE_DEMO_YOUTUBE_URL) {
-        Ok(())
-    } else {
-        Err(format!(
-            "expected content to contain '{}', got: {:?}…",
-            ONLINE_DEMO_YOUTUBE_URL,
-            &content[..content.len().min(200)]
-        ))
-    }
-}
-
-/// Asserts that a JSON `ffprobe -print_format json -show_streams` payload contains at
-/// least one video stream and at least one audio stream.  Returns the video and audio
-/// stream indices for further assertions.
-pub fn assert_ffprobe_has_video_and_audio(
-    payload: &serde_json::Value,
-) -> Result<(usize, usize), String> {
-    let streams = payload
-        .get("streams")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "ffprobe payload missing 'streams' array".to_string())?;
-    let video_idx = streams
-        .iter()
-        .position(|s| s.get("codec_type").and_then(|v| v.as_str()) == Some("video"))
-        .ok_or_else(|| "ffprobe streams: no video stream found".to_string())?;
-    let audio_idx = streams
-        .iter()
-        .position(|s| s.get("codec_type").and_then(|v| v.as_str()) == Some("audio"))
-        .ok_or_else(|| "ffprobe streams: no audio stream found".to_string())?;
-    Ok((video_idx, audio_idx))
 }
 
 #[cfg(test)]

@@ -59,7 +59,7 @@ Every materialized file is verified for content correctness. Two strategies:
 | **Content format** | Structure + deterministic URL content | `.url` = `[InternetShortcut]` + YouTube URL; `.webloc` = plist XML |
 | **ffprobe metadata** | Exact codec/container/tag values, asserted per artifact | h264, aac, matroska, 256x144, bt709; tagged: ARTIST=Rick Astley, ISRC=GBUM71029573; untagged: upstream title, no MusicBrainz or replaygain tags |
 
-Shared constants/helpers in `demo_hierarchy_spec.rs`: `ONLINE_DEMO_YOUTUBE_URL`, `ONLINE_DEMO_YT_DLP_VIDEO_ID`, `assert_starts_with_webvtt()`, `assert_valid_image_magic_bytes()`, `assert_content_contains_youtube_url()`, `assert_ffprobe_has_video_and_audio()`.
+Shared constants/helpers in `demo_hierarchy_spec.rs`: `ONLINE_DEMO_YOUTUBE_URL`, `ONLINE_DEMO_YT_DLP_VIDEO_ID`, `assert_valid_image_magic_bytes()`. The demo's other content checks live in `mediapm_demo_online.rs` where they are used, not here.
 
 Coverage matrix: `sdd-tdd-workflow.instructions.md` → "Demo online content verification".
 

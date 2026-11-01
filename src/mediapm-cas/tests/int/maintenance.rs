@@ -134,6 +134,66 @@ async fn prune_constraints_reports_bases_and_markers_it_drops() {
     );
 }
 
+/// A maintenance pass whose only change is a pruned constraint base reports
+/// that change as work.
+///
+/// The optimizer skips a target whose stored bases are all dead — the
+/// effective set is empty, so there is no base to compress against — and a
+/// pass that already materialized the WAL has nothing else to do. The base-set
+/// prune is then the only evidence the pass leaves, and
+/// `OptimizeReport::maintenance_done` is what a caller reads to decide whether
+/// running the pass again is worth the walk.
+#[tokio::test]
+async fn a_pruned_base_alone_counts_as_maintenance_work() {
+    let cas = new_in_memory_cas();
+    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
+    // A base the store never held: recorded, pruned on the next pass.
+    let dead_base = Hash::from_content(b"never-stored-base");
+    cas.set_constraint(target, [dead_base].into()).await.unwrap();
+
+    let report = cas.run_maintenance_cycle().await.unwrap();
+
+    assert!(
+        cas.get_constraint(target).await.unwrap().is_empty(),
+        "precondition: the dropped base is the pass's only change, so it must be gone",
+    );
+    assert!(
+        report.maintenance_done,
+        "a pass whose only change was a dropped constraint base reported no work",
+    );
+
+    // The same pass over the same store, with nothing left to prune, reports no
+    // work: the flag tracks the prune instead of being true for every pass.
+    let second = cas.run_maintenance_cycle().await.unwrap();
+    assert!(!second.maintenance_done, "a pass with nothing left to prune reported work");
+}
+
+/// A maintenance pass whose only change is a pruned keep-full marker reports
+/// that change as work.
+///
+/// Marking a hash the store never held is accepted — the marker describes how
+/// those bytes must be stored, and the store records it beside the object
+/// rather than refusing an order the caller had already ordered by content. A
+/// marker with no object is therefore exactly the change a pass with no
+/// optimizer work still has to report.
+#[tokio::test]
+async fn a_pruned_marker_alone_counts_as_maintenance_work() {
+    let cas = new_in_memory_cas();
+    let ghost = Hash::from_content(b"never-stored-marked");
+    cas.mark_keep_full(ghost).await.unwrap();
+
+    let report = cas.run_maintenance_cycle().await.unwrap();
+
+    assert!(
+        !cas.is_keep_full(ghost).await.unwrap(),
+        "precondition: the dropped marker is the pass's only change, so it must be gone",
+    );
+    assert!(
+        report.maintenance_done,
+        "a pass whose only change was a dropped keep-full marker reported no work",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Optimizer delta-rewrite tests (Phase 5)
 // ---------------------------------------------------------------------------

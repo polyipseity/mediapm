@@ -1,6 +1,8 @@
 //! The pinned overall bar of the tool phase and the screen the caller hands in.
 
-use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
+use mediapm_utils::progress::recording::{
+    ProgressOp, RecordingProgressTracker, RecordingTrackedHandle,
+};
 use std::collections::BTreeMap;
 
 use super::*;
@@ -220,6 +222,43 @@ fn overall_progress_advances_once_per_entry() {
         })
         .collect();
     assert_eq!(advances, vec![1, 1], "one advance per entry index; got {ops:?}");
+}
+
+/// A run that carried a notice ends its overall bar yellow, not green.
+///
+/// The ending is a status, not a decoration: `[W]` tells a reader the run
+/// finished with something they should look at, and the summary's exit
+/// status reads the same fact. Swapping the two branches of
+/// `finish_overall_bar` fails this test.
+#[test]
+fn finish_overall_bar_ends_warning_when_warnings_present() {
+    let bar = RecordingTrackedHandle::new(3);
+
+    finish_overall_bar(&bar, &["a payload directory survived its own removal".to_string()]);
+
+    assert_eq!(
+        bar.ops(),
+        vec![ProgressOp::FinishWarning],
+        "a warning-carrying sync must end the overall bar with `finish_warning` ([W])"
+    );
+}
+
+/// A run with nothing to report ends its overall bar green.
+///
+/// The other half of the same rule: an empty warning list is a clean run, so
+/// the bar ends `[S]` and not `[W]`. Swapping the two branches of
+/// `finish_overall_bar` fails this test.
+#[test]
+fn finish_overall_bar_ends_success_without_warnings() {
+    let bar = RecordingTrackedHandle::new(3);
+
+    finish_overall_bar(&bar, &[]);
+
+    assert_eq!(
+        bar.ops(),
+        vec![ProgressOp::FinishSuccess],
+        "a warning-free sync must end the overall bar with `finish_success` ([S])"
+    );
 }
 
 /// The `Skipped` arm may re-assert an entry the pool already counted without
