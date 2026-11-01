@@ -56,6 +56,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// File name of the stub binary, without the platform executable suffix.
 pub const STUB_TOOL_BIN_NAME: &str = "mediapm-stub-tool";
@@ -72,22 +73,45 @@ const STUB_TOOL_SOURCE: &str = include_str!("bin/mediapm-stub-tool.rs");
 
 /// Suffix of the record that says which source a fallback was compiled from.
 ///
-/// It begins with a dot for two reasons: the record's path is derived by
-/// appending it to the executable's whole path, and Cargo's hashed-name rule
-/// rejects any name with a dot in what follows the build hash, so a record can
-/// never pass for a target.
+/// The record's path is derived by appending this suffix to the executable's
+/// whole path, so the record lives beside the file it describes and no
+/// name-splitting is needed: a caller has the executable's path and nothing else.
+///
+/// What keeps the record out of [`hashed_candidates`] is that its name keeps the
+/// binary's hyphens and therefore never begins with the `mediapm_stub_tool-`
+/// prefix the search derives from Cargo's underscore spelling; the dot takes no
+/// part in that, because the prefix check rejects the name before the shape of
+/// the hash is examined.
 const SOURCE_FINGERPRINT_SUFFIX: &str = ".source-fingerprint";
+
+/// Separates the compiles one process makes.
+///
+/// A process id does not name a compile. Cargo runs a test binary's tests as
+/// threads of one process, so several tests reach [`compile_stub_into`] at once
+/// under one pid — `cargo test -p mediapm-test-support` is exactly that — and a
+/// work directory keyed on the pid alone would be shared by all of them, one
+/// thread removing the codegen objects or the staged executable another thread is
+/// still linking. A process-wide counter, drawn before the directory is made,
+/// gives every call a directory no other call in this process uses.
+static COMPILE_INVOCATION: AtomicU64 = AtomicU64::new(0);
 
 /// Compiles the stub into `directory` and returns the executable's path.
 ///
 /// Each compile works in a directory of its own, and the finished executable is
-/// moved into place by rename, so two test processes that both find no stub
-/// neither observe each other's half-written binary nor collide while building
-/// it: `rustc` names its codegen objects after the crate rather than after the
-/// `-o` path, so two compiles sharing an output directory sign the same object
-/// names and the loser fails to link. The work directory sits under `directory`
-/// instead of in the system temporary directory because a rename cannot cross
+/// moved into place by rename, so two callers that both find no stub neither
+/// observe each other's half-written binary nor collide while building it:
+/// `rustc` names its codegen objects after the crate rather than after the `-o`
+/// path, so two compiles sharing an output directory sign the same object names
+/// and the loser fails to link. The work directory sits under `directory` instead
+/// of in the system temporary directory because a rename cannot cross
 /// filesystems, and the move into place must be atomic.
+///
+/// The name of that directory carries the process id **and** a per-call counter
+/// ([`COMPILE_INVOCATION`]) because the id alone does not separate two compiles:
+/// a test binary runs its tests as threads of one process, so two tests can enter
+/// this function at the same instant under the same pid and would then share the
+/// directory the cleanup removes — one thread deleting the objects, or the staged
+/// executable, of another still running its link.
 ///
 /// The compile writes the source's fingerprint to the record beside the
 /// executable, because nothing else tracks this file's input: Cargo does not know
@@ -97,6 +121,13 @@ const SOURCE_FINGERPRINT_SUFFIX: &str = ".source-fingerprint";
 /// binary a concurrent compile is about to replace, and the search would then
 /// trust the older file, while an interrupted compile leaves a record that does
 /// not match and is rebuilt.
+///
+/// The move into place tolerates one failure. Windows refuses to replace a file
+/// another process is executing, and a failed move is then not a lost build: the
+/// file already at the destination answers what the move wanted, because another
+/// compile in this run wrote it from the same source. [`compiled_from`] is what
+/// separates that case from a move that left no build of this source behind,
+/// which still panics.
 ///
 /// The compiler is the one already running these tests: `rustc` is resolved from
 /// `PATH`, and that resolution relies on the environment Cargo sets for a test
@@ -108,15 +139,17 @@ const SOURCE_FINGERPRINT_SUFFIX: &str = ".source-fingerprint";
 ///
 /// Panics when the work directory, the source or the record cannot be written,
 /// when `rustc` cannot be spawned or rejects the source, or when the executable
-/// cannot be moved into place. Every one of those leaves no runnable executable,
-/// and a path that does not run is exactly the vacuous pass the locator exists to
-/// prevent.
+/// cannot be moved into place **and** the destination holds no build of this
+/// source. Every one of those leaves no runnable executable, and a path that does
+/// not run is exactly the vacuous pass the locator exists to prevent.
 #[must_use]
 fn compile_stub_into(directory: &Path) -> PathBuf {
     let file_name = format!("{STUB_TOOL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
     let target = directory.join(&file_name);
     let record = record_path(&target);
-    let build = directory.join(format!("{file_name}.mediapm-build-{}", std::process::id()));
+    let invocation = COMPILE_INVOCATION.fetch_add(1, Ordering::Relaxed);
+    let build =
+        directory.join(format!("{file_name}.mediapm-build-{}-{invocation}", std::process::id()));
     let source = build.join(format!("{STUB_TOOL_BIN_NAME}.rs"));
     let staged = build.join(&file_name);
 
@@ -139,9 +172,16 @@ fn compile_stub_into(directory: &Path) -> PathBuf {
         let _ = std::fs::remove_dir_all(&build);
         panic!("compiling the stub failed: {}", String::from_utf8_lossy(&output.stderr));
     }
-    std::fs::rename(&staged, &target).unwrap_or_else(|error| {
-        panic!("the staged stub must move into place at {}: {error}", target.display())
-    });
+    if let Err(error) = std::fs::rename(&staged, &target) {
+        // A sharing violation on Windows is the expected failure here: the file at
+        // `target` is the one a concurrent compile staged and another process is
+        // executing. The destination is right when the record beside it names this
+        // source, which only that compile's own move-then-record sequence writes.
+        if !compiled_from(&target, STUB_TOOL_SOURCE) {
+            let _ = std::fs::remove_dir_all(&build);
+            panic!("the staged stub must move into place at {}: {error}", target.display());
+        }
+    }
     std::fs::write(&record, source_fingerprint(STUB_TOOL_SOURCE)).unwrap_or_else(|error| {
         panic!("the fallback's source record must be writable at {}: {error}", record.display())
     });
@@ -151,9 +191,6 @@ fn compile_stub_into(directory: &Path) -> PathBuf {
 
 /// Path of the record beside `executable` that says which source built it.
 ///
-/// The suffix is appended to the executable's whole path rather than to its last
-/// component, which is the same file for a suffix that begins with a dot and
-/// needs no name-splitting: a caller has the executable's path and nothing else.
 /// The record lives beside the file it describes, so removing the artifact
 /// removes the claim about it as well.
 fn record_path(executable: &Path) -> PathBuf {
@@ -444,6 +481,39 @@ mod tests {
             output.status.code(),
             Some(2),
             "the compiled stub must behave like the built one"
+        );
+    }
+
+    /// A record that disagrees with the embedded source drives a rebuild, not trust.
+    ///
+    /// The user-level guarantee: the record is the only thing that notices an edit
+    /// to `src/bin/mediapm-stub-tool.rs` for a fallback Cargo never built, so the
+    /// locator has to consult it instead of accepting an artifact because it exists
+    /// and runs. A locator that stopped comparing it would answer with the previous
+    /// build while every stub-based test reported the current source.
+    ///
+    /// The locator may also move on to Cargo's own copy of the binary target, which
+    /// carries no record of ours and needs none, so the assertion is the property
+    /// that holds either way: the answer is never the artifact whose record
+    /// disagrees with the embedded source.
+    #[test]
+    fn a_stale_record_makes_the_locator_rebuild_the_stub() {
+        let stale = stub_tool_path();
+        let record = record_path(&stale);
+        std::fs::write(&record, "0000000000000000").expect("the record must be writable");
+        assert!(
+            !compiled_from(&stale, STUB_TOOL_SOURCE),
+            "the rewritten record must make the artifact stale before the search runs",
+        );
+
+        let answer = stub_tool_path();
+
+        assert!(
+            answer != stale || compiled_from(&stale, STUB_TOOL_SOURCE),
+            "the locator answered with {} and left the record reading {}, so it trusted an \
+             artifact its record calls stale instead of rebuilding it",
+            answer.display(),
+            std::fs::read_to_string(&record).unwrap_or_default().trim(),
         );
     }
 
