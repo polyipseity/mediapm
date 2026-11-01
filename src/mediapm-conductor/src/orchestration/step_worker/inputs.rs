@@ -83,8 +83,11 @@ pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
 pub struct InstanceKeyInputValues {
     /// Binding name to the bytes the template resolved to.
     pub values: BTreeMap<String, Vec<u8>>,
-    /// Binding names whose template did not resolve.
-    pub unresolved: BTreeSet<String>,
+    /// Binding name to the reason its template did not resolve.
+    ///
+    /// The text is the engine's own error, because a reader writes a diagnostic
+    /// per input and a name alone cannot say what the engine objected to.
+    pub unresolved: BTreeMap<String, String>,
 }
 
 /// Resolves the values an instance key hashes, the way the step worker resolves
@@ -104,8 +107,8 @@ pub struct InstanceKeyInputValues {
 /// which is what `${inputs.…}` reads inside a default.
 ///
 /// A binding whose template raises is reported in
-/// [`InstanceKeyInputValues::unresolved`] instead of being hashed from its
-/// unexpanded text.
+/// [`InstanceKeyInputValues::unresolved`] with the engine's own error text
+/// instead of being hashed from its unexpanded text.
 pub async fn resolve_instance_key_input_values<C: CasApi + Send + Sync>(
     bindings: &BTreeMap<String, String>,
     step_inputs: &BTreeMap<String, String>,
@@ -130,8 +133,8 @@ pub async fn resolve_instance_key_input_values<C: CasApi + Send + Sync>(
             Ok(value) => {
                 resolved.values.insert(key.clone(), value.into_bytes());
             }
-            Err(_) => {
-                resolved.unresolved.insert(key.clone());
+            Err(error) => {
+                resolved.unresolved.insert(key.clone(), error.to_string());
             }
         }
     }
@@ -308,8 +311,35 @@ mod tests {
 
         assert!(!resolved.values.contains_key("path"), "an unresolved binding has no value");
         assert!(
-            resolved.unresolved.contains("path"),
+            resolved.unresolved.contains_key("path"),
             "an unresolved binding must be named, or its absence reads as an empty value",
+        );
+    }
+
+    /// A binding whose template raises carries the reason, not only its name.
+    ///
+    /// The reader in mediapm writes a diagnostic per unresolved input. A name alone
+    /// sends the user to the step's inputs without saying what the engine objected
+    /// to, and two different failures on one step would read identically.
+    #[tokio::test]
+    async fn an_unresolved_binding_records_the_templates_own_failure() {
+        let bindings = BTreeMap::from([(
+            "output".to_string(),
+            "${step_output.missing_step.default}".to_string(),
+        )]);
+
+        let resolved = resolve_instance_key_input_values::<mediapm_cas::InMemoryCas>(
+            &bindings,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .await;
+
+        let reason =
+            resolved.unresolved.get("output").expect("the binding must be recorded as unresolved");
+        assert!(
+            reason.contains("missing_step") || reason.contains("unknown"),
+            "the recorded reason must come from the engine: {reason}",
         );
     }
 

@@ -478,8 +478,12 @@ enum UnresolvedInputCause {
     /// The archive the binding names holds no member it selects, or the bytes it
     /// names are not an archive at all.
     MissingArchiveMember,
-    /// The binding's own template did not resolve, so it names no value at all.
-    UnresolvedBinding,
+    /// A binding whose template raised while the key was being reconstructed.
+    ///
+    /// Distinct from [`Self::PriorStepOutput`], which reports a reference this
+    /// pass could not follow: the two failures need different fixes, so they
+    /// must not share a phrase.
+    TemplateRaised,
 }
 
 impl UnresolvedInputCause {
@@ -492,7 +496,7 @@ impl UnresolvedInputCause {
             Self::PriorStepOutput => "names a step output this traversal did not resolve",
             Self::MissingObject => "names an object the store could not read",
             Self::MissingArchiveMember => "names an archive member the stored bytes do not contain",
-            Self::UnresolvedBinding => "names a binding whose template did not resolve",
+            Self::TemplateRaised => "names a binding whose template raised an error",
         }
     }
 }
@@ -526,24 +530,31 @@ impl UnresolvedInput {
 /// reaches one set only, and the check states that rather than assuming it: a
 /// second cause for one input would replace the store's answer with a weaker
 /// one.
-fn record_unresolved_bindings(unresolved: &mut UnresolvedInputs, bindings: &BTreeSet<String>) {
-    for input_name in bindings {
+fn record_unresolved_bindings(
+    unresolved: &mut UnresolvedInputs,
+    bindings: &BTreeMap<String, String>,
+) {
+    for (input_name, reason) in bindings {
         if unresolved.contains_key(input_name) {
             continue;
         }
         unresolved.insert(
             input_name.clone(),
-            UnresolvedInput { cause: UnresolvedInputCause::UnresolvedBinding, detail: None },
+            UnresolvedInput {
+                cause: UnresolvedInputCause::TemplateRaised,
+                detail: Some(reason.clone()),
+            },
         );
     }
 }
 
 /// Records the inputs whose `:zip(...)` selector the store could not answer.
 ///
-/// Kept apart from [`record_unresolved_bindings`] because these carry a cause and
-/// the failing operation's words, which the binding failures do not. The same
-/// `contains_key` guard applies, for the same reason: a name reaches one path
-/// only, and a cause already recorded is the better one.
+/// Kept apart from [`record_unresolved_bindings`] because these carry a cause the
+/// binding failures do not: a selector needs the store, so its failures are
+/// facts about the bytes rather than about the document. The same `contains_key`
+/// guard applies, for the same reason: a name reaches one path only, and a cause
+/// already recorded is the better one.
 fn record_unresolved_members(
     unresolved: &mut UnresolvedInputs,
     members: &BTreeMap<String, UnresolvedInput>,
@@ -634,7 +645,7 @@ async fn resolve_single_step_output_hashes_strict(
     expected_inputs.unresolved_input_names.extend(resolved_values.unresolved_names());
     // A name whose hash never reconstructed already carries its own cause from
     // the pass that recorded it. Only the binding's own failures are new here, and
-    // the engine reports their names without the reason each failed.
+    // the engine hands on each failure's own words.
     record_unresolved_bindings(&mut unresolved, &resolved_values.unresolved_bindings);
     record_unresolved_members(&mut unresolved, &resolved_values.unresolved_members);
     let key_material = materializer_key_material(
@@ -854,16 +865,15 @@ fn materializer_key_material(
 /// The two unresolved sets are kept apart because their causes come from different
 /// places. A hash this pass never reconstructed was already recorded with its own
 /// cause by [`resolve_expected_input_hashes`]; a binding the template engine could
-/// not resolve is new here, and the engine reports its name without the reason it
-/// failed.
+/// not resolve is new here, and the engine reports the reason it failed.
 #[derive(Default)]
 struct ResolvedKeyValueBytes {
     /// Binding name to the bytes its template resolved to.
     values: BTreeMap<String, Vec<u8>>,
     /// Inputs whose hash this pass never reconstructed.
     unresolved_hashes: BTreeSet<String>,
-    /// Inputs whose binding template did not resolve.
-    unresolved_bindings: BTreeSet<String>,
+    /// Binding name to the reason the engine could not resolve it.
+    unresolved_bindings: BTreeMap<String, String>,
     /// Inputs whose `:zip(...)` selector the store could not answer, with the
     /// failing operation's words.
     ///
@@ -880,8 +890,8 @@ struct ResolvedKeyValueBytes {
 impl ResolvedKeyValueBytes {
     /// Every input this pass could not turn into bytes, whichever cause applies.
     fn unresolved_names(&self) -> BTreeSet<String> {
-        let mut names: BTreeSet<String> =
-            self.unresolved_hashes.union(&self.unresolved_bindings).cloned().collect();
+        let mut names: BTreeSet<String> = self.unresolved_hashes.clone();
+        names.extend(self.unresolved_bindings.keys().cloned());
         names.extend(self.unresolved_members.keys().cloned());
         names
     }
@@ -904,8 +914,9 @@ impl ResolvedKeyValueBytes {
 ///   context has no handle for; the member comes from the store here, as the
 ///   command surface resolves it.
 /// - A binding whose template raises is reported in
-///   [`mediapm_conductor::InstanceKeyInputValues::unresolved`], so the caller
-///   refuses the strict match instead of hashing an omission.
+///   [`mediapm_conductor::InstanceKeyInputValues::unresolved`] with the engine's
+///   own error text, so the caller refuses the strict match instead of hashing an
+///   omission.
 async fn build_instance_key_resolved_value_bytes(
     cas: &FileSystemCas,
     step_inputs: &BTreeMap<String, String>,
@@ -3547,6 +3558,31 @@ mod tests {
         }
     }
 
+    /// A binding the engine could not resolve reports the engine's reason.
+    ///
+    /// The refusal already names each input. What it could not say before the reason
+    /// crossed the crate boundary is why the template failed, which is what a user
+    /// needs to fix it.
+    #[test]
+    fn a_template_failure_reaches_the_refusal_with_its_reason() {
+        let mut unresolved = UnresolvedInputs::new();
+        record_unresolved_bindings(
+            &mut unresolved,
+            &BTreeMap::from([("output".to_string(), "unknown step 'missing_step'".to_string())]),
+        );
+
+        let described = describe_unresolved_inputs(&unresolved);
+        assert!(described.contains("output"), "the refusal names the binding: {described}",);
+        assert!(
+            described.contains("unknown step 'missing_step'"),
+            "the refusal carries the engine's reason: {described}",
+        );
+        assert!(
+            described.contains("template"),
+            "the cause must say a template raised, not only that an input is unresolved: {described}",
+        );
+    }
+
     /// A member whose archive vanishes between the two reads is a miss, not an
     /// abort.
     ///
@@ -3605,7 +3641,7 @@ mod tests {
             UnresolvedInputCause::PriorStepOutput,
             UnresolvedInputCause::MissingObject,
             UnresolvedInputCause::MissingArchiveMember,
-            UnresolvedInputCause::UnresolvedBinding,
+            UnresolvedInputCause::TemplateRaised,
         ]
         .map(UnresolvedInputCause::phrase);
         let distinct: BTreeSet<&str> = phrases.iter().copied().collect();
@@ -3812,7 +3848,10 @@ mod tests {
                 detail: Some("reading ZIP output 'h' failed: corrupt object h".to_string()),
             },
         )]);
-        record_unresolved_bindings(&mut unresolved, &BTreeSet::from(["source".to_string()]));
+        record_unresolved_bindings(
+            &mut unresolved,
+            &BTreeMap::from([("source".to_string(), "unknown input 'source'".to_string())]),
+        );
 
         let kept = unresolved.get("source").expect("the input stays unresolved");
         assert_eq!(
@@ -3829,10 +3868,10 @@ mod tests {
 
     /// A binding whose template does not resolve is not a lost object.
     ///
-    /// The template engine reports the binding name and not the failure, so this
-    /// pass can say only that the binding did not resolve. Recording it as a
-    /// missing object would send a reader to the store for a fault in the
-    /// document, and the store still holds every byte the step names.
+    /// The engine reports the failure as a template that raised, so this pass
+    /// keeps that cause with the engine's own words. Recording it as a missing
+    /// object would send a reader to the store for a fault in the document, and
+    /// the store still holds every byte the step names.
     #[tokio::test]
     async fn a_binding_that_does_not_resolve_is_not_recorded_as_a_lost_object() {
         let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
@@ -3850,7 +3889,7 @@ mod tests {
         .expect("a binding that does not resolve is reported, not raised");
 
         assert!(
-            resolved.unresolved_bindings.contains("url"),
+            resolved.unresolved_bindings.contains_key("url"),
             "the binding, not a store read, is what failed: {:?}",
             resolved.unresolved_names()
         );
