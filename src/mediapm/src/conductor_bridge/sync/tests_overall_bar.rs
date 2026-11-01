@@ -1,7 +1,7 @@
 //! The pinned overall bar of the tool phase and the screen the caller hands in.
 
 use mediapm_utils::progress::recording::{
-    ProgressOp, RecordingProgressTracker, RecordingTrackedHandle,
+    BarId, ProgressOp, RecordingProgressTracker, RecordingTrackedHandle,
 };
 use std::collections::BTreeMap;
 
@@ -271,6 +271,11 @@ fn finish_overall_bar_ends_success_without_warnings() {
 /// bar red exactly as a resolve or fetch failure does. A pass that unwound with
 /// the caller's row still animating would hide its own failure from the screen
 /// the caller is about to commit (`service.rs` returns before joining it).
+///
+/// This fixture registers no `[prn]` prune bar: it desires and generates no
+/// tools, so the rewrite has no prune candidate and the zero-candidate guard
+/// skips the bar entirely. The case where the bar does exist is
+/// `reconcile_desired_tools_finish_prune_bar_red_when_tail_fails`.
 #[tokio::test]
 async fn reconcile_desired_tools_finish_overall_bar_red_when_tail_fails() {
     let tmp = mediapm_utils::temp::artifact_dir().unwrap();
@@ -315,6 +320,116 @@ async fn reconcile_desired_tools_finish_overall_bar_red_when_tail_fails() {
     assert!(
         !ops.iter().any(|op| matches!(op, ProgressOp::FinishSuccess | ProgressOp::FinishWarning)),
         "a failed pass must not end green or yellow; got {ops:?}"
+    );
+}
+
+/// A run whose tail failed ends the `[prn]` prune bar red as well.
+///
+/// The prune bar is registered before the tail block, and its only other
+/// terminal op (`finish_success`) sits inside that block, so a tail that fails
+/// after the registration used to leave the bar animating under an error the
+/// caller propagates without finishing it. Both bars the pass owns end red, and
+/// each ending is asserted per bar, by recording identity: a shared count of
+/// terminal ops would also pass if one bar finished twice and the other never.
+///
+/// The fixture seeds one prune candidate, because the bar exists only when the
+/// rewrite found something to prune — the candidate-less case is
+/// `reconcile_desired_tools_finish_overall_bar_red_when_tail_fails`. Removing
+/// the prune bar's `finish_error` from the tail's error arm fails this test.
+#[tokio::test]
+async fn reconcile_desired_tools_finish_prune_bar_red_when_tail_fails() {
+    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+    let paths = MediaPmPaths::from_root(tmp.path());
+    let tracker = RecordingProgressTracker::new();
+    let state = MediaPmState::default();
+    let workspace_cas = super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
+
+    // A manual tool in the generated document is a prune candidate: nothing in
+    // the desired set provisions it, so the rewrite removes it and the sync
+    // registers the bar that tracks that removal.
+    let mut content_map = BTreeMap::new();
+    content_map.insert("linux/user_script".to_string(), "blake3:manual".to_string());
+    let tool_spec = ToolSpec {
+        name: "user_script".to_string(),
+        runtime: ToolRuntime {
+            content_map,
+            // `in_place` staging requires a payload root the seeded spec does
+            // not have; the candidate is pruned either way.
+            payload_staging: ConfigPayloadStaging::Copy,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let doc = NickelDocument {
+        tools: BTreeMap::from([("user_script@somehash".to_string(), tool_spec)]),
+        ..Default::default()
+    };
+    save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+    // A regular file where the tools directory belongs fails the tail's first
+    // filesystem step, after both bars are registered.
+    std::fs::write(&paths.tools_dir, b"not a directory").expect("plant the conflicting file");
+
+    let result = reconcile_desired_tools(
+        workspace_cas,
+        &paths,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        PayloadStaging::InPlace,
+        RecheckPolicy::default(),
+        &state,
+        Some(cache_root.path()),
+        &tracker,
+        None,
+    )
+    .await
+    .map(ToolSyncOutcome::into_report);
+    assert!(
+        result.is_err(),
+        "a file where the tools directory belongs must fail the sync: {:?}",
+        result.ok()
+    );
+
+    let recorded = tracker.recorded();
+    let bar_of = |label: &str| {
+        recorded.iter().find_map(|entry| match &entry.op {
+            ProgressOp::AddBar { label: added, .. } if added == label => Some(entry.bar),
+            _ => None,
+        })
+    };
+    let overall = bar_of("syncing tools").expect("the phase registers its overall bar");
+    let prune =
+        bar_of("pruning [prn]").expect("a seeded prune candidate must register the `[prn]` bar");
+
+    // The terminal ops of one bar, in order: a bar ends red once, and neither
+    // finishing green nor yellow may appear on either bar of a failed pass.
+    let endings = |bar: BarId| -> Vec<ProgressOp> {
+        recorded
+            .iter()
+            .filter(|entry| entry.bar == bar)
+            .map(|entry| entry.op.clone())
+            .filter(|op| {
+                matches!(
+                    op,
+                    ProgressOp::FinishSuccess
+                        | ProgressOp::FinishError
+                        | ProgressOp::FinishWarning
+                        | ProgressOp::FinishAndClear
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        endings(overall),
+        vec![ProgressOp::FinishError],
+        "a failing tail must end the overall bar red exactly once; got {recorded:?}"
+    );
+    assert_eq!(
+        endings(prune),
+        vec![ProgressOp::FinishError],
+        "a failing tail must end the `[prn]` prune bar red too, not leave it animating; \
+         got {recorded:?}"
     );
 }
 

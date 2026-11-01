@@ -22,7 +22,7 @@ Crate-prefixed error codes across the workspace. Format: `<CRATE-PREFIX>-<TYPE><
 | MPM-E008 | Conductor document error | Conductor document loading or validation failed | Check the conductor-generated NCL document |
 | MPM-E009 | Managed namespace conflict | User conductor document declares a tool key or workflow name in the mediapm-managed namespace | Remove or rename the conflicting entry; mediapm owns the managed namespace |
 | MPM-E010 | Unsaved materialized variant | A variant the hierarchy materializes is declared with `save = false` | Keep it (`save = "full"`, `true` or `"auto"`), or drop the hierarchy entry that selects it |
-| MPM-W001 | Silenced serde error | `build_provisioning_entries` collects its `global_reqs` map through `filter_map(... .ok())`, so a `ToolRequirement` that fails to deserialize is dropped there and no diagnostic names it. The declaration itself is still decoded: a tool whose own requirement cannot be decoded aborts the sync with `invalid tool requirement for <id>: <error>`. What the drop costs is a neighbour — a tool whose `"inherit"` dependency reads the missing entry reports MPM-E002 ("not configured in the tools section"), not the parse failure, when the inheriting tool sorts first | Fix the declared requirement's shape. MPM-W001 is catalogued but never emitted, so no log line names the drop |
+| MPM-W001 | Silenced serde error (no site) | Nothing is silenced: `decode_tool_requirements` decodes each `ToolRequirement` once, before the sync reads any, and aborts naming the tool (`invalid tool requirement for <id>: <error>`, MPM-E006), so no requirement is dropped and no MPM-W001 is emitted. The code stays catalogued as a reserved warning | Fix the declared requirement's shape |
 
 ## CAS — mediapm-cas
 

@@ -1077,32 +1077,61 @@ pub(crate) fn index_managed_tools(
     map
 }
 
-/// Build provisioning entries from desired tools.
+/// Decode every desired tool's declared requirement, once.
+///
+/// The returned map has exactly the keys of `desired_tools`, in the same order,
+/// so every later reader — the dependency-key/field validation, the staging
+/// choices and [`build_provisioning_entries`] — reads one decoded value per
+/// tool instead of decoding the same JSON again.
+///
+/// A failure is fatal and names the tool. Skipping it would leave a hole that
+/// another tool's `"inherit"` dependency then reports as "not configured in the
+/// tools section" (`MPM-E002`), naming the depender instead of the declaration
+/// that is actually wrong.
+///
+/// # Errors
+///
+/// [`MediaPmError::Workflow`] (`MPM-E006`) naming the tool whose requirement
+/// does not decode.
+fn decode_tool_requirements(
+    desired_tools: &BTreeMap<String, serde_json::Value>,
+) -> Result<BTreeMap<String, ToolRequirement>, MediaPmError> {
+    let mut decoded: BTreeMap<String, ToolRequirement> = BTreeMap::new();
+    for (tool_id, tool_value) in desired_tools {
+        let requirement =
+            serde_json::from_value::<ToolRequirement>(tool_value.clone()).map_err(|error| {
+                MediaPmError::Workflow(format!("invalid tool requirement for {tool_id}: {error}"))
+            })?;
+        decoded.insert(tool_id.clone(), requirement);
+    }
+    Ok(decoded)
+}
+
+/// Build provisioning entries from the decoded desired tools.
 ///
 /// Each explicit tool gets one entry. Each dependency of each tool gets a
 /// separate entry with the resolved version spec from the dependency
 /// declaration. Dep entries are sorted before explicit entries so they
 /// provision first (making dep `canonical_versions` available for composites).
+///
+/// `decoded_tools` is the map [`decode_tool_requirements`] returned. That one
+/// map is both what [`resolve_dep_version_spec`] reads a dependency's
+/// `"inherit"` target from and the source of each entry's own requirement, so
+/// no value can be read in one place and missed in the other.
+///
+/// # Errors
+///
+/// Whatever [`resolve_dep_version_spec`] returns for a dependency's spec
+/// (`MPM-E002` for an unconfigured `"inherit"` target, `MPM-E003` for a cycle).
 fn build_provisioning_entries(
-    desired_tools: &BTreeMap<String, serde_json::Value>,
+    decoded_tools: &BTreeMap<String, ToolRequirement>,
 ) -> Result<Vec<ProvisionEntry>, MediaPmError> {
-    // Build a ToolRequirement map for resolve_dep_version_spec which expects
-    // &BTreeMap<String, ToolRequirement>
-    let global_reqs: BTreeMap<String, ToolRequirement> = desired_tools
-        .iter()
-        .filter_map(|(id, val)| {
-            serde_json::from_value::<ToolRequirement>(val.clone()).ok().map(|req| (id.clone(), req))
-        })
-        .collect();
-
     let mut explicit_entries: BTreeMap<String, ProvisionEntry> = BTreeMap::new();
     let mut dep_entries: Vec<ProvisionEntry> = Vec::new();
 
-    for (tool_id, tool_value) in desired_tools {
-        let req: ToolRequirement = serde_json::from_value(tool_value.clone()).map_err(|e| {
-            MediaPmError::Workflow(format!("invalid tool requirement for {tool_id}: {e}"))
-        })?;
-
+    // The decoded map keys are the desired tool ids in the same order, so the
+    // entry order (and therefore the dep-then-explicit dedup) is unchanged.
+    for (tool_id, req) in decoded_tools {
         // Explicit entry
         explicit_entries.entry(tool_id.clone()).or_insert_with(|| ProvisionEntry {
             tool_id: tool_id.clone(),
@@ -1112,7 +1141,7 @@ fn build_provisioning_entries(
 
         // Dependency entries — one per dep, with resolved version spec
         for (dep_id, dep_spec) in &req.dependencies {
-            let resolved_spec = resolve_dep_version_spec(dep_spec, dep_id, &global_reqs, tool_id)?;
+            let resolved_spec = resolve_dep_version_spec(dep_spec, dep_id, decoded_tools, tool_id)?;
             let dep_req = ToolRequirement {
                 version_spec: match resolved_spec {
                     VersionSpec::Latest => ConfigVersionSpec::Latest,
@@ -1468,8 +1497,10 @@ fn finish_overall_bar(bar: &dyn ProgressBarApi, warnings: &[String]) {
 /// # Errors
 ///
 /// Returns an error when any critical step (document loading, builtin
-/// registration, content-map import) fails. Non-critical failures are
-/// reported as warnings in [`ToolSyncReport`].
+/// registration, content-map import) fails, and when a declared tool
+/// requirement does not decode: every requirement is decoded once at the top of
+/// the pass, naming the tool it cannot read. Non-critical failures are reported
+/// as warnings in [`ToolSyncReport`].
 #[expect(
     clippy::too_many_lines,
     reason = "reconciliation runs the provisioning phase sequence in strict order; splitting would obscure the ordering invariant"
@@ -1492,27 +1523,34 @@ pub(crate) async fn reconcile_desired_tools(
 ) -> Result<ToolSyncOutcome, MediaPmError> {
     let mut report = ToolSyncReport::default();
 
+    // Decode every declared requirement once. Everything below reads this map —
+    // the validation loop, the staging choices and the provisioning entries —
+    // so no reader decodes the same JSON value again.
+    let decoded_tools = decode_tool_requirements(desired_tools)?;
+
     // Validate all dependency keys before any provisioning begins.
     // Fail-fast with MPM-E001 if any tool has an unrecognized dependency key.
-    for (tool_id, tool_value) in desired_tools {
-        if let Ok(req) = serde_json::from_value::<ToolRequirement>(tool_value.clone()) {
-            crate::tools::dependency::validate_dependency_keys(tool_id, &req.dependencies)?;
-        }
-        crate::tools::dependency::validate_tool_requirement_fields(tool_id, tool_value)?;
+    //
+    // The dependency keys come from the decoded requirement. The field rules
+    // read the same iteration's raw declaration instead, because serde fills
+    // defaults and a decoded `ToolRequirement` cannot tell an absent field from
+    // one set to its default. `decode_tool_requirements` preserves both the key
+    // set and the key order of `desired_tools`, so the two maps zip tool by
+    // tool.
+    for ((tool_id, declaration), (_, requirement)) in desired_tools.iter().zip(&decoded_tools) {
+        crate::tools::dependency::validate_dependency_keys(tool_id, &requirement.dependencies)?;
+        crate::tools::dependency::validate_tool_requirement_fields(tool_id, declaration)?;
     }
 
-    // The staging each tool asks for, keyed by mediapm tool id. The values come
-    // from the same requirements `build_provisioning_entries` decodes, and that
-    // call rejects a requirement it cannot decode before this point in the
-    // sync, so the `.ok()` below cannot drop a live choice: every requirement
-    // that reaches here has already decoded once.
-    let tool_staging_choices: BTreeMap<String, ConfigPayloadStaging> = desired_tools
+    // The staging each tool asks for, keyed by mediapm tool id, because the
+    // generated document records one strategy for the whole library and this
+    // map is what lets `stamp_payload_roots` write a tool's own choice instead
+    // of overriding every tool with that default. A tool whose requirement
+    // states none keeps `inherit`, which is what leaves the library default in
+    // force for it.
+    let tool_staging_choices: BTreeMap<String, ConfigPayloadStaging> = decoded_tools
         .iter()
-        .filter_map(|(tool_id, value)| {
-            serde_json::from_value::<ToolRequirement>(value.clone())
-                .ok()
-                .map(|requirement| (tool_id.clone(), requirement.payload_staging))
-        })
+        .map(|(tool_id, requirement)| (tool_id.clone(), requirement.payload_staging))
         .collect();
 
     // 1. Load or create generated document.
@@ -1563,7 +1601,7 @@ pub(crate) async fn reconcile_desired_tools(
     // Build provisioning entries and in-memory live state index for
     // O(1) skip checking across entries. Must happen before the progress
     // bar setup since the bar total uses entries.len().
-    let entries = build_provisioning_entries(desired_tools)?;
+    let entries = build_provisioning_entries(&decoded_tools)?;
     let mut live_state = index_managed_tools(&state.managed_tools);
 
     // Progress bar for the per-tool provisioning loop.
@@ -1892,9 +1930,15 @@ pub(crate) async fn reconcile_desired_tools(
         Ok(payload_guards) => payload_guards,
         Err(error) => {
             // The tail is where the pass writes, so a failure there leaves the
-            // caller nothing it can execute from and the pass is over: the bar
-            // ends red rather than animating under an error that the caller
-            // propagates without finishing it.
+            // caller nothing it can execute from and the pass is over: both bars
+            // the pass owns end red rather than animating under an error that the
+            // caller propagates without finishing them. The prune bar is only
+            // registered when the rewrite found candidates, so it is finished
+            // here when it exists and skipped when it does not; that pass began
+            // before the tail and nothing in the tail's failure ends it.
+            if let Some(ref bar) = prn_bar {
+                bar.finish_error();
+            }
             pb.finish_error();
             return Err(error);
         }

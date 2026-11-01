@@ -6,9 +6,17 @@ use std::collections::BTreeMap;
 
 use super::*;
 
+/// The decoded requirements for a set of raw declarations: the shape
+/// [`decode_tool_requirements`] gives `build_provisioning_entries`.
+fn decoded_requirements(
+    desired: &BTreeMap<String, serde_json::Value>,
+) -> BTreeMap<String, ToolRequirement> {
+    decode_tool_requirements(desired).unwrap()
+}
+
 #[test]
 fn build_provisioning_entries_empty() {
-    let entries = build_provisioning_entries(&BTreeMap::new()).unwrap();
+    let entries = build_provisioning_entries(&decoded_requirements(&BTreeMap::new())).unwrap();
     assert!(entries.is_empty());
 }
 
@@ -23,7 +31,7 @@ fn build_provisioning_entries_single_no_deps() {
         })
         .unwrap(),
     );
-    let entries = build_provisioning_entries(&desired).unwrap();
+    let entries = build_provisioning_entries(&decoded_requirements(&desired)).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].tool_id, "ffmpeg");
     assert!(matches!(entries[0].kind, EntryKind::Explicit));
@@ -50,7 +58,7 @@ fn build_provisioning_entries_with_deps() {
         })
         .unwrap(),
     );
-    let entries = build_provisioning_entries(&desired).unwrap();
+    let entries = build_provisioning_entries(&decoded_requirements(&desired)).unwrap();
     assert_eq!(entries.len(), 2);
     // Dep entry should come first (dep-first sort)
     assert_eq!(entries[0].tool_id, "ffmpeg");
@@ -81,7 +89,7 @@ fn build_provisioning_entries_dedup_same_spec() {
         })
         .unwrap(),
     );
-    let entries = build_provisioning_entries(&desired).unwrap();
+    let entries = build_provisioning_entries(&decoded_requirements(&desired)).unwrap();
     // Two same-spec ffmpeg dep entries dedup → total 3
     assert_eq!(entries.len(), 3);
     assert_eq!(entries.iter().filter(|e| e.tool_id == "ffmpeg").count(), 1);
@@ -141,7 +149,7 @@ fn build_provisioning_entries_level_split_ordering() {
         serde_json::to_value(ToolRequirement::default()).unwrap(),
     );
 
-    let entries = build_provisioning_entries(&desired).unwrap();
+    let entries = build_provisioning_entries(&decoded_requirements(&desired)).unwrap();
 
     // ffmpeg deduped from two requesters (2→1), deno separate dep → total 5
     assert_eq!(entries.len(), 5, "expected 5 entries (ffmpeg deduped), got {}", entries.len());
@@ -220,8 +228,55 @@ fn build_provisioning_entries_different_spec_no_dedup() {
         })
         .unwrap(),
     );
-    let entries = build_provisioning_entries(&desired).unwrap();
+    let entries = build_provisioning_entries(&decoded_requirements(&desired)).unwrap();
     // Two different ffmpeg specs → NO dedup, total = 4
     assert_eq!(entries.len(), 4);
     assert_eq!(entries.iter().filter(|e| e.tool_id == "ffmpeg").count(), 2);
+}
+
+/// A requirement that does not decode aborts the pass naming its tool, before
+/// any neighbour's `"inherit"` dependency is resolved against the decoded map.
+///
+/// The decode runs once over the whole desired set, so a malformed requirement
+/// is its own failure and never a hole in that map. The fixture puts the
+/// inheriting tool first (`aaa-tool` sorts before `zzz-tool`), which is the
+/// order in which a map that dropped the malformed value would answer the
+/// dependency with `MPM-E002` ("not configured in the tools section") instead of
+/// the parse failure. Collecting the map through `filter_map(... .ok())` again
+/// fails this test.
+#[test]
+fn decode_tool_requirements_aborts_naming_a_malformed_requirement() {
+    let mut desired = BTreeMap::new();
+    desired.insert(
+        "aaa-tool".to_string(),
+        serde_json::to_value(ToolRequirement {
+            version_spec: ConfigVersionSpec::Latest,
+            dependencies: BTreeMap::from([("zzz-tool".to_string(), ConfigVersionSpec::Inherit)]),
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    // `"not-a-spec"` is neither `"latest"`, `"inherit"` nor an exact field
+    // object, so `ConfigVersionSpec`'s visitor rejects it.
+    desired.insert("zzz-tool".to_string(), serde_json::json!({ "version_spec": "not-a-spec" }));
+
+    let Err(error) = decode_tool_requirements(&desired) else {
+        panic!("a malformed requirement must abort the decode");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("invalid tool requirement for zzz-tool"),
+        "the abort must name the tool whose requirement does not decode: {message}"
+    );
+    assert_eq!(
+        error.code(),
+        "MPM-E006",
+        "a malformed requirement is the workflow-level abort, not the config-validation \
+         gap a dropped entry would produce: {message}"
+    );
+    assert!(
+        !message.contains("not configured in the tools section"),
+        "the dependency must not be reported as unconfigured once its tool's requirement \
+         failed to decode: {message}"
+    );
 }
