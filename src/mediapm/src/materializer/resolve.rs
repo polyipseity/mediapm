@@ -473,7 +473,7 @@ enum UnresolvedInputCause {
     /// The store could not read the object the binding names.
     ///
     /// A miss, a corrupt object and an I/O failure all land here, so the phrase
-    /// says the read failed and the detail says which way.
+    /// says the store cannot supply the bytes and the detail says which way.
     MissingObject,
     /// The archive the binding names holds no member it selects, or the bytes it
     /// names are not an archive at all.
@@ -489,14 +489,26 @@ enum UnresolvedInputCause {
 impl UnresolvedInputCause {
     /// The phrase the refusal uses to say why the input did not resolve.
     ///
-    /// Each phrase is true of every way its cause arises, because a phrase that
-    /// fits one of two causes sends a reader to the wrong place.
+    /// Each phrase names the one failure its cause reports, in the terms a reader
+    /// acts on: a step whose output this run has not produced, bytes the store
+    /// cannot supply, an entry the payload does not contain, and an expression the
+    /// engine refused. It is also true of every way its cause arises, because a
+    /// phrase that fits one of two causes sends a reader to the wrong place.
+    ///
+    /// The phrase lands inside the refusal's own sentence — `input '<name>'
+    /// (<phrase>: <detail>) did not resolve` — so it borrows none of the words
+    /// that sentence or its detail already carries. The frame supplies "input",
+    /// "step" and the verb "resolve"; the detail is the failing operation's own
+    /// words, which name the artifact ("template: ...", "ZIP member ...",
+    /// "reading ZIP output ...") and its verdict ("not found"). A phrase that
+    /// repeated one would state a single fact twice, and a reader would take the
+    /// repetition for a second failure to fix.
     fn phrase(self) -> &'static str {
         match self {
-            Self::PriorStepOutput => "names a step output this traversal did not resolve",
-            Self::MissingObject => "names an object the store could not read",
-            Self::MissingArchiveMember => "names an archive member the stored bytes do not contain",
-            Self::TemplateRaised => "names a binding the template engine could not resolve",
+            Self::PriorStepOutput => "an upstream output this run has not produced",
+            Self::MissingObject => "bytes the store cannot supply",
+            Self::MissingArchiveMember => "a selected entry the payload does not contain",
+            Self::TemplateRaised => "an expression the engine refused",
         }
     }
 }
@@ -3488,7 +3500,7 @@ mod tests {
         );
         assert!(
             message.contains("'url'")
-                && message.contains("step output this traversal did not resolve"),
+                && message.contains(UnresolvedInputCause::PriorStepOutput.phrase()),
             "the refusal names the input that stopped the strict pass, and why: {message}"
         );
         assert!(
@@ -3551,9 +3563,9 @@ mod tests {
         ]);
         let described = describe_unresolved_inputs(&two);
         for expected in [
-            "inputs 'archive' (names an archive member the stored bytes do not contain: \
+            "inputs 'archive' (a selected entry the payload does not contain: \
              extracting ZIP member 'payload.txt' failed: no such member)",
-            "'url' (names a step output this traversal did not resolve)",
+            "'url' (an upstream output this run has not produced)",
         ] {
             assert!(
                 described.contains(expected),
@@ -3629,8 +3641,8 @@ mod tests {
             .get("source")
             .expect("the vanished archive's input is recorded as unresolved");
         assert!(
-            unresolved.describe("source").contains("store could not read"),
-            "the failure names the read: {}",
+            unresolved.describe("source").contains(UnresolvedInputCause::MissingObject.phrase()),
+            "the failure names the store that could not supply the bytes: {}",
             unresolved.describe("source")
         );
         assert!(
@@ -3640,17 +3652,44 @@ mod tests {
     }
 
     /// Every cause says something different about what a reader should look at.
+    ///
+    /// The failure this pins is a phrase that reads as another cause's: one phrase
+    /// contained in another sends a reader to the second cause's place to look for
+    /// the first cause's fault. The words each phrase must avoid are the ones the
+    /// composed refusal states around it — the frame's "input", "step" and verb
+    /// "resolve", and the noun and verdict the detail beside it always carries
+    /// ("template", "not found"). A phrase borrowing one of those says a single
+    /// fact twice in one sentence, which reads as a second fault.
     #[test]
     fn each_unresolved_cause_has_its_own_phrase() {
-        let phrases = [
+        let causes = [
             UnresolvedInputCause::PriorStepOutput,
             UnresolvedInputCause::MissingObject,
             UnresolvedInputCause::MissingArchiveMember,
             UnresolvedInputCause::TemplateRaised,
-        ]
-        .map(UnresolvedInputCause::phrase);
+        ];
+        let phrases = causes.map(UnresolvedInputCause::phrase);
         let distinct: BTreeSet<&str> = phrases.iter().copied().collect();
         assert_eq!(distinct.len(), phrases.len(), "two causes share a phrase: {phrases:?}");
+
+        for (index, phrase) in phrases.iter().enumerate() {
+            for other in &phrases[index + 1..] {
+                assert!(
+                    !phrase.contains(other) && !other.contains(phrase),
+                    "'{phrase}' and '{other}' share a phrase, so one cause reads as the other"
+                );
+            }
+        }
+
+        for phrase in phrases {
+            for already_said in ["resolve", "input", "step", "template", "not found"] {
+                assert!(
+                    !phrase.contains(already_said),
+                    "'{phrase}' repeats '{already_said}', which the refusal's own sentence or the \
+                     detail beside it already says"
+                );
+            }
+        }
     }
 
     /// The two ways an archive-backed input fails are told apart.
@@ -3705,12 +3744,12 @@ mod tests {
             .describe("source");
 
         assert!(
-            absent.contains("store could not read"),
-            "an archive the store lost is reported as a read the store could not do: {absent}"
+            absent.contains(UnresolvedInputCause::MissingObject.phrase()),
+            "an archive the store lost is reported as bytes the store cannot supply: {absent}"
         );
         assert!(
-            !unreadable.contains("could not read"),
-            "bytes the store holds are not reported as missing from it: {unreadable}"
+            !unreadable.contains(UnresolvedInputCause::MissingObject.phrase()),
+            "bytes the store holds are not reported as bytes it cannot supply: {unreadable}"
         );
         assert_ne!(
             absent, unreadable,
