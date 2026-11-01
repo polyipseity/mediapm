@@ -17,6 +17,12 @@
 //! harness probes for a deleting `rm`, hands the children a `PATH` whose
 //! first `rm` is that one, and skips with a message when the host has none,
 //! so an environment limitation is never reported as a janitor defect.
+//! A trash-based `rm` that moves rather than deletes can still satisfy the
+//! probe, in which case swept trees land in the user's Trash instead of
+//! vanishing — an observed consequence, not a false pass. A host with no
+//! working `rm` at all prints `skipped:` on stdout rather than skipping at
+//! the harness level, so nextest reports it as passed: a known trade-off,
+//! matching the file's existing interpreter-skip convention.
 //! Running `tests/scripts/test-clean-mediapm-temp.sh` by hand on such a host
 //! still fails at the janitor's non-zero exit for the same reason; the
 //! harness is what supplies the working `rm`.
@@ -181,16 +187,25 @@ fn command_v(name: &str) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
-/// Whether `candidate` deletes a directory: exit 0 with the directory gone.
+/// Whether `candidate` deletes a non-empty directory: exit 0 with the tree gone.
 ///
 /// Both halves matter: a trash wrapper that is denied exits non-zero and
 /// leaves the tree, and a candidate that cannot delete cannot prove the
 /// janitor's sweep. The probe dir carries the managed `mediapm-` prefix, so
 /// a crash leak is reclaimed by the janitor like any other.
+///
+/// The probe tree holds a file, because the sweeps it vouches for delete trees
+/// that hold files too: a wrapper that deletes an empty directory but refuses a
+/// non-empty one would pass an empty probe and then fail the janitor's real
+/// run, which is the false defect this probe exists to prevent.
 fn rm_deletes(candidate: &Path) -> bool {
     let seq = SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed);
     let probe = std::env::temp_dir().join(format!("mediapm-rm-probe-{}-{seq}", std::process::id()));
     if fs::create_dir_all(&probe).is_err() {
+        return false;
+    }
+    if fs::write(probe.join("probe-file"), b"probe").is_err() {
+        let _ = fs::remove_dir_all(&probe);
         return false;
     }
     let status = Command::new(candidate).arg("-rf").arg(&probe).status();
@@ -204,16 +219,15 @@ fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
-/// A `PATH` value whose first `rm` is `real_rm`.
+/// A `PATH` value whose first `rm` runs `body` as a `/bin/sh` script.
 ///
 /// The shim lives inside the test's sandbox so it is removed with it: a
 /// `mediapm-`-prefixed dir that outlived the test would trip the orphan gate.
-fn path_with_real_rm(sandbox: &Path, real_rm: &Path) -> OsString {
+fn path_with_rm_shim(sandbox: &Path, body: &str) -> OsString {
     let bin = sandbox.join("rm-bin");
     fs::create_dir_all(&bin).expect("create rm shim dir");
     let shim = bin.join("rm");
-    fs::write(&shim, format!("#!/bin/sh\nexec {} \"$@\"\n", shell_quote(real_rm)))
-        .expect("write rm shim");
+    fs::write(&shim, format!("#!/bin/sh\n{body}")).expect("write rm shim");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -224,6 +238,16 @@ fn path_with_real_rm(sandbox: &Path, real_rm: &Path) -> OsString {
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());
     path
+}
+
+/// A `PATH` value whose first `rm` is `real_rm`.
+fn path_with_real_rm(sandbox: &Path, real_rm: &Path) -> OsString {
+    path_with_rm_shim(sandbox, &format!("exec {} \"$@\"\n", shell_quote(real_rm)))
+}
+
+/// A `PATH` value whose first `rm` prints nothing and fails without deleting.
+fn path_with_failing_rm(sandbox: &Path) -> OsString {
+    path_with_rm_shim(sandbox, "exit 1\n")
 }
 
 /// Runs a script under `program` (e.g. `bash` or `sh`) inside a sandbox,
@@ -260,8 +284,8 @@ fn skip_unless(program: &str, args: &[&str]) -> bool {
     }
 }
 
-/// Exercises the full janitor sequence (dry-run, real run, empty dry-run,
-/// help, bogus arg) against a sandbox seeded with fake dirs.
+/// A sandbox whose `scope` subdir holds the dirs named `names`, plus that scope
+/// path.
 ///
 /// The janitor scans with `find "$tmp_root" -maxdepth 1 -name 'mediapm-*'`,
 /// which also matches the starting point itself. The sandbox root carries
@@ -269,13 +293,21 @@ fn skip_unless(program: &str, args: &[&str]) -> bool {
 /// janitor / orphan gate), so the seeded dirs live in a nested `scope`
 /// subdir whose basename does not match the glob; the janitor is pointed at
 /// `scope` via the child-scoped `TMPDIR`.
-fn assert_janitor_sequence(script_name: &str, run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome) {
+fn seeded_scope(names: &[&str]) -> (Sandbox, PathBuf) {
     let sandbox = Sandbox::new();
     let scope = sandbox.path.join("scope");
     fs::create_dir_all(&scope).expect("create janitor scope dir");
-    for name in FAKE_MEDIAPM_DIRS.iter().copied().chain(CONTROL_DIRS.iter().copied()) {
+    for name in names {
         fs::create_dir_all(scope.join(name)).expect("create seeded sandbox dir");
     }
+    (sandbox, scope)
+}
+
+/// Exercises the full janitor sequence (dry-run, real run, empty dry-run,
+/// help, bogus arg) against a sandbox seeded with fake dirs.
+fn assert_janitor_sequence(script_name: &str, run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome) {
+    let seeded: Vec<&str> = FAKE_MEDIAPM_DIRS.iter().copied().chain(CONTROL_DIRS).collect();
+    let (_sandbox, scope) = seeded_scope(&seeded);
     let janitor = script_path(script_name);
 
     // Dry run: reports exactly the three mediapm-* dirs, never the controls.
@@ -353,6 +385,43 @@ fn bash_janitor_dry_run_and_real_run() {
     assert_janitor_sequence("clean-mediapm-temp.sh", |script, sandbox, flags| {
         run_script("bash", script, sandbox, flags, rm)
     });
+}
+
+/// A `--dry-run` never reaches `rm` in the sweep loop, so this pins the exit
+/// trap and nothing else: the shimmed `rm` fails the trap's unlink of the
+/// listing, and the dry run must still report its sweep and exit 0.
+///
+/// The host's own `rm` is irrelevant here, so this test does not ask for one:
+/// what it needs is a `PATH` whose `rm` fails.
+#[test]
+fn bash_janitor_dry_run_survives_a_failing_rm() {
+    if !skip_unless("bash", &["--version"]) {
+        return;
+    }
+    let seeded = &FAKE_MEDIAPM_DIRS[..2];
+    let (sandbox, scope) = seeded_scope(seeded);
+    let janitor = script_path("clean-mediapm-temp.sh");
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(&janitor).arg("--dry-run");
+    cmd.env("PATH", path_with_failing_rm(&sandbox.path));
+    let dry = capture_output(cmd, &scope);
+
+    assert!(dry.status.success(), "a failing rm failed the dry run: {}", dry.stderr);
+    let reported: Vec<&str> =
+        dry.stdout.lines().filter(|line| line.starts_with("would remove: ")).collect();
+    assert_eq!(
+        reported.len(),
+        seeded.len(),
+        "dry-run reported {reported:?}, expected {}",
+        seeded.len()
+    );
+    for name in seeded {
+        assert!(
+            reported.iter().any(|line| line.ends_with(name)),
+            "dry-run did not report {name}: {reported:?}"
+        );
+    }
 }
 
 /// Runs a janitor self-test, skipping when its interpreter is absent.
