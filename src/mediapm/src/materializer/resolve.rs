@@ -2609,13 +2609,6 @@ mod tests {
                 }
                 rewrite.claiming_steps.insert(step.id.clone());
             } else {
-                println!(
-                    "step {}\n  instance {}\n  previous {}\n  current  {}",
-                    step.id,
-                    instance.tool_call_id,
-                    stored_key.to_hex(),
-                    current_key.to_hex(),
-                );
                 rewrites.insert(
                     *stored_key,
                     DemoInstanceKeyRewrite {
