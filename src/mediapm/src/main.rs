@@ -1204,7 +1204,7 @@ mod tests {
     fn sync_summary() -> mediapm::SyncSummary {
         mediapm::SyncSummary {
             executed_steps: 0,
-            cached_instances: 0,
+            cached_steps: 0,
             materialized_paths: 0,
             skipped_paths: 0,
             missing_paths: 0,

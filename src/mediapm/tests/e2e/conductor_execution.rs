@@ -157,7 +157,7 @@ async fn sync_twice_conductor_state_persists() -> Result<(), mediapm::MediaPmErr
         "the second sync must be served from the persisted instance state: {second_summary:?}"
     );
     assert_eq!(
-        second_summary.cached_instances, first_executed,
+        second_summary.cached_steps, first_executed,
         "every instance the first run executed must be a cache hit on the second sync: \
          {second_summary:?}"
     );

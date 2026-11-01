@@ -40,7 +40,7 @@ Integration tests in `tests/progress_output/` converted from substring/contains/
 | `spinner.rs` — worker-spinner style, spinner freeze after finish, zero-total fill                       | 3 tests, exact `concat!()`                    | [covered] |
 | `progress/tests/ansi.rs` (unit) — ANSI stripping, visible width, width clamps                           | 11 tests                                      | [covered] |
 | `progress/tests/components.rs` (unit) — prefix/suffix components, truncation orders, styles             | 52 tests                                      | [covered] |
-| `progress/tests/recording.rs` (unit) — recording doubles and their op log                               | 15 tests                                      | [covered] |
+| `progress/tests/recording.rs` (unit) — recording doubles and their op log                               | 20 tests                                      | [covered] |
 | `progress/tests/renderer.rs` (unit) — per-frame sync, pre-roll, suffix merge, client truncation    | 16 tests                                      | [covered] |
 | `progress/tests/screen.rs` (unit) — commit-on-join, retention, gated draw path, screen API              | 17 tests                                      | [covered] |
 | `progress/tests/state.rs` (unit) — handle and state semantics, elapsed, spinner cycles, slot restart    | 59 tests                                      | [covered] |

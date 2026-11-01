@@ -110,14 +110,15 @@ pub struct MediaPackage {
 /// failed workflow step is an error, a run that only warned is a warning, and
 /// everything else is clean. No rule reads `skipped_paths`, so a skip can
 /// neither raise nor lower an outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncSummary {
     /// Number of workflow steps that ran during sync. A step whose instance
     /// the cache served did not run, so cached work is excluded.
     pub executed_steps: usize,
-    /// Number of workflow steps the conductor served from its instance cache
-    /// instead of running. Counted from the run summary's `cached_steps`.
-    pub cached_instances: usize,
+    /// Workflow steps served from the instance cache instead of running
+    /// (not tool-call instances). Counted from the run summary's
+    /// `cached_steps`, which the conductor keeps per step.
+    pub cached_steps: usize,
     /// Number of hierarchy paths materialized to the resolved library root.
     pub materialized_paths: usize,
     /// Number of hierarchy paths the run left untouched because a record named
@@ -161,9 +162,10 @@ pub struct WorkflowSyncSummary {
     /// Workflow steps that ran in this sync. A step whose instance the cache
     /// served did not run, so cached work is excluded.
     pub executed_steps: usize,
-    /// Workflow steps the conductor served from its instance cache instead of
-    /// running. Counted from the run summary's `cached_steps`.
-    pub cached_instances: usize,
+    /// Workflow steps served from the instance cache instead of running (not
+    /// tool-call instances). Counted from the run summary's `cached_steps`,
+    /// which the conductor keeps per step.
+    pub cached_steps: usize,
     /// Steps that failed after exhausting retries across all workflows.
     pub failed_steps: usize,
 }

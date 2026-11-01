@@ -199,7 +199,7 @@ async fn invalidating_one_workflow_leaves_the_other_cached() -> Result<(), Media
         cached.executed_steps, 0,
         "an unchanged re-run must be served from cache before invalidation: {cached:?}"
     );
-    assert_eq!(cached.cached_instances, 2, "both steps must be cache hits: {cached:?}");
+    assert_eq!(cached.cached_steps, 2, "both steps must be cache hits: {cached:?}");
 
     let summary = service.invalidate_media_step_tool_calls(&media_id, 0).await?;
     assert_eq!(summary.changed_instances, 1, "only the targeted media is marked: {summary:?}");
@@ -210,7 +210,7 @@ async fn invalidating_one_workflow_leaves_the_other_cached() -> Result<(), Media
         "exactly the invalidated workflow must re-execute: {forced:?}",
     );
     assert_eq!(
-        forced.cached_instances, 1,
+        forced.cached_steps, 1,
         "the unrelated workflow must stay cached: {forced:?} \
          (other media id: {other_media_id})",
     );

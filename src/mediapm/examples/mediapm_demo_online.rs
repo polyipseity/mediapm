@@ -327,7 +327,7 @@ impl Error for DemoOnlineTimeoutError {}
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct SecondRunTally {
     executed_steps: usize,
-    cached_instances: usize,
+    cached_steps: usize,
     materialized_paths: usize,
     skipped_paths: usize,
     removed_paths: usize,
@@ -383,7 +383,7 @@ struct DemoManifest {
     /// recomputing anything.
     materialized_file_hashes: BTreeMap<String, String>,
     executed_steps: usize,
-    cached_instances: usize,
+    cached_steps: usize,
     materialized_paths: usize,
     removed_paths: usize,
     added_tools: usize,
@@ -892,10 +892,10 @@ fn assert_second_sync_did_no_work(
             second.executed_steps
         ));
     }
-    if second.cached_instances != first.executed_steps {
+    if second.cached_steps != first.executed_steps {
         problems.push(format!(
-            "cached_instances={} (expected {}: the first run's executed steps)",
-            second.cached_instances, first.executed_steps
+            "cached_steps={} (expected {}: the first run's executed steps)",
+            second.cached_steps, first.executed_steps
         ));
     }
     if second.materialized_paths != 0 {
@@ -3452,7 +3452,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let materialized_after = snapshot_materialized_files(&hierarchy_root)?;
     let second_run = SecondRunTally {
         executed_steps: second.executed_steps,
-        cached_instances: second.cached_instances,
+        cached_steps: second.cached_steps,
         materialized_paths: second.materialized_paths,
         skipped_paths: second.skipped_paths,
         removed_paths: second.removed_paths,
@@ -3506,7 +3506,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             .map(|(path, record)| (path.clone(), record.hash.clone()))
             .collect(),
         executed_steps: summary.executed_steps,
-        cached_instances: summary.cached_instances,
+        cached_steps: summary.cached_steps,
         materialized_paths: summary.materialized_paths,
         removed_paths: summary.removed_paths,
         added_tools: summary.added_tools,
@@ -4240,7 +4240,7 @@ mod tests {
     fn second_run_tally_serializes_the_documented_schema() {
         let tally = super::SecondRunTally {
             executed_steps: 0,
-            cached_instances: 16,
+            cached_steps: 16,
             materialized_paths: 0,
             skipped_paths: 16,
             removed_paths: 0,
@@ -4262,7 +4262,7 @@ mod tests {
         keys.sort();
         let mut expected = vec![
             "executed_steps",
-            "cached_instances",
+            "cached_steps",
             "materialized_paths",
             "skipped_paths",
             "removed_paths",

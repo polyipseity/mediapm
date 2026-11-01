@@ -151,7 +151,7 @@ struct DemoManifest {
     lock_managed_files_count: usize,
     lock_managed_tools_count: usize,
     executed_steps: usize,
-    cached_instances: usize,
+    cached_steps: usize,
     materialized_paths: usize,
     removed_paths: usize,
     warning_count: usize,
@@ -1003,7 +1003,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         lock_managed_files_count: lock.managed_files.len(),
         lock_managed_tools_count: lock.managed_tools.len(),
         executed_steps: maybe_summary.as_ref().map_or(0, |summary| summary.executed_steps),
-        cached_instances: maybe_summary.as_ref().map_or(0, |summary| summary.cached_instances),
+        cached_steps: maybe_summary.as_ref().map_or(0, |summary| summary.cached_steps),
         materialized_paths: maybe_summary.as_ref().map_or(0, |summary| summary.materialized_paths),
         removed_paths: maybe_summary.as_ref().map_or(0, |summary| summary.removed_paths),
         warning_count: maybe_summary.as_ref().map_or(0, |summary| summary.warnings.len()),
@@ -1331,7 +1331,7 @@ mod tests {
             second.warnings
         );
         assert_eq!(
-            second.cached_instances, first_executed as usize,
+            second.cached_steps, first_executed as usize,
             "second sync must cache exactly the steps the first run executed"
         );
         assert_eq!(second.materialized_paths, 0, "second sync must rewrite no library path");

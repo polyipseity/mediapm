@@ -158,8 +158,8 @@ pub fn print_sync_summary(summary: &SyncSummary) {
     let mut fields: Vec<(&str, Box<dyn std::fmt::Display>)> = Vec::new();
     fields.push(("executed", Box::new(summary.executed_steps)));
 
-    if summary.cached_instances > 0 {
-        fields.push(("cached", Box::new(summary.cached_instances)));
+    if summary.cached_steps > 0 {
+        fields.push(("cached", Box::new(summary.cached_steps)));
     }
     if summary.materialized_paths > 0 {
         fields.push(("materialized", Box::new(summary.materialized_paths)));
@@ -202,5 +202,21 @@ pub fn print_sync_summary(summary: &SyncSummary) {
 
     for warning in &summary.warnings {
         print_warning(warning);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::SyncSummary;
+
+    /// The field name promises what the field counts. `cached_steps` is fed by the
+    /// conductor's cache-hit step count, and the online demo compares it against
+    /// `executed_steps` from the previous run — a comparison that only makes sense
+    /// when both sides count steps.
+    #[test]
+    fn cached_steps_is_named_for_what_it_counts() {
+        let summary = SyncSummary { cached_steps: 1, executed_steps: 2, ..SyncSummary::default() };
+        assert_eq!(summary.cached_steps, 1, "the field is the conductor's cache-hit step count");
+        assert_eq!(summary.executed_steps, 2);
     }
 }

@@ -4,7 +4,7 @@
 //! back over an unchanged library must do the work once. The first run executes
 //! the synthesized import workflow and materializes its output; the second must
 //! serve every workflow instance from cache (`executed_steps == 0`,
-//! `cached_instances` equal to the first run's total), write no new path
+//! `cached_steps` equal to the first run's total), write no new path
 //! (`materialized_paths == 0`), and decline the entries the first run produced
 //! (`skipped_paths` equal to the first run's materialized count).
 //!
@@ -221,7 +221,7 @@ async fn an_immediate_second_sync_executes_nothing_and_rematerializes_nothing()
          {second:?} (first run: {first:?})"
     );
     assert_eq!(
-        second.cached_instances, first.executed_steps,
+        second.cached_steps, first.executed_steps,
         "every instance the first run executed must be served from cache on the re-run: {second:?}"
     );
 

@@ -1383,7 +1383,7 @@ impl MediaPmService<FileSystemCas> {
             .map(|workflow| workflow.name.clone())
             .collect();
         let mut executed_steps: usize = 0;
-        let mut cached_instances: usize = 0;
+        let mut cached_steps: usize = 0;
         let mut workflow_failed_steps: usize = 0;
         // Loaded *after* tool sync because that phase rewrites the managed-tool
         // registry and saves it. Loading earlier would leave this handle with a
@@ -1430,7 +1430,7 @@ impl MediaPmService<FileSystemCas> {
             // would report that run as cached. Executed = steps that actually
             // ran this run; cached = steps served from the instance cache.
             executed_steps += summary.executed_steps;
-            cached_instances += summary.cached_steps;
+            cached_steps += summary.cached_steps;
             if summary.failed_steps > 0 {
                 workflow_failed_steps += summary.failed_steps;
                 warnings.push(format!(
@@ -1450,7 +1450,7 @@ impl MediaPmService<FileSystemCas> {
         if let Some(ref obs) = observer {
             obs.on_phase(crate::SyncPhaseReport::Workflow(crate::WorkflowSyncSummary {
                 executed_steps,
-                cached_instances,
+                cached_steps,
                 failed_steps: workflow_failed_steps,
             }));
         }
@@ -1521,7 +1521,7 @@ impl MediaPmService<FileSystemCas> {
 
         Ok(SyncSummary {
             executed_steps,
-            cached_instances,
+            cached_steps,
             materialized_paths: materialize_report.materialized_paths,
             skipped_paths: materialize_report.skipped_paths,
             missing_paths: materialize_report.missing_paths,
