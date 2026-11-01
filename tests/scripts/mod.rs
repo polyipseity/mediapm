@@ -445,10 +445,10 @@ fn bash_janitor_dry_run_and_real_run() {
     });
 }
 
-/// A `--dry-run` reaches no removal at all: the preflight is guarded on a real
-/// run and the sweep loop only prints, so this pins the exit trap and nothing
-/// else. The shimmed `rm` fails the trap's unlink of the listing, and the dry
-/// run must still report its sweep and exit 0.
+/// A `--dry-run` never reaches `rm` in the sweep loop: the preflight is guarded
+/// on a real run and the loop only prints, so the one removal a dry run does is
+/// the trap's unlink of its own listing. That is what this pins: the shimmed
+/// `rm` fails the trap, and the dry run must still report its sweep and exit 0.
 ///
 /// The host's own `rm` is irrelevant here, so this test does not ask for one:
 /// what it needs is a `PATH` whose `rm` fails. It proves that `PATH` shadows the

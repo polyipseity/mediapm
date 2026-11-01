@@ -32,6 +32,7 @@ fail() {
 
 # --- Runtime part: sandboxed $TMPDIR with fake mediapm-* dirs and controls.
 tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
 # The janitor removes with `rm`, so every sweep case below needs an `rm` that
 # deletes. Hosts that front `~/.local/bin/rm` with a safe-delete wrapper make
@@ -56,7 +57,6 @@ printf '#!/bin/sh\nexec %s "$@"\n' "$real_rm" >"$real_rm_bin/rm"
 chmod +x "$real_rm_bin/rm"
 PATH="$real_rm_bin:$PATH"
 export PATH
-trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
 mkdir -p "$tmpdir/mediapm-artifact-fake1"
 mkdir -p "$tmpdir/mediapm-cache-fake2"
@@ -264,6 +264,10 @@ if [ "$(id -u)" -ne 0 ]; then
     case "$(cat "$tmpdir/fail.err")" in
         *"failed to remove: $fail_root/mediapm-artifact-sealed"*) ;;
         *) fail "per-path failure did not name the sealed dir: $(cat "$tmpdir/fail.err")" ;;
+    esac
+    case "$(cat "$tmpdir/fail.err")" in
+        *'1 director(ies) could not be removed'*) ;;
+        *) fail "per-path failure did not summarise the count: $(cat "$tmpdir/fail.err")" ;;
     esac
     case "$(cat "$tmpdir/fail.out")" in
         *"removed: $fail_root/mediapm-cache-ok"*) ;;

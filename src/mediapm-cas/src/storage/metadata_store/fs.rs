@@ -86,10 +86,15 @@ impl FileSystemMetadataStore {
     ///
     /// The lock itself belongs to the blob store
     /// ([`FileSystemBlobStore::lock_aux_dir`](super::super::blob_store::FileSystemBlobStore::lock_aux_dir)),
-    /// because the file is the blob store's: two metadata stores built by `new`
-    /// over one blob store are two writers to one file, and clones of a blob
-    /// store share the lock, so the guarantee follows the file rather than the
-    /// caller.
+    /// because the file is the blob store's: clones of a blob store share the
+    /// lock, so the guarantee follows the file rather than the caller.
+    ///
+    /// What the lock does not do is merge facts. It orders writers of one
+    /// directory, so whichever writer flushes last installs a file holding only
+    /// the facts its own store collected. Two metadata stores built by
+    /// [`new`](Self::new) over one blob store hold separate in-memory indexes
+    /// and must therefore not be built; only clones of one metadata store are
+    /// supported, because a clone shares the index the snapshot is taken from.
     async fn flush_dir(&self, hash: &Hash) -> Result<(), CasError> {
         let _dir = self.blob_store.lock_aux_dir(hash).await;
         let prefix = &hash.to_hex()[..4];

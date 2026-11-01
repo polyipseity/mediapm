@@ -219,12 +219,20 @@ impl FileSystemBlobStore {
 
     /// Hold this fan-out directory's aux lock until the returned guard is dropped.
     ///
+    /// The key is the directory that holds the fan-out's aux files, and that is
+    /// the directory an object path lives in: `hash_to_path` ends in the object's
+    /// own file name, so its `parent` is `<root>/<layout>/blake3/ab/cd`, the same
+    /// directory `aux_path(hash, name)` joins a file name onto. Keying by the aux
+    /// path's own parent instead would land on the 2-hex ancestor and serialize
+    /// unrelated fan-out directories against each other.
+    ///
     /// Taken before any [`Self::lock_commit`] guard for a file inside the
     /// directory; that is the only order used in this crate (`dir` then `file`).
     /// The guard is owned so a caller can hold it across `.await` without
     /// borrowing the store.
     pub(crate) async fn lock_aux_dir(&self, hash: &Hash) -> tokio::sync::OwnedMutexGuard<()> {
-        let key = self.aux_path(hash, "").parent().map(Path::to_path_buf).unwrap_or_default();
+        let key =
+            hash_to_path(&self.root, hash).parent().map(Path::to_path_buf).unwrap_or_default();
         let lock = Arc::clone(&*self.aux_dir_locks.entry(key).or_default());
         lock.lock_owned().await
     }
@@ -1566,9 +1574,17 @@ mod tests {
         let (left, right) = fan_out_pair();
         let elsewhere = other_fan_out(&left);
 
+        // The lock keys by the object's own fan-out directory, so this is the
+        // premise the rest of the test rests on: that directory is where the aux
+        // files land.
         assert_eq!(
-            store.aux_path(&left, "probe").parent(),
-            store.aux_path(&right, "probe").parent(),
+            hash_to_path(store.root(), &left).parent(),
+            store.aux_path(&left, "some-name").parent(),
+            "the object's own directory is the one holding its aux files"
+        );
+        assert_eq!(
+            hash_to_path(store.root(), &left).parent(),
+            hash_to_path(store.root(), &right).parent(),
             "the pair has to share a fan-out directory, or the blocks below prove nothing"
         );
 

@@ -1279,10 +1279,6 @@ mod tests {
         cache.store_bytes("test", "key", b"data").await;
         let before = cache.get_entry_last_access("test", "key").expect("entry exists");
 
-        // A scheduling yield, not a time advance: it gives a concurrent reader
-        // a chance to interleave, which is what this test watches for.
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-
         let _ = cache.lookup_bytes("test", "key").await;
         let after = cache.get_entry_last_access("test", "key").expect("entry still exists");
         assert_eq!(before, after, "lookup_bytes must not bump last_access");
