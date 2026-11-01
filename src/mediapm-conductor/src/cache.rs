@@ -118,6 +118,8 @@ pub struct Cache {
     /// removed while a handle is still alive: flushing would recreate the
     /// root as an index-only orphan directory.
     root: PathBuf,
+    /// Source of every expiry timestamp this cache reads.
+    clock: Clock,
 }
 
 /// Creates the CAS store and loads all domain index files.
@@ -308,8 +310,13 @@ impl Cache {
     /// fails.
     pub async fn open(root: &Path, domains: &[CacheDomainConfig]) -> Result<Self, ConductorError> {
         let (cas, domains_map) = open_domain_setup(root, domains, Vec::new()).await?;
-        let mut cache =
-            Self { cas, domains: domains_map, bg_guard: None, root: root.to_path_buf() };
+        let mut cache = Self {
+            cas,
+            domains: domains_map,
+            bg_guard: None,
+            root: root.to_path_buf(),
+            clock: Clock::system(),
+        };
 
         // Start background prune loop that iterates all domains.
         //
@@ -322,6 +329,7 @@ impl Cache {
         let cancelled_clone = cancelled.clone();
         let bg_cas = cache.cas.clone();
         let bg_domains = cache.domains.clone();
+        let bg_clock = cache.clock.clone();
         let domain_names: Vec<String> = bg_domains.keys().cloned().collect();
         let handle = tokio::spawn(async move {
             loop {
@@ -329,9 +337,8 @@ impl Cache {
                     break;
                 }
                 for domain in &domain_names {
-                    let _ =
-                        prune_expired_inner_core(&bg_cas, &bg_domains, domain, now_unix_seconds())
-                            .await;
+                    let _ = prune_expired_inner_core(&bg_cas, &bg_domains, domain, bg_clock.now())
+                        .await;
                 }
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
@@ -360,7 +367,13 @@ impl Cache {
         domains: &[CacheDomainConfig],
     ) -> Result<Self, ConductorError> {
         let (cas, domains_map) = open_domain_setup(root, domains, Vec::new()).await?;
-        Ok(Self { cas, domains: domains_map, bg_guard: None, root: root.to_path_buf() })
+        Ok(Self {
+            cas,
+            domains: domains_map,
+            bg_guard: None,
+            root: root.to_path_buf(),
+            clock: Clock::system(),
+        })
     }
 
     /// Prunes expired entries for one domain **immediately**, bypassing the
@@ -379,7 +392,7 @@ impl Cache {
         &self,
         domain: &str,
     ) -> Result<CachePruneReport, ConductorError> {
-        let now = now_unix_seconds();
+        let now = self.clock.now();
         self.prune_expired_inner(domain, now).await
     }
 
@@ -455,7 +468,7 @@ impl Cache {
         let Some(domain_state) = self.domains.get(domain) else {
             return;
         };
-        let now = now_unix_seconds();
+        let now = self.clock.now();
 
         // Check throttle before acquiring the index lock.
         let should_persist = {
@@ -501,7 +514,7 @@ impl Cache {
         &self,
         domain: &str,
     ) -> Result<CachePruneReport, ConductorError> {
-        let now = now_unix_seconds();
+        let now = self.clock.now();
         let last_prune = {
             let domain_state = self.domains.get(domain).ok_or_else(|| {
                 ConductorError::Workflow(format!("unknown cache domain '{domain}'"))
@@ -575,7 +588,7 @@ impl Cache {
         let Ok(mut index) = domain_state.index.lock() else {
             return;
         };
-        let now = now_unix_seconds();
+        let now = self.clock.now();
         let hash_text = hash.to_string();
         let mut should_persist = true;
         if let Some(existing) = index.entries.get_mut(key) {
@@ -754,6 +767,49 @@ fn now_unix_seconds() -> u64 {
     mediapm_utils::Timestamp::now().as_unix_secs()
 }
 
+/// Where the cache reads the current second.
+///
+/// Every expiry decision compares against this, so a test can say which second
+/// it means instead of sleeping towards one. Cheap to clone, and the clone the
+/// background task holds reads the same source as the handle's.
+#[derive(Clone)]
+struct Clock(Arc<dyn Fn() -> u64 + Send + Sync>);
+
+impl Clock {
+    /// The wall clock, truncated to whole seconds.
+    fn system() -> Self {
+        Self(Arc::new(now_unix_seconds))
+    }
+
+    /// The current second.
+    fn now(&self) -> u64 {
+        (self.0)()
+    }
+}
+
+/// A clock a test advances by hand.
+#[cfg(test)]
+struct TestClock(Arc<AtomicU64>);
+
+#[cfg(test)]
+impl TestClock {
+    /// Start at `second`.
+    fn new(second: u64) -> Self {
+        Self(Arc::new(AtomicU64::new(second)))
+    }
+
+    /// The handle to hand the cache.
+    fn handle(&self) -> Clock {
+        let value = Arc::clone(&self.0);
+        Clock(Arc::new(move || value.load(Ordering::Relaxed)))
+    }
+
+    /// Move the clock to `second`.
+    fn set(&self, second: u64) {
+        self.0.store(second, Ordering::Relaxed);
+    }
+}
+
 /// Flushes all domain indexes on drop so throttle-deferred writes are not lost.
 impl Drop for Cache {
     fn drop(&mut self) {
@@ -805,6 +861,27 @@ impl Cache {
         self.bg_guard.clone()
     }
 
+    /// Test-only: opens a cache at `root` over `clock`, for tests that need to
+    /// say which second they mean instead of sleeping towards one.
+    ///
+    /// Starts no background loop: a test that owns the clock must not race a
+    /// loop that would prune on a second the test never set.
+    async fn with_test_clock(
+        root: &Path,
+        domains: &[CacheDomainConfig],
+        clock: &TestClock,
+    ) -> Self {
+        let (cas, domains_map) =
+            open_domain_setup(root, domains, Vec::new()).await.expect("open cache");
+        Self {
+            cas,
+            domains: domains_map,
+            bg_guard: None,
+            root: root.to_path_buf(),
+            clock: clock.handle(),
+        }
+    }
+
     /// Test-only: opens cache with a configurable background maintenance
     /// interval for a single domain named `"test"`, using the given verify
     /// strategies for the underlying CAS.
@@ -821,17 +898,23 @@ impl Cache {
             entry_ttl_seconds,
         };
         let (cas, domains_map) = open_domain_setup(root, &[config], verify_strategies).await?;
-        let mut cache =
-            Self { cas, domains: domains_map, bg_guard: None, root: root.to_path_buf() };
-        // Capture owned clones of the CAS and domain map instead of a full
-        // `Cache` clone: a captured clone would keep the last `Cache` alive
-        // until runtime teardown, at which point its Drop index flush would
-        // recreate a tempdir the owning scope already removed (orphan leak
-        // of index-only directories under `$TMPDIR`).
+        let mut cache = Self {
+            cas,
+            domains: domains_map,
+            bg_guard: None,
+            root: root.to_path_buf(),
+            clock: Clock::system(),
+        };
+        // Capture owned clones of the CAS, domain map and clock instead of a
+        // full `Cache` clone: a captured clone would keep the last `Cache`
+        // alive until runtime teardown, at which point its Drop index flush
+        // would recreate a tempdir the owning scope already removed (orphan
+        // leak of index-only directories under `$TMPDIR`).
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_clone = cancelled.clone();
         let bg_cas = cache.cas.clone();
         let bg_domains = cache.domains.clone();
+        let bg_clock = cache.clock.clone();
         let domain_names: Vec<String> = bg_domains.keys().cloned().collect();
         let handle = tokio::spawn(async move {
             loop {
@@ -839,9 +922,8 @@ impl Cache {
                     break;
                 }
                 for domain in &domain_names {
-                    let _ =
-                        prune_expired_inner_core(&bg_cas, &bg_domains, domain, now_unix_seconds())
-                            .await;
+                    let _ = prune_expired_inner_core(&bg_cas, &bg_domains, domain, bg_clock.now())
+                        .await;
                 }
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
@@ -867,17 +949,23 @@ impl Cache {
             entry_ttl_seconds,
         };
         let (cas, domains_map) = open_domain_setup(root, &[config], Vec::new()).await?;
-        let mut cache =
-            Self { cas, domains: domains_map, bg_guard: None, root: root.to_path_buf() };
-        // Capture owned clones of the CAS and domain map instead of a full
-        // `Cache` clone: a captured clone would keep the last `Cache` alive
-        // until runtime teardown, at which point its Drop index flush would
-        // recreate a tempdir the owning scope already removed (orphan leak
-        // of index-only directories under `$TMPDIR`).
+        let mut cache = Self {
+            cas,
+            domains: domains_map,
+            bg_guard: None,
+            root: root.to_path_buf(),
+            clock: Clock::system(),
+        };
+        // Capture owned clones of the CAS, domain map and clock instead of a
+        // full `Cache` clone: a captured clone would keep the last `Cache`
+        // alive until runtime teardown, at which point its Drop index flush
+        // would recreate a tempdir the owning scope already removed (orphan
+        // leak of index-only directories under `$TMPDIR`).
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_clone = cancelled.clone();
         let bg_cas = cache.cas.clone();
         let bg_domains = cache.domains.clone();
+        let bg_clock = cache.clock.clone();
         let domain_names: Vec<String> = bg_domains.keys().cloned().collect();
         let handle = tokio::spawn(async move {
             loop {
@@ -885,9 +973,8 @@ impl Cache {
                     break;
                 }
                 for domain in &domain_names {
-                    let _ =
-                        prune_expired_inner_core(&bg_cas, &bg_domains, domain, now_unix_seconds())
-                            .await;
+                    let _ = prune_expired_inner_core(&bg_cas, &bg_domains, domain, bg_clock.now())
+                        .await;
                 }
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
@@ -904,7 +991,7 @@ impl Cache {
 mod tests {
     use super::{
         Cache, CacheDomainConfig, ENTRY_TTL_SECONDS, PRUNE_INTERVAL_SECONDS,
-        TOUCH_PERSIST_INTERVAL_SECONDS,
+        TOUCH_PERSIST_INTERVAL_SECONDS, TestClock,
     };
     use mediapm_cas::{CasApi, FileSystemCas, Hash, VerifyTriggerStrategy};
     use std::collections::BTreeSet;
@@ -1134,35 +1221,44 @@ mod tests {
         );
     }
 
-    /// Verifies that `touch()` bumps `last_access` so an entry survives prune.
+    /// A touch moves the entry's last access forward, and the boundary is exact.
+    ///
+    /// At second resolution the cutoff is `now - ttl` and the comparison is
+    /// `<=`, so an entry touched at `T` is still live when the prune reads `T`
+    /// and expires when it reads `T + ttl`. Writing both readings down is the
+    /// point: with a real clock this test could only assert the first, because
+    /// whether it saw `T` or `T + ttl` depended on where the wall clock stood.
+    ///
+    /// The prunes go through [`Cache::prune_expired_immediate`] because the
+    /// cooldown-gated entry point would answer `0` for the second reading
+    /// without consulting the entry at all.
     #[tokio::test]
     async fn touch_bumps_last_access_and_prevents_prune() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
-        let cache = Cache::open(
+        let clock = TestClock::new(1_000);
+        let cache = Cache::with_test_clock(
             root.path(),
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
                 entry_ttl_seconds: 1,
             }],
+            &clock,
         )
-        .await
-        .expect("open cache");
+        .await;
 
+        clock.set(1_000);
         cache.store_bytes("test", "key", b"data").await;
-
-        // Wait for TTL to expire (1 second).
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-        // Touch moves last_access forward to now.
+        clock.set(1_001);
         cache.touch("test", "key");
 
-        // Prune — entry should survive because touch moved last_access
-        // past the cutoff (now - 1s).
-        let report = cache.prune_expired_entries("test").await.expect("prune");
-        assert_eq!(report.removed_entries, 0, "touched entry must survive prune");
-        let retrieved = cache.lookup_bytes("test", "key").await;
-        assert_eq!(retrieved, Some(b"data".to_vec()));
+        let report = cache.prune_expired_immediate("test").await.expect("prune");
+        assert_eq!(report.removed_entries, 0, "the touch refreshed this entry");
+        assert_eq!(cache.lookup_bytes("test", "key").await, Some(b"data".to_vec()));
+
+        clock.set(1_002);
+        let report = cache.prune_expired_immediate("test").await.expect("prune");
+        assert_eq!(report.removed_entries, 1, "one ttl past the touch it expires");
     }
 
     /// Verifies that `lookup_bytes()` does not update `last_access`.
@@ -1183,6 +1279,8 @@ mod tests {
         cache.store_bytes("test", "key", b"data").await;
         let before = cache.get_entry_last_access("test", "key").expect("entry exists");
 
+        // A scheduling yield, not a time advance: it gives a concurrent reader
+        // a chance to interleave, which is what this test watches for.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
         let _ = cache.lookup_bytes("test", "key").await;
@@ -1190,26 +1288,29 @@ mod tests {
         assert_eq!(before, after, "lookup_bytes must not bump last_access");
     }
 
+    /// A touch stamps the second the clock reads, so a test can step past the
+    /// old stamp instead of sleeping until the wall clock agrees.
+    ///
     /// Verifies that `touch()` bumps `last_access`.
     #[tokio::test]
     async fn touch_bumps_last_access() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
-        let cache = Cache::open(
+        let clock = TestClock::new(1_000);
+        let cache = Cache::with_test_clock(
             root.path(),
             &[CacheDomainConfig {
                 domain: "test".to_string(),
                 index_file_name: "tools.json".to_string(),
                 entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
+            &clock,
         )
-        .await
-        .expect("open cache");
+        .await;
 
         cache.store_bytes("test", "key", b"data").await;
         let before = cache.get_entry_last_access("test", "key").expect("entry exists");
 
-        // Timestamps are in seconds; sleep 1s to guarantee a different second.
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        clock.set(1_001);
 
         cache.touch("test", "key");
         let after = cache.get_entry_last_access("test", "key").expect("entry still exists");
@@ -1861,10 +1962,19 @@ mod tests {
 
     /// Verifies that a blob referenced by two separate domain index files
     /// survives when only one domain is pruned.
+    ///
+    /// Both keys are stored at second `1_000_000`; the prune reads the next
+    /// second, one ttl past the content row and far short of the metadata
+    /// row.
+    ///
+    /// The clock starts well past `PRUNE_INTERVAL_SECONDS` on purpose: the
+    /// fresh index's `last_prune` is zero, and this test is about the payload
+    /// reference, not about the cooldown gate swallowing the prune.
     #[tokio::test]
     async fn prune_expired_cross_index_shared_hash_preserves_blob() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
-        let cache = Cache::open(
+        let clock = TestClock::new(1_000_000);
+        let cache = Cache::with_test_clock(
             root.path(),
             &[
                 CacheDomainConfig {
@@ -1878,16 +1988,16 @@ mod tests {
                     entry_ttl_seconds: 3600,
                 },
             ],
+            &clock,
         )
-        .await
-        .expect("open cache");
+        .await;
 
         let payload = b"cross-index-shared".to_vec();
         cache.store_bytes("content", "key-a", &payload).await;
         cache.store_bytes("metadata", "key-b", &payload).await;
 
-        // Wait for content domain's TTL to expire.
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // One second past the store puts the content row past its ttl.
+        clock.set(1_000_001);
 
         // Prune content domain — key-a expires, but blob is referenced by
         // metadata domain.
@@ -1960,7 +2070,10 @@ mod tests {
         .await
         .expect("open cache");
         cache.store_bytes("test", "expiring-key", b"ephemeral").await;
-        // Wait for background prune to run (interval is 1s).
+        // Wait for background prune to run (interval is 1s). The clock cannot
+        // replace this wait: it fires the loop's real timer, not a second the
+        // test picks, and with TTL = 0 the entry's expiry does not depend on
+        // which second the loop reads.
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert!(
             cache.lookup_bytes("test", "expiring-key").await.is_none(),
@@ -1981,7 +2094,10 @@ mod tests {
         .await
         .expect("open cache");
         cache.store_bytes("test", "fresh-key", b"fresh").await;
-        // Wait for background prune to run (interval is 1s).
+        // Wait for background prune to run (interval is 1s). The clock cannot
+        // replace this wait: it fires the loop's real timer, not a second the
+        // test picks, and a 24-hour ttl keeps the entry live at any second the
+        // loop reads.
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert!(
             cache.lookup_bytes("test", "fresh-key").await.is_some(),
@@ -2117,45 +2233,51 @@ mod tests {
 
     /// Verifies that `touch()` persists the updated timestamp across cache
     /// open/close cycles via the `Drop` flush.
+    ///
+    /// Session one stores at `1_000` and touches at `1_001`; session two
+    /// reopens over the same root and the same clock, so the persisted stamp
+    /// is the touch's second rather than whichever second the reopen happened
+    /// in.
     #[tokio::test]
     async fn touch_persists_across_restart() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let domain = "test";
         let key = "touch-survive-key";
+        let clock = TestClock::new(1_000);
 
         // ── First session ──
-        let cache = Cache::open(
+        let cache = Cache::with_test_clock(
             root.path(),
             &[CacheDomainConfig {
                 domain: domain.to_string(),
                 index_file_name: "tools.json".to_string(),
                 entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
+            &clock,
         )
-        .await
-        .expect("open cache");
+        .await;
         let payload = b"touch-persistence-payload".to_vec();
         cache.store_bytes(domain, key, &payload).await;
         let original_access =
             cache.get_entry_last_access(domain, key).expect("entry exists after store");
 
-        // Advance time enough to make the touch bump observable.
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // One second on, so the touch's stamp is observably later.
+        clock.set(1_001);
 
         cache.touch(domain, key);
         drop(cache); // Drop flushes indexes
 
         // ── Second session ──
-        let cache = Cache::open(
+        let cache = Cache::with_test_clock(
             root.path(),
             &[CacheDomainConfig {
                 domain: domain.to_string(),
                 index_file_name: "tools.json".to_string(),
                 entry_ttl_seconds: ENTRY_TTL_SECONDS,
             }],
+            &clock,
         )
-        .await
-        .expect("reopen cache");
+        .await;
 
         let retrieved = cache.lookup_bytes(domain, key).await;
         assert_eq!(retrieved, Some(payload), "payload must survive restart");
