@@ -496,7 +496,7 @@ impl UnresolvedInputCause {
             Self::PriorStepOutput => "names a step output this traversal did not resolve",
             Self::MissingObject => "names an object the store could not read",
             Self::MissingArchiveMember => "names an archive member the stored bytes do not contain",
-            Self::TemplateRaised => "names a binding whose template raised an error",
+            Self::TemplateRaised => "names a binding the template engine could not resolve",
         }
     }
 }
@@ -522,6 +522,10 @@ impl UnresolvedInput {
 
 /// Records the bindings whose template did not resolve, keeping a cause an
 /// input already carries.
+///
+/// Each recorded reason is the template engine's own error text, and becomes
+/// the input's `detail`: the refusal then prints the engine's words after the
+/// cause's phrase, which is what tells a reader what the engine objected to.
 ///
 /// Each binding takes one path through
 /// [`build_instance_key_resolved_value_bytes`]: a `:zip(...)` selector is
@@ -3578,8 +3582,9 @@ mod tests {
             "the refusal carries the engine's reason: {described}",
         );
         assert!(
-            described.contains("template"),
-            "the cause must say a template raised, not only that an input is unresolved: {described}",
+            described.contains(UnresolvedInputCause::TemplateRaised.phrase()),
+            "the cause says the engine could not resolve the binding, not only that an input is \
+             unresolved: {described}",
         );
     }
 
@@ -3892,6 +3897,17 @@ mod tests {
             resolved.unresolved_bindings.contains_key("url"),
             "the binding, not a store read, is what failed: {:?}",
             resolved.unresolved_names()
+        );
+        let reason = resolved
+            .unresolved_bindings
+            .get("url")
+            .expect("the binding's reason travels with its name");
+        assert!(
+            !reason.is_empty()
+                && reason.contains("${inputs.missing}")
+                && reason.contains("not found"),
+            "the recorded reason is the engine's own words for this binding, not an empty or \
+             synthetic string: {reason:?}"
         );
         assert!(
             resolved.values.is_empty(),

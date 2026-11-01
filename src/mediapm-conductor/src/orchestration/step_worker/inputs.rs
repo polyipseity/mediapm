@@ -86,7 +86,9 @@ pub struct InstanceKeyInputValues {
     /// Binding name to the reason its template did not resolve.
     ///
     /// The text is the engine's own error, because a reader writes a diagnostic
-    /// per input and a name alone cannot say what the engine objected to.
+    /// per input and a name alone cannot say what the engine objected to. It is
+    /// never key material: the key derives from [`Self::values`] alone, and a
+    /// recorded reason only refuses the match.
     pub unresolved: BTreeMap<String, String>,
 }
 
