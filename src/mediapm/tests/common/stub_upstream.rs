@@ -284,7 +284,7 @@ pub(crate) async fn mount_managed_tool_upstreams(mock: &MockUpstream) {
 /// The returned guard holds the process environment lock, so the caller must not
 /// already hold `example_isolation::env_lock()`: that mutex is not reentrant and
 /// nesting it deadlocks rather than failing.
-pub(crate) async fn mock_all_managed_tools() -> (MockUpstream, SeamGuard) {
+pub(crate) async fn mock_all_managed_tools() -> (MockUpstream, SeamGuard<'static>) {
     let mock = MockUpstream::start().await;
     mount_managed_tool_upstreams(&mock).await;
     let seams = mock.all_seams(mediapm::example_isolation::env_lock());

@@ -92,7 +92,7 @@ impl MockUpstream {
     /// names it rather than silently taking a second one; pass
     /// [`seams::env_lock`] when the consuming crate has no lock of its own.
     #[must_use]
-    pub fn all_seams(&self, lock: &'static Mutex<()>) -> SeamGuard {
+    pub fn all_seams(&self, lock: &'static Mutex<()>) -> SeamGuard<'static> {
         SeamGuard::all_seams(lock, &self.server.uri())
     }
 

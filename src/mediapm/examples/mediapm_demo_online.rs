@@ -145,9 +145,16 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
     NickelDocument, ToolKindSpec, ToolSpec, decode_document, default_runtime_inherited_env_vars,
 };
+use mediapm_test_support::MockUpstream;
+use mediapm_test_support::media_fixture::{
+    MEDIA_FIXTURE_AUDIO_CODEC_ID, MEDIA_FIXTURE_DURATION_SECONDS, MEDIA_FIXTURE_HEIGHT,
+    MEDIA_FIXTURE_VIDEO_CODEC_ID, MEDIA_FIXTURE_WIDTH,
+};
+use mediapm_test_support::mock_musicbrainz::MockMusicBrainz;
+use mediapm_test_support::seams::SeamGuard;
+use mediapm_test_support::stub_media::{self, OfflineToolChain};
 use same_file::is_same_file;
 use serde::Serialize;
-use serde_json::json;
 
 const DEMO_MEDIA_ID: &str = "youtube.dQw4w9WgXcQ";
 const DEMO_TAGGED_HIERARCHY_ID: &str = "youtube.dQw4w9WgXcQ";
@@ -284,6 +291,31 @@ const DEMO_REPLAYGAIN_DISALLOWED_TAG_KEYS: [&str; 3] =
 
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
+/// The environment variable a bare tool name resolves through.
+const PATH_ENV: &str = "PATH";
+
+/// The upstream a demo run reaches.
+///
+/// The value is threaded from `main` into every decision the route governs — the
+/// tagger endpoint the document states, which post-sync assertions the run makes,
+/// and whether it records offline evidence — so the switch has one reader and a
+/// run cannot reach the real providers on one decision and the stub chain on
+/// another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolRoute {
+    /// The real providers, the real tool binaries and the real tagger backend.
+    RealUpstream,
+    /// The stub tool chain, the mocked provisioner and the mocked tagger backend.
+    StubChain,
+}
+
+impl ToolRoute {
+    /// Whether this route reaches the real upstream.
+    fn is_online(self) -> bool {
+        matches!(self, Self::RealUpstream)
+    }
+}
+
 static DEMO_FFPROBE_COMMAND: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,11 +380,35 @@ struct ManagedToolProvenance {
     resolved_vcs_hash: Option<String>,
 }
 
+/// What an offline run recorded that proves it reached no network.
+///
+/// The two halves are positive evidence rather than the absence of a failure:
+/// the invocation record is written by the stub binaries themselves, so it cannot
+/// exist unless a chain copy ran, and the request count is the tagger backend's
+/// own traffic. The two name fields are the media root the run materialized,
+/// split by [`load_resolved_demo_metadata`]; they are named for the root rather
+/// than for the tagging step because the name is what a reader can check against
+/// the artifact. Offline that name carries the container's own tags, because no
+/// chain copy applies the tagging step's `FFmetadata` document — the tagging half
+/// of the assertion is [`OfflineEvidence::musicbrainz_requests`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct OfflineEvidence {
+    /// Every chain executable this run invoked, in order, by the logical tool it
+    /// stands in for.
+    chain_invocations: Vec<String>,
+    /// How many requests the mocked tagger backend answered.
+    musicbrainz_requests: usize,
+    /// The artist the materialized media root's name carries.
+    root_artist: String,
+    /// The title the materialized media root's name carries.
+    root_title: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct DemoManifest {
-    /// Which mode produced this manifest. The full-sync path records
-    /// `"full"`; the reduced config-only path writes its own manifest with
-    /// `"config_only"`.
+    /// Which mode produced this manifest. Both routes run the same full sync, so
+    /// this is always `"full"`; [`DemoManifest::offline`] is what records which
+    /// upstream the run reached.
     run_mode: String,
     generated_unix_epoch_seconds: u64,
     artifact_root: String,
@@ -387,8 +443,9 @@ struct DemoManifest {
     added_tools: usize,
     updated_tools: usize,
     warning_count: usize,
-    /// Present only when the full-sync path ran its second idempotency sync;
-    /// reduced (config-only) runs record `None`.
+    /// Present whenever the sync wrote its idempotency re-run's tally, which is
+    /// every run the demo performs: the manifest keeps it optional because the
+    /// tally is written by the full-sync path alone.
     second_run: Option<SecondRunTally>,
     profile_path: String,
     /// Total logical size of every CAS blob object (sum of `info.len` for
@@ -399,6 +456,9 @@ struct DemoManifest {
     /// `v1/` instead of `blobs/v1/`, and even after fixing the path both
     /// delta and without-delta would be identical for this store.
     store_size_bytes: u64,
+    /// The evidence a stub-chain run leaves; absent on a real-upstream run,
+    /// which has no chain to record.
+    offline: Option<OfflineEvidence>,
 }
 
 /// Runtime storage for demo runs; the user-level tool cache resolves to a
@@ -536,12 +596,13 @@ struct DemoResolvedMetadata {
     /// otherwise, which is why `assert_metadata_files_present` pins the media root against the
     /// canonical form.
     title: String,
-    /// Canonical artist prefix, checked against the materialized media root's own name.
+    /// Canonical artist prefix, read back from the materialized media root's own name.
     ///
     /// The recording title carries no artist, so the artist is its own metadata entry and the
-    /// prefix is what puts it into the name. `parse_jellyfin_root_folder_name` requires the name to
-    /// start with `{DEMO_METADATA_ARTIST} - ` and reports that constant; the prefix is validated,
-    /// not read back, because the demo pins the artist the tagging steps must have written.
+    /// prefix is what puts it into the name. On the real-upstream route it is the artist the
+    /// tagging steps wrote; on the stub-chain route no copy applies the tagging document, so the
+    /// name carries the container's own `ARTIST` tag and this holds that value instead of
+    /// [`DEMO_METADATA_ARTIST`].
     artist: String,
     /// yt-dlp provider title (`info.json` `title` key).
     ///
@@ -587,27 +648,24 @@ fn resolve_demo_metadata_template(template: &str, metadata: &DemoResolvedMetadat
         .replace("${media.metadata.video_ext}", &metadata.video_ext)
 }
 
-/// Splits a materialized folder name into its artist, canonical title and media id.
+/// Splits a materialized folder name into its artist, title and media id.
 ///
-/// The name mediapm renders is `<artist> - <title> [<media-id>]`. The prefix is checked against
-/// `DEMO_METADATA_ARTIST` rather than read back — the demo pins the artist its tagging steps must
-/// have written — and only the title and the media id are parsed out. A name without the prefix
-/// did not come from the demo's templates, and refusing here keeps the failure at the shape check
-/// instead of letting a later equality pass on a wrong name.
+/// The name mediapm renders is `<artist> - <title> [<media-id>]`, so this reads
+/// all three back. Whether the artist is the one the tagging steps must have
+/// written is a separate assertion, made by [`assert_canonical_media_root_name`]
+/// on the real-upstream route: no chain copy applies the tagging step's
+/// `FFmetadata` document, so a stub-chain run's name carries the container's own
+/// tags and still has this shape.
 fn parse_jellyfin_root_folder_name(folder_name: &str) -> Option<(String, String, String)> {
     let (stem, media_id_segment) = folder_name.rsplit_once(" [")?;
     let media_id = media_id_segment.strip_suffix(']')?.trim();
-    let stem = stem.trim();
-    if stem.is_empty() || media_id.is_empty() {
-        return None;
-    }
-    let artist_prefix = format!("{DEMO_METADATA_ARTIST} - ");
-    let title = stem.strip_prefix(&artist_prefix)?.trim();
-    if title.is_empty() {
+    let (artist, title) = stem.trim().split_once(" - ")?;
+    let (artist, title) = (artist.trim(), title.trim());
+    if artist.is_empty() || title.is_empty() || media_id.is_empty() {
         return None;
     }
 
-    Some((DEMO_METADATA_ARTIST.to_string(), title.to_string(), media_id.to_string()))
+    Some((artist.to_string(), title.to_string(), media_id.to_string()))
 }
 
 fn load_resolved_demo_metadata(interpolated_root: &Path) -> ExampleResult<DemoResolvedMetadata> {
@@ -1032,11 +1090,22 @@ async fn assert_materialized_output_hardlinked_to_cas(
     Ok(())
 }
 
+/// Writes the demo's `mediapm.ncl` into `workspace_root` and returns the tool ids
+/// it declares, in declaration order.
+///
+/// `musicbrainz_endpoint` is the tagging step's backend when the run must not
+/// reach the real one: the tagger is a host builtin, so its endpoint is a step
+/// option rather than a provider seam, and a stub-chain run passes the mock's
+/// loopback URL. `None` leaves the option out, which is what the real-upstream
+/// route does — the tagger's default endpoint then applies.
 #[expect(
     clippy::too_many_lines,
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
 )]
-fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Vec<String>> {
+fn configure_document_for_online_demo(
+    workspace_root: &Path,
+    musicbrainz_endpoint: Option<&str>,
+) -> ExampleResult<Vec<String>> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     // The artifact root is reset fresh on every run; start from a default
     // document when no seed `mediapm.ncl` exists yet.
@@ -1130,6 +1199,26 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             },
         ),
     ]);
+
+    // The tagging step's backend. Offline the option names the mock's loopback
+    // endpoint, which is the only way the in-process builtin reaches a local
+    // server; online the option is absent and the tagger's default endpoint
+    // applies.
+    let mut media_tagger_options = BTreeMap::from([
+        (
+            "recording_mbid".to_string(),
+            TransformInputValue::String("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_string()),
+        ),
+        ("release_mbid".to_string(), TransformInputValue::String(String::new())),
+        ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
+        ("write_all_tags".to_string(), TransformInputValue::String("true".to_string())),
+    ]);
+    if let Some(endpoint) = musicbrainz_endpoint {
+        media_tagger_options.insert(
+            "musicbrainz_endpoint".to_string(),
+            TransformInputValue::String(endpoint.to_string()),
+        );
+    }
 
     let steps = vec![
         MediaStep {
@@ -1276,15 +1365,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     ..Default::default()
                 }),
             )]),
-            options: BTreeMap::from([
-                (
-                    "recording_mbid".to_string(),
-                    TransformInputValue::String("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_string()),
-                ),
-                ("release_mbid".to_string(), TransformInputValue::String(String::new())),
-                ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
-                ("write_all_tags".to_string(), TransformInputValue::String("true".to_string())),
-            ]),
+            options: media_tagger_options,
         },
         MediaStep {
             tool: MediaStepTool::Rsgain,
@@ -2413,6 +2494,61 @@ fn assert_mkv_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
+/// Asserts the materialized media's codec, dimension and duration facts for `route`.
+///
+/// Online the container is a real tool's output, so the facts come from a real
+/// `ffprobe`. Offline the artifact's bytes are the committed fixture's — every
+/// chain copy writes its input's bytes — so the facts come from an in-process read
+/// of the materialized file. The offline arm deliberately does not ask the chain's
+/// `ffprobe`: that answer is a pinned document, so a probe of it would confirm
+/// itself rather than the file.
+fn assert_media_facts(route: ToolRoute, path: &Path, context: &str) -> ExampleResult<()> {
+    if route.is_online() {
+        return assert_mkv_video_audio_with_ffprobe(path);
+    }
+    assert_fixture_media_facts(path, context)
+}
+
+/// Asserts the materialized file is the committed fixture, read in process.
+fn assert_fixture_media_facts(path: &Path, context: &str) -> ExampleResult<()> {
+    let facts = mediapm_test_support::read_matroska_facts(path)
+        .map_err(|error| format!("{context}: {error}"))?;
+
+    let codec = |observed: Option<&str>, expected: &str, what: &str| -> ExampleResult<()> {
+        if observed == Some(expected) {
+            return Ok(());
+        }
+        Err(format!(
+            "{context}: the materialized media's {what} must be '{expected}', the file reads \
+             {observed:?}"
+        )
+        .into())
+    };
+    codec(facts.video_codec_id.as_deref(), MEDIA_FIXTURE_VIDEO_CODEC_ID, "video codec")?;
+    codec(facts.audio_codec_id.as_deref(), MEDIA_FIXTURE_AUDIO_CODEC_ID, "audio codec")?;
+
+    if facts.width != Some(MEDIA_FIXTURE_WIDTH) || facts.height != Some(MEDIA_FIXTURE_HEIGHT) {
+        return Err(format!(
+            "{context}: the materialized media must be {MEDIA_FIXTURE_WIDTH}x{MEDIA_FIXTURE_HEIGHT}, \
+             the file reads {:?}x{:?}",
+            facts.width, facts.height
+        )
+        .into());
+    }
+    let Some(duration) = facts.duration_seconds else {
+        return Err(format!("{context}: the materialized media states no duration").into());
+    };
+    if (duration - MEDIA_FIXTURE_DURATION_SECONDS).abs() >= 0.5 {
+        return Err(format!(
+            "{context}: the materialized media must run about {MEDIA_FIXTURE_DURATION_SECONDS} s, \
+             the file reads {duration} s"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
 fn probe_replaygain_tags_with_ffprobe(
     tagged_video_path: &Path,
 ) -> ExampleResult<serde_json::Value> {
@@ -3133,25 +3269,6 @@ fn assert_metadata_files_present(
         .into());
     }
 
-    let canonical_base = expected_demo_media_root_name();
-    // The comparison against `canonical_base` is the assertion that tagging ran: the canonical
-    // basename is the artist followed by the MusicBrainz recording title, while a run that never
-    // reached the tagging steps resolves upstream's title, which appends `(Official Video)` and
-    // `(4K Remaster)` after a second copy of the artist, so its name matches this one in no part.
-    if resolved_output_base != canonical_base {
-        return Err(format!(
-            "[metadata] materialized basename '{resolved_output_base}' must be the canonical title \
-             '{canonical_base}'\n\
-             the root name is `<artist> - <title>`: the artist is media-tagger's MusicBrainz \
-             credit, and the title is media-tagger's recording title once tagging has run\n\
-             this name carries yt-dlp's `info.json` title instead, which already embeds the artist \
-             and appends '(Official Video)' and '(4K Remaster)', so the tagging stage did not land\n\
-             a `media-tagger` step that failed upstream (MusicBrainz or AcoustID) and one that \
-             never ran produce the same name; check the workflow summary's failed-step count above"
-        )
-        .into());
-    }
-
     let untagged_name =
         resolve_demo_metadata_template(DEMO_UNTAGGED_MEDIA_FILE_NAME, resolved_metadata);
     let tagged_name =
@@ -3176,6 +3293,35 @@ fn assert_metadata_files_present(
     }
 
     Ok(())
+}
+
+/// Asserts the media root carries the canonical basename.
+///
+/// The comparison is the assertion that tagging ran: the canonical basename is
+/// the artist followed by the `MusicBrainz` recording title, while a run that
+/// never reached the tagging steps resolves upstream's title, which appends
+/// `(Official Video)` and `(4K Remaster)` after a second copy of the artist, so
+/// its name matches this one in no part. Only a real `ffmpeg` applies the tagging
+/// step's `FFmetadata` document to the container, so only the real-upstream route
+/// can make this assertion.
+fn assert_canonical_media_root_name(resolved_metadata: &DemoResolvedMetadata) -> ExampleResult<()> {
+    let resolved_output_base =
+        resolve_demo_metadata_template(DEMO_OUTPUT_FILE_NAME_BASE, resolved_metadata);
+    let canonical_base = expected_demo_media_root_name();
+    if resolved_output_base == canonical_base {
+        return Ok(());
+    }
+    Err(format!(
+        "[metadata] materialized basename '{resolved_output_base}' must be the canonical title \
+         '{canonical_base}'\n\
+         the root name is `<artist> - <title>`: the artist is media-tagger's MusicBrainz \
+         credit, and the title is media-tagger's recording title once tagging has run\n\
+         this name carries yt-dlp's `info.json` title instead, which already embeds the artist \
+         and appends '(Official Video)' and '(4K Remaster)', so the tagging stage did not land\n\
+         a `media-tagger` step that failed upstream (MusicBrainz or AcoustID) and one that \
+         never ran produce the same name; check the workflow summary's failed-step count above"
+    )
+    .into())
 }
 
 fn assert_sidecar_files_present(
@@ -3260,9 +3406,22 @@ fn assert_sidecar_files_present(
     Ok(sidecar_paths)
 }
 
+/// The artifact paths and resolved metadata one sync's output resolution yields.
+struct ResolvedDemoOutput {
+    /// The pre-tagging media leaf.
+    untagged_video: PathBuf,
+    /// The post-tagging media leaf.
+    tagged_video: PathBuf,
+    /// One materialized sidecar path per `DEMO_SIDECAR_VARIANT_PATHS` label.
+    sidecars: BTreeMap<String, PathBuf>,
+    /// The metadata the materialized names were rendered from.
+    metadata: DemoResolvedMetadata,
+}
+
 fn resolve_demo_output_paths(
+    route: ToolRoute,
     hierarchy_root: &Path,
-) -> ExampleResult<(PathBuf, PathBuf, BTreeMap<String, PathBuf>)> {
+) -> ExampleResult<ResolvedDemoOutput> {
     let interpolated_root = resolve_interpolated_demo_root(hierarchy_root)?;
     if !interpolated_root.exists() {
         return Err(format!(
@@ -3322,8 +3481,10 @@ fn resolve_demo_output_paths(
         "[video] untagged",
     )?;
     assert_video_file_integrity(&video_path, "[video] untagged")?;
-    assert_mkv_video_audio_with_ffprobe(&video_path)?;
-    assert_untagged_media_metadata(&video_path, &resolved_metadata.provider_title)?;
+    assert_media_facts(route, &video_path, "[video] untagged")?;
+    if route.is_online() {
+        assert_untagged_media_metadata(&video_path, &resolved_metadata.provider_title)?;
+    }
 
     let tagged_video_path = interpolated_root.join(&resolved_tagged_file_name);
     if !tagged_video_path.is_file() {
@@ -3339,18 +3500,184 @@ fn resolve_demo_output_paths(
         "[video] tagged",
     )?;
     assert_video_file_integrity(&tagged_video_path, "[video] tagged")?;
-    assert_mkv_video_audio_with_ffprobe(&tagged_video_path)?;
-    assert_tagged_media_metadata(&tagged_video_path)?;
+    assert_media_facts(route, &tagged_video_path, "[video] tagged")?;
+    if route.is_online() {
+        assert_tagged_media_metadata(&tagged_video_path)?;
+    }
 
     let sidecar_paths = assert_sidecar_files_present(&interpolated_root, &resolved_metadata)?;
 
     assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)?;
     assert_no_mediapm_marker_in_hierarchy_paths(&interpolated_root)?;
 
-    Ok((video_path, tagged_video_path, sidecar_paths))
+    // The canonical name is the tagged variant's metadata made visible: its artist
+    // and its `MusicBrainz` recording title. Only a real `ffmpeg` writes those into
+    // the container, so only the real-upstream route can assert the name.
+    if route.is_online() {
+        assert_canonical_media_root_name(&resolved_metadata)?;
+    }
+
+    Ok(ResolvedDemoOutput {
+        untagged_video: video_path,
+        tagged_video: tagged_video_path,
+        sidecars: sidecar_paths,
+        metadata: resolved_metadata,
+    })
+}
+
+/// The stub tool chain, the mocked upstream and the mocked tagger backend a
+/// stub-chain run reaches, plus the process environment that points the run at
+/// them.
+///
+/// The value is built while the caller holds the process env lock and owns two
+/// [`SeamGuard`]s that borrow it: the four provider seams that answer tool
+/// provisioning, and the chain's own environment — its manifest and
+/// invocation-record names, and the `PATH` entry the bare `ffprobe` lookups resolve
+/// through. Both guards restore their variables when dropped, which the borrow
+/// orders before the lock is released.
+struct OfflineRun<'a> {
+    /// The directory the chain's executables, manifest and record live in, kept
+    /// alive for the run.
+    _chain_dir: tempfile::TempDir,
+    /// The chain's records: the executables' invocation log and the pairs that
+    /// name it.
+    chain: OfflineToolChain,
+    /// The provisioner's answer. Declared before the environment guards so a
+    /// route mounted on it stays available for the whole run.
+    _upstream: MockUpstream,
+    /// The tagger backend, kept for its request count.
+    mock: MockMusicBrainz,
+    /// The chain's environment, restored when the run ends.
+    _environment: SeamGuard<'a>,
+    /// The provider seams, restored when the run ends.
+    _seams: SeamGuard<'a>,
+}
+
+impl<'a> OfflineRun<'a> {
+    /// Mounts the chain and both mocks, and installs the environment they need.
+    ///
+    /// `env_lock` is the caller's already-held process env lock. Both installers
+    /// borrow it rather than taking it again: the mutex is not reentrant, so a
+    /// second acquisition on this thread would deadlock instead of failing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the chain directory cannot be created, when the
+    /// caller's `PATH` cannot carry the chain's directory, or when this crate was
+    /// built without the `test-seams` feature (which the mocks refuse with a
+    /// message naming it).
+    async fn mount(env_lock: &'a parking_lot::MutexGuard<'static, ()>) -> ExampleResult<Self> {
+        let chain_dir = mediapm_utils::temp::artifact_dir()
+            .map_err(|error| format!("cannot create the stub chain directory: {error}"))?;
+        let fixture =
+            mediapm_test_support::media_fixture_path(Path::new(env!("CARGO_MANIFEST_DIR")));
+        let chain = stub_media::mount_offline_tool_chain(chain_dir.path(), &fixture);
+
+        let upstream = MockUpstream::start().await;
+        let _upstreams = stub_media::mount_managed_tool_upstreams(&upstream).await;
+        let mock = MockMusicBrainz::start().await;
+
+        let environment = SeamGuard::borrowing(env_lock, &chain_environment(&chain)?);
+        let seams = SeamGuard::borrowing(env_lock, &upstream.seam_pairs());
+
+        Ok(Self {
+            _chain_dir: chain_dir,
+            chain,
+            _upstream: upstream,
+            mock,
+            _environment: environment,
+            _seams: seams,
+        })
+    }
+
+    /// The tagging step's backend: the mock's loopback ws/2 URL.
+    fn tagger_endpoint(&self) -> String {
+        self.mock.endpoint()
+    }
+
+    /// What this run recorded, for the manifest's offline block.
+    ///
+    /// The chain's record is written by the stub binaries themselves, so it
+    /// cannot exist unless a chain copy ran; the request count is the tagger
+    /// backend's own traffic. `resolved` is the media root the run materialized,
+    /// split by [`load_resolved_demo_metadata`].
+    async fn evidence(&self, resolved: &DemoResolvedMetadata) -> OfflineEvidence {
+        let musicbrainz_requests =
+            self.mock.server().received_requests().await.map_or(0, |requests| requests.len());
+        OfflineEvidence {
+            chain_invocations: self
+                .chain
+                .invocations()
+                .iter()
+                .map(|invocation| logical_chain_tool(&invocation.tool).to_string())
+                .collect(),
+            musicbrainz_requests,
+            root_artist: resolved.artist.clone(),
+            root_title: resolved.title.clone(),
+        }
+    }
+}
+
+/// The logical tool a recorded program name stands in for.
+///
+/// The provider provisions yt-dlp under its platform asset's own file name, so a
+/// chain run records `yt-dlp_macos` or `yt-dlp_linux` where the demo configured
+/// `yt-dlp`; the stub's dispatch claims all three names for the same reason. Every
+/// other tool is provisioned under its own name.
+fn logical_chain_tool(recorded: &str) -> &str {
+    match recorded {
+        "yt-dlp_macos" | "yt-dlp_linux" => "yt-dlp",
+        name => name,
+    }
+}
+
+/// The chain's environment: its two names plus the entry that makes a bare
+/// `ffprobe` resolve to the chain's copy.
+///
+/// Two probe sites look `ffprobe` up by name rather than through a resolved tool
+/// command: [`configure_demo_ffprobe_command`] falls back to the bare name because
+/// the mocked ffmpeg payload carries no sibling `ffprobe` file, and the
+/// materializer's in-process metadata probe runs a bare `ffprobe`
+/// (`extract_metadata_key_from_media_bytes_via_ffprobe` in
+/// `src/mediapm/src/materializer/metadata.rs`). A step spawn inherits this
+/// process's environment — the conductor's spawn site never clears it — so the
+/// entry covers the in-process probe and the spawned copies alike.
+///
+/// # Errors
+///
+/// Returns an error when the chain directory cannot be expressed as a `PATH`
+/// entry, which a path holding the platform's separator cannot be.
+fn chain_environment(chain: &OfflineToolChain) -> ExampleResult<Vec<(&'static str, String)>> {
+    let mut pairs = chain.env_pairs();
+    pairs.push((PATH_ENV, path_with_chain_dir(chain.dir())?));
+    Ok(pairs)
+}
+
+/// Prepends `dir` to this process's `PATH`, keeping every entry it already has.
+fn path_with_chain_dir(dir: &Path) -> ExampleResult<String> {
+    let mut entries =
+        std::env::split_paths(&std::env::var_os(PATH_ENV).unwrap_or_default()).collect::<Vec<_>>();
+    entries.insert(0, dir.to_path_buf());
+    let joined = std::env::join_paths(entries).map_err(|error| {
+        format!(
+            "the stub chain directory '{}' cannot be prepended to {PATH_ENV}: {error}",
+            dir.display()
+        )
+    })?;
+    joined.into_string().map_err(|path| {
+        format!(
+            "{PATH_ENV} is not valid UTF-8, so it cannot carry the stub chain directory '{}'",
+            Path::new(&path).display()
+        )
+        .into()
+    })
 }
 
 /// Runs the online demo end to end and returns the paths it wrote.
+///
+/// `route` decides which upstream the run reaches and which post-sync assertions
+/// it makes; `offline` is present exactly when it is [`ToolRoute::StubChain`], and
+/// supplies the chain's environment and the evidence the manifest records.
 ///
 /// Shuts the conductor the service owns down before returning:
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
@@ -3359,7 +3686,11 @@ fn resolve_demo_output_paths(
     clippy::too_many_lines,
     reason = "this example keeps end-to-end demo orchestration and artifact assertions in one function for traceability"
 )]
-async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> {
+async fn run_online_demo(
+    route: ToolRoute,
+    offline: Option<&OfflineRun<'_>>,
+    sync_timeout: Duration,
+) -> ExampleResult<DemoRunPaths> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -3369,7 +3700,9 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let workspace_root = root.clone();
     let runtime_storage = example_runtime_storage();
 
-    let logical_tool_ids = configure_document_for_online_demo(&workspace_root)?;
+    let tagger_endpoint = offline.map(OfflineRun::tagger_endpoint);
+    let logical_tool_ids =
+        configure_document_for_online_demo(&workspace_root, tagger_endpoint.as_deref())?;
 
     // Full library sync with a filesystem-backed CAS. `sync_library*` re-provisions
     // managed tools internally (step 2), so there is no separate tool-sync
@@ -3408,25 +3741,35 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let yt_dlp_max_retries = assert_yt_dlp_retry_policy(&machine, &yt_dlp_tool_id)?;
     let (workflow_id, workflow_step_count) = assert_demo_workflow_shape(&machine)?;
     let hierarchy_root = sync_service.resolve_effective_paths()?.hierarchy_root_dir;
-    let (output_video_path, output_tagged_video_path, output_sidecar_paths) =
-        resolve_demo_output_paths(&hierarchy_root)?;
+    let resolved = resolve_demo_output_paths(route, &hierarchy_root)?;
     let playlist_path = hierarchy_root.join("playlists").join("rickroll.m3u8");
     assert_playlist_content_format(&playlist_path)?;
-    assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
+    if route.is_online() {
+        assert_tagged_media_replaygain_tags(&resolved.tagged_video).await?;
+    }
     let cas_root = sync_service.paths().runtime_root.join("store");
     let lock = load_mediapm_state_document(&sync_service.paths().mediapm_state_json)?;
     let cas = sync_service.conductor().cas();
-    assert_materialized_output_hardlinked_to_cas(cas, &hierarchy_root, &lock, &output_video_path)
-        .await?;
     assert_materialized_output_hardlinked_to_cas(
         cas,
         &hierarchy_root,
         &lock,
-        &output_tagged_video_path,
+        &resolved.untagged_video,
+    )
+    .await?;
+    assert_materialized_output_hardlinked_to_cas(
+        cas,
+        &hierarchy_root,
+        &lock,
+        &resolved.tagged_video,
     )
     .await?;
     let materialized_demo_video_hardlinked_to_cas = true;
     let materialized_demo_tagged_video_hardlinked_to_cas = true;
+    let offline_evidence = match offline {
+        Some(run) => Some(run.evidence(&resolved.metadata).await),
+        None => None,
+    };
 
     // Second sync: the demo's idempotency proof. A full run always re-syncs
     // and asserts the re-run did no work, so the artifact a human inspects
@@ -3492,11 +3835,12 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         workflow_id,
         workflow_step_count,
         materialization_preference_order,
-        materialized_demo_video_path: display_path(&output_video_path),
-        materialized_demo_tagged_video_path: display_path(&output_tagged_video_path),
+        materialized_demo_video_path: display_path(&resolved.untagged_video),
+        materialized_demo_tagged_video_path: display_path(&resolved.tagged_video),
         materialized_demo_video_hardlinked_to_cas,
         materialized_demo_tagged_video_hardlinked_to_cas,
-        materialized_demo_sidecar_paths: output_sidecar_paths
+        materialized_demo_sidecar_paths: resolved
+            .sidecars
             .iter()
             .map(|(variant, path)| (variant.clone(), display_path(path)))
             .collect(),
@@ -3515,6 +3859,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         second_run: Some(second_run),
         profile_path: display_path(&sync_service.paths().runtime_root.join("profile.json")),
         store_size_bytes,
+        offline: offline_evidence,
     };
 
     let manifest_path = root.join("manifest.json");
@@ -3566,26 +3911,6 @@ fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> Exam
     Ok(find_managed_tool_spec(machine, logical_name)?.name.clone())
 }
 
-#[expect(clippy::unused_async)]
-async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
-    let (root, _fallback_artifact) = reset_artifact_root()?;
-    let workspace_root = root.clone();
-
-    configure_document_for_online_demo(&workspace_root)?;
-
-    // Write minimal manifest indicating config-only run
-    let manifest = json!({
-        "run_mode": "config-only",
-        "artifact_root": display_path(&root),
-        "workspace_root": display_path(&workspace_root),
-    });
-
-    let manifest_path = root.join("manifest.json");
-    write_json_file(&manifest_path, &manifest)?;
-
-    Ok(DemoRunPaths { artifact_root: root, workspace_root, manifest_path })
-}
-
 /// Rejects arguments the demo does not accept.
 ///
 /// The demo takes no arguments. A stray dispatch into this binary would run a
@@ -3612,6 +3937,16 @@ where
     .into())
 }
 
+/// Runs the demo against the upstream its route names.
+///
+/// # Errors
+///
+/// Returns whatever the run reports; a conductor-layer timeout is turned into
+/// the watchdog notice and exit code 124 by the caller.
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the lock the stub-chain branch holds serializes process env mutation, not shared data: the seams and the chain's names are process-global, so they have to stay installed and unreplaced for the whole sync"
+)]
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     // Under `cargo test` the harness owns argv and the embedded test calls
@@ -3621,41 +3956,52 @@ async fn main() -> ExampleResult<()> {
         reject_unexpected_arguments(std::env::args_os().skip(1))?;
     }
 
-    let run_sync = example_isolation::parse_run_online_sync_override(
-        std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok().as_deref(),
-    )?;
-    // Watchdog budgets resolve before the mode branch so both modes export
-    // the same knobs: a bad timeout env value fails fast everywhere, and the
+    // The switch's one reader: an unset value and every token but the enabled
+    // ones select the stub chain, so a run has to ask for the real upstream by
+    // name rather than getting it by saying nothing.
+    let route = if example_isolation::online_sync_enabled() {
+        ToolRoute::RealUpstream
+    } else {
+        ToolRoute::StubChain
+    };
+    // Watchdog budgets resolve before the route branch so both paths export the
+    // same knobs: a bad timeout env value fails fast everywhere, and the
     // conductor sees the same budget whenever it is constructed.
     let sync_timeout = online_demo_timeout()?;
     configure_demo_conductor_executable_timeout(sync_timeout);
     configure_demo_conductor_rpc_timeout(sync_timeout);
-    if !run_sync {
-        let paths = run_online_demo_config_only().await?;
-        println!("generated artifacts root: {}", paths.artifact_root.display());
-        println!("generated workspace root: {}", paths.workspace_root.display());
-        println!("manifest: {}", paths.manifest_path.display());
-        println!("sync executed: false");
-        return Ok(());
-    }
 
     let hard_timeout_guard = spawn_hard_timeout_guard(sync_timeout);
 
-    let paths = match run_online_demo(sync_timeout).await {
-        Ok(paths) => {
-            hard_timeout_guard.store(true, Ordering::SeqCst);
-            paths
-        }
-        Err(error) => {
-            hard_timeout_guard.store(true, Ordering::SeqCst);
-            match error.downcast::<DemoOnlineTimeoutError>() {
-                Ok(timeout_error) => {
-                    emit_watchdog_notice(&timeout_error.to_string());
-                    process::exit(124);
-                }
-                Err(other) => return Err(other),
+    let outcome = match route {
+        ToolRoute::RealUpstream => run_online_demo(route, None, sync_timeout).await,
+        ToolRoute::StubChain => {
+            // Held for the whole run: the provider seams and the chain's
+            // environment are process-global, so a sibling that installed its own
+            // would replace them mid-sync. One acquisition serves both installers,
+            // because the mutex is not reentrant.
+            let env_lock = example_isolation::lock_process_env();
+            // The mount's error is carried out of the arm rather than returned with
+            // `?`: returning early would leave `main` with the watchdog still armed,
+            // and that guard exits the process once its budget elapses.
+            match OfflineRun::mount(&env_lock).await {
+                Ok(offline) => run_online_demo(route, Some(&offline), sync_timeout).await,
+                Err(error) => Err(error),
             }
         }
+    };
+
+    hard_timeout_guard.store(true, Ordering::SeqCst);
+
+    let paths = match outcome {
+        Ok(paths) => paths,
+        Err(error) => match error.downcast::<DemoOnlineTimeoutError>() {
+            Ok(timeout_error) => {
+                emit_watchdog_notice(&timeout_error.to_string());
+                process::exit(124);
+            }
+            Err(other) => return Err(other),
+        },
     };
 
     println!("generated artifacts root: {}", paths.artifact_root.display());
@@ -3859,7 +4205,7 @@ mod tests {
     fn the_title_chain_prefers_the_tagged_variant() -> super::ExampleResult<()> {
         let isolated = IsolatedExampleRoots::with_cache();
         let workspace_root = isolated.artifact_root_path();
-        super::configure_document_for_online_demo(workspace_root)?;
+        super::configure_document_for_online_demo(workspace_root, None)?;
 
         let document = super::load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
         let source =
@@ -3904,7 +4250,7 @@ mod tests {
         unsafe {
             std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
         }
-        let result = example_isolation::parse_run_online_sync_override(Some("false"));
+        let result = example_isolation::online_sync_enabled();
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
@@ -3915,10 +4261,10 @@ mod tests {
             }
         }
 
-        assert!(matches!(result, Ok(false)), "disabled run-sync tokens must select reduced mode");
+        assert!(!result, "a disabled token must select the offline path");
     }
 
-    /// Ensures demo-online sync override allows unset environment (full mode).
+    /// Ensures demo-online sync override allows unset environment (offline path).
     #[test]
     fn run_sync_override_validator_allows_unset_env() {
         let _env_lock = example_isolation::lock_process_env();
@@ -3929,7 +4275,7 @@ mod tests {
             std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
         }
 
-        let result = example_isolation::parse_run_online_sync_override(None);
+        let result = example_isolation::online_sync_enabled();
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
@@ -3938,32 +4284,51 @@ mod tests {
             }
         }
 
-        assert!(matches!(result, Ok(true)), "unset run-sync override should select full mode");
+        assert!(!result, "an unset switch must select the offline path");
     }
 
-    /// Ensures sync-mode override parser still rejects unknown tokens.
+    /// Ensures the switch reads only the enabled tokens as the real upstream.
+    ///
+    /// The unknown token is the case the retired three-level parser refused
+    /// outright: the two-path rule has no third path for it to select, so it
+    /// resolves to offline like every other non-enabled value.
     #[test]
-    fn run_sync_override_rejects_invalid_tokens() {
+    fn online_sync_enabled_accepts_only_enabled_tokens() {
         let _env_lock = example_isolation::lock_process_env();
         let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
 
-        // SAFETY: test mutates one process env key in a controlled scope and
-        // restores the previous value before exit.
-        unsafe {
-            std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "maybe");
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("yes", true),
+            ("on", true),
+            ("TRUE", true),
+            ("false", false),
+            ("0", false),
+            ("no", false),
+            ("off", false),
+            ("", false),
+            ("maybe", false),
+        ] {
+            // SAFETY: the process env lock is held for the whole loop.
+            unsafe {
+                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
+            }
+            assert_eq!(
+                example_isolation::online_sync_enabled(),
+                expected,
+                "'{value}' must {} the online path",
+                if expected { "select" } else { "not select" }
+            );
         }
-        let result = example_isolation::parse_run_online_sync_override(Some("maybe"));
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
-            if let Some(value) = previous {
-                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
-            } else {
-                std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
+            match previous {
+                Some(value) => std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value),
+                None => std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV),
             }
         }
-
-        assert!(result.is_err(), "unknown run-sync tokens must be rejected");
     }
 
     /// Ensures a dispatch into the demo is refused by name.
@@ -4010,101 +4375,6 @@ mod tests {
         );
     }
 
-    /// Points example env vars at unique tempdirs for the guard's lifetime.
-    /// Executes the documented example entry point via `main()` in reduced
-    /// (config-only) mode.
-    ///
-    /// The online full-sync path is nondeterministic (network + external
-    /// tools) and is NOT exercised here; it runs only on an explicit
-    /// `cargo run -p mediapm --example mediapm_demo_online`. Run conditions:
-    /// (1) CI → skip via `example_isolation::ci_mode_detected()`; (2) any other
-    /// test harness → reduced mode via `MEDIAPM_RUN_ONLINE_SYNC=false`; (3)
-    /// explicit `cargo run --example` → full sync (no test binary exists).
-    /// The demo respects a caller-set conductor RPC budget instead of
-    /// replacing it with its own computed one.
-    ///
-    /// `configure_demo_conductor_rpc_timeout` sizes the budget from the demo's
-    /// own sync budget, but the conductor captures the knob on first actor use,
-    /// so a caller who set it has already chosen the policy layer that should
-    /// fire. The test runs the documented entry point rather than the helper,
-    /// because the export happens on `main`'s reduced path and the assertion is
-    /// that `main` left the caller's value alone. The sentinel is asserted to
-    /// differ from the computed default first: a run that overwrote the knob
-    /// with the same number would otherwise pass.
-    #[test]
-    fn main_leaves_a_caller_set_rpc_budget_untouched() {
-        if example_isolation::ci_mode_detected() {
-            eprintln!(
-                "[demo_online] skipping main_leaves_a_caller_set_rpc_budget_untouched in CI; \
-                 the full-sync online path is nondeterministic and needs \
-                 network and external tools"
-            );
-            return;
-        }
-
-        let _isolated = IsolatedExampleRoots::with_cache();
-
-        /// The budget the caller sets, which has to differ from the one the
-        /// demo would compute or the assertion below cannot tell the two apart.
-        const SENTINEL: &str = "4321";
-        let computed_default = (super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT
-            - super::DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS)
-            .to_string();
-        assert_ne!(
-            SENTINEL, computed_default,
-            "the sentinel must differ from the value the demo computes, or an overwrite is \
-             invisible to this test"
-        );
-
-        let previous_run_online = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
-        let previous_rpc_budget = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).ok();
-        let previous_sync_budget = std::env::var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV).ok();
-        let previous_exec_timeout =
-            std::env::var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV).ok();
-        // SAFETY: test mutates process env keys in a controlled scope and
-        // restores every previous value before exit.
-        unsafe {
-            std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
-            std::env::set_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, SENTINEL);
-            std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV);
-            std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV);
-        }
-
-        super::main().expect("example main should run to completion");
-
-        assert_eq!(
-            std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV)
-                .expect("the knob the caller set is still present after the run"),
-            SENTINEL,
-            "a caller-set conductor RPC budget is respected: the demo must leave it alone rather \
-             than replacing it with the budget it computes"
-        );
-
-        // SAFETY: restore previous env var values for test isolation.
-        unsafe {
-            match previous_run_online {
-                Some(value) => std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value),
-                None => std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV),
-            }
-            match previous_rpc_budget {
-                Some(value) => {
-                    std::env::set_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, value)
-                }
-                None => std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV),
-            }
-            match previous_sync_budget {
-                Some(value) => std::env::set_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV, value),
-                None => std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV),
-            }
-            match previous_exec_timeout {
-                Some(value) => {
-                    std::env::set_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV, value)
-                }
-                None => std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV),
-            }
-        }
-    }
-
     /// Proves the online demo states the save policy its own hierarchy asks
     /// for, variant by variant, and shows both decisions: every variant the
     /// library links keeps its bytes whole, and the preview variant nothing
@@ -4118,7 +4388,7 @@ mod tests {
     fn the_online_demo_saves_what_the_hierarchy_materializes() {
         let _isolated = IsolatedExampleRoots::with_cache();
         let workspace_root = super::artifact_root();
-        let tool_ids = super::configure_document_for_online_demo(&workspace_root)
+        let tool_ids = super::configure_document_for_online_demo(&workspace_root, None)
             .expect("configure the online demo document");
         assert_eq!(tool_ids.len(), 6, "the online demo configures six tool requirements");
 
@@ -4208,8 +4478,9 @@ mod tests {
     #[test]
     fn resolve_tool_binaries_skips_a_payload_free_builtin() {
         let _isolated = IsolatedExampleRoots::with_cache();
-        let configured_ids = super::configure_document_for_online_demo(&super::artifact_root())
-            .expect("configure the online demo document");
+        let configured_ids =
+            super::configure_document_for_online_demo(&super::artifact_root(), None)
+                .expect("configure the online demo document");
         assert_eq!(
             configured_ids.iter().map(String::as_str).collect::<Vec<_>>(),
             DEMO_CONFIGURED_TOOL_IDS.to_vec(),
@@ -4242,46 +4513,121 @@ mod tests {
         );
     }
 
+    /// Every env key besides the two example roots that one `main()` run reads.
+    const MAIN_RUN_KNOBS: [&str; 4] = [
+        example_isolation::RUN_ONLINE_SYNC_ENV,
+        super::DEMO_ONLINE_TIMEOUT_SECS_ENV,
+        super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV,
+        super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV,
+    ];
+
+    /// The environment one `main()` call runs under, installed without holding the lock.
+    ///
+    /// [`IsolatedExampleRoots`] holds the process env lock for its whole lifetime,
+    /// and `main`'s offline branch takes that same lock for the whole run, so a
+    /// test cannot keep a guard across the call: the mutex is not reentrant, and
+    /// the deadlock it would produce is indistinguishable from a timeout. This
+    /// installs the two example roots and the run's knobs under the lock, releases
+    /// it for the run, and restores every previous value on drop. The tempdirs
+    /// live as long as the value, so the run writes into roots that outlive it.
+    struct MainRunEnv {
+        artifact: tempfile::TempDir,
+        /// Kept alive because the run resolves its user-level cache through the
+        /// env override this points at.
+        _cache: tempfile::TempDir,
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl MainRunEnv {
+        /// Installs the two roots, then runs `configure` for the run's knobs while
+        /// the process env lock is still held.
+        fn install(configure: impl FnOnce(&parking_lot::MutexGuard<'static, ()>)) -> Self {
+            let artifact = mediapm_utils::temp::artifact_dir().expect("create temp artifact root");
+            let cache = mediapm_utils::temp::cache_dir().expect("create temp cache root");
+            let env_lock = example_isolation::lock_process_env();
+            let previous =
+                [example_isolation::ARTIFACT_ROOT_ENV, example_isolation::CACHE_ROOT_ENV]
+                    .into_iter()
+                    .chain(MAIN_RUN_KNOBS)
+                    .map(|name| (name, std::env::var_os(name)))
+                    .collect();
+            // SAFETY: the process env lock is held for every write in this scope.
+            unsafe {
+                std::env::set_var(example_isolation::ARTIFACT_ROOT_ENV, artifact.path());
+                std::env::set_var(example_isolation::CACHE_ROOT_ENV, cache.path());
+            }
+            configure(&env_lock);
+            drop(env_lock);
+            Self { artifact, _cache: cache, previous }
+        }
+
+        /// The artifact root the run writes into.
+        fn artifact_root(&self) -> &Path {
+            self.artifact.path()
+        }
+    }
+
+    impl Drop for MainRunEnv {
+        fn drop(&mut self) {
+            let _env_lock = example_isolation::lock_process_env();
+            for (name, previous) in &self.previous {
+                // SAFETY: the process env lock is held for every restore here.
+                unsafe {
+                    match previous {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Executes the documented entry point on its default, stub-chain path.
+    ///
+    /// The default path needs no network, so the test runs a full sync rather than
+    /// a reduced one and reads what the run recorded: the manifest's mode, the
+    /// idempotency re-run's tally, the chain's recorded invocations, the mocked
+    /// tagger backend's request count, and the media root the hierarchy
+    /// materialized. The media facts come from an in-process read of the
+    /// materialized file, never from the chain's own `ffprobe`.
+    ///
+    /// The conductor budgets are asserted here rather than in a test of their own,
+    /// which would pay for a second full sync. Two of their branches are what
+    /// `main` decides: it computes and exports the RPC budget from its own sync
+    /// budget — the conductor-layer error names that knob, so it has to fire before
+    /// the demo's blind hard-timeout wrapper — and it leaves a caller-set budget
+    /// alone, because a caller who set one has already chosen the policy layer that
+    /// should fire.
     #[test]
     fn main_is_exercised() {
-        if example_isolation::ci_mode_detected() {
-            eprintln!(
-                "[demo_online] skipping main_is_exercised in CI; \
-                 the full-sync online path is nondeterministic and needs \
-                 network and external tools"
-            );
-            return;
-        }
+        /// The budget the caller sets, which has to differ from the one the demo
+        /// computes or an overwrite would be invisible to this test.
+        const CALLER_EXECUTABLE_BUDGET: &str = "4321";
 
-        let _isolated = IsolatedExampleRoots::with_cache();
-
-        let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
-        // SAFETY: test mutates one process env key in a controlled scope and
-        // restores the previous value before exit.
-        unsafe {
-            std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
-        }
-
-        // Clear the watchdog knobs so the defaulted path is deterministic:
-        // a value leaked by a sibling test would shadow the computation the
-        // assertion below protects.
-        let previous_rpc_budget = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).ok();
-        let previous_sync_budget = std::env::var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV).ok();
-        let previous_exec_timeout =
-            std::env::var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV).ok();
-        // SAFETY: same controlled-scope mutation and restore as above.
-        unsafe {
-            std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV);
-            std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV);
-            std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV);
-        }
+        let roots = MainRunEnv::install(|_env_lock| {
+            // SAFETY: the caller holds the process env lock for every write here and
+            // releases it before `main` takes it. The knobs are cleared so a value
+            // leaked by a sibling test cannot shadow the computation asserted below.
+            unsafe {
+                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
+                std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV);
+                std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV);
+                std::env::set_var(
+                    super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV,
+                    CALLER_EXECUTABLE_BUDGET,
+                );
+            }
+        });
 
         super::main().expect("example main should run to completion");
 
-        // The demo must export a conductor RPC budget strictly below its own
-        // overall sync budget: the conductor-layer timeout error names the
-        // budget and knob, so it has to fire before the demo's blind
-        // hard-timeout wrapper to keep the failure diagnosable.
+        assert_eq!(
+            std::env::var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV).ok().as_deref(),
+            Some(CALLER_EXECUTABLE_BUDGET),
+            "a caller-set conductor executable budget is respected: the demo must leave it alone \
+             rather than replacing it with the budget it computes"
+        );
+
         let rpc_budget = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV)
             .expect("main must export the conductor RPC budget");
         let expected = (super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT
@@ -4294,44 +4640,86 @@ mod tests {
             "RPC budget must stay below the demo's overall sync budget"
         );
 
-        // SAFETY: restore previous env var values for test isolation.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value),
-                None => std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV),
-            }
-            match previous_rpc_budget {
-                Some(value) => {
-                    std::env::set_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, value)
-                }
-                None => std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV),
-            }
-            match previous_sync_budget {
-                Some(value) => std::env::set_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV, value),
-                None => std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV),
-            }
-            match previous_exec_timeout {
-                Some(value) => {
-                    std::env::set_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV, value)
-                }
-                None => std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV),
-            }
-        }
-
-        // Reduced mode must leave the config-only manifest behind; proves the
-        // test exercised reduced mode, not a (network-hitting) full sync.
-        let manifest_path = _isolated.artifact_root_path().join("manifest.json");
+        // The default path ran a full sync, which is what the run prints as
+        // `sync executed: true`. The manifest is the assertable form of that
+        // decision: both routes record `full`, and the idempotency re-run's tally
+        // is written by that path alone.
+        let manifest_path = roots.artifact_root().join("manifest.json");
         let manifest: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&manifest_path).expect("config-only run should write a manifest.json"),
+            &std::fs::read(&manifest_path).expect("the offline run should write a manifest.json"),
         )
         .expect("manifest.json should be valid JSON");
-        assert_eq!(manifest["run_mode"], "config-only");
-        // Reduced mode runs no sync, so it must record no second-run block:
-        // the block appears only on the full-sync path, where it carries the
-        // idempotency tallies of the demo's re-run.
+        assert_eq!(manifest["run_mode"], "full", "the default path must run a full sync");
         assert!(
-            manifest.get("second_run").is_none(),
-            "config-only manifest must not record a second_run tally"
+            manifest.get("second_run").is_some(),
+            "the default path must run the idempotency re-run the full path performs"
+        );
+
+        // The hierarchy materialized from the chain's media, and the media is
+        // the committed fixture: the codec, dimension and duration facts come
+        // from an in-process read of the file, never from the stub under test.
+        let tagged_video_path = std::path::PathBuf::from(
+            manifest["materialized_demo_tagged_video_path"]
+                .as_str()
+                .expect("the manifest records the tagged media path"),
+        );
+        assert!(tagged_video_path.is_file(), "the tagged media leaf must be materialized");
+        let facts = mediapm_test_support::read_matroska_facts(&tagged_video_path)
+            .expect("the materialized media must be a readable Matroska file");
+        assert_eq!(
+            facts.video_codec_id.as_deref(),
+            Some(mediapm_test_support::media_fixture::MEDIA_FIXTURE_VIDEO_CODEC_ID),
+            "the offline media is the fixture, whose video codec the in-process read states"
+        );
+        assert_eq!(
+            facts.audio_codec_id.as_deref(),
+            Some(mediapm_test_support::media_fixture::MEDIA_FIXTURE_AUDIO_CODEC_ID),
+            "the offline media is the fixture, whose audio codec the in-process read states"
+        );
+        assert_eq!(facts.width, Some(mediapm_test_support::media_fixture::MEDIA_FIXTURE_WIDTH));
+        assert_eq!(facts.height, Some(mediapm_test_support::media_fixture::MEDIA_FIXTURE_HEIGHT));
+        let duration = facts.duration_seconds.expect("the fixture states a duration");
+        assert!(
+            (duration - mediapm_test_support::media_fixture::MEDIA_FIXTURE_DURATION_SECONDS).abs()
+                < 0.5,
+            "the fixture runs about ten seconds, got {duration}"
+        );
+
+        // The media root's name is the run's resolved metadata made visible on
+        // disk, so it is what a reader can check against the artifact. Offline that
+        // metadata is the container's own tags: no chain copy applies the tagging
+        // step's `FFmetadata` document, so the two values are asserted against an
+        // in-process read of the materialized file rather than against the mock's
+        // payload, and the tagging half of the evidence is the request count below.
+        let offline = manifest.get("offline").expect("the offline run records its evidence");
+        assert_eq!(
+            offline["root_artist"].as_str(),
+            facts.artist.as_deref(),
+            "the materialized root's artist must be the container's own tag, read in process"
+        );
+        assert_eq!(
+            offline["root_title"].as_str(),
+            facts.title.as_deref(),
+            "the materialized root's title must be the container's own tag, read in process"
+        );
+
+        // Offline is proved, not assumed: every tool the run reached is a chain
+        // copy (the record is written by the stub binaries themselves), and the
+        // tagger's backend answered on loopback.
+        let chain_invocations = offline["chain_invocations"]
+            .as_array()
+            .expect("the manifest lists the chain invocations");
+        let invoked =
+            |tool: &str| chain_invocations.iter().any(|entry| entry.as_str() == Some(tool));
+        for tool in ["yt-dlp", "ffmpeg", "ffprobe", "rsgain", "sd"] {
+            assert!(
+                invoked(tool),
+                "the offline run must reach the chain's '{tool}', recorded: {chain_invocations:?}"
+            );
+        }
+        assert!(
+            offline["musicbrainz_requests"].as_u64().is_some_and(|count| count > 0),
+            "the mocked backend must have answered the tagger's lookup: {offline}"
         );
     }
 

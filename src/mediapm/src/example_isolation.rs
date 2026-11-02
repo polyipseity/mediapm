@@ -15,14 +15,18 @@ pub const ARTIFACT_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";
 /// Env var overriding the user-level tool download cache root for example runs.
 pub const CACHE_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
 
-/// Env var gating the Level 3 full online-sync path shared by the online demo
-/// (`mediapm_demo_online`) and the non-example `online_sync_post_sync_dump`
-/// regression test. The offline demo (`mediapm_demo`) is deterministic and has
-/// no Level 3 gate.
+/// Env var selecting which of the two paths a network-bound example runs.
 ///
-/// Semantics differ by consumer (the 3-level model): the online demo `main()`
-/// runs full sync unless explicitly disabled (`false|0|no|off`); the
-/// regression test runs only on an enabled token (`1|true|yes|on`).
+/// [`online_sync_enabled`] is the switch's one reader. The online demo
+/// (`mediapm_demo_online`) runs offline — stub tools and a mocked tagger
+/// backend — unless this holds an enabled token (`1|true|yes|on`), in which
+/// case it runs the real upstream. Unset and every other value, including the
+/// disabled tokens (`false|0|no|off`), select the offline path, which needs the
+/// `test-seams` feature.
+///
+/// The non-example `online_sync_post_sync_dump` regression test reads the same
+/// switch through [`run_online_sync_enabled`]. The offline demo
+/// (`mediapm_demo`) reaches no upstream at all and has no switch.
 pub const RUN_ONLINE_SYNC_ENV: &str = "MEDIAPM_RUN_ONLINE_SYNC";
 
 /// Process-wide lock serializing `MEDIAPM_EXAMPLE_*` env mutation.
@@ -105,46 +109,28 @@ pub fn ci_mode_detected() -> bool {
         || std::env::var("DRONE").is_ok()
 }
 
-/// Level 3 opt-in for the non-example `online_sync_post_sync_dump` regression
-/// test. Enabled tokens: `1|true|yes|on`. Anything else (unset/disabled/unknown)
-/// returns `false` (Level 2 skip). Independent of the `large-tests` Cargo feature.
+/// Whether the real upstream is selected: true only for `1|true|yes|on`.
+///
+/// This is [`RUN_ONLINE_SYNC_ENV`]'s one reader. Unset, empty and every other
+/// value — the disabled tokens `false|0|no|off` among them — select the offline
+/// path, so a reader that wants the real upstream has to ask for it by name
+/// rather than getting it by saying nothing.
 #[must_use]
-pub fn run_online_sync_enabled() -> bool {
+pub fn online_sync_enabled() -> bool {
     std::env::var(RUN_ONLINE_SYNC_ENV)
         .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
-/// Strict parser for the online demo `main()` Level 3 override.
+/// [`online_sync_enabled`] under the name the non-example
+/// `online_sync_post_sync_dump` regression test reads it by.
 ///
-/// - `None`/empty → `Ok(true)` (full sync; direct `cargo run --example` = Level 3).
-/// - enabled token (`1|true|yes|on`) → `Ok(true)`.
-/// - disabled token (`false|0|no|off`) → `Ok(false)` (reduced mode).
-/// - unknown token → `Err(...)`.
-///
-/// Fail-fast on unknown tokens preserves the prior `run_sync_override_rejects_invalid_tokens`
-/// contract.
-#[expect(clippy::missing_errors_doc, reason = "public helper documented above")]
-pub fn parse_run_online_sync_override(value: Option<&str>) -> Result<bool, String> {
-    let Some(raw) = value else {
-        return Ok(true);
-    };
-
-    let normalized = raw.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return Ok(true);
-    }
-
-    if matches!(normalized.as_str(), "true" | "1" | "yes" | "on") {
-        return Ok(true);
-    }
-
-    if matches!(normalized.as_str(), "false" | "0" | "no" | "off") {
-        return Ok(false);
-    }
-
-    Err(format!(
-        "{RUN_ONLINE_SYNC_ENV} only accepts enabled (true/1/yes/on) or disabled (false/0/no/off) values; got '{normalized}'"
-    ))
+/// The two names are one switch, and this delegates rather than repeating the
+/// token match, so a change to what counts as enabled cannot reach one reader
+/// and miss the other. The regression test is the second name's only caller;
+/// the two-path conversion of that test is what removes it.
+#[must_use]
+pub fn run_online_sync_enabled() -> bool {
+    online_sync_enabled()
 }
 
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.

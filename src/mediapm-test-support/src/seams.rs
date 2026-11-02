@@ -118,14 +118,34 @@ pub(crate) fn read_under_lock(name: &str) -> Option<OsString> {
 /// panics still cannot leak a seam into a sibling. The restore runs from the
 /// `Drop` impl below, which is what puts the writes before the unlock; field
 /// declaration order plays no part in it.
-pub struct SeamGuard {
-    /// The process lock held for this guard's whole lifetime.
-    _lock: MutexGuard<'static, ()>,
+pub struct SeamGuard<'a> {
+    /// The process lock kept held for this guard's whole lifetime, either
+    /// acquired here or borrowed from a caller that already held it.
+    _lock: HeldLock<'a>,
     /// Previous value, or absence, of every variable this guard set.
     restore: Vec<(&'static str, Option<OsString>)>,
 }
 
-impl SeamGuard {
+/// The lock a [`SeamGuard`] keeps held, and whose release it is responsible for.
+///
+/// The mutex is not reentrant, so a caller that already holds it cannot let the
+/// guard take it a second time: the guard borrows the caller's guard instead and
+/// leaves the release to it.
+///
+/// Neither variant's payload is ever read: it is held so the lock stays held for
+/// the guard's lifetime, and released by `Drop`.
+#[expect(
+    dead_code,
+    reason = "both variants hold their guard only to keep the lock held, so nothing reads the field"
+)]
+enum HeldLock<'a> {
+    /// Acquired by the guard that holds it.
+    Owned(MutexGuard<'a, ()>),
+    /// Held by a caller, which releases it when its own guard drops.
+    Borrowed(&'a MutexGuard<'static, ()>),
+}
+
+impl<'a> SeamGuard<'a> {
     /// Installs `vars` under `lock`.
     ///
     /// The lock is a required parameter rather than a defaulted one, so a
@@ -140,19 +160,30 @@ impl SeamGuard {
     pub fn new(lock: &'static Mutex<()>, vars: &[(&'static str, String)]) -> Self {
         enforce_seam_feature(cfg!(feature = "test-seams"));
         let guard = lock.lock();
-        let restore = vars
-            .iter()
-            .map(|(name, value)| {
-                let previous = std::env::var_os(name);
-                // SAFETY: the guard returned by `lock` is held here, so no
-                // other thread in this process mutates the environment for the
-                // rest of this scope, and every reader that takes the same lock
-                // is excluded until `drop` releases it.
-                unsafe { std::env::set_var(name, value) };
-                (*name, previous)
-            })
-            .collect();
-        Self { _lock: guard, restore }
+        let restore = install(vars);
+        Self { _lock: HeldLock::Owned(guard), restore }
+    }
+
+    /// Installs `vars` while borrowing a lock the caller already holds.
+    ///
+    /// The process lock is not reentrant: taking it a second time on one thread
+    /// deadlocks rather than failing, and a deadlock is indistinguishable from
+    /// the run's own timeout. A caller that holds it for a whole scope — the
+    /// offline demo's entry point holds it for a run, so the provider seams and
+    /// the stub chain's environment stay installed and serialized while the sync
+    /// runs — therefore hands this constructor the guard it has instead of
+    /// letting [`new`][Self::new] take the mutex again. The borrow keeps the
+    /// caller's guard from dropping before the restore, which is what puts the
+    /// restore before the release here as well.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this crate was built without `test-seams`.
+    #[must_use]
+    pub fn borrowing(held: &'a MutexGuard<'static, ()>, vars: &[(&'static str, String)]) -> Self {
+        enforce_seam_feature(cfg!(feature = "test-seams"));
+        let restore = install(vars);
+        Self { _lock: HeldLock::Borrowed(held), restore }
     }
 
     /// Installs every seam variable, all pointing at `base`, under `lock`.
@@ -166,7 +197,25 @@ impl SeamGuard {
     }
 }
 
-impl Drop for SeamGuard {
+/// Sets every pair in `vars`, returning what each variable held before.
+///
+/// The caller holds the process lock here — [`SeamGuard::new`] has acquired it
+/// and [`SeamGuard::borrowing`] borrows the caller's — so no other thread in the
+/// process mutates the environment for the rest of the guard's scope, and every
+/// reader that takes the same lock is excluded until the guard is dropped.
+fn install(vars: &[(&'static str, String)]) -> Vec<(&'static str, Option<OsString>)> {
+    vars.iter()
+        .map(|(name, value)| {
+            let previous = std::env::var_os(name);
+            // SAFETY: the caller holds the process lock for this write, as its
+            // module documentation requires of every constructor.
+            unsafe { std::env::set_var(name, value) };
+            (*name, previous)
+        })
+        .collect()
+}
+
+impl Drop for SeamGuard<'_> {
     /// Restores every variable this guard set, then releases the lock.
     ///
     /// The lock is still held here: `drop` runs before the guard's fields are
@@ -198,6 +247,9 @@ mod tests {
 
     /// A second such variable, for the panic case.
     const PROBE_PANIC: &str = "MEDIAPM_TEST_SUPPORT_PROBE_PANIC";
+
+    /// A third such variable, for the borrowed-guard case.
+    const PROBE_BORROWED: &str = "MEDIAPM_TEST_SUPPORT_PROBE_BORROWED";
 
     /// Installs `value` for `name` under the process lock.
     ///
@@ -277,6 +329,38 @@ mod tests {
             "http://before.example"
         );
         clear(PROBE_PANIC);
+    }
+
+    /// A guard can install under a lock its caller already holds.
+    ///
+    /// This is the only shape that works for a caller that keeps the lock for a
+    /// whole run: [`lock_process_env`] is not reentrant, so a `SeamGuard::new`
+    /// here would deadlock instead of failing, and this test would hang rather
+    /// than report. The restore is asserted because a borrowed guard that only
+    /// borrowed would leave its variables behind for the caller's whole scope,
+    /// which reads as a sibling's seam rather than as this test's.
+    #[test]
+    fn a_borrowed_guard_installs_and_restores_under_the_callers_lock() {
+        install_prior(PROBE_BORROWED, "http://before.example");
+
+        let held = lock_process_env();
+        {
+            let _guard = SeamGuard::borrowing(
+                &held,
+                &[(PROBE_BORROWED, "http://during.example".to_string())],
+            );
+            assert_eq!(
+                std::env::var(PROBE_BORROWED).expect("seam set by the borrowed guard"),
+                "http://during.example"
+            );
+        }
+        assert_eq!(
+            std::env::var(PROBE_BORROWED).expect("the borrowed guard restored the previous value"),
+            "http://before.example",
+            "a borrowed guard restores every variable it changed, like an owning one",
+        );
+        drop(held);
+        clear(PROBE_BORROWED);
     }
 
     /// Every seam variable points at one base, which is what one mock server
