@@ -285,7 +285,12 @@ const DEMO_MEDIA_TAGGER_RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f
 
 const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 
-/// Total hard-watchdog deadline; MUST equal nextest `slow-timeout.terminate-after` (600s) for the network test-group in `.config/nextest.toml`.
+/// Total hard-watchdog deadline.
+///
+/// The runner's budget for a test in the `network` group must exceed this, or the
+/// runner kills the demo before its own watchdog can report what stalled. That
+/// budget is `period x terminate-after` of the group's `slow-timeout` override in
+/// `.config/nextest.toml` — a count of periods, not a duration — and it is 720 s.
 const DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS: u64 = 10 * 60;
 
 const DEMO_ONLINE_TIMEOUT_SECS_DEFAULT: u64 =
@@ -5064,11 +5069,15 @@ mod tests {
         assert!(super::DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS > 0);
     }
 
-    /// Ensures the watchdog hard limit stays in sync with nextest's network-group
-    /// `slow-timeout.terminate-after` (600s) in `.config/nextest.toml`; a future
-    /// one-sided bump fails here.
+    /// Pins the watchdog's hard limit at ten minutes.
+    ///
+    /// The limit is only meaningful while the runner gives a test in its `network`
+    /// group more room than this, so that the demo's own watchdog is what fires
+    /// first and says what stalled. The runner's budget is the group's `slow-timeout`
+    /// override in `.config/nextest.toml`, whose `terminate-after` counts periods:
+    /// `60s x 12` is the 720 s that holds the ordering.
     #[test]
-    fn hard_watchdog_total_matches_nextest_terminate_after() {
+    fn hard_watchdog_total_is_ten_minutes() {
         assert_eq!(super::DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS, 600);
     }
 
