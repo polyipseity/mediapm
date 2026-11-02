@@ -17,6 +17,7 @@
 //! regenerated the fixture, the codec settings it used, and the ceiling it must
 //! stay under.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Fixture path relative to the consuming package's manifest dir.
@@ -48,10 +49,11 @@ pub const MEDIA_FIXTURE_AUDIO_CODEC_ID: &str = "A_AAC";
 pub const MEDIA_FIXTURE_MAX_BYTES: u64 = 1_048_576;
 
 /// Maximum EBML nesting the walk follows before it refuses the file.
-const MAX_EBML_DEPTH: usize = 8;
+pub const MAX_EBML_DEPTH: usize = 8;
 
-/// Maximum number of bytes the walk reads from one file.
-const MAX_EBML_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum number of bytes the walk reads from one file; a larger file is
+/// refused before it is read into memory.
+pub const MAX_EBML_BYTES: usize = 16 * 1024 * 1024;
 
 /// Matroska's default `TimestampScale` in nanoseconds (one millisecond).
 const DEFAULT_TIMESTAMP_SCALE_NS: u64 = 1_000_000;
@@ -91,7 +93,7 @@ pub fn media_fixture_path(manifest_dir: &Path) -> PathBuf {
 }
 
 /// The bounded set of Matroska facts the demo assertions read.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MatroskaFacts {
     /// Segment title (`Info`/`Title`), when the file carries one.
     pub title: Option<String>,
@@ -113,13 +115,32 @@ pub struct MatroskaFacts {
     duration_units: Option<f64>,
 }
 
+impl Default for MatroskaFacts {
+    /// Yields an empty fact set whose `TimestampScale` is Matroska's default,
+    /// so a file that states no scale still reports a correct duration.
+    fn default() -> Self {
+        Self {
+            title: None,
+            artist: None,
+            video_codec_id: None,
+            audio_codec_id: None,
+            width: None,
+            height: None,
+            duration_seconds: None,
+            timestamp_scale_ns: DEFAULT_TIMESTAMP_SCALE_NS,
+            duration_units: None,
+        }
+    }
+}
+
 /// Reads the bounded Matroska facts the demo assertions need from `path`.
 ///
 /// The walk descends only the elements that carry those facts (`Segment`,
-/// `Info`, `Tracks`, `Tags`) and skips every other element by its declared size,
-/// so the cluster payload a fixture carries is never decoded. Nesting is capped
-/// at [`MAX_EBML_DEPTH`] and the file at [`MAX_EBML_BYTES`], so a malformed file
-/// fails instead of looping.
+/// `Info`, `Tracks`, `Tags`, `Tag`) and skips every other element by its
+/// declared size, so the cluster payload a fixture carries is never decoded.
+/// Nesting is capped at [`MAX_EBML_DEPTH`] and the file is refused above
+/// [`MAX_EBML_BYTES`] before it is read into memory, so a malformed or
+/// oversized file fails instead of looping or allocating.
 ///
 /// # Errors
 ///
@@ -132,25 +153,38 @@ pub struct MatroskaFacts {
     reason = "a Matroska TimestampScale is a small nanosecond count that f64 represents exactly"
 )]
 pub fn read_matroska_facts(path: &Path) -> Result<MatroskaFacts, String> {
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("read media '{}': {error}", path.display()))?;
-    if bytes.len() > MAX_EBML_BYTES {
-        return Err(format!(
-            "media '{}' is {} bytes, above the {MAX_EBML_BYTES}-byte EBML read cap",
-            path.display(),
-            bytes.len()
-        ));
-    }
+    let bytes = read_bounded(path)?;
 
-    let mut facts = MatroskaFacts {
-        timestamp_scale_ns: DEFAULT_TIMESTAMP_SCALE_NS,
-        ..MatroskaFacts::default()
-    };
+    let mut facts = MatroskaFacts::default();
     walk(&bytes, 0, bytes.len(), 0, &mut facts)?;
     facts.duration_seconds = facts
         .duration_units
         .map(|units| units * facts.timestamp_scale_ns as f64 / NANOS_PER_SECOND);
     Ok(facts)
+}
+
+/// Reads `path`, refusing a file above [`MAX_EBML_BYTES`] before it is read into
+/// memory.
+///
+/// The length is checked up front and the read is capped, so an oversized file
+/// fails without being allocated whole first.
+fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("read media '{}': {error}", path.display()))?;
+    let cap = u64::try_from(MAX_EBML_BYTES).unwrap_or(u64::MAX);
+    let length =
+        file.metadata().map_err(|error| format!("read media '{}': {error}", path.display()))?.len();
+    if length > cap {
+        return Err(format!(
+            "media '{}' is {length} bytes, above the {MAX_EBML_BYTES}-byte EBML read cap",
+            path.display()
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(cap)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read media '{}': {error}", path.display()))?;
+    Ok(bytes)
 }
 
 /// One EBML element located within its parent.
@@ -169,7 +203,7 @@ struct Element {
 struct TrackEntry {
     /// `TrackType`: 1 is video, 2 is audio.
     track_type: Option<u64>,
-    /// `CodecID`, read before `TrackType` in the file.
+    /// `CodecID` of the track.
     codec_id: Option<String>,
     /// `PixelWidth` of a video track.
     width: Option<u64>,
@@ -406,5 +440,22 @@ mod tests {
     fn read_vint_rejects_a_zero_marker() {
         let error = read_vint(&[0x00], 0, true).expect_err("a zero marker must fail");
         assert!(error.contains("no length marker"), "unexpected error: {error}");
+    }
+
+    /// The walk refuses nesting deeper than the cap instead of recursing further.
+    #[test]
+    fn walk_rejects_nesting_deeper_than_the_cap() {
+        // Nest one `Segment` per allowed level plus one, each wrapping the last.
+        let mut bytes = Vec::new();
+        for _ in 0..=MAX_EBML_DEPTH {
+            let size = u8::try_from(bytes.len()).expect("the nest stays within one size byte");
+            let mut element = vec![0x18, 0x53, 0x80, 0x67, 0x80 | size];
+            element.extend_from_slice(&bytes);
+            bytes = element;
+        }
+        let mut facts = MatroskaFacts::default();
+        let error = walk(&bytes, 0, bytes.len(), 0, &mut facts)
+            .expect_err("nesting past the cap must fail");
+        assert!(error.contains("deeper than the 8-level cap"), "unexpected error: {error}");
     }
 }
