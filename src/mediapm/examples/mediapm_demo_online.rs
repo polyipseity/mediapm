@@ -250,6 +250,15 @@ const DEMO_SIDECAR_SELECTED_SUBTITLE_FILE_NAME: &str = "sidecars/subtitles.en.vt
 
 const DEMO_EXPECTED_YT_DLP_STEP_COUNT: usize = 1;
 
+/// The recording MBID the demo's tagging step binds.
+///
+/// Binding one skips the tagger's `AcoustID` fingerprint lookup, which is what makes
+/// the step reachable offline at all: the tagger fetches this recording from its
+/// configured endpoint instead of fingerprinting audio. It is the MBID
+/// `mediapm_test_support::mock_musicbrainz` answers for, so an offline run's tagger
+/// finds a route for it and the mock's request record names it.
+const DEMO_MEDIA_TAGGER_RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae";
+
 const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 
 /// Total hard-watchdog deadline; MUST equal nextest `slow-timeout.terminate-after` (600s) for the network test-group in `.config/nextest.toml`.
@@ -316,6 +325,38 @@ impl ToolRoute {
     }
 }
 
+/// The refusal an offline route gets in a build that compiles the provider seams out.
+///
+/// Compiled exactly where [`stub_chain_refusal`] is, and for the same reason: a build
+/// that carries the seams has no reader for it, and this workspace denies warnings, so
+/// an unconditional copy would fail that build as dead code.
+#[cfg(any(test, not(feature = "test-seams")))]
+const STUB_CHAIN_NEEDS_TEST_SEAMS: &str = "the offline demo route needs the `test-seams` \
+     feature, and this build does not enable it: the provider base-URL seams it redirects are \
+     compiled out, so the run would provision from the real upstream. Rebuild with the \
+     feature, for example `cargo run --all-features -p mediapm --example \
+     mediapm_demo_online`.";
+
+/// Why `route` cannot run in a build whose `test-seams` feature is as given, if it cannot.
+///
+/// `mediapm`'s own `test-seams` gates the provider base-URL readers: `github_api_base` and
+/// `github_download_base` in `src/mediapm/src/tools/provider/mod.rs` read their overrides
+/// only under that feature. Without it the offline route mounts the chain, installs the
+/// seam variables, and provisions from the real upstream anyway, because nothing reads
+/// them. The support crate's own refusal cannot cover this — it gates on *its*
+/// `test-seams`, which this crate's dev-dependency always enables for an example build.
+///
+/// The feature is a parameter rather than an enclosing `cfg` block for the reason
+/// [`mediapm_test_support::seams::enforce_seam_feature`] takes one: a check that lives
+/// inside `#[cfg(not(feature = "test-seams"))]` is compiled out of every `--all-features`
+/// build, so nothing would fail if this message or the condition were deleted. `main`
+/// evaluates `cfg!(feature = "test-seams")` at its call site, and the tests assert both
+/// values in either build.
+#[cfg(any(test, not(feature = "test-seams")))]
+fn stub_chain_refusal(route: ToolRoute, seams_compiled_in: bool) -> Option<&'static str> {
+    (!seams_compiled_in && !route.is_online()).then_some(STUB_CHAIN_NEEDS_TEST_SEAMS)
+}
+
 static DEMO_FFPROBE_COMMAND: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,24 +421,29 @@ struct ManagedToolProvenance {
     resolved_vcs_hash: Option<String>,
 }
 
-/// What an offline run recorded that proves it reached no network.
+/// What an offline run recorded that proves it reached no network, and that the mock's
+/// answer is the one the run used.
 ///
-/// The two halves are positive evidence rather than the absence of a failure:
-/// the invocation record is written by the stub binaries themselves, so it cannot
-/// exist unless a chain copy ran, and the request count is the tagger backend's
-/// own traffic. The two name fields are the media root the run materialized,
-/// split by [`load_resolved_demo_metadata`]; they are named for the root rather
-/// than for the tagging step because the name is what a reader can check against
-/// the artifact. Offline that name carries the container's own tags, because no
-/// chain copy applies the tagging step's `FFmetadata` document — the tagging half
-/// of the assertion is [`OfflineEvidence::musicbrainz_requests`].
+/// The halves are positive evidence rather than the absence of a failure: the invocation
+/// record is written by the stub binaries themselves, so it cannot exist unless a chain
+/// copy ran, and the request paths are the tagger backend's own traffic. The paths are
+/// what separates a tagger that used the mock from one that merely reached it: a path
+/// naming the recording MBID the demo binds is only recorded by a tagger that asked for
+/// that recording. The two name fields are the media root the run materialized, split by
+/// [`load_resolved_demo_metadata`]; they are named for the root rather than for the
+/// tagging step because the name is what a reader can check against the artifact. Offline
+/// that name carries the container's own tags — no chain copy applies the tagging step's
+/// `FFmetadata` document, so the file keeps the fixture's tags and the root is named after
+/// them. It is therefore not a record of what the tagger wrote, and the tagging half of
+/// the evidence is [`OfflineEvidence::musicbrainz_request_paths`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct OfflineEvidence {
     /// Every chain executable this run invoked, in order, by the logical tool it
     /// stands in for.
     chain_invocations: Vec<String>,
-    /// How many requests the mocked tagger backend answered.
-    musicbrainz_requests: usize,
+    /// Every request path the mocked tagger backend answered, in the order it received
+    /// them.
+    musicbrainz_request_paths: Vec<String>,
     /// The artist the materialized media root's name carries.
     root_artist: String,
     /// The title the materialized media root's name carries.
@@ -1207,7 +1253,7 @@ fn configure_document_for_online_demo(
     let mut media_tagger_options = BTreeMap::from([
         (
             "recording_mbid".to_string(),
-            TransformInputValue::String("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_string()),
+            TransformInputValue::String(DEMO_MEDIA_TAGGER_RECORDING_MBID.to_string()),
         ),
         ("release_mbid".to_string(), TransformInputValue::String(String::new())),
         ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
@@ -3545,7 +3591,7 @@ struct OfflineRun<'a> {
     /// The provisioner's answer. Declared before the environment guards so a
     /// route mounted on it stays available for the whole run.
     _upstream: MockUpstream,
-    /// The tagger backend, kept for its request count.
+    /// The tagger backend, kept for the record of what it answered.
     mock: MockMusicBrainz,
     /// The chain's environment, restored when the run ends.
     _environment: SeamGuard<'a>,
@@ -3598,12 +3644,20 @@ impl<'a> OfflineRun<'a> {
     /// What this run recorded, for the manifest's offline block.
     ///
     /// The chain's record is written by the stub binaries themselves, so it
-    /// cannot exist unless a chain copy ran; the request count is the tagger
-    /// backend's own traffic. `resolved` is the media root the run materialized,
+    /// cannot exist unless a chain copy ran; the request paths are the tagger
+    /// backend's own traffic, which is what says the tagger asked the mock for the
+    /// recording the demo binds. `resolved` is the media root the run materialized,
     /// split by [`load_resolved_demo_metadata`].
     async fn evidence(&self, resolved: &DemoResolvedMetadata) -> OfflineEvidence {
-        let musicbrainz_requests =
-            self.mock.server().received_requests().await.map_or(0, |requests| requests.len());
+        let musicbrainz_request_paths = self
+            .mock
+            .server()
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect();
         OfflineEvidence {
             chain_invocations: self
                 .chain
@@ -3611,7 +3665,7 @@ impl<'a> OfflineRun<'a> {
                 .iter()
                 .map(|invocation| logical_chain_tool(&invocation.tool).to_string())
                 .collect(),
-            musicbrainz_requests,
+            musicbrainz_request_paths,
             root_artist: resolved.artist.clone(),
             root_title: resolved.title.clone(),
         }
@@ -3654,6 +3708,12 @@ fn chain_environment(chain: &OfflineToolChain) -> ExampleResult<Vec<(&'static st
 }
 
 /// Prepends `dir` to this process's `PATH`, keeping every entry it already has.
+///
+/// # Errors
+///
+/// Returns an error when the resulting list cannot be carried as one environment value:
+/// `std::env::join_paths` rejects an entry holding the platform's separator, and a list
+/// whose rendering is not valid UTF-8 cannot travel in the `String` a seam pair holds.
 fn path_with_chain_dir(dir: &Path) -> ExampleResult<String> {
     let mut entries =
         std::env::split_paths(&std::env::var_os(PATH_ENV).unwrap_or_default()).collect::<Vec<_>>();
@@ -3691,6 +3751,12 @@ async fn run_online_demo(
     offline: Option<&OfflineRun<'_>>,
     sync_timeout: Duration,
 ) -> ExampleResult<DemoRunPaths> {
+    debug_assert_eq!(
+        route.is_online(),
+        offline.is_none(),
+        "the chain handle is present exactly when the route is the stub chain, so the run reads \
+         one decision rather than two that could disagree"
+    );
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -3965,24 +4031,13 @@ async fn main() -> ExampleResult<()> {
         ToolRoute::StubChain
     };
 
-    // A build without `mediapm`'s own `test-seams` feature compiles the provider
-    // base-URL readers out (`github_api_base` and `github_download_base` in
-    // `src/mediapm/src/tools/provider/mod.rs` read their overrides only under that
-    // feature), so the offline route's seams would install variables nothing reads
-    // and the sync would provision from the real upstream. The support crate's own
-    // refusal cannot cover this: it gates on *its* `test-seams`, which this crate's
-    // dev-dependency always enables for an example build. So the offline route
-    // stops here, before it mounts a chain or resolves a tool. The online route
-    // asks for the real upstream by name and is left alone.
+    // The refusal lives in `stub_chain_refusal`, which the tests reach directly; this
+    // arm exists only in a build without the feature, so that build is the one that can
+    // take the offline route into it. It runs before any watchdog is armed, before a
+    // chain is mounted and before a tool is resolved.
     #[cfg(not(feature = "test-seams"))]
-    if !route.is_online() {
-        return Err(
-            "the offline demo route needs the `test-seams` feature, and this build does not \
-             enable it: the provider base-URL seams it redirects are compiled out, so the run \
-             would provision from the real upstream. Rebuild with the feature, for example \
-             `cargo run --all-features -p mediapm --example mediapm_demo_online`."
-                .into(),
-        );
+    if let Some(refusal) = stub_chain_refusal(route, cfg!(feature = "test-seams")) {
+        return Err(refusal.into());
     }
 
     // Watchdog budgets resolve before the route branch so both paths export the
@@ -4396,6 +4451,38 @@ mod tests {
         );
     }
 
+    /// The offline route's refusal is one testable decision, not a `cfg` arm.
+    ///
+    /// The arm that calls it is compiled out of every `--all-features` build, so an
+    /// assertion reachable only through `main` would never run under a gate and
+    /// deleting the message or the condition would fail nothing. The feature is a
+    /// parameter for exactly that reason, the same shape as
+    /// `mediapm_test_support::seams::enforce_seam_feature`; these assertions hold in
+    /// a feature-less build and a gated one alike.
+    #[test]
+    fn the_stub_chain_refusal_stops_only_an_offline_route_without_the_seams() {
+        let refusal = super::stub_chain_refusal(super::ToolRoute::StubChain, false)
+            .expect("an offline route in a build without the seams must refuse");
+        assert!(refusal.contains("test-seams"), "the refusal must name the feature: {refusal}");
+        assert!(
+            refusal.contains("--all-features"),
+            "the refusal must name the flag that enables the feature: {refusal}"
+        );
+        assert!(
+            refusal.contains("mediapm_demo_online"),
+            "the refusal must name the command a reader runs instead: {refusal}"
+        );
+
+        assert!(
+            super::stub_chain_refusal(super::ToolRoute::RealUpstream, false).is_none(),
+            "the online route asks for the real upstream by name, so no seam is involved"
+        );
+        assert!(
+            super::stub_chain_refusal(super::ToolRoute::StubChain, true).is_none(),
+            "a build that carries the seams has nothing to refuse"
+        );
+    }
+
     /// Proves the online demo states the save policy its own hierarchy asks
     /// for, variant by variant, and shows both decisions: every variant the
     /// library links keeps its bytes whole, and the preview variant nothing
@@ -4607,18 +4694,19 @@ mod tests {
     ///
     /// The default path needs no network, so the test runs a full sync rather than
     /// a reduced one and reads what the run recorded: the manifest's mode, the
-    /// idempotency re-run's tally, the chain's recorded invocations, the mocked
-    /// tagger backend's request count, and the media root the hierarchy
+    /// idempotency re-run's tally, the chain's recorded invocations, the request paths
+    /// the mocked tagger backend answered, and the media root the hierarchy
     /// materialized. The media facts come from an in-process read of the
     /// materialized file, never from the chain's own `ffprobe`.
     ///
-    /// The conductor budgets are asserted here rather than in a test of their own,
-    /// which would pay for a second full sync. Two of their branches are what
-    /// `main` decides: it computes and exports the RPC budget from its own sync
-    /// budget — the conductor-layer error names that knob, so it has to fire before
-    /// the demo's blind hard-timeout wrapper — and it leaves a caller-set budget
-    /// alone, because a caller who set one has already chosen the policy layer that
-    /// should fire.
+    /// The conductor budgets: `main` computes and exports the RPC budget from its own
+    /// sync budget — the conductor-layer error names that knob, so it has to fire before
+    /// the demo's blind hard-timeout wrapper — and it leaves a caller-set budget alone,
+    /// because a caller who set one has already chosen the policy layer that should fire.
+    /// One `main()` call can only observe one branch of each knob, so this asserts the
+    /// caller-set executable budget and the computed RPC budget;
+    /// [`a_caller_set_rpc_budget_survives_the_demo`] asserts the RPC knob's other branch
+    /// against the same item `main` calls, which is cheaper than a second full sync.
     #[test]
     fn main_is_exercised() {
         /// The budget the caller sets, which has to differ from the one the demo
@@ -4711,7 +4799,8 @@ mod tests {
         // metadata is the container's own tags: no chain copy applies the tagging
         // step's `FFmetadata` document, so the two values are asserted against an
         // in-process read of the materialized file rather than against the mock's
-        // payload, and the tagging half of the evidence is the request count below.
+        // payload. They therefore do not say which backend tagged anything, and the
+        // tagging half of the evidence is the request paths below.
         let offline = manifest.get("offline").expect("the offline run records its evidence");
         assert_eq!(
             offline["root_artist"].as_str(),
@@ -4738,9 +4827,77 @@ mod tests {
                 "the offline run must reach the chain's '{tool}', recorded: {chain_invocations:?}"
             );
         }
+
+        // The mock reached is not the same fact as the mock's answer being the one
+        // the run used: the recorded request paths say which lookups the tagger
+        // actually made, and one of them must name the recording MBID the demo
+        // binds. A tagger that ignored the endpoint, or asked for a different
+        // recording, records no such path.
+        let request_paths = offline["musicbrainz_request_paths"]
+            .as_array()
+            .expect("the manifest lists the mocked backend's request paths")
+            .iter()
+            .map(|path| path.as_str().expect("a recorded request path is a string").to_string())
+            .collect::<Vec<String>>();
+        let recording_lookup =
+            format!("/ws/2/recording/{}", super::DEMO_MEDIA_TAGGER_RECORDING_MBID);
         assert!(
-            offline["musicbrainz_requests"].as_u64().is_some_and(|count| count > 0),
-            "the mocked backend must have answered the tagger's lookup: {offline}"
+            request_paths.contains(&recording_lookup),
+            "the tagger must have asked the mocked backend for the recording the demo binds \
+             ('{recording_lookup}'), recorded: {request_paths:?}"
+        );
+    }
+
+    /// A caller-set conductor RPC budget is left alone by the demo's own sizing step.
+    ///
+    /// [`main_is_exercised`] runs `main` once with the executable-timeout knob set and
+    /// this knob unset, so it observes `main`'s computed branch and cannot observe this
+    /// one: one `main()` call cannot leave both knobs set and still compute either. This
+    /// asserts the other branch against the item `main` calls, which is the whole of the
+    /// decision: the sizing returns before writing when the knob already has a value. The
+    /// pair is what covers both branches — `main_is_exercised` proves `main` reaches this
+    /// item and exports what it computed, and this proves the item's caller-set branch.
+    #[test]
+    fn a_caller_set_rpc_budget_survives_the_demo() {
+        /// The budget the caller sets. It has to differ from the one the demo computes,
+        /// or an overwrite could hide behind an identical number.
+        const CALLER_RPC_BUDGET: &str = "4321";
+
+        let _env_lock = example_isolation::lock_process_env();
+        let previous = std::env::var_os(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV);
+        // SAFETY: the process env lock is held for every write and restore here.
+        unsafe {
+            std::env::set_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, CALLER_RPC_BUDGET);
+        }
+
+        super::configure_demo_conductor_rpc_timeout(std::time::Duration::from_secs(
+            super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT,
+        ));
+
+        let observed = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).ok();
+        // SAFETY: the same lock covers this restore.
+        unsafe {
+            match previous {
+                Some(value) => {
+                    std::env::set_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, value);
+                }
+                None => std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV),
+            }
+        }
+
+        assert_eq!(
+            observed.as_deref(),
+            Some(CALLER_RPC_BUDGET),
+            "a caller-set conductor RPC budget is respected: the demo must leave it alone \
+             rather than replacing it with the budget it computes"
+        );
+        assert_ne!(
+            CALLER_RPC_BUDGET,
+            (super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT
+                - super::DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS)
+                .to_string(),
+            "the sentinel must differ from the computed budget, or this assertion could not \
+             see an overwrite"
         );
     }
 

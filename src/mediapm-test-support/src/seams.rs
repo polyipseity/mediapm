@@ -23,7 +23,9 @@
 //!   [`lock_process_env`] also guards.
 //!
 //! A caller that mutates the environment without a guard takes
-//! [`lock_process_env`] directly.
+//! [`lock_process_env`] directly, and a caller that already holds that guard
+//! passes it to [`SeamGuard::borrowing`], never to [`SeamGuard::new`]: the mutex
+//! is not reentrant, so a second acquisition on one thread deadlocks.
 
 use std::ffi::OsString;
 use std::sync::LazyLock;
@@ -53,7 +55,10 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 ///
 /// Pass the result to [`SeamGuard::new`] or [`SeamGuard::all_seams`] when the
 /// consuming crate has no lock of its own. A crate that has one passes that
-/// instead, so no caller ever silently takes a second mutex.
+/// instead, so no caller ever silently takes a second mutex. A caller that
+/// already holds the guard [`lock_process_env`] returned passes it to
+/// [`SeamGuard::borrowing`], never to [`SeamGuard::new`], which would take the
+/// same non-reentrant mutex again and deadlock.
 #[must_use]
 pub fn env_lock() -> &'static Mutex<()> {
     &ENV_LOCK

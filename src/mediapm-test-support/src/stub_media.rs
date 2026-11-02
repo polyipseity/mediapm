@@ -23,8 +23,14 @@
 //! # Known limitation
 //!
 //! A chain copy is handed a real tool's command line, so the copy-shaped
-//! fallback has one output path to work with: the last argument that is not an
-//! option. An `ffmpeg` step that binds more than one output slot therefore gets
+//! fallback has to guess its one output path from that line: it takes the
+//! rightmost argument that is neither an option nor an option's value, and only
+//! when that argument is path-shaped — carrying a path separator, or a last dot
+//! that leaves a non-empty extension (`looks_like_a_path` in
+//! `src/bin/mediapm-stub-tool.rs`). Whatever else a command line names is a
+//! value, and writing one escapes the sandbox the step was given, so a line
+//! with no path-shaped token writes nothing and succeeds.
+//! An `ffmpeg` step that binds more than one output slot therefore gets
 //! its highest-indexed path written and the others left absent. `ffmpeg`
 //! renders one `${inputs.output_path_N}` per slot (`build_ffmpeg_command` in
 //! `src/mediapm/src/tools/workflows/ffmpeg.rs`) and the command line carries

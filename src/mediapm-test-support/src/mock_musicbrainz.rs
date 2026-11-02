@@ -33,8 +33,12 @@ pub const ARTIST_MBID: &str = "33d21b86-dc54-47b2-9258-92d5b42c99a1";
 /// The artist the mock's payloads credit.
 ///
 /// This is the demo's own artist (`DEMO_METADATA_ARTIST` in
-/// `src/mediapm/src/demo_hierarchy_spec.rs`), so the `ARTIST` tag a tagging run
-/// writes is the one the demo asserts.
+/// `src/mediapm/src/demo_hierarchy_spec.rs`), so on the real-upstream path the
+/// `ARTIST` tag a tagging run writes is the one the demo asserts. A stub-chain run
+/// never reaches that tag: its `ffmpeg` is a copy, so the tagger's metadata
+/// document lands in no container and the materialized file keeps the fixture's own
+/// tags. What a stub-chain run can prove about this value is that the tagger asked
+/// the mock for the recording it binds, not that the answer reached a file.
 pub const ARTIST_NAME: &str = "Rick Astley";
 
 /// The recording title the mock reports.
