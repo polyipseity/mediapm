@@ -461,13 +461,16 @@ fn missing_after_success_message(command: &CliBuildCommand) -> String {
 ///
 /// Split out so the message a profile-selected run reads is pinned by a test
 /// instead of depending on the profile the test binary itself was built in.
+/// The same-profile arm names the target-directory variables because that is
+/// the only thing left to explain when the profile already matches: the build
+/// and the probe agree on the profile, so they disagree on the target directory.
 fn missing_after_success_message_for(
     command: &CliBuildCommand,
     running_profile: Option<&str>,
 ) -> String {
     let remedy = match running_profile {
         Some(profile) if profile == DEFAULT_BUILD_PROFILE => {
-            "this run lives in that same profile, so the build landed in a target directory this binary does not probe".to_string()
+            "this run lives in that same profile, so the build landed in a target directory this binary does not probe; check CARGO_TARGET_DIR and --target-dir".to_string()
         }
         Some(profile) => format!(
             "this run lives in the `{profile}` profile, so a build for this run needs an explicit `cargo build --release -p mediapm`"
@@ -480,22 +483,29 @@ fn missing_after_success_message_for(
     )
 }
 
-/// The cargo profile directory the running binary lives in, when its path names
-/// one.
+/// The cargo profile an executable path names, when its layout names one.
 ///
 /// A cargo-built binary sits at `<target-dir>[/<triple>]/<profile>/<kind>/<name>`,
 /// with `examples` or `deps` for the two kinds an example runs as, so the profile
 /// is the directory two levels above the executable. The `<kind>` segment is what
-/// makes the guess safe: a binary started under another layout answers `None`
-/// instead of reporting whatever directory happens to enclose it as a profile.
-fn running_profile() -> Option<String> {
-    let current_exe = std::env::current_exe().ok()?;
-    let dir = current_exe.parent()?;
-    if !matches!(dir.file_name().and_then(std::ffi::OsStr::to_str), Some("examples" | "deps")) {
+/// makes the guess safe: a path under another layout answers `None` instead of
+/// reporting whatever directory happens to enclose it as a profile.
+///
+/// Takes the path as an argument so the layout half is pinned by literals; see
+/// [`running_profile`] for the half that reads this process.
+fn profile_from_exe_path(path: &Path) -> Option<String> {
+    let kind_dir = path.parent()?;
+    let kind = kind_dir.file_name().and_then(std::ffi::OsStr::to_str);
+    if !matches!(kind, Some("examples" | "deps")) {
         return None;
     }
-    let profile = dir.parent()?.file_name()?;
+    let profile = kind_dir.parent()?.file_name()?;
     Some(profile.to_string_lossy().into_owned())
+}
+
+/// The cargo profile the running binary lives in, when its path names one.
+fn running_profile() -> Option<String> {
+    profile_from_exe_path(&std::env::current_exe().ok()?)
 }
 
 /// The last `limit` lines of a build's stderr, as a failure message quotes them.
@@ -973,7 +983,7 @@ mod tests {
         assert_eq!(
             missing_after_success_message_for(&command, Some("debug")),
             format!(
-                "{built}this run lives in that same profile, so the build landed in a target directory this binary does not probe"
+                "{built}this run lives in that same profile, so the build landed in a target directory this binary does not probe; check CARGO_TARGET_DIR and --target-dir"
             )
         );
         assert_eq!(
@@ -984,27 +994,51 @@ mod tests {
         );
     }
 
-    /// The running profile is read from the executable's own layout, so the
-    /// message can name the profile a `--release` run lives in. This asserts the
-    /// wiring through [`running_profile`], which no literals can pin because it
-    /// reads this process's own path.
+    /// [`profile_from_exe_path`] reads the two layouts an example runs as and
+    /// refuses everything else, so a plugin- or install-layout binary is not
+    /// told its enclosing directory is a cargo profile.
+    #[test]
+    fn profile_from_exe_path_reads_cargo_layouts_only() {
+        assert_eq!(
+            profile_from_exe_path(Path::new("/work/target/release/examples/x")).as_deref(),
+            Some("release"),
+            "an example built with `--release` lives in the release profile"
+        );
+        assert_eq!(
+            profile_from_exe_path(Path::new("/work/target/debug/deps/mod-1")).as_deref(),
+            Some("debug"),
+            "a test binary in `deps` lives in the debug profile"
+        );
+        assert_eq!(
+            profile_from_exe_path(Path::new("/usr/local/bin/x")),
+            None,
+            "an installed binary names no cargo profile"
+        );
+    }
+
+    /// The message a profile-selected run reads is the arm for the profile this
+    /// process's own path names, so the executable-path read is wired into the
+    /// message. Compared against that arm rather than the arms in isolation:
+    /// dropping the wiring would leave the message on the `None` arm while the
+    /// expected arm stayed put.
     #[test]
     fn missing_after_success_message_reads_the_running_profile() {
         let command = cli_build_command(
             PathBuf::from("/opt/rust/bin/cargo"),
             PathBuf::from("/work/src/mediapm/Cargo.toml"),
         );
+        let profile = profile_from_exe_path(&std::env::current_exe().expect("current exe path"));
 
         let message = missing_after_success_message(&command);
 
+        assert_eq!(
+            message,
+            missing_after_success_message_for(&command, profile.as_deref()),
+            "renders the arm for the profile this binary's path names"
+        );
         assert!(
             message.contains("the build writes the default `debug` profile, and "),
             "keeps the profile explanation: {message}"
-        );
-        assert!(
-            message.contains("`cargo build --release -p mediapm`")
-                || message.contains("a target directory this binary does not probe"),
-            "names the release build or the target-directory cause: {message}"
         );
     }
 
