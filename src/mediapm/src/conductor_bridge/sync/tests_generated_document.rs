@@ -149,8 +149,8 @@ fn fetched_none_registers_a_spec_without_a_version() {
     assert_eq!(
         record.version,
         format!("{}+{}", env!("CARGO_PKG_VERSION"), crate::global::MEDIAPM_GIT_HASH),
-        "the registry entry names the workspace build that will run the launcher, \
-         which is a different claim from a release the provider resolved"
+        "the registry entry names the workspace build whose registry answers for the \
+         builtin, which is a different claim from a release the provider resolved"
     );
 }
 

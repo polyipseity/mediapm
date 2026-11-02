@@ -5,9 +5,9 @@
 //! 2. Load the generated document
 //! 3. Fetch desired tool payloads, import to CAS, build content maps
 //! 4. Build proper `ToolSpec` + `ToolRuntime` for each tool
-//! 5. Apply lifecycle transitions (tag updates, launcher files)
+//! 5. Apply lifecycle transitions (tag updates, stale entries)
 //! 6. Write generated runtime env file
-/// 7. Save the generated document
+//! 7. Save the generated document
 pub(crate) mod external_data;
 pub(crate) mod lifecycle;
 mod pool;
@@ -146,7 +146,7 @@ enum EntryOutcome {
         /// same-step dep payloads by `provision_entry`).
         payload: FetchedToolPayload,
     },
-    /// Resolved and fetched with no payload (builtin/launcher).
+    /// Resolved and fetched with no payload (a builtin, or a tool with no sources).
     FetchedNone {
         /// Tool identifier.
         tool_id: String,
@@ -501,7 +501,7 @@ async fn provision_entry(
             Ok(EntryOutcome::Fetched { tool_id: tool_id.clone(), payload })
         }
         Ok(None) => {
-            // No payload (builtin/launcher or no sources): publish an empty
+            // No payload (a builtin, or a tool with no sources): publish an empty
             // own map and carry the composite computed at resolve time.
             publisher.publish_own_map(BTreeMap::new());
             Ok(EntryOutcome::FetchedNone {

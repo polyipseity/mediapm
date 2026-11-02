@@ -152,7 +152,7 @@ Tool provisioning uses a two-module architecture in `src/mediapm-conductor/src/t
 - `preset/`: per-tool `ToolSpec`/`ToolRuntime` builders (configuration/declarative intent)
 - `provider/`: three-phase pipeline (resolve → fetch → process) handling download, archive extraction, binary CAS-import, and content-map construction. Process returns `ProvisionResult { content_map, os_exec_paths }`.
 
-Source definitions use `SourceProducer::Fetch` (URL-based download) for managed tools and `SourceProducer::GenerateLauncher` (inline launcher script) for builtins. Each entry defines per-OS download URLs for all three supported platforms (`windows`, `linux`, `macos`).
+Source definitions use `SourceProducer::Fetch` (URL-based download), the enum's only variant (`src/mediapm-conductor/src/tools/provider/mod.rs`), so every producer generates bytes by fetching URL candidates. A builtin has no producer at all: its provider still answers under its own tool id but returns an empty source list, because its implementation is code a dispatcher runs rather than bytes to place in a sandbox (`builtin_providers_have_no_sources`). Each fetched entry defines per-OS download URLs for all three supported platforms (`windows`, `linux`, `macos`).
 
 Tool preset download invariants:
 
@@ -160,6 +160,18 @@ Tool preset download invariants:
 - Runtime command selection stays selector-driven via `${context.os == ...}` conditionals so the correct executable is chosen at execution time without changing the downloaded payload set.
 
 The `os_exec_paths` map (OS label → relative executable path) replaces the old `command_selector` string. The shared helper `build_os_conditional_selector(os_exec_paths)` in `tools::helpers` produces `${context.os == ...}` template expressions used by the preset layer. For archive payloads, the `os_exec_paths` value is the binary path relative to the extracted directory (e.g., `"sd"`); for binary payloads, it is the URL-derived filename (e.g., `"sd-x86_64-linux"`).
+
+## Host-Supplied Builtin Runners
+
+`src/mediapm-conductor/src/tools/host_builtin.rs` is how a program built on the conductor adds its own builtins. The build ships a fixed set (`ALL_BUILTINS`); a host implements `HostBuiltin` once per tool it wants run in-process, collects them in `HostBuiltins`, and passes that registry to every run through `RunWorkflowOptions::host_builtins` (`src/mediapm-conductor/src/api.rs`, empty by default). A host tool dispatches exactly like a static one: its step's tool declares no command parts, and the tool's builtin id is the string a runner answers for.
+
+- `HostBuiltin` is `Debug + Send + Sync` with `fn id(&self) -> &str` and an async `run(&self, HostBuiltinRequest<'_>) -> Result<HostBuiltinOutput, ConductorError>`. A runner fails its step by returning `Err`, which the run reports the way it reports any failed step.
+- `HostBuiltinRequest` carries the step's resolved `args`, the run's store as `&dyn HostBuiltinCas`, `outermost_config_dir` and the step's `sandbox_dir`. `HostBuiltinCas` is a read-only view (`async fn get(&self, Hash) -> Result<Bytes, CasError>`) with a blanket impl for every `T: CasApi`: `CasApi::get_to_writer` is generic, so the full trait is not dyn-compatible, and a host runner's outputs reach the store through the step's capture spec rather than through a write here.
+- `HostBuiltinOutput { stdout, stderr, exit_code }` is what the capture phase reads, mirroring the executor's private execution result. A `0` status is success as it is for a child process, and a non-zero status is data a `process_code` capture records rather than a verdict.
+- `HostBuiltins::new(Vec<Arc<dyn HostBuiltin>>)` refuses two runners for one id and refuses an id a static builtin already owns (`static_builtin_owns`, answered from `ALL_BUILTINS`), each as `ConductorError::Workflow` naming the id. Static arms are what dispatch tries first, so a host runner under a shipped id would never be reached; refusing the registry is what keeps resolution order a fact instead of a rule to remember. `HostBuiltins::get` resolves an id, and `host_only_ids` lists what the registry supplies.
+- The registry is wrapped in one `Arc` per run (`Coordinator::run_workflow`, `src/mediapm-conductor/src/orchestration/coordinator.rs`) and handed to every step's `StepExecutionRequest`, so a step cannot dispatch to a set the run-start check never saw. `run_builtin` (`orchestration/step_worker/process.rs`) keeps its static arms first and falls through to the registry; `dispatch_tool_execution` (`orchestration/step_worker/executor.rs`) derives the id as the spec's declared `builtin_id`, or the tool's own name when it declares none.
+- `ensure_document_builtins_run` (`tools/host_builtin.rs`) runs at the start of `Coordinator::run_workflow`, before any worker exists, and refuses a document whose builtin ids this run cannot dispatch: an id either `ALL_BUILTINS` ships or the host registered, judged by the same derivation dispatch uses. The check is document-wide rather than workflow-scoped — every workflow shares the tool catalog — and its message names each offender plus the host ids that are registered, because a wiring bug known up front must not be reported as a partially executed workflow.
+- The document layer judges no builtin id. `from_boundary` (`config/versions/mod.rs`) and `merge_documents` (`config/versions/merge.rs`) carry whatever id a document names, because a host legitimately registers runners for ids this build cannot know; whether a run can dispatch one is answered when the run starts.
 
 ## Tool Schema and Runtime Invariants
 
@@ -802,14 +814,15 @@ Three race scenarios in the tool content cache:
 
 ### N.16 Cross-Crate: Builtin IDs a Document May Name (§6.4)
 
-**Issue**: A `builtin` spec names an id its build cannot dispatch, and the failure surfaces only when a step first runs.
+**Issue**: A `builtin` spec names an id its run cannot dispatch, and the failure surfaces only when a step first runs.
 
 **Contract**:
 
-- A `builtin` spec must name an id the build registers. `NickelDocument::validate_builtin_tool_ids` rejects any other at both load entry points — the single-document decode (`from_boundary`) and the multi-document merge (`merge_documents`) — and one error names every offending tool, so a document with two misses does not need two runs to fix.
-- The check asks `registered_builtin_ids()`, which answers what the build can dispatch: the five real builtins, plus the test doubles when `test-builtins` is on. A production build therefore rejects a document naming `flaky@v1` or `slow@v1` with no special case.
+- No load path judges a builtin id. `from_boundary` (`config/versions/mod.rs`) and `merge_documents` (`config/versions/merge.rs`) carry any id a document names, because a host registers runners for ids this build cannot know; a decode or merge that rejected them would make every host document unreadable.
+- The run judges, once, before its first step. `ensure_document_builtins_run` (`tools/host_builtin.rs`) runs at the start of `Coordinator::run_workflow` and refuses a builtin id that is neither in `ALL_BUILTINS` nor registered in `RunWorkflowOptions::host_builtins`, naming every offending tool and the host ids that are registered, so a document with two misses does not need two runs to fix.
+- The id judged is the one dispatch resolves: a tool that declares no command parts but no `builtin_id` is judged by its own name, because that is the id `dispatch_tool_execution` hands to `run_builtin` for it.
 - A tool key is not reserved. An executable spec may use any key, including one spelled like a builtin id; the only key rule is that the user and generated documents may not define the same key, which the merge rejects as `MergeConflict::DuplicateTool`.
-- The check is absent from `encode_document` deliberately: a generated document written by an earlier build may name a double, and the prune must be able to save the document that drops the entry.
+- No save path judges one either: a generated document written by an earlier build may name an id this build cannot dispatch, and the prune must be able to save the document that drops the entry.
 
 ### N.17 Cross-Crate: State Persistence Consistency (§6.5)
 
@@ -938,7 +951,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`conductor.g
 | § | Issue | Contract |
 | --- | --- | --- |
 | 6.2 | Builtin failure vs conductor error recovery | Validation errors → no retry. Transient errors → retry N times (`max_retries`). Persistent errors → no retry. CAS errors propagate via `?` regardless of purity. |
-| 6.4 | Builtin ids a document may name | A `builtin` spec must name an id the build registers; `validate_builtin_tool_ids` checks both load entry points and names every offender. A tool key is not reserved: an executable spec may spell one like a builtin id. |
+| 6.4 | Builtin ids a document may name | No load path judges a builtin id; `ensure_document_builtins_run` judges them at run start against `ALL_BUILTINS` plus `RunWorkflowOptions::host_builtins` and names every offender. A tool key is not reserved: an executable spec may spell one like a builtin id. |
 | 6.6 | Cache invalidation across tool versions | `retain_only()` removes old cache entries; `content_map` cleared on version change so stale references are not preserved. |
 | 6.7 | Instance key immutability | Instance key = `hash(tool_id + sorted_inputs + impure_timestamp)`. Immutable after first derivation. Changing tool_id or inputs produces a new key (no in-place mutation). |
 | 6.8 | NCL↔Rust schema sync | Typed envelope pattern with `#[serde(flatten)]` + `deny_unknown_fields`. Versioned schemas in `versions/vN.rs`. Migration bridges via manual serde conversion. |

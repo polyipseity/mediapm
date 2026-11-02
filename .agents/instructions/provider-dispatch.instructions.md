@@ -16,12 +16,12 @@ Routes tool names (case-insensitive) to per-tool `sources()` functions:
 | `yt-dlp`       | `yt_dlp.rs`       | GitHub releases                      |
 | `deno`         | `deno.rs`         | GitHub releases                      |
 | `rsgain`       | `rsgain.rs`       | GitHub releases                      |
-| `media-tagger` | `media_tagger.rs` | GitHub releases + `GenerateLauncher` |
+| `media-tagger` | `media_tagger.rs` | none: a host builtin, dispatched in-process |
 | `sd`           | `sd.rs`           | GitHub releases                      |
 
 Returns `(ResolvedToolFetch, ResolvedToolMetadata)`:
 
-- `ResolvedToolFetch`: per-OS `sources` (`Vec<ResolvedSource>` with URL, expected size, and producer type) plus optional `GenerateLauncher` entries for script-based tool bootstrap.
+- `ResolvedToolFetch`: per-OS `sources` (`Vec<ResolvedSource>` with URL, expected size, and producer type). A builtin provider returns the same shape with an empty list.
 - `ResolvedToolMetadata`: `human_readable_version`, `canonical_version`, `metadata_cached`, `metadata_fetch_count`, and the three provenance fields `resolved_tag`, `resolved_version`, `resolved_vcs_hash` (all `Option<String>`; see "Resolved provenance fields" below).
 
 ## `MetadataCacheTracker`
@@ -81,7 +81,7 @@ Every `ResolvedToolMetadata` carries three provenance fields of type `Option<Str
 | `rsgain`       | `Some(tag)`            | `Some(tag)`              | `Some(commit_hash)`     | —          |
 | `sd`           | `Some(tag)`            | `Some(tag)`              | `Some(commit_hash)`     | —          |
 | `ffmpeg`       | `Some(autobuild_tag)`  | `None`                   | `None`                  | Mixed sources (BtbN autobuilds + martin-riedl/jellyfin chains): neither a single version nor a single VCS hash identifies the artifact set. A `git/refs/tags/{tag}` deref on BtbN yields the build-script repo commit, not the upstream ffmpeg source commit; martin-riedl and jellyfin publish versioned archives with no git provenance. Resolvable ≠ meaningful. |
-| `media-tagger` | `None`                 | `Some(CARGO_PKG_VERSION)` | `Some(MEDIAPM_GIT_HASH)` | Builtin launcher shipped inside mediapm: no upstream tagged release; identity is the mediapm build. |
+| `media-tagger` | `None`                 | `Some(CARGO_PKG_VERSION)` | `Some(MEDIAPM_GIT_HASH)` | Builtin shipped inside mediapm with no payload: no upstream tagged release; identity is the mediapm build. |
 
 **Why-empty invariant (hard rule):** any of the three fields left as `None` MUST carry a documented reason in three places: (a) an inline `// WHY:` comment on the provider dispatch arm, (b) the per-tool provider module doc comment, (c) the per-tool row in this file. A `None` field without documentation is a code-review failure.
 
@@ -89,4 +89,4 @@ Every `ResolvedToolMetadata` carries three provenance fields of type `Option<Str
 
 - macOS ffmpeg: the chain is martin-riedl.de → jellyfin-ffmpeg (never GitHub), three members deep per arch: the martin-riedl snapshot permalink, the martin-riedl release permalink, then the jellyfin archive. Each macOS arch (`aarch64`, `x86_64`) resolves its own source, so the ffmpeg macOS OS slot is a **dual-arch slot** and its content keys are arch-segmented (`macos/{arch}/...`); `os_exec_paths["macos"]` records the host arch's payload. The martin-riedl permalink 302-redirects to a versioned download; the build id parsed from that redirect target becomes the macOS leg of the composite version. The leg probe requests the permalink with `GET` and a one-byte `Range` — martin-riedl answers `HEAD` with 404 and serves only `GET` — so the resolve-time leg and the fetch-observed leg agree and the skip check matches on the next sync. Those permalink candidates also declare the leg as their content-cache identity (`ResolvedSource.identity`), so a build rotated upstream is a cache miss instead of the previous build's bytes served under the new build's name; the unresolved-leg sentinel is never keyed, and the Windows/Linux autobuild sources declare the resolved BtbN tag for the same reason — their `latest/download` path never changes while the asset behind it is replaced — and they declare it on both target shapes, because that URL is an alias whether the target is `Latest` or `Exact`. Arch labels are mapped to each provider's spelling at URL-build time — martin-riedl writes the canonical labels as `arm64`/`amd64`, and jellyfin splits them across a directory token and a filename token (`arm64`/`macarm64`, `x86_64`/`mac64`) — while the canonical arch stays untouched in `ResolvedSource.arch`, the content keys, and `os_exec_paths`. The jellyfin member is discovered, never pinned: the newest `latest-{N}.x` line is picked numerically from the repo index and the archive filename comes from that line's per-arch `*-gpl.txt` pointer file, both cached in the metadata domain. An unreadable index or pointer file shortens the chain instead of failing it, and a chain served by a later member is reported as a sync warning rather than passing silently.
 - GitHub release assets (yt-dlp, deno, rsgain, sd, BtbN ffmpeg) never serve a sibling `.sha256`, so the checksum probe is skipped for github.com / objects.githubusercontent.com hosts; martin-riedl and jellyfin (and hermetic test servers) are still probed so "verify when served" keeps working wherever a checksum might appear.
-- media-tagger: uses `GenerateLauncher` for cross-platform launcher script generation instead of binary download on some platforms.
+- media-tagger: resolves to no sources at all. It is a builtin mediapm's host runs in-process (see `src/mediapm/AGENTS.md`, "Host builtin: media-tagger"), so there is no payload and no per-OS slot to describe.

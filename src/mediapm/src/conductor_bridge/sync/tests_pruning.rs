@@ -251,7 +251,7 @@ async fn reconcile_media_tagger_latest(
         None,
     )
     .await
-    .expect("reconcile_desired_tools must succeed for an offline builtin launcher")
+    .expect("reconcile_desired_tools must succeed for an offline builtin")
     .into_report()
 }
 

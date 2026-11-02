@@ -169,8 +169,8 @@ pub(super) async fn prepare_tool_payload<C: CasApi + Send + Sync>(
 /// Checks the payload root a strategy that reads one depends on, and answers it.
 ///
 /// Answers `None` for a tool that declares no payload entries: there is nothing
-/// to stage, and a launcher or a builtin names its own executable. A tool that
-/// does declare entries gets the root the document recorded, checked before the
+/// to stage, because a builtin runs in process. A tool that does declare entries
+/// gets the root the document recorded, checked before the
 /// step runs rather than after: a missing root that surfaced as "command not
 /// found" would send the reader to the tool instead of to the document.
 ///

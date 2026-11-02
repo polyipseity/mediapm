@@ -257,7 +257,7 @@ pub(super) fn normalize_optional_text(value: Option<&str>) -> Option<String> {
 /// Resolves ffmpeg executable path for internal tagger operations.
 ///
 /// Managed sync injects a host-specific relative executable path through
-/// `MEDIA_TAGGER_FFMPEG_BIN_ENV` so internal launchers can run without relying
+/// `MEDIA_TAGGER_FFMPEG_BIN_ENV` so the internal ffmpeg calls can run without relying
 /// on ambient PATH state.
 pub(super) fn resolve_ffmpeg_executable() -> String {
     resolve_ffmpeg_executable_from_configured_path(

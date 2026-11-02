@@ -283,10 +283,10 @@ async fn regression_skip_path_registers_managed_tool() {
 
 /// Runs one `media-tagger` reconcile pass and hands back what it wrote.
 ///
-/// `media-tagger` is the fixture tool because its provider is a builtin
-/// launcher: a resolve needs neither network nor a seeded download cache, yet
-/// the launcher it generates is a real payload, so the pass reaches the fetch
-/// branch instead of the no-payload one.
+/// `media-tagger` is the fixture tool because it is a payload-free builtin: a
+/// resolve needs neither network nor a seeded download cache. A test that needs
+/// a recorded content map hands one in through `spec_content_map` instead of
+/// relying on a provider that produces one.
 ///
 /// The document is filed under `{name}@{hash}` the way a real pass files it, and
 /// `pinned_vcs_hash` is the field the user pins, because `vcs_hash` is what this

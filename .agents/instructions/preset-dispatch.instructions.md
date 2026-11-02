@@ -18,7 +18,7 @@ Case-insensitive routing to per-tool `apply()` functions:
 | `yt-dlp`       | `yt_dlp.rs`       | URL-based command, subtitle/thumbnail outputs, format selectors |
 | `deno`         | `deno.rs`         | Deno runtime command with permissions                           |
 | `rsgain`       | `rsgain.rs`       | ReplayGain analysis command, single-track mode                  |
-| `media-tagger` | `media_tagger.rs` | Native builtin tagging command, CAA provider config             |
+| `media-tagger` | not routed | the tagger is a host builtin mediapm runs in-process: its spec comes from `crate::builtins::host_builtin_tool_spec()`, and `media_tagger.rs` holds only the `dependency_types()` the sync gates on |
 | `sd`           | `sd.rs`           | Stable Diffusion command, model paths                           |
 
 Each preset builds:

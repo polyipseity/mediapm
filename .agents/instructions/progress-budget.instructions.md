@@ -70,12 +70,12 @@ The outer phase loop owns the `MultiItemBudget` and creates one item per tracked
 budget = MultiItemBudget::with_capacity(sources.len())
 for src in sources: est = src.expected_size.or(size_hint_bytes).unwrap_or(0) budget.add_item(est)
 
-for (idx, source) in sources: match source.producer: Fetch { urls }: if cache hit: budget.set_total(idx, cached.len()) budget.advance(idx, cached.len()) else: budget.set_total(idx, estimate) fetch_bytes_from_candidates(urls, ..., &budget, idx, ...) # Inside fetch (per chunk): #   budget.set_total(idx, content_length_estimate) #   budget.advance(idx, chunk.len()) #   cb(aggregate snapshot)  ← fires after EACH chunk GenerateLauncher { .. }: budget.set_total(idx, launcher_size) budget.advance(idx, launcher_size)
+for (idx, source) in sources: match source.producer: Fetch { urls }: if cache hit: budget.set_total(idx, cached.len()) budget.advance(idx, cached.len()) else: budget.set_total(idx, estimate) fetch_bytes_from_candidates(urls, ..., &budget, idx, ...) # Inside fetch (per chunk): #   budget.set_total(idx, content_length_estimate) #   budget.advance(idx, chunk.len()) #   cb(aggregate snapshot)  ← fires after EACH chunk
 
-    # Per-source callback (cached/launcher: only here; fetch: in addition to per-chunk) cb(ProviderProgressSnapshot { phase: Fetch, items: (idx + 1, total),        # (completed_items, total_items) bytes: budget.aggregate(),       # (sum_pos, sum_total) })
+    # Per-source callback (cached: only here; fetch: in addition to per-chunk) cb(ProviderProgressSnapshot { phase: Fetch, items: (idx + 1, total),        # (completed_items, total_items) bytes: budget.aggregate(),       # (sum_pos, sum_total) })
 ```
 
-`fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx` + `progress_cb`; during download it calls `budget.set_total` + `budget.advance` per chunk and fires the aggregate callback after each. Cached/launcher sources advance in one step, covered by the end-of-source callback.
+`fetch_bytes_from_candidates` receives `&MultiItemBudget` + `item_idx` + `progress_cb`; during download it calls `budget.set_total` + `budget.advance` per chunk and fires the aggregate callback after each. A cached source advances in one step, covered by the end-of-source callback.
 
 #### Fetch phase progress granularity
 
@@ -135,7 +135,7 @@ prn_bar.finish_success()
 
 ### Process phase loop (`process_tool_sources`)
 
-Archive sources use **2 budget items** (decompress + compress); binary/launcher sources use **1 item** (CAS import).
+Archive sources use **2 budget items** (decompress + compress); binary sources use **1 item** (CAS import).
 
 ```text
 total_items = sum(2 if is_archive(source) else 1 for source in entries)
