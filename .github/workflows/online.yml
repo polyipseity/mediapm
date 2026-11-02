@@ -68,10 +68,18 @@ jobs:
           MEDIAPM_RUN_ONLINE_SYNC=1 cargo --locked run --all-features -p mediapm
           --example mediapm_demo_online
 
+      # Both ignored runs select the `online` nextest profile
+      # (`.config/nextest.toml`). Its `network` group serializes them and bounds
+      # each one at 30 minutes, because a cold runner provisioning every managed
+      # tool's payload for every OS slot, plus a video, emits no test output for
+      # minutes: under the local-run budget that silence is killed as a failure
+      # and reported as a defect in this repository rather than in the upstream.
+      # The job keeps its own 60-minute timeout as the outer bound; the demo step
+      # above stays outside nextest and keeps the example's own watchdog.
       - name: Run the YouTube regression against the real upstream
         if: inputs.test == 'youtube'
-        run: cargo --locked test-pkg mediapm -- --ignored youtube_regression
+        run: cargo --locked test-pkg mediapm --profile online -- --ignored youtube_regression
 
       - name: Run the all-platform twin against the real upstream hosts
         if: inputs.test == 'all_platform'
-        run: cargo --locked test-pkg mediapm -- --ignored all_platform
+        run: cargo --locked test-pkg mediapm --profile online -- --ignored all_platform

@@ -43,6 +43,28 @@ fail-fast = false
 retries = 2
 slow-timeout = { period = "15s", terminate-after = 120 }
 
+# ── Dispatch profile (the manual real-upstream job) ────────────────────
+# Selected only by `.github/workflows/online.yml`, whose inputs reach real
+# upstreams from a cold runner: the workspace is built from scratch, every
+# managed tool's payload is provisioned for every OS slot, and a video is
+# downloaded. None of that lands on a test's output pipe, so `default`'s
+# budget kills a healthy test for the runner's pace and reports it as a
+# defect. No fail-fast, so a run still reports every subject it was given; no
+# retries, because a real-upstream failure is the result and a retry would
+# turn an upstream's answer into a pass. `inherits` keeps the default
+# profile's leak detection; this profile's override comes last in the network
+# section below, and nextest applies the last matching override, so the
+# dispatch job's subjects get the longer budget.
+[profile.online]
+inherits = "default"
+fail-fast = false
+retries = 0
+# `terminate-after` counts periods, not seconds: 30s x 60 = 30 minutes per
+# test. Sized for the provisioning work above rather than for a local run, and
+# still inside the job's 60-minute timeout, so nextest names the test it killed
+# instead of the runner cancelling the job mid-step.
+slow-timeout = { period = "30s", terminate-after = 60 }
+
 # ── Network-heavy test serialization & timeout ─────────────────────────
 # Demo examples and the all_platform integration tests each download the full
 # managed-tool set (ffmpeg ~163M, etc.) into a fresh empty cache. 3-7 running in
@@ -53,6 +75,14 @@ slow-timeout = { period = "15s", terminate-after = 120 }
 # Non-network tests in these binaries are fast and just join the group.
 # terminate-after = 600 MUST stay equal to DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS in
 # src/mediapm/examples/mediapm_demo_online.rs (watchdog and runner are synced).
+# That equality binds `default` and `ci`, the profiles the demo is run under
+# locally and in CI. `profile.online` is exempt on purpose: the dispatch job
+# runs the demo as the example binary (`cargo run --example
+# mediapm_demo_online`), so the watched run is the example's own watchdog and
+# not a nextest test paired with the runner's budget. The online budget bounds
+# the two ignored twins, which carry no in-process watchdog and whose work
+# depends on a cold runner's download pace, so it is sized for that work
+# instead of mirroring the demo's constant.
 [test-groups]
 network = { max-threads = 1 }
 
@@ -65,3 +95,12 @@ slow-timeout = { period = "60s", terminate-after = 600 }
 filter = 'binary(mediapm_demo) or binary(mediapm_demo_online) or test(all_platform)'
 test-group = 'network'
 slow-timeout = { period = "60s", terminate-after = 600 }
+
+# Every subject of the dispatch job: the demo binaries with their siblings in
+# `default`/`ci`, plus the YouTube twin `test(all_platform)` does not match.
+# One group across profiles keeps the twins serialized even though the workflow
+# runs them in separate steps — they share the job's bandwidth.
+[[profile.online.overrides]]
+filter = 'binary(mediapm_demo) or binary(mediapm_demo_online) or test(all_platform) or test(youtube_regression)'
+test-group = 'network'
+slow-timeout = { period = "30s", terminate-after = 60 }
