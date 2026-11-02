@@ -22,9 +22,12 @@
 //!   an event log the moment it runs — so an absent log is positive evidence
 //!   that nothing executed, rather than the absence of an assertion;
 //! - the `conductor` binary's own case — an empty registry, the one `cli.rs`
-//!   passes — refuses a document naming `media-tagger` with the exact sentence
-//!   the CLI docs state, and the recording progress group holds only the overall
-//!   bar its caller created, so no step bar was added before the refusal.
+//!   passes — refuses a document naming `media-tagger` with the production
+//!   refusal sentence, pinned verbatim by the test below. No doc states that
+//!   sentence: `cli.rs` states the rule and `AGENTS.md` paraphrases it, so the
+//!   test is the only place the wording is asserted. The recording progress
+//!   group holds only the overall bar its caller created, so no step bar was
+//!   added before the refusal.
 //!
 //! The static builtins are untouched by any of this: a host id may not shadow
 //! one (refused at registration, unit-tested beside the registry), so a run
@@ -374,7 +377,11 @@ async fn strict_a_document_naming_media_tagger_is_refused_at_run_start() {
         "registers; the host must register a host builtin under each of those ids (registered ",
         "host builtins: none)",
     );
-    assert_eq!(error.to_string(), expected, "the refusal is the sentence the CLI docs state");
+    assert_eq!(
+        error.to_string(),
+        expected,
+        "the refusal is the sentence the run-start check writes"
+    );
     assert_eq!(
         tracker.ops(),
         vec![ProgressOp::AddBar { total: 1, label: "workflow".to_string() }],

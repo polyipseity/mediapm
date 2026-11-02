@@ -496,6 +496,16 @@ async fn two_step_same_level_success_progress_ops() {
 /// the overall bar. With `pool_size=2`, the third step cannot dispatch until
 /// a worker frees; it takes worker-0's slot the moment s1 settles, so its
 /// dispatch/terminal counts advance to 2.
+///
+/// Recorded flaky under load on 2026-11-02. It was not reproduced: 557
+/// single-test runs under six concurrent full-suite runs, across three
+/// attempts, produced no failure, so there is no failing line to quote. The
+/// suspicion is that the assertion below pins a whole op sequence, the
+/// per-worker dispatch ops included, while the free-worker pool hands a
+/// same-level step to whichever worker settles first — so a run where s2
+/// settles first can order the third step's ops differently. Reopen only with
+/// evidence: capture the first op line that differs from the expected
+/// sequence, and prefer asserting the tally over the screen.
 #[tokio::test]
 async fn three_step_same_level_progress_ops() {
     fix_worker_pool_size();

@@ -152,8 +152,9 @@ pub(crate) struct StepExecutionRequest {
     /// steps are never visible, so a cache probe depends only on the step's
     /// own dependency closure — not on dispatch timing.
     pub state_snapshot: Arc<ConductorState>,
-    /// Absolute directory that directly contains the outermost conductor
-    /// configuration file used for this run.
+    /// Directory that directly contains the outermost conductor configuration
+    /// file used for this run. Absolute whenever `std::path::absolute` resolves
+    /// it; an empty root is handed on empty.
     ///
     /// Builtins resolve relative path values against this directory.
     pub outermost_config_dir: PathBuf,

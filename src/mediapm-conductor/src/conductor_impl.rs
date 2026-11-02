@@ -1008,9 +1008,13 @@ fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
 /// document falls back to `conductor_dir`, the root the discovered paths hang
 /// off.
 ///
-/// The result is absolute: that is the field's contract, and the mediapm
-/// default root (`--root .`) yields `./mediapm.conductor.ncl`, whose parent is
-/// a `CurDir`-only path that would otherwise be carried through unchanged.
+/// The result is absolute whenever `std::path::absolute` resolves it: that is
+/// the field's contract, and the mediapm default root (`--root .`) yields
+/// `./mediapm.conductor.ncl`, whose parent is a `CurDir`-only path that would
+/// otherwise be carried through unchanged. Absolutization is best effort —
+/// `unwrap_or` keeps the input when it fails — and the input it refuses is an
+/// empty directory, so a run whose root is the empty string (or a document
+/// path with no parent component) hands on an empty path.
 fn outermost_config_dir(config_paths: &[PathBuf], conductor_dir: &Path) -> PathBuf {
     let dir = config_paths
         .first()

@@ -38,10 +38,11 @@ pub(crate) enum ConductorMessage {
         unified: UnifiedNickelDocument,
         /// Current orchestration state (cloned, actor owns its copy).
         state: ConductorState,
-        /// Absolute directory that directly contains the outermost document
-        /// this run loads. Carried with the run because it is derived from the
-        /// documents the caller loaded, so the actor cannot re-derive it from
-        /// what it holds.
+        /// Directory that directly contains the outermost document this run
+        /// loads. Absolute whenever `std::path::absolute` resolves it; an empty
+        /// root is handed on empty. Carried with the run because it is derived
+        /// from the documents the caller loaded, so the actor cannot re-derive
+        /// it from what it holds.
         outermost_config_dir: PathBuf,
         /// Reply channel (returns summary + updated state).
         reply: RpcReplyPort<Result<(RunSummary, ConductorState), ConductorError>>,

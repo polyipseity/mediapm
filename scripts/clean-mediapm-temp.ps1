@@ -80,7 +80,9 @@ function Clear-ReadOnlyAttributes {
 # exhausts it and the interpreter dies with `Stack overflow.`, leaving no verdict
 # for any path. This walk records each directory it opens and removes them in
 # reverse afterwards (leaves first, the root last), so depth costs heap and the
-# removal is bounded by the platform's path limit instead of the stack budget.
+# removal is bounded by the platform's path limit instead of the stack budget; a
+# path past that limit is reported (`failed to remove:`) rather than silently
+# skipped.
 #
 # Every unlink and every directory removal stays a `Remove-Item` call: a host
 # that shadows the cmdlet must see every removal, and a tree the sweep cannot
