@@ -4,9 +4,9 @@ Three-phase provisioning pipeline: **resolve → fetch → process**. Each file 
 
 Phases:
 
-1. **Resolve** — Select the correct source URL/launcher for the target OS
-2. **Fetch** — Download bytes, extract archives, generate launcher scripts
-3. **Process** — Import into CAS, create content maps, build sandbox payload
+1. **Resolve** — Select the per-tool source descriptors, one per OS slot, each carrying its URL candidates
+2. **Fetch** — Download the bytes of every source, trying each source's candidates in order
+3. **Process** — Extract archives, import into CAS, create content maps, build sandbox payload
 
 Dispatched tool IDs: `sd`, `echo`, `archive`, `export`, `fs`, `import`.
 

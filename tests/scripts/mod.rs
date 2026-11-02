@@ -701,6 +701,79 @@ fn assert_deep_chain_removed(script_name: &str, run: impl Fn(&Path, &Path, &[&st
     assert!(!root.exists(), "the deep chain survived the sweep");
 }
 
+/// Seeds a `mediapm-*` symlink to a directory outside the sweep root and
+/// asserts the sweep neither follows nor removes it.
+///
+/// The link's target sits beside the sweep root, not inside it: a sweep that
+/// walks through the link unlinks files the janitor does not own, so the
+/// target's contents surviving the run is the safety property this pins. Both
+/// twins enumerate real directories only — `find` compares the entry's own type,
+/// and `Get-ChildItem -Directory` reports a link as a container, which the pwsh
+/// sweep has to skip — so the link is not a swept path and both runs report the
+/// empty sweep.
+#[cfg(unix)]
+fn assert_root_symlink_not_followed(
+    script_name: &str,
+    run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome,
+) {
+    let sandbox = Sandbox::new();
+    let scope = sandbox.path.join("scope");
+    fs::create_dir_all(&scope).expect("create janitor scope dir");
+    let target = sandbox.path.join("symlink-target");
+    fs::create_dir_all(target.join("nested")).expect("create the link target");
+    fs::write(target.join("keep-file"), b"keep").expect("seed the link target's file");
+    fs::write(target.join("nested").join("keep-nested"), b"keep")
+        .expect("seed the link target's nested file");
+    let link = scope.join(FAKE_MEDIAPM_DIRS[0]);
+    std::os::unix::fs::symlink(&target, &link).expect("seed the mediapm-* symlink");
+    let janitor = script_path(script_name);
+
+    let dry = run(&janitor, &scope, &["--dry-run"]);
+    assert!(dry.status.success(), "dry-run failed: {}", dry.stderr);
+    assert!(
+        dry.stdout.contains("no mediapm temp directories found"),
+        "the dry run counted a symlink as a swept directory: {}",
+        dry.stdout
+    );
+
+    let sweep = run(&janitor, &scope, &[]);
+    assert!(sweep.status.success(), "sweep failed: {}", sweep.stderr);
+    assert!(
+        sweep.stdout.contains("no mediapm temp directories found"),
+        "the sweep counted a symlink as a swept directory: {}",
+        sweep.stdout
+    );
+    assert!(
+        target.join("keep-file").is_file(),
+        "the sweep followed the symlink and unlinked its target's file: {}",
+        sweep.stdout
+    );
+    assert!(
+        target.join("nested").join("keep-nested").is_file(),
+        "the sweep followed the symlink and unlinked its target's nested file: {}",
+        sweep.stdout
+    );
+    assert!(
+        fs::symlink_metadata(&link).is_ok(),
+        "the sweep removed the symlink itself: {}",
+        sweep.stdout
+    );
+}
+
+/// The sh twin never treats a `mediapm-*` symlink as a swept path: its `find`
+/// tests the entry's own type, so a link is not a directory there.
+#[cfg(unix)]
+#[test]
+fn bash_janitor_leaves_a_root_symlink_alone() {
+    if !skip_unless("bash", &["--version"]) {
+        return;
+    }
+    let rm = path_with_clearing_rm();
+    assert_root_symlink_not_followed("clean-mediapm-temp.sh", |script, sandbox, flags| {
+        run_script("bash", script, sandbox, flags, &rm)
+    });
+}
+
 #[test]
 fn bash_janitor_removes_a_deep_chain() {
     if !skip_unless("bash", &["--version"]) {
@@ -768,6 +841,18 @@ fn pwsh_janitor_removes_a_deep_chain() {
         return;
     }
     assert_deep_chain_removed("clean-mediapm-temp.ps1", run_pwsh);
+}
+
+/// Same shape as [`bash_janitor_leaves_a_root_symlink_alone`]: `-Directory`
+/// reports a link to a directory as a container, so the pwsh twin has to skip
+/// links explicitly to stay on the same set of paths as the sh twin.
+#[cfg(unix)]
+#[test]
+fn pwsh_janitor_leaves_a_root_symlink_alone() {
+    if !skip_unless("pwsh", &["--version"]) {
+        return;
+    }
+    assert_root_symlink_not_followed("clean-mediapm-temp.ps1", run_pwsh);
 }
 
 /// Runs a janitor self-test, skipping when its interpreter is absent.

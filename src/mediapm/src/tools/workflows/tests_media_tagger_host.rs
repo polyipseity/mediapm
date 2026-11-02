@@ -25,7 +25,6 @@ use crate::config::MediaPmDocument;
 use crate::config::MediaRuntimeStorage;
 use crate::config::output_types::OutputVariantValue;
 use crate::config::source_types::{MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue};
-use crate::paths::MediaPmPaths;
 use crate::tools::workflows::media_tagger::build_media_tagger_spec;
 use crate::tools::workflows::{build_media_workflow_plan_with_limits, managed_workflow_name};
 
@@ -280,10 +279,8 @@ async fn run_tagging_step() -> String {
     )
     .expect("write the conductor document");
 
-    let paths = MediaPmPaths::from_root(workspace.path());
-    let options =
-        conductor_run_workflow_options(&paths, &MediaRuntimeStorage::default(), None, None)
-            .expect("the host builtins must register");
+    let options = conductor_run_workflow_options(&MediaRuntimeStorage::default(), None, None)
+        .expect("the host builtins must register");
     assert!(
         options.host_builtins.get("media-tagger").is_some(),
         "every run must carry the media-tagger runner, or a library that tags cannot sync",

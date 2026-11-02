@@ -543,12 +543,13 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
     }
 }
 
-/// Builds conductor runtime options from resolved mediapm paths.
+/// Builds the conductor runtime options every mediapm run starts with.
 ///
 /// Every run mediapm starts carries the builtin runners this crate supplies, so
 /// a workflow step naming one runs in-process. The registry is the single place
 /// that assembly happens: a run started any other way would reach the run-start
 /// check without an implementation for a builtin its own workflow names.
+/// `runtime_storage` supplies the retry policy the workspace configured.
 ///
 /// # Errors
 ///
@@ -556,7 +557,6 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
 /// (a duplicate id). The list is fixed at compile time, so this reports a wiring
 /// bug in this crate rather than a condition a run can recover from.
 pub(crate) fn conductor_run_workflow_options(
-    _paths: &MediaPmPaths,
     runtime_storage: &MediaRuntimeStorage,
     progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn mediapm_utils::progress::ProgressBarApi>>,

@@ -85,8 +85,9 @@ function Clear-ReadOnlyAttributes {
 # Every unlink and every directory removal stays a `Remove-Item` call: a host
 # that shadows the cmdlet must see every removal, and a tree the sweep cannot
 # empty must fail this path rather than pass silently. A symlink to a directory
-# is a leaf here, because `Remove-Item -Recurse` removes the link instead of
-# following it into the target.
+# is a leaf: unlinking it removes the link and leaves its target alone. The
+# sweep skips a `mediapm-*` link before it reaches this walk, so the path
+# handed in here is always a real directory.
 function Remove-TreeIteratively {
     param(
         [Parameter(Mandatory = $true)]
@@ -183,8 +184,15 @@ if (-not $dryRun) {
 }
 
 # Single mediapm-* glob at depth 1 under the OS temp dir.
+#
+# A symlink named mediapm-* is not a swept path. `-Directory` reports a link to
+# a directory as a container, and Remove-TreeIteratively walks the path it is
+# handed, so sweeping a link would unlink the link target's contents: a tree
+# outside the sweep, which the janitor does not own. The sh twin never sees such
+# a link, because `find -type d` tests the entry's own type. Skipping links here
+# keeps the twins on the same set of paths, in a dry run and in a real one.
 foreach ($dir in Get-ChildItem -LiteralPath $tempRoot -Directory -Force) {
-    if ($dir.Name -like 'mediapm-*') {
+    if ($dir.Name -like 'mediapm-*' -and -not $dir.LinkType) {
         Remove-JunkDirectory -Path $dir.FullName
     }
 }
