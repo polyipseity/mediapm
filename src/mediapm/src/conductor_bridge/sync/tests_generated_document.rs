@@ -319,3 +319,31 @@ fn regression_a_test_only_builtin_entry_never_reaches_a_generated_document() {
         );
     }
 }
+
+/// The payload-free arm reads the published set rather than naming an id of its
+/// own.
+///
+/// The loop ties the two halves together: every id `HOST_BUILTIN_IDS` publishes
+/// must get its own definition here, so an id added to the set without a
+/// definition fails this test instead of reaching a document as a command-less
+/// executable nothing can run. The second assertion is the other side of the
+/// boundary — an id outside the set is refused the host-builtin treatment and
+/// keeps the command-less executable shape a payload-free tool that is not a
+/// builtin gets.
+#[test]
+fn strict_payload_free_tool_spec_refuses_an_id_outside_the_published_set() {
+    for &id in crate::builtins::HOST_BUILTIN_IDS {
+        let spec = payload_free_tool_spec(id);
+        assert!(
+            matches!(&spec.kind, ToolKindSpec::Builtin { builtin_id } if builtin_id.eq_ignore_ascii_case(id)),
+            "a published host builtin id must get its own definition, not a command-less \
+             executable: {id} -> {spec:?}",
+        );
+    }
+
+    let outside = payload_free_tool_spec("not-a-published-builtin");
+    assert!(
+        matches!(&outside.kind, ToolKindSpec::Executable { command, .. } if command.is_empty()),
+        "an id outside the published set keeps the command-less executable shape: {outside:?}",
+    );
+}

@@ -171,6 +171,11 @@ impl HostBuiltins {
     ///
     /// Every one is host-only: [`HostBuiltins::new`] refuses an id a static
     /// builtin owns, so nothing here can be in [`ALL_BUILTINS`](crate::tools::ALL_BUILTINS).
+    ///
+    /// [`ensure_document_builtins_run`] is today's only reader: it lists the
+    /// ids a run could dispatch beside the ids the document names but nothing
+    /// supplies, so a reader of the run-start error can tell which side is
+    /// missing an entry.
     pub fn host_only_ids(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
     }

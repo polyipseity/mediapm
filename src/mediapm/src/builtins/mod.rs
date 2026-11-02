@@ -88,17 +88,24 @@ pub(crate) fn host_builtins() -> Result<HostBuiltins, ConductorError> {
 /// Returns the tool definition of a builtin mediapm's host supplies, if
 /// `tool_id` names one.
 ///
+/// [`HOST_BUILTIN_IDS`] is the set this answers for, and the only place the
+/// host builtin ids are written down: the lookup refuses an id outside it, so
+/// the published set and the definition it writes cannot name different ids.
 /// A host builtin has no payload, so the sync has nothing to fetch and no spec
 /// preset to build from a content map: its definition is the one the
 /// synthesizer writes, and the sync asks for it by the tool id the library
 /// declared.
 #[must_use]
 pub(crate) fn host_builtin_tool_spec(tool_id: &str) -> Option<mediapm_conductor::ToolSpec> {
-    match tool_id {
-        #[cfg(feature = "media-tagger")]
-        n if n.eq_ignore_ascii_case(MEDIA_TAGGER_BUILTIN_ID) => {
-            Some(crate::tools::workflows::media_tagger::build_media_tagger_spec().0)
-        }
-        _ => None,
+    if !HOST_BUILTIN_IDS.iter().any(|id| id.eq_ignore_ascii_case(tool_id)) {
+        return None;
     }
+    // One arm per id the published set carries. A definition cannot be derived
+    // from the id alone, so the builder is per-id code; the guard above is what
+    // keeps this from becoming a second list of ids.
+    #[cfg(feature = "media-tagger")]
+    if tool_id.eq_ignore_ascii_case(MEDIA_TAGGER_BUILTIN_ID) {
+        return Some(crate::tools::workflows::media_tagger::build_media_tagger_spec().0);
+    }
+    None
 }

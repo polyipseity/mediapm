@@ -4,6 +4,13 @@
 //! it parses with lives in `mediapm-conductor-cli` and is re-exported below: a
 //! build script cannot depend on the package it builds, so a definition that
 //! lived here would be unreachable from this package's own build script.
+//!
+//! The binary is its own host and registers no host builtins, so a document
+//! naming a builtin id this build does not ship is refused at run start, before
+//! any step executes, with an error naming the registration it is missing. A
+//! run also resolves a relative `import`/`export` path value against the
+//! directory of the outermost conductor document it loaded, not the process
+//! working directory.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

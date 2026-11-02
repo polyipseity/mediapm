@@ -814,12 +814,22 @@ fn apply_entry_outcome(
 
 /// Returns the definition the entry of a payload-free tool carries.
 ///
-/// A tool the host supplies a runner for answers for itself
-/// ([`crate::builtins::host_builtin_tool_spec`]): a builtin id and the runtime
-/// that definition declares. Any other payload-free tool keeps the shape the arm
-/// always wrote — a command-less executable — which declares itself pure.
+/// The payload-free set is the one mediapm publishes
+/// ([`crate::builtins::is_payload_free_builtin_id`] over
+/// [`crate::builtins::HOST_BUILTIN_IDS`] plus `import`), and this arm reads it
+/// instead of naming an id of its own, so the set the sync arm and the pre-run
+/// check read cannot drift apart. A tool the host supplies a runner for answers
+/// for itself ([`crate::builtins::host_builtin_tool_spec`]): a builtin id and
+/// the runtime that definition declares. Any other payload-free tool keeps the
+/// shape the arm always wrote — a command-less executable — which declares
+/// itself pure.
 fn payload_free_tool_spec(tool_id: &str) -> ToolSpec {
-    crate::builtins::host_builtin_tool_spec(tool_id).unwrap_or_else(|| ToolSpec {
+    if crate::builtins::is_payload_free_builtin_id(tool_id)
+        && let Some(spec) = crate::builtins::host_builtin_tool_spec(tool_id)
+    {
+        return spec;
+    }
+    ToolSpec {
         version: None,
         name: tool_id.to_string(),
         kind: mediapm_conductor::ToolKindSpec::Executable {
@@ -831,7 +841,7 @@ fn payload_free_tool_spec(tool_id: &str) -> ToolSpec {
         default_inputs: BTreeMap::new(),
         outputs: BTreeMap::new(),
         runtime: ToolRuntime::default(),
-    })
+    }
 }
 
 /// Returns whether every hash in a string content map is present in `cas`.

@@ -327,3 +327,54 @@ async fn strict_an_unregistered_host_builtin_fails_the_run_before_any_step() {
     );
     tc.shutdown().await;
 }
+
+/// The `mediapm-conductor` binary registers no host builtins, so a document
+/// naming one is refused at run start with the sentence its CLI docs state.
+///
+/// `media-tagger` is the live case: it is the id mediapm's own host supplies a
+/// runner for, so a document may legitimately name it, and this binary is the
+/// one that cannot dispatch it. The empty registry is what the binary passes,
+/// and the whole sentence is asserted rather than a substring, because the
+/// sentence is the user-facing contract. The recording progress group is the
+/// second half: the refusal precedes the first step, so the group records no
+/// step bar — only the overall row the caller created before the run.
+#[cfg(feature = "progress")]
+#[tokio::test]
+async fn strict_a_document_naming_media_tagger_is_refused_at_run_start() {
+    use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
+
+    let tc = TestConductor::new();
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("media-tagger".to_string(), host_tool("media-tagger"))]),
+        vec![workflow_with_steps("default", vec![capturing_step("tag", "media-tagger")])],
+    ));
+
+    let (tracker, overall) = RecordingProgressTracker::with_overall("workflow", 1);
+    let error = tc
+        .conductor()
+        .run_workflow(
+            "default",
+            RunWorkflowOptions {
+                host_builtins: HostBuiltins::default(),
+                progress_group: Some(Arc::new(tracker.clone())),
+                overall_bar: Some(Arc::new(overall)),
+                ..RunWorkflowOptions::default()
+            },
+        )
+        .await
+        .expect_err("the conductor binary supplies no runner for media-tagger");
+
+    let expected = concat!(
+        "cannot dispatch builtin ids this run has no runner for: tool 'media-tagger' dispatches ",
+        "builtin id 'media-tagger', which this conductor build does not ship and no host runner ",
+        "registers; the host must register a host builtin under each of those ids (registered ",
+        "host builtins: none)",
+    );
+    assert_eq!(error.to_string(), expected, "the refusal is the sentence the CLI docs state");
+    assert_eq!(
+        tracker.ops(),
+        vec![ProgressOp::AddBar { total: 1, label: "workflow".to_string() }],
+        "the refusal precedes every step, so the progress group saw no step bar",
+    );
+    tc.shutdown().await;
+}
