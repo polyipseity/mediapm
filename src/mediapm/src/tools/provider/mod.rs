@@ -876,8 +876,10 @@ pub(crate) async fn resolve_tool_fetch(
                     canonical_version: canonical.clone(),
                     metadata_cached: false,
                     metadata_fetch_count: 0,
-                    // WHY: media-tagger is a builtin launcher shipped inside
-                    // mediapm; there is no upstream tagged release to resolve.
+                    // WHY: media-tagger is a host builtin shipped inside
+                    // mediapm — its tagging step dispatches in-process and its
+                    // entry carries the `Builtin` kind with no payload — so
+                    // there is no upstream tagged release to resolve.
                     resolved_tag: None,
                     resolved_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                     resolved_vcs_hash: Some(canonical),
@@ -1046,8 +1048,8 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            if *name == "media-tagger" || *name == "import" {
-                // media-tagger is a builtin launcher with 3 GenerateLauncher sources.
+            if *name == "import" {
+                // import is a conductor builtin launcher with 3 GenerateLauncher sources.
                 assert_eq!(fetch.sources.len(), 3, "tool {name}: should have 3 sources");
                 for source in &fetch.sources {
                     assert!(
@@ -1055,6 +1057,16 @@ mod tests {
                         "tool {name}: source should be GenerateLauncher"
                     );
                 }
+            } else if *name == "media-tagger" {
+                // A host builtin: mediapm runs the tagger in-process, so the
+                // provider has nothing to fetch and nothing to generate. The
+                // identity it reports is what the sync records and what makes
+                // an unchanged library skippable on the next pass.
+                assert!(
+                    fetch.sources.is_empty(),
+                    "tool {name}: a host builtin has no payload, got {:?}",
+                    fetch.sources
+                );
             } else {
                 assert!(!fetch.sources.is_empty(), "tool {name}: should have at least one source");
             }

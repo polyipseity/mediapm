@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use mediapm_conductor::NickelDocument;
 
 use super::ffmpeg::build_ffmpeg_spec;
+#[cfg(feature = "media-tagger")]
 use super::media_tagger::build_media_tagger_spec;
 use super::rsgain::build_rsgain_spec;
 use super::yt_dlp::build_yt_dlp_spec;
@@ -48,18 +49,25 @@ fn os_exec_paths(tool: &str) -> BTreeMap<String, String> {
 #[test]
 fn impure_classification_matches_every_tool_builder() {
     let (_spec, yt_dlp) = build_yt_dlp_spec(BTreeMap::new(), &os_exec_paths("yt-dlp"));
-    let (_spec, media_tagger) =
-        build_media_tagger_spec(BTreeMap::new(), &os_exec_paths("media-tagger"));
+    #[cfg(feature = "media-tagger")]
+    let (_spec, media_tagger) = build_media_tagger_spec();
     let (_spec, rsgain) = build_rsgain_spec(BTreeMap::new(), &os_exec_paths("rsgain"));
     let (_spec, ffmpeg) =
         build_ffmpeg_spec(BTreeMap::new(), &os_exec_paths("ffmpeg"), FfmpegSlotLimits::default());
 
-    for (tool, runtime) in [
+    #[cfg_attr(
+        not(feature = "media-tagger"),
+        expect(unused_mut, reason = "no tagger case is pushed in a build without the feature")
+    )]
+    let mut cases = vec![
         (MediaStepTool::YtDlp, yt_dlp),
         (MediaStepTool::Ffmpeg, ffmpeg),
         (MediaStepTool::Rsgain, rsgain),
-        (MediaStepTool::MediaTagger, media_tagger),
-    ] {
+    ];
+    #[cfg(feature = "media-tagger")]
+    cases.push((MediaStepTool::MediaTagger, media_tagger));
+
+    for (tool, runtime) in cases {
         assert_eq!(
             runtime.impure,
             tool.is_impure(),

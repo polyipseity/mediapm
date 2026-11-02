@@ -195,22 +195,34 @@ async fn reconcile_prunes_old_tool_version_clears_content_map() {
         "new version key should exist after sync, keys: {:?}",
         doc.tools.keys().collect::<Vec<_>>()
     );
+    // The fresh entry is the bare id the host dispatches: a host builtin has
+    // no payload to file under a content hash, so the sync writes it under the
+    // tool's own name with an empty map and the builtin kind a step resolves.
     let new_spec = doc.tools.values().find(|s| s.name == "media-tagger").unwrap();
     assert!(
-        !new_spec.runtime.content_map.is_empty(),
-        "new version key should have non-empty content_map"
+        new_spec.runtime.content_map.is_empty(),
+        "a host builtin holds no payload, got {:?}",
+        new_spec.runtime.content_map
+    );
+    assert_eq!(
+        new_spec.kind,
+        ToolKindSpec::Builtin { builtin_id: "media-tagger".to_string() },
+        "the surviving entry names the runner, not a command",
     );
 }
 
 /// Runs one `media-tagger` reconcile pass and hands back its report.
 ///
 /// media-tagger is the fixture tool for the stale-seed tests because its
-/// provider is a builtin launcher: resolution needs neither network nor a
-/// seeded download cache, yet the launcher it generates is a real payload.
-/// The entry therefore reaches the `Fetched` outcome branch, which carries the
-/// name-match and the pruning this file is about. The no-payload branch takes a
-/// different route through the same pass, so a fixture that landed there would
-/// prove nothing about either.
+/// provider answers without network or a seeded download cache: the identity is
+/// mediapm's own build, and a host builtin has no payload to fetch. The entry
+/// therefore reaches the `FetchedNone` outcome branch, which still carries the
+/// registry record and the pruning this file is about — a tool that no longer
+/// holds a payload still has a document entry, a record and a directory to
+/// reconcile. The payload-bearing shape of the same trail is covered where a
+/// fetching tool is the fixture
+/// (`reconcile_retain_active_set_uses_conductor_tool_ids`, and
+/// `int::tool_sync`'s reprovision tests).
 async fn reconcile_media_tagger_latest(
     paths: &MediaPmPaths,
     state: &MediaPmState,
@@ -299,7 +311,7 @@ async fn reconcile_counts_identity_not_generated_doc_presence() {
         );
     }
     assert_eq!(
-        seeded.pruned_tools, 2,
+        seeded.pruned_tools, 1,
         "the seeded arm still prunes the stale key it replaced: {seeded:?}"
     );
 }
@@ -395,25 +407,31 @@ async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
         "the active key must be the fresh content hash, got {active_key}"
     );
     assert!(
-        !active_spec.runtime.content_map.is_empty(),
-        "the fresh key must carry the reprovisioned payload"
+        active_spec.runtime.content_map.is_empty(),
+        "a host builtin carries no payload, so the fresh entry has no content map"
+    );
+    assert_eq!(
+        active_spec.kind,
+        ToolKindSpec::Builtin { builtin_id: "media-tagger".to_string() },
+        "the fresh entry is the builtin the run dispatches to",
     );
     assert!(
         report.pruned_tools >= 1,
         "clearing and dropping the stale key counts as a prune: {report:?}"
     );
 
-    // The provisioned directory follows the same trail on disk.
+    // The provisioned directory follows the same trail on disk. A host builtin
+    // provisions nothing, so the directory the stale hash owned is removed and
+    // no replacement appears — the trail ends with the tool owning none.
     assert!(!stale_dir.exists(), "retain-only must remove the directory the stale hash owned");
     let provisioned: Vec<String> = std::fs::read_dir(&paths.tools_dir)
         .expect("read tools dir")
         .map(|entry| entry.expect("tools dir entry").file_name().to_string_lossy().into_owned())
         .filter(|name| name.starts_with("media-tagger@"))
         .collect();
-    assert_eq!(
-        provisioned.len(),
-        1,
-        "exactly one fresh directory is left for the tool: {provisioned:?}"
+    assert!(
+        provisioned.is_empty(),
+        "a payload-free tool owns no provisioned directory: {provisioned:?}"
     );
 }
 
@@ -608,5 +626,86 @@ async fn regression_a_generated_document_naming_an_unregistered_builtin_is_prune
     assert!(
         doc.tools.contains_key("echo@v1"),
         "only the stale entry went: the production builtins are still registered"
+    );
+}
+
+/// A sync writes `media-tagger`'s tool entry as a payload-free builtin.
+///
+/// The tool is a runner mediapm supplies for its own builtin id, so there is
+/// nothing to fetch and nothing to install: the entry carries no content map,
+/// no launcher and no command, and its kind names the builtin a step dispatches
+/// to. This is the shape the run-start check reads, so an entry carrying a
+/// command would be dispatched as a program instead.
+#[tokio::test]
+async fn a_sync_writes_the_host_builtin_entry_with_no_payload() {
+    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+    let paths = MediaPmPaths::from_root(tmp.path());
+
+    let report =
+        reconcile_media_tagger_latest(&paths, &MediaPmState::default(), cache_root.path()).await;
+    assert_eq!(
+        (report.tools_added, report.tools_updated, report.tools_skipped),
+        (1, 0, 0),
+        "the first pass has no record of the tool, so it adds it: {report:?}"
+    );
+
+    let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
+    let (key, spec) = find_active_tool_spec(&doc, "media-tagger")
+        .expect("the entry the sync wrote must resolve for a step that names the tool");
+    assert_eq!(key, "media-tagger", "a payload-free tool is filed under its bare id");
+    assert!(
+        spec.runtime.content_map.is_empty(),
+        "a host builtin holds no payload, got {:?}",
+        spec.runtime.content_map
+    );
+    assert_eq!(
+        spec.kind,
+        ToolKindSpec::Builtin { builtin_id: "media-tagger".to_string() },
+        "the entry must name the builtin id a runner answers for, not a launcher command",
+    );
+}
+
+/// The second sync keeps the entry the first one wrote.
+///
+/// The prune retains an entry whose bare name is a production builtin and drops
+/// one whose content map is empty, which is the rule that removes a managed
+/// tool this sync no longer wants. A host builtin is neither: its entry names no
+/// payload by design, so the same rule would delete it on the pass after the one
+/// that wrote it, and the workflow row naming the tool would stop resolving.
+#[tokio::test]
+async fn a_second_sync_keeps_the_host_builtin_entry() {
+    let tmp = mediapm_utils::temp::artifact_dir().unwrap();
+    let cache_root = mediapm_utils::temp::cache_dir().unwrap();
+    let paths = MediaPmPaths::from_root(tmp.path());
+
+    let first =
+        reconcile_media_tagger_latest(&paths, &MediaPmState::default(), cache_root.path()).await;
+    assert_eq!(first.tools_added, 1, "the first pass writes the entry: {first:?}");
+
+    // The second pass reads what the first wrote, as a real second sync does:
+    // the record the first pass made is the state it starts from.
+    let state =
+        MediaPmState { managed_tools: first.tool_records.clone(), ..MediaPmState::default() };
+    let second = reconcile_media_tagger_latest(&paths, &state, cache_root.path()).await;
+
+    let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
+    let (key, spec) = find_active_tool_spec(&doc, "media-tagger").expect(
+        "the entry must survive the pass after the one that wrote it, otherwise the tagging step stops resolving",
+    );
+    assert_eq!(key, "media-tagger");
+    assert!(
+        matches!(spec.kind, ToolKindSpec::Builtin { .. }),
+        "the surviving entry is still the builtin the run dispatches, got {:?}",
+        spec.kind
+    );
+    assert_eq!(
+        second.pruned_tools, 0,
+        "a pass over an unchanged library prunes nothing: {second:?}"
+    );
+    assert!(
+        !doc.tools.keys().any(|key| key.starts_with("media-tagger@")),
+        "no keyed entry may survive beside it, keys: {:?}",
+        doc.tools.keys().collect::<Vec<_>>()
     );
 }

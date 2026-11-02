@@ -1,16 +1,21 @@
 //! Media-tagger workflow step synthesis.
 //!
 //! Produces the conductor workflow steps for one `media-tagger` metadata step.
+//!
+//! The tagging step names a builtin instead of a program: it declares no command
+//! parts, and the tool definition [`build_media_tagger_spec`] builds carries the
+//! `media-tagger` builtin id, so the conductor dispatches it to the runner
+//! mediapm registers for that id (see
+//! [`MediaTaggerBuiltin`](crate::builtins::media_tagger::host::MediaTaggerBuiltin))
+//! rather than spawning a launcher.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use mediapm_conductor::{
-    InputBinding, NickelDocument, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec,
-    ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+    NickelDocument, OutputCaptureSpec, SaveMode, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
+    WorkflowStepSpec,
 };
-
-use mediapm_conductor::tools::helpers::build_os_conditional_selector;
 
 use crate::conductor_bridge::constants::{
     INPUT_CONTENT, INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS,
@@ -26,7 +31,6 @@ use super::ffmpeg::{
     ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_file_path,
     ffmpeg_output_path_input_name,
 };
-use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
 use super::yt_dlp_inputs::resolve_step_output_binding;
 use super::{
     AutoSaveContext, FfmpegSlotLimits, VariantProducer, media_step_id,
@@ -34,7 +38,17 @@ use super::{
 };
 
 /// Fixed sandbox output file path for media-tagger `FFmetadata` documents.
-const MEDIA_TAGGER_OUTPUT_FILE: &str = "metadata/output.ffmeta";
+///
+/// The tagging step captures it as a `file:` output and the host builtin writes
+/// it at the same sandbox-relative path, so the capture and the write cannot
+/// disagree about where the document lands.
+pub(crate) const MEDIA_TAGGER_OUTPUT_FILE: &str = "metadata/output.ffmeta";
+
+/// The builtin id `media-tagger` is dispatched by.
+///
+/// One spelling for the tool definition, the host runner that answers for it
+/// and the generated document's retention set.
+pub(crate) const MEDIA_TAGGER_BUILTIN_ID: &str = "media-tagger";
 
 /// Regex matching the apply step's single ffmpeg output file (slot 0).
 ///
@@ -42,83 +56,6 @@ const MEDIA_TAGGER_OUTPUT_FILE: &str = "metadata/output.ffmeta";
 /// apply step (synthesized here, not by the ffmpeg synthesizer) captures the
 /// output regardless of the container-override extension.
 const MEDIA_TAGGER_APPLY_OUTPUT_FILE_REGEX: &str = r"^output-0(?:[.][^/\\]+)?$";
-
-/// Managed input defaults every synthesized media-tagger step starts from.
-const MEDIA_TAGGER_INPUT_DEFAULTS: &[(&str, &str)] = &[
-    ("strict_identification", "true"),
-    ("write_all_tags", "true"),
-    ("write_all_images", "true"),
-    ("save_images_to_tags", "true"),
-    ("embed_only_one_front_image", "false"),
-    ("ca_providers", "caa_release,url_relationships,caa_release_group"),
-    ("caa_image_types", "all,-matrix/runout,-raw/unedited,-watermark"),
-    ("caa_image_size", "full"),
-    ("caa_approved_only", "false"),
-    ("preserve_images", "false"),
-    ("clear_existing_tags", "false"),
-    ("enable_tag_saving", "true"),
-    ("release_ars", "true"),
-    ("cover_art_slot_count", "16"),
-    ("acoustid_endpoint", "https://api.acoustid.org/v2/lookup"),
-    ("musicbrainz_endpoint", "https://musicbrainz.org/ws/2"),
-    ("caa_endpoint", "https://coverartarchive.org"),
-    ("cache_dir", ""),
-    ("cache_expiry_seconds", "86400"),
-];
-
-/// Per-input command-token shape: value booleans and scalars render as
-/// `--flag ${*inputs.x}` pairs so a configured `false` reaches the process.
-const MEDIA_TAGGER_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
-    ("acoustid_endpoint", TokenSpec::Pair("--acoustid-endpoint")),
-    ("musicbrainz_endpoint", TokenSpec::Pair("--musicbrainz-endpoint")),
-    ("caa_endpoint", TokenSpec::Pair("--caa-endpoint")),
-    ("cache_dir", TokenSpec::Pair("--cache-dir")),
-    ("cache_expiry_seconds", TokenSpec::Pair("--cache-expiry-seconds")),
-    ("strict_identification", TokenSpec::Pair("--strict-identification")),
-    ("write_all_tags", TokenSpec::Pair("--write-all-tags")),
-    ("write_all_images", TokenSpec::Pair("--write-all-images")),
-    ("save_images_to_tags", TokenSpec::Pair("--save-images-to-tags")),
-    ("embed_only_one_front_image", TokenSpec::Pair("--embed-only-one-front-image")),
-    ("ca_providers", TokenSpec::Pair("--ca-providers")),
-    ("caa_image_types", TokenSpec::Pair("--caa-image-types")),
-    ("caa_image_size", TokenSpec::Pair("--caa-image-size")),
-    ("caa_approved_only", TokenSpec::Pair("--caa-approved-only")),
-    ("preserve_images", TokenSpec::Pair("--preserve-images")),
-    ("clear_existing_tags", TokenSpec::Pair("--clear-existing-tags")),
-    ("enable_tag_saving", TokenSpec::Pair("--enable-tag-saving")),
-    ("release_ars", TokenSpec::Pair("--release-ars")),
-    ("cover_art_slot_count", TokenSpec::Pair("--cover-art-slot-count")),
-    ("recording_mbid", TokenSpec::Pair("--recording-mbid")),
-    ("release_mbid", TokenSpec::Pair("--release-mbid")),
-];
-
-/// Ordered option inputs a media-tagger step accepts, in template order.
-const MEDIA_TAGGER_OPTION_INPUTS: &[&str] = &[
-    "option_args",
-    "acoustid_endpoint",
-    "musicbrainz_endpoint",
-    "caa_endpoint",
-    "cache_dir",
-    "cache_expiry_seconds",
-    "strict_identification",
-    "write_all_tags",
-    "write_all_images",
-    "save_images_to_tags",
-    "embed_only_one_front_image",
-    "ca_providers",
-    "caa_image_types",
-    "caa_image_size",
-    "caa_approved_only",
-    "preserve_images",
-    "clear_existing_tags",
-    "enable_tag_saving",
-    "release_ars",
-    "cover_art_slot_count",
-    "recording_mbid",
-    "release_mbid",
-    "acoustid_api_key",
-    "enable_acoustid",
-];
 
 /// Synthesizes one media-tagger step as a metadata-fetch + ffmpeg-apply pair.
 ///
@@ -267,10 +204,10 @@ pub(crate) fn synthesize_media_tagger_step(
 ///
 /// `input_binding` is the source content binding resolved from the input
 /// producer; `ffmpeg_bin_for_metadata` seeds the `ffmpeg_bin` option when the
-/// step does not override it. List-style options (`INPUT_LEADING_ARGS`,
-/// `INPUT_TRAILING_ARGS`, `option_args`) are JSON-encoded as array strings for
-/// the conductor's `${*inputs.*}` splat expansion; synthesizer-owned options
-/// (`ffmpeg_version`, `output_container`) are dropped.
+/// step does not override it. Synthesizer-owned options (`ffmpeg_version`,
+/// `output_container`) are dropped; nothing here renders a command, because the
+/// tagging step declares no command parts and the host builtin reads the
+/// inputs directly.
 fn build_media_tagger_metadata_inputs(
     step: &MediaStep,
     input_binding: &str,
@@ -279,31 +216,15 @@ fn build_media_tagger_metadata_inputs(
 ) -> BTreeMap<String, String> {
     let mut inputs = BTreeMap::from([(INPUT_CONTENT.to_string(), input_binding.to_string())]);
     inputs.extend(step_option_input_bindings(step));
-    // List-style options are re-encoded below as JSON array strings for the
-    // conductor's `${*inputs.*}` splat expansion.
-    inputs.remove(INPUT_LEADING_ARGS);
-    inputs.remove(INPUT_TRAILING_ARGS);
-    inputs.remove("option_args");
     // Consumed by this synthesizer, never forwarded to media-tagger.
     inputs.remove("ffmpeg_version");
     inputs.remove("output_container");
     // The shared option filter drops MBID lookups; they remain media-tagger
-    // pair options.
+    // inputs.
     for mbid_key in ["recording_mbid", "release_mbid"] {
         if let Some(value) = step_option_scalar(step, mbid_key) {
             inputs.insert(mbid_key.to_string(), value.to_string());
         }
-    }
-    inputs.insert(
-        INPUT_LEADING_ARGS.to_string(),
-        step_option_json_list(step, INPUT_LEADING_ARGS).unwrap_or_else(|| "[]".to_string()),
-    );
-    inputs.insert(
-        INPUT_TRAILING_ARGS.to_string(),
-        step_option_json_list(step, INPUT_TRAILING_ARGS).unwrap_or_else(|| "[]".to_string()),
-    );
-    if let Some(option_args) = step_option_json_list(step, "option_args") {
-        inputs.insert("option_args".to_string(), option_args);
     }
     inputs.entry("ffmpeg_bin".to_string()).or_insert_with(|| ffmpeg_bin_for_metadata.to_string());
     inputs.entry("cache_dir".to_string()).or_insert_with(|| cache_dir.to_string());
@@ -429,57 +350,6 @@ fn resolve_media_tagger_ffmpeg_bin(step: &MediaStep) -> String {
     "ffmpeg".to_string()
 }
 
-/// JSON-encodes one list-style step option into a splat-compatible array
-/// string, whitespace-split (matching the legacy `StringList` binding).
-fn step_option_json_list(step: &MediaStep, key: &str) -> Option<String> {
-    let tokens = step_option_scalar(step, key)?.split_whitespace().collect::<Vec<_>>();
-    // The conductor's `${*inputs.*}` splat JSON-decodes the value; serializing
-    // a string-slice array cannot fail.
-    Some(serde_json::to_string(&tokens).expect("serializing a string-slice array is infallible"))
-}
-
-#[must_use]
-fn build_media_tagger_command(command_path: &str) -> Vec<String> {
-    let mut command = vec![
-        command_path.to_string(),
-        format!("${{*inputs.{INPUT_LEADING_ARGS}}}"),
-        format!("${{*inputs.{INPUT_CONTENT} ? --input | ''}}"),
-        format!(
-            "${{*inputs.{INPUT_CONTENT} ? inputs.{INPUT_CONTENT}:file(inputs/input.media) | ''}}"
-        ),
-        "--output".to_string(),
-        MEDIA_TAGGER_OUTPUT_FILE.to_string(),
-    ];
-    command.extend(command_option_tokens_for_tool(
-        MEDIA_TAGGER_OPTION_INPUTS,
-        MEDIA_TAGGER_TOKEN_SPECS,
-    ));
-    command.push(format!("${{*inputs.{INPUT_TRAILING_ARGS}}}"));
-    command
-}
-
-#[must_use]
-fn build_media_tagger_inputs() -> BTreeMap<String, ToolInputSpec> {
-    let mut inputs = BTreeMap::from([
-        (
-            INPUT_LEADING_ARGS.to_string(),
-            ToolInputSpec { kind: ToolInputKind::String, required: false },
-        ),
-        (
-            INPUT_TRAILING_ARGS.to_string(),
-            ToolInputSpec { kind: ToolInputKind::String, required: false },
-        ),
-        (INPUT_CONTENT.to_string(), ToolInputSpec { kind: ToolInputKind::String, required: false }),
-    ]);
-    for option_input in MEDIA_TAGGER_OPTION_INPUTS {
-        inputs.insert(
-            (*option_input).to_string(),
-            ToolInputSpec { kind: ToolInputKind::String, required: false },
-        );
-    }
-    inputs
-}
-
 /// Builds media-tagger output capture spec map.
 ///
 /// These are live defaults, so the cover-art folder tolerates an empty match:
@@ -541,39 +411,29 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
     ])
 }
 
+/// Builds the tool definition the conductor dispatches `media-tagger` through.
+///
+/// The tool is a builtin mediapm's host supplies for its own id: it declares no
+/// command and carries no payload, so a step naming it runs the host runner
+/// in-process instead of spawning a binary. The declared outputs are the
+/// captures every run records — the `FFmetadata` document and the cover-art
+/// folder — and each step says which of them it saves.
+///
+/// The inputs a tagging step binds are its own: no default lives here, so the
+/// step's bindings are the whole answer for which option a run uses.
 #[must_use]
-fn build_media_tagger_default_input_defaults() -> BTreeMap<String, InputBinding> {
-    let mut defaults = BTreeMap::from([
-        (INPUT_LEADING_ARGS.to_string(), InputBinding::Vec(vec![])),
-        (INPUT_TRAILING_ARGS.to_string(), InputBinding::Vec(vec![])),
-    ]);
-    for option_input in MEDIA_TAGGER_OPTION_INPUTS {
-        defaults.entry((*option_input).to_string()).or_default();
-    }
-    for (key, value) in MEDIA_TAGGER_INPUT_DEFAULTS {
-        defaults.insert(key.to_string(), InputBinding::String(value.to_string()));
-    }
-    defaults
-}
-
-/// Builds the full [`ToolSpec`] and [`ToolRuntime`] for the managed media-tagger tool.
-#[must_use]
-pub(crate) fn build_media_tagger_spec(
-    content_map: BTreeMap<String, String>,
-    os_exec_paths: &BTreeMap<String, String>,
-) -> (ToolSpec, ToolRuntime) {
-    let command_path = build_os_conditional_selector(os_exec_paths);
-    assemble_tool_spec(
-        "media-tagger",
-        content_map,
-        build_media_tagger_command(&command_path),
-        build_media_tagger_inputs(),
-        build_media_tagger_outputs(),
-        build_media_tagger_default_input_defaults(),
-        true, // impure — media-tagger requires network
-        0,    // max_concurrent_calls
-        0,    // max_retries
-    )
+pub(crate) fn build_media_tagger_spec() -> (ToolSpec, ToolRuntime) {
+    let runtime = ToolRuntime { impure: true, ..ToolRuntime::default() };
+    let spec = ToolSpec {
+        version: None,
+        kind: ToolKindSpec::Builtin { builtin_id: MEDIA_TAGGER_BUILTIN_ID.to_string() },
+        name: MEDIA_TAGGER_BUILTIN_ID.to_string(),
+        inputs: BTreeMap::new(),
+        default_inputs: BTreeMap::new(),
+        outputs: build_media_tagger_outputs(),
+        runtime: runtime.clone(),
+    };
+    (spec, runtime)
 }
 
 #[cfg(test)]
@@ -582,26 +442,6 @@ mod tests {
 
     use crate::config::MediaStepTool;
     use crate::config::source_types::TransformInputValue;
-
-    #[test]
-    fn build_media_tagger_command_includes_input_output_flags() {
-        let command = build_media_tagger_command("media-tagger");
-        assert!(command.iter().any(|c| c.contains("--input")), "expected --input flag");
-        assert!(command.iter().any(|c| c.contains("--output")), "expected --output flag");
-        assert!(
-            command.iter().any(|c| c.contains(MEDIA_TAGGER_OUTPUT_FILE)),
-            "expected output file path"
-        );
-    }
-
-    #[test]
-    fn build_media_tagger_inputs_includes_expected_entries() {
-        let inputs = build_media_tagger_inputs();
-        assert!(inputs.contains_key("strict_identification"));
-        assert!(inputs.contains_key("ca_providers"));
-        assert!(inputs.contains_key("cover_art_slot_count"));
-        assert!(inputs.contains_key("caa_endpoint"));
-    }
 
     #[test]
     fn build_media_tagger_outputs_include_standard_captures() {
@@ -625,34 +465,35 @@ mod tests {
         );
     }
 
+    /// The tool definition names the builtin and carries no payload.
+    ///
+    /// The entry a sync writes for `media-tagger` is what the run-start check
+    /// and the dispatcher read: a builtin id means the step runs the host
+    /// runner, and an empty content map means there is nothing to fetch,
+    /// materialize or place on a command line. The declared outputs are the
+    /// captures a run records, so they stay part of the definition.
     #[test]
-    fn build_media_tagger_defaults_include_cache_and_endpoints() {
-        let defaults = build_media_tagger_default_input_defaults();
-        assert_eq!(
-            defaults.get("strict_identification"),
-            Some(&InputBinding::String("true".to_string()))
-        );
-        assert_eq!(
-            defaults.get("embed_only_one_front_image"),
-            Some(&InputBinding::String("false".to_string()))
-        );
-        assert_eq!(
-            defaults.get("cache_expiry_seconds"),
-            Some(&InputBinding::String("86400".to_string()))
-        );
-        assert_eq!(
-            defaults.get("caa_endpoint"),
-            Some(&InputBinding::String("https://coverartarchive.org".to_string())),
-            "caa_endpoint must default to the Cover Art Archive like its CLI sibling"
-        );
-    }
+    fn the_tool_definition_is_a_payload_free_builtin() {
+        let (spec, runtime) = build_media_tagger_spec();
 
-    #[test]
-    fn build_media_tagger_spec_sets_impure() {
-        let content_map = BTreeMap::new();
-        let os_exec_paths = BTreeMap::from([("linux".into(), "media-tagger".into())]);
-        let (_spec, runtime) = build_media_tagger_spec(content_map, &os_exec_paths);
-        assert!(runtime.impure);
+        assert_eq!(
+            spec.kind,
+            ToolKindSpec::Builtin { builtin_id: MEDIA_TAGGER_BUILTIN_ID.to_string() },
+            "the tool must dispatch to the host runner, not to a command",
+        );
+        assert_eq!(spec.name, MEDIA_TAGGER_BUILTIN_ID);
+        assert!(runtime.content_map.is_empty(), "a host builtin holds no payload");
+        assert!(runtime.impure, "tagging reaches the network, so the step is impure");
+        assert!(
+            spec.inputs.is_empty() && spec.default_inputs.is_empty(),
+            "the step binds every option it uses; a definition default would be a second home for it",
+        );
+        assert!(
+            spec.outputs.contains_key(OUTPUT_CONTENT)
+                && spec.outputs.contains_key(OUTPUT_SANDBOX_ARTIFACTS),
+            "both artifacts a run produces must be capturable, got {:?}",
+            spec.outputs.keys().collect::<Vec<_>>(),
+        );
     }
 
     /// Ensures synthesized metadata inputs default `cache_dir` to the
@@ -775,59 +616,5 @@ mod tests {
         let inputs = build_media_tagger_apply_inputs(&step, "input", "meta");
 
         assert_eq!(inputs.get("container").map(String::as_str), Some("mp4"));
-    }
-
-    /// The names of the ten media-tagger options that the CLI accepts as
-    /// value-style booleans (`--flag true` / `--flag false`) rather than
-    /// presence flags.
-    const MEDIA_TAGGER_VALUE_BOOL_INPUTS: &[&str] = &[
-        "strict_identification",
-        "write_all_tags",
-        "write_all_images",
-        "save_images_to_tags",
-        "embed_only_one_front_image",
-        "caa_approved_only",
-        "preserve_images",
-        "clear_existing_tags",
-        "enable_tag_saving",
-        "release_ars",
-    ];
-
-    /// Every boolean toggle the media-tagger CLI declares as a value argument
-    /// must be paired (`--flag false` reaches the process) — an equality-gated
-    /// `Bool` spec silently drops "false" and the clap default of `true` wins.
-    #[test]
-    fn media_tagger_boolean_inputs_use_pair_token_specs() {
-        for input in MEDIA_TAGGER_VALUE_BOOL_INPUTS {
-            let spec = MEDIA_TAGGER_TOKEN_SPECS
-                .iter()
-                .find(|(name, _)| name == input)
-                .unwrap_or_else(|| panic!("no token spec entry for '{input}'"))
-                .1;
-            assert!(
-                matches!(spec, TokenSpec::Pair(_)),
-                "'{input}' must use TokenSpec::Pair so a 'false' value reaches the CLI"
-            );
-        }
-    }
-
-    /// The same pairing applies to every boolean toggle the CLI declares as a
-    /// value argument — a lone `--flag` token with no scalar cannot carry a
-    /// "false" value to the process, so the flag guard plus the scalar must
-    /// render for each one.
-    #[test]
-    fn every_value_boolean_renders_flag_and_scalar_tokens() {
-        for input in MEDIA_TAGGER_VALUE_BOOL_INPUTS {
-            let flag = format!("--{}", input.replace('_', "-"));
-            let rendered = command_option_tokens_for_tool(&[input], MEDIA_TAGGER_TOKEN_SPECS);
-            assert_eq!(
-                rendered,
-                vec![
-                    format!("${{*inputs.{input} ? {flag} | ''}}"),
-                    format!("${{*inputs.{input}}}"),
-                ],
-                "'{input}' must render the Pair flag guard plus the scalar value"
-            );
-        }
     }
 }

@@ -602,87 +602,6 @@ mod tests {
         assert!(resolve_result.is_err(), "resolve_tool_fetch should reject unknown tools");
     }
 
-    #[tokio::test]
-    #[expect(
-        clippy::await_holding_lock,
-        reason = "the process env lock serializes this test's github_api_base() reads against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
-    )]
-    async fn fetch_and_import_generate_launcher_succeeds() {
-        let _env = lock_process_env();
-        let cas = new_in_memory_cas();
-        let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
-        let cache = Cache::open(
-            tmp.path(),
-            &[
-                CacheDomainConfig {
-                    domain: "tools".to_string(),
-                    index_file_name: "tools.json".to_string(),
-                    entry_ttl_seconds: ENTRY_TTL_SECONDS,
-                },
-                CacheDomainConfig {
-                    domain: "tool_metadata".to_string(),
-                    index_file_name: "tool_metadata.json".to_string(),
-                    entry_ttl_seconds: 24 * 60 * 60,
-                },
-            ],
-        )
-        .await
-        .expect("cache open");
-        let cache = UserLevelCache::from_cache(cache);
-        let tracker = RecordingProgressTracker::new();
-        let (fetch, metadata) = crate::tools::provider::resolve_tool_fetch(
-            "media-tagger",
-            &VersionSpec::Latest,
-            Some((&*cache, "tool_metadata")),
-            RecheckPolicy::default(),
-        )
-        .await
-        .unwrap();
-        let outcome = PreResolveOutcome::Resolved(fetch, metadata);
-        let result =
-            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
-        match result {
-            Ok(Some(payload)) => {
-                // GenerateLauncher returns 3 inline sources (windows/macos/linux).
-                assert_eq!(payload.content_map.len(), 3, "expected 3 content-map entries");
-                assert_eq!(payload.os_exec_paths.len(), 3, "expected 3 OS exec paths");
-                assert!(
-                    payload.content_map.contains_key("windows/media-tagger"),
-                    "missing windows/media-tagger in content_map"
-                );
-                assert!(
-                    payload.content_map.contains_key("macos/media-tagger"),
-                    "missing macos/media-tagger in content_map"
-                );
-                assert!(
-                    payload.content_map.contains_key("linux/media-tagger"),
-                    "missing linux/media-tagger in content_map"
-                );
-                assert_eq!(
-                    payload.os_exec_paths.get("windows"),
-                    Some(&"media-tagger".to_string()),
-                    "windows exec path mismatch"
-                );
-                assert_eq!(
-                    payload.os_exec_paths.get("macos"),
-                    Some(&"media-tagger".to_string()),
-                    "macos exec path mismatch"
-                );
-                assert_eq!(
-                    payload.os_exec_paths.get("linux"),
-                    Some(&"media-tagger".to_string()),
-                    "linux exec path mismatch"
-                );
-                assert!(
-                    !payload.canonical_version.is_empty(),
-                    "canonical_version should be populated"
-                );
-            }
-            Ok(None) => panic!("media-tagger should return Ok(Some(...)), got Ok(None)"),
-            Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
-        }
-    }
-
     /// A bar that already finished keeps its status when a later phase fails.
     ///
     /// The resolve bar is finished success before the fetch begins, and
@@ -1047,8 +966,38 @@ mod tests {
         );
     }
 
+    /// A metadata pass that already named the canonical version keeps it.
+    ///
+    /// The fetch phase re-derives a canonical version from the bytes it
+    /// actually received, which is right when resolution only guessed. A
+    /// pre-resolved canonical version is a claim the caller already made, so the
+    /// payload must carry it through rather than overwrite it with a second
+    /// answer — otherwise the record the sync writes names a build the operator
+    /// never resolved.
+    ///
+    /// The fixture is a fetching tool served by a local host: this is a
+    /// property of the payload the fetch produces, and a tool without one has no
+    /// answer to preserve.
     #[tokio::test]
     async fn fetch_and_import_with_pre_resolved_canonical_version() {
+        let mock_server = MockServer::start().await;
+        let binaries = vec![
+            ("windows", "fake-windows.bin", &b"fake windows bytes"[..]),
+            ("macos", "fake-macos.bin", &b"fake macos bytes"[..]),
+            ("linux", "fake-linux.bin", &b"fake linux bytes"[..]),
+        ];
+        for (_, filename, bytes) in &binaries {
+            Mock::given(method("GET"))
+                .and(path(format!("/{filename}")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_bytes(bytes.to_vec())
+                        .insert_header("Content-Length", bytes.len().to_string()),
+                )
+                .mount(&mock_server)
+                .await;
+        }
+
         let cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(
@@ -1071,13 +1020,29 @@ mod tests {
         let cache = UserLevelCache::from_cache(cache);
         let tracker = RecordingProgressTracker::new();
 
-        // Use media_tagger's sources as a known ResolvedToolFetch.
-        let fetch = provider::media_tagger::sources();
+        let fetch = ResolvedToolFetch {
+            tool_id: "yt-dlp".to_string(),
+            sources: binaries
+                .iter()
+                .map(|(os, filename, _)| ResolvedSource {
+                    os: (*os).to_string(),
+                    arch: host_arch_label(),
+                    producer: SourceProducer::Fetch {
+                        urls: vec![format!(
+                            "http://127.0.0.1:{}/{filename}",
+                            mock_server.address().port()
+                        )],
+                    },
+                    expected_size: None,
+                    size_hint_bytes: None,
+                    identity: None,
+                })
+                .collect(),
+        };
         let outcome =
             PreResolveOutcome::Resolved(fetch, test_metadata("", "test-canonical", false, 1));
 
-        let result =
-            fetch_and_import_tool_payload(&cas, "media-tagger", &cache, &tracker, outcome).await;
+        let result = fetch_and_import_tool_payload(&cas, "yt-dlp", &cache, &tracker, outcome).await;
         match result {
             Ok(Some(payload)) => {
                 assert_eq!(
@@ -1086,8 +1051,8 @@ mod tests {
                 );
                 assert_eq!(payload.content_map.len(), 3, "expected 3 content-map entries");
             }
-            Ok(None) => panic!("media-tagger should return Ok(Some(...)), got Ok(None)"),
-            Err(e) => panic!("media-tagger should succeed, got Err({e:?})"),
+            Ok(None) => panic!("yt-dlp should return Ok(Some(...)), got Ok(None)"),
+            Err(e) => panic!("yt-dlp should succeed, got Err({e:?})"),
         }
     }
 

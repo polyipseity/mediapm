@@ -15,9 +15,9 @@ use super::*;
 /// return, releasing the directory lock; the caller keeps the
 /// underlying `TempDir` alive so the data persists.
 ///
-/// media-tagger is an offline builtin launcher (`GenerateLauncher`);
-/// its `resolve_tool_fetch` arm returns `sources()` directly with
-/// `metadata_fetch_count: 0`, so no metadata seeding is required.
+/// media-tagger is a host builtin mediapm runs in-process: its
+/// `resolve_tool_fetch` arm returns no sources, so no metadata or payload
+/// seeding is required and the pass creates no fetch or process bar for it.
 async fn seed_two_tool_cache(cache_root: &std::path::Path) {
     let cache = Cache::open(
         cache_root,
@@ -113,10 +113,13 @@ fn assert_overall_position_reaches_total(
 /// **sorted multiset** of `(tool_id, phase)` pairs extracted from every
 /// `AddBar` label — order-free by construction.
 ///
-/// Two tools: yt-dlp (seeded metadata + payloads) and media-tagger
-/// (offline `GenerateLauncher`). Both take the `Resolved` path (empty
-/// `MediaPmState` defeats both skip checks), so each produces exactly
-/// 3 bars: `[res]`, `[fch]`, `[pro]`. The overall bar adds 1.
+/// Two tools: yt-dlp (seeded metadata + payloads) and media-tagger (a host
+/// builtin with no payload). Both take the `Resolved` path (empty
+/// `MediaPmState` defeats both skip checks), so yt-dlp produces three bars —
+/// `[res]`, `[fch]`, `[pro]` — and media-tagger produces only `[res]`: the two
+/// later phases exist only where there is something to fetch and process, and
+/// a host builtin's bytes are the runner mediapm already runs. The overall bar
+/// adds 1.
 #[tokio::test]
 #[expect(
     clippy::await_holding_lock,
@@ -180,8 +183,9 @@ async fn sync_multi_tool_per_tool_bars_are_order_independent() {
         ops.iter().filter(|op| matches!(op, ProgressOp::AddBar { .. })).collect();
     assert_eq!(
         add_bars.len(),
-        1 + 3 * 2,
-        "expected 1 overall + 3 bars per tool (res/fch/pro) × 2 tools = 7, got {}",
+        1 + 3 + 1,
+        "expected 1 overall + 3 bars for yt-dlp (res/fch/pro) + 1 for the payload-free \
+         media-tagger (res) = 5, got {}",
         add_bars.len()
     );
 
@@ -213,8 +217,6 @@ async fn sync_multi_tool_per_tool_bars_are_order_independent() {
         ("yt-dlp".to_string(), "fch".to_string()),
         ("yt-dlp".to_string(), "pro".to_string()),
         ("media-tagger".to_string(), "res".to_string()),
-        ("media-tagger".to_string(), "fch".to_string()),
-        ("media-tagger".to_string(), "pro".to_string()),
     ];
     expected.sort();
 
@@ -223,14 +225,20 @@ async fn sync_multi_tool_per_tool_bars_are_order_independent() {
         "sorted (tool_id, phase) multiset mismatch — order-independence violated"
     );
 
-    // --- bar totals: [fch] = 3, [pro] = 3 for both tools ---
+    // --- bar totals: [fch] = 3, [pro] = 3 for the one fetched tool ---
+    // media-tagger draws no fetch or process bar at all, so a bar with a
+    // wrong total here can only be yt-dlp's.
     for op in &add_bars {
         if let ProgressOp::AddBar { label, total } = op
             && (label.ends_with("[fch]") || label.ends_with("[pro]"))
         {
+            assert!(
+                label.starts_with("yt-dlp"),
+                "only a fetching tool draws fetch and process bars, got {label}"
+            );
             assert_eq!(
                 *total, 3,
-                "{label}: expected total 3 for plain-binary/launcher sources, got {total}"
+                "{label}: expected total 3 for plain-binary sources, got {total}"
             );
         }
     }
@@ -253,9 +261,11 @@ async fn sync_multi_tool_per_tool_bars_are_order_independent() {
 /// than a fixed three-part label.
 ///
 /// The fixture is the same two tools the order-independence test seeds:
-/// yt-dlp resolves a tag out of the seeded metadata, and media-tagger
-/// generates its launcher offline. Both take the `Resolved` path, so each
-/// produces a `[res]`, a `[fch]` and a `[pro]` bar.
+/// yt-dlp resolves a tag out of the seeded metadata, and media-tagger resolves
+/// the payload-free identity its builtin provider reports. Both take the
+/// `Resolved` path; yt-dlp draws a `[res]`, a `[fch]` and a `[pro]`, and
+/// media-tagger draws the `[res]` alone because there is nothing to fetch or
+/// process for a tool whose bytes are the runner mediapm runs.
 #[tokio::test]
 #[expect(
     clippy::await_holding_lock,
@@ -315,7 +325,11 @@ async fn per_tool_phase_bars_carry_the_version_between_the_tool_and_the_phase() 
             _ => None,
         })
         .collect();
-    assert_eq!(phase_labels.len(), 6, "two tools at three phases each: {phase_labels:?}");
+    assert_eq!(
+        phase_labels.len(),
+        4,
+        "yt-dlp at three phases plus the payload-free media-tagger's resolve: {phase_labels:?}"
+    );
 
     // yt-dlp's provider resolves a tag from the seeded metadata, so its
     // rows must carry it between the tool id and the phase tag. The tag is
@@ -353,11 +367,12 @@ async fn per_tool_phase_bars_carry_the_version_between_the_tool_and_the_phase() 
 
     assert_eq!(seen.len(), 2, "both tools drew their own phase bars: {seen:?}");
     for (tool, phases) in &seen {
-        assert_eq!(
-            phases,
-            &["fch", "pro", "res"].into_iter().collect(),
-            "{tool} drew one bar per phase: {phases:?}"
-        );
+        let expected: BTreeSet<&str> = if *tool == "media-tagger" {
+            ["res"].into_iter().collect()
+        } else {
+            ["fch", "pro", "res"].into_iter().collect()
+        };
+        assert_eq!(phases, &expected, "{tool} drew the bars its payload admits: {phases:?}");
     }
 }
 

@@ -29,12 +29,14 @@ use mediapm::{
     global_tool_cache_prune_expired, global_tool_cache_status, load_runtime_dotenv,
     media_id_from_uri, resolve_effective_paths_for_root,
 };
+#[cfg(all(feature = "cli", feature = "media-tagger"))]
+use mediapm_cli::BuiltinCommand;
 #[cfg(feature = "media-tagger")]
 use mediapm_cli::InternalMediaTaggerArgs;
 #[cfg(feature = "cli")]
 use mediapm_cli::{
-    BuiltinCommand, Cli, Command, GlobalCommand, GlobalToolCacheCommand, HierarchyCommand,
-    HierarchyPresetArg, MediaAddPreset, MediaCommand, RecheckPolicyArgs, SyncArgs, ToolCommand,
+    Cli, Command, GlobalCommand, GlobalToolCacheCommand, HierarchyCommand, HierarchyPresetArg,
+    MediaAddPreset, MediaCommand, RecheckPolicyArgs, SyncArgs, ToolCommand,
 };
 #[cfg(feature = "cli")]
 use url::Url;

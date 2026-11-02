@@ -154,6 +154,62 @@ fn fetched_none_registers_a_spec_without_a_version() {
     );
 }
 
+/// The runtime the no-payload arm records is the one its entry declares.
+///
+/// `media-tagger` reaches the network, so the definition mediapm supplies for it
+/// says `impure`, and the entry a run loads is what a step's retry policy reads.
+/// A hardcoded `false` here would let the sync record a classification its own
+/// document contradicts, which is the state this arm used to write.
+#[cfg(feature = "media-tagger")]
+#[test]
+fn fetched_none_stamps_the_runtime_its_entry_declares() {
+    let screen = ProgressScreen::disabled();
+    let bar: Arc<dyn ProgressBarApi> = Arc::new(screen.add_bar(0, "fetched-none"));
+    let progress = OverallProgress::new(&bar);
+    let entry = ProvisionEntry {
+        tool_id: "media-tagger".to_string(),
+        tool_requirement: ToolRequirement::default(),
+        kind: EntryKind::Explicit,
+    };
+    let mut generated_doc = NickelDocument::default();
+    let mut tool_runtimes = BTreeMap::new();
+    let mut report = ToolSyncReport::default();
+    let mut live_state = std::collections::HashMap::new();
+    let mut pruned_tools = 0usize;
+    let inherited_env_vars = BTreeMap::new();
+
+    apply_entry_outcome(
+        &entry,
+        EntryOutcome::FetchedNone {
+            tool_id: "media-tagger".to_string(),
+            is_builtin_code: false,
+            canonical_version: "mediapm-0123456789ab".to_string(),
+            resolved_tag: None,
+            resolved_version: Some("0.0.0".to_string()),
+            resolved_vcs_hash: Some("0123456789abcdef".to_string()),
+        },
+        &mut generated_doc,
+        &mut tool_runtimes,
+        &mut report,
+        &mut live_state,
+        &mut pruned_tools,
+        &inherited_env_vars,
+        0,
+        &progress,
+    );
+
+    let spec = generated_doc.tools.get("media-tagger").expect("the arm writes the entry");
+    assert!(
+        spec.runtime.impure,
+        "the tagger reaches the network, so the definition it is written from is impure",
+    );
+    assert_eq!(
+        tool_runtimes.get("media-tagger").map(|runtime| runtime.impure),
+        Some(true),
+        "the runtime the sync records must be the classification its entry declares",
+    );
+}
+
 /// Every builtin the coordinator registers carries no version, and its
 /// document key is the bare registration id.
 ///

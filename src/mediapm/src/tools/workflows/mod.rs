@@ -10,6 +10,7 @@
 
 pub(crate) mod deno;
 pub(crate) mod ffmpeg;
+#[cfg(feature = "media-tagger")]
 pub(crate) mod media_tagger;
 pub(crate) mod rsgain;
 pub(crate) mod sd;
@@ -649,7 +650,19 @@ fn synthesize_media_steps(
                 )?;
             }
             MediaStepTool::MediaTagger => {
+                #[cfg(not(feature = "media-tagger"))]
+                {
+                    // The cache directory is only read by the tagger's own
+                    // step pair, which this build does not compile.
+                    let _ = media_tagger_cache_dir;
+                    return Err(MediaPmError::Workflow(format!(
+                        "media '{media_id}' {:?} uses media-tagger, which this build does not include:                          rebuild with the `media-tagger` feature",
+                        step.tool,
+                    )));
+                }
+                #[cfg(feature = "media-tagger")]
                 let tool_id = resolve_step_tool_id(step.tool, generated_doc)?;
+                #[cfg(feature = "media-tagger")]
                 media_tagger::synthesize_media_tagger_step(
                     workflow,
                     media_id,
@@ -878,6 +891,9 @@ mod tests_impure_parity;
 
 #[cfg(test)]
 mod tests_media_tagger_apply;
+
+#[cfg(all(test, feature = "media-tagger"))]
+mod tests_media_tagger_host;
 
 #[cfg(test)]
 mod tests {

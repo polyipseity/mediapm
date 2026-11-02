@@ -636,8 +636,7 @@ fn resolve_mediapm_executable_path_in(
 /// `MEDIAPM_EXECUTABLE` counts as unset.
 ///
 /// [`MediaPmCliResolution::Missing`] means no mediapm CLI exists on this host,
-/// a value the callers interpret differently: [`ensure_mediapm_executable`]
-/// reports it as an error while `ensure_mediapm_executable_env` only warns.
+/// which [`ensure_mediapm_executable`] reports as an error.
 /// The current executable is never substituted for a missing CLI, because a
 /// host binary that is not the CLI would then be exported as one.
 ///
@@ -722,47 +721,33 @@ pub fn ensure_mediapm_executable() -> Result<std::path::PathBuf, MediaPmError> {
     Ok(resolved)
 }
 
-/// Ensures launcher-based managed tools can resolve the mediapm executable.
+/// Builds conductor runtime options from resolved mediapm paths.
 ///
-/// Best effort by design: `sync_library` calls this before running workflows,
-/// and a library embed whose tools are not launcher-based must not fail because
-/// the host has no mediapm CLI built beside it. When nothing is resolvable this
-/// exports nothing and warns with the remedy; it never fabricates a value and
-/// never substitutes the current executable. A caller that genuinely needs the
-/// variable wants [`ensure_mediapm_executable`] instead, which reports the
-/// condition as an error.
+/// Every run mediapm starts carries the builtin runners this crate supplies, so
+/// a workflow step naming one runs in-process. The registry is the single place
+/// that assembly happens: a run started any other way would reach the run-start
+/// check without an implementation for a builtin its own workflow names.
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError::Workflow`] when the current executable path cannot
-/// be read, when `MEDIAPM_EXECUTABLE` is not valid Unicode, or when the value
-/// it holds is not the mediapm CLI: a configured-but-wrong override is a real
-/// error and must not be swallowed.
-pub(crate) fn ensure_mediapm_executable_env() -> Result<(), MediaPmError> {
-    match resolve_mediapm_cli()? {
-        MediaPmCliResolution::Found(path) => export_mediapm_executable(&path),
-        MediaPmCliResolution::Missing => tracing::warn!("{}", MISSING_MEDIAPM_CLI_MESSAGE),
-        MediaPmCliResolution::InvalidOverride(path) => {
-            return Err(MediaPmError::Workflow(invalid_override_message(&path)));
-        }
-    }
-    Ok(())
-}
-
-/// Builds conductor runtime options from resolved mediapm paths.
-#[must_use]
+/// Returns [`MediaPmError::Workflow`] when the registry refuses its entry list
+/// (a duplicate id). The list is fixed at compile time, so this reports a wiring
+/// bug in this crate rather than a condition a run can recover from.
 pub(crate) fn conductor_run_workflow_options(
     _paths: &MediaPmPaths,
     runtime_storage: &MediaRuntimeStorage,
     progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn mediapm_utils::progress::ProgressBarApi>>,
-) -> mediapm_conductor::RunWorkflowOptions {
-    mediapm_conductor::RunWorkflowOptions {
+) -> Result<mediapm_conductor::RunWorkflowOptions, MediaPmError> {
+    Ok(mediapm_conductor::RunWorkflowOptions {
         retry_impure: runtime_storage.retry_impure,
         progress_group,
         overall_bar,
+        host_builtins: crate::builtins::host_builtins().map_err(|error| {
+            MediaPmError::Workflow(format!("builtin runner registry rejected its entries: {error}"))
+        })?,
         ..mediapm_conductor::RunWorkflowOptions::default()
-    }
+    })
 }
 
 /// Builds default managed transform chain for one local-source CAS hash.

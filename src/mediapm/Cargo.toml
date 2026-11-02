@@ -17,6 +17,7 @@ cli = [
   "mediapm-conductor/cli",
 ]
 media-tagger = [
+  "dep:async-trait",
   "dep:chromaprint-next",
   "dep:musicbrainz_rs",
   "dep:ffmetadata",
@@ -42,6 +43,9 @@ required-features = ["cli"]
 
 [dependencies]
 anyhow.workspace = true
+# Implements the conductor's `HostBuiltin` seam, which is an `async_trait`
+# trait; gated with the builtin runner that implements it.
+async-trait = { workspace = true, optional = true }
 blake3.workspace = true
 bytes.workspace = true
 chromaprint-next = { workspace = true, optional = true }

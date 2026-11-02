@@ -49,19 +49,32 @@ mod tests {
     use super::*;
     use crate::conductor_bridge::constants::OUTPUT_SANDBOX_ARTIFACTS;
 
-    /// All six managed tool names resolve through the dispatcher without panic.
+    /// Every managed tool name resolves to a spec through one of the two doors
+    /// the sync uses: a fetched tool through the preset dispatcher, a host
+    /// builtin through the definition the crate supplying its runner writes.
+    ///
+    /// media-tagger is the second kind, and it is named here, not dropped: a
+    /// name in this list that nothing answers for is what this asserts.
     #[test]
     fn build_tool_spec_resolves_all_managed_tools() {
         let content_map = BTreeMap::new();
         let limits = FfmpegSlotLimits::default();
 
-        for tool_name in &["deno", "yt-dlp", "ffmpeg", "rsgain", "media-tagger", "sd"] {
+        for tool_name in &["deno", "yt-dlp", "ffmpeg", "rsgain", "sd"] {
             let os_exec_paths = BTreeMap::from([("linux".into(), (*tool_name).to_string())]);
             let (spec, runtime) =
                 build_tool_spec(tool_name, content_map.clone(), &os_exec_paths, limits);
             assert_eq!(spec.name, *tool_name);
             assert_eq!(runtime.content_map, content_map);
         }
+
+        let host_builtin = crate::builtins::host_builtin_tool_spec("media-tagger")
+            .expect("the host builtin's definition must resolve for the tool a library declares");
+        assert_eq!(host_builtin.name, "media-tagger");
+        assert_eq!(
+            host_builtin.kind,
+            mediapm_conductor::ToolKindSpec::Builtin { builtin_id: "media-tagger".to_string() }
+        );
     }
 
     /// Sandbox artifacts folder varies per tool: yt-dlp uses `downloads`,
@@ -79,11 +92,12 @@ mod tests {
             "yt-dlp sandbox folder"
         );
 
-        let mt_os = BTreeMap::from([("linux".into(), "media-tagger".into())]);
-        let mt_outputs =
-            build_tool_spec("media-tagger", content_map.clone(), &mt_os, limits).0.outputs;
+        // A host builtin has no payload, so its outputs come from the
+        // definition its runner answers for rather than from a preset.
+        let media_tagger = crate::builtins::host_builtin_tool_spec("media-tagger")
+            .expect("the host builtin's definition must resolve");
         assert_eq!(
-            mt_outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:coverart",
+            media_tagger.outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:coverart",
             "media-tagger sandbox folder"
         );
 

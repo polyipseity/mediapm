@@ -254,8 +254,8 @@ pub(crate) async fn mount_ffmpeg(mock: &MockUpstream) {
 
 /// Mounts every managed tool's upstream traffic on one mock server.
 ///
-/// media-tagger is absent on purpose: it is a launcher-only builtin whose
-/// script is generated locally, so it has no upstream to mock.
+/// media-tagger is absent on purpose: it is a host builtin mediapm runs
+/// in-process, so it has no upstream to mock.
 pub(crate) async fn mount_managed_tool_upstreams(mock: &MockUpstream) {
     mount_yt_dlp(mock).await;
     mount_deno(mock).await;

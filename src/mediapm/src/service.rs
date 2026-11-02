@@ -48,9 +48,9 @@ use crate::tools::workflows::{MANAGED_WORKFLOW_PREFIX, reconcile_media_workflows
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
     SyncProgressOverrides, SyncSummary, ToolsSyncSummary, conductor_run_workflow_options,
-    ensure_mediapm_executable_env, export_config_contracts, load_runtime_dotenv,
-    local_source_default_steps, media_id_from_local_path, media_id_from_uri, merge_runtime_storage,
-    normalize_source_uri, validate_source_uri,
+    export_config_contracts, load_runtime_dotenv, local_source_default_steps,
+    media_id_from_local_path, media_id_from_uri, merge_runtime_storage, normalize_source_uri,
+    validate_source_uri,
 };
 
 /// Selects the single terminal a sync's phases share.
@@ -1395,7 +1395,6 @@ impl MediaPmService<FileSystemCas> {
             .ensure_persisted_state_loaded()
             .await
             .map_err(|e| MediaPmError::Workflow(format!("failed to load conductor state: {e}")))?;
-        ensure_mediapm_executable_env()?;
 
         // Surface the conductor-owned workflow progress screen during sync.
         // The screen is derived from the sync's terminal, so it shares the one
@@ -1417,7 +1416,7 @@ impl MediaPmService<FileSystemCas> {
                 &merged,
                 workflow_pg.clone(),
                 workflow_overall.clone(),
-            );
+            )?;
             // Only the run-scoped escape hatch reaches here. A per-step
             // invalidation is recorded on the instances themselves, so the
             // probe misses on its own and this flag has nothing to add — which

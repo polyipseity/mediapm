@@ -140,9 +140,13 @@ async fn sync_populates_resolved_fields_from_a_download_provider()
 /// provider metadata, while identity fields are preserved.
 ///
 /// Seeds state.json with a media-tagger entry whose resolved fields are all
-/// `None` plus a non-empty `content_map_hash` (so the skip check fires). After
-/// re-sync the resolved fields are filled, but `content_map_hash`,
-/// `deployed_at`, and `version` are untouched — proving no re-provision.
+/// `None` and whose `content_map_hash` is the one the first sync provisioned.
+/// The skip check compares that hash with the content map the generated document
+/// holds, so it fires on the two being equal — for this tool both sides are the
+/// empty map, because a host builtin has no payload — rather than on either side
+/// being non-empty. After re-sync the resolved fields are filled, but
+/// `content_map_hash`, `deployed_at`, and `version` are untouched — proving no
+/// re-provision.
 #[tokio::test]
 async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmError> {
     let mut runtime = MediaRuntimeStorage::default();

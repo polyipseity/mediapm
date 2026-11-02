@@ -2081,6 +2081,7 @@ name = "mediapm"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "blake3",
  "build-utils",
  "bytes",

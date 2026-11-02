@@ -377,6 +377,15 @@ async fn provision_entry(
             // document keeps another one, and the record it writes states a
             // canonical version beside a content hash from a different build.
             //
+            // The map comparison is an equality, not a non-emptiness test: a
+            // tool with no payload — a host builtin mediapm supplies a runner
+            // for — records the empty map and is filed in the document under
+            // its bare id, so both sides are empty and the two still describe
+            // one build. Requiring a non-empty map on either side made such a
+            // tool unskippable: every pass rewrote its record with a fresh
+            // `deployed_at`, so an unchanged library's state churned on each
+            // sync, which is the outcome a skip exists to prevent.
+            //
             // Selecting the newest *composite-matching* record instead would
             // reach a different answer: when the newest deployment has moved on,
             // an older record can still match, and skipping for it reports a
@@ -389,10 +398,8 @@ async fn provision_entry(
             let newest_record = prior_tool_record(live_state, tool_id);
 
             if let Some(record) = newest_record
-                && !record.content_map_hash.is_empty()
                 && record.canonical_version == expected_composite
                 && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
-                && !spec.runtime.content_map.is_empty()
                 && content_map_hash(&spec.runtime.content_map) == record.content_map_hash
                 && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map)
                     .await
@@ -752,12 +759,33 @@ fn apply_entry_outcome(
             resolved_version,
             resolved_vcs_hash,
         } => {
-            let runtime = ToolRuntime {
-                impure: false,
+            // A tool that resolves without a payload still needs a spec the
+            // workflow row can name; a document that already holds one keeps
+            // it, because the counter answers a different question from the
+            // document's contents. A builtin is registered under its own keyed
+            // entry, so writing a bare-id spec here would shadow it. A host
+            // builtin gets the definition the crate that supplies the runner
+            // writes — a builtin id, not a bare command-less executable — so
+            // the entry names the implementation a step dispatches to.
+            //
+            // The runtime stamped below is the entry's own, not a default:
+            // whether a step is impure is a property of the tool (a host builtin
+            // that reaches the network is), and the entry a run loads is what a
+            // step's retry policy reads, so a hardcoded classification here
+            // would describe a different tool than the document does.
+            let mut runtime = ToolRuntime {
                 inherited_env_vars: inherited_env_vars.get(&tool_id).cloned().unwrap_or_default(),
                 ..ToolRuntime::default()
             };
-            tool_runtimes.insert(tool_id.clone(), runtime.clone());
+            if !is_builtin_code {
+                generated_doc
+                    .tools
+                    .entry(tool_id.clone())
+                    .or_insert_with(|| payload_free_tool_spec(&tool_id));
+                runtime.impure =
+                    generated_doc.tools.get(&tool_id).is_some_and(|spec| spec.runtime.impure);
+            }
+            tool_runtimes.insert(tool_id.clone(), runtime);
 
             let record = ToolRegistryEntry {
                 tool_id: tool_id.clone(),
@@ -780,32 +808,30 @@ fn apply_entry_outcome(
             }
             live_state.entry(tool_id.clone()).or_default().push(record.clone());
             report.tool_records.push(record);
-
-            // A tool that resolves without a payload still needs an executable
-            // spec the workflow row can name; a document that already holds one
-            // keeps it, because the counter answers a different question from
-            // the document's contents. A builtin is registered under its own
-            // keyed entry, so writing a bare-id spec here would shadow it.
-            if !is_builtin_code && !generated_doc.tools.contains_key(&tool_id) {
-                generated_doc.tools.insert(
-                    tool_id.clone(),
-                    mediapm_conductor::ToolSpec {
-                        version: None,
-                        name: tool_id.clone(),
-                        kind: mediapm_conductor::ToolKindSpec::Executable {
-                            command: Vec::new(),
-                            env_vars: BTreeMap::new(),
-                            success_codes: vec![0],
-                        },
-                        inputs: BTreeMap::new(),
-                        default_inputs: BTreeMap::new(),
-                        outputs: BTreeMap::new(),
-                        runtime,
-                    },
-                );
-            }
         }
     }
+}
+
+/// Returns the definition the entry of a payload-free tool carries.
+///
+/// A tool the host supplies a runner for answers for itself
+/// ([`crate::builtins::host_builtin_tool_spec`]): a builtin id and the runtime
+/// that definition declares. Any other payload-free tool keeps the shape the arm
+/// always wrote — a command-less executable — which declares itself pure.
+fn payload_free_tool_spec(tool_id: &str) -> ToolSpec {
+    crate::builtins::host_builtin_tool_spec(tool_id).unwrap_or_else(|| ToolSpec {
+        version: None,
+        name: tool_id.to_string(),
+        kind: mediapm_conductor::ToolKindSpec::Executable {
+            command: Vec::new(),
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
+        inputs: BTreeMap::new(),
+        default_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime::default(),
+    })
 }
 
 /// Returns whether every hash in a string content map is present in `cas`.
@@ -1765,30 +1791,47 @@ pub(crate) async fn reconcile_desired_tools(
     // The builtin set is the registry's production entries, the same set the
     // writer registers: a registration marked `test_only` is a test double, so
     // an entry an earlier build left behind in a generated document is pruned
-    // like any other entry this sync did not produce.
+    // like any other entry this sync did not produce. The host builtins mediapm
+    // supplies join that set, because an entry naming one is payload-free by
+    // design: without them the content-map rule below would delete the entry on
+    // the pass after the one that wrote it, and a workflow row naming the tool
+    // would stop resolving.
     let provisioned_names: HashSet<&str> =
         entries.iter().map(|entry| entry.tool_id.as_str()).collect();
     let builtin_names: HashSet<&str> =
         mediapm_conductor::tools::production_builtins().map(|builtin| builtin.name).collect();
+    let host_builtin_names: HashSet<&str> =
+        crate::builtins::HOST_BUILTIN_IDS.iter().copied().collect();
+
+    // One rule, read by the progress bar's count and by the `retain` below, so
+    // the bar cannot promise a prune the document does not perform.
+    //
+    // A host builtin's entry is the bare id: the runner is the payload, so a
+    // keyed entry (`{name}@...`) is what an earlier build wrote when the tool
+    // was a fetched one, and keeping it would leave a command shadowing the
+    // builtin the step now dispatches to.
+    let keeps_entry = |key: &str, spec: &mediapm_conductor::ToolSpec| {
+        let bare = key.split('@').next().unwrap_or(key);
+        if builtin_names.contains(bare) {
+            return true;
+        }
+        if host_builtin_names.contains(bare) {
+            return key == bare;
+        }
+        if !provisioned_names.contains(bare) {
+            return false;
+        }
+        // Drop pruned version keys whose content_map was cleared — an empty
+        // map still matches workflow step `tool = "{name}"` and shadows the
+        // active `{name}@{hash}` entry.
+        !spec.runtime.content_map.is_empty()
+    };
 
     // [prn] Bar: count prune candidates (document rewrite + filesystem prune).
     // Total = number of entries the `retain` closure will remove, so the bar
     // shows actual prune progress rather than a fixed step count.
-    let prune_candidates = generated_doc
-        .tools
-        .keys()
-        .filter(|key| {
-            let bare = key.split('@').next().unwrap_or(key.as_str());
-            if builtin_names.contains(bare) {
-                return false;
-            }
-            if !provisioned_names.contains(bare) {
-                return true;
-            }
-            // Will be removed by retain if content_map is empty
-            generated_doc.tools[*key].runtime.content_map.is_empty()
-        })
-        .count();
+    let prune_candidates =
+        generated_doc.tools.iter().filter(|(key, spec)| !keeps_entry(key.as_str(), spec)).count();
     // The prune bar belongs to the screen that is driving the sync. It is
     // registered after the provisioning loop, so the screen must still be live
     // here — the caller joins it only once this function returns.
@@ -1803,19 +1846,7 @@ pub(crate) async fn reconcile_desired_tools(
     }
 
     let tools_before_rewrite = generated_doc.tools.len();
-    generated_doc.tools.retain(|key, spec| {
-        let bare = key.split('@').next().unwrap_or(key.as_str());
-        if builtin_names.contains(bare) {
-            return true;
-        }
-        if !provisioned_names.contains(bare) {
-            return false;
-        }
-        // Drop pruned version keys whose content_map was cleared — an empty
-        // map still matches workflow step `tool = "{name}"` and shadows the
-        // active `{name}@{hash}` entry.
-        !spec.runtime.content_map.is_empty()
-    });
+    generated_doc.tools.retain(|key, spec| keeps_entry(key, spec));
     let actual_pruned = tools_before_rewrite - generated_doc.tools.len();
     pruned_tools += actual_pruned;
     if let Some(ref bar) = prn_bar {

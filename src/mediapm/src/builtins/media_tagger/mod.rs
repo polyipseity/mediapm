@@ -37,6 +37,7 @@ use tokio::process::Command;
 mod acoustid;
 mod cover_art;
 mod ffmetadata;
+pub(crate) mod host;
 mod musicbrainz;
 mod util;
 

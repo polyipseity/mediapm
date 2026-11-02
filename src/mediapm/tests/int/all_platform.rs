@@ -30,27 +30,24 @@ use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec};
 /// Order is fixed so the failure message names the slots in a stable order.
 const MANAGED_OS_SLOTS: [&str; 3] = ["linux", "macos", "windows"];
 
-/// The managed tools a full sync has to provision.
+/// The managed tools a full sync has to provision a payload for.
 ///
-/// These are the tools `mediapm.ncl` can declare; the builtins the sync
-/// registers (echo, fs, import, export, archive) carry no payload and are
-/// deliberately absent.
+/// These are the tools `mediapm.ncl` can declare whose bytes come from an
+/// upstream; the builtins the sync registers (echo, fs, import, export, archive)
+/// carry no payload and are deliberately absent, and so is `media-tagger`, which
+/// is a host builtin mediapm runs in-process —
+/// [`assert_host_builtin_has_no_payload`] is what covers it.
 ///
 /// `tools::provider::resolve_tool_fetch`'s dispatch is the source of truth for
 /// this set, and this list has to be updated whenever that dispatch changes: a
-/// seventh tool added there would otherwise leave the assertion below covering
-/// nothing about it while the test kept passing. Deriving the list from a shared
-/// provider constant would remove that coupling entirely, and the coverage
-/// matrix in `.agents/coverage-matrix.md` needs the same pointer.
-const MANAGED_TOOLS: [&str; 6] = ["yt-dlp", "ffmpeg", "deno", "rsgain", "sd", "media-tagger"];
+/// seventh fetched tool added there would otherwise leave the assertion below
+/// covering nothing about it while the test kept passing. Deriving the list from
+/// a shared provider constant would remove that coupling entirely, and the
+/// coverage matrix in `.agents/coverage-matrix.md` needs the same pointer.
+const MANAGED_TOOLS: [&str; 5] = ["yt-dlp", "ffmpeg", "deno", "rsgain", "sd"];
 
-/// The tools whose payloads come from a launcher script rather than a
-/// download.
-///
-/// A launcher's bytes are generated per OS from one template, so two OS slots
-/// may legitimately carry identical bytes; every fetched tool's slots carry
-/// distinct upstream builds.
-const LAUNCHER_ONLY_TOOLS: [&str; 1] = ["media-tagger"];
+/// The managed tool a run dispatches to a runner mediapm supplies.
+const HOST_BUILTIN_TOOL: &str = "media-tagger";
 
 /// Content-map key prefix marking an inlined same-step dependency payload.
 ///
@@ -65,7 +62,7 @@ const INLINED_DEP_PREFIX: &str = "deps/";
 /// pass vacuously. The whole set is declared explicitly for that reason.
 fn all_managed_tools_storage() -> MediaRuntimeStorage {
     let mut storage = MediaRuntimeStorage::default();
-    for tool_id in MANAGED_TOOLS {
+    for tool_id in MANAGED_TOOLS.into_iter().chain([HOST_BUILTIN_TOOL]) {
         storage.tools.insert(tool_id.to_string(), tool_requirement());
     }
     storage
@@ -148,18 +145,14 @@ fn assert_every_managed_tool_covers_every_os(doc: &NickelDocument) {
             hashes_by_os.insert(os, hashes);
         }
 
-        if !LAUNCHER_ONLY_TOOLS.contains(&tool_id) {
-            for (first, second) in [("linux", "macos"), ("linux", "windows"), ("macos", "windows")]
-            {
-                let shared: Vec<&str> =
-                    hashes_by_os[first].intersection(&hashes_by_os[second]).copied().collect();
-                assert!(
-                    shared.is_empty(),
-                    "tool {tool_id}: the {first} and {second} slots carry the same payload {shared:?}",
-                );
-            }
+        for (first, second) in [("linux", "macos"), ("linux", "windows"), ("macos", "windows")] {
+            let shared: Vec<&str> =
+                hashes_by_os[first].intersection(&hashes_by_os[second]).copied().collect();
+            assert!(
+                shared.is_empty(),
+                "tool {tool_id}: the {first} and {second} slots carry the same payload {shared:?}",
+            );
         }
-
         let ToolKindSpec::Executable { command, .. } = &spec.kind else {
             panic!("tool {tool_id}: a managed tool must carry an executable command");
         };
@@ -177,12 +170,43 @@ fn assert_every_managed_tool_covers_every_os(doc: &NickelDocument) {
     }
 }
 
-/// A full sync against mocked upstream hosts provisions every managed tool's
-/// payload for every OS slot.
+/// Asserts the host builtin's entry in the same document carries no payload.
+///
+/// `media-tagger` is a runner mediapm supplies to the conductor, so there is
+/// nothing to download and nothing to install: the entry is a bare id whose kind
+/// names the builtin, its content map is empty, and its command is empty. A
+/// command here would make the conductor dispatch the step as a program again,
+/// which is the courier this shape replaced.
+///
+/// # Panics
+///
+/// Panics when no entry names the tool, or when the entry carries a payload, a
+/// command or another kind.
+fn assert_host_builtin_has_no_payload(doc: &NickelDocument) {
+    let spec = doc
+        .tools
+        .values()
+        .find(|spec| spec.name == HOST_BUILTIN_TOOL)
+        .unwrap_or_else(|| panic!("no generated spec names {HOST_BUILTIN_TOOL}"));
+    assert!(
+        spec.runtime.content_map.is_empty(),
+        "{HOST_BUILTIN_TOOL} holds no payload, got {:?}",
+        spec.runtime.content_map
+    );
+    assert_eq!(
+        spec.kind,
+        ToolKindSpec::Builtin { builtin_id: HOST_BUILTIN_TOOL.to_string() },
+        "{HOST_BUILTIN_TOOL} must name the builtin a run dispatches to, not a command",
+    );
+}
+
+/// A full sync against mocked upstream hosts provisions every payload-bearing
+/// managed tool's payload for every OS slot, and registers `media-tagger` as the
+/// payload-free builtin a run dispatches to.
 ///
 /// This is the test that makes the all-platform contract checkable: it declares
-/// all six managed tools, answers their metadata and payload traffic locally,
-/// and asserts the document the sync wrote.
+/// every managed tool, answers their metadata and payload traffic locally, and
+/// asserts the document the sync wrote.
 #[tokio::test]
 async fn every_managed_tool_provisions_a_payload_for_every_os_slot()
 -> Result<(), mediapm::MediaPmError> {
@@ -195,6 +219,7 @@ async fn every_managed_tool_provisions_a_payload_for_every_os_slot()
 
     let doc = read_generated_doc(&service);
     assert_every_managed_tool_covers_every_os(&doc);
+    assert_host_builtin_has_no_payload(&doc);
     Ok(())
 }
 
