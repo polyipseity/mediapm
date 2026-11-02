@@ -38,6 +38,11 @@ pub(crate) enum ConductorMessage {
         unified: UnifiedNickelDocument,
         /// Current orchestration state (cloned, actor owns its copy).
         state: ConductorState,
+        /// Absolute directory that directly contains the outermost document
+        /// this run loads. Carried with the run because it is derived from the
+        /// documents the caller loaded, so the actor cannot re-derive it from
+        /// what it holds.
+        outermost_config_dir: PathBuf,
         /// Reply channel (returns summary + updated state).
         reply: RpcReplyPort<Result<(RunSummary, ConductorState), ConductorError>>,
     },
@@ -116,10 +121,18 @@ where
                 options,
                 unified,
                 state: mut ws_state,
+                outermost_config_dir,
                 reply,
             } => {
-                let summary =
-                    state.run_workflow(&workflow_name, &unified, &mut ws_state, &options).await;
+                let summary = state
+                    .run_workflow(
+                        &workflow_name,
+                        &unified,
+                        &mut ws_state,
+                        &options,
+                        &outermost_config_dir,
+                    )
+                    .await;
                 let _ = reply.send(summary.map(|s| (s, ws_state)));
             }
             ConductorMessage::GetRuntimeDiagnostics { reply } => {
@@ -201,6 +214,7 @@ impl ConductorActorClient {
         options: RunWorkflowOptions,
         unified: UnifiedNickelDocument,
         state: ConductorState,
+        outermost_config_dir: PathBuf,
     ) -> Result<(RunSummary, ConductorState), ConductorError> {
         match self
             .actor_ref
@@ -210,6 +224,7 @@ impl ConductorActorClient {
                     options,
                     unified,
                     state,
+                    outermost_config_dir,
                     reply,
                 },
                 Some(self.rpc_timeout),

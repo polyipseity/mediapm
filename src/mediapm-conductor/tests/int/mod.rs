@@ -81,6 +81,10 @@ mod workflow_scheduler;
 /// before any step executes.
 mod host_builtins;
 
+/// A run hands its step requests the directory that holds its outermost
+/// document, which a host runner reads as the root of the run's own files.
+mod outermost_config_dir;
+
 /// Client-defined bar-label truncation: worker bars drop progress tally,
 /// step bars yield the version before the tool name.
 #[cfg(feature = "progress")]

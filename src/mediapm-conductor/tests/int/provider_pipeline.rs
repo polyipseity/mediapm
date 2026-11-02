@@ -11,8 +11,10 @@ use mediapm_cas::InMemoryCas;
 use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::{
-    ResolvedToolFetch, fetch_tool_sources, process_tool_sources, resolve_tool_fetch,
+    ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources, process_tool_sources,
+    resolve_tool_fetch,
 };
+use mediapm_utils::progress::{ProviderProgressCallback, ProviderProgressSnapshot};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,5 +111,97 @@ async fn a_builtin_provisions_without_fetching() {
         result.os_exec_paths.is_empty(),
         "a builtin names no executable: {:?}",
         result.os_exec_paths
+    );
+}
+
+/// Fetch progress aggregates every source's bytes: `items` counts completed
+/// sources, and the byte aggregate ends at the payloads' summed size.
+///
+/// The fetch is serialized through `MEDIAPM_SOURCE_FETCH_CONCURRENCY=1` so the
+/// snapshot sequence is the pipeline's schedule rather than a race between two
+/// concurrent downloads. Two sources in flight at once can push a snapshot that
+/// read the completed count before the other task's increment and so appears
+/// after it, which is why the crate's own unit test asserts a maximum rather
+/// than a monotone run; one source at a time makes monotonicity a property of
+/// the pipeline instead of the machine's timing.
+#[tokio::test]
+async fn progress_aggregation_over_a_mocked_fetch_source_covers_every_byte() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // SAFETY: the variable is read once per fetch and only lowers the source
+    // fetch concurrency to one. This binary is the only place that fetches tool
+    // sources, so no sibling test's concurrency is constrained by it.
+    unsafe {
+        std::env::set_var("MEDIAPM_SOURCE_FETCH_CONCURRENCY", "1");
+    }
+
+    let first = vec![0x11u8; 3_000];
+    let second = vec![0x22u8; 5_000];
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/first.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(first.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/second.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(second.clone()))
+        .mount(&server)
+        .await;
+
+    let source = |path: &str, len: usize| ResolvedSource {
+        os: "linux".to_string(),
+        arch: "x86_64".to_string(),
+        producer: SourceProducer::Fetch { urls: vec![format!("{}/{path}", server.uri())] },
+        expected_size: Some(len as u64),
+        size_hint_bytes: None,
+        identity: None,
+    };
+    let fetch = ResolvedToolFetch {
+        tool_id: "mocked".to_string(),
+        sources: vec![source("first.bin", first.len()), source("second.bin", second.len())],
+    };
+
+    let (cache, _cache_root) = open_echo_cache().await;
+    let snapshots: std::sync::Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = std::sync::Arc::clone(&snapshots);
+    let cb: ProviderProgressCallback = std::sync::Arc::new(move |snap| {
+        recorder.lock().expect("the snapshot recorder is never poisoned").push(snap);
+    });
+
+    let downloaded = fetch_tool_sources(&fetch, &cache, "default", Some(cb))
+        .await
+        .expect("both mocked sources serve their bytes");
+    assert_eq!(downloaded.entries.len(), 2, "each source yields its own entry");
+
+    let all = snapshots.lock().expect("the snapshot recorder is never poisoned").clone();
+    assert!(!all.is_empty(), "a fetch fires at least one snapshot");
+
+    let mut completed_so_far = 0u64;
+    for (index, snapshot) in all.iter().enumerate() {
+        let (completed, total) = snapshot.items;
+        assert_eq!(total, 2, "snapshot {index} counts both resolved sources: {snapshot:?}");
+        assert!(
+            completed >= completed_so_far,
+            "the completed count decreased at snapshot {index}: {snapshot:?}"
+        );
+        completed_so_far = completed;
+        let (done, expected) = snapshot.bytes;
+        assert!(
+            done <= expected,
+            "the byte aggregate {done} exceeds its total {expected} at snapshot {index}: \
+             {snapshot:?}"
+        );
+    }
+    assert_eq!(completed_so_far, 2, "both sources must be counted as completed");
+
+    let expected_bytes = (first.len() + second.len()) as u64;
+    let last = all.last().expect("at least one snapshot was recorded");
+    assert_eq!(
+        last.bytes,
+        (expected_bytes, expected_bytes),
+        "the final snapshot's byte aggregate is the payloads' summed size: {last:?}"
     );
 }

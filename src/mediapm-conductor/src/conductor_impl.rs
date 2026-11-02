@@ -212,8 +212,14 @@ where
                 std::mem::take(&mut *guard)
             }
         };
+        // The directory holding the outermost document this run loads is
+        // derived here, where the documents are discovered, rather than
+        // accepted from the caller: a value a caller supplies could name a
+        // directory the run never loaded from, and a builtin resolving a
+        // relative path against it would then read the wrong root.
+        let outermost_dir = outermost_config_dir(self.storage_paths());
         let (summary, updated_state) =
-            client.run_workflow(workflow_name, options, unified, state).await?;
+            client.run_workflow(workflow_name, options, unified, state, outermost_dir).await?;
         *self.state.lock().expect("state lock") = updated_state.clone();
         // Persist state after each run so later sessions resume from disk.
         save_state_file(self.storage_paths(), &updated_state)?;
@@ -968,6 +974,23 @@ fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
     }
 
     paths
+}
+
+/// The directory that directly contains the outermost conductor document a
+/// run loads.
+///
+/// [`discover_config_paths`] returns the run's documents in load order, so the
+/// first one is the outermost: the standalone root `conductor.ncl` when the
+/// paths are discovered, or the first document a caller wired explicitly
+/// (mediapm's user-owned `mediapm.conductor.ncl`, whose generated sibling sits
+/// beside it). A run that names no document falls back to
+/// [`RuntimeStoragePaths::conductor_dir`], the root the discovered paths hang
+/// off.
+fn outermost_config_dir(storage_paths: &RuntimeStoragePaths) -> PathBuf {
+    discover_config_paths(storage_paths)
+        .first()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| storage_paths.conductor_dir.clone())
 }
 
 /// Returns the path of the first user config file in `conductor_dir`, or

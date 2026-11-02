@@ -66,9 +66,9 @@ pub struct HostBuiltinRequest<'a> {
     pub cas: &'a dyn HostBuiltinCas,
     /// Directory a builtin resolves relative path values against.
     ///
-    /// This is the value the coordinator sets on every step request, which today
-    /// is the process working directory for a builtin of any kind: a runner that
-    /// needs the running document's own location cannot get it from here.
+    /// This is the value the coordinator sets on every step request: the
+    /// directory that directly contains the outermost conductor document the
+    /// run loaded, which is also what every builtin this build ships receives.
     pub outermost_config_dir: &'a Path,
     /// The step's sandbox directory, where a runner writes the files its
     /// step's `file:` captures read.

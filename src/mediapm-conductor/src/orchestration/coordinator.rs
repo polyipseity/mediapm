@@ -546,6 +546,7 @@ where
         unified: &UnifiedNickelDocument,
         state: &mut ConductorState,
         options: &RunWorkflowOptions,
+        outermost_config_dir: &Path,
     ) -> Result<RunSummary, ConductorError> {
         let outcome = async {
             // The run's builtin registry, wrapped once so every step's request
@@ -758,7 +759,7 @@ where
                             None
                         },
                         state_snapshot: current_state_snapshot,
-                        outermost_config_dir: Path::new(".").to_path_buf(),
+                        outermost_config_dir: outermost_config_dir.to_path_buf(),
                         conductor_tmp_dir: self.conductor_tmp_dir.clone(),
                         host_builtins: host_builtins.clone(),
                         step_outputs: current_step_outputs,
