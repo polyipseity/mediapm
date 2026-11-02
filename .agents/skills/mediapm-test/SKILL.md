@@ -9,11 +9,11 @@ name: "mediapm-test"
 
 | What changed              | Command                                          |
 | ------------------------- | ------------------------------------------------ |
-| mediapm crate only        | `cargo test -p mediapm`                          |
-| mediapm lib tests         | `cargo test -p mediapm -- lib`                   |
-| mediapm CLI tests         | `cargo test -p mediapm -- main`                  |
-| mediapm integration tests | `cargo test -p mediapm -- integration`           |
-| A specific test           | `cargo test -p mediapm -- <test_name>`           |
+| mediapm crate only        | `cargo test-pkg mediapm`                         |
+| mediapm lib tests         | `cargo test-pkg mediapm -- lib`                  |
+| mediapm CLI tests         | `cargo test-pkg mediapm -- main`                 |
+| mediapm integration tests | `cargo test-pkg mediapm -- integration`          |
+| A specific test           | `cargo test-pkg mediapm -- <test_name>`          |
 | Conductor crate           | `cargo test -p mediapm-conductor`                |
 | CAS crate                 | `cargo test -p mediapm-cas`                      |
 | A conductor builtin       | `cargo test -p mediapm-conductor-builtin-<name>` |
@@ -35,7 +35,7 @@ Do not run demos during dev iteration. The online path is opt-in and is the only
 ## Full workspace validation
 
 ```sh
-cargo test --no-fail-fast
+cargo test-all
 ```
 
 ## Formatting and linting
@@ -47,7 +47,7 @@ cargo clippy-all
 
 ## When to run what
 
-- **During dev iteration**: `cargo test -p mediapm -- <specific_test>` for tight feedback.
-- **Before staging**: `cargo test -p mediapm` for the affected crate.
+- **During dev iteration**: `cargo test-pkg mediapm -- <specific_test>` for tight feedback.
+- **Before staging**: `cargo test-pkg mediapm` for the affected crate.
 - **Before push**: `cargo test --no-fail-fast` + `cargo fmt-check` + `cargo clippy-all`.
 - **End-to-end**: both demo examples (sequential).
