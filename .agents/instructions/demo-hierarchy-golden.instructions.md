@@ -61,6 +61,8 @@ Every materialized file is verified for content correctness. Two strategies:
 
 Shared constants/helpers in `demo_hierarchy_spec.rs`: `ONLINE_DEMO_YOUTUBE_URL`, `ONLINE_DEMO_YT_DLP_VIDEO_ID`, `assert_valid_image_magic_bytes()`. The demo's other content checks live in `mediapm_demo_online.rs` where they are used, not here.
 
+**Which of those the offline path asserts.** The demo has two paths and only the offline one runs in a gate, so the split matters. The three tiers above are the online path's (`ToolRoute::RealUpstream`): the ffprobe stream properties (`assert_video_stream_properties`, `assert_audio_stream_properties`), the per-artifact tag sets (`assert_untagged_media_metadata`, `assert_tagged_media_metadata`), the ReplayGain tags (`assert_tagged_media_replaygain_tags`) and the canonical root name (`assert_canonical_media_root_name`) are asserted online alone, because only a real `ffmpeg`, `rsgain` and `sd` writes them. The offline path (`ToolRoute::StubChain`) keeps the checks a copying chain can still reproduce — magic bytes, sidecar and playlist formats, the sidecar families, the hierarchy shape — and replaces the probe tier with `assert_fixture_media_facts`: an in-process `mediapm_test_support::read_matroska_facts` of the materialized file compared against the committed fixture's codec, size and duration. No offline fact comes from the chain's own `ffprobe`, whose answer is a pinned document that a probe would only confirm.
+
 Coverage matrix: `sdd-tdd-workflow.instructions.md` → "Demo online content verification".
 
 ## Key symbols

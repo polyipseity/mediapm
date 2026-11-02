@@ -1,5 +1,5 @@
 ---
-description: "Use when authoring or editing example files or example-execution tests. Covers the policy that every example main must be exercised by an embedded test, and that CI detection for nondeterministic examples lives in the test that calls main, never inside main itself."
+description: "Use when authoring or editing example files or example-execution tests. Covers the policy that every example main must be exercised by an embedded test, and that path selection for a nondeterministic example lives in the test that calls main, never inside main itself."
 name: "Example Execution Policy"
 applyTo: "src/**/examples/**/*.rs"
 ---
@@ -10,15 +10,22 @@ Each example under `src/*/examples/` must contain a `#[cfg(test)]` test that run
 
 ## Deterministic vs nondeterministic examples
 
-Nondeterministic examples (network, external services, managed-tool downloads) detect CI in the test that calls `main()`, never inside `main()`. Of the examples only `mediapm_demo_online` carries that gate: `mediapm_cli_add_tools` and `mediapm_cli_add_hierarchy` carry **no** gate at all, because neither reaches an upstream — the tools example syncs before it writes any tool requirement and then fabricates its own dummy payloads, and the hierarchy example declares no managed tool. Deterministic examples (the offline demo) run their full path in tests with no CI detection.
+Nondeterministic examples (network, external services, managed-tool downloads) select their path in the test that calls `main()`, never inside `main()`. Of the examples only `mediapm_demo_online` can reach an upstream at all, and it no longer detects CI: its default path is offline and hermetic (see its two paths below). `mediapm_cli_add_tools` and `mediapm_cli_add_hierarchy` reach no upstream and carry **no** gate — the tools example syncs before it writes any tool requirement and then fabricates its own dummy payloads, and the hierarchy example declares no managed tool. Deterministic examples run their full path in tests with no CI detection.
 
-- **Deterministic** (offline demo): always full path in tests (no reduced mode, no CI detection). Its two `import` steps provision with no network — one captures the media fixture the hierarchy links, the other a scratch payload nothing links, so the document shows both halves of the save policy — so the full path is genuinely offline. The demo therefore covers no real managed binary: `ffmpeg`, `sd`, and `rsgain` fetch real payloads, and `media-tagger` is classified impure because it performs network lookups at run time, so none of them can appear in a demo whose defining property is that it needs no network. Real-binary coverage of the transform and tagging stages lives behind the `MEDIAPM_RUN_ONLINE_SYNC` gate (see the three-level skip model below), exercised by `online_sync_post_sync_dump`. Excluding them moved that coverage from the default suite, where it failed at payload fetch, to the opt-in gate, where it runs.
-- **Nondeterministic** (online demo) (three-level model:
-  - **Level 1 (CI:)** `cargo test` with any of `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `DRONE` set → embedded test skips via `ci_mode_detected()`.
-  - **Level 2 (harness outside CI:)** `cargo test`/`test-all`/pre-push (no CI env) → runs `main()` in a deterministic reduced mode (e.g. config-only) via documented env vars, never touching the network.
-  - **Level 3 (explicit run:)** `cargo run --example <name>` (no `cfg(test)`) → full path, the only level exercising network and external tools. With env overrides unset, cache-using examples resolve the real persistent cache via `example_isolation::user_level_cache_root()` (`<os-cache-dir>/mediapm/cache`), so downloads persist across runs.
+- **Deterministic** (offline demo): always full path in tests (no reduced mode, no CI detection). Its two `import` steps provision with no network — one captures the media fixture the hierarchy links, the other a scratch payload nothing links, so the document shows both halves of the save policy — so the full path is genuinely offline. The demo therefore covers no real managed binary: `ffmpeg`, `sd`, and `rsgain` fetch real payloads, and `media-tagger` is classified impure because it performs network lookups at run time, so none of them can appear in a demo whose defining property is that it needs no network. Real-binary coverage of the transform and tagging stages lives on the online demo's opt-in path (see "The demo's two paths" below) and behind the YouTube regression's Level 3 opt-in.
+- **Two paths** (online demo): offline by default, online on request. Neither path is skipped and no CI variable is read; `MEDIAPM_RUN_ONLINE_SYNC` only selects. See "The demo's two paths" below.
 
 `main()` must be deterministic given env inputs: no CI detection, no network probing, only the documented env vars select behavior.
+
+## The demo's two paths: offline by default, online on request
+
+`mediapm_demo_online` is one `main` with two paths, and the switch does nothing but select between them.
+
+- **Offline (default).** Unset, empty, `false`, and every other token but `1|true|yes|on` select the stub tool chain: each managed tool provisions from a mocked upstream whose payload is a chain executable that copies its input, and the tagging step names a mocked `MusicBrainz` endpoint. The run is the full pipeline — tool sync, materialization, the idempotency re-run — and needs no network, which is why the embedded `main_is_exercised` runs it in every gate.
+- **Offline needs `--all-features`.** The provider base-URL seams the offline path redirects are compiled behind `test-seams`, which only `--all-features` enables, so every documented command for this demo carries it. A build without the feature refuses the offline route, naming the feature and the command, before any watchdog is armed and before any tool is resolved; it fails closed rather than provisioning from the real upstream. The support crate's own seam refusal cannot cover that build, because it gates on *its* `test-seams`, which `mediapm`'s dev-dependency always enables for an example build.
+- **Online (opt-in).** `1|true|yes|on` select the real providers, the real tool binaries and the real `MusicBrainz`. No gate reaches it: only an explicit `MEDIAPM_RUN_ONLINE_SYNC=1 cargo run --all-features -p mediapm --example mediapm_demo_online` does. Such a run downloads from YouTube and reuses the real user-level tool download cache (`<os-cache-dir>/mediapm/cache`), so provisioned tools persist across runs.
+
+The assertions follow the path. Only a real `ffmpeg`, `rsgain` and `sd` can satisfy the real-tool facts — the ffprobe stream properties, the untagged and tagged tag sets, the ReplayGain tags and the canonical media-root name — so they run online alone. The offline path reads the materialized file in process and asserts the committed fixture's codec, size and duration; `demo-hierarchy-golden.instructions.md` names that split.
 
 ## A network-bound test gets two paths, not a skip ladder
 
@@ -51,9 +58,9 @@ Seam-dependent tests are gated `#[cfg(feature = "test-seams")]`, so they need an
 
 The env-lock rule a test that sets a seam must follow is in `example-temp-isolation.instructions.md` ("Parallelism constraints").
 
-## The three-level skip model still applies where no mock exists
+## The three-level skip model still applies to the YouTube regression
 
-Two tests still reach the real network and have no mock to answer them: the online demo, whose subject is the real upstream, and the YouTube regression below. They keep the skip model; the two-path model above is what a new upstream-dependent test should use.
+One consumer is left. `src/mediapm/tests/int/online_sync_post_sync_dump.rs` still reaches the real network and has no mock to answer it, so it keeps the skip model; the two-path model above is what a new upstream-dependent test should use. The online demo no longer uses either — its subject is an upstream too, but it has a stub chain, so it defaults offline and takes its online path by explicit opt-in.
 
 Any non-deterministic test doing real network downloads must apply the same gating. Canonical case: `src/mediapm/tests/int/online_sync_post_sync_dump.rs` (YouTube-download regression):
 
@@ -61,7 +68,7 @@ Any non-deterministic test doing real network downloads must apply the same gati
 - **Level 2 (harness skip:)** absent opt-in, returns early — normal `cargo test`/`test-all`/pre-push never downloads.
 - **Level 3 (explicit opt-in:)** `MEDIAPM_RUN_ONLINE_SYNC=1` (tokens `1|true|yes|on`) runs the full download and assertions.
 
-This gate is **orthogonal** to the `large-tests` feature: `--all-features` does not run the YouTube test, and the test needs no feature. The single shared env var `MEDIAPM_RUN_ONLINE_SYNC` (`example_isolation::RUN_ONLINE_SYNC_ENV`) is the only Level 3 gate: the online demo `main()` uses it as a disable toggle (unset/enabled = full sync; disabled = reduced mode), the non-example regression test as an enable toggle (unset/disabled/unknown = skip). The offline demo (`mediapm_demo`) has no Level 3 env var and always runs a full sync.
+This gate is **orthogonal** to the `large-tests` feature: `--all-features` does not run the YouTube test, and the test needs no feature. The single shared env var `MEDIAPM_RUN_ONLINE_SYNC` (`example_isolation::RUN_ONLINE_SYNC_ENV`) has one reader per consumer and the two defaults are opposite: the regression test reads `run_online_sync_enabled()` as an enable toggle (unset/disabled/unknown = skip), while the online demo's `main` reads `online_sync_enabled()` as a path selector (unset/disabled = offline, `1|true|yes|on` = online). So "no opt-in" skips the regression and runs the demo offline. The offline demo (`mediapm_demo`) reads no switch and always runs a full sync.
 
 ## Examples-as-tests must be isolated
 

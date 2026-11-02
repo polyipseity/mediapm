@@ -1,18 +1,37 @@
 //! End-to-end online demo exercising managed tool provisioning.
 //!
-//! Default sync enabled; disable via `MEDIAPM_RUN_ONLINE_SYNC=false`.
+//! One `main`, two paths, and the offline one is the default. The switch only
+//! selects; neither path is skipped here, and there is no CI gate.
+//!
+//! - **Offline (default).** An unset `MEDIAPM_RUN_ONLINE_SYNC`, and every value
+//!   but `1|true|yes|on`, selects the stub tool chain: each managed tool
+//!   provisions from a mocked upstream whose payload is a chain executable that
+//!   copies its input, and the tagging step asks a mocked `MusicBrainz`. The run
+//!   is the full pipeline and needs no network, so it is what the embedded test
+//!   exercises. It does need the `test-seams` feature, which only
+//!   `--all-features` enables, so every command below carries it; a build
+//!   without the feature refuses this route, naming the feature, instead of
+//!   provisioning from the real upstream.
+//! - **Online (opt-in).** `MEDIAPM_RUN_ONLINE_SYNC=1` selects the real providers,
+//!   the real tool binaries and the real `MusicBrainz`, and only an explicit run
+//!   reaches it. Such a run reuses the real user-level tool download cache
+//!   (`<os-cache-dir>/mediapm/cache`) and persists downloaded tools across runs.
+//!
+//! The post-sync assertions follow the path. The real-tool facts — the ffprobe
+//! stream properties, the untagged and tagged tag sets, the ReplayGain tags and
+//! the canonical media-root name — are assertions only a real
+//! `ffmpeg`/`rsgain`/`sd` can satisfy, so they run online alone; offline the run
+//! reads the materialized file in process and asserts the committed fixture's
+//! codec, size and duration.
+//!
 //! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on `YouTube` URL, plus one
 //! further ffmpeg step that transcodes a `preview` the hierarchy never links.
 //! That preview is the demo's unsaved capture: ffmpeg is local, so the step costs
 //! no network, and the document shows both halves of the save policy — every
 //! linked variant keeps its bytes whole, the preview is declared unsaved and the
-//! conductor's GC reclaims it once the step's instance is superseded.
-//! The embedded test exercises `main()` in reduced (config-only) mode; the
-//! full-sync path (network + external tools) runs only on an explicit
-//! `cargo run -p mediapm --example mediapm_demo_online`, which reuses the real
-//! user-level tool download cache (`<os-cache-dir>/mediapm/cache`) and persists
-//! downloaded tools across runs. Every tool the workflow runs is either managed
-//! (fetched) or a host builtin (in-process), so no `mediapm` CLI is needed.
+//! conductor's GC reclaims it once the step's instance is superseded. Every tool
+//! the workflow runs is either managed (fetched) or a host builtin (in-process),
+//! so no `mediapm` CLI is needed.
 //!
 //! # Expected post-sync hierarchy
 //!
@@ -106,14 +125,17 @@
 //! # Verification
 //!
 //! ```bash
-//! cargo test -p mediapm demo_hierarchy_golden
-//! cargo test -p mediapm demo_online_hierarchy_materialization
-//! cargo test -p mediapm --example mediapm_demo_online -- --skip main_is_exercised
-//! # main_is_exercised runs reduced (config-only) mode deterministically (no network).
-//! cargo test -p mediapm --example mediapm_demo_online main_is_exercised
-//! # Full-sync online path (network + external tools) — explicit run only;
-//! # reuses the real user-level tool download cache, persisting tools across runs.
-//! cargo run -p mediapm --example mediapm_demo_online
+//! cargo test -p mediapm --all-features demo_hierarchy_golden
+//! cargo test -p mediapm --all-features demo_online_hierarchy_materialization
+//! # The offline path, which the embedded test runs: the full pipeline against the
+//! # stub chain, no network.
+//! cargo test -p mediapm --all-features --example mediapm_demo_online main_is_exercised
+//! # The same path as a binary; reuses the real user-level tool download cache
+//! # (`<os-cache-dir>/mediapm/cache`), so provisioned tools persist across runs.
+//! cargo run --all-features -p mediapm --example mediapm_demo_online
+//! # The online path: real providers, real binaries, real MusicBrainz. Nothing in a
+//! # gate reaches it; it downloads from YouTube and takes minutes.
+//! MEDIAPM_RUN_ONLINE_SYNC=1 cargo run --all-features -p mediapm --example mediapm_demo_online
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -4317,7 +4339,7 @@ mod tests {
         Ok(())
     }
 
-    /// Ensures sync-mode override parser accepts disabled values (reduced mode).
+    /// Ensures the switch's disabled tokens select the offline path.
     #[test]
     fn run_sync_override_accepts_disabled_tokens() {
         let _env_lock = example_isolation::lock_process_env();
