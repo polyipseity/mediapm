@@ -3343,7 +3343,8 @@ fn resolve_demo_output_paths(
 /// launchers dispatch through `MEDIAPM_EXECUTABLE`, so a host whose override
 /// names a different binary must fail here rather than after the artifact root
 /// is removed and every managed tool has been downloaded. A missing CLI is built
-/// on demand (`MEDIAPM_EXAMPLE_AUTO_BUILD_CLI` opts out).
+/// on demand, unless a test harness or a CI run forbids it, and
+/// `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI` opts out of building.
 ///
 /// Shuts the conductor the service owns down before returning:
 /// `Conductor::shutdown` awaits the background pass that would otherwise write

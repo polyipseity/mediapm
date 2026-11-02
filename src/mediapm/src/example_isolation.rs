@@ -234,6 +234,12 @@ pub struct CliBuildCommand {
 /// `cfg!(test)` from the example's own crate, because a library unit cannot
 /// observe the example's test build, so the guard has to be stated by the caller.
 ///
+/// Not exporting the resolved path here is safe because nothing between this call
+/// and the workflows needs it: `sync_library` exports `MEDIAPM_EXECUTABLE` in
+/// `service.rs` before the first `run_workflow`, the generated launcher scripts
+/// re-read the variable from the host environment when they exec, and tool
+/// provisioning spawns no process at all.
+///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Workflow`] when resolution fails, when the build is
@@ -323,7 +329,19 @@ fn cli_build_command(cargo: PathBuf, manifest: PathBuf) -> CliBuildCommand {
 /// property of the compilation unit that asks, so only the caller can answer for
 /// itself — [`ensure_example_cli`] therefore takes it as its own parameter.
 fn allow_build(is_test: bool) -> bool {
-    !is_test && !ci_mode_detected() && auto_build_cli_enabled()
+    allow_build_from(is_test, ci_mode_detected(), auto_build_cli_enabled())
+}
+
+/// The three-guard conjunction [`allow_build`] reads process state for.
+///
+/// Split out so the truth table is a pure function a test can pin: under a test
+/// harness `is_test` short-circuits the other two conjuncts, so a test that went
+/// through [`allow_build`] alone could not tell a dropped guard from a working
+/// one. No conjunct is redundant — the harness owns argv and output, CI builds
+/// the CLI as its own step (a demo build would hide a missing one), and
+/// [`AUTO_BUILD_CLI_ENV`] is the user's opt-out.
+fn allow_build_from(is_test: bool, ci_detected: bool, env_enabled: bool) -> bool {
+    !is_test && !ci_detected && env_enabled
 }
 
 /// Whether [`AUTO_BUILD_CLI_ENV`] leaves the on-demand CLI build enabled.
@@ -368,13 +386,10 @@ fn run_cli_build(command: &CliBuildCommand) -> Result<PathBuf, MediaPmError> {
     })?;
 
     if !output.status.success() {
-        return Err(MediaPmError::Workflow(format!(
-            "`{} {}` failed with {}; the mediapm CLI was not built from '{}'. Last {CLI_BUILD_STDERR_LINES} lines of stderr:\n{}",
-            command.cargo.display(),
-            command.argv.join(" "),
+        return Err(MediaPmError::Workflow(cli_build_failure_message(
+            command,
             output.status,
-            command.manifest.display(),
-            last_stderr_lines(&output.stderr, CLI_BUILD_STDERR_LINES),
+            &output.stderr,
         )));
     }
 
@@ -384,14 +399,45 @@ fn run_cli_build(command: &CliBuildCommand) -> Result<PathBuf, MediaPmError> {
         // one starts), so both arms are the same failure: the build succeeded but
         // wrote no CLI this process can find beside its own binary.
         MediaPmCliResolution::Missing | MediaPmCliResolution::InvalidOverride(_) => {
-            return Err(MediaPmError::Workflow(format!(
-                "the mediapm CLI build from '{}' succeeded, but no CLI appeared beside the running binary; check CARGO_TARGET_DIR and --target-dir",
-                command.manifest.display()
-            )));
+            return Err(MediaPmError::Workflow(missing_after_success_message(command)));
         }
     };
     eprintln!("[mediapm] built the mediapm CLI in {}s", started.elapsed().as_secs());
     Ok(path)
+}
+
+/// What a failed CLI build reports: the command, its status, and cargo's own
+/// last [`CLI_BUILD_STDERR_LINES`] lines.
+///
+/// The tail is quoted, not the whole log: a full build log can be thousands of
+/// lines and would bury the status it accompanies. The limit is passed to
+/// [`last_stderr_lines`] from this one constant, so the count the message
+/// promises is the count the reader gets.
+fn cli_build_failure_message(
+    command: &CliBuildCommand,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> String {
+    format!(
+        "`{} {}` failed with {}; the mediapm CLI was not built from '{}'. Last {CLI_BUILD_STDERR_LINES} lines of stderr:\n{}",
+        command.cargo.display(),
+        command.argv.join(" "),
+        status,
+        command.manifest.display(),
+        last_stderr_lines(stderr, CLI_BUILD_STDERR_LINES),
+    )
+}
+
+/// What a successful CLI build reports when no CLI still resolves.
+///
+/// A successful build that leaves nothing findable beside the running binary is
+/// a target-directory mismatch, not a cargo failure, so the message names the
+/// two variables that decide where the binary landed.
+fn missing_after_success_message(command: &CliBuildCommand) -> String {
+    format!(
+        "the mediapm CLI build from '{}' succeeded, but no CLI appeared beside the running binary; check CARGO_TARGET_DIR and --target-dir",
+        command.manifest.display()
+    )
 }
 
 /// The last `limit` lines of a build's stderr, as a failure message quotes them.
@@ -676,22 +722,31 @@ mod tests {
         }
     }
 
-    /// The embedded-test row of the decision table, now that the caller states
-    /// its own test-ness: an example passing `cfg!(test)` from a test build
-    /// reaches the preflight as `allow_build(true)` and is refused, never built.
+    /// The decision is all three guards, not any two of them. Under a test
+    /// harness `is_test` short-circuits the other conjuncts, so [`allow_build`]
+    /// itself can only ever answer `false` in a test; this pins the composition
+    /// the caller depends on, where dropping the CI conjunct would let a demo
+    /// build inside a CI run that builds the CLI as its own step.
     #[test]
-    fn cli_preflight_is_refused_in_a_test_build() {
-        let cargo = PathBuf::from("/opt/rust/bin/cargo");
-        let manifest = PathBuf::from("/work/src/mediapm/Cargo.toml");
+    fn allow_build_requires_every_guard() {
+        let cases = [
+            ("all guards clear", false, false, true, true),
+            ("a test harness", true, false, true, false),
+            ("CI", false, true, true, false),
+            ("the env opt-out", false, false, false, false),
+            ("a test in CI", true, true, true, false),
+            ("a test with the opt-out", true, false, false, false),
+            ("CI with the opt-out", false, true, false, false),
+            ("all three guards", true, true, false, false),
+        ];
 
-        let plan = plan_cli_preflight(
-            MediaPmCliResolution::Missing,
-            allow_build(true),
-            Some(cargo),
-            Some(manifest),
-        );
-
-        assert_eq!(plan, CliPreflightPlan::Refuse(MISSING_MEDIAPM_CLI_MESSAGE.to_string()));
+        for (case, is_test, ci_detected, env_enabled, expected) in cases {
+            assert_eq!(
+                allow_build_from(is_test, ci_detected, env_enabled),
+                expected,
+                "case: {case}"
+            );
+        }
     }
 
     /// A permitted build still needs both cargo inputs, and the refusal names the
@@ -757,11 +812,90 @@ mod tests {
                 "--package".to_string(),
                 "mediapm".to_string(),
                 "--manifest-path".to_string(),
-                manifest.display().to_string(),
+                "/work/src/mediapm/Cargo.toml".to_string(),
             ]
         );
         assert_eq!(command.cargo, cargo, "uses the cargo that launched the example");
         assert_eq!(command.manifest, manifest, "keeps the manifest it passes");
+    }
+
+    /// A failing [`std::process::ExitStatus`] built without spawning anything:
+    /// the message helpers only read its `Display`.
+    fn failed_exit_status() -> std::process::ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt as _;
+            std::process::ExitStatus::from_raw(101)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt as _;
+            std::process::ExitStatus::from_raw(101)
+        }
+    }
+
+    /// A failed build's error names the command, its status and cargo's tail —
+    /// the last [`CLI_BUILD_STDERR_LINES`] lines only. Quoting `stderr` whole
+    /// would bury the status, and quoting it raw would print a build log inline.
+    #[test]
+    fn cli_build_failure_message_quotes_the_last_stderr_lines() {
+        let command = cli_build_command(
+            PathBuf::from("/opt/rust/bin/cargo"),
+            PathBuf::from("/work/src/mediapm/Cargo.toml"),
+        );
+        let status = failed_exit_status();
+        let stderr: Vec<String> = (1..=25).map(|line| format!("error line {line}")).collect();
+
+        let message = cli_build_failure_message(&command, status, stderr.join("\n").as_bytes());
+
+        assert!(
+            message.starts_with(
+                "`/opt/rust/bin/cargo build --package mediapm --manifest-path /work/src/mediapm/Cargo.toml` failed with "
+            ),
+            "names the command that failed: {message}"
+        );
+        assert!(
+            message.contains(&format!("{status}; the mediapm CLI was not built from '/work/src/mediapm/Cargo.toml'. Last 20 lines of stderr:\n")),
+            "quotes cargo's status and the manifest, and promises 20 lines: {message}"
+        );
+        assert_eq!(
+            message.lines().skip(1).collect::<Vec<_>>(),
+            stderr[5..].iter().map(String::as_str).collect::<Vec<_>>(),
+            "quotes exactly the newest 20 lines, in order"
+        );
+    }
+
+    /// A build that succeeds without producing a findable CLI is reported as a
+    /// target-directory mismatch, naming the variables that decide where the
+    /// binary landed. Its own message, not the failed-build one.
+    #[test]
+    fn missing_after_success_message_names_the_target_directory_variables() {
+        let command = cli_build_command(
+            PathBuf::from("/opt/rust/bin/cargo"),
+            PathBuf::from("/work/src/mediapm/Cargo.toml"),
+        );
+
+        assert_eq!(
+            missing_after_success_message(&command),
+            "the mediapm CLI build from '/work/src/mediapm/Cargo.toml' succeeded, but no CLI appeared beside the running binary; check CARGO_TARGET_DIR and --target-dir"
+        );
+    }
+
+    /// The quoting clause never dangles: an empty stream says so, and the tail is
+    /// the boundary case — one line more than the limit drops the oldest only.
+    #[test]
+    fn last_stderr_lines_quotes_the_tail_or_says_so() {
+        assert_eq!(last_stderr_lines(b"", CLI_BUILD_STDERR_LINES), "(no stderr)");
+        assert_eq!(last_stderr_lines(b"a single line", CLI_BUILD_STDERR_LINES), "a single line");
+
+        let over_limit: Vec<String> = (1..=21).map(|line| format!("line {line}")).collect();
+        let tail = last_stderr_lines(over_limit.join("\n").as_bytes(), CLI_BUILD_STDERR_LINES);
+
+        assert_eq!(
+            tail.lines().collect::<Vec<_>>(),
+            over_limit[1..].iter().map(String::as_str).collect::<Vec<_>>(),
+            "keeps the newest lines and drops the oldest"
+        );
     }
 
     /// `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI` only subtracts a capability: the four
