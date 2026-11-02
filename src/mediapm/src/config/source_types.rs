@@ -199,13 +199,6 @@ impl MediaStepTool {
             Self::Ffmpeg | Self::Rsgain => false,
         }
     }
-
-    /// Returns true when the given tool name identifies a builtin
-    /// source-ingest step that is never downloader-provisioned.
-    #[must_use]
-    pub fn is_builtin_source_ingest_name(tool_name: &str) -> bool {
-        tool_name.eq_ignore_ascii_case("import")
-    }
 }
 
 /// One transform input-option binding value.

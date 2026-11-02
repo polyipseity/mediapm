@@ -1639,6 +1639,13 @@ fn load_machine(path: &Path) -> ExampleResult<NickelDocument> {
     Ok(decode_document(raw.as_bytes())?)
 }
 
+/// Resolves the command selector of every configured tool that has a payload.
+///
+/// A builtin runs in-process, so it has no binary to resolve: its spec names a
+/// builtin id and carries no content map, and the id it answers under is not a
+/// command. Checking that shape and skipping the entry keeps the map to the
+/// tools a caller can spawn, which is what the map is read for; the configured
+/// ids themselves stay the caller's list, not this map's keys.
 fn resolve_tool_binaries(
     machine: &NickelDocument,
     tool_ids: &[String],
@@ -1649,10 +1656,18 @@ fn resolve_tool_binaries(
         let spec = find_managed_tool_spec(machine, tool_id)?;
         let resolved_tool_id = &spec.name;
 
-        let ToolKindSpec::Executable { command, .. } = &spec.kind else {
-            return Err(
-                format!("tool '{resolved_tool_id}' is not executable in machine config").into()
-            );
+        let command = match &spec.kind {
+            ToolKindSpec::Executable { command, .. } => command,
+            ToolKindSpec::Builtin { builtin_id } => {
+                if !spec.runtime.content_map.is_empty() {
+                    return Err(format!(
+                        "builtin tool '{resolved_tool_id}' ('{builtin_id}') carries a content_map \
+                         payload, which no builtin dispatches"
+                    )
+                    .into());
+                }
+                continue;
+            }
         };
         let Some(first) = command.first() else {
             return Err(format!("tool '{resolved_tool_id}' has an empty command vector").into());
@@ -3388,8 +3403,6 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let tool_binaries = resolve_tool_binaries(&machine, &logical_tool_ids)?;
     configure_demo_ffprobe_command(&machine, &tool_binaries)?;
 
-    let tool_ids = tool_binaries.keys().cloned().collect::<Vec<_>>();
-
     let yt_dlp_tool_id = resolve_managed_tool_id(&machine, "yt-dlp")?;
     let yt_dlp_max_concurrent_calls = assert_yt_dlp_concurrency_policy(&machine, &yt_dlp_tool_id)?;
     let yt_dlp_max_retries = assert_yt_dlp_retry_policy(&machine, &yt_dlp_tool_id)?;
@@ -3464,7 +3477,9 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
         artifact_root: display_path(&root),
         workspace_root: display_path(&workspace_root),
-        tool_ids,
+        // The configured set, not the resolved one: a builtin has no binary to
+        // resolve, and the manifest records the tools the demo asked for.
+        tool_ids: logical_tool_ids,
         tool_binaries: tool_binaries
             .iter()
             .map(|(tool_id, command)| (tool_id.clone(), command.clone()))
@@ -3653,9 +3668,12 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
+    use mediapm::ConfigPayloadStaging;
     use mediapm::example_isolation::{self, IsolatedExampleRoots};
+    use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec};
 
     use super::{CasApi, FileSystemCas};
 
@@ -4120,6 +4138,107 @@ mod tests {
                 unsaved: 1,
             },
             "the online demo declares eleven materialized outputs and one preview nothing keeps"
+        );
+    }
+
+    /// The logical tool ids the demo configures, in the order it declares them.
+    const DEMO_CONFIGURED_TOOL_IDS: [&str; 6] =
+        ["yt-dlp", "deno", "ffmpeg", "rsgain", "sd", "media-tagger"];
+
+    /// The tool entries a full sync writes for [`DEMO_CONFIGURED_TOOL_IDS`],
+    /// rebuilt here so the reader below is exercised without a network run.
+    ///
+    /// A fetched tool's entry is the one the sync's fetch arms write: a
+    /// `name@<content-map-hash>` key, an `Executable` kind naming the provisioned
+    /// command, and a non-empty content map. `media-tagger`'s entry is the one
+    /// the payload-free arm writes for a host builtin
+    /// (`payload_free_tool_spec`): a bare-id key, a `Builtin` kind, and an empty
+    /// content map — no payload exists for an in-process step. The shape is
+    /// restated rather than synthesized because the crate that writes it exposes
+    /// neither the writer nor the host-builtin definition to an example.
+    fn generated_document_with_every_configured_tool() -> NickelDocument {
+        let mut tools = BTreeMap::new();
+        for logical_id in DEMO_CONFIGURED_TOOL_IDS {
+            if logical_id == "media-tagger" {
+                tools.insert(
+                    logical_id.to_string(),
+                    ToolSpec {
+                        version: None,
+                        name: logical_id.to_string(),
+                        kind: ToolKindSpec::Builtin { builtin_id: "media-tagger@v1".to_string() },
+                        ..ToolSpec::default()
+                    },
+                );
+                continue;
+            }
+            tools.insert(
+                format!("{logical_id}@blake3:{logical_id}-payload"),
+                ToolSpec {
+                    version: None,
+                    name: logical_id.to_string(),
+                    kind: ToolKindSpec::Executable {
+                        command: vec![logical_id.to_string()],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "./".to_string(),
+                            format!("blake3:{logical_id}-payload"),
+                        )]),
+                        payload_staging: ConfigPayloadStaging::Copy,
+                        ..ToolRuntime::default()
+                    },
+                    ..ToolSpec::default()
+                },
+            );
+        }
+        NickelDocument { tools, ..NickelDocument::default() }
+    }
+
+    /// The demo's binary resolver answers for the five executables and skips the
+    /// host builtin, while the configured id list it is handed stays at six.
+    ///
+    /// `media-tagger` became a host builtin: its step dispatches in-process, so
+    /// its generated entry has no command to spawn and the resolver must not
+    /// claim it has a binary — nor may it reject the run for that. The configured
+    /// ids are the manifest's `tool_ids`, so they stay whole: the manifest
+    /// records the tools the demo asked for, and only `tool_binaries` narrows to
+    /// what can be spawned.
+    #[test]
+    fn resolve_tool_binaries_skips_a_payload_free_builtin() {
+        let _isolated = IsolatedExampleRoots::with_cache();
+        let configured_ids = super::configure_document_for_online_demo(&super::artifact_root())
+            .expect("configure the online demo document");
+        assert_eq!(
+            configured_ids.iter().map(String::as_str).collect::<Vec<_>>(),
+            DEMO_CONFIGURED_TOOL_IDS.to_vec(),
+            "the manifest's tool_ids are the configured set, in declaration order"
+        );
+
+        let document = generated_document_with_every_configured_tool();
+        let binaries = super::resolve_tool_binaries(&document, &configured_ids)
+            .expect("a payload-free builtin must not fail the run");
+
+        assert_eq!(
+            binaries.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "deno".to_string(),
+                "ffmpeg".to_string(),
+                "rsgain".to_string(),
+                "sd".to_string(),
+                "yt-dlp".to_string(),
+            ],
+            "every executable resolves to its command selector and the builtin has none"
+        );
+        assert!(
+            !binaries.contains_key("media-tagger"),
+            "a host builtin runs in-process, so it has no binary to record"
+        );
+        assert_eq!(
+            configured_ids.len(),
+            6,
+            "the manifest keeps all six configured ids while the binary map holds five"
         );
     }
 

@@ -1,7 +1,7 @@
-//! Decoupled external_data usage tracker.
+//! Decoupled `external_data` usage tracker.
 //!
-//! Tracks which CAS hashes are referenced by tool content_map entries and by
-//! workflow steps. Produces the exact external_data map for
+//! Tracks which CAS hashes are referenced by tool `content_map` entries and by
+//! workflow steps. Produces the exact `external_data` map for
 //! `conductor.generated.ncl`, satisfying the `content_map ⊆ external_data`
 //! invariant and the step-reference rule beside it.
 //!

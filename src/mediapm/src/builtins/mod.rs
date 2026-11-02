@@ -41,6 +41,32 @@ pub(crate) const HOST_BUILTIN_IDS: &[&str] = &[MEDIA_TAGGER_BUILTIN_ID];
 #[cfg(not(feature = "media-tagger"))]
 pub(crate) const HOST_BUILTIN_IDS: &[&str] = &[];
 
+/// Returns whether `tool_id` names a builtin: a tool that runs in-process and
+/// therefore has no payload.
+///
+/// A builtin's registry record carries no content map — there are no bytes to
+/// fetch, so the sync writes an empty content-map hash and the tool's spec names
+/// a builtin id rather than a command. An empty content map is therefore the
+/// normal shape for these ids, not the sign of a sync that never ran: the reader
+/// that asks this question still has to treat an empty map on a *fetched* tool
+/// as a missing payload.
+///
+/// The two halves are one list because both kinds reach mediapm without a
+/// payload for the same reason: `import` is the conductor's source-ingest
+/// builtin, and [`HOST_BUILTIN_IDS`] are the ids this host supplies runners for.
+#[must_use]
+pub(crate) fn is_payload_free_builtin_id(tool_id: &str) -> bool {
+    tool_id.eq_ignore_ascii_case(IMPORT_BUILTIN_ID)
+        || HOST_BUILTIN_IDS.iter().any(|id| id.eq_ignore_ascii_case(tool_id))
+}
+
+/// The tool id of the conductor's source-ingest builtin.
+///
+/// mediapm declares no dependency on the crate that ships it: this crate reaches
+/// `import` only through its provider (`tools::provider::import`), whose own
+/// module doc states the same id.
+const IMPORT_BUILTIN_ID: &str = "import";
+
 /// Builds the registry of builtin runners mediapm supplies to a conductor run.
 ///
 /// # Errors

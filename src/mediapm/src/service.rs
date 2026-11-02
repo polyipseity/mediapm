@@ -26,8 +26,8 @@ use crate::conductor_bridge::sync::{
 };
 use crate::config::versions;
 use crate::config::{
-    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool, RuntimeBasePaths,
-    ToolRequirement, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, RuntimeBasePaths, ToolRequirement,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
 };
 use crate::error::MediaPmError;
@@ -234,6 +234,12 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// registry or its canonical version does not match the provider-resolved
     /// version.
     ///
+    /// A recorded canonical version that matches is still not enough for a
+    /// fetched tool: an empty content map there means the payload never landed,
+    /// so the tool is asked to sync again. A builtin has no payload by design
+    /// (`crate::builtins::is_payload_free_builtin_id`), so its empty map is the
+    /// expected shape and never triggers a sync on its own.
+    ///
     /// # Panics
     ///
     /// Panics on an internal invariant violation: a `tool_id` declared in
@@ -318,9 +324,13 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
                             desired.unwrap(),
                             &dep_segments,
                         );
+                    // An empty content map means two different things: a
+                    // builtin has no payload to map, so its record stays empty
+                    // by design, while a fetched tool with no map has not
+                    // fetched its bytes yet.
                     Ok(existing.canonical_version != expected_composite
                         || (existing.content_map_hash.is_empty()
-                            && !MediaStepTool::is_builtin_source_ingest_name(tool_id)))
+                            && !crate::builtins::is_payload_free_builtin_id(tool_id)))
                 }
                 Err(_) => {
                     // Conservatively recommend sync on provider resolution failure.
@@ -1560,6 +1570,8 @@ mod tests {
     use indicatif::InMemoryTerm;
 
     use super::*;
+    #[cfg(feature = "media-tagger")]
+    use crate::config::ToolRegistryEntry;
 
     /// `--no-progress` selects an inert terminal instead of a live one.
     ///
@@ -1609,5 +1621,118 @@ mod tests {
             "an injected terminal must be used as given, not replaced by an inert one"
         );
         selected_screen.join();
+    }
+
+    /// The tag and commit the `yt-dlp` provider resolves a `latest` requirement
+    /// to, seeded into the cache the check reads.
+    #[cfg(feature = "media-tagger")]
+    const YT_DLP_SEEDED_TAG: &str = "2025.07.15";
+    /// The commit `yt-dlp`'s seeded `latest` tag resolves to.
+    #[cfg(feature = "media-tagger")]
+    const YT_DLP_SEEDED_COMMIT: &str = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+
+    /// Seeds the override cache's `tool_metadata` domain with the fields the
+    /// `yt-dlp` provider resolves a `latest` requirement to, so the resolve
+    /// behind [`MediaPmService::logical_tool_requires_sync`] reaches no network.
+    ///
+    /// The key is built from [`crate::tools::provider::github_api_base`], the
+    /// same base the provider builds it from, so a redirected seam still finds
+    /// this seed. The `Cache` handle is dropped before return, releasing the
+    /// directory lock the service's own open would otherwise contend with.
+    #[cfg(feature = "media-tagger")]
+    async fn seed_yt_dlp_latest_metadata(cache_root: &Path) {
+        let domain = CacheDomainConfig {
+            domain: "tool_metadata".to_string(),
+            index_file_name: "tool_metadata.json".to_string(),
+            entry_ttl_seconds: 24 * 60 * 60,
+        };
+        let cache = Cache::open(cache_root, &[domain]).await.expect("seed cache opens");
+        let api_key = format!(
+            "{}/repos/yt-dlp/yt-dlp/releases/latest",
+            crate::tools::provider::github_api_base()
+        );
+        cache
+            .store_bytes(
+                "tool_metadata",
+                &api_key,
+                format!("{YT_DLP_SEEDED_TAG}\n{YT_DLP_SEEDED_COMMIT}").as_bytes(),
+            )
+            .await;
+    }
+
+    /// Builds the registry record a completed sync writes for one tool.
+    ///
+    /// The content-map hash is a parameter because that field is the whole
+    /// subject: a builtin's payload-free record and a fetched tool whose bytes
+    /// never landed differ in nothing else.
+    #[cfg(feature = "media-tagger")]
+    fn recorded_tool(
+        tool_id: &str,
+        canonical_version: &str,
+        content_map_hash: &str,
+    ) -> ToolRegistryEntry {
+        ToolRegistryEntry {
+            tool_id: tool_id.to_string(),
+            version: format!("{}+{}", env!("CARGO_PKG_VERSION"), crate::global::MEDIAPM_GIT_HASH),
+            canonical_version: canonical_version.to_string(),
+            content_map_hash: content_map_hash.to_string(),
+            deployed_at: mediapm_utils::Timestamp::default(),
+            resolved_tag: None,
+            resolved_version: None,
+            resolved_vcs_hash: None,
+        }
+    }
+
+    /// A payload-free builtin recorded by a sync needs no second sync, while a
+    /// fetched tool with the same empty content map still does.
+    ///
+    /// Both records here carry the canonical version the provider resolves, so
+    /// the version clause answers "unchanged" and the content-map clause decides
+    /// alone. `media-tagger` is a host builtin: its step dispatches in-process,
+    /// the sync writes no payload for it, and its record's empty content map is
+    /// final — asking for a sync there reported a warning after every pass and
+    /// rewrote the record forever. `yt-dlp` is fetched, so the same empty map
+    /// means its payload is missing and a sync is owed: the exemption must cover
+    /// the builtin without letting the fetched tool through.
+    #[cfg(feature = "media-tagger")]
+    #[tokio::test]
+    async fn payload_free_builtin_needs_no_sync_but_fetched_tool_without_payload_does() {
+        let root = mediapm_utils::temp::artifact_dir().expect("workspace tempdir");
+        let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
+        seed_yt_dlp_latest_metadata(cache_root.path()).await;
+
+        let builtin_id = crate::tools::workflows::media_tagger::MEDIA_TAGGER_BUILTIN_ID;
+        let runtime = MediaRuntimeStorage {
+            cache_root_override: Some(cache_root.path().to_path_buf()),
+            tools: BTreeMap::from([
+                (builtin_id.to_string(), ToolRequirement::default()),
+                ("yt-dlp".to_string(), ToolRequirement::default()),
+            ]),
+            ..MediaRuntimeStorage::default()
+        };
+        let service =
+            MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime)
+                .await
+                .expect("service opens on a temp root");
+
+        let mut state = MediaPmState::default();
+        state.managed_tools.push(recorded_tool(builtin_id, crate::global::MEDIAPM_GIT_HASH, ""));
+        state.managed_tools.push(recorded_tool("yt-dlp", YT_DLP_SEEDED_COMMIT, ""));
+
+        assert!(
+            !service
+                .logical_tool_requires_sync(builtin_id, &state)
+                .await
+                .expect("builtin sync check"),
+            "a recorded payload-free builtin needs no sync: its empty content map is the shape a \
+             sync writes, not a payload that failed to land"
+        );
+        assert!(
+            service
+                .logical_tool_requires_sync("yt-dlp", &state)
+                .await
+                .expect("fetched tool sync check"),
+            "a fetched tool whose record has an empty content map still needs a sync"
+        );
     }
 }
