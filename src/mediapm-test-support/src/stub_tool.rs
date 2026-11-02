@@ -1530,6 +1530,106 @@ mod tests {
         );
     }
 
+    /// A copy named `ffmpeg` writes nothing when the last token that is not an
+    /// option is a format's name rather than a path.
+    ///
+    /// The command line is `extract_existing_ffmetadata_map`'s
+    /// (`src/mediapm/src/builtins/media_tagger/mod.rs`): the media input after
+    /// `-i`, the stream-suppression flags, and then `-f ffmetadata -`, which asks
+    /// ffmpeg for an ffmetadata document on stdout and names no output file at
+    /// all. A fallback that took the last token which is not an option chose the
+    /// format name `ffmetadata` and wrote a copy of the input under that name in
+    /// the process's working directory, outside the sandbox the step was handed.
+    /// The only path-shaped token here is the input, so the invocation is the
+    /// in-place shape and has to leave the file system exactly as it found it.
+    #[test]
+    fn a_copy_named_ffmpeg_writes_nothing_when_the_trailing_token_is_a_format_name() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox = dir.path().join("sandbox");
+        std::fs::create_dir_all(&sandbox).expect("create the sandbox");
+        let input = sandbox.join("input-0.mkv");
+        std::fs::write(&input, b"media-bytes").expect("write the input");
+        let ffmpeg = copy_stub_named(dir.path(), "ffmpeg");
+
+        let (code, stdout, stderr) = run_program(
+            &ffmpeg,
+            &[
+                "-v",
+                "error",
+                "-probesize",
+                "32k",
+                "-analyzeduration",
+                "0",
+                "-i",
+                input.to_str().expect("utf-8 input path"),
+                "-vn",
+                "-an",
+                "-sn",
+                "-dn",
+                "-f",
+                "ffmetadata",
+                "-",
+            ],
+            &[],
+            Some(&sandbox),
+        );
+
+        assert_eq!(code, 0, "an invocation that names no output must succeed: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write the document itself: {stdout}");
+        assert!(
+            !sandbox.join("ffmetadata").exists(),
+            "the format name is not a path, so the invocation must write nothing in its working \
+             directory: {}",
+            sandbox.display(),
+        );
+        assert_eq!(
+            std::fs::read(&input).expect("read the input"),
+            b"media-bytes",
+            "the in-place shape must leave the input as the step staged it",
+        );
+    }
+
+    /// A copy named `ffmpeg` whose command line names no path-shaped token writes
+    /// nothing at all.
+    ///
+    /// The input is a bare name with neither a separator nor an extension, which is
+    /// the one shape that is an input and not a path: the fallback classifies tokens
+    /// by shape, so a command line carrying no path-shaped token has no output, and
+    /// writing one would be the sandbox escape the shape rule exists to prevent. The
+    /// invocation succeeds, because a tool handed no file has nothing to do. The
+    /// trailing `-f ffmetadata -` is the same shape as the export invocation above,
+    /// so this pins the classification itself rather than the format's name.
+    #[test]
+    fn a_copy_named_ffmpeg_with_no_path_shaped_token_writes_nothing() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let sandbox = dir.path().join("sandbox");
+        std::fs::create_dir_all(&sandbox).expect("create the sandbox");
+        std::fs::write(sandbox.join("media"), b"media-bytes").expect("write the input");
+        let ffmpeg = copy_stub_named(dir.path(), "ffmpeg");
+
+        let (code, stdout, stderr) = run_program(
+            &ffmpeg,
+            &["-i", "media", "-vn", "-f", "ffmetadata", "-"],
+            &[],
+            Some(&sandbox),
+        );
+
+        assert_eq!(code, 0, "an invocation that names no output must succeed: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write the document itself: {stdout}");
+        let mut written: Vec<String> = std::fs::read_dir(&sandbox)
+            .expect("read the sandbox")
+            .map(|entry| {
+                entry.expect("read the sandbox entry").file_name().to_string_lossy().into_owned()
+            })
+            .collect();
+        written.sort();
+        assert_eq!(
+            written,
+            vec!["media".to_string()],
+            "the invocation must write nothing when no token is path-shaped",
+        );
+    }
+
     /// A copy named `sd` leaves the file it is handed in place.
     ///
     /// The command line is `build_sd_command`'s shape

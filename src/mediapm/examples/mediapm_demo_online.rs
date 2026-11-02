@@ -3964,6 +3964,27 @@ async fn main() -> ExampleResult<()> {
     } else {
         ToolRoute::StubChain
     };
+
+    // A build without `mediapm`'s own `test-seams` feature compiles the provider
+    // base-URL readers out (`github_api_base` and `github_download_base` in
+    // `src/mediapm/src/tools/provider/mod.rs` read their overrides only under that
+    // feature), so the offline route's seams would install variables nothing reads
+    // and the sync would provision from the real upstream. The support crate's own
+    // refusal cannot cover this: it gates on *its* `test-seams`, which this crate's
+    // dev-dependency always enables for an example build. So the offline route
+    // stops here, before it mounts a chain or resolves a tool. The online route
+    // asks for the real upstream by name and is left alone.
+    #[cfg(not(feature = "test-seams"))]
+    if !route.is_online() {
+        return Err(
+            "the offline demo route needs the `test-seams` feature, and this build does not \
+             enable it: the provider base-URL seams it redirects are compiled out, so the run \
+             would provision from the real upstream. Rebuild with the feature, for example \
+             `cargo run --all-features -p mediapm --example mediapm_demo_online`."
+                .into(),
+        );
+    }
+
     // Watchdog budgets resolve before the route branch so both paths export the
     // same knobs: a bad timeout env value fails fast everywhere, and the
     // conductor sees the same budget whenever it is constructed.

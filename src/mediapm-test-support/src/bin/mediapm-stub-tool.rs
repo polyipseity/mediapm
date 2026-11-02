@@ -47,17 +47,28 @@
 //! `ffprobe` probes, and `ffmpeg`, `rsgain`, `sd`, `deno` and `deno.real` — the
 //! name the provider's permission shim re-execs, `deno.real.exe` on Windows,
 //! whose file stem the suffix leaves as `deno.real` — fall back to the copy
-//! shape: the output is the last argument that is not itself an option, and the
-//! input is the path after the first `-i` when the command line names one and
-//! the output itself otherwise. That fallback is what covers the three shapes an
-//! offline chain has: a tool that reads an input slot and writes an output file
-//! (`ffmpeg`), a tool that rewrites the file it is handed in place, which the
-//! copy leaves exactly as the step staged it (`sd`, `rsgain`), and a tool
-//! invoked with nothing but flags (`deno`, whose provider shim appends
-//! `--allow-all`), which has no file to copy and succeeds. Any other program
-//! name stays the missing-mode usage failure, so a copy that stands in for
-//! nothing — including the test harness Cargo writes beside the stub — still
-//! answers the way the locator's probe expects.
+//! shape: the output is the first argument that is not itself an option,
+//! scanning right to left, that looks like a path — one carrying a path
+//! separator or a non-empty file extension — and the input is the path after the
+//! first `-i` when the command line names one and the output itself otherwise.
+//! That fallback is what covers the shapes an offline chain has: a tool that
+//! reads an input slot and writes an output file (`ffmpeg`), a tool that rewrites
+//! the file it is handed in place, which the copy leaves exactly as the step
+//! staged it (`sd`, `rsgain`), and a tool invoked with nothing but flags (`deno`,
+//! whose provider shim appends `--allow-all`), which has no file to copy and
+//! succeeds.
+//!
+//! Scanning right to left is not enough on its own, because a real command line
+//! ends with a flag's *value* as often as with a path: `ffmpeg -f ffmetadata -`
+//! asks for an ffmetadata document on stdout and names no output file at all.
+//! Taking the last token that is not an option chose the format's name there and
+//! wrote a copy of the input under it in the stub's own working directory, outside
+//! the sandbox the step was given. So a token qualifies only when it looks like a
+//! path, and a command line naming no such token writes nothing and succeeds — a
+//! tool handed no file has nothing to do. Any other program name stays the
+//! missing-mode usage failure, so a copy that stands in for nothing — including the
+//! test harness Cargo writes beside the stub — still answers the way the locator's
+//! probe expects.
 //!
 //! The emit manifest path cannot travel on a command line the preset owns, so it
 //! arrives in the environment: `MEDIAPM_STUB_MANIFEST` names it, and an emit with
@@ -299,23 +310,26 @@ fn emit_from_environment(args: &[String]) -> Result<(), StubError> {
 
 /// Copies the way `copy` does, for the tools whose command line carries no mode.
 ///
-/// The output is the last argument that is not itself an option, because a real
-/// command line ends with an option's *value* as often as with a path — the
-/// provider's deno shim appends `--allow-all` after the arguments it was given,
-/// and a path is what a tool is handed, not a flag. A command line with no such
-/// argument has nothing to do and succeeds.
+/// The output is the first argument that is not itself an option, scanning right
+/// to left, that looks like a path: a real command line ends with an option's
+/// *value* as often as with a path — the provider's deno shim appends
+/// `--allow-all` after the arguments it was given, and `ffmpeg -f ffmetadata -`
+/// ends with a format's name and a stdout marker — so neither a flag nor a flag's
+/// value is a file a tool is handed. A command line with no path-shaped argument
+/// names nothing to write and succeeds.
 ///
 /// # Errors
 ///
 /// Returns an I/O failure when the input cannot be read or the output cannot be
 /// written.
 fn fallback(args: &[String]) -> Result<(), StubError> {
-    let Some(output) = args.iter().rev().find(|arg| !arg.is_empty() && !arg.starts_with('-'))
+    let Some(output) =
+        args.iter().rev().find(|arg| !arg.starts_with('-') && looks_like_a_path(arg))
     else {
         return Ok(());
     };
-    // The `-i` input when the command line names one, else the file the command
-    // line hands the tool last: `sd` and `rsgain` rewrite the file they are given
+    // The `-i` input when the command line names one, else the path the command
+    // line hands the tool: `sd` and `rsgain` rewrite the file they are given
     // in place, so that file is both the input and the output, and the copy below
     // leaves it as the step staged it. `first_input_path`'s usage failure belongs
     // to `copy`; here a command line with no usable `-i` is the in-place shape
@@ -329,6 +343,20 @@ fn fallback(args: &[String]) -> Result<(), StubError> {
     std::fs::write(output, &bytes)
         .map_err(|error| StubError::io(format!("cannot write output '{output}': {error}")))?;
     Ok(())
+}
+
+/// Reports whether `token` looks like a file path rather than an option's value.
+///
+/// Two shapes qualify: a token carrying a path separator (`inputs/input.flac`)
+/// and a token whose last dot leaves a non-empty extension (`output-0.mkv`, which
+/// the preset emits as a sandbox-relative output slot). The test is about shape
+/// rather than existence, because a step's output does not exist yet when the tool
+/// is handed its path. Everything else — a format's name, a codec id, a number, a
+/// constant — is a value, and writing one escapes the sandbox the step was given.
+fn looks_like_a_path(token: &str) -> bool {
+    let path = Path::new(token);
+    path.parent().is_some_and(|parent| !parent.as_os_str().is_empty())
+        || path.extension().is_some_and(|extension| !extension.is_empty())
 }
 
 /// Appends this invocation to the record the environment names, when it names one.
