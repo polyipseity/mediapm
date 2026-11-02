@@ -625,6 +625,151 @@ fn bash_janitor_reports_a_per_path_failure() {
     assert!(!removable.exists(), "the removable tree survived next to a stuck one");
 }
 
+/// Depth of the chain [`seed_deep_chain`] seeds.
+///
+/// Deep enough that a recursive tree walk spends real stack on it, shallow
+/// enough that every seeded path stays inside `PATH_MAX`: a one-character name
+/// costs two bytes per level, so this keeps the deepest path near 700 bytes,
+/// under the tightest limit among the hosts that run the suite (1024 on macOS).
+const DEEP_CHAIN_LEVELS: usize = 300;
+
+/// Name of each seeded chain level.
+const DEEP_CHAIN_LEVEL: &str = "d";
+
+/// The file at the bottom of the chain, so the sweep has to unlink a file and
+/// not only empty directories.
+const DEEP_CHAIN_LEAF: &str = "leaf";
+
+/// Seeds `<scope>/<name>/d/d/...` [`DEEP_CHAIN_LEVELS`] deep with a leaf file at
+/// the bottom, and returns the chain root.
+///
+/// The seeding steps into each level instead of building one long absolute path,
+/// so the test's own writes never depend on the platform's path limit. The chain
+/// still stays inside `PATH_MAX` on purpose, and that is the documented limit of
+/// the thing under test rather than a test case: both twins address a tree
+/// through paths (`chmod`/`rm` and `Get-Item`/`Remove-Item` all take one), so a
+/// tree past `PATH_MAX` cannot be named by any of them, and seeding one would
+/// leak a sandbox no removal here can address.
+fn seed_deep_chain(scope: &Path, name: &str) -> PathBuf {
+    let root = scope.join(name);
+    fs::create_dir_all(&root).expect("create deep chain root");
+    let original = std::env::current_dir().expect("read the working directory");
+    std::env::set_current_dir(&root).expect("step into the deep chain root");
+    for _ in 1..DEEP_CHAIN_LEVELS {
+        fs::create_dir(DEEP_CHAIN_LEVEL).expect("create a deep chain level");
+        std::env::set_current_dir(DEEP_CHAIN_LEVEL).expect("step into a deep chain level");
+    }
+    fs::write(DEEP_CHAIN_LEAF, b"leaf").expect("seed the deep chain leaf file");
+    std::env::set_current_dir(&original).expect("restore the working directory");
+    root
+}
+
+/// Asserts one twin removes a seeded deep chain whole and still reports the
+/// count it removed.
+///
+/// The chain is the shape a recursive walk spends its stack on: a sweep that
+/// recurses per level is bounded by the tree's depth, so the failure this pins
+/// is a walk that cannot finish, not a path too long to name.
+fn assert_deep_chain_removed(script_name: &str, run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome) {
+    let (_sandbox, scope) = seeded_scope(&[]);
+    let root = seed_deep_chain(&scope, FAKE_MEDIAPM_DIRS[0]);
+    let janitor = script_path(script_name);
+
+    let sweep = run(&janitor, &scope, &[]);
+
+    assert!(
+        sweep.status.success(),
+        "deep-chain sweep failed: stdout {}, stderr {}",
+        sweep.stdout,
+        sweep.stderr
+    );
+    assert!(
+        sweep.stdout.contains(&format!("removed: {}", root.display())),
+        "the sweep did not report the chain it removed: {}",
+        sweep.stdout
+    );
+    assert!(
+        sweep.stdout.contains("removed 1 mediapm temp director(ies)"),
+        "the sweep did not print its count: {}",
+        sweep.stdout
+    );
+    assert!(
+        !sweep.stderr.contains("failed to remove: "),
+        "the sweep failed on the deep chain: {}",
+        sweep.stderr
+    );
+    assert!(!root.exists(), "the deep chain survived the sweep");
+}
+
+#[test]
+fn bash_janitor_removes_a_deep_chain() {
+    if !skip_unless("bash", &["--version"]) {
+        return;
+    }
+    let rm = path_with_clearing_rm();
+    assert_deep_chain_removed("clean-mediapm-temp.sh", |script, sandbox, flags| {
+        run_script("bash", script, sandbox, flags, &rm)
+    });
+}
+
+/// A sweep that matched a path and removed none of them must print its count
+/// line, not `no mediapm temp directories found`: the empty line is a claim
+/// about what the glob found, and this run found a path it could not remove.
+/// The run still fails through the failure summary.
+#[cfg(unix)]
+#[test]
+fn bash_janitor_does_not_call_a_failed_sweep_empty() {
+    if !skip_unless("bash", &["--version"]) {
+        return;
+    }
+    if running_as_root() {
+        println!("skipped: the sealed-tree case needs a non-root user");
+        return;
+    }
+
+    let rm = path_with_clearing_rm();
+    let (sandbox, scope) = seeded_scope(&FAKE_MEDIAPM_DIRS[..1]);
+    let janitor = script_path("clean-mediapm-temp.sh");
+    let sealed = scope.join(FAKE_MEDIAPM_DIRS[0]);
+    seal_with_child(&sealed);
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(&janitor);
+    cmd.env("PATH", path_with_rm_exec(&sandbox.path, &rm));
+    let sweep = capture_output(cmd, &scope);
+    unseal(&sealed);
+
+    assert!(
+        !sweep.status.success(),
+        "a tree the sweep cannot remove did not fail the run: stdout {}, stderr {}",
+        sweep.stdout,
+        sweep.stderr
+    );
+    assert!(
+        sweep.stderr.contains(&format!("failed to remove: {}", sealed.display())),
+        "the stuck tree is not named on stderr: {}",
+        sweep.stderr
+    );
+    assert!(
+        sweep.stdout.contains("removed 0 mediapm temp director(ies)"),
+        "a matched path the sweep left in place printed no count line: {}",
+        sweep.stdout
+    );
+    assert!(
+        !sweep.stdout.contains("no mediapm temp directories found"),
+        "a failed sweep claimed the glob matched nothing: {}",
+        sweep.stdout
+    );
+}
+
+#[test]
+fn pwsh_janitor_removes_a_deep_chain() {
+    if !skip_unless("pwsh", &["--version"]) {
+        return;
+    }
+    assert_deep_chain_removed("clean-mediapm-temp.ps1", run_pwsh);
+}
+
 /// Runs a janitor self-test, skipping when its interpreter is absent.
 fn assert_self_test(
     script: &Path,

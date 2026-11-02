@@ -97,7 +97,12 @@ while IFS= read -r -d '' dir; do
     remove_if_exists "$dir"
 done <"$listing"
 
-if [[ "$removed" -eq 0 ]]; then
+# A swept path has exactly two outcomes: removed, or named as failed. So the
+# "found nothing" line belongs to a glob that matched nothing; a run that
+# matched a path it could not remove prints its count line (`removed 0 ...`)
+# and exits 1 through the failure summary below, instead of claiming it found
+# no mediapm temp directory while naming one it left in place.
+if [[ "$removed" -eq 0 && "$failed" -eq 0 ]]; then
     echo "no mediapm temp directories found"
 else
     if [[ "$dry_run" -eq 1 ]]; then
