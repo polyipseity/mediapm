@@ -1012,7 +1012,7 @@ fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
 /// the field's contract, and the mediapm default root (`--root .`) yields
 /// `./mediapm.conductor.ncl`, whose parent is a `CurDir`-only path that would
 /// otherwise be carried through unchanged. Absolutization is best effort —
-/// `unwrap_or` keeps the input when it fails — and the input it refuses is an
+/// `unwrap_or` keeps the input when it fails — and one input it refuses is an
 /// empty directory, so a run whose root is the empty string (or a document
 /// path with no parent component) hands on an empty path.
 fn outermost_config_dir(config_paths: &[PathBuf], conductor_dir: &Path) -> PathBuf {
