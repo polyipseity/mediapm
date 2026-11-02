@@ -632,12 +632,12 @@ fn resolve_mediapm_executable_path_in(
 /// Resolves the mediapm CLI executable used by managed-tool launcher scripts.
 ///
 /// Reads `MEDIAPM_EXECUTABLE` and the current executable path, then delegates
-/// the precedence rules to [`resolve_mediapm_executable_path_in`]. A blank
+/// the precedence rules to `resolve_mediapm_executable_path_in`. A blank
 /// `MEDIAPM_EXECUTABLE` counts as unset.
 ///
 /// [`MediaPmCliResolution::Missing`] means no mediapm CLI exists on this host,
 /// a value the callers interpret differently: [`ensure_mediapm_executable`]
-/// reports it as an error while [`ensure_mediapm_executable_env`] only warns.
+/// reports it as an error while `ensure_mediapm_executable_env` only warns.
 /// The current executable is never substituted for a missing CLI, because a
 /// host binary that is not the CLI would then be exported as one.
 ///

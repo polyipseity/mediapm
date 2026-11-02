@@ -2,7 +2,7 @@
 //!
 //! Sets `MEDIAPM_EXAMPLE_*` env overrides to [`mediapm_utils::temp`] directories,
 //! and owns the example CLI preflight that builds a missing mediapm CLI on
-//! demand ([`ensure_example_cli`]).
+//! demand ([`example_isolation::ensure_example_cli`]).
 //! See `.agents/instructions/example-temp-isolation.instructions.md`.
 
 use std::ffi::OsString;
