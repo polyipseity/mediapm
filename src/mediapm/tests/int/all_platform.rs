@@ -6,7 +6,8 @@
 //! with no branch for the others. [`assert_every_managed_tool_covers_every_os`]
 //! is that contract, and both tests in this module run it — the hermetic one
 //! against a mock upstream that answers all four hosts, the other against the
-//! real hosts behind an `#[ignore]` opt-in.
+//! real hosts, which only the `online` workflow's `all_platform` input reaches
+//! (`.github/workflows/online.yml`, dispatched by hand).
 //!
 //! The stub upstream this module mounts lives in [`crate::common::stub_upstream`],
 //! shared with the `tool_sync` modules so two tests cannot disagree about the
@@ -226,10 +227,12 @@ async fn every_managed_tool_provisions_a_payload_for_every_os_slot()
 /// The same contract against the real upstream hosts.
 ///
 /// Ignored by default: it downloads every managed tool's payload for every OS,
-/// which is hundreds of megabytes and needs network access. Run it with
-/// `cargo test -p mediapm --all-features -- --ignored` when upstream behavior
-/// is what is in question; the hermetic test above is the one that runs in the
-/// suite.
+/// which is hundreds of megabytes and needs network access. The `online`
+/// workflow's `all_platform` input is what runs it on a runner
+/// (`.github/workflows/online.yml`); locally the same run is
+/// `cargo test-pkg mediapm -- --ignored all_platform`. Invoke either when
+/// upstream behavior is what is in question; the hermetic test above is the one
+/// that runs in the suite.
 #[tokio::test]
 #[ignore = "downloads every managed tool from the real upstream hosts"]
 async fn every_managed_tool_provisions_a_payload_for_every_os_slot_online()

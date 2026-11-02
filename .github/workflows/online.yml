@@ -1,0 +1,77 @@
+# Online: Real-Upstream Checks
+#
+# Purpose:
+#   - Reach the three checks no gate can run: the two `#[ignore]`d real-upstream
+#     twins and the online demo. Each one downloads from real upstreams, so none
+#     of them can sit in `ci.yml`.
+#
+# Triggers:
+#   - `workflow_dispatch` only, through a `test` choice naming which check to
+#     run. No push and no pull request reaches this file: a red gate on every
+#     commit against a third-party host would report that host's mood as a
+#     defect, so this is validation a maintainer asks for deliberately.
+#
+# Security & reproducibility notes:
+#   - Least privilege (`contents: read`); actions pinned to the same revisions
+#     `ci.yml` pins.
+
+name: online
+
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Which real-upstream check to run."
+        type: choice
+        default: all_platform
+        options:
+          - all_platform
+          - youtube
+          - demo-online
+
+permissions:
+  contents: read
+
+# One job, not one per input: the paths share a checkout, a build and a tool
+# cache, and the `youtube` path needs the demo's output in the same workspace
+# (see the demo step below).
+jobs:
+  online:
+    name: "Online: ${{ inputs.test }}"
+    runs-on: ubuntu-latest
+    # 60 minutes, sized for the worst input rather than the average one. A cold
+    # `--all-features` build of the workspace comes first. Then each path
+    # downloads hundreds of megabytes of real payloads: the demo provisions the
+    # managed tool set and runs the full pipeline under its own 600 s watchdog
+    # (`DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS` in `examples/mediapm_demo_online.rs`),
+    # the `youtube` regression provisions a second tool set into its own
+    # temporary cache and downloads the video, and the `all_platform` twin
+    # downloads every managed tool's payload for every OS slot. A stalled
+    # download should fail the job's own step, not make the runner kill it
+    # halfway through a different input.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34a5143606
+
+      # The `youtube` input runs the demo first for a reason the regression's own
+      # fixture check names: the test reads
+      # `<crate>/examples/artifacts/demo-online/mediapm.ncl`, a document
+      # `.gitignore` excludes, so a fresh checkout has none, and the online demo
+      # is the command that writes it.
+      - name: Run the online demo
+        if: inputs.test == 'demo-online' || inputs.test == 'youtube'
+        run: >-
+          MEDIAPM_RUN_ONLINE_SYNC=1 cargo --locked run --all-features -p mediapm
+          --example mediapm_demo_online
+
+      - name: Run the YouTube regression against the real upstream
+        if: inputs.test == 'youtube'
+        run: cargo --locked test-pkg mediapm -- --ignored youtube_regression
+
+      - name: Run the all-platform twin against the real upstream hosts
+        if: inputs.test == 'all_platform'
+        run: cargo --locked test-pkg mediapm -- --ignored all_platform
