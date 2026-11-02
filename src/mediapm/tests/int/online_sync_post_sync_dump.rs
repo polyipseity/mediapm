@@ -48,9 +48,15 @@ fn fixture_mediapm_ncl() -> PathBuf {
 ///
 /// A generated tool key and a recorded tool-call id share one spelling, `<tool>@<identity>`
 /// (`{name}@{content_map_hash}` in `conductor_bridge::sync`), so the same read answers both
-/// questions. A host builtin records a bare tool name and therefore never matches.
+/// questions. The bare tool name matches too: that is a host builtin's spelling, and a
+/// `yt-dlp` entry that lost its content-map hash is the payload-less downloader
+/// [`assert_yt_dlp_deployed_with_a_payload`] exists to catch, so it must reach that
+/// assertion's message rather than be reported as no entry at all.
 fn names_yt_dlp(identity: &str) -> bool {
-    identity.split_once('@').is_some_and(|(tool, _)| tool == YT_DLP_TOOL)
+    match identity.split_once('@') {
+        Some((tool, _)) => tool == YT_DLP_TOOL,
+        None => identity == YT_DLP_TOOL,
+    }
 }
 
 /// Reads the upstream provider title yt-dlp recorded in its `info.json` sidecar.
@@ -104,6 +110,11 @@ fn assert_youtube_regression_post_sync(
 /// A fresh root holds no instance the cache could serve and no path an earlier run could
 /// have written, so a run that executed nothing or materialized nothing did not do the work
 /// the rest of the assertions read.
+///
+/// The last two counts are the run's error channels, and [`SyncSummary::warnings`] does not
+/// carry them: [`mediapm::output::sync_outcome`] reads `missing_paths` and
+/// `workflow_failed_steps` before it looks at `warnings`, so a run that leaves a promised
+/// path unwritten is an error with an empty warning list.
 fn assert_summary_reports_a_first_sync(summary: &SyncSummary) {
     assert_eq!(
         summary.cached_steps, 0,
@@ -117,6 +128,16 @@ fn assert_summary_reports_a_first_sync(summary: &SyncSummary) {
     assert!(
         summary.materialized_paths >= 1,
         "the sync must have materialized the hierarchy it resolved: {summary:?}"
+    );
+    assert_eq!(
+        summary.missing_paths, 0,
+        "the run must leave no promised hierarchy path unwritten, and this count is what says \
+         so rather than the warning list: {summary:?}"
+    );
+    assert_eq!(
+        summary.workflow_failed_steps, 0,
+        "the run must not fail a workflow step, because the media the step was to produce is \
+         then not on disk, and a failed step is an error with no warning: {summary:?}"
     );
     assert!(
         summary.warnings.is_empty(),
@@ -226,8 +247,9 @@ fn assert_yt_dlp_deployed_with_a_payload(generated_path: &Path) {
     let content_map = &generated.tools[yt_dlp_key].runtime.content_map;
     assert!(
         !content_map.is_empty(),
-        "the deployed entry '{yt_dlp_key}' must name the payload files it materializes, and \
-         its content map is empty"
+        "the deployed entry '{yt_dlp_key}' must name the payload files it materializes, and its \
+         content map is empty — the spelling of a host builtin, i.e. an entry that names the \
+         downloader and carries nothing to run"
     );
 }
 
@@ -261,10 +283,13 @@ async fn youtube_regression_against_the_real_upstream() {
     let fixture = fixture_mediapm_ncl();
     assert!(
         fixture.is_file(),
-        "the regression's config fixture '{}' is gitignored, because it is written by the \
-         demo (`**/examples/artifacts/` in `.gitignore`), so a fresh clone has none: write it \
-         with `cargo run --all-features -p mediapm --example mediapm_demo_online` and run \
-         this test with `--ignored`",
+        "the regression's config fixture '{}' is gitignored (`**/examples/artifacts/` in \
+         `.gitignore`), because it is written by the demo, so a fresh clone has none: write it \
+         with `MEDIAPM_RUN_ONLINE_SYNC=1 cargo run --all-features -p mediapm --example \
+         mediapm_demo_online`, then run this test with `--ignored`. The switch matters: without \
+         it the demo takes its default stub-chain route, which writes the mock `MusicBrainz` \
+         endpoint into the document's tagging step, so this test would ask a mock that is not \
+         listening instead of the real upstream",
         fixture.display()
     );
 
@@ -276,4 +301,23 @@ async fn youtube_regression_against_the_real_upstream() {
 
     let expectations = load_demo_hierarchy_golden_document().online;
     assert_youtube_regression_post_sync(&service, &summary, &expectations);
+}
+
+/// The identity match the regression reads both documents with.
+///
+/// This is the one assertion the ignored run cannot make on a passing run: a correct
+/// document holds the generated spelling alone, so the bare spelling is only reachable on a
+/// failing run and would otherwise go unexercised.
+#[cfg(test)]
+mod tests {
+    use super::names_yt_dlp;
+
+    #[test]
+    fn names_yt_dlp_accepts_the_generated_and_the_bare_spelling() {
+        assert!(names_yt_dlp("yt-dlp@blake3:5f2a"));
+        assert!(names_yt_dlp("yt-dlp"));
+        assert!(!names_yt_dlp("ffmpeg@blake3:5f2a"));
+        assert!(!names_yt_dlp("media-tagger"));
+        assert!(!names_yt_dlp("yt-dlp-extra"));
+    }
 }

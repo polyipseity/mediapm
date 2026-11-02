@@ -18,7 +18,7 @@
 //!   (`<os-cache-dir>/mediapm/cache`) and persists downloaded tools across runs.
 //!
 //! The post-sync assertions follow the path. The real-tool facts — the ffprobe
-//! stream properties, the untagged and tagged tag sets, the ReplayGain tags and
+//! stream properties, the untagged and tagged tag sets, the `ReplayGain` tags and
 //! the canonical media-root name — are assertions only a real
 //! `ffmpeg`/`rsgain`/`sd` can satisfy, so they run online alone; offline the run
 //! reads the materialized file in process and asserts the committed fixture's

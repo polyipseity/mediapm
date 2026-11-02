@@ -24,9 +24,9 @@ pub const CACHE_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
 /// disabled tokens (`false|0|no|off`), select the offline path, which needs the
 /// `test-seams` feature.
 ///
-/// The non-example `online_sync_post_sync_dump` regression test reads the same
-/// switch through [`run_online_sync_enabled`]. The offline demo
-/// (`mediapm_demo`) reaches no upstream at all and has no switch.
+/// The offline demo (`mediapm_demo`) reaches no upstream at all and has no
+/// switch, and the `online_sync_post_sync_dump` regression reads none either: it
+/// reaches the real upstream through `#[ignore]`.
 pub const RUN_ONLINE_SYNC_ENV: &str = "MEDIAPM_RUN_ONLINE_SYNC";
 
 /// Process-wide lock serializing `MEDIAPM_EXAMPLE_*` env mutation.
@@ -92,23 +92,6 @@ pub fn uses_isolated_cache_root() -> bool {
     std::env::var_os(CACHE_ROOT_ENV).is_some()
 }
 
-/// Detects a CI environment from standard CI variables.
-///
-/// Used by the 3-level run model: Level 1 skips nondeterministic network paths
-/// automatically in CI. Mirrors the pattern previously duplicated in
-/// `mediapm_demo_online.rs` and `online_sync_post_sync_dump.rs`.
-#[must_use]
-pub fn ci_mode_detected() -> bool {
-    std::env::var("CI")
-        .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
-        || std::env::var("GITHUB_ACTIONS").is_ok()
-        || std::env::var("GITLAB_CI").is_ok()
-        || std::env::var("CIRCLECI").is_ok()
-        || std::env::var("TRAVIS").is_ok()
-        || std::env::var("BUILDKITE").is_ok()
-        || std::env::var("DRONE").is_ok()
-}
-
 /// Whether the real upstream is selected: true only for `1|true|yes|on`.
 ///
 /// This is [`RUN_ONLINE_SYNC_ENV`]'s one reader. Unset, empty and every other
@@ -119,18 +102,6 @@ pub fn ci_mode_detected() -> bool {
 pub fn online_sync_enabled() -> bool {
     std::env::var(RUN_ONLINE_SYNC_ENV)
         .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-}
-
-/// [`online_sync_enabled`] under the name the non-example
-/// `online_sync_post_sync_dump` regression test reads it by.
-///
-/// The two names are one switch, and this delegates rather than repeating the
-/// token match, so a change to what counts as enabled cannot reach one reader
-/// and miss the other. The regression test is the second name's only caller;
-/// the two-path conversion of that test is what removes it.
-#[must_use]
-pub fn run_online_sync_enabled() -> bool {
-    online_sync_enabled()
 }
 
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.
