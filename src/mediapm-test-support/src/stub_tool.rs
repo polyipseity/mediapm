@@ -534,6 +534,18 @@ mod tests {
         target
     }
 
+    /// Copies the located stub into `directory` under the exact file name `name`.
+    ///
+    /// [`copy_stub_named`] appends this host's executable suffix; a test that
+    /// pins a name the provider writes on one OS only needs the name given
+    /// literally, so the same shape can be run on every host.
+    fn copy_stub_as(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let target = directory.join(name);
+        std::fs::copy(stub_tool_path(), &target)
+            .expect("the stub must copy into the chain directory");
+        target
+    }
+
     /// The environment variable naming the manifest a `yt-dlp`-named copy emits.
     ///
     /// Spelled here as the literal the binary reads, because the binary is
@@ -1576,6 +1588,32 @@ mod tests {
 
         let (code, _, stderr) = run_program(&deno, &["", "--allow-all"], &[], Some(dir.path()));
         assert_eq!(code, 0, "a copy named deno must succeed through the shim: {stderr}");
+    }
+
+    /// A copy named `deno.real.exe` succeeds through the permission shim.
+    ///
+    /// The provider's permission wrapper renames the deno binary it found and
+    /// writes a shim that re-execs it (`wrap_deno_binary` in
+    /// `src/mediapm-conductor/src/tools/provider/mod.rs`), so the process the
+    /// shim starts carries the rewritten path as its `argv[0]`. That name is
+    /// `deno.real.exe` on Windows and `deno.real` elsewhere, and only the
+    /// Windows one has a stem no other name covers: `program_stem` strips the
+    /// last extension, so `deno.real.exe` reduces to `deno.real` while
+    /// `deno.real` reduces to `deno`, which the bare-name test above already
+    /// runs. The stem comes from the name alone, so pinning the Windows name
+    /// here pins the dispatch on every host; the name is written literally
+    /// because `copy_stub_named` would append this host's own suffix.
+    #[test]
+    fn a_copy_named_deno_real_exe_succeeds_through_the_permission_shim() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let copy = copy_stub_as(dir.path(), "deno.real.exe");
+
+        let (code, stdout, stderr) =
+            run_program(&copy, &["", "--allow-all"], &[], Some(dir.path()));
+
+        assert_eq!(code, 0, "a copy named deno.real.exe must succeed through the shim: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write to stdout: {stdout}");
+        assert!(stderr.is_empty(), "the stub must not write to stderr: {stderr}");
     }
 
     /// A program name that is not a tool this stub stands in for stays a usage failure.

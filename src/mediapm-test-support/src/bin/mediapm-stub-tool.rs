@@ -44,14 +44,16 @@
 //! have been given, so there is no `--mode` to read. A copy with no `--mode`
 //! dispatches on the file stem of its own `argv[0]`: `yt-dlp` (and the asset
 //! names the provider provisions, `yt-dlp_macos` and `yt-dlp_linux`) emits,
-//! `ffprobe` probes, and `ffmpeg`, `rsgain`, `sd` and `deno` fall back to the
-//! copy shape — the output is the last argument that is not itself an option,
-//! and the input is the path after the first `-i` when the command line names
-//! one and the output itself otherwise. That fallback is what covers the three
-//! shapes an offline chain has: a tool that reads an input slot and writes an
-//! output file (`ffmpeg`), a tool that rewrites the file it is handed in place,
-//! which the copy leaves exactly as the step staged it (`sd`, `rsgain`), and a
-//! tool invoked with nothing but flags (`deno`, whose provider shim appends
+//! `ffprobe` probes, and `ffmpeg`, `rsgain`, `sd`, `deno` and `deno.real` — the
+//! name the provider's permission shim re-execs, `deno.real.exe` on Windows,
+//! whose file stem the suffix leaves as `deno.real` — fall back to the copy
+//! shape: the output is the last argument that is not itself an option, and the
+//! input is the path after the first `-i` when the command line names one and
+//! the output itself otherwise. That fallback is what covers the three shapes an
+//! offline chain has: a tool that reads an input slot and writes an output file
+//! (`ffmpeg`), a tool that rewrites the file it is handed in place, which the
+//! copy leaves exactly as the step staged it (`sd`, `rsgain`), and a tool
+//! invoked with nothing but flags (`deno`, whose provider shim appends
 //! `--allow-all`), which has no file to copy and succeeds. Any other program
 //! name stays the missing-mode usage failure, so a copy that stands in for
 //! nothing — including the test harness Cargo writes beside the stub — still
@@ -94,7 +96,13 @@ const EMIT_PROGRAMS: [&str; 3] = ["yt-dlp", "yt-dlp_macos", "yt-dlp_linux"];
 const PROBE_PROGRAM: &str = "ffprobe";
 
 /// Program names whose copies use the copy-shaped fallback.
-const FALLBACK_PROGRAMS: [&str; 4] = ["ffmpeg", "rsgain", "sd", "deno"];
+///
+/// `deno.real` is here because the provider's permission wrapper re-execs the
+/// renamed binary (`wrap_deno_binary` in
+/// `src/mediapm-conductor/src/tools/provider/mod.rs`), so the process the shim
+/// starts carries that name rather than `deno`; on Windows the name is
+/// `deno.real.exe`, which `program_stem` reduces to `deno.real`.
+const FALLBACK_PROGRAMS: [&str; 5] = ["ffmpeg", "rsgain", "sd", "deno", "deno.real"];
 
 /// Environment variable naming the manifest an emit reads.
 ///

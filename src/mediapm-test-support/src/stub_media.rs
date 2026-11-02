@@ -20,6 +20,21 @@
 //! payload is ever materialized into a sandbox, so a stub in the other slots
 //! would only cost time.
 //!
+//! # Known limitation
+//!
+//! A chain copy is handed a real tool's command line, so the copy-shaped
+//! fallback has one output path to work with: the last argument that is not an
+//! option. An `ffmpeg` step that binds more than one output slot therefore gets
+//! its highest-indexed path written and the others left absent. `ffmpeg`
+//! renders one `${inputs.output_path_N}` per slot (`build_ffmpeg_command` in
+//! `src/mediapm/src/tools/workflows/ffmpeg.rs`) and the command line carries
+//! them as bare trailing arguments, so nothing on it says how many slots are
+//! bound or which path belongs to which. The limitation is not fixable from a
+//! real command line: a stub that assigned the positional arguments to slots
+//! would write the wrong files rather than none, and a marker it could read
+//! would be a flag the real tool would reject. An offline step that needs
+//! several outputs is out of this chain's reach.
+//!
 //! The upstream shapes mirror `src/mediapm/tests/common/stub_upstream.rs`,
 //! which cannot be reused: it is a test module of the `mediapm` crate, and this
 //! crate does not depend on `mediapm` (a dependency that would put `wiremock`
@@ -51,6 +66,7 @@ pub const MANIFEST_ENV: &str = "MEDIAPM_STUB_MANIFEST";
 ///
 /// Published the same way as [`MANIFEST_ENV`], and pinned by the same test.
 pub const INVOCATION_RECORD_ENV: &str = "MEDIAPM_STUB_INVOCATIONS";
+
 /// The tools an offline chain stands in for, in the order it writes them.
 pub const CHAIN_TOOLS: [&str; 6] = ["yt-dlp", "ffmpeg", "ffprobe", "rsgain", "sd", "deno"];
 
@@ -465,12 +481,15 @@ pub async fn mount_managed_tool_upstreams(mock: &MockUpstream) -> ManagedToolUps
 
 /// Returns the file name the provider's `find_os_executable` resolves in a slot.
 ///
-/// The provider looks for `{tool_id}` and `{tool_id}.exe`, so the name carries
-/// the host's executable suffix and nothing else. One name is enough: the
-/// provider's search tries the plain name first and the suffixed one second, and
-/// only the suffixed one exists here on Windows.
-fn executable_name(tool: &str) -> String {
-    format!("{tool}{}", std::env::consts::EXE_SUFFIX)
+/// The provider looks for `{tool_id}` and `{tool_id}.exe` in every slot, so
+/// either name resolves; the entry still carries the name the slot's own OS
+/// gives the tool, because a payload stands in for the asset upstream serves,
+/// and a Windows slot holding the plain name on a unix host is not that shape.
+/// Every slot label but `windows` is a unix slot: the per-OS loops pass their
+/// OS, and the martin-riedl and jellyfin payloads pass the macOS architecture
+/// they cover.
+fn slot_executable_name(tool: &str, slot: &str) -> String {
+    if slot == "windows" { format!("{tool}.exe") } else { tool.to_string() }
 }
 
 /// The architecture label the provider resolves for this host.
@@ -488,21 +507,27 @@ fn provider_host_arch() -> &'static str {
 }
 
 /// Whether `os` is the OS label this host runs.
+///
+/// The provider layer's own OS label is out of reach here — this crate does not
+/// depend on the conductor — so the comparison rests on
+/// [`crate::stub_payload::host_os`], this crate's copy of that label, the same
+/// way [`provider_host_arch`] restates the conductor's arch label.
 fn is_host_os(os: &str) -> bool {
-    os == std::env::consts::OS
+    os == crate::stub_payload::host_os()
 }
 
 /// Packs one OS slot's entries: the stub when this slot is the one the host runs.
 ///
 /// Every slot's payload is downloaded and packed by the provider, but only the
 /// host's is materialized, so the other slots carry a small text body naming the
-/// slot they stand for.
+/// slot they stand for. The entry's name is the slot's own, not this host's
+/// ([`slot_executable_name`]).
 fn slot_entries(tool: &str, slot: &str, stub: Option<&[u8]>) -> Vec<StubEntry> {
     let body = match stub {
         Some(stub) => stub.to_vec(),
         None => format!("{tool} stub for {slot}\n").into_bytes(),
     };
-    vec![StubEntry::executable(executable_name(tool), body)]
+    vec![StubEntry::executable(slot_executable_name(tool, slot), body)]
 }
 
 /// Mounts yt-dlp's upstream traffic: one bare binary per OS slot.
@@ -534,8 +559,10 @@ async fn mount_yt_dlp(mock: &MockUpstream, stub: &[u8]) -> String {
 ///
 /// The macOS and Linux asset names follow the host architecture, exactly as the
 /// provider's own slot table does. The provider wraps the executable it finds in
-/// a permission shim and renames the stub to `deno.real`, whose file stem is
-/// still `deno`, so the copy dispatches as deno.
+/// a permission shim and renames the stub to `deno.real` (`deno.real.exe` on
+/// Windows), writing a shim at the original path that re-execs the rewritten
+/// binary, so a provisioned deno runs under one of those two names; the stub's
+/// dispatch covers both.
 async fn mount_deno(mock: &MockUpstream, stub: &[u8]) -> String {
     let arch = provider_host_arch();
     let assets = [
@@ -679,4 +706,25 @@ async fn mount_ffmpeg(mock: &MockUpstream, stub: &[u8]) -> String {
     }
 
     host_url
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A slot's entry carries the executable name that slot's own OS gives the tool.
+    ///
+    /// The mocked payloads stand in for the assets upstream serves, so the
+    /// Windows slot has to hold `deno.exe` and the unix slots `deno`. Naming
+    /// every slot with this host's suffix would leave the Windows slot holding
+    /// the plain name on a unix host, which is a shape no upstream asset has.
+    #[test]
+    fn a_slot_entry_is_named_the_way_its_own_os_names_the_executable() {
+        let name = |slot: &str| slot_entries("deno", slot, None)[0].name.clone();
+
+        assert_eq!(name("windows"), "deno.exe", "the Windows slot's entry is the suffixed name");
+        assert_eq!(name("linux"), "deno", "the Linux slot's entry is the plain name");
+        assert_eq!(name("macos"), "deno", "the macOS slot's entry is the plain name");
+        assert_eq!(name("aarch64"), "deno", "a macOS architecture label is not a Windows slot");
+    }
 }
