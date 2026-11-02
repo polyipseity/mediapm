@@ -436,8 +436,8 @@ mod tests {
     #[tokio::test]
     async fn every_production_builtin_has_a_static_arm() {
         let cas = mediapm_cas::InMemoryCas::default();
-        let config_dir = tempfile::tempdir().expect("config dir");
-        let sandbox = tempfile::tempdir().expect("sandbox dir");
+        let config_dir = mediapm_utils::temp::artifact_dir().expect("config dir");
+        let sandbox = mediapm_utils::temp::artifact_dir().expect("sandbox dir");
         let no_args = BTreeMap::new();
 
         for entry in crate::tools::production_builtins() {
