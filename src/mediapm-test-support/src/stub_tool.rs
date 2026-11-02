@@ -484,6 +484,8 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
+    use crate::media_fixture::{MEDIA_FIXTURE_HEIGHT, MEDIA_FIXTURE_WIDTH};
+
     /// Runs the stub with `args` and returns its exit code, stdout and stderr.
     fn run_stub(args: &[&str]) -> (i32, String, String) {
         let output = Command::new(stub_tool_path())
@@ -919,15 +921,20 @@ mod tests {
         assert!(!output.exists(), "a failed copy must not leave an output behind");
     }
 
-    /// An unknown mode is rejected rather than ignored.
+    /// An unknown mode is rejected rather than ignored, and the usage line names every mode.
     ///
     /// A stub that fell through to one of its modes would let a typo in a tool
-    /// spec pass as a working step.
+    /// spec pass as a working step, and a usage line that still named only the
+    /// modes of the day would send a caller looking for a mode that is there.
     #[test]
     fn an_unknown_mode_is_a_usage_failure() {
         let (code, _, stderr) = run_stub(&["--mode", "transcode"]);
         assert_eq!(code, 2, "an unknown mode is a usage failure: {stderr}");
         assert!(stderr.contains("unknown mode 'transcode'"), "the failure must name it: {stderr}");
+        assert!(
+            stderr.contains("copy") && stderr.contains("emit") && stderr.contains("probe"),
+            "the usage line must name every mode a caller can ask for: {stderr}",
+        );
     }
 
     /// A missing `--mode` is rejected.
@@ -972,6 +979,233 @@ mod tests {
         assert!(
             elapsed >= Duration::from_millis(900),
             "one second of sleep must take about a second, took {elapsed:?}",
+        );
+    }
+
+    /// `emit` writes every entry the manifest names, creating a missing parent directory.
+    ///
+    /// This is the property that lets the stub stand in for `yt-dlp`: a download
+    /// writes a set of sidecars rather than one file, and the caller names every
+    /// destination in the manifest, so the stub needs no knowledge of which tool
+    /// asked for them. The destinations sit under a directory that does not exist
+    /// yet, because that is the shape a fresh hierarchy has.
+    #[test]
+    fn emit_mode_writes_every_entry_and_creates_missing_parent_directories() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let first_source = dir.path().join("first.bin");
+        let second_source = dir.path().join("second.bin");
+        std::fs::write(&first_source, b"first-bytes").expect("write the first source");
+        std::fs::write(&second_source, b"second-bytes").expect("write the second source");
+        let first_output = dir.path().join("nested").join("deeper").join("first.info.json");
+        let second_output = dir.path().join("nested").join("second.vtt");
+        let manifest = dir.path().join("emit.manifest");
+        std::fs::write(
+            &manifest,
+            format!(
+                "{}\t{}\n{}\t{}\n",
+                first_output.display(),
+                first_source.display(),
+                second_output.display(),
+                second_source.display(),
+            ),
+        )
+        .expect("write the manifest");
+
+        let (code, stdout, stderr) = run_stub(&[
+            "--mode",
+            "emit",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+        ]);
+
+        assert_eq!(code, 0, "a well-formed emit must succeed: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write to stdout: {stdout}");
+        assert_eq!(
+            std::fs::read(&first_output).expect("read the first output"),
+            b"first-bytes",
+            "the first entry's destination must carry its source's bytes",
+        );
+        assert_eq!(
+            std::fs::read(&second_output).expect("read the second output"),
+            b"second-bytes",
+            "every entry must be written, not only the first",
+        );
+    }
+
+    /// A source the manifest names but does not exist fails before anything is written.
+    ///
+    /// The caller's hierarchy consumes the whole set, so a stub that wrote the
+    /// entries it could would leave a partial set behind and report success — the
+    /// step would look complete while the links pointed at files that were never
+    /// produced. Reading every source before the first destination is what makes
+    /// the failure total.
+    #[test]
+    fn emit_mode_with_a_missing_source_writes_no_destination() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let present_source = dir.path().join("present.bin");
+        std::fs::write(&present_source, b"present-bytes").expect("write the present source");
+        let missing_source = dir.path().join("absent.bin");
+        let present_output = dir.path().join("present.info.json");
+        let missing_output = dir.path().join("absent.info.json");
+        let manifest = dir.path().join("partial.manifest");
+        std::fs::write(
+            &manifest,
+            format!(
+                "{}\t{}\n{}\t{}\n",
+                present_output.display(),
+                present_source.display(),
+                missing_output.display(),
+                missing_source.display(),
+            ),
+        )
+        .expect("write the manifest");
+
+        let (code, _, stderr) = run_stub(&[
+            "--mode",
+            "emit",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+        ]);
+
+        assert_eq!(code, 3, "an unreadable source is an I/O failure: {stderr}");
+        assert!(
+            stderr.contains("cannot read manifest source"),
+            "the failure must name the cause: {stderr}",
+        );
+        assert!(
+            stderr.contains("absent.bin"),
+            "the failure must name the source it could not read: {stderr}",
+        );
+        assert!(
+            !present_output.exists(),
+            "a failed emit must not write the entries it could have written",
+        );
+        assert!(!missing_output.exists(), "a failed emit must write no destination");
+    }
+
+    /// A manifest line that names no destination and source pair is a usage failure.
+    ///
+    /// A stub that skipped a line it could not read would emit a set that is
+    /// silently smaller than the one the caller asked for.
+    #[test]
+    fn emit_mode_with_a_malformed_manifest_is_a_usage_failure() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let manifest = dir.path().join("malformed.manifest");
+
+        for line in ["just-a-destination\n", "destination\t\n"] {
+            std::fs::write(&manifest, line).expect("write the malformed manifest");
+            let (code, _, stderr) = run_stub(&[
+                "--mode",
+                "emit",
+                "--manifest",
+                manifest.to_str().expect("utf-8 manifest path"),
+            ]);
+
+            assert_eq!(code, 2, "a malformed line is a usage failure: {stderr}");
+            assert!(
+                stderr.contains("manifest line 1 is malformed"),
+                "the failure must name the line it could not read: {stderr}",
+            );
+        }
+    }
+
+    /// A manifest that names no entry is a usage failure, not a silent success.
+    ///
+    /// An emit that wrote nothing would let a step whose manifest was never
+    /// populated pass as a successful one, which is the failure class this stub
+    /// exists to make loud.
+    #[test]
+    fn emit_mode_with_an_empty_manifest_is_a_usage_failure() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let manifest = dir.path().join("empty.manifest");
+        std::fs::write(&manifest, "").expect("write the empty manifest");
+
+        let (code, _, stderr) = run_stub(&[
+            "--mode",
+            "emit",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+        ]);
+
+        assert_eq!(code, 2, "an empty manifest is a usage failure: {stderr}");
+        assert!(stderr.contains("names no entry"), "the failure must name the cause: {stderr}");
+    }
+
+    /// Emit mode without `--manifest` is rejected.
+    ///
+    /// The flag is the mode's whole input, so a run that named no file set would
+    /// otherwise succeed having written nothing.
+    #[test]
+    fn emit_mode_without_a_manifest_is_a_usage_failure() {
+        let (code, _, stderr) = run_stub(&["--mode", "emit"]);
+        assert_eq!(code, 2, "a missing manifest is a usage failure: {stderr}");
+        assert!(stderr.contains("--manifest is required"), "the failure must name it: {stderr}");
+    }
+
+    /// Probe mode answers the `ffprobe`-shaped document on stdout.
+    ///
+    /// The stub stands in for `ffprobe`, and the media the offline run hands it is
+    /// the committed fixture (`src/mediapm/tests/fixtures/media/demo.mkv`), so the
+    /// document states that file's facts: a Matroska container, an H.264 video
+    /// track, and an AAC audio track. `ffprobe` writes its JSON to stdout and exits
+    /// 0, so a caller's read has to find it there rather than on stderr or in an
+    /// exit code.
+    #[test]
+    fn probe_mode_prints_the_ffprobe_shaped_document_on_stdout() {
+        let (code, stdout, stderr) = run_stub(&["--mode", "probe"]);
+
+        assert_eq!(code, 0, "a probe must succeed: {stderr}");
+        assert!(stderr.is_empty(), "the probe must answer on stdout, not stderr: {stderr}");
+        let payload: serde_json::Value =
+            serde_json::from_str(&stdout).expect("the probe output must be JSON");
+        let format_name = payload
+            .get("format")
+            .and_then(|format| format.get("format_name"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            format_name.contains("matroska"),
+            "the document must name the fixture's container, got '{format_name}': {stdout}",
+        );
+        let streams = payload
+            .get("streams")
+            .and_then(serde_json::Value::as_array)
+            .expect("the document must carry a streams array");
+        // The dimensions are asserted against the fixture's pinned consts rather
+        // than against literals, so a fixture regenerated at another resolution
+        // fails here instead of leaving the stub answering with facts no file
+        // carries any more.
+        let video = streams
+            .iter()
+            .find(|stream| {
+                stream.get("codec_type").and_then(serde_json::Value::as_str) == Some("video")
+            })
+            .expect("the document must carry a video stream");
+        assert_eq!(
+            video.get("codec_name").and_then(serde_json::Value::as_str),
+            Some("h264"),
+            "the fixture's video track is H.264: {stdout}",
+        );
+        assert_eq!(
+            video.get("width").and_then(serde_json::Value::as_u64),
+            Some(MEDIA_FIXTURE_WIDTH),
+            "the document must state the committed fixture's width: {stdout}",
+        );
+        assert_eq!(
+            video.get("height").and_then(serde_json::Value::as_u64),
+            Some(MEDIA_FIXTURE_HEIGHT),
+            "the document must state the committed fixture's height: {stdout}",
+        );
+        let audio = streams
+            .iter()
+            .find(|stream| {
+                stream.get("codec_type").and_then(serde_json::Value::as_str) == Some("audio")
+            })
+            .expect("the document must carry an audio stream");
+        assert_eq!(
+            audio.get("codec_name").and_then(serde_json::Value::as_str),
+            Some("aac"),
+            "the fixture's audio track is AAC: {stdout}",
         );
     }
 
