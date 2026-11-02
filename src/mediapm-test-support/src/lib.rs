@@ -71,18 +71,35 @@
 //! // Every provider URL now resolves to the mock for this scope.
 //! # }
 //! ```
+//!
+//! # A whole offline run
+//!
+//! [`stub_media`] composes the pieces above into the two halves a hermetic run
+//! needs: [`stub_media::mount_offline_tool_chain`] writes an executable per
+//! managed tool, and [`stub_media::mount_managed_tool_upstreams`] answers the
+//! provider seams with those same executables, so a sync provisions them without
+//! a network. [`MockMusicBrainz`] covers the one upstream that is not a tool:
+//! the media tagger is a host builtin, so its lookup needs an answer rather than
+//! an executable.
 
 pub mod media_fixture;
+pub mod mock_musicbrainz;
 pub mod mock_upstream;
 pub mod seams;
+pub mod stub_media;
 pub mod stub_payload;
 pub mod stub_tool;
 
 pub use media_fixture::{MatroskaFacts, media_fixture_path, read_matroska_facts};
+pub use mock_musicbrainz::MockMusicBrainz;
 pub use mock_upstream::MockUpstream;
 pub use seams::{
     ALL_SEAMS, GITHUB_API_BASE, GITHUB_DOWNLOAD_BASE, JELLYFIN_BASE, MARTIN_RIEDL_BASE, SeamGuard,
     env_lock, lock_process_env, seam_pairs,
+};
+pub use stub_media::{
+    CHAIN_TOOLS, INVOCATION_RECORD_ENV, MANIFEST_ENV, ManagedToolUpstreams, OfflineToolChain,
+    StubInvocation, mount_managed_tool_upstreams, mount_offline_tool_chain,
 };
 pub use stub_payload::{
     PayloadFormat, StubAsset, StubEntry, StubPayload, StubPayloadBuilder, host_arch, host_os,

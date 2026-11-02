@@ -37,21 +37,77 @@
 //!
 //! `--mode sleep --seconds <n>` sleeps for `n` whole seconds.
 //!
+//! # Running as a named tool
+//!
+//! An offline run does not invoke this binary: it invokes copies of it named
+//! after the tools they stand in for, with the command line the real tool would
+//! have been given, so there is no `--mode` to read. A copy with no `--mode`
+//! dispatches on the file stem of its own `argv[0]`: `yt-dlp` (and the asset
+//! names the provider provisions, `yt-dlp_macos` and `yt-dlp_linux`) emits,
+//! `ffprobe` probes, and `ffmpeg`, `rsgain`, `sd` and `deno` fall back to the
+//! copy shape — the output is the last argument that is not itself an option,
+//! and the input is the path after the first `-i` when the command line names
+//! one and the output itself otherwise. That fallback is what covers the three
+//! shapes an offline chain has: a tool that reads an input slot and writes an
+//! output file (`ffmpeg`), a tool that rewrites the file it is handed in place,
+//! which the copy leaves exactly as the step staged it (`sd`, `rsgain`), and a
+//! tool invoked with nothing but flags (`deno`, whose provider shim appends
+//! `--allow-all`), which has no file to copy and succeeds. Any other program
+//! name stays the missing-mode usage failure, so a copy that stands in for
+//! nothing — including the test harness Cargo writes beside the stub — still
+//! answers the way the locator's probe expects.
+//!
+//! The emit manifest path cannot travel on a command line the preset owns, so it
+//! arrives in the environment: `MEDIAPM_STUB_MANIFEST` names it, and an emit with
+//! no manifest is a usage failure rather than a silent no-op. When
+//! `MEDIAPM_STUB_INVOCATIONS` is set it names a file that every invocation
+//! appends one NUL-separated line to — the program's stem, then its arguments —
+//! which is how an offline run shows a tool was reached without that tool
+//! producing anything itself. Both are optional: a `--mode` run reads neither.
+//!
 //! # Exit codes
 //!
 //! `0` on success, `2` when the command line is unusable (unknown mode, a
 //! missing flag value, an output that names the input, a manifest that names no
-//! usable entry), and `3` when a file operation fails. A stub that defaulted
+//! usable entry, an emit with no manifest to read), and `3` when a file
+//! operation fails, including the invocation record. A stub that defaulted
 //! instead of failing would let a broken command line pass as a successful step,
 //! so every unusable shape is loud.
 
+use std::ffi::OsStr;
 use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
 
 /// Exit code for a command line the stub cannot act on.
 const USAGE_EXIT: i32 = 2;
 /// Exit code for a file operation that failed.
 const IO_EXIT: i32 = 3;
+
+/// Program names whose copies emit the manifest the environment names.
+///
+/// The provider provisions yt-dlp under its platform asset's name and the file
+/// keeps that name, so every name the tool can be reached under emits.
+const EMIT_PROGRAMS: [&str; 3] = ["yt-dlp", "yt-dlp_macos", "yt-dlp_linux"];
+
+/// Program name whose copies answer the probe document.
+const PROBE_PROGRAM: &str = "ffprobe";
+
+/// Program names whose copies use the copy-shaped fallback.
+const FALLBACK_PROGRAMS: [&str; 4] = ["ffmpeg", "rsgain", "sd", "deno"];
+
+/// Environment variable naming the manifest an emit reads.
+///
+/// Spelled in `stub_media::MANIFEST_ENV` too, because the chain that sets it
+/// cannot import this binary's constants; a test there pins the two spellings
+/// together.
+const MANIFEST_ENV: &str = "MEDIAPM_STUB_MANIFEST";
+
+/// Environment variable naming the file invocations are appended to.
+///
+/// Spelled in `stub_media::INVOCATION_RECORD_ENV` too, for the same reason as
+/// [`MANIFEST_ENV`].
+const INVOCATION_RECORD_ENV: &str = "MEDIAPM_STUB_INVOCATIONS";
 
 /// The `ffprobe`-shaped document `--mode probe` writes to stdout.
 ///
@@ -123,24 +179,42 @@ impl StubError {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Err(error) = run(&args) {
+    let mut raw = std::env::args();
+    let program = raw.next();
+    let args: Vec<String> = raw.collect();
+    let result =
+        record_invocation(program.as_deref(), &args).and_then(|()| run(program.as_deref(), &args));
+    if let Err(error) = result {
         eprintln!("mediapm-stub-tool: {}", error.message);
         std::process::exit(error.exit_code);
     }
 }
 
-/// Dispatches one invocation on its `--mode` value.
+/// Dispatches one invocation.
+///
+/// `--mode` names the mode outright. A copy of this binary invoked as a real
+/// tool has no such flag and is dispatched on its own name instead, which is the
+/// only thing distinguishing the chain's copies from each other.
 ///
 /// # Errors
 ///
-/// Returns a usage failure when `--mode` is absent or names no known mode, and
-/// whatever the selected mode itself reports.
-fn run(args: &[String]) -> Result<(), StubError> {
-    let mode = value_after(args, "--mode").ok_or_else(|| {
-        StubError::usage("--mode is required (expected `copy`, `emit`, `probe` or `sleep`)")
-    })?;
-    match mode.as_str() {
+/// Returns a usage failure when `--mode` names no known mode and no program name
+/// claims the invocation, and whatever the selected mode itself reports.
+fn run(program: Option<&str>, args: &[String]) -> Result<(), StubError> {
+    match value_after(args, "--mode") {
+        Some(mode) => run_mode(&mode, args),
+        None => run_as_program(program, args),
+    }
+}
+
+/// Runs the mode `--mode` names.
+///
+/// # Errors
+///
+/// Returns a usage failure for an unknown mode, and whatever the selected mode
+/// itself reports.
+fn run_mode(mode: &str, args: &[String]) -> Result<(), StubError> {
+    match mode {
         "copy" => copy(args),
         "emit" => emit(args),
         "probe" => probe(),
@@ -149,6 +223,132 @@ fn run(args: &[String]) -> Result<(), StubError> {
             "unknown mode '{unknown}': expected `copy`, `emit`, `probe` or `sleep`"
         ))),
     }
+}
+
+/// Runs the mode the invocation's own program name stands for.
+///
+/// # Errors
+///
+/// Returns the missing-mode usage failure for a name no mode claims, and whatever
+/// the dispatched mode itself reports.
+fn run_as_program(program: Option<&str>, args: &[String]) -> Result<(), StubError> {
+    let stem = program_stem(program);
+    if EMIT_PROGRAMS.contains(&stem.as_str()) {
+        return emit_from_environment(args);
+    }
+    if stem == PROBE_PROGRAM {
+        return probe();
+    }
+    if FALLBACK_PROGRAMS.contains(&stem.as_str()) {
+        return fallback(args);
+    }
+    Err(missing_mode())
+}
+
+/// The failure an invocation that names no mode reports.
+///
+/// One spelling, because the locator matches it: a candidate is only accepted
+/// when a bare run answers this message (`behaves_like_the_stub` in
+/// `src/mediapm-test-support/src/lib.rs`).
+fn missing_mode() -> StubError {
+    StubError::usage("--mode is required (expected `copy`, `emit`, `probe` or `sleep`)")
+}
+
+/// The file stem of `argv[0]`, the name a copy of the stub was invoked under.
+///
+/// The stem rather than the whole name, because the provider provisions a
+/// Windows asset as `yt-dlp.exe`.
+fn program_stem(program: Option<&str>) -> String {
+    program
+        .and_then(|program| Path::new(program).file_stem())
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Emits the manifest the environment names.
+///
+/// The command line a preset renders belongs to the real tool, so the manifest
+/// path reaches the stub through [`MANIFEST_ENV`] instead.
+///
+/// # Errors
+///
+/// Returns a usage failure when the environment names no manifest, and whatever
+/// [`emit`] reports.
+fn emit_from_environment(args: &[String]) -> Result<(), StubError> {
+    let manifest =
+        std::env::var(MANIFEST_ENV).ok().filter(|path| !path.is_empty()).ok_or_else(|| {
+            StubError::usage(format!(
+                "a copy invoked as yt-dlp emits the manifest named by {MANIFEST_ENV}, \
+                 which is unset or empty"
+            ))
+        })?;
+    let mut args = args.to_vec();
+    args.push("--manifest".to_string());
+    args.push(manifest);
+    emit(&args)
+}
+
+/// Copies the way `copy` does, for the tools whose command line carries no mode.
+///
+/// The output is the last argument that is not itself an option, because a real
+/// command line ends with an option's *value* as often as with a path — the
+/// provider's deno shim appends `--allow-all` after the arguments it was given,
+/// and a path is what a tool is handed, not a flag. A command line with no such
+/// argument has nothing to do and succeeds.
+///
+/// # Errors
+///
+/// Returns an I/O failure when the input cannot be read or the output cannot be
+/// written.
+fn fallback(args: &[String]) -> Result<(), StubError> {
+    let Some(output) = args.iter().rev().find(|arg| !arg.is_empty() && !arg.starts_with('-'))
+    else {
+        return Ok(());
+    };
+    // The `-i` input when the command line names one, else the file the command
+    // line hands the tool last: `sd` and `rsgain` rewrite the file they are given
+    // in place, so that file is both the input and the output, and the copy below
+    // leaves it as the step staged it. `first_input_path`'s usage failure belongs
+    // to `copy`; here a command line with no usable `-i` is the in-place shape
+    // rather than a mistake.
+    let input = first_input_path(args).unwrap_or_else(|_| output.clone());
+    if &input == output {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&input)
+        .map_err(|error| StubError::io(format!("cannot read input '{input}': {error}")))?;
+    std::fs::write(output, &bytes)
+        .map_err(|error| StubError::io(format!("cannot write output '{output}': {error}")))?;
+    Ok(())
+}
+
+/// Appends this invocation to the record the environment names, when it names one.
+///
+/// # Errors
+///
+/// Returns an I/O failure when the record cannot be opened or appended to: a run
+/// whose evidence cannot be written must not pass as a run that produced none.
+fn record_invocation(program: Option<&str>, args: &[String]) -> Result<(), StubError> {
+    let Ok(path) = std::env::var(INVOCATION_RECORD_ENV) else {
+        return Ok(());
+    };
+    if path.is_empty() {
+        return Ok(());
+    }
+    let mut line = program_stem(program);
+    for arg in args {
+        line.push('\0');
+        line.push_str(arg);
+    }
+    line.push('\n');
+    let mut record =
+        std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|error| {
+            StubError::io(format!("cannot open the invocation record '{path}': {error}"))
+        })?;
+    record.write_all(line.as_bytes()).map_err(|error| {
+        StubError::io(format!("cannot append to the invocation record '{path}': {error}"))
+    })
 }
 
 /// Copies the first `-i` input to the last argument.

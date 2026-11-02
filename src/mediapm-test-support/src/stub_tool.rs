@@ -488,18 +488,65 @@ mod tests {
         MEDIA_FIXTURE_HEIGHT, MEDIA_FIXTURE_PROBE_DURATION, MEDIA_FIXTURE_WIDTH,
     };
 
-    /// Runs the stub with `args` and returns its exit code, stdout and stderr.
-    fn run_stub(args: &[&str]) -> (i32, String, String) {
-        let output = Command::new(stub_tool_path())
-            .args(args)
-            .output()
-            .expect("the located stub must be executable");
+    /// Runs `program` with `args` and `env`, in `cwd` when one is named, and
+    /// returns its exit code, stdout and stderr.
+    ///
+    /// The environment is added to the inherited one rather than replacing it,
+    /// which is how the conductor spawns a tool: a stub that could not see the
+    /// caller's environment would not run on a platform whose loader needs it.
+    fn run_program(
+        program: &std::path::Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+        cwd: Option<&std::path::Path>,
+    ) -> (i32, String, String) {
+        let mut command = Command::new(program);
+        command.args(args);
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let output = command.output().expect("the program must be executable");
         (
-            output.status.code().expect("the stub must exit with a code, not a signal"),
+            output.status.code().expect("the program must exit with a code, not a signal"),
             String::from_utf8_lossy(&output.stdout).into_owned(),
             String::from_utf8_lossy(&output.stderr).into_owned(),
         )
     }
+
+    /// Runs the located stub with `args` and returns its exit code, stdout and stderr.
+    fn run_stub(args: &[&str]) -> (i32, String, String) {
+        run_program(&stub_tool_path(), args, &[], None)
+    }
+
+    /// Copies the located stub into `directory` under the real tool name `tool`.
+    ///
+    /// This is the shape the offline chain mounts and the shape the provider
+    /// provisions: an executable whose file name is a real tool's, with nothing
+    /// on the command line saying which stub mode it is. `std::fs::copy` carries
+    /// the execute bit across, so the copy runs without a second chmod.
+    fn copy_stub_named(directory: &std::path::Path, tool: &str) -> std::path::PathBuf {
+        let target = directory.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::copy(stub_tool_path(), &target)
+            .expect("the stub must copy into the chain directory");
+        target
+    }
+
+    /// The environment variable naming the manifest a `yt-dlp`-named copy emits.
+    ///
+    /// Spelled here as the literal the binary reads, because the binary is
+    /// compiled without this crate's library and cannot share the constant:
+    /// `stub_media::MANIFEST_ENV` holds the same name, and a guard test there
+    /// fails if the embedded stub source stops naming it.
+    const MANIFEST_ENV: &str = "MEDIAPM_STUB_MANIFEST";
+
+    /// The environment variable naming the file every invocation is recorded in.
+    ///
+    /// Spelled here for the same reason as [`MANIFEST_ENV`]; the same guard test
+    /// pins it against `stub_media::INVOCATION_RECORD_ENV`.
+    const INVOCATION_RECORD_ENV: &str = "MEDIAPM_STUB_INVOCATIONS";
 
     /// The locator returns a real binary whose name marks it as the stub.
     ///
@@ -686,8 +733,15 @@ mod tests {
     ///
     /// The locator may also move on to Cargo's own copy of the binary target, which
     /// carries no record of ours and needs none, so the assertion is the property
-    /// that holds either way: the answer is never the artifact whose record
+    /// that holds either way: the answer is never the fallback whose record
     /// disagrees with the embedded source.
+    ///
+    /// The poisoned artifact is the fallback slot itself, filled first with a build
+    /// of the embedded source. Poisoning whatever `stub_tool_path` happened to
+    /// return would miss whenever that answer is Cargo's own copy of the binary
+    /// target: the record beside that copy is not ours to consult, so a correct
+    /// locator would rightly answer with it and the test would fail a correct
+    /// locator.
     ///
     /// Nothing is asserted between writing the record and running the search, and
     /// that gap is deliberate: the record belongs to the one fallback the whole
@@ -698,14 +752,19 @@ mod tests {
     /// what is asserted.
     #[test]
     fn a_stale_record_makes_the_locator_rebuild_the_stub() {
-        let stale = stub_tool_path();
-        let record = record_path(&stale);
+        let directory = std::env::current_exe()
+            .expect("the running executable's path must be readable")
+            .parent()
+            .expect("the running executable must have a directory")
+            .to_path_buf();
+        let fallback = compile_stub_into(&directory);
+        let record = record_path(&fallback);
         std::fs::write(&record, "0000000000000000").expect("the record must be writable");
 
         let answer = stub_tool_path();
 
         assert!(
-            answer != stale || compiled_from(&stale, STUB_TOOL_SOURCE),
+            answer != fallback || compiled_from(&fallback, STUB_TOOL_SOURCE),
             "the locator answered with {} and left the record reading {}, so it trusted an \
              artifact its record calls stale instead of rebuilding it",
             answer.display(),
@@ -1287,5 +1346,349 @@ mod tests {
     fn the_located_stub_executes() {
         let (code, _, stderr) = run_stub(&["--mode", "copy"]);
         assert_eq!(code, 2, "the stub ran and rejected the empty command line: {stderr}");
+    }
+
+    /// The chain's public environment names are the ones the embedded stub reads.
+    ///
+    /// The stub binary is compiled without this crate's library, so the two
+    /// spellings cannot share a constant: the binary holds literals and
+    /// `stub_media` holds the names a caller installs. A rename on either side
+    /// would leave the manifest unpublished and the record unwritten, and the
+    /// run would fail with a missing file rather than with the rename.
+    #[test]
+    fn the_stub_source_names_the_chain_environment_variables() {
+        assert!(
+            STUB_TOOL_SOURCE.contains(crate::stub_media::MANIFEST_ENV),
+            "the stub source must read {}",
+            crate::stub_media::MANIFEST_ENV,
+        );
+        assert!(
+            STUB_TOOL_SOURCE.contains(crate::stub_media::INVOCATION_RECORD_ENV),
+            "the stub source must read {}",
+            crate::stub_media::INVOCATION_RECORD_ENV,
+        );
+    }
+
+    /// A copy named `yt-dlp` emits the manifest its environment names.
+    ///
+    /// The command line below is the shape `build_yt_dlp_command`
+    /// (`src/mediapm/src/tools/workflows/yt_dlp.rs`) renders for the demo's
+    /// step: the preset's `--no-progress --no-part` head, the step's own
+    /// options, and the source URL last. A stub that treated the last argument
+    /// as a copy destination would answer by writing the URL's name, so
+    /// dispatching on the program name is what makes this command line work at
+    /// all.
+    #[test]
+    fn a_copy_named_yt_dlp_emits_the_manifest_the_environment_names() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let source = dir.path().join("source.bin");
+        std::fs::write(&source, b"sidecar-bytes").expect("write the source");
+        let destination = dir.path().join("downloads").join("clip.mkv");
+        let manifest = dir.path().join("yt-dlp.manifest");
+        std::fs::write(&manifest, format!("{}\t{}\n", destination.display(), source.display()))
+            .expect("write the manifest");
+        let yt_dlp = copy_stub_named(dir.path(), "yt-dlp");
+
+        let (code, stdout, stderr) = run_program(
+            &yt_dlp,
+            &[
+                "--no-progress",
+                "--no-part",
+                "-f",
+                "best[height<=144]/best[height<=240]/worst",
+                "--paths",
+                "downloads",
+                "--output",
+                "%(title)s [%(id)s]%(playlist_index|)s__mediapm__.%(ext)s",
+                "--sub-langs",
+                "en",
+                "--write-auto-subs",
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            ],
+            &[(MANIFEST_ENV, manifest.to_str().expect("utf-8 manifest path"))],
+            None,
+        );
+
+        assert_eq!(code, 0, "a copy named yt-dlp must emit: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write to stdout: {stdout}");
+        assert_eq!(
+            std::fs::read(&destination).expect("read the destination"),
+            b"sidecar-bytes",
+            "the manifest's entries must be written",
+        );
+    }
+
+    /// A copy named `yt-dlp` with no manifest in its environment fails.
+    ///
+    /// The chain publishes the manifest path, so an absent variable means the
+    /// run was set up wrong. Falling back to the copy shape instead would write
+    /// the URL's basename into the sandbox and report success, and the step
+    /// would then fail on a missing capture with nothing naming the cause.
+    #[test]
+    fn a_copy_named_yt_dlp_without_a_manifest_is_a_usage_failure() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let yt_dlp = copy_stub_named(dir.path(), "yt-dlp");
+
+        let (code, _, stderr) = run_program(&yt_dlp, &["--no-progress"], &[], None);
+
+        assert_eq!(code, 2, "an emit with no manifest is a usage failure: {stderr}");
+        assert!(
+            stderr.contains(MANIFEST_ENV),
+            "the failure must name the variable that carries the manifest: {stderr}",
+        );
+    }
+
+    /// A copy named `ffprobe` answers the probe document.
+    ///
+    /// The command line is the one `try_fetch_local_source_metadata_with_ffprobe`
+    /// (`src/mediapm/src/source_metadata.rs`) runs, and the demo runs the same
+    /// shape to derive the sandbox metadata it compares against the fixture's
+    /// pinned facts.
+    #[test]
+    fn a_copy_named_ffprobe_answers_the_probe_document() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let input = dir.path().join("input.mkv");
+        std::fs::write(&input, b"not-really-media").expect("write the input");
+        let ffprobe = copy_stub_named(dir.path(), "ffprobe");
+
+        let (code, stdout, stderr) = run_program(
+            &ffprobe,
+            &[
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                input.to_str().expect("utf-8 input path"),
+            ],
+            &[],
+            None,
+        );
+
+        assert_eq!(code, 0, "a copy named ffprobe must probe: {stderr}");
+        assert!(stderr.is_empty(), "the probe must answer on stdout, not stderr: {stderr}");
+        let payload: serde_json::Value =
+            serde_json::from_str(&stdout).expect("the probe output must be JSON");
+        assert!(
+            payload.get("format").is_some() && payload.get("streams").is_some(),
+            "the probe must answer the ffprobe-shaped document: {stdout}",
+        );
+    }
+
+    /// A copy named `ffmpeg` copies its first `-i` input to its last argument.
+    ///
+    /// The command line is `build_ffmpeg_command`'s shape
+    /// (`src/mediapm/src/tools/workflows/ffmpeg.rs`): the input slots, the
+    /// option tokens `FFMPEG_STATIC_DEFAULTS` supplies when a step sets no
+    /// options, and the output path last. The input path is sandbox-relative,
+    /// as the preset's `inputs/input-0.bin` is, so the run has to be given the
+    /// sandbox as its working directory.
+    #[test]
+    fn a_copy_named_ffmpeg_copies_its_first_input_to_its_last_argument() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let inputs = dir.path().join("inputs");
+        std::fs::create_dir_all(&inputs).expect("create the input directory");
+        std::fs::write(inputs.join("input-0.bin"), b"media-bytes").expect("write the input");
+        let ffmpeg = copy_stub_named(dir.path(), "ffmpeg");
+
+        let (code, stdout, stderr) = run_program(
+            &ffmpeg,
+            &[
+                "-y",
+                "-i",
+                "inputs/input-0.bin",
+                "-c",
+                "copy",
+                "-hide_banner",
+                "-map_metadata",
+                "0",
+                "output-0.mkv",
+            ],
+            &[],
+            Some(dir.path()),
+        );
+
+        assert_eq!(code, 0, "a copy named ffmpeg must copy: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write to stdout: {stdout}");
+        assert_eq!(
+            std::fs::read(dir.path().join("output-0.mkv")).expect("read the output"),
+            b"media-bytes",
+            "the first input must reach the last argument",
+        );
+    }
+
+    /// A copy named `sd` leaves the file it is handed in place.
+    ///
+    /// The command line is `build_sd_command`'s shape
+    /// (`src/mediapm/src/tools/workflows/sd.rs`) with the replacement the
+    /// rsgain workflow's metadata rewrite supplies: a pattern, a replacement
+    /// and the staged ffmetadata file, which `sd` rewrites in place. There is
+    /// no `-i` to read, so the last argument is both the input and the output,
+    /// and the step's capture has to find the file still there.
+    #[test]
+    fn a_copy_named_sd_leaves_the_file_it_rewrites_in_place() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let inputs = dir.path().join("inputs");
+        std::fs::create_dir_all(&inputs).expect("create the input directory");
+        let staged = inputs.join("input.ffmeta");
+        std::fs::write(&staged, b";FFMETADATA1\ntitle=Never Gonna Give You Up\n")
+            .expect("write the staged metadata");
+        let sd = copy_stub_named(dir.path(), "sd");
+
+        let (code, stdout, stderr) = run_program(
+            &sd,
+            &["(?i)REPLAYGAIN_", "replaygain_", "inputs/input.ffmeta"],
+            &[],
+            Some(dir.path()),
+        );
+
+        assert_eq!(code, 0, "a copy named sd must succeed in place: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write to stdout: {stdout}");
+        assert_eq!(
+            std::fs::read(&staged).expect("read the staged metadata"),
+            b";FFMETADATA1\ntitle=Never Gonna Give You Up\n",
+            "an in-place rewrite must leave the staged file's bytes alone",
+        );
+    }
+
+    /// A copy named `deno` succeeds with no arguments.
+    ///
+    /// `build_deno_command` (`src/mediapm/src/tools/workflows/deno.rs`) renders
+    /// the provisioned path and nothing else, so this is the whole command
+    /// line: the stub has to succeed without a file to copy and without a
+    /// destination, because the demo's step exists to prove deno is resolvable
+    /// rather than to run a script. The second run is the shape the provider's
+    /// permission shim produces, which peels the first argument and injects
+    /// `--allow-all` (`wrap_deno_binary` in
+    /// `src/mediapm-conductor/src/tools/provider/mod.rs`): an empty first
+    /// argument and a flag, so no argument names a file either way.
+    #[test]
+    fn a_copy_named_deno_succeeds_with_no_arguments() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let deno = copy_stub_named(dir.path(), "deno");
+
+        let (code, stdout, stderr) = run_program(&deno, &[], &[], Some(dir.path()));
+
+        assert_eq!(code, 0, "a copy named deno must succeed bare: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write to stdout: {stdout}");
+        assert!(stderr.is_empty(), "the stub must not write to stderr: {stderr}");
+
+        let (code, _, stderr) = run_program(&deno, &["", "--allow-all"], &[], Some(dir.path()));
+        assert_eq!(code, 0, "a copy named deno must succeed through the shim: {stderr}");
+    }
+
+    /// A program name that is not a tool this stub stands in for stays a usage failure.
+    ///
+    /// The locator validates a candidate by running it bare and expecting exit
+    /// 2 with the missing-mode message (`behaves_like_the_stub` in
+    /// `src/mediapm-test-support/src/lib.rs`), so the program-name dispatch has
+    /// to leave every name it does not claim answering that way. A copy named
+    /// after something else is exactly what the locator rejects, and what a
+    /// stray test harness named `mediapm_stub_tool-<hash>` looks like.
+    #[test]
+    fn an_unknown_program_name_without_a_mode_is_a_usage_failure() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let impostor = copy_stub_named(dir.path(), "mediapm_stub_tool-0123456789abcdef");
+
+        let (code, stdout, stderr) = run_program(&impostor, &[], &[], None);
+
+        assert_eq!(code, 2, "an unclaimed program name is a usage failure: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write to stdout: {stdout}");
+        assert!(
+            stderr.contains("--mode is required"),
+            "the failure must stay the missing-mode message the locator matches: {stderr}",
+        );
+    }
+
+    /// `--mode` overrides the program name.
+    ///
+    /// The flag is the explicit override the chain's copies never pass and a
+    /// diagnostic run always can, so a copy named `ffprobe` that is told to
+    /// copy has to copy rather than probe.
+    #[test]
+    fn a_mode_flag_overrides_the_program_name() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let source = dir.path().join("source.bin");
+        std::fs::write(&source, b"payload-bytes").expect("write the source");
+        let output = dir.path().join("output.bin");
+        let ffprobe = copy_stub_named(dir.path(), "ffprobe");
+
+        let (code, stdout, stderr) = run_program(
+            &ffprobe,
+            &[
+                "--mode",
+                "copy",
+                "-i",
+                source.to_str().expect("utf-8 source path"),
+                output.to_str().expect("utf-8 output path"),
+            ],
+            &[],
+            None,
+        );
+
+        assert_eq!(code, 0, "the flag must win over the program name: {stderr}");
+        assert!(stdout.is_empty(), "the stub must not write to stdout: {stdout}");
+        assert_eq!(
+            std::fs::read(&output).expect("read the output"),
+            b"payload-bytes",
+            "the named mode must run, not the program-name mode",
+        );
+    }
+
+    /// Every invocation is recorded, one line per run.
+    ///
+    /// The offline run proves a tool was reached with this record rather than
+    /// with the tool's own output, which the stub does not produce. The fields
+    /// are NUL-separated so an argument that contains a space stays one field,
+    /// and the first field is the program's stem, because that is what decided
+    /// the mode.
+    #[test]
+    fn the_invocation_record_names_every_invocation() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let source = dir.path().join("source.bin");
+        std::fs::write(&source, b"payload-bytes").expect("write the source");
+        let output = dir.path().join("output.bin");
+        let record = dir.path().join("invocations.log");
+        let ffmpeg = copy_stub_named(dir.path(), "ffmpeg");
+        let env = [(INVOCATION_RECORD_ENV, record.to_str().expect("utf-8 record path"))];
+
+        let (code, _, stderr) = run_program(
+            &ffmpeg,
+            &[
+                "--mode",
+                "copy",
+                "-i",
+                source.to_str().expect("utf-8 source path"),
+                output.to_str().expect("utf-8 output path"),
+            ],
+            &env,
+            None,
+        );
+        assert_eq!(code, 0, "the first invocation must succeed: {stderr}");
+        let (code, _, stderr) =
+            run_program(&ffmpeg, &["--mode", "sleep", "--seconds", "0"], &env, None);
+        assert_eq!(code, 0, "the second invocation must succeed: {stderr}");
+
+        let text = std::fs::read_to_string(&record).expect("read the record");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "every invocation must be recorded once: {text}");
+        assert_eq!(
+            lines[0].split('\0').collect::<Vec<&str>>(),
+            vec![
+                "ffmpeg",
+                "--mode",
+                "copy",
+                "-i",
+                source.to_str().expect("utf-8 source path"),
+                output.to_str().expect("utf-8 output path"),
+            ],
+            "the record must name the program stem and every argument: {text}",
+        );
+        assert_eq!(
+            lines[1].split('\0').collect::<Vec<&str>>(),
+            vec!["ffmpeg", "--mode", "sleep", "--seconds", "0"],
+            "the record must append rather than overwrite: {text}",
+        );
     }
 }
