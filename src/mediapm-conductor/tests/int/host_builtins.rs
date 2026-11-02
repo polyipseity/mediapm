@@ -336,7 +336,8 @@ async fn strict_an_unregistered_host_builtin_fails_the_run_before_any_step() {
 }
 
 /// The `mediapm-conductor` binary registers no host builtins, so a document
-/// naming one is refused at run start with the sentence its CLI docs state.
+/// naming one is refused at run start with the sentence `cli.rs` states and
+/// `AGENTS.md` paraphrases.
 ///
 /// `media-tagger` is the live case: it is the id mediapm's own host supplies a
 /// runner for, so a document may legitimately name it, and this binary is the

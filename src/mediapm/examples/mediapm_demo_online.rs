@@ -670,8 +670,8 @@ struct DemoResolvedMetadata {
     /// The online demo's name templates render `${media.metadata.artist} - ${media.metadata.title}`,
     /// so every root-level projection resolves this title behind that prefix. It is the
     /// `MusicBrainz` recording title once tagging has run and the upstream provider title
-    /// otherwise, which is why `assert_metadata_files_present` pins the media root against the
-    /// canonical form.
+    /// otherwise, which is why the online route pins the media root against the canonical form
+    /// and the offline route against the base the run itself resolved.
     title: String,
     /// Canonical artist prefix, read back from the materialized media root's own name.
     ///
@@ -3324,11 +3324,13 @@ fn assert_file_extension(
     }
 }
 
-/// Asserts the media root carries the canonical basename and that its sibling names derive from it.
+/// Asserts the media root and its sibling names derive from the metadata the run resolved.
 ///
-/// The canonical basename is the artist followed by the `MusicBrainz` recording title. Upstream's
-/// title embeds the artist again and appends its own suffixes, so a parenthetical or a doubled
-/// artist in this name is the fingerprint of a run whose names came from the pre-tagging variant.
+/// The root's name is compared against the base the run itself resolved, so this holds on both
+/// routes. Pinning the canonical basename — the artist followed by the `MusicBrainz` recording
+/// title — is the online route's separate assertion, because upstream's title embeds the artist
+/// again and appends its own suffixes, and a parenthetical or a doubled artist in the name is the
+/// fingerprint of a run whose names came from the pre-tagging variant.
 fn assert_metadata_files_present(
     interpolated_root: &Path,
     resolved_metadata: &DemoResolvedMetadata,

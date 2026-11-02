@@ -4,10 +4,15 @@
 //! the exact requests the provider layer makes: release metadata, tag refs,
 //! asset names following each provider's own naming scheme, and container
 //! bytes the pipeline's extractors accept. That shape is spelled once here so
-//! two test modules cannot disagree about it. A mock that drifts from the
-//! provider's requests fails closed, but a mock that drifts from a sibling
-//! test's fixture passes while covering nothing, and that second failure is
-//! silent — which is why the shape has one definition.
+//! the modules this file serves cannot disagree about it. A mock that drifts
+//! from the provider's requests fails closed, but a mock that drifts from a
+//! sibling test's fixture passes while covering nothing, and that second
+//! failure is silent — which is why the shape has one definition.
+//!
+//! It is not the only definition in the workspace:
+//! `mediapm_test_support::stub_media` carries its own route set for the demo's
+//! offline chain, because that crate cannot depend on this one (the dependency
+//! runs the other way). The two drift apart as a 404, not as a wrong answer.
 //!
 //! Every stub payload's body names the tool and the OS slot it was built for,
 //! so a document that fills one slot with another slot's bytes is detectable
