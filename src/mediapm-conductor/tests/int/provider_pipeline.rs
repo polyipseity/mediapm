@@ -1,30 +1,22 @@
 //! Integration tests for the tool provider pipeline
 //! (resolve → fetch → process).
 //!
-//! These tests validate the full 3-phase pipeline end-to-end using
-//! launcher-based (GenerateLauncher) tools that don't require network
-//! access. The echo builtin is used because it produces launcher scripts
-//! in memory rather than downloading payloads.
+//! The builtin tools (`echo`, `fs`, `archive`, `import`, `export`) resolve with
+//! no sources: a builtin step carries no command parts and its implementation
+//! runs in-process, so the pipeline has nothing to download for it. These tests
+//! pin that end to end and offline — resolve answers with an empty source list,
+//! and fetching and processing that list succeeds without touching the network.
 
-use std::str::FromStr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use mediapm_cas::{CasApi, InMemoryCas};
+use mediapm_cas::InMemoryCas;
 use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::{
-    DownloadedSource, DownloadedSources, ResolvedToolFetch, SourceProducer, fetch_tool_sources,
-    process_tool_sources, resolve_tool_fetch,
+    ResolvedToolFetch, fetch_tool_sources, process_tool_sources, resolve_tool_fetch,
 };
-use mediapm_utils::progress::{ProviderPhase, ProviderProgressSnapshot};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Expected OS labels produced by the echo provider.
-const ECHO_OS_LABELS: &[&str] = &["linux", "macos", "windows"];
 
 /// Resolves the echo tool.
 async fn resolve_echo() -> ResolvedToolFetch {
@@ -40,94 +32,21 @@ async fn open_echo_cache() -> (UserLevelCache, tempfile::TempDir) {
     (cache, cache_root)
 }
 
-/// Resolves and fetches echo sources.
-async fn fetch_echo(
-    progress_cb: Option<Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync>>,
-) -> DownloadedSources {
-    let fetch = resolve_echo().await;
-    let (cache, _cache_root) = open_echo_cache().await;
-    fetch_tool_sources(&fetch, &cache, "default", progress_cb).await.expect("fetch echo sources")
-}
-
-/// Shared snapshot list plus the callback that records into it.
-type ProgressRecorder = (
-    Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>>,
-    Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync>,
-);
-
-/// Returns a callback that records every progress snapshot.
-fn recording_progress_cb() -> ProgressRecorder {
-    let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let snap_clone = Arc::clone(&snapshots);
-    let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> =
-        Arc::new(move |snap| snap_clone.lock().unwrap().push(snap));
-    (snapshots, cb)
-}
-
-/// Asserts that snapshots for `phase` have non-decreasing position never
-/// exceeding total.
-fn assert_phase_progress_monotonic(all: &[ProviderProgressSnapshot], phase: ProviderPhase) {
-    let mut prev_pos = 0u64;
-    for (i, snap) in all.iter().enumerate() {
-        if snap.phase != phase {
-            continue;
-        }
-        let pos = snap.bytes.0;
-        let tot = snap.bytes.1;
-        assert!(
-            pos >= prev_pos,
-            "{phase:?} position decreased at snapshot {i}: {pos} < {prev_pos}",
-        );
-        assert!(pos <= tot, "{phase:?} position {pos} exceeds total {tot} at snapshot {i}");
-        prev_pos = pos;
-    }
-}
-
-/// Returns the last snapshot recorded for `phase`, which is the end state a
-/// progress consumer renders once the phase is over.
-fn last_snapshot_of(
-    all: &[ProviderProgressSnapshot],
-    phase: ProviderPhase,
-) -> &ProviderProgressSnapshot {
-    all.iter()
-        .rev()
-        .find(|snap| snap.phase == phase)
-        .unwrap_or_else(|| panic!("no {phase:?} snapshot recorded"))
-}
-
 // ---------------------------------------------------------------------------
 // Phase 1 — Resolve
 // ---------------------------------------------------------------------------
 
-/// Resolving echo returns a `ResolvedToolFetch` with one `GenerateLauncher`
-/// source per platform.
+/// Resolving echo returns no sources.
+///
+/// A builtin's implementation is code the host runs, so its `ResolvedToolFetch`
+/// carries the tool id and an empty source list — neither a per-OS download nor
+/// a script to generate.
 #[tokio::test]
-async fn resolve_echo_returns_three_launcher_sources() {
+async fn resolve_echo_returns_no_sources() {
     let fetch = resolve_echo().await;
 
     assert_eq!(fetch.tool_id, "echo");
-    assert_eq!(fetch.sources.len(), ECHO_OS_LABELS.len());
-
-    let oses: Vec<&str> = fetch.sources.iter().map(|s| s.os.as_str()).collect();
-    for expected_os in ECHO_OS_LABELS {
-        assert!(oses.contains(expected_os), "missing source for OS {expected_os}");
-    }
-
-    for source in &fetch.sources {
-        let producer = &source.producer;
-        match producer {
-            mediapm_conductor::tools::provider::SourceProducer::GenerateLauncher {
-                builtin_id,
-                argv_prefix: _,
-            } => {
-                assert_eq!(builtin_id, "echo@v1", "all launchers should reference echo@v1");
-            }
-            mediapm_conductor::tools::provider::SourceProducer::Fetch { .. } => {
-                panic!("echo sources should all be GenerateLauncher")
-            }
-        }
-    }
+    assert!(fetch.sources.is_empty(), "a builtin has no payload, got {:?}", fetch.sources);
 }
 
 /// Resolving an unknown tool returns an error.
@@ -137,329 +56,58 @@ async fn resolve_unknown_tool_returns_error() {
     assert!(result.is_err(), "unknown tool should fail to resolve");
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2 — Fetch
-// ---------------------------------------------------------------------------
-
-/// Fetching echo sources returns launcher scripts (shell/batch) for each OS,
-/// cached in `UserLevelCache`.
+/// Every registered provider answers for the tool id it was asked about.
+///
+/// `sd` is a managed tool and still declares per-OS `Fetch` sources, which is
+/// what keeps the empty lists above a statement about builtins rather than about
+/// the registry as a whole.
 #[tokio::test]
-async fn fetch_echo_produces_launcher_scripts_via_cache() {
-    let downloaded = fetch_echo(None).await;
-
-    assert_eq!(downloaded.tool_id, "echo");
-    assert_eq!(downloaded.entries.len(), ECHO_OS_LABELS.len());
-
-    for entry in &downloaded.entries {
-        assert!(ECHO_OS_LABELS.contains(&entry.os.as_str()), "unexpected OS: {}", entry.os);
-
-        let text = String::from_utf8_lossy(&entry.bytes);
-        assert!(
-            text.contains("MEDIAPM_EXECUTABLE"),
-            "launcher script should reference MEDIAPM_EXECUTABLE (os: {})",
-            entry.os
-        );
-        assert!(
-            text.contains("echo@v1"),
-            "launcher script should reference echo@v1 (os: {})",
-            entry.os
-        );
-
-        // Platform-specific checks
-        if entry.os == "windows" {
-            assert!(text.contains("%*"), "Windows launcher should use %* for args");
-            assert!(text.contains("@echo off"), "Windows launcher should start with @echo off");
-        } else {
-            assert!(text.contains("$@"), "Unix launcher should use $@ for args");
-            assert!(text.contains("#!/bin/sh"), "Unix launcher should have shebang");
-        }
+async fn every_registered_provider_resolves() {
+    for tool_id in &["echo", "fs", "archive", "import", "export"] {
+        let fetch =
+            resolve_tool_fetch(tool_id).await.unwrap_or_else(|e| panic!("resolve {tool_id}: {e}"));
+        assert_eq!(fetch.tool_id, *tool_id, "{tool_id}: resolve must answer under its own id");
+        assert!(fetch.sources.is_empty(), "{tool_id}: a builtin declares no source");
     }
+
+    let sd = resolve_tool_fetch("sd").await.expect("resolve sd");
+    assert_eq!(sd.tool_id, "sd");
+    assert!(!sd.sources.is_empty(), "sd is a managed tool and fetches a payload");
 }
 
-/// Fetching from cache returns the same bytes on the second call.
+// ---------------------------------------------------------------------------
+// Phases 2 and 3 — Fetch and process a tool with no sources
+// ---------------------------------------------------------------------------
+
+/// A builtin provisions without fetching: no entries, no cache traffic, and an
+/// empty content map.
+///
+/// The pipeline is the one a managed tool walks, so this is what makes a
+/// builtin's empty source list a pass-through rather than a special case.
 #[tokio::test]
-async fn fetch_echo_is_cached_idempotently() {
+async fn a_builtin_provisions_without_fetching() {
     let fetch = resolve_echo().await;
     let (cache, _cache_root) = open_echo_cache().await;
 
-    let first = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("first fetch");
-    let second = fetch_tool_sources(&fetch, &cache, "default", None).await.expect("second fetch");
+    let downloaded = fetch_tool_sources(&fetch, &cache, "default", None)
+        .await
+        .expect("fetching no sources succeeds");
+    assert!(downloaded.entries.is_empty(), "no source, no entry: {:?}", downloaded.entries);
+    assert_eq!(downloaded.cached_count, 0, "nothing was looked up in the cache");
+    assert!(downloaded.warnings.is_empty(), "nothing was tried: {:?}", downloaded.warnings);
 
-    assert_eq!(first.entries.len(), second.entries.len());
-    for (a, b) in first.entries.iter().zip(second.entries.iter()) {
-        assert_eq!(a.os, b.os);
-        assert_eq!(a.bytes, b.bytes, "cached bytes for OS {} should match", a.os);
-    }
-}
-
-/// Processing echo launchers produces a content map with one entry per OS
-/// (binary format → `{os_label}/{tool_id}` keys) and an `os_exec_paths` map
-/// with one entry per OS.
-#[tokio::test]
-async fn process_echo_produces_correct_content_map_and_os_exec_paths() {
-    let downloaded = fetch_echo(None).await;
     let cas = InMemoryCas::default();
-
-    let result = process_tool_sources(&downloaded, &cas, None).await.expect("process echo");
-
-    // Content map: one binary-format entry per OS
-    assert_eq!(result.content_map.len(), ECHO_OS_LABELS.len(), "content map size");
-    for os in ECHO_OS_LABELS {
-        let key = format!("{os}/echo");
-        assert!(
-            result.content_map.contains_key(&key),
-            "content map should contain key {key:?}, got keys: {:?}",
-            result.content_map.keys().collect::<Vec<_>>(),
-        );
-    }
-
-    // os_exec_paths: one entry per OS
-    assert_eq!(result.os_exec_paths.len(), ECHO_OS_LABELS.len(), "os_exec_paths size");
-    for os in ECHO_OS_LABELS {
-        assert!(
-            result.os_exec_paths.contains_key(*os),
-            "os_exec_paths should contain OS {os:?}, got keys: {:?}",
-            result.os_exec_paths.keys().collect::<Vec<_>>(),
-        );
-        assert_eq!(
-            result.os_exec_paths[*os], "echo",
-            "os_exec_paths for {os:?} should be \"echo\"",
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Full pipeline (resolve → fetch → process)
-// ---------------------------------------------------------------------------
-
-/// The full pipeline for echo produces a usable `ProvisionResult` where
-/// every content-map hash is retrievable from CAS.
-#[tokio::test]
-async fn full_pipeline_echo_all_hashes_retrievable_from_cas() {
-    let downloaded = fetch_echo(None).await;
-    let cas = InMemoryCas::default();
-
-    let result = process_tool_sources(&downloaded, &cas, None).await.expect("process echo");
-
-    // Every content-map hash should be retrievable
-    for (key, hex_hash) in &result.content_map {
-        let hash = mediapm_cas::Hash::from_str(hex_hash).expect("valid hash hex");
-        let bytes = cas.get(hash).await.expect("hash should be retrievable from CAS");
-        assert!(!bytes.is_empty(), "retrieved bytes for key {key:?} should not be empty");
-    }
-
-    // Verify binary content: each OS launcher script
-    for os in ECHO_OS_LABELS {
-        let key = format!("{os}/echo");
-        let hex_hash = result.content_map.get(&key).expect("key in content map");
-        let hash = mediapm_cas::Hash::from_str(hex_hash).expect("valid hash");
-        let bytes = cas.get(hash).await.expect("retrievable from CAS");
-        let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("MEDIAPM_EXECUTABLE"), "CAS content should be launcher script");
-    }
-}
-
-/// Every registered conductor provider returns at least one source —
-/// `sources.len()` must always be a valid positive count for progress bars.
-#[tokio::test]
-async fn resolve_tool_fetch_matches_sources_len_for_all_providers() {
-    for tool_id in &["echo", "fs", "archive", "import", "export", "sd"] {
-        let fetch =
-            resolve_tool_fetch(tool_id).await.unwrap_or_else(|e| panic!("resolve {tool_id}: {e}"));
-        assert!(!fetch.sources.is_empty(), "{tool_id}: expected at least one source, got empty");
-    }
-}
-
-/// Processing with a progress callback fires at least one callback per
-/// source entry (launcher-based tools still trigger per-source progress).
-#[tokio::test]
-async fn process_fires_progress_per_source_entry() {
-    let downloaded = fetch_echo(None).await;
-    let cas = InMemoryCas::default();
-    let source_count = downloaded.entries.len();
-
-    let call_count = Arc::new(AtomicUsize::new(0));
-    let cc = Arc::clone(&call_count);
-    let cb: Arc<dyn Fn(ProviderProgressSnapshot) + Send + Sync> = Arc::new(move |snap| {
-        // Only count process phase callbacks.
-        if matches!(snap.phase, ProviderPhase::Process) {
-            cc.fetch_add(1, Ordering::Relaxed);
-        }
-    });
-
-    let _result = process_tool_sources(&downloaded, &cas, Some(cb)).await.expect("process echo");
-
-    let total_calls = call_count.load(Ordering::Relaxed);
+    let result = process_tool_sources(&downloaded, &cas, None)
+        .await
+        .expect("processing no sources succeeds");
     assert!(
-        total_calls >= source_count,
-        "expected >= {source_count} progress callbacks (one per source), got {total_calls}",
+        result.content_map.is_empty(),
+        "a builtin has no content to map: {:?}",
+        result.content_map
     );
-}
-
-/// Full-pipeline progress monotonicity: fetch and process phases must
-/// produce monotonically non-decreasing position within each phase, and
-/// position must never exceed total.  This is a regression test for the
-/// input-size policy fix (prevents backward jumps, total instability).
-#[tokio::test]
-async fn full_pipeline_progress_monotonic() {
-    let cas = InMemoryCas::default();
-    let (snapshots, cb) = recording_progress_cb();
-
-    let downloaded = fetch_echo(Some(cb.clone())).await;
-    let _result = process_tool_sources(&downloaded, &cas, Some(cb)).await.expect("process echo");
-
-    let all = snapshots.lock().unwrap().clone();
-    assert!(!all.is_empty(), "should have recorded at least one snapshot");
-
-    // Verify monotonicity within each phase.
-    assert_phase_progress_monotonic(&all, ProviderPhase::Fetch);
-    assert_phase_progress_monotonic(&all, ProviderPhase::Process);
-}
-
-#[tokio::test]
-async fn process_mixed_archive_binary_progress() {
-    // Use echo (launcher-only) for binary sources and add a synthetic
-    // zip archive as an extra source to validate mixed progress.
-    let downloaded = fetch_echo(None).await;
-
-    let decompressed = pseudo_random_buffer(20_000);
-    let zip = synthetic_zip(&[("extra.bin", &decompressed)]);
-
-    // Append a synthetic archive entry to test mixed source processing.
-    let mut entries = downloaded.entries.clone();
-    entries.push(DownloadedSource {
-        // A distinct OS label keeps this synthetic archive outside echo's
-        // launcher slots: two sources on one OS label would make the slot
-        // dual-arch (arch-segmented keys) or, with equal arches, trip the
-        // duplicate-key guard — neither is what this progress test is about.
-        os: "test-os".to_string(),
-        arch: "x86_64".to_string(),
-        producer: SourceProducer::Fetch { urls: vec!["https://example.com/extra.zip".to_string()] },
-        bytes: zip,
-        expected_size: None,
-        actual_url: None,
-    });
-    let mixed = DownloadedSources {
-        tool_id: "echo".to_string(),
-        entries,
-        cached_count: downloaded.cached_count,
-        warnings: Vec::new(),
-    };
-
-    let cas = InMemoryCas::default();
-    let (snapshots, cb) = recording_progress_cb();
-
-    let _result =
-        process_tool_sources(&mixed, &cas, Some(cb)).await.expect("process mixed echo+archive");
-
-    let all = snapshots.lock().unwrap().clone();
-    assert!(!all.is_empty(), "should have recorded at least one snapshot");
-    assert_phase_progress_monotonic(&all, ProviderPhase::Process);
-}
-
-/// Echo launchers plus one synthetic ZIP source, so a single process run
-/// exercises the one-item binary arm and the two-item archive arm
-/// (decompress, then compress) in one budget.
-fn echo_with_zip_archive(downloaded: &DownloadedSources) -> DownloadedSources {
-    let payload = pseudo_random_buffer(20_000);
-    let mut entries = downloaded.entries.clone();
-    entries.push(DownloadedSource {
-        // Distinct OS label, same reasoning as `process_mixed_archive_binary_progress`.
-        os: "test-os".to_string(),
-        arch: "x86_64".to_string(),
-        producer: SourceProducer::Fetch { urls: vec!["https://example.com/extra.zip".to_string()] },
-        bytes: synthetic_zip(&[("extra.bin", payload.as_slice())]),
-        expected_size: None,
-        actual_url: None,
-    });
-    DownloadedSources {
-        tool_id: downloaded.tool_id.clone(),
-        entries,
-        cached_count: downloaded.cached_count,
-        warnings: Vec::new(),
-    }
-}
-
-/// The aggregate a progress callback receives is where a shortfall in a
-/// single budget item goes invisible: per-item assertions pass while the bar
-/// a consumer renders stops short of its own total. This runs a mixed
-/// launcher and ZIP source set, then checks that the last snapshot of each
-/// phase reports byte position equal to byte total over a non-zero total,
-/// with every item counted as finished. The per-item endpoints are covered by
-/// `process_single_source_archive_two_items_completed` in the provider unit
-/// tests.
-#[tokio::test]
-async fn each_phase_ends_with_a_complete_budget_snapshot() {
-    let cas = InMemoryCas::default();
-    let (snapshots, cb) = recording_progress_cb();
-
-    let downloaded = fetch_echo(Some(Arc::clone(&cb))).await;
-    let fetch_sources = downloaded.entries.len();
-    let mixed = echo_with_zip_archive(&downloaded);
-    // Archives take two budget items, every other source takes one.
-    let process_items = mixed.entries.len() as u64 + 1;
-
-    let _result =
-        process_tool_sources(&mixed, &cas, Some(cb)).await.expect("process mixed sources");
-
-    let all = snapshots.lock().unwrap().clone();
-
-    let last_fetch = last_snapshot_of(&all, ProviderPhase::Fetch);
-    assert!(last_fetch.bytes.1 > 0, "a zero fetch total would make the equality below vacuous");
-    assert_eq!(
-        last_fetch.bytes.0, last_fetch.bytes.1,
-        "fetch phase must end with byte position equal to byte total, got {} of {}",
-        last_fetch.bytes.0, last_fetch.bytes.1
+    assert!(
+        result.os_exec_paths.is_empty(),
+        "a builtin names no executable: {:?}",
+        result.os_exec_paths
     );
-    assert_eq!(
-        last_fetch.items,
-        (fetch_sources as u64, fetch_sources as u64),
-        "fetch phase must end with every source counted as finished"
-    );
-
-    let last_process = last_snapshot_of(&all, ProviderPhase::Process);
-    assert!(last_process.bytes.1 > 0, "a zero process total would make the equality below vacuous");
-    assert_eq!(
-        last_process.bytes.0, last_process.bytes.1,
-        "process phase must end with byte position equal to byte total, got {} of {}",
-        last_process.bytes.0, last_process.bytes.1
-    );
-    assert_eq!(
-        last_process.items,
-        (process_items, process_items),
-        "process phase must end with every budget item counted as finished"
-    );
-}
-
-/// Creates a deterministic pseudo-random buffer useful for archive tests
-/// where compressed size should remain close to uncompressed size.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "xorshift PRNG deliberately emits the low byte of state"
-)]
-fn pseudo_random_buffer(size: usize) -> Vec<u8> {
-    let mut data = vec![0u8; size];
-    let mut state: u64 = 123_456_789;
-    for byte in &mut data {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        *byte = state as u8;
-    }
-    data
-}
-
-/// Creates a synthetic zip archive from named entries.
-fn synthetic_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
-    use std::io::Write;
-    use zip::write::SimpleFileOptions;
-    let cursor = std::io::Cursor::new(Vec::new());
-    let mut writer = zip::ZipWriter::new(cursor);
-    let options = SimpleFileOptions::default();
-    for (name, content) in entries {
-        writer.start_file(*name, options).unwrap();
-        writer.write_all(content).unwrap();
-    }
-    let cursor = writer.finish().unwrap();
-    cursor.into_inner()
 }

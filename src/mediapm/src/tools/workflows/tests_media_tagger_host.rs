@@ -1,9 +1,9 @@
 //! The tagging step runs in-process, as a host builtin.
 //!
-//! Nothing about tagging may depend on a `mediapm` binary on disk or on
-//! `MEDIAPM_EXECUTABLE`. The step declares no command parts, the tool entry a
-//! sync writes carries no payload and no launcher, and the conductor dispatches
-//! the step to the runner mediapm registers under the `media-tagger` builtin id.
+//! Nothing about tagging may depend on a `mediapm` binary on disk. The step
+//! declares no command parts, the tool entry a sync writes carries no payload,
+//! and the conductor dispatches the step to the runner mediapm registers under
+//! the `media-tagger` builtin id.
 //! This module runs the **synthesized** metadata step — the step a sync writes,
 //! not a hand-built copy of it — against a local `wiremock` `MusicBrainz` host,
 //! so a run that still reached for a binary would fail here while the real
@@ -256,31 +256,8 @@ async fn captured_content(conductor: &Conductor<mediapm_cas::InMemoryCas>) -> By
     conductor.cas().get(captured.hash).await.expect("the captured content must be in the store")
 }
 
-/// Runs the synthesized tagging step with `executable_override` in
-/// `MEDIAPM_EXECUTABLE` and returns the document the step captured.
-///
-/// The variable is set before anything about the run is built — the plan, the
-/// step, the run options — so a reader reintroduced anywhere on that path fails
-/// the override test instead of being masked by the ordering. It is
-/// process-global, so the caller holds the process env lock for the whole run;
-/// the value is removed before returning.
-async fn run_tagging_step(executable_override: Option<&str>) -> String {
-    match executable_override {
-        Some(value) => {
-            // SAFETY: the caller holds the process env lock for this whole run,
-            // which scopes this process-global variable to this test.
-            unsafe {
-                std::env::set_var("MEDIAPM_EXECUTABLE", value);
-            }
-        }
-        None => {
-            // SAFETY: same env-lock scope as the set above.
-            unsafe {
-                std::env::remove_var("MEDIAPM_EXECUTABLE");
-            }
-        }
-    }
-
+/// Runs the synthesized tagging step and returns the document it captured.
+async fn run_tagging_step() -> String {
     let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
     let musicbrainz = wiremock::MockServer::start().await;
     mount_musicbrainz(&musicbrainz).await;
@@ -322,39 +299,23 @@ async fn run_tagging_step(executable_override: Option<&str>) -> String {
         "the tagging step runs once and succeeds: {summary:?}",
     );
 
-    // SAFETY: same env-lock scope.
-    unsafe {
-        std::env::remove_var("MEDIAPM_EXECUTABLE");
-    }
-
     let text = String::from_utf8(captured_content(&conductor).await.to_vec())
         .expect("the captured document is UTF-8");
     conductor.shutdown().await.expect("conductor shutdown");
     text
 }
 
-/// The tagging step runs to success with `MEDIAPM_EXECUTABLE` unset.
+/// The tagging step runs to success with no binary on disk.
 ///
 /// The user-level guarantee: a library that tags does not need a `mediapm`
 /// binary beside it. The step declares no command parts, so the conductor
 /// dispatches it to the host runner instead of spawning anything, and the
 /// document the run captures carries the tags the mock host served. Whether a
 /// binary happens to sit next to this test binary is not something the run may
-/// consult, which is why the next test supplies a value the run must ignore
-/// rather than asserting a file's absence.
+/// consult, which is why the step is synthesized here rather than hand-built.
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "the process env lock scopes this test's MEDIAPM_EXECUTABLE mutation to its own run; the run reads the variable, so the guard has to outlive the await"
-)]
-async fn the_tagging_step_tags_in_process_with_no_executable_set() {
-    let _env = crate::example_isolation::lock_process_env();
-    assert!(
-        std::env::var_os("MEDIAPM_EXECUTABLE").is_none(),
-        "the fixture must start with the variable unset",
-    );
-
-    let document = run_tagging_step(None).await;
+async fn the_tagging_step_tags_in_process() {
+    let document = run_tagging_step().await;
 
     assert!(
         document.contains("title=Test Recording"),
@@ -363,29 +324,5 @@ async fn the_tagging_step_tags_in_process_with_no_executable_set() {
     assert!(
         document.contains(&format!("MUSICBRAINZ_RECORDINGID={RECORDING_MBID}")),
         "the recording id the run resolved must reach the document, got: {document}",
-    );
-}
-
-/// A value of `MEDIAPM_EXECUTABLE` naming nothing cannot change the outcome.
-///
-/// The tagger used to be reached through a generated launcher that re-executed
-/// `$MEDIAPM_EXECUTABLE builtin media-tagger`. Nothing on the tagging path reads
-/// the variable any more, so a value that names no program is inert: the run
-/// succeeds, which it could not do if anything consulted the value to dispatch
-/// or to build the step.
-#[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "same env-lock scope as the unset fixture: the value is process-global and this test sets it for the length of the run"
-)]
-async fn the_tagging_step_ignores_the_executable_override() {
-    let _env = crate::example_isolation::lock_process_env();
-    let bogus = std::env::temp_dir().join("mediapm-host-builtin-absent").join("mediapm");
-
-    let document = run_tagging_step(Some(&bogus.to_string_lossy())).await;
-
-    assert!(
-        document.contains("title=Test Recording"),
-        "a value nothing consults must not change the tags the step writes, got: {document}",
     );
 }

@@ -849,9 +849,7 @@ mod tests {
         assert_eq!(macos[0].arch, "aarch64");
         assert_eq!(macos[1].arch, "x86_64");
         for source in &macos {
-            let SourceProducer::Fetch { urls } = &source.producer else {
-                panic!("macOS sources must be fetch producers");
-            };
+            let SourceProducer::Fetch { urls } = &source.producer;
             let archive = jellyfin.urls.get(&source.arch).expect("every arch has an archive");
             assert_eq!(
                 urls,
@@ -876,9 +874,7 @@ mod tests {
         let fetch = sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG, TEST_AUTOBUILD_TAG);
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
-            let SourceProducer::Fetch { urls } = &source.producer else {
-                panic!("macOS sources must be fetch producers");
-            };
+            let SourceProducer::Fetch { urls } = &source.producer;
             assert_eq!(
                 urls,
                 &[
@@ -907,9 +903,7 @@ mod tests {
         let fetch = sources(&target, Some(&jellyfin), build_id, TEST_AUTOBUILD_TAG);
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
-            let SourceProducer::Fetch { urls } = &source.producer else {
-                panic!("macOS sources must be fetch producers");
-            };
+            let SourceProducer::Fetch { urls } = &source.producer;
             let archive = jellyfin.urls.get(&source.arch).expect("every arch has an archive");
             assert_eq!(
                 urls,

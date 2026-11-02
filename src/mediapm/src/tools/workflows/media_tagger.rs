@@ -496,6 +496,46 @@ mod tests {
         );
     }
 
+    /// The regenerated demo document's `media-tagger` entry is this definition.
+    ///
+    /// `tests/fixtures/demo_conductor_generated.ncl` is hand-regenerated
+    /// whenever the generated-document shape changes, which leaves it able to
+    /// drift from the definition the sync actually writes. Pinning the entry
+    /// against [`build_media_tagger_spec`] makes the fixture itself the
+    /// assertion: a synthesizer change that is not mirrored into the fixture
+    /// fails here, and so does a fixture edit that no synthesizer produces.
+    #[test]
+    fn the_regenerated_fixture_entry_matches_the_tool_definition() {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/demo_conductor_generated.ncl"),
+        )
+        .expect("read the regenerated demo conductor document");
+        let document = mediapm_conductor::decode_document(&bytes)
+            .expect("the regenerated demo conductor document decodes");
+        let entry = document.tools.get(MEDIA_TAGGER_BUILTIN_ID).unwrap_or_else(|| {
+            panic!(
+                "the fixture must hold a '{MEDIA_TAGGER_BUILTIN_ID}' entry, got {:?}",
+                document.tools.keys().collect::<Vec<_>>()
+            )
+        });
+
+        let (spec, runtime) = build_media_tagger_spec();
+        assert_eq!(entry.kind, spec.kind, "the entry must dispatch to the host runner");
+        assert_eq!(entry.name, spec.name, "the entry keeps the builtin id as its name");
+        assert_eq!(entry.inputs, spec.inputs, "the definition declares no input of its own");
+        assert_eq!(
+            entry.default_inputs, spec.default_inputs,
+            "the definition declares no default of its own",
+        );
+        assert_eq!(entry.outputs, spec.outputs, "the captures a run records must match");
+        assert!(
+            entry.runtime.content_map.is_empty() && runtime.content_map.is_empty(),
+            "a host builtin holds no payload, so neither side names a content root: fixture {:?}",
+            entry.runtime.content_map
+        );
+    }
+
     /// Ensures synthesized metadata inputs default `cache_dir` to the
     /// caller-provided workspace cache directory (empty when omitted, so the
     /// HTTP cache stays disabled unless a real path is threaded through).

@@ -99,8 +99,7 @@ pub(super) enum PreResolveOutcome {
 /// Returns `true` if the source producer represents an archive download.
 ///
 /// Archive sources produce compressed payloads that require decompression
-/// (e.g., `.zip`, `.tar.gz`, `.tar.xz`). Binary and launcher sources are
-/// used as-is.
+/// (e.g., `.zip`, `.tar.gz`, `.tar.xz`). Binary sources are used as-is.
 ///
 /// This classifies by the declared URL because it runs before the fetch, when
 /// the bytes do not exist yet; the conductor decides extraction from the served
@@ -109,18 +108,14 @@ pub(super) enum PreResolveOutcome {
 /// binaries, and a chain that mixes them would show a wrong item total here
 /// rather than a wrong extraction there.
 fn is_archive_source(producer: &SourceProducer) -> bool {
-    match producer {
-        SourceProducer::Fetch { urls } => {
-            urls.first().is_some_and(|url| infer_archive_format(url).is_some())
-        }
-        SourceProducer::GenerateLauncher { .. } => false,
-    }
+    let SourceProducer::Fetch { urls } = producer;
+    urls.first().is_some_and(|url| infer_archive_format(url).is_some())
 }
 
 /// Infers archive format from a URL's file extension.
 ///
 /// Returns `Some(format)` for recognized archive extensions, or `None` for
-/// binary/launcher payloads.
+/// binary payloads.
 ///
 /// The conductor's own resolver reads the served bytes first and consults the
 /// URL only when they match no container header, so this extension table is
@@ -188,7 +183,7 @@ pub(crate) fn display_version(version: &str) -> &str {
 /// or `"skipped"` otherwise. Fetch bar shows
 /// `sources.len()` items (one per source).  Process bar shows the sum
 /// of per-source items: archive sources contribute 2 items (decompress +
-/// compress), binary/launcher sources contribute 1 item (import).  Phase 2
+/// compress), binary sources contribute 1 item.  Phase 2
 /// and 3 bars are created on-demand — one before fetching, one before
 /// processing — so bars only appear when their phase actively runs.
 ///
@@ -327,7 +322,7 @@ pub(super) async fn fetch_and_import_tool_payload(
     let total = fetch.sources.len() as u64;
 
     // Compute total process items: archive sources get 2 (decompress + compress),
-    // binary/launcher sources get 1 (import).
+    // binary sources get 1.
     let total_process_items: u64 = fetch
         .sources
         .iter()
@@ -469,10 +464,8 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
         .iter()
         .enumerate()
         .filter_map(|(idx, source)| {
-            let url = match &source.producer {
-                SourceProducer::Fetch { urls } if !urls.is_empty() => &urls[0],
-                _ => return None,
-            };
+            let SourceProducer::Fetch { urls } = &source.producer;
+            let url = urls.first()?;
             let client = client.clone();
             let semaphore = semaphore.clone();
             let url = url.clone();
@@ -751,12 +744,10 @@ mod tests {
         // Patch download URLs to point at wiremock (so the prefetch probe and
         // download hit the local server instead of GitHub).
         for source in &mut fetch.sources {
-            if let SourceProducer::Fetch { urls } = &mut source.producer {
-                for url in urls.iter_mut() {
-                    let filename = url.rsplit('/').next().unwrap_or(url);
-                    *url =
-                        format!("http://127.0.0.1:{}/{}", mock_server.address().port(), filename);
-                }
+            let SourceProducer::Fetch { urls } = &mut source.producer;
+            for url in urls.iter_mut() {
+                let filename = url.rsplit('/').next().unwrap_or(url);
+                *url = format!("http://127.0.0.1:{}/{}", mock_server.address().port(), filename);
             }
         }
 
@@ -1541,12 +1532,6 @@ mod tests {
     }
 
     #[test]
-    fn is_archive_source_launcher_returns_false() {
-        let producer = SourceProducer::launcher("test");
-        assert!(!is_archive_source(&producer));
-    }
-
-    #[test]
     fn total_process_items_three_sources_three_archives() {
         let fetch = ResolvedToolFetch {
             tool_id: "ffmpeg".to_string(),
@@ -1619,7 +1604,9 @@ mod tests {
                 ResolvedSource {
                     os: "windows".to_string(),
                     arch: host_arch_label(),
-                    producer: SourceProducer::launcher("test"),
+                    producer: SourceProducer::Fetch {
+                        urls: vec!["https://example.com/tool-windows".to_string()],
+                    },
                     expected_size: None,
                     size_hint_bytes: None,
                     identity: None,
@@ -1631,7 +1618,7 @@ mod tests {
             .iter()
             .map(|s| if is_archive_source(&s.producer) { 2u64 } else { 1u64 })
             .sum();
-        // 1 archive (2) + 1 binary (1) + 1 launcher (1) = 4
+        // 1 archive (2) + 2 binaries (1 each) = 4
         assert_eq!(total, 4, "mixed sources should produce correct process total");
     }
 

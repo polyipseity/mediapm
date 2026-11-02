@@ -666,8 +666,7 @@ pub(crate) fn canonical_version_after_fetch(
 /// keeps resolving latest and leaves comparison to the caller's validation
 /// gate. `Exact` of any flavor is refused for ffmpeg (`BtbN` retains no
 /// historical builds). [`media-tagger`](crate::tools::provider::media_tagger)
-/// and [`import`] are builtin launchers with
-/// no upstream release and ignore the target.
+/// and [`import`] are builtins with no upstream release and ignore the target.
 ///
 /// Returns a tuple of `(ResolvedToolFetch, ResolvedToolMetadata)` where the
 /// second element carries:
@@ -727,10 +726,9 @@ pub(crate) async fn resolve_tool_fetch(
                 let (tag, commit_hash, mc) = yt_dlp::resolve_latest_tag(tracker_ref).await?;
                 let mut fetch = yt_dlp::sources();
                 for source in &mut fetch.sources {
-                    if let SourceProducer::Fetch { urls } = &mut source.producer {
-                        for url in urls.iter_mut() {
-                            *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
-                        }
+                    let SourceProducer::Fetch { urls } = &mut source.producer;
+                    for url in urls.iter_mut() {
+                        *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
                     }
                 }
                 (
@@ -809,10 +807,9 @@ pub(crate) async fn resolve_tool_fetch(
                 let (tag, commit_hash, mc) = deno::resolve_tag(tracker_ref).await?;
                 let mut fetch = deno::sources();
                 for source in &mut fetch.sources {
-                    if let SourceProducer::Fetch { urls } = &mut source.producer {
-                        for url in urls.iter_mut() {
-                            *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
-                        }
+                    let SourceProducer::Fetch { urls } = &mut source.producer;
+                    for url in urls.iter_mut() {
+                        *url = url.replace("/latest/download/", &format!("/download/{tag}/"));
                     }
                 }
                 (
@@ -844,12 +841,11 @@ pub(crate) async fn resolve_tool_fetch(
                 let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
                 let mut fetch = rsgain::sources();
                 for source in &mut fetch.sources {
-                    if let SourceProducer::Fetch { urls } = &mut source.producer {
-                        for url in urls.iter_mut() {
-                            *url = url
-                                .replace("/latest/download/", &format!("/download/{tag}/"))
-                                .replace("rsgain-latest", &format!("rsgain-{version}"));
-                        }
+                    let SourceProducer::Fetch { urls } = &mut source.producer;
+                    for url in urls.iter_mut() {
+                        *url = url
+                            .replace("/latest/download/", &format!("/download/{tag}/"))
+                            .replace("rsgain-latest", &format!("rsgain-{version}"));
                     }
                 }
                 (
@@ -896,7 +892,7 @@ pub(crate) async fn resolve_tool_fetch(
                     canonical_version: canonical.clone(),
                     metadata_cached: false,
                     metadata_fetch_count: 0,
-                    // WHY: import is a conductor builtin launcher; no upstream release to resolve.
+                    // WHY: import is a conductor builtin; no upstream release to resolve.
                     resolved_tag: None,
                     resolved_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                     resolved_vcs_hash: Some(canonical),
@@ -911,12 +907,11 @@ pub(crate) async fn resolve_tool_fetch(
                 let (tag, commit_hash, mc) = sd::resolve_tag(tracker_ref).await?;
                 let mut fetch = sd::sources();
                 for source in &mut fetch.sources {
-                    if let SourceProducer::Fetch { urls } = &mut source.producer {
-                        for url in urls.iter_mut() {
-                            *url = url
-                                .replace("/latest/download/", &format!("/download/{tag}/"))
-                                .replace("sd-latest", &format!("sd-{tag}"));
-                        }
+                    let SourceProducer::Fetch { urls } = &mut source.producer;
+                    for url in urls.iter_mut() {
+                        *url = url
+                            .replace("/latest/download/", &format!("/download/{tag}/"))
+                            .replace("sd-latest", &format!("sd-{tag}"));
                     }
                 }
                 (
@@ -1048,23 +1043,14 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            if *name == "import" {
-                // import is a conductor builtin launcher with 3 GenerateLauncher sources.
-                assert_eq!(fetch.sources.len(), 3, "tool {name}: should have 3 sources");
-                for source in &fetch.sources {
-                    assert!(
-                        matches!(source.producer, SourceProducer::GenerateLauncher { .. }),
-                        "tool {name}: source should be GenerateLauncher"
-                    );
-                }
-            } else if *name == "media-tagger" {
-                // A host builtin: mediapm runs the tagger in-process, so the
-                // provider has nothing to fetch and nothing to generate. The
-                // identity it reports is what the sync records and what makes
-                // an unchanged library skippable on the next pass.
+            if *name == "import" || *name == "media-tagger" {
+                // A builtin: mediapm dispatches it in-process, so the provider
+                // has nothing to fetch. The identity it reports is what the sync
+                // records and what makes an unchanged library skippable on the
+                // next pass.
                 assert!(
                     fetch.sources.is_empty(),
-                    "tool {name}: a host builtin has no payload, got {:?}",
+                    "tool {name}: a builtin has no payload, got {:?}",
                     fetch.sources
                 );
             } else {
@@ -1333,7 +1319,7 @@ mod tests {
     async fn resolve_tool_fetch_media_tagger_leaves_tag_none() {
         let _env = lock_process_env();
         // Regression: media-tagger's resolved_tag must stay None by design
-        // (builtin launcher shipped inside mediapm; no upstream tag exists).
+        // (builtin shipped inside mediapm; no upstream tag exists).
         // resolved_version and resolved_vcs_hash identify the mediapm build.
         let (cache, _tmp) = seed_metadata_cache("media-tagger").await;
         let (_, metadata) = resolve_tool_fetch(
@@ -1344,7 +1330,7 @@ mod tests {
         )
         .await
         .expect("media-tagger resolve should succeed");
-        // WHY: media-tagger is a builtin launcher; there is no upstream tag.
+        // WHY: media-tagger is a builtin; there is no upstream tag.
         assert_eq!(metadata.resolved_tag, None);
         assert_eq!(metadata.resolved_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(metadata.resolved_vcs_hash.as_deref(), Some(crate::global::MEDIAPM_GIT_HASH));
@@ -1405,7 +1391,7 @@ mod tests {
 
         seed_jellyfin_metadata(&cache, "default").await;
 
-        // media-tagger is an internal launcher — no external sources.
+        // media-tagger is an internal builtin — no external sources.
         let expected_oses = ["windows", "linux", "macos"];
         let expected_canonicals: [(&str, &str); 5] = [
             ("ffmpeg", "autobuild-2025-07-15-12-00+1759500000_N-127260-g7bc3576910"),
@@ -1523,29 +1509,28 @@ mod tests {
             );
             assert!(!fetch.sources.is_empty(), "tool {tool_name}: should have at least one source");
             for source in &fetch.sources {
-                if let SourceProducer::Fetch { urls } = &source.producer {
-                    for url in urls {
-                        // No URL should still contain the /latest/download/ placeholder,
-                        // EXCEPT ffmpeg's BtbN URLs which intentionally keep /latest/download/.
-                        if *tool_name == "ffmpeg" && url.contains("BtbN") {
-                            // ffmpeg BtbN URLs intentionally keep /latest/download/.
-                            assert!(
-                                url.contains("/latest/download/"),
-                                "tool {tool_name}: ffmpeg BtbN URL should keep /latest/download/",
-                            );
-                        } else {
-                            assert!(
-                                !url.contains("/latest/download/"),
-                                "tool {tool_name}: URL {url} still contains placeholder /latest/download/",
-                            );
-                        }
-                        // For all tools other than ffmpeg, the URL should contain the resolved tag.
-                        if *tool_name != "ffmpeg" {
-                            assert!(
-                                url.contains(tag),
-                                "tool {tool_name}: URL {url} does not contain resolved tag '{tag}'",
-                            );
-                        }
+                let SourceProducer::Fetch { urls } = &source.producer;
+                for url in urls {
+                    // No URL should still contain the /latest/download/ placeholder,
+                    // EXCEPT ffmpeg's BtbN URLs which intentionally keep /latest/download/.
+                    if *tool_name == "ffmpeg" && url.contains("BtbN") {
+                        // ffmpeg BtbN URLs intentionally keep /latest/download/.
+                        assert!(
+                            url.contains("/latest/download/"),
+                            "tool {tool_name}: ffmpeg BtbN URL should keep /latest/download/",
+                        );
+                    } else {
+                        assert!(
+                            !url.contains("/latest/download/"),
+                            "tool {tool_name}: URL {url} still contains placeholder /latest/download/",
+                        );
+                    }
+                    // For all tools other than ffmpeg, the URL should contain the resolved tag.
+                    if *tool_name != "ffmpeg" {
+                        assert!(
+                            url.contains(tag),
+                            "tool {tool_name}: URL {url} does not contain resolved tag '{tag}'",
+                        );
                     }
                 }
             }
@@ -1571,14 +1556,13 @@ mod tests {
             // BtbN sources keep /latest/download/; the martin-riedl permalink
             // and jellyfin fallback carry no /latest/download/ placeholder.
             for source in &fetch.sources {
-                if let SourceProducer::Fetch { urls } = &source.producer {
-                    for url in urls {
-                        if url.contains("BtbN") {
-                            assert!(
-                                url.contains("/latest/download/"),
-                                "ffmpeg BtbN URL should keep /latest/download/: {url}"
-                            );
-                        }
+                let SourceProducer::Fetch { urls } = &source.producer;
+                for url in urls {
+                    if url.contains("BtbN") {
+                        assert!(
+                            url.contains("/latest/download/"),
+                            "ffmpeg BtbN URL should keep /latest/download/: {url}"
+                        );
                     }
                 }
             }
@@ -1651,27 +1635,26 @@ mod tests {
             );
             assert_eq!(fetch.sources.len(), 3, "yt-dlp: expected 3 OS sources");
             // Assert exact URLs per OS source.
-            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
-                assert_eq!(fetch.sources[0].os, "windows");
-                assert_eq!(
-                    urls,
-                    &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp.exe"]
-                );
-            }
-            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
-                assert_eq!(fetch.sources[1].os, "macos");
-                assert_eq!(
-                    urls,
-                    &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_macos"]
-                );
-            }
-            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
-                assert_eq!(fetch.sources[2].os, "linux");
-                assert_eq!(
-                    urls,
-                    &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_linux"]
-                );
-            }
+            let SourceProducer::Fetch { urls } = &fetch.sources[0].producer;
+            assert_eq!(fetch.sources[0].os, "windows");
+            assert_eq!(
+                urls,
+                &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp.exe"]
+            );
+
+            let SourceProducer::Fetch { urls } = &fetch.sources[1].producer;
+            assert_eq!(fetch.sources[1].os, "macos");
+            assert_eq!(
+                urls,
+                &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_macos"]
+            );
+
+            let SourceProducer::Fetch { urls } = &fetch.sources[2].producer;
+            assert_eq!(fetch.sources[2].os, "linux");
+            assert_eq!(
+                urls,
+                &["https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_linux"]
+            );
         }
 
         // — ffmpeg (composite canonical, BtbN URLs keep /latest/download/, macOS is
@@ -1692,25 +1675,23 @@ mod tests {
             );
             assert_eq!(fetch.sources.len(), 4, "ffmpeg: windows + 2 macOS arches + linux");
             // windows: BtbN URLs keep /latest/download/ (no substitution)
-            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
-                assert_eq!(fetch.sources[0].os, "windows");
-                assert_eq!(urls.len(), 2);
-                assert!(
-                    urls[0].contains("/releases/latest/download/"),
-                    "ffmpeg windows primary URL should use /latest/download/"
-                );
-                assert!(
-                    urls[0].contains("ffmpeg-master-latest"),
-                    "ffmpeg windows primary URL should use master-latest naming"
-                );
-            }
+            let SourceProducer::Fetch { urls } = &fetch.sources[0].producer;
+            assert_eq!(fetch.sources[0].os, "windows");
+            assert_eq!(urls.len(), 2);
+            assert!(
+                urls[0].contains("/releases/latest/download/"),
+                "ffmpeg windows primary URL should use /latest/download/"
+            );
+            assert!(
+                urls[0].contains("ffmpeg-master-latest"),
+                "ffmpeg windows primary URL should use master-latest naming"
+            );
+
             // macos: one source per arch — snapshot permalink, release
             // permalink, then the jellyfin fallback
             for source in &fetch.sources[1..3] {
                 assert_eq!(source.os, "macos");
-                let SourceProducer::Fetch { urls } = &source.producer else {
-                    panic!("ffmpeg macOS sources must be Fetch producers");
-                };
+                let SourceProducer::Fetch { urls } = &source.producer;
                 assert_eq!(
                     urls.len(),
                     3,
@@ -1735,14 +1716,13 @@ mod tests {
             assert_eq!(fetch.sources[1].arch, "aarch64");
             assert_eq!(fetch.sources[2].arch, "x86_64");
             // linux: BtbN URLs keep /latest/download/
-            if let SourceProducer::Fetch { urls } = &fetch.sources[3].producer {
-                assert_eq!(fetch.sources[3].os, "linux");
-                assert_eq!(urls.len(), 2);
-                assert!(
-                    urls[0].contains("/releases/latest/download/"),
-                    "ffmpeg linux primary URL should use /latest/download/"
-                );
-            }
+            let SourceProducer::Fetch { urls } = &fetch.sources[3].producer;
+            assert_eq!(fetch.sources[3].os, "linux");
+            assert_eq!(urls.len(), 2);
+            assert!(
+                urls[0].contains("/releases/latest/download/"),
+                "ffmpeg linux primary URL should use /latest/download/"
+            );
         }
 
         // — deno (tag "v2.2.12", v-prefixed, no filename rewrite) —
@@ -1761,37 +1741,36 @@ mod tests {
                 "deno canonical version"
             );
             assert_eq!(fetch.sources.len(), 3, "deno: expected 3 OS sources");
-            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
-                assert_eq!(fetch.sources[0].os, "windows");
-                assert!(urls[0].contains("v2.2.12"), "deno windows URL should contain tag");
-                assert!(
-                    urls[0].ends_with("deno-x86_64-pc-windows-msvc.zip"),
-                    "deno windows URL filename mismatch",
-                );
-            }
-            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
-                assert_eq!(fetch.sources[1].os, "macos");
-                assert!(urls[0].contains("v2.2.12"), "deno macos URL should contain tag");
-                assert!(
-                    urls[0].ends_with(&format!("deno-{}-apple-darwin.zip", host_arch_label())),
-                    "deno macos URL should name the host-arch asset, got {}",
-                    urls[0],
-                );
-                assert_eq!(
-                    urls.len(),
-                    1,
-                    "deno macos should have exactly one host-arch URL, not a cross-arch list"
-                );
-            }
-            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
-                assert_eq!(fetch.sources[2].os, "linux");
-                assert!(urls[0].contains("v2.2.12"), "deno linux URL should contain tag");
-                assert_eq!(
-                    urls.len(),
-                    1,
-                    "deno linux should have exactly one host-arch URL, not a cross-arch list"
-                );
-            }
+            let SourceProducer::Fetch { urls } = &fetch.sources[0].producer;
+            assert_eq!(fetch.sources[0].os, "windows");
+            assert!(urls[0].contains("v2.2.12"), "deno windows URL should contain tag");
+            assert!(
+                urls[0].ends_with("deno-x86_64-pc-windows-msvc.zip"),
+                "deno windows URL filename mismatch",
+            );
+
+            let SourceProducer::Fetch { urls } = &fetch.sources[1].producer;
+            assert_eq!(fetch.sources[1].os, "macos");
+            assert!(urls[0].contains("v2.2.12"), "deno macos URL should contain tag");
+            assert!(
+                urls[0].ends_with(&format!("deno-{}-apple-darwin.zip", host_arch_label())),
+                "deno macos URL should name the host-arch asset, got {}",
+                urls[0],
+            );
+            assert_eq!(
+                urls.len(),
+                1,
+                "deno macos should have exactly one host-arch URL, not a cross-arch list"
+            );
+
+            let SourceProducer::Fetch { urls } = &fetch.sources[2].producer;
+            assert_eq!(fetch.sources[2].os, "linux");
+            assert!(urls[0].contains("v2.2.12"), "deno linux URL should contain tag");
+            assert_eq!(
+                urls.len(),
+                1,
+                "deno linux should have exactly one host-arch URL, not a cross-arch list"
+            );
         }
 
         // — rsgain (tag "v3.7", path + filename rewrite: rsgain-latest → rsgain-3.7) —
@@ -1810,33 +1789,32 @@ mod tests {
                 "rsgain canonical version"
             );
             assert_eq!(fetch.sources.len(), 3, "rsgain: expected 3 OS sources");
-            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
-                assert_eq!(fetch.sources[0].os, "windows");
-                assert_eq!(
-                    urls,
-                    &[
-                        "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-win64.zip"
-                    ]
-                );
-            }
-            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
-                assert_eq!(fetch.sources[1].os, "macos");
-                assert_eq!(
-                    urls,
-                    &[
-                        "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-macOS-x86_64.zip"
-                    ]
-                );
-            }
-            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
-                assert_eq!(fetch.sources[2].os, "linux");
-                assert_eq!(
-                    urls,
-                    &[
-                        "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-Linux.tar.xz"
-                    ]
-                );
-            }
+            let SourceProducer::Fetch { urls } = &fetch.sources[0].producer;
+            assert_eq!(fetch.sources[0].os, "windows");
+            assert_eq!(
+                urls,
+                &[
+                    "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-win64.zip"
+                ]
+            );
+
+            let SourceProducer::Fetch { urls } = &fetch.sources[1].producer;
+            assert_eq!(fetch.sources[1].os, "macos");
+            assert_eq!(
+                urls,
+                &[
+                    "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-macOS-x86_64.zip"
+                ]
+            );
+
+            let SourceProducer::Fetch { urls } = &fetch.sources[2].producer;
+            assert_eq!(fetch.sources[2].os, "linux");
+            assert_eq!(
+                urls,
+                &[
+                    "https://github.com/complexlogic/rsgain/releases/download/v3.7/rsgain-3.7-Linux.tar.xz"
+                ]
+            );
         }
 
         // — sd (tag "v1.1.0", path + filename rewrite: sd-latest → sd-v1.1.0) —
@@ -1855,36 +1833,35 @@ mod tests {
                 "sd canonical version"
             );
             assert_eq!(fetch.sources.len(), 3, "sd: expected 3 OS sources");
-            if let SourceProducer::Fetch { urls } = &fetch.sources[0].producer {
-                assert_eq!(fetch.sources[0].os, "windows");
-                assert_eq!(
-                    urls,
-                    &[
-                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-pc-windows-msvc.zip"
-                    ]
-                );
-            }
-            if let SourceProducer::Fetch { urls } = &fetch.sources[1].producer {
-                assert_eq!(fetch.sources[1].os, "macos");
-                let expected = format!(
-                    "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-{}-apple-darwin.tar.gz",
-                    host_arch_label()
-                );
-                assert_eq!(
-                    urls,
-                    &[expected],
-                    "sd macos should have exactly one host-arch URL, not a cross-arch list"
-                );
-            }
-            if let SourceProducer::Fetch { urls } = &fetch.sources[2].producer {
-                assert_eq!(fetch.sources[2].os, "linux");
-                assert_eq!(
-                    urls,
-                    &[
-                        "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-unknown-linux-gnu.tar.gz"
-                    ]
-                );
-            }
+            let SourceProducer::Fetch { urls } = &fetch.sources[0].producer;
+            assert_eq!(fetch.sources[0].os, "windows");
+            assert_eq!(
+                urls,
+                &[
+                    "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-pc-windows-msvc.zip"
+                ]
+            );
+
+            let SourceProducer::Fetch { urls } = &fetch.sources[1].producer;
+            assert_eq!(fetch.sources[1].os, "macos");
+            let expected = format!(
+                "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-{}-apple-darwin.tar.gz",
+                host_arch_label()
+            );
+            assert_eq!(
+                urls,
+                &[expected],
+                "sd macos should have exactly one host-arch URL, not a cross-arch list"
+            );
+
+            let SourceProducer::Fetch { urls } = &fetch.sources[2].producer;
+            assert_eq!(fetch.sources[2].os, "linux");
+            assert_eq!(
+                urls,
+                &[
+                    "https://github.com/chmln/sd/releases/download/v1.1.0/sd-v1.1.0-x86_64-unknown-linux-gnu.tar.gz"
+                ]
+            );
         }
     }
 
@@ -1909,7 +1886,7 @@ mod tests {
         if !canonical.is_empty() {
             assert!(canonical.len() >= 7, "git hash should be at least 7 chars");
         }
-        // WHY: media-tagger is a builtin launcher — no upstream tag; identity is
+        // WHY: media-tagger is a builtin — no upstream tag; identity is
         // the mediapm build itself.
         assert_eq!(metadata.resolved_tag, None);
         assert_eq!(metadata.resolved_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
@@ -2053,11 +2030,6 @@ mod tests {
             .unwrap_or_else(|e| panic!("resolve {name}: {e}"));
             for source in &fetch.sources {
                 assert!(
-                    matches!(source.producer, super::SourceProducer::Fetch { .. }),
-                    "{name}: expected Fetch source, got {:?}",
-                    source.producer
-                );
-                assert!(
                     source.size_hint_bytes.is_some(),
                     "{name} source for {}: size_hint_bytes should be Some",
                     source.os
@@ -2065,8 +2037,8 @@ mod tests {
             }
         }
 
-        // media-tagger is a host builtin: it has no payload to fetch and no
-        // launcher to generate, so the provider answers with no source at all.
+        // media-tagger is a host builtin: it has no payload to fetch, so the
+        // provider answers with no source at all.
         {
             let (fetch, _metadata) = resolve_tool_fetch(
                 "media-tagger",
@@ -2288,7 +2260,7 @@ mod tests {
         assert_eq!(
             canonical_version_after_fetch("ffmpeg", "autobuild-x+leg", &no_actual_url),
             "autobuild-x+leg",
-            "a launcher-style entry carries no URL feedback"
+            "an entry with no served URL carries no URL feedback"
         );
 
         let unparsable = [macos_entry_with_actual_url("https://example.com/not-a-chain-url.zip")];
@@ -2415,9 +2387,7 @@ mod tests {
 
             let mut payload_urls = 0_usize;
             for source in &fetch.sources {
-                let SourceProducer::Fetch { urls } = &source.producer else {
-                    continue;
-                };
+                let SourceProducer::Fetch { urls } = &source.producer;
                 for url in urls {
                     payload_urls += 1;
                     assert!(
@@ -2429,7 +2399,7 @@ mod tests {
                 }
             }
             if name == "import" {
-                assert_eq!(payload_urls, 0, "tool {name}: a launcher fetches no payload");
+                assert_eq!(payload_urls, 0, "tool {name}: a builtin fetches no payload");
             } else {
                 assert!(
                     payload_urls > 0,

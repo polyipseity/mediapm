@@ -736,7 +736,6 @@ pub struct WorkflowStepSpec {
 pub fn default_runtime_inherited_env_vars() -> BTreeMap<String, String> {
     if cfg!(windows) {
         BTreeMap::from([
-            ("MEDIAPM_EXECUTABLE".to_string(), String::new()),
             ("PATH".to_string(), String::new()),
             ("SYSTEMROOT".to_string(), String::new()),
             ("USERNAME".to_string(), String::new()),
@@ -747,7 +746,6 @@ pub fn default_runtime_inherited_env_vars() -> BTreeMap<String, String> {
     } else {
         BTreeMap::from([
             ("HOME".to_string(), String::new()),
-            ("MEDIAPM_EXECUTABLE".to_string(), String::new()),
             ("PATH".to_string(), String::new()),
             ("TMPDIR".to_string(), String::new()),
             ("USER".to_string(), String::new()),

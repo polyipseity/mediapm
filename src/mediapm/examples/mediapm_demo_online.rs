@@ -3573,17 +3573,16 @@ async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
 
 /// Rejects arguments the demo does not accept.
 ///
-/// The demo takes no arguments. A managed-tool launcher that dispatches into
-/// this binary passes `builtin media-tagger …`, and running a second demo
-/// from that dispatch is what turned a tagging step into a 300s timeout, so
-/// any argument is an error rather than something to ignore.
+/// The demo takes no arguments. A stray dispatch into this binary would run a
+/// second demo, and a second demo from a dispatch is what once turned a tagging
+/// step into a 300s timeout, so any argument is an error rather than something
+/// to ignore.
 ///
 /// # Errors
 ///
-/// Returns an error naming the first argument and `MEDIAPM_EXECUTABLE` when
-/// `args` is not empty. The check reads no process state, so a caller passes
-/// the arguments it received and a test passes the arguments it wants to
-/// assert on.
+/// Returns an error naming the first argument when `args` is not empty. The
+/// check reads no process state, so a caller passes the arguments it received
+/// and a test passes the arguments it wants to assert on.
 fn reject_unexpected_arguments<I>(args: I) -> ExampleResult<()>
 where
     I: IntoIterator<Item = std::ffi::OsString>,
@@ -3592,7 +3591,7 @@ where
         return Ok(());
     };
     Err(format!(
-        "mediapm_demo_online takes no arguments, but was invoked with '{}'; a managed-tool launcher dispatched into the demo, so MEDIAPM_EXECUTABLE does not point at the mediapm CLI — set it, or run `cargo build --package mediapm`",
+        "mediapm_demo_online takes no arguments, but was invoked with '{}'; something dispatched into the demo in place of the mediapm CLI — check what named this binary as its executable",
         first.to_string_lossy()
     )
     .into())
@@ -3949,23 +3948,22 @@ mod tests {
         assert!(result.is_err(), "unknown run-sync tokens must be rejected");
     }
 
-    /// Ensures a managed-tool launcher that dispatches into the demo is refused by name.
+    /// Ensures a dispatch into the demo is refused by name.
     ///
-    /// The launcher passes `builtin media-tagger …`, which an argv-ignoring demo would run as
-    /// a second demo. The error has to name the first argument and the variable whose value
-    /// caused the dispatch, because those two facts are what tell a reader which launcher to
-    /// repoint.
+    /// A caller passing `builtin media-tagger …` would run a second demo if the
+    /// argument list were ignored. The error has to name the first argument,
+    /// because that is what tells a reader which caller dispatched here.
     #[test]
-    fn rejects_the_launcher_dispatch_into_the_demo() {
+    fn rejects_a_dispatch_into_the_demo() {
         let args = ["builtin", "media-tagger", "--input", "x"].map(std::ffi::OsString::from);
 
         let error = super::reject_unexpected_arguments(args)
-            .expect_err("a launcher dispatch into the demo must be refused");
+            .expect_err("a dispatch into the demo must be refused");
 
         assert_eq!(
             error.to_string(),
-            "mediapm_demo_online takes no arguments, but was invoked with 'builtin'; a managed-tool launcher dispatched into the demo, so MEDIAPM_EXECUTABLE does not point at the mediapm CLI — set it, or run `cargo build --package mediapm`",
-            "the refusal must name the argument it received, the variable that caused the dispatch, and the remedy"
+            "mediapm_demo_online takes no arguments, but was invoked with 'builtin'; something dispatched into the demo in place of the mediapm CLI — check what named this binary as its executable",
+            "the refusal must name the argument it received and say what a dispatch means"
         );
     }
 
@@ -3981,12 +3979,12 @@ mod tests {
 
     /// Ensures any stray argument is refused, including one that looks like a flag.
     ///
-    /// The demo has no help mode, so `--help` reaching it means a launcher used the demo as the
+    /// The demo has no help mode, so `--help` reaching it means something used the demo as a
     /// CLI; accepting it would reintroduce the dispatch this check exists to refuse.
     #[test]
     fn rejects_any_stray_argument() {
         let error = super::reject_unexpected_arguments([std::ffi::OsString::from("--help")])
-            .expect_err("the demo has no help mode, so `--help` is a launcher dispatch");
+            .expect_err("the demo has no help mode, so `--help` is a dispatch into it");
 
         assert!(
             error.to_string().contains("'--help'"),

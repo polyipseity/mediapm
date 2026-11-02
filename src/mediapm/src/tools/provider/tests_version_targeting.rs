@@ -116,9 +116,9 @@ async fn exact_tag_fetches_release_assets_and_builds_pinned_urls() {
     let urls: Vec<&str> = fetch
         .sources
         .iter()
-        .filter_map(|s| match &s.producer {
-            SourceProducer::Fetch { urls } => urls.first().map(String::as_str),
-            SourceProducer::GenerateLauncher { .. } => None,
+        .filter_map(|s| {
+            let SourceProducer::Fetch { urls } = &s.producer;
+            urls.first().map(String::as_str)
         })
         .collect();
     assert_eq!(urls.len(), 3, "expected one URL per OS, got {urls:?}");
@@ -372,9 +372,7 @@ fn deno_sources_select_one_host_arch_candidate_per_os() {
     let host = host_arch_label();
     let fetch = deno::sources();
     for source in &fetch.sources {
-        let SourceProducer::Fetch { urls } = &source.producer else {
-            continue;
-        };
+        let SourceProducer::Fetch { urls } = &source.producer;
         assert_eq!(urls.len(), 1, "exactly one candidate for os {}", source.os);
         let expected_arch =
             if source.os == "windows" { "x86_64".to_string() } else { host.clone() };
@@ -398,9 +396,7 @@ fn sd_sources_select_one_host_arch_candidate_per_os() {
     let host = host_arch_label();
     let fetch = sd::sources();
     for source in &fetch.sources {
-        let SourceProducer::Fetch { urls } = &source.producer else {
-            continue;
-        };
+        let SourceProducer::Fetch { urls } = &source.producer;
         assert_eq!(urls.len(), 1, "exactly one candidate for os {}", source.os);
         let expected_arch = if source.os == "macos" { host.clone() } else { "x86_64".to_string() };
         assert!(
@@ -431,9 +427,7 @@ fn exact_name_matchers_pin_the_matched_asset_url() {
         [("windows", "yt-dlp.exe"), ("macos", "yt-dlp_macos"), ("linux", "yt-dlp_linux")]
     {
         let source = fetch.sources.iter().find(|s| s.os == os).expect("os slot present");
-        let SourceProducer::Fetch { urls } = &source.producer else {
-            panic!("{os} slot must be a fetch source");
-        };
+        let SourceProducer::Fetch { urls } = &source.producer;
         assert_eq!(urls.len(), 1, "{os} slot carries one candidate");
         assert!(
             urls[0].ends_with(&format!("/releases/download/{tag}/{expected}")),
@@ -459,9 +453,7 @@ fn exact_name_matchers_pin_the_matched_asset_url() {
         ("linux", format!("deno-{host}-unknown-linux-gnu.zip")),
     ] {
         let source = fetch.sources.iter().find(|s| s.os == os).expect("os slot present");
-        let SourceProducer::Fetch { urls } = &source.producer else {
-            panic!("{os} slot must be a fetch source");
-        };
+        let SourceProducer::Fetch { urls } = &source.producer;
         assert!(
             urls[0].ends_with(&format!("/releases/download/{tag}/{expected}")),
             "{os} slot must pin the exact {expected} asset, got {}",
@@ -496,9 +488,7 @@ fn rsgain_suffix_matcher_pins_the_versioned_asset_and_names_a_miss() {
         ("linux", "rsgain-3.7-Linux.tar.xz"),
     ] {
         let source = fetch.sources.iter().find(|s| s.os == os).expect("os slot present");
-        let SourceProducer::Fetch { urls } = &source.producer else {
-            panic!("{os} slot must be a fetch source");
-        };
+        let SourceProducer::Fetch { urls } = &source.producer;
         assert!(
             urls[0].ends_with(&format!("/releases/download/{tag}/{expected}")),
             "{os} slot must pin the matched {expected} asset, got {}",
@@ -544,9 +534,7 @@ fn sd_suffix_matcher_pins_the_versioned_asset_and_names_a_miss() {
         ("linux", "sd-v1.1.0-x86_64-unknown-linux-gnu.tar.gz".to_string()),
     ] {
         let source = fetch.sources.iter().find(|s| s.os == os).expect("os slot present");
-        let SourceProducer::Fetch { urls } = &source.producer else {
-            panic!("{os} slot must be a fetch source");
-        };
+        let SourceProducer::Fetch { urls } = &source.producer;
         assert!(
             urls[0].ends_with(&format!("/releases/download/{tag}/{expected}")),
             "{os} slot must pin the matched {expected} asset, got {}",

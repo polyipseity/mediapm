@@ -1,40 +1,14 @@
 //! Provider for the `echo` builtin tool.
 
-use super::{ResolvedSource, ResolvedToolFetch, SourceProducer, host_arch_label};
+use super::ResolvedToolFetch;
 
-/// Returns the resolved tool fetch for `echo`.
+/// Returns the source descriptors for `echo`: none.
+///
+/// `echo` is a conductor builtin the host dispatches in-process, so its step
+/// carries no command parts and there is nothing to download, generate or place
+/// in a sandbox. Resolution still answers, because a declared builtin tool must
+/// resolve: what it has is no payload.
 #[must_use]
-pub fn sources() -> ResolvedToolFetch {
-    ResolvedToolFetch {
-        tool_id: "echo".to_string(),
-        sources: vec![
-            ResolvedSource {
-                os: "windows".to_string(),
-                // Launcher scripts are arch-independent; they label the host arch.
-                arch: host_arch_label(),
-                producer: SourceProducer::launcher("echo@v1"),
-                expected_size: None,
-                size_hint_bytes: None,
-                identity: None,
-            },
-            ResolvedSource {
-                os: "linux".to_string(),
-                // Launcher scripts are arch-independent; they label the host arch.
-                arch: host_arch_label(),
-                producer: SourceProducer::launcher("echo@v1"),
-                expected_size: None,
-                size_hint_bytes: None,
-                identity: None,
-            },
-            ResolvedSource {
-                os: "macos".to_string(),
-                // Launcher scripts are arch-independent; they label the host arch.
-                arch: host_arch_label(),
-                producer: SourceProducer::launcher("echo@v1"),
-                expected_size: None,
-                size_hint_bytes: None,
-                identity: None,
-            },
-        ],
-    }
+pub(crate) fn sources() -> ResolvedToolFetch {
+    ResolvedToolFetch { tool_id: "echo".to_string(), sources: Vec::new() }
 }

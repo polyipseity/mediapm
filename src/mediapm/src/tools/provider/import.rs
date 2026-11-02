@@ -1,42 +1,22 @@
-//! Provider for the conductor `import` builtin tool.
+//! Provider source definitions for the conductor `import` builtin.
+//!
+//! `import` is a conductor builtin the host dispatches in-process: its step
+//! carries no command parts, so [`sources`] is empty. The sync classifies it as
+//! builtin code (`is_builtin_source_ingest_requirement`) and provisions nothing
+//! for it — the bytes an import step consumes are the media the step names, not
+//! a payload belonging to the tool.
+//!
+//! Canonical version: mediapm build-time git hash (VCS hash kind, fixed at
+//! code-writing time), because the builtin ships inside mediapm with no
+//! upstream tagged release.
 
-use mediapm_conductor::tools::provider::{
-    ResolvedSource, ResolvedToolFetch, SourceProducer, host_arch_label,
-};
+use mediapm_conductor::tools::provider::ResolvedToolFetch;
 
-/// Returns the resolved tool fetch for `import`.
+/// Returns the source descriptors for `import`: none.
+///
+/// The tool still resolves, so a document that declares it keeps a version
+/// identity and a registry record; what it has no longer is a payload.
 #[must_use]
 pub(crate) fn sources() -> ResolvedToolFetch {
-    ResolvedToolFetch {
-        tool_id: "import".to_string(),
-        sources: vec![
-            ResolvedSource {
-                os: "windows".to_string(),
-                // Launcher scripts are arch-independent; they label the host arch.
-                arch: host_arch_label(),
-                producer: SourceProducer::launcher("import@v1"),
-                expected_size: None,
-                size_hint_bytes: None,
-                identity: None,
-            },
-            ResolvedSource {
-                os: "linux".to_string(),
-                // Launcher scripts are arch-independent; they label the host arch.
-                arch: host_arch_label(),
-                producer: SourceProducer::launcher("import@v1"),
-                expected_size: None,
-                size_hint_bytes: None,
-                identity: None,
-            },
-            ResolvedSource {
-                os: "macos".to_string(),
-                // Launcher scripts are arch-independent; they label the host arch.
-                arch: host_arch_label(),
-                producer: SourceProducer::launcher("import@v1"),
-                expected_size: None,
-                size_hint_bytes: None,
-                identity: None,
-            },
-        ],
-    }
+    ResolvedToolFetch { tool_id: "import".to_string(), sources: Vec::new() }
 }

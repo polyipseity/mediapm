@@ -1,10 +1,12 @@
 //! Tool provider: three-phase pipeline for resolving, fetching, and processing
-//! downloadable tool payloads (and generating launcher scripts for builtins).
+//! downloadable tool payloads.
 //!
 //! # Architecture
 //!
-//! Every tool (external download + launcher-based builtin) goes through three
-//! sequential phases:
+//! Every managed (externally downloaded) tool goes through three sequential
+//! phases. A builtin tool resolves with no sources at all — its step carries no
+//! command parts and dispatches in-process — so it passes through the pipeline
+//! without fetching or processing anything:
 //!
 //! 1. **Resolve** — gather metadata, resolve versions, determine sources.
 //! 2. **Fetch** — download or generate bytes for each source.
@@ -240,24 +242,15 @@ impl<'de> serde::Deserialize<'de> for VersionSpecFields {
 }
 
 /// How phase 2 produces bytes for one source.
+///
+/// Every producer generates bytes by fetching them from URL candidates. A
+/// builtin tool has no producer at all: it resolves with an empty source list,
+/// because its implementation is code the host runs rather than bytes to place
+/// in a sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceProducer {
     /// Fetch bytes from URL candidates (tried in order).
     Fetch { urls: Vec<String> },
-    /// Generate launcher script bytes that dispatch a builtin tool.
-    GenerateLauncher {
-        builtin_id: String,
-        /// argv tokens inserted before `builtin_id` (for example `builtin` on mediapm CLI).
-        argv_prefix: Vec<String>,
-    },
-}
-
-impl SourceProducer {
-    /// Builds one launcher producer for conductor-style builtin dispatch.
-    #[must_use]
-    pub fn launcher(builtin_id: impl Into<String>) -> Self {
-        Self::GenerateLauncher { builtin_id: builtin_id.into(), argv_prefix: Vec::new() }
-    }
 }
 
 /// One resolved source after phase 1.
@@ -270,8 +263,8 @@ pub struct ResolvedSource {
     ///
     /// Carried but not yet used in content-map keys (arch key segments land
     /// with the ffmpeg macOS chain). Sources publishing one universal
-    /// artifact per OS (builtin launcher scripts, yt-dlp's universal macOS
-    /// binary) label the host architecture via [`host_arch_label`].
+    /// artifact per OS (yt-dlp's universal macOS binary) label the host
+    /// architecture via [`host_arch_label`].
     pub arch: String,
     /// How phase 2 produces bytes for this source.
     pub producer: SourceProducer,
@@ -345,8 +338,7 @@ pub struct DownloadedSource {
     /// reports the versioned download URL it resolved to. Cache-served
     /// entries carry the requested candidate URL — the cached bytes' redirect
     /// provenance is not retained, and the identity segment a content-cache
-    /// key may carry is not part of a URL. `None` for launcher-generated
-    /// sources.
+    /// key may carry is not part of a URL.
     pub actual_url: Option<String>,
 }
 
@@ -446,11 +438,12 @@ pub async fn resolve_tool_fetch(
 // Phase 2 — Fetch
 // ██████████████████████████████████████████████████████████████████████████████
 
-/// Fetches (or generates) bytes for every source in `fetch`.
+/// Fetches bytes for every source in `fetch`.
 ///
-/// URL sources are tried in order; the first HTTP 200 wins. Launcher sources
-/// generate shell/batch script bytes in memory. Uses `cache` for deduplication
-/// of downloaded payloads.
+/// URL sources are tried in order; the first HTTP 200 wins. A fetch with no
+/// sources produces no entries: that is what a builtin tool resolves to, and it
+/// is why the caller never has to special-case one. Uses `cache` for
+/// deduplication of downloaded payloads.
 ///
 /// Progress reporting: the per-chunk total combines already-completed sizes
 /// (`agg_completed_bytes`) + the best lower bound for the current source
@@ -503,10 +496,10 @@ pub async fn fetch_tool_sources(
 
     // ── Parallel fetch phase ──────────────────────────────────────────
     //
-    // Spawn one concurrent task per Fetch source. Each task performs its
-    // own cache lookup, downloads on miss, and returns the source index
-    // together with the result. GenerateLauncher sources are fast and
-    // handled inline after the parallel fetch.
+    // Spawn one concurrent task per source. Each task performs its own cache
+    // lookup, downloads on miss, and returns the source index together with the
+    // result. A fetch with no sources collects nothing, so the stream below
+    // yields no results and the entry list stays empty.
     //
     // Fire an initial progress snapshot so the bar shows the byte aggregate
     // immediately (matching the sequential contract where the first snapshot
@@ -515,91 +508,93 @@ pub async fn fetch_tool_sources(
         fire_progress(cb, ProviderPhase::Fetch, (0, total), &budget);
     }
 
-    // Build futures for every Fetch source, each carrying its index and
+    // Build futures for every source, each carrying its index and
     // owned URLs so the async block is self-contained.
     let fetch_futures: Vec<_> = fetch
         .sources
         .iter()
         .enumerate()
-        .filter_map(|(idx, source)| match &source.producer {
-            SourceProducer::Fetch { urls } => {
-                let urls = urls.clone();
-                let tool_id = fetch.tool_id.clone();
-                let os_label = source.os.clone();
-                let identity = source.identity.clone();
-                let cb = progress_cb.clone();
-                let budget = budget.clone();
-                let completed_sources = Arc::clone(&completed_sources);
-                Some(async move {
-                    // Try cache lookup for each fallback URL, under the key
-                    // that URL is stored with: the URL itself, plus the
-                    // source's resolved identity when its URL is a moving
-                    // permalink.
-                    let mut cache_hit = None;
-                    for url in &urls {
-                        let key = content_cache_key(url, identity.as_deref());
-                        if let Some(cached) = cache.lookup_bytes(domain, &key).await {
-                            cache.touch(domain, &key);
-                            cache_hit = Some((key, url.clone(), cached));
-                            break;
-                        }
+        .map(|(idx, source)| {
+            let SourceProducer::Fetch { urls } = &source.producer;
+            let urls = urls.clone();
+            let tool_id = fetch.tool_id.clone();
+            let os_label = source.os.clone();
+            let identity = source.identity.clone();
+            let cb = progress_cb.clone();
+            let budget = budget.clone();
+            let completed_sources = Arc::clone(&completed_sources);
+            async move {
+                // Try cache lookup for each fallback URL, under the key
+                // that URL is stored with: the URL itself, plus the
+                // source's resolved identity when its URL is a moving
+                // permalink.
+                let mut cache_hit = None;
+                for url in &urls {
+                    let key = content_cache_key(url, identity.as_deref());
+                    if let Some(cached) = cache.lookup_bytes(domain, &key).await {
+                        cache.touch(domain, &key);
+                        cache_hit = Some((key, url.clone(), cached));
+                        break;
                     }
+                }
 
-                    if let Some((cache_key, requested_url, cached)) = cache_hit {
-                        let size = cached.len() as u64;
-                        budget.set_total(idx, size);
-                        budget.advance(idx, size);
-                        completed_sources.fetch_add(1, Ordering::AcqRel);
-                        if let Some(ref cb) = cb {
-                            fire_fetch_chunk_progress(cb, &completed_sources, total, &budget);
-                        }
-                        // A cache hit reports the candidate URL it was
-                        // looked up under; the bytes' original redirect
-                        // provenance is not retained, so the candidate is
-                        // the best-known actual URL. The key's identity
-                        // suffix is not part of a URL, and the bytes' final
-                        // URL is derived from it, so the requested URL is
-                        // reported unkeyed. A cache hit never reports
-                        // failures — the chain was not walked.
-                        let fetched = FetchedBytes {
-                            bytes: cached,
-                            cache_key: cache_key.clone(),
-                            final_url: Some(requested_url),
-                            failures: Vec::new(),
-                        };
-                        (idx, Ok(fetched), true)
-                    } else {
-                        let estimate = source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
-                        budget.set_total(idx, estimate);
-                        let total_sources = total;
-                        let result = fetch_bytes_from_candidates(
-                            &urls,
-                            &tool_id,
-                            &os_label,
-                            identity.as_deref(),
-                            &budget,
-                            idx,
-                            &completed_sources,
-                            total_sources,
-                            cb.as_ref(),
-                        )
-                        .await;
-                        match result {
-                            Ok(fetched) => {
-                                cache.store_bytes(domain, &fetched.cache_key, &fetched.bytes).await;
-                                completed_sources.fetch_add(1, Ordering::AcqRel);
-                                (idx, Ok(fetched), false)
-                            }
-                            Err(e) => (idx, Err(e), false),
-                        }
+                if let Some((cache_key, requested_url, cached)) = cache_hit {
+                    let size = cached.len() as u64;
+                    budget.set_total(idx, size);
+                    budget.advance(idx, size);
+                    completed_sources.fetch_add(1, Ordering::AcqRel);
+                    if let Some(ref cb) = cb {
+                        fire_fetch_chunk_progress(cb, &completed_sources, total, &budget);
                     }
-                })
+                    // A cache hit reports the candidate URL it was
+                    // looked up under; the bytes' original redirect
+                    // provenance is not retained, so the candidate is
+                    // the best-known actual URL. The key's identity
+                    // suffix is not part of a URL, and the bytes' final
+                    // URL is derived from it, so the requested URL is
+                    // reported unkeyed. A cache hit never reports
+                    // failures — the chain was not walked.
+                    let fetched = FetchedBytes {
+                        bytes: cached,
+                        cache_key: cache_key.clone(),
+                        final_url: Some(requested_url),
+                        failures: Vec::new(),
+                    };
+                    (idx, Ok(fetched), true)
+                } else {
+                    let estimate = source.expected_size.or(source.size_hint_bytes).unwrap_or(0);
+                    budget.set_total(idx, estimate);
+                    let total_sources = total;
+                    let result = fetch_bytes_from_candidates(
+                        &urls,
+                        &tool_id,
+                        &os_label,
+                        identity.as_deref(),
+                        &budget,
+                        idx,
+                        &completed_sources,
+                        total_sources,
+                        cb.as_ref(),
+                    )
+                    .await;
+                    match result {
+                        Ok(fetched) => {
+                            cache.store_bytes(domain, &fetched.cache_key, &fetched.bytes).await;
+                            completed_sources.fetch_add(1, Ordering::AcqRel);
+                            (idx, Ok(fetched), false)
+                        }
+                        Err(e) => (idx, Err(e), false),
+                    }
+                }
             }
-            SourceProducer::GenerateLauncher { .. } => None,
         })
         .collect();
 
     // Run all fetch futures concurrently, bounded by default_source_fetch_concurrency().
+    //
+    // The `.max(1)` floor is what lets a source list be empty: `buffer_unordered(0)`
+    // never polls its inner stream, so a zero-source fetch would never complete.
+    // A builtin tool resolves to exactly that list.
     let fetch_concurrency = default_source_fetch_concurrency().min(fetch_futures.len()).max(1);
     let fetch_results: Vec<(usize, FetchResult, bool)> =
         stream::iter(fetch_futures).buffer_unordered(fetch_concurrency).collect().await;
@@ -615,63 +610,40 @@ pub async fn fetch_tool_sources(
     // Chain members that a later member covered, as user-facing sentences.
     let mut warnings: Vec<String> = Vec::new();
 
-    for (idx, source) in fetch.sources.iter().enumerate() {
-        match &source.producer {
-            SourceProducer::Fetch { urls } => {
-                // The parallel fetch produced exactly one result per Fetch source,
-                // in sorted order — advance the iterator.
-                let (_, result, was_cached) =
-                    fetch_iter.next().expect("parallel fetch result missing for Fetch source");
-                let FetchedBytes { bytes, final_url: actual_url, failures, .. } = result?;
-                if was_cached {
-                    total_cached += 1;
-                }
-                // A chain served by a later member is a warning, not a
-                // failure: the source provisioned, but a candidate it
-                // declares does not serve. Naming the tool, OS and arch is
-                // what lets an operator act on it.
-                let tool_id = &fetch.tool_id;
-                let os = &source.os;
-                let arch = &source.arch;
-                let served_url = actual_url.as_deref().unwrap_or("an unknown URL");
-                for (url, cause) in failures {
-                    warnings.push(format!(
-                        "tool {tool_id} os {os} (arch {arch}): candidate failed ({cause} at \
-                         {url}); served by {served_url}"
-                    ));
-                }
-                entries.push(DownloadedSource {
-                    os: source.os.clone(),
-                    arch: source.arch.clone(),
-                    producer: SourceProducer::Fetch { urls: urls.clone() },
-                    expected_size: {
-                        let actual_size = bytes.len() as u64;
-                        source.expected_size.map(|s| s.max(actual_size)).or(Some(actual_size))
-                    },
-                    bytes,
-                    actual_url,
-                });
-            }
-            SourceProducer::GenerateLauncher { builtin_id, argv_prefix } => {
-                // Launcher generation is in-memory, no I/O — run inline.
-                let bytes = generate_launcher_script(source.os.as_str(), builtin_id, argv_prefix);
-                let launcher_size = bytes.len() as u64;
-                budget.set_total(idx, launcher_size);
-                budget.advance(idx, launcher_size);
-                completed_sources.fetch_add(1, Ordering::AcqRel);
-                entries.push(DownloadedSource {
-                    os: source.os.clone(),
-                    arch: source.arch.clone(),
-                    producer: SourceProducer::GenerateLauncher {
-                        builtin_id: builtin_id.clone(),
-                        argv_prefix: argv_prefix.clone(),
-                    },
-                    bytes,
-                    expected_size: None,
-                    actual_url: None,
-                });
-            }
+    for source in &fetch.sources {
+        let SourceProducer::Fetch { urls } = &source.producer;
+        // The parallel fetch produced exactly one result per source, in sorted
+        // order — advance the iterator.
+        let (_, result, was_cached) =
+            fetch_iter.next().expect("parallel fetch result missing for Fetch source");
+        let FetchedBytes { bytes, final_url: actual_url, failures, .. } = result?;
+        if was_cached {
+            total_cached += 1;
         }
+        // A chain served by a later member is a warning, not a failure: the
+        // source provisioned, but a candidate it declares does not serve.
+        // Naming the tool, OS and arch is what lets an operator act on it.
+        let tool_id = &fetch.tool_id;
+        let os = &source.os;
+        let arch = &source.arch;
+        let served_url = actual_url.as_deref().unwrap_or("an unknown URL");
+        for (url, cause) in failures {
+            warnings.push(format!(
+                "tool {tool_id} os {os} (arch {arch}): candidate failed ({cause} at \
+                 {url}); served by {served_url}"
+            ));
+        }
+        entries.push(DownloadedSource {
+            os: source.os.clone(),
+            arch: source.arch.clone(),
+            producer: SourceProducer::Fetch { urls: urls.clone() },
+            expected_size: {
+                let actual_size = bytes.len() as u64;
+                source.expected_size.map(|s| s.max(actual_size)).or(Some(actual_size))
+            },
+            bytes,
+            actual_url,
+        });
         if let Some(cb) = progress_cb.as_ref() {
             fire_fetch_chunk_progress(cb, &completed_sources, total, &budget);
         }
@@ -939,48 +911,6 @@ fn url_serves_checksum(url: &str) -> bool {
         || host.ends_with(".githubusercontent.com"))
 }
 
-/// Generates a launcher script that dispatches `$MEDIAPM_EXECUTABLE <argv...> {args...}`.
-///
-/// The launcher is the only place that knows `MEDIAPM_EXECUTABLE` is
-/// mandatory, so every emitted script tests the variable before it dispatches:
-/// a missing value otherwise surfaces as a step failure nowhere near its cause,
-/// either as an empty command or as whatever binary happened to hold the name.
-/// The message the guard prints names the build remedy, so the failure states
-/// its own fix. The variable must hold the `mediapm` CLI binary; any other
-/// value turns the step into a different program.
-///
-/// POSIX hosts (`os` other than `"windows"`) get a `#!/bin/sh` script whose
-/// second line is a `:?` guard and whose third line `exec`s the CLI with the
-/// dispatch arguments. Windows gets a CRLF batch script whose guard runs
-/// `if not defined` / `exit /b 1`. The dispatch arguments themselves are the
-/// same on both shapes and follow the guard unchanged.
-///
-/// The returned bytes are the script text verbatim; nothing here touches the
-/// filesystem or fails.
-#[cfg(feature = "tool-presets")]
-fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) -> Vec<u8> {
-    let mut dispatch_argv = argv_prefix.to_vec();
-    dispatch_argv.push(builtin_id.to_string());
-    let dispatch = dispatch_argv.join(" ");
-    match os {
-        "windows" => format!(concat!(
-            "@echo off\r\n",
-            "if not defined MEDIAPM_EXECUTABLE (\r\n",
-            "echo mediapm CLI executable is not set; build it with \"cargo build --package mediapm\" or set MEDIAPM_EXECUTABLE 1>&2\r\n",
-            "exit /b 1\r\n",
-            ")\r\n",
-            "\"%MEDIAPM_EXECUTABLE%\" {} %*\r\n",
-        ), dispatch)
-        .into_bytes(),
-        _ => format!(concat!(
-            "#!/bin/sh\n",
-            ": \"${{MEDIAPM_EXECUTABLE:?mediapm CLI executable is not set; build it with 'cargo build --package mediapm' or export MEDIAPM_EXECUTABLE}}\"\n",
-            "exec \"${{MEDIAPM_EXECUTABLE}}\" {} \"$@\"\n",
-        ), dispatch)
-        .into_bytes(),
-    }
-}
-
 // ██████████████████████████████████████████████████████████████████████████████
 // Phase 3 — Process
 // ██████████████████████████████████████████████████████████████████████████████
@@ -992,7 +922,7 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 /// repacked into a single uncompressed ZIP and imported to CAS, producing
 /// a single trailing-slash content-map key (`{os}/`, or `{os}/{arch}/` for
 /// an OS label shared by two sources — a dual-arch slot). For
-/// binary/launcher format the data is directly CAS-imported as a
+/// binary format the data is directly CAS-imported as a
 /// file-level entry (`{os}/{filename}`, arch-segmented the same way).
 ///
 /// Archive format is inferred from the URL extension.
@@ -1042,7 +972,7 @@ fn generate_launcher_script(os: &str, builtin_id: &str, argv_prefix: &[String]) 
 ///   tar entry, and sub-entry callbacks fire every `SUB_ENTRY_CHUNK` (64
 ///   KiB) bytes consumed.
 ///
-/// - **Binary / launcher sources**: a single callback fires after the
+/// - **Binary sources**: a single callback fires after the
 ///   source is fully processed (CAS import is an instant in-memory
 ///   operation).
 ///
@@ -1105,7 +1035,7 @@ pub async fn process_tool_sources(
         collect_os_slot_arches(&downloaded.tool_id, &downloaded.entries)?;
 
     // Compute total items: archive sources get 2 items (decompress + compress),
-    // binary/launcher sources get 1 item.
+    // binary sources get 1 item.
     let total_items: usize =
         downloaded.entries.iter().map(|e| if is_archive_source(e) { 2usize } else { 1usize }).sum();
     let mut budget = MultiItemBudget::with_capacity(total_items);
@@ -1249,7 +1179,7 @@ fn collect_os_slot_arches<'a>(
 /// Infers archive format from a URL's file extension.
 ///
 /// Returns `Some(format)` for recognized archive extensions, or `None` for
-/// binary/launcher payloads.
+/// binary payloads.
 #[cfg(feature = "tool-presets")]
 fn infer_archive_format(url: &str) -> Option<&'static str> {
     let url_path = url.split('?').next().unwrap_or(url);
@@ -1313,10 +1243,8 @@ fn served_source_url(entry: &DownloadedSource) -> &str {
     if let Some(url) = entry.actual_url.as_deref() {
         return url;
     }
-    match &entry.producer {
-        SourceProducer::Fetch { urls } => urls.first().map_or("", String::as_str),
-        SourceProducer::GenerateLauncher { .. } => "",
-    }
+    let SourceProducer::Fetch { urls } = &entry.producer;
+    urls.first().map_or("", String::as_str)
 }
 
 /// Resolves one downloaded source's archive format.
@@ -1333,9 +1261,9 @@ fn archive_format_of_entry(entry: &DownloadedSource) -> Option<&'static str> {
 /// Returns `true` if the source is an archive download.
 ///
 /// Archive sources produce compressed payloads that require decompression
-/// (e.g. `.zip`, `.tar.gz`, `.tar.xz`). Binary and launcher sources are used
-/// as-is. This is [`archive_format_of_entry`] read as a boolean so the item
-/// budget and the extraction decision cannot disagree about one source.
+/// (e.g. `.zip`, `.tar.gz`, `.tar.xz`). Binary sources are used as-is. This is
+/// [`archive_format_of_entry`] read as a boolean so the item budget and the
+/// extraction decision cannot disagree about one source.
 fn is_archive_source(entry: &DownloadedSource) -> bool {
     archive_format_of_entry(entry).is_some()
 }
@@ -1349,25 +1277,21 @@ fn is_archive_source(entry: &DownloadedSource) -> bool {
 /// from, so a chain member that serves under a name different from the
 /// chain's first candidate still keys under the name that arrived. Query and
 /// fragment are dropped before the basename is taken, matching how
-/// [`infer_archive_format`] reads an extension out of the same URL.
+/// [`infer_archive_format`] reads an extension out of the same URL. `tool_id`
+/// is the fallback when the served URL names no path segment at all.
 fn resolve_format_and_filename(
     entry: &DownloadedSource,
     tool_id: &str,
 ) -> (Option<&'static str>, String) {
-    match &entry.producer {
-        SourceProducer::Fetch { .. } => {
-            let fmt = archive_format_of_entry(entry);
-            let fname = if fmt.is_some() {
-                String::new()
-            } else {
-                let url = served_source_url(entry);
-                let path = url.split(['?', '#']).next().unwrap_or(url);
-                path.split('/').rfind(|segment| !segment.is_empty()).unwrap_or(tool_id).to_string()
-            };
-            (fmt, fname)
-        }
-        SourceProducer::GenerateLauncher { .. } => (None, tool_id.to_string()),
-    }
+    let fmt = archive_format_of_entry(entry);
+    let fname = if fmt.is_some() {
+        String::new()
+    } else {
+        let url = served_source_url(entry);
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        path.split('/').rfind(|segment| !segment.is_empty()).unwrap_or(tool_id).to_string()
+    };
+    (fmt, fname)
 }
 
 /// Reads an XZ variable-length integer from `data` at position `pos`.
@@ -1454,7 +1378,7 @@ fn parse_xz_index(bytes: &[u8]) -> Option<u64> {
 /// gzip streams.
 /// For tar.xz archives: parses the XZ Stream Index for the exact total
 /// uncompressed size.
-/// Returns 0 for non-archive (binary/launcher) formats.
+/// Returns 0 for non-archive (binary) formats.
 fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
     match format {
         Some(ARCHIVE_ZIP) => {
@@ -1511,7 +1435,7 @@ fn estimate_uncompressed_size(bytes: &[u8], format: Option<&str>) -> u64 {
             tracing::warn!("unknown archive format {other}, cannot estimate uncompressed size");
             bytes.len() as u64
         }
-        None => 0, // Binary/launcher — no compress phase.
+        None => 0, // Binary — no compress phase.
     }
 }
 
@@ -1579,8 +1503,8 @@ fn fire_progress(
 /// repack to uncompressed ZIP → CAS import → single trailing-slash content
 /// key (`{key_prefix}/`).
 ///
-/// For binary/launcher format: CAS-import bytes directly using the given
-/// `filename` (URL basename for Fetch sources, `tool_id` for launchers).
+/// For binary format: CAS-import bytes directly using the given `filename`,
+/// which is the basename of the URL the payload came from.
 /// Returns file-level content key (`{key_prefix}/{filename}`).
 ///
 /// `key_prefix` is the content-key prefix the caller computed for this
@@ -1591,7 +1515,7 @@ fn fire_progress(
 /// # Budget item layout
 ///
 /// Archive sources use 2 consecutive budget items (`item_idx` = decompress,
-/// `item_idx + 1` = compress). Binary/launcher sources use 1 item (`item_idx`).
+/// `item_idx + 1` = compress). Binary sources use 1 item (`item_idx`).
 /// The caller must set `item_count` to 2 for archive sources, 1 for others.
 ///
 /// # Progress callbacks
@@ -1698,15 +1622,14 @@ async fn process_single_source(
         cm.insert(key, hash.to_hex());
         Ok(ProcessedSource { content_map: cm, exec_path })
     } else {
-        // ── Binary/launcher format ───────────────────────────────────
-        debug_assert_eq!(item_count, 1, "binary/launcher sources must use 1 budget item");
-        // CAS-import bytes directly; filename is the URL basename
-        // (for Fetch sources) or tool_id (for launcher scripts).
+        // ── Binary format ────────────────────────────────────────────
+        debug_assert_eq!(item_count, 1, "binary sources must use 1 budget item");
+        // CAS-import bytes directly; the filename is the URL basename.
         let cost = bytes.len() as u64;
         budget.set_total(item_idx, cost);
         budget.advance(item_idx, cost);
         if let Some(cb) = progress_cb.as_ref() {
-            // Binary/launcher: this single item is now complete
+            // Binary: this single item is now complete
             let completed = items_completed + 1;
             fire_progress(cb, ProviderPhase::Process, (completed, total_items), budget);
         }
@@ -2639,11 +2562,11 @@ mod tests {
     async fn process_binary_format_produces_file_entry() {
         let cas = InMemoryCas::default();
         let os_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let launcher_bytes = generate_launcher_script("linux", "echo@v1", &[]);
+        let payload = b"#!/bin/sh\necho payload\n";
         let mut budget = MultiItemBudget::new();
         budget.add_item(0);
         let result = process_single_source(
-            &launcher_bytes,
+            payload,
             None,
             "linux",
             "linux",
@@ -2735,8 +2658,14 @@ mod tests {
         }
     }
 
+    /// Every builtin provider resolves to an empty source list.
+    ///
+    /// A builtin's implementation is code the host runs, not bytes to place in
+    /// a sandbox, so it has no per-OS slots to describe — and therefore no size
+    /// hint either. The provider module and the tool id it answers for stay, so
+    /// a document that declares the builtin still resolves.
     #[test]
-    fn builtin_providers_size_hint_bytes_are_none() {
+    fn builtin_providers_have_no_sources() {
         for (name, fetch) in [
             ("echo", echo::sources()),
             ("archive", archive::sources()),
@@ -2744,13 +2673,8 @@ mod tests {
             ("fs", fs::sources()),
             ("import", import::sources()),
         ] {
-            for source in &fetch.sources {
-                assert_eq!(
-                    source.size_hint_bytes, None,
-                    "{name} source for {} should have None",
-                    source.os
-                );
-            }
+            assert_eq!(fetch.tool_id, name, "the provider must answer under its own tool id");
+            assert!(fetch.sources.is_empty(), "{name} is a builtin, so it has no payload");
         }
     }
 
@@ -3336,229 +3260,6 @@ mod tests {
         );
     }
 
-    // ── generate_launcher_script ──────────────────────────────────────
-
-    #[test]
-    fn generate_windows_launcher() {
-        let script = generate_launcher_script("windows", "echo@v1", &[]);
-        let text = String::from_utf8_lossy(&script);
-        assert!(text.contains("MEDIAPM_EXECUTABLE"));
-        assert!(text.contains("echo@v1"));
-        assert!(text.contains("%*"));
-    }
-
-    #[test]
-    fn generate_unix_launcher() {
-        let script = generate_launcher_script("linux", "echo@v1", &[]);
-        let text = String::from_utf8_lossy(&script);
-        assert!(text.contains("exec"));
-        assert!(text.contains("MEDIAPM_EXECUTABLE"));
-        assert!(text.contains("echo@v1"));
-        assert!(text.contains("$@"));
-    }
-
-    /// A producer that declares argv tokens gets them ahead of the builtin id,
-    /// so the launcher dispatches one command line on both OS shapes.
-    #[test]
-    fn generate_unix_launcher_places_an_argv_prefix_before_the_builtin_id() {
-        let prefix = ["dispatch".to_string()];
-        let script = generate_launcher_script("linux", "echo@v1", &prefix);
-        let text = String::from_utf8_lossy(&script);
-        assert!(text.contains("exec \"${MEDIAPM_EXECUTABLE}\" dispatch echo@v1"), "got: {text}");
-    }
-
-    #[test]
-    fn generate_macos_launcher() {
-        let script = generate_launcher_script("macos", "echo@v1", &[]);
-        let text = String::from_utf8_lossy(&script);
-        assert!(text.contains("exec"));
-        assert!(text.contains("MEDIAPM_EXECUTABLE"));
-        assert!(text.contains("echo@v1"));
-    }
-
-    /// Protects the guard every generated launcher carries: both OS shapes
-    /// must refuse an unset `MEDIAPM_EXECUTABLE` and name the build remedy, so
-    /// a missing CLI fails on the launcher's second line instead of dispatching
-    /// an empty command or an unrelated program.
-    #[test]
-    fn launcher_script_requires_the_executable_variable() {
-        let unix = generate_launcher_script("linux", "echo@v1", &[]);
-        let unix_text = String::from_utf8_lossy(&unix);
-        let guard_line = unix_text.lines().nth(1).expect("launcher script has a second line");
-        assert!(
-            guard_line.starts_with(": \"${MEDIAPM_EXECUTABLE:?"),
-            "second line must be the `:?` guard, got: {guard_line}"
-        );
-        assert!(
-            guard_line.contains("cargo build --package mediapm"),
-            "guard message must name the build remedy, got: {guard_line}"
-        );
-
-        let windows = generate_launcher_script("windows", "echo@v1", &[]);
-        let windows_text = String::from_utf8_lossy(&windows);
-        assert!(
-            windows_text.contains("if not defined MEDIAPM_EXECUTABLE"),
-            "batch script must guard on a defined variable, got: {windows_text}"
-        );
-        assert!(
-            windows_text.contains("exit /b 1"),
-            "batch guard must leave a non-zero exit status, got: {windows_text}"
-        );
-        assert!(
-            windows_text.contains("cargo build --package mediapm"),
-            "guard message must name the build remedy, got: {windows_text}"
-        );
-    }
-
-    /// Protects the ordering inside the POSIX script: the guard runs first, and
-    /// the dispatch arguments stay on the `exec` line, where the exec'd CLI
-    /// receives them.
-    #[test]
-    fn launcher_script_keeps_the_dispatch_behind_the_guard() {
-        let script = generate_launcher_script("linux", "echo@v1", &[]);
-        let text = String::from_utf8_lossy(&script);
-        let guard_index = text
-            .lines()
-            .position(|line| line.starts_with(": \"${MEDIAPM_EXECUTABLE:?"))
-            .expect("launcher script carries the guard line");
-        let exec_index = text
-            .lines()
-            .position(|line| line.starts_with("exec "))
-            .expect("launcher script carries the exec line");
-        assert!(
-            guard_index < exec_index,
-            "guard line {guard_index} must precede exec line {exec_index}"
-        );
-        let exec_line = text.lines().nth(exec_index).expect("exec line is indexed");
-        assert!(
-            exec_line.contains("echo@v1"),
-            "dispatch must stay on the exec line, got: {exec_line}"
-        );
-    }
-
-    /// Protects the failure mode the guard exists for: running the generated
-    /// POSIX script with no `MEDIAPM_EXECUTABLE` must exit non-zero, write
-    /// nothing to stdout, and name the variable on stderr.
-    #[cfg(unix)]
-    #[test]
-    fn launcher_script_exits_without_the_variable() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let path = dir.path().join("echo-launcher");
-        let script = generate_launcher_script("linux", "echo@v1", &[]);
-        std::fs::write(&path, script).expect("write launcher script");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("mark launcher script executable");
-
-        let output = std::process::Command::new(&path)
-            .env_remove("MEDIAPM_EXECUTABLE")
-            .output()
-            .expect("run launcher script");
-
-        assert!(!output.status.success(), "launcher must fail without MEDIAPM_EXECUTABLE");
-        assert!(output.stdout.is_empty(), "launcher must not write to stdout");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("MEDIAPM_EXECUTABLE"),
-            "stderr must name the variable, got: {stderr}"
-        );
-    }
-
-    /// Windows twin of the execution test: the batch guard must leave status 1
-    /// with an empty stdout and the variable named on stderr.
-    ///
-    /// The generated batch text is asserted on every platform, so its shape is
-    /// compiled and checked wherever the suite runs rather than only on a
-    /// Windows host. The execution half is gated on runtime detection because
-    /// a `.cmd` batch file needs `cmd /C` to interpret it: on a POSIX host
-    /// there is no interpreter to run it with, so only the shape can be
-    /// asserted there.
-    #[test]
-    fn launcher_script_exits_without_the_variable_windows() {
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let path = dir.path().join("echo-launcher.cmd");
-        let script = generate_launcher_script("windows", "echo@v1", &[]);
-        let text = String::from_utf8_lossy(&script).into_owned();
-
-        assert!(
-            text.contains("if not defined MEDIAPM_EXECUTABLE"),
-            "batch script must guard on a defined variable, got: {text}"
-        );
-        assert!(
-            text.contains("exit /b 1"),
-            "batch guard must leave a non-zero exit status, got: {text}"
-        );
-        assert!(
-            text.contains("\"%MEDIAPM_EXECUTABLE%\" echo@v1 %*"),
-            "dispatch must stay on the batch dispatch line with the passthrough, got: {text}"
-        );
-
-        std::fs::write(&path, script).expect("write launcher script");
-
-        if !cfg!(windows) {
-            return;
-        }
-
-        let output = std::process::Command::new("cmd")
-            .arg("/C")
-            .arg(&path)
-            .env_remove("MEDIAPM_EXECUTABLE")
-            .output()
-            .expect("run launcher script through cmd");
-
-        assert!(!output.status.success(), "launcher must fail without MEDIAPM_EXECUTABLE");
-        assert!(output.stdout.is_empty(), "launcher must not write to stdout");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("MEDIAPM_EXECUTABLE"),
-            "stderr must name the variable, got: {stderr}"
-        );
-    }
-
-    /// Protects the dispatch direction of the launcher seam: with
-    /// `MEDIAPM_EXECUTABLE` set, the generated POSIX launcher must reach that
-    /// target with exactly the dispatch arguments followed by the caller's
-    /// own. No other test in this module runs a launcher with the variable
-    /// set, so the recorded arguments are the only assertion that the CLI
-    /// receives both halves.
-    #[cfg(unix)]
-    #[test]
-    fn launcher_script_dispatches_to_the_executable_with_the_dispatch_arguments() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let launcher = dir.path().join("echo-launcher");
-        let stub = dir.path().join("mediapm-stub");
-        let record = dir.path().join("recorded-args.txt");
-
-        std::fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MEDIAPM_ARG_RECORD\"\n")
-            .expect("write stub executable");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("mark stub executable");
-
-        let script = generate_launcher_script("linux", "echo@v1", &[]);
-        std::fs::write(&launcher, script).expect("write launcher script");
-        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
-            .expect("mark launcher script executable");
-
-        let output = std::process::Command::new(&launcher)
-            .env("MEDIAPM_EXECUTABLE", &stub)
-            .env("MEDIAPM_ARG_RECORD", &record)
-            .arg("--input")
-            .output()
-            .expect("run launcher script");
-
-        assert!(
-            output.status.success(),
-            "launcher must succeed with MEDIAPM_EXECUTABLE set, stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let recorded = std::fs::read_to_string(&record).expect("read the recorded arguments");
-        let arguments: Vec<&str> = recorded.lines().collect();
-        assert_eq!(arguments, ["echo@v1", "--input"]);
-    }
-
     // ── extract helpers ───────────────────────────────────────────────
 
     #[test]
@@ -3815,45 +3516,35 @@ mod tests {
     /// never decrease, and position should never exceed total (the suffix-
     /// expected estimate).  Total may decrease as remaining-expected narrows
     /// (the intentional "ASAP lower-bound" design).
+    ///
+    /// Every source is served from the content cache under its own `mock://`
+    /// URL, so the phase runs without a server while each source still reports
+    /// bytes of its own.
     #[tokio::test]
     async fn fetch_progress_monotonic_with_known_sizes() {
         use crate::cache_user_level::UserLevelCache;
-
-        let fetch = ResolvedToolFetch {
-            tool_id: "test-tool".to_string(),
-            sources: vec![
-                ResolvedSource {
-                    os: "linux".to_string(),
-                    arch: host_arch_label(),
-                    producer: SourceProducer::launcher("test"),
-                    expected_size: Some(100),
-                    size_hint_bytes: None,
-                    identity: None,
-                },
-                ResolvedSource {
-                    os: "macos".to_string(),
-                    arch: host_arch_label(),
-                    producer: SourceProducer::launcher("test"),
-                    expected_size: Some(200),
-                    size_hint_bytes: None,
-                    identity: None,
-                },
-                ResolvedSource {
-                    os: "windows".to_string(),
-                    arch: host_arch_label(),
-                    producer: SourceProducer::launcher("test"),
-                    expected_size: Some(150),
-                    size_hint_bytes: None,
-                    identity: None,
-                },
-            ],
-        };
 
         let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache =
             UserLevelCache::open(cache_root.path(), "tools.json", crate::cache::ENTRY_TTL_SECONDS)
                 .await
                 .expect("open UserLevelCache");
+
+        let mut sources = Vec::new();
+        for (os, len) in [("linux", 100usize), ("macos", 200), ("windows", 150)] {
+            let url = format!("mock://{os}");
+            let payload = vec![0u8; len];
+            cache.store_bytes("default", &url, &payload).await;
+            sources.push(ResolvedSource {
+                os: os.to_string(),
+                arch: host_arch_label(),
+                producer: SourceProducer::Fetch { urls: vec![url] },
+                expected_size: Some(len as u64),
+                size_hint_bytes: None,
+                identity: None,
+            });
+        }
+        let fetch = ResolvedToolFetch { tool_id: "test-tool".to_string(), sources };
 
         let snapshots: Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3862,8 +3553,9 @@ mod tests {
             snap_clone.lock().unwrap().push(snap);
         }));
 
-        let _result =
-            fetch_tool_sources(&fetch, &cache, "download", cb).await.expect("fetch should succeed");
+        let result =
+            fetch_tool_sources(&fetch, &cache, "default", cb).await.expect("fetch should succeed");
+        assert_eq!(result.entries.len(), 3, "every cached source yields an entry");
 
         let all = snapshots.lock().unwrap().clone();
         assert!(!all.is_empty(), "should have recorded at least one fetch snapshot");
@@ -3883,7 +3575,7 @@ mod tests {
             prev_pos = pos;
             prev_items = snap.items.0;
         }
-        assert_eq!(prev_items, 3, "three launcher sources must all be counted as completed");
+        assert_eq!(prev_items, 3, "three sources must all be counted as completed");
     }
 
     /// The fetch progress `items` counter counts *completed sources*, never a
@@ -4007,117 +3699,34 @@ mod tests {
         }
     }
 
-    // ── buffer_unordered(0) regression test ──────────────────────────
+    // ── Empty fetch set regression test ──────────────────────────────
     //
-    // Verifies that fetch_tool_sources completes when all sources are
-    // GenerateLauncher (no Fetch sources). Without the `.max(1)` capacity
-    // floor, `buffer_unordered(0)` on an empty stream hangs forever.
+    // A builtin tool resolves to no sources at all. `fetch_tool_sources` still
+    // has to complete: without the `.max(1)` capacity floor,
+    // `buffer_unordered(0)` never polls an empty stream and the
+    // `.collect().await` never completes.
 
-    /// Regression test for `buffer_unordered(0)` hanging on empty streams.
-    /// When all sources are `GenerateLauncher`, `fetch_futures` is empty and
-    /// `fetch_concurrency` was 0 — `buffer_unordered(0)` never polls the
-    /// inner stream, so the `.collect().await` never completes.
-    #[tokio::test]
-    async fn fetch_tool_sources_completes_with_generate_launcher_only() {
-        use crate::cache::{Cache, CacheDomainConfig};
-        use crate::cache_user_level::UserLevelCache;
-
-        let cache_dir = mediapm_utils::temp::cache_dir().expect("temp cache dir");
-        let cache = Cache::open(
-            cache_dir.path(),
-            &[CacheDomainConfig {
-                domain: "tools".to_string(),
-                index_file_name: "tools.json".to_string(),
-                entry_ttl_seconds: 86400,
-            }],
-        )
-        .await
-        .expect("cache open");
-        let user_cache = UserLevelCache::from_cache(cache);
-
-        let fetch = ResolvedToolFetch {
-            tool_id: "echo@v1".to_string(),
-            sources: vec![
-                ResolvedSource {
-                    os: "linux".to_string(),
-                    arch: host_arch_label(),
-                    producer: SourceProducer::launcher("echo@v1"),
-                    expected_size: None,
-                    size_hint_bytes: None,
-                    identity: None,
-                },
-                ResolvedSource {
-                    os: "macos".to_string(),
-                    arch: host_arch_label(),
-                    producer: SourceProducer::launcher("echo@v1"),
-                    expected_size: None,
-                    size_hint_bytes: None,
-                    identity: None,
-                },
-                ResolvedSource {
-                    os: "windows".to_string(),
-                    arch: host_arch_label(),
-                    producer: SourceProducer::launcher("echo@v1"),
-                    expected_size: None,
-                    size_hint_bytes: None,
-                    identity: None,
-                },
-            ],
-        };
-
-        // Must complete within a reasonable time — the old code hung here.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            fetch_tool_sources(&fetch, &user_cache, "tools", None),
-        )
-        .await
-        .expect("fetch_tool_sources must not hang (buffer_unordered(0) regression)");
-
-        let downloaded = result.expect("fetch should succeed");
-        assert_eq!(downloaded.entries.len(), 3, "all 3 launcher sources processed");
-        assert_eq!(downloaded.cached_count, 0, "no cache hits for launchers");
-    }
-
-    /// A `GenerateLauncher` source is served by the script generator, not by
-    /// the network: the entry carries the generated bytes and no URL at all.
+    /// A tool with no sources fetches to an empty entry list.
     ///
-    /// The launcher producers never join the concurrent fetch set (see the
-    /// `fetch_futures` construction), so their bytes exist with no HTTP call
-    /// and no cache lookup. A launcher routed through the fetch path instead
-    /// would carry the candidate URL it was looked up under — it has no URLs to
-    /// look up — and could not produce the dispatch script asserted here.
+    /// This is the shape a builtin tool resolves to — its step carries no
+    /// command parts and its implementation runs in-process — so the pipeline
+    /// must pass it through rather than hang or reach the network.
     #[tokio::test]
-    async fn generate_launcher_sources_produce_their_script_without_a_fetch() {
+    async fn fetching_a_tool_with_no_sources_yields_no_entries() {
         let (cache, _cache_dir) = open_tools_cache().await;
-        let fetch = ResolvedToolFetch {
-            tool_id: "echo@v1".to_string(),
-            sources: vec![ResolvedSource {
-                os: "linux".to_string(),
-                arch: host_arch_label(),
-                producer: SourceProducer::launcher("echo@v1"),
-                expected_size: None,
-                size_hint_bytes: None,
-                identity: None,
-            }],
-        };
+        let fetch = ResolvedToolFetch { tool_id: "echo".to_string(), sources: Vec::new() };
 
-        let downloaded = fetch_tool_sources(&fetch, &cache, "tools", None)
-            .await
-            .expect("a launcher source provisions with no server to talk to");
+        let downloaded = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fetch_tool_sources(&fetch, &cache, "tools", None),
+        )
+        .await
+        .expect("fetch_tool_sources must not hang on an empty source list")
+        .expect("a tool with no sources fetches to nothing");
 
-        assert!(
-            downloaded.warnings.is_empty(),
-            "no candidate was tried: {:?}",
-            downloaded.warnings
-        );
-        assert_eq!(downloaded.cached_count, 0, "a launcher is generated, never cache-served");
-        let entry = downloaded.entries.first().expect("one source yields one entry");
-        assert_eq!(entry.actual_url, None, "nothing was fetched, so the entry names no URL");
-        assert_eq!(
-            entry.bytes,
-            generate_launcher_script("linux", "echo@v1", &[]),
-            "the entry carries the script the generator produces for this OS and argv prefix",
-        );
+        assert!(downloaded.entries.is_empty(), "no source, no entry: {:?}", downloaded.entries);
+        assert_eq!(downloaded.cached_count, 0, "nothing was looked up");
+        assert!(downloaded.warnings.is_empty(), "nothing was tried: {:?}", downloaded.warnings);
     }
 
     // ── Counting mechanism regression tests ─────────────────────────
