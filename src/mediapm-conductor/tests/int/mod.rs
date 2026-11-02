@@ -76,6 +76,11 @@ mod workflow_progress;
 /// available, so this module needs no gate of its own.
 mod workflow_scheduler;
 
+/// Host-supplied builtin runners: a no-command step dispatches to the host's
+/// runner and captures its output, and an id no runner supplies fails the run
+/// before any step executes.
+mod host_builtins;
+
 /// Client-defined bar-label truncation: worker bars drop progress tally,
 /// step bars yield the version before the tool name.
 #[cfg(feature = "progress")]

@@ -23,6 +23,7 @@ use crate::defaults;
 use crate::error::ConductorError;
 use crate::gc::{ConductorGcReport, GcClassification};
 use crate::state::ConductorState;
+use crate::tools::HostBuiltins;
 
 // ---------------------------------------------------------------------------
 // CLI structure
@@ -179,6 +180,10 @@ async fn cmd_run(workflow_name: &str, force_rerun: bool) -> Result<(), Conductor
         retry_impure: false,
         force_rerun,
         tool_selector: None,
+        // The binary is its own host and ships no runners of its own: a document
+        // naming an id this build does not supply fails the run before its first
+        // step, naming the registration it is missing.
+        host_builtins: HostBuiltins::default(),
         progress_group: Some(group.clone()),
         overall_bar: Some(overall),
     };

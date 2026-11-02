@@ -247,6 +247,7 @@ async fn run_step(
         state_snapshot: Arc::new(ConductorState::new_empty()),
         outermost_config_dir: fixture.runtime_root.clone(),
         conductor_tmp_dir: fixture.runtime_root.clone(),
+        host_builtins: Arc::new(crate::tools::HostBuiltins::default()),
         step_outputs: Arc::new(BTreeMap::new()),
         required_output_names: BTreeSet::from(["out".to_string()]),
         force_rerun: false,

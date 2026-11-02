@@ -17,12 +17,20 @@
 //!   build that has it may write or keep it — so a `cfg(test)`-only entry would
 //!   be invisible to integration-test crates while a gate production builds
 //!   also enable would leak the double into shipped binaries.
+//! - **Host builtins** — runners a program built on the conductor supplies for
+//!   its own builtin ids, registered in [`HostBuiltins`] and dispatched
+//!   in-process beside the static builtins. See [`host_builtin`].
 
 pub mod helpers;
+pub mod host_builtin;
 pub mod preset;
 pub mod provider;
 #[cfg(feature = "tool-presets")]
 pub mod spec;
+
+pub use host_builtin::{
+    HostBuiltin, HostBuiltinCas, HostBuiltinOutput, HostBuiltinRequest, HostBuiltins,
+};
 
 use std::collections::HashSet;
 

@@ -546,15 +546,19 @@ async fn regression_a_seeded_entry_no_sync_produces_is_pruned() {
     );
 }
 
-/// A generated document naming an unregistered builtin is rebuilt, not pruned.
+/// A generated document naming an unregistered builtin is pruned, not discarded.
 ///
-/// Load rejects a `builtin` spec whose id the build does not register, so a
-/// document an earlier build wrote around a test double cannot decode in this
-/// one. `load_conductor_generated_document` discards an undecodable generated
-/// document, and the sync rebuilds it from the registry instead. The prune count
-/// stays at zero because there was no loaded entry to remove.
+/// A document's `builtin` id is not judged where the document is read: a host
+/// program legitimately registers runners for ids the conductor build cannot
+/// know, so the document layer keeps whatever the document names and a run
+/// decides what it can dispatch. That makes this the entry's problem rather than
+/// the document's: a builtin id no sync produces is outside the retain set, so
+/// the prune removes it and rewrites the document, and the rest of the document
+/// survives instead of being thrown away with it. The guarantee this test
+/// guards is unchanged — a stale builtin cannot outlive a sync — only its
+/// mechanism, and the prune count is the evidence of which one ran.
 #[tokio::test]
-async fn regression_a_generated_document_naming_an_unregistered_builtin_is_rebuilt() {
+async fn regression_a_generated_document_naming_an_unregistered_builtin_is_pruned() {
     let tmp = mediapm_utils::temp::artifact_dir().unwrap();
     let cache_root = mediapm_utils::temp::cache_dir().unwrap();
     let paths = MediaPmPaths::from_root(tmp.path());
@@ -592,17 +596,17 @@ async fn regression_a_generated_document_naming_an_unregistered_builtin_is_rebui
     assert!(result.is_ok(), "reconcile_desired_tools failed: {:?}", result.err());
     let report = result.unwrap();
     assert_eq!(
-        report.pruned_tools, 0,
-        "this build cannot load the seeded document, so it was discarded and rebuilt rather than pruned"
+        report.pruned_tools, 1,
+        "the document loads, so its stale builtin entry is the one entry the prune removes"
     );
 
     let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
     assert!(
         !doc.tools.contains_key("ghost@v1"),
-        "a document naming an unregistered builtin must not survive the rewrite"
+        "a builtin id no sync produces must not survive the rewrite"
     );
     assert!(
         doc.tools.contains_key("echo@v1"),
-        "the rebuilt document carries the production builtins"
+        "only the stale entry went: the production builtins are still registered"
     );
 }

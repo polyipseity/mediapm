@@ -159,6 +159,12 @@ pub(crate) struct StepExecutionRequest {
     pub outermost_config_dir: PathBuf,
     /// Root path for per-step temporary directories.
     pub conductor_tmp_dir: PathBuf,
+    /// Builtin runners the host supplies for this run, shared by every step.
+    ///
+    /// The coordinator hands each request the run's one registry, so the
+    /// run-start check and a step's dispatch cannot disagree about what the
+    /// host registered. Empty for a run that supplies none.
+    pub host_builtins: Arc<crate::tools::HostBuiltins>,
     /// Output hashes already produced by this step's transitive dependencies
     /// in this run.
     ///

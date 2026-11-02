@@ -59,8 +59,15 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
         let args: BTreeMap<String, String> =
             resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
         let builtin_id = tool_spec.builtin_id.as_deref().unwrap_or(&request.step.tool);
-        let result =
-            run_builtin(cas, builtin_id, &args, &request.outermost_config_dir, sandbox_dir).await?;
+        let result = run_builtin(
+            cas,
+            builtin_id,
+            &args,
+            &request.outermost_config_dir,
+            sandbox_dir,
+            &request.host_builtins,
+        )
+        .await?;
         Ok(DispatchedExecution {
             result,
             command_args: key_material.to_vec(),
@@ -575,6 +582,7 @@ mod tests {
             state_snapshot: Arc::new(state),
             outermost_config_dir: tmp.path().to_path_buf(),
             conductor_tmp_dir: tmp.path().join("runtime"),
+            host_builtins: Arc::new(crate::tools::HostBuiltins::default()),
             step_outputs: Arc::new(BTreeMap::new()),
             required_output_names: required,
             force_rerun: false,

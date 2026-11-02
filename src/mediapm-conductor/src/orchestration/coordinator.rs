@@ -32,6 +32,7 @@ use super::protocol::{
     find_tool_by_name,
 };
 use super::step_worker::{StepWorkerMessage, spawn_step_worker_pool};
+use crate::tools::host_builtin;
 
 // ---------------------------------------------------------------------------
 // Dependency graph
@@ -547,6 +548,15 @@ where
         options: &RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
         let outcome = async {
+            // The run's builtin registry, wrapped once so every step's request
+            // shares one handle: a per-request clone of the registry would let a
+            // step dispatch to a set the run-start check never saw.
+            let host_builtins = Arc::new(options.host_builtins.clone());
+            // A builtin id neither this build nor the host supplies has no
+            // implementation for the whole run, so the run refuses it before
+            // its first step (and before any worker exists) instead of failing
+            // at whichever step names it first.
+            host_builtin::ensure_document_builtins_run(unified, &host_builtins)?;
             self.ensure_workers().await?;
 
             let workflow = unified.workflows.get(workflow_name).ok_or_else(|| {
@@ -750,6 +760,7 @@ where
                         state_snapshot: current_state_snapshot,
                         outermost_config_dir: Path::new(".").to_path_buf(),
                         conductor_tmp_dir: self.conductor_tmp_dir.clone(),
+                        host_builtins: host_builtins.clone(),
                         step_outputs: current_step_outputs,
                         required_output_names,
                         force_rerun: options.force_rerun,

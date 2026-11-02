@@ -139,9 +139,10 @@ pub(super) enum MergeConflict {
 ///
 /// # Errors
 ///
-/// Returns `ConductorError::Workflow` containing all merge conflicts found, and
-/// one naming every `builtin` spec whose id this build does not register: the
-/// merged document goes through the same load check a single source does.
+/// Returns `ConductorError::Workflow` containing all merge conflicts found. A
+/// `builtin` spec's id is carried through unjudged: a host program names ids
+/// this build cannot know, so a run answers which ids it can dispatch when it
+/// starts, against this build's builtins plus the host's runners.
 pub(super) fn merge_documents(docs: &[SourceDocument]) -> Result<NickelDocument, ConductorError> {
     let mut state = MergeState::new();
     for source in docs {
@@ -348,7 +349,6 @@ impl MergeState {
         let doc: NickelDocument = self.merged.into();
         doc.validate_external_data_invariant()?;
         doc.validate_payload_staging_invariant()?;
-        doc.validate_builtin_tool_ids()?;
         Ok(doc)
     }
 }
@@ -398,6 +398,7 @@ mod tests {
     use super::*;
     use crate::config::PayloadStaging;
     use crate::config::PlatformInheritedEnvVars;
+    use crate::config::ToolKindSpec;
     use crate::config::versions::v_latest::{
         ConductorRuntimeConfigLatest, ExternalDataEntryLatest, NICKEL_VERSION_LATEST,
         NickelEnvelopeLatest, OutputPolicyLatest, PayloadStagingLatest,
@@ -597,15 +598,16 @@ mod tests {
         assert!(msg.contains("defined in"), "error should mention duplicate tool: {msg}");
     }
 
-    /// Verifies `merge_documents` rejects a merged document whose `builtin`
-    /// spec names an id this build does not register.
+    /// Verifies `merge_documents` carries a `builtin` id this build does not
+    /// ship through unchanged.
     ///
-    /// A user document can spell any id, so the merge is the second place an
-    /// unavailable builtin has to stop: without this check the run would fail
-    /// at the step that first dispatches it. The message names both the tool
-    /// and the id, so the document is fixable from what the error prints.
+    /// The document layer has no registry to judge a builtin id against: a host
+    /// program registers runners for ids this build cannot know, so the merge
+    /// keeps whatever the document names and the run-start check is what
+    /// refuses an id nothing supplies. Re-adding a static check here would make
+    /// a host id unloadable, so this test pins the absence.
     #[test]
-    fn strict_a_merge_rejects_an_unregistered_builtin_id() {
+    fn a_merge_carries_an_unknown_builtin_id_through() {
         let mut env1 = envelope();
         env1.tools.insert("echo".to_string(), builtin_tool("echo"));
         let mut ghost = builtin_tool("ghost");
@@ -613,11 +615,13 @@ mod tests {
         let mut env2 = envelope();
         env2.tools.insert("ghost".to_string(), ghost);
 
-        let err = merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)])
-            .unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("ghost@v1"), "the error must name the unregistered id: {msg}");
-        assert!(msg.contains("tool 'ghost'"), "the error must name the offending tool: {msg}");
+        let merged = merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)])
+            .expect("a builtin id is the document's to name, not the merge's to judge");
+        assert_eq!(
+            merged.tools["ghost"].kind,
+            ToolKindSpec::Builtin { builtin_id: "ghost@v1".to_string() },
+            "the id the document named must survive the merge unchanged",
+        );
     }
 
     /// Verifies `merge_documents` merges identical workflow re-declarations

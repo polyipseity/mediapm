@@ -18,6 +18,7 @@ use crate::error::ConductorError;
 use crate::provision::Metadata;
 use crate::provision::helpers::sanitize_tool_id;
 use crate::provision::{METADATA_FILE_NAME, ProvisionCache};
+use crate::tools::HostBuiltins;
 
 /// Resolved filesystem paths for one conductor runtime directory.
 ///
@@ -224,6 +225,15 @@ pub struct RunWorkflowOptions {
     pub force_rerun: bool,
     /// Optional tool selector override (managed tool id).
     pub tool_selector: Option<String>,
+    /// Builtin runners the host program supplies for this run.
+    ///
+    /// A step whose tool declares no command parts executes in-process: the
+    /// conductor runs the builtin its `builtin_id` names when this build ships
+    /// one, and otherwise the runner registered here under that id. Empty by
+    /// default, which runs the builtins this build ships and nothing else. An
+    /// id no runner supplies fails the run before its first step (see
+    /// [`HostBuiltins`]).
+    pub host_builtins: HostBuiltins,
     /// Optional progress group the conductor composes its own workflow
     /// progress screen into (one overall bar + one child bar per step).
     /// When `None`, the conductor runs silently with no progress output.
@@ -247,7 +257,8 @@ impl std::fmt::Debug for RunWorkflowOptions {
         let mut dbg = f.debug_struct("RunWorkflowOptions");
         dbg.field("retry_impure", &self.retry_impure)
             .field("force_rerun", &self.force_rerun)
-            .field("tool_selector", &self.tool_selector);
+            .field("tool_selector", &self.tool_selector)
+            .field("host_builtins", &self.host_builtins);
         #[cfg(feature = "progress")]
         {
             dbg.field("progress_group", &self.progress_group.as_ref().map(|_| "…"));

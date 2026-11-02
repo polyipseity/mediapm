@@ -117,16 +117,19 @@ pub(super) fn resolve_version_contract(
 /// Returns [`ConductorError::Serialization`] when the source is not valid
 /// UTF-8 or Nickel evaluation/migration fails, and
 /// [`ConductorError::Workflow`] when the resolved document violates the
-/// `content_map` subset `external_data` invariant, stages a payload by a
-/// strategy that needs the root it does not name, or gives a `builtin` spec an
-/// id this build does not register.
+/// `content_map` subset `external_data` invariant or stages a payload by a
+/// strategy that needs the root it does not name.
+///
+/// A `builtin` spec may name any id: the document layer has no registry to
+/// judge one against, and a host program legitimately names ids this build
+/// cannot know. Whether a run can dispatch an id is answered when the run
+/// starts, against this build's builtins plus the host's runners.
 pub(crate) fn from_boundary(source: &str) -> Result<crate::config::NickelDocument, ConductorError> {
     let envelope: v_latest::NickelEnvelopeLatest =
         evaluate_document_source(source, "configuration document")?;
     let doc: crate::config::NickelDocument = envelope.into();
     doc.validate_external_data_invariant()?;
     doc.validate_payload_staging_invariant()?;
-    doc.validate_builtin_tool_ids()?;
     Ok(doc)
 }
 
@@ -223,8 +226,12 @@ pub(crate) fn restore_readable_fields(
 /// that writes a document it cannot read is worse than one that refuses to
 /// write it: the generated-document loader discards an unreadable file and
 /// regenerates, so the only trace of the mismatch would be a warning and a full
-/// re-provision. The builtin-id check is the deliberate exception, and the code
-/// below records why.
+/// re-provision.
+///
+/// A `builtin` spec's id is not validated in either direction. It names a
+/// runner the document does not own, so the answer lives where the runners do:
+/// a run refuses an id neither this build nor its host supplies before its
+/// first step.
 ///
 /// # Errors
 ///
@@ -237,10 +244,6 @@ pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8
     // fail on the next decode.
     document.validate_external_data_invariant()?;
     document.validate_payload_staging_invariant()?;
-    // The builtin-id check runs on load and not here. A generated document
-    // written by a build that carried a test double may name a builtin this
-    // build does not register, and the prune has to be able to save the
-    // document that drops the entry before the next load reads the file.
     let envelope = into_boundary(document);
     let bytes =
         mediapm_utils::nickel::render_document_as_nickel(&envelope, "configuration document")
@@ -316,6 +319,36 @@ pub fn validate_v1_document(source: &str) -> Result<serde_json::Value, Conductor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{NickelDocument, ToolKindSpec, ToolSpec};
+
+    /// A `builtin` spec may name an id this build does not ship.
+    ///
+    /// The document layer has no registry to judge one against, and a host
+    /// program legitimately registers runners for ids this build cannot know,
+    /// so a decode that rejected them would make every host document unreadable.
+    /// Whether a run can dispatch an id is answered when the run starts, against
+    /// this build's builtins plus the host's runners.
+    #[test]
+    fn strict_a_decode_carries_a_host_builtin_id_through() {
+        let mut document = NickelDocument::default();
+        document.tools.insert(
+            "retag@v1".to_string(),
+            ToolSpec {
+                kind: ToolKindSpec::Builtin { builtin_id: "host-retag@v1".to_string() },
+                name: "retag".to_string(),
+                ..ToolSpec::default()
+            },
+        );
+
+        let bytes = encode_document(document).expect("encode a document naming a host builtin");
+        let decoded = decode_document(&bytes).expect("a host builtin id must load");
+
+        assert_eq!(
+            decoded.tools["retag@v1"].kind,
+            ToolKindSpec::Builtin { builtin_id: "host-retag@v1".to_string() },
+            "the id the document named must survive the decode unchanged",
+        );
+    }
 
     /// Every file the registry imports is one the export can publish.
     ///

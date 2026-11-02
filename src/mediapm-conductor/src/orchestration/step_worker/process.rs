@@ -10,6 +10,7 @@ use tokio::time::timeout;
 
 use super::{EXECUTABLE_TIMEOUT_ENV_VAR, executable_timeout};
 use crate::error::ConductorError;
+use crate::tools::{HostBuiltinRequest, HostBuiltins};
 
 /// Test-only builtin that fails its first `failures` invocations (keyed by
 /// `key`) then succeeds. Used to exercise retry-to-success paths.
@@ -194,18 +195,30 @@ async fn collect_child_output(
     Ok(exit_code)
 }
 
-/// Runs a builtin tool by dispatching to the appropriate handler through the
-/// [`ALL_BUILTINS`](crate::tools::ALL_BUILTINS) registry.
+/// Runs a builtin tool.
+///
+/// The arms below are the builtins this build ships, and the
+/// [`ALL_BUILTINS`](crate::tools::ALL_BUILTINS) registry names them: a match arm
+/// and a registry entry are two halves of one dispatcher, and a build that
+/// dropped either would advertise a builtin it cannot run. An id none of them
+/// answers for falls through to `host_builtins`, where a program built on the
+/// conductor registers its own runners; static arms first is what makes a host
+/// runner unable to shadow a shipped builtin, and
+/// [`HostBuiltins::new`](crate::tools::HostBuiltins::new) refuses that
+/// registration for the same reason.
 ///
 /// `cas` backs hash-valued builtin inputs (e.g. import `kind=cas_hash`);
 /// impure builtins that ingest pre-existing content resolve their hashes
-/// against the shared store rather than materializing sandbox copies.
+/// against the shared store rather than materializing sandbox copies. A host
+/// runner sees the same store through
+/// [`HostBuiltinCas`](crate::tools::HostBuiltinCas).
 pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
     cas: &C,
     tool_name: &str,
     args: &BTreeMap<String, String>,
     outermost_config_dir: &Path,
     sandbox_dir: &Path,
+    host_builtins: &HostBuiltins,
 ) -> Result<ExecutionResult, ConductorError> {
     match tool_name {
         n if n == mediapm_conductor_builtin_echo::TOOL_BUILTIN_ID => {
@@ -223,43 +236,7 @@ pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
             Ok(ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 })
         }
         n if n == mediapm_conductor_builtin_import::TOOL_BUILTIN_ID => {
-            let bytes = if args.get("kind").map(String::as_str) == Some("cas_hash") {
-                // Resolve the CAS payload up front (the builtin resolver is
-                // synchronous), then hand the fetched bytes to the builtin so
-                // its argument/format validation still runs.
-                let hash_text = args.get("hash").ok_or_else(|| {
-                    ConductorError::Workflow("import kind='cas_hash' requires 'hash'".to_string())
-                })?;
-                let hash = hash_text.parse::<Hash>().map_err(|e| {
-                    ConductorError::Workflow(format!(
-                        "import kind='cas_hash' invalid hash '{hash_text}': {e}"
-                    ))
-                })?;
-                let content = cas
-                    .get(hash)
-                    .await
-                    .map_err(|e| {
-                        ConductorError::Workflow(format!(
-                            "import kind='cas_hash' CAS read failed: {e}"
-                        ))
-                    })?
-                    .to_vec();
-                mediapm_conductor_builtin_import::execute_content_map_with_hash_resolver(
-                    outermost_config_dir,
-                    args,
-                    &BTreeMap::new(),
-                    |_hash_text| Ok(content.clone()),
-                )
-                .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?
-            } else {
-                mediapm_conductor_builtin_import::execute_content_map(
-                    outermost_config_dir,
-                    args,
-                    &BTreeMap::new(),
-                )
-                .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?
-            };
-            Ok(ExecutionResult { stdout: bytes, stderr: Vec::new(), exit_code: 0 })
+            run_import_builtin(cas, args, outermost_config_dir).await
         }
         n if n == mediapm_conductor_builtin_archive::TOOL_BUILTIN_ID => {
             let bytes = mediapm_conductor_builtin_archive::execute_content_map(
@@ -305,10 +282,72 @@ pub(super) async fn run_builtin<C: CasApi + Send + Sync>(
         }
         #[cfg(any(test, feature = "test-builtins"))]
         n if n == SLOW_BUILTIN_ID => run_slow_builtin(args).await,
-        name => Err(ConductorError::Workflow(format!(
-            "builtin tool '{name}' has no execute implementation"
-        ))),
+        name => match host_builtins.get(name) {
+            Some(runner) => {
+                let output = runner
+                    .run(HostBuiltinRequest { args, cas, outermost_config_dir, sandbox_dir })
+                    .await?;
+                Ok(ExecutionResult {
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    exit_code: output.exit_code,
+                })
+            }
+            None => Err(ConductorError::Workflow(format!(
+                "builtin tool '{name}' has no execute implementation"
+            ))),
+        },
     }
+}
+
+/// Runs the `import` builtin: it ingests a file, folder, fetch source or CAS
+/// hash and returns the bytes, so a `cas_hash` input is resolved against the
+/// run's store before the builtin's own argument validation runs.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Workflow`] when the arguments or the resolved
+/// content are rejected, and forwards a CAS read failure the same way.
+async fn run_import_builtin<C: CasApi + Send + Sync>(
+    cas: &C,
+    args: &BTreeMap<String, String>,
+    outermost_config_dir: &Path,
+) -> Result<ExecutionResult, ConductorError> {
+    let bytes = if args.get("kind").map(String::as_str) == Some("cas_hash") {
+        // Resolve the CAS payload up front (the builtin resolver is
+        // synchronous), then hand the fetched bytes to the builtin so
+        // its argument/format validation still runs.
+        let hash_text = args.get("hash").ok_or_else(|| {
+            ConductorError::Workflow("import kind='cas_hash' requires 'hash'".to_string())
+        })?;
+        let hash = hash_text.parse::<Hash>().map_err(|e| {
+            ConductorError::Workflow(format!(
+                "import kind='cas_hash' invalid hash '{hash_text}': {e}"
+            ))
+        })?;
+        let content = cas
+            .get(hash)
+            .await
+            .map_err(|e| {
+                ConductorError::Workflow(format!("import kind='cas_hash' CAS read failed: {e}"))
+            })?
+            .to_vec();
+        mediapm_conductor_builtin_import::execute_content_map_with_hash_resolver(
+            outermost_config_dir,
+            args,
+            &BTreeMap::new(),
+            |_hash_text| Ok(content.clone()),
+        )
+        .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?
+    } else {
+        mediapm_conductor_builtin_import::execute_content_map(
+            outermost_config_dir,
+            args,
+            &BTreeMap::new(),
+        )
+        .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?
+    };
+    Ok(ExecutionResult { stdout: bytes, stderr: Vec::new(), exit_code: 0 })
 }
 
 /// Runs the `slow@v1` test builtin: appends `start <label>` to the log file
@@ -383,6 +422,45 @@ async fn run_slow_builtin(
 mod tests {
     use super::*;
     use crate::orchestration::step_worker::EXECUTABLE_TIMEOUT_ENV_VAR;
+
+    /// Every builtin this build ships answers its own id from a static arm.
+    ///
+    /// The arms inside [`run_builtin`] and the
+    /// [`ALL_BUILTINS`](crate::tools::ALL_BUILTINS) entries are two halves of one
+    /// dispatcher, and nothing else ties them together: an argv or argument
+    /// failure is fine here, because what is asserted is only that each entry has
+    /// an arm to fail in rather than falling through to the registry fallback —
+    /// a build that advertised a builtin it cannot run would answer with `has no
+    /// execute implementation`. The empty registry is what makes that fallback
+    /// answer nothing, so a missing arm cannot be mistaken for a host runner.
+    #[tokio::test]
+    async fn every_production_builtin_has_a_static_arm() {
+        let cas = mediapm_cas::InMemoryCas::default();
+        let config_dir = tempfile::tempdir().expect("config dir");
+        let sandbox = tempfile::tempdir().expect("sandbox dir");
+        let no_args = BTreeMap::new();
+
+        for entry in crate::tools::production_builtins() {
+            let error = match run_builtin(
+                &cas,
+                entry.builtin_id,
+                &no_args,
+                config_dir.path(),
+                sandbox.path(),
+                &HostBuiltins::default(),
+            )
+            .await
+            {
+                Ok(_) => continue,
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                !error.contains("has no execute implementation"),
+                "{} is in ALL_BUILTINS but has no static arm: {error}",
+                entry.builtin_id,
+            );
+        }
+    }
 
     /// RAII guard that overrides [`EXECUTABLE_TIMEOUT_ENV_VAR`] for one test
     /// and restores the prior value (or removes the variable) on drop, so a
