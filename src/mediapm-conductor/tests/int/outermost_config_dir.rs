@@ -104,7 +104,7 @@ fn host_tool() -> ToolSpec {
 /// document, and the runner fails its step unless it is handed exactly it.
 #[tokio::test]
 async fn a_host_runner_receives_the_directory_holding_the_outermost_document() {
-    let tc = TestConductor::new();
+    let tc = TestConductor::with_pinned_config();
     let runner = Arc::new(DocumentDirRunner::new(tc.path().to_path_buf()));
     tc.write_config(doc_with_workflows(
         BTreeMap::from([(HOST_BUILTIN_ID.to_string(), host_tool())]),

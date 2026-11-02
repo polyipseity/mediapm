@@ -16,6 +16,8 @@ use mediapm_conductor::tools::provider::{
 };
 use mediapm_utils::progress::{ProviderProgressCallback, ProviderProgressSnapshot};
 
+use crate::{EnvVarGuard, rpc_env_lock};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -129,12 +131,13 @@ async fn progress_aggregation_over_a_mocked_fetch_source_covers_every_byte() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // SAFETY: the variable is read once per fetch and only lowers the source
-    // fetch concurrency to one. This binary is the only place that fetches tool
-    // sources, so no sibling test's concurrency is constrained by it.
-    unsafe {
-        std::env::set_var("MEDIAPM_SOURCE_FETCH_CONCURRENCY", "1");
-    }
+    // One source in flight at a time, so the snapshot sequence is the
+    // pipeline's schedule rather than a race between two concurrent downloads.
+    // The guard restores any prior value on drop, and the lock is what makes
+    // the process-wide mutation safe while sibling tests read the environment;
+    // see `rpc_env_lock`.
+    let _lock = rpc_env_lock().await;
+    let _concurrency = EnvVarGuard::set("MEDIAPM_SOURCE_FETCH_CONCURRENCY", "1");
 
     let first = vec![0x11u8; 3_000];
     let second = vec![0x22u8; 5_000];

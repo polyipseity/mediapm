@@ -183,8 +183,13 @@ where
         // instances wholesale, so a pass that snapshot the state underneath it
         // would write its snapshot back over the run's records.
         let _gate = self.state_gate.lock().await;
+        // The run's documents are discovered once, and both the load and the
+        // run's outermost directory are derived from that one list, so the
+        // directory cannot disagree with what was loaded.
+        let config_paths = discover_config_paths(self.storage_paths());
         let (unified, fresh_state) =
-            load_unified_config_and_state_async(&*self.cas, self.storage_paths()).await?;
+            load_unified_config_and_state_async(&*self.cas, self.storage_paths(), &config_paths)
+                .await?;
         // Apply conductor runtime config defaults to options
         let options = {
             let mut opts = options;
@@ -213,11 +218,13 @@ where
             }
         };
         // The directory holding the outermost document this run loads is
-        // derived here, where the documents are discovered, rather than
-        // accepted from the caller: a value a caller supplies could name a
-        // directory the run never loaded from, and a builtin resolving a
-        // relative path against it would then read the wrong root.
-        let outermost_dir = outermost_config_dir(self.storage_paths());
+        // derived from the same list the run loaded, not from a second
+        // discovery pass and not from the caller: a second pass could see a
+        // document appear or disappear between the two reads and move the
+        // root, and a caller-supplied directory could name a place the run
+        // never loaded from.
+        let outermost_dir =
+            outermost_config_dir(&config_paths, &self.storage_paths().conductor_dir);
         let (summary, updated_state) =
             client.run_workflow(workflow_name, options, unified, state, outermost_dir).await?;
         *self.state.lock().expect("state lock") = updated_state.clone();
@@ -806,18 +813,31 @@ where
 fn load_unified_config(
     storage_paths: &RuntimeStoragePaths,
 ) -> Result<UnifiedNickelDocument, ConductorError> {
-    let config_paths = discover_config_paths(storage_paths);
+    load_unified_config_from_paths(&discover_config_paths(storage_paths))
+}
 
-    let merged = versions::merge_document_sources(&config_paths)?;
+/// Loads the merged unified configuration from an already-discovered document
+/// list.
+///
+/// A caller that also needs the documents' directory passes the list it
+/// loaded, so the two cannot come from different discovery passes.
+fn load_unified_config_from_paths(
+    config_paths: &[PathBuf],
+) -> Result<UnifiedNickelDocument, ConductorError> {
+    let merged = versions::merge_document_sources(config_paths)?;
     Ok(merged.to_unified())
 }
 
 /// Loads the unified configuration and persisted orchestration state.
+///
+/// `config_paths` is the list the caller discovered once and also derives the
+/// run's outermost directory from.
 async fn load_unified_config_and_state_async<C: CasApi>(
     cas: &C,
     storage_paths: &RuntimeStoragePaths,
+    config_paths: &[PathBuf],
 ) -> Result<(UnifiedNickelDocument, ConductorState), ConductorError> {
-    let unified = load_unified_config(storage_paths)?;
+    let unified = load_unified_config_from_paths(config_paths)?;
     let state = load_state_file_async(cas, storage_paths).await?.unwrap_or_default();
     Ok((unified, state))
 }
@@ -983,14 +1003,20 @@ fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
 /// first one is the outermost: the standalone root `conductor.ncl` when the
 /// paths are discovered, or the first document a caller wired explicitly
 /// (mediapm's user-owned `mediapm.conductor.ncl`, whose generated sibling sits
-/// beside it). A run that names no document falls back to
-/// [`RuntimeStoragePaths::conductor_dir`], the root the discovered paths hang
+/// beside it). `config_paths` is the exact list the run loaded, so the
+/// directory cannot disagree with the loaded documents. A run that names no
+/// document falls back to `conductor_dir`, the root the discovered paths hang
 /// off.
-fn outermost_config_dir(storage_paths: &RuntimeStoragePaths) -> PathBuf {
-    discover_config_paths(storage_paths)
+///
+/// The result is absolute: that is the field's contract, and the mediapm
+/// default root (`--root .`) yields `./mediapm.conductor.ncl`, whose parent is
+/// a `CurDir`-only path that would otherwise be carried through unchanged.
+fn outermost_config_dir(config_paths: &[PathBuf], conductor_dir: &Path) -> PathBuf {
+    let dir = config_paths
         .first()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| storage_paths.conductor_dir.clone())
+        .and_then(|path| path.parent())
+        .map_or_else(|| conductor_dir.to_path_buf(), Path::to_path_buf);
+    std::path::absolute(&dir).unwrap_or(dir)
 }
 
 /// Returns the path of the first user config file in `conductor_dir`, or
@@ -1095,6 +1121,41 @@ mod tests {
         let found = discover_config_paths(&paths);
         assert!(found.contains(&conductor));
         assert!(!found.contains(&mediapm));
+    }
+
+    /// The directory a run derives from its documents is absolute even when
+    /// the run's root is relative.
+    ///
+    /// The mediapm default root is `.`, so its document path
+    /// `./mediapm.conductor.ncl` has a `CurDir`-only parent; the field's
+    /// contract is an absolute directory, so that `CurDir` must resolve
+    /// against the process working directory rather than be carried through.
+    #[test]
+    fn outermost_config_dir_is_absolute_for_a_relative_root() {
+        let dir = outermost_config_dir(&[PathBuf::from("./mediapm.conductor.ncl")], Path::new("."));
+        assert!(dir.is_absolute(), "the field is an absolute directory, got '{}'", dir.display());
+        assert_eq!(dir, std::env::current_dir().expect("current dir"));
+    }
+
+    /// The directory follows the document list the run loaded, not a fresh
+    /// discovery of its storage paths.
+    ///
+    /// A second discovery pass can see a document appear or disappear between
+    /// the load and the derivation and move the root; taking the loaded list
+    /// removes that window. The storage paths here would discover a document
+    /// at their own root, so a discovery-based derivation cannot answer with
+    /// the nested directory the loaded document implies.
+    #[test]
+    fn outermost_config_dir_follows_the_loaded_document_list() {
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        std::fs::write(tmp.path().join("conductor.ncl"), "{}").expect("write root doc");
+        let storage_paths = RuntimeStoragePaths::new(tmp.path());
+
+        let loaded = vec![tmp.path().join("nested").join("conductor.ncl")];
+        assert_eq!(
+            outermost_config_dir(&loaded, &storage_paths.conductor_dir),
+            tmp.path().join("nested")
+        );
     }
 
     /// `find_first_config` prefers `conductor.ncl` over `mediapm.ncl` at the
