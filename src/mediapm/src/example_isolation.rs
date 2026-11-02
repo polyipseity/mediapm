@@ -1029,6 +1029,8 @@ mod tests {
         );
         let profile = profile_from_exe_path(&std::env::current_exe().expect("current exe path"));
 
+        assert!(profile.is_some(), "the harness runs a cargo-layout binary: {profile:?}");
+
         let message = missing_after_success_message(&command);
 
         assert_eq!(
