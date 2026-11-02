@@ -9,9 +9,9 @@
 //! [`HostBuiltin`](mediapm_conductor::tools::HostBuiltin) exactly as it would
 //! through a shipped builtin.
 //!
-//! Two things are asserted here, both through the [`Conductor`] facade rather
+//! Three things are asserted here, all through the [`Conductor`] facade rather
 //! than the internal dispatch, because the option has to reach the executor for
-//! either to be true:
+//! each to be true:
 //!
 //! - the runner's stdout is what the step captures, so the seam carries bytes
 //!   and not merely a call, and the runner is handed the step's resolved inputs
@@ -20,7 +20,11 @@
 //!   message naming the id and the registration that is missing. The workflow
 //!   puts an observable step ahead of it — a test-only builtin that appends to
 //!   an event log the moment it runs — so an absent log is positive evidence
-//!   that nothing executed, rather than the absence of an assertion.
+//!   that nothing executed, rather than the absence of an assertion;
+//! - the `conductor` binary's own case — an empty registry, the one `cli.rs`
+//!   passes — refuses a document naming `media-tagger` with the exact sentence
+//!   the CLI docs state, and the recording progress group holds only the overall
+//!   bar its caller created, so no step bar was added before the refusal.
 //!
 //! The static builtins are untouched by any of this: a host id may not shadow
 //! one (refused at registration, unit-tested beside the registry), so a run
