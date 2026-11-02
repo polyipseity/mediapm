@@ -433,9 +433,11 @@ struct ManagedToolProvenance {
 /// [`load_resolved_demo_metadata`]; they are named for the root rather than for the
 /// tagging step because the name is what a reader can check against the artifact. Offline
 /// that name carries the container's own tags — no chain copy applies the tagging step's
-/// `FFmetadata` document, so the file keeps the fixture's tags and the root is named after
-/// them. It is therefore not a record of what the tagger wrote, and the tagging half of
-/// the evidence is [`OfflineEvidence::musicbrainz_request_paths`].
+/// `FFmetadata` document — but it is not read from the file either: the materializer asks a
+/// bare `ffprobe`, which the chain `PATH` entry answers with the stub's pinned document, so
+/// the two name fields record what that document states. They are therefore not a record of
+/// what the tagger wrote, and the tagging half of the evidence is
+/// [`OfflineEvidence::musicbrainz_request_paths`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct OfflineEvidence {
     /// Every chain executable this run invoked, in order, by the logical tool it
@@ -4796,21 +4798,21 @@ mod tests {
 
         // The media root's name is the run's resolved metadata made visible on
         // disk, so it is what a reader can check against the artifact. Offline that
-        // metadata is the container's own tags: no chain copy applies the tagging
-        // step's `FFmetadata` document, so the two values are asserted against an
-        // in-process read of the materialized file rather than against the mock's
-        // payload. They therefore do not say which backend tagged anything, and the
-        // tagging half of the evidence is the request paths below.
+        // metadata comes from the chain `ffprobe`'s pinned document — the materializer
+        // asks a bare `ffprobe`, and the chain `PATH` entry answers it — so these two
+        // values say what that document states, not which backend tagged anything. The
+        // in-process read below is a fixture-drift guard: it fails when the committed
+        // media stops matching the document the stub answers with.
         let offline = manifest.get("offline").expect("the offline run records its evidence");
         assert_eq!(
             offline["root_artist"].as_str(),
             facts.artist.as_deref(),
-            "the materialized root's artist must be the container's own tag, read in process"
+            "the materialized root's artist must still be the tag the chain probe reports"
         );
         assert_eq!(
             offline["root_title"].as_str(),
             facts.title.as_deref(),
-            "the materialized root's title must be the container's own tag, read in process"
+            "the materialized root's title must still be the tag the chain probe reports"
         );
 
         // Offline is proved, not assumed: every tool the run reached is a chain

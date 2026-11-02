@@ -43,8 +43,10 @@ pub const ARTIST_NAME: &str = "Rick Astley";
 
 /// The recording title the mock reports.
 ///
-/// This is the demo's own title (`DEMO_METADATA_TITLE`), which is the title a
-/// tagging run writes and the hierarchy renders into the media's folder name.
+/// This is the demo's own title (`DEMO_METADATA_TITLE`), which a tagging run writes
+/// and the hierarchy renders into the media's folder name on the real-upstream path.
+/// A stub-chain run renders the chain probe's title instead: its `ffmpeg` is a copy,
+/// so the tagger's document reaches no container.
 pub const RECORDING_TITLE: &str = "Never Gonna Give You Up";
 
 /// The release title the mock reports.
