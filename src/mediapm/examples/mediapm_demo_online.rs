@@ -3339,11 +3339,11 @@ fn resolve_demo_output_paths(
 
 /// Runs the online demo end to end and returns the paths it wrote.
 ///
-/// Resolves and exports the mediapm CLI before touching the filesystem:
-/// managed-tool launchers dispatch through `MEDIAPM_EXECUTABLE`, so a host
-/// with no CLI, or one whose override names a different binary, must fail
-/// here rather than after the artifact root is removed and every managed tool
-/// has been downloaded.
+/// Resolves the mediapm CLI before touching the filesystem: managed-tool
+/// launchers dispatch through `MEDIAPM_EXECUTABLE`, so a host whose override
+/// names a different binary must fail here rather than after the artifact root
+/// is removed and every managed tool has been downloaded. A missing CLI is built
+/// on demand (`MEDIAPM_EXAMPLE_AUTO_BUILD_CLI` opts out).
 ///
 /// Shuts the conductor the service owns down before returning:
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
@@ -3358,10 +3358,10 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         .with_writer(std::io::stderr)
         .try_init();
 
-    // Preflight before the wipe: a target directory with no mediapm CLI fails
-    // here instead of after the artifact root is removed and the managed tools
-    // are downloaded.
-    let cli = mediapm::ensure_mediapm_executable()
+    // Preflight before the wipe: a target directory with no mediapm CLI builds
+    // one here instead of failing after the artifact root is removed and the
+    // managed tools are downloaded.
+    let cli = mediapm::example_isolation::ensure_example_cli(cfg!(test))
         .map_err(|error| format!("online demo preflight failed: {error}"))?;
 
     let (root, _fallback_artifact) = reset_artifact_root()?;

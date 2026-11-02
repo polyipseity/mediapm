@@ -1,11 +1,19 @@
 //! Isolation helpers for `mediapm` examples and examples-as-tests.
 //!
-//! Sets `MEDIAPM_EXAMPLE_*` env overrides to [`mediapm_utils::temp`] directories.
+//! Sets `MEDIAPM_EXAMPLE_*` env overrides to [`mediapm_utils::temp`] directories,
+//! and owns the example CLI preflight that builds a missing mediapm CLI on
+//! demand ([`ensure_example_cli`]).
 //! See `.agents/instructions/example-temp-isolation.instructions.md`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::LazyLock;
+use std::time::Instant;
+
+use crate::{
+    MISSING_MEDIAPM_CLI_MESSAGE, MediaPmCliResolution, MediaPmError, invalid_override_message,
+};
 
 pub use mediapm_utils::temp::remove_dir_all_with_retry;
 
@@ -145,6 +153,257 @@ pub fn parse_run_online_sync_override(value: Option<&str>) -> Result<bool, Strin
     Err(format!(
         "{RUN_ONLINE_SYNC_ENV} only accepts enabled (true/1/yes/on) or disabled (false/0/no/off) values; got '{normalized}'"
     ))
+}
+
+/// Env var disabling an example's on-demand build of the mediapm CLI.
+///
+/// A switch that only subtracts a capability, so the demo works out of the box:
+/// the disable tokens (`0|false|no|off`, case-insensitive, trimmed) are the only
+/// values that turn the build off, and absent, empty and unrecognized values all
+/// leave it on.
+const AUTO_BUILD_CLI_ENV: &str = "MEDIAPM_EXAMPLE_AUTO_BUILD_CLI";
+
+/// Cargo's own path to the cargo that launched this process.
+///
+/// Set by cargo for every binary it runs and never guessed from `PATH`: another
+/// cargo can carry another toolchain, profile or target directory, and the CLI
+/// build has to land where the running binary looks for its sibling.
+const CARGO_ENV: &str = "CARGO";
+
+/// Cargo's manifest directory of the crate this process was built from.
+///
+/// Joined with `Cargo.toml` to form the `--manifest-path` a CLI build passes, so
+/// the build resolves the same workspace and target directory.
+const CARGO_MANIFEST_DIR_ENV: &str = "CARGO_MANIFEST_DIR";
+
+/// How many trailing stderr lines a failed CLI build quotes in its error.
+///
+/// Cargo states its cause in its last lines; a full build log can be thousands
+/// of lines and would bury the error it accompanies.
+const CLI_BUILD_STDERR_LINES: usize = 20;
+
+/// What an example's CLI preflight decided to do.
+///
+/// A decision, not an action: the caller owns the build's side effects, so every
+/// case is a value a test can assert without spawning anything.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub enum CliPreflightPlan {
+    /// A usable CLI already resolves; nothing to build.
+    Ready(PathBuf),
+    /// No CLI resolves; run this command, then resolve again.
+    Build(CliBuildCommand),
+    /// No CLI resolves and building is not possible here; the message is the
+    /// reason, reported verbatim as the preflight error.
+    Refuse(String),
+}
+
+/// The one command an example runs to build the mediapm CLI it needs.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CliBuildCommand {
+    /// The cargo that launched this process (`CARGO`), never a `PATH` guess.
+    pub cargo: PathBuf,
+    /// The manifest passed as `--manifest-path`, so the build lands in the
+    /// target directory the running cargo used.
+    pub manifest: PathBuf,
+    /// The arguments that follow the cargo executable, in order:
+    /// `build --package mediapm --manifest-path <manifest>`.
+    pub argv: Vec<String>,
+}
+
+/// Resolves the mediapm CLI an example needs, building it when none resolves.
+///
+/// Managed-tool launcher scripts dispatch through `MEDIAPM_EXECUTABLE`, so an
+/// example that runs one needs a CLI build beside its own. `cargo run --example`
+/// builds only the example, so the CLI can legitimately be absent; this builds
+/// it from the running crate's manifest with the cargo that launched the
+/// example.
+///
+/// Building is the last remedy, and three guards keep it there: never under a
+/// test harness, never in CI (which builds the CLI as its own step, so a demo
+/// build would hide a missing one), and never when `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI`
+/// holds a disable token (`0|false|no|off`, case-insensitive). Everything else
+/// that prevents a build — no `CARGO`, no `CARGO_MANIFEST_DIR`, an invalid
+/// `MEDIAPM_EXECUTABLE` — is refused with the reason instead of built over.
+///
+/// Prints one line before the build starts, because a first build of this
+/// workspace can take minutes and there is no timeout to report progress, and one
+/// line with the elapsed whole seconds when it succeeds.
+///
+/// `is_test` is the test-harness guard, and only the caller can state it: pass
+/// `cfg!(test)` from the example's own crate, because a library unit cannot
+/// observe the example's test build, so the guard has to be stated by the caller.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when resolution fails, when the build is
+/// refused, when cargo exits non-zero, or when a successful build still leaves no
+/// CLI beside the running binary.
+pub fn ensure_example_cli(is_test: bool) -> Result<PathBuf, MediaPmError> {
+    match plan_cli_preflight(
+        crate::resolve_mediapm_cli()?,
+        allow_build(is_test),
+        std::env::var_os(CARGO_ENV).map(PathBuf::from),
+        manifest_dir(),
+    ) {
+        CliPreflightPlan::Ready(path) => Ok(path),
+        CliPreflightPlan::Refuse(message) => Err(MediaPmError::Workflow(message)),
+        CliPreflightPlan::Build(command) => run_cli_build(&command),
+    }
+}
+
+/// Decides what an example's CLI preflight does with what resolution found.
+///
+/// A resolvable CLI wins over everything, because building is only ever the
+/// remedy for having none. An invalid override is refused rather than built
+/// over: the variable is the user's statement of where the CLI is, and a build
+/// would silently ignore it. A missing CLI is built only when `allow_build` says
+/// so and both cargo inputs are known.
+///
+/// `allow_build` arrives precomputed so this decision reads no process state of
+/// its own; `cargo` is `CARGO` and `manifest` is the running crate's `Cargo.toml`,
+/// both `None` outside a cargo-launched process.
+fn plan_cli_preflight(
+    resolution: MediaPmCliResolution,
+    allow_build: bool,
+    cargo: Option<PathBuf>,
+    manifest: Option<PathBuf>,
+) -> CliPreflightPlan {
+    match resolution {
+        MediaPmCliResolution::Found(path) => CliPreflightPlan::Ready(path),
+        MediaPmCliResolution::InvalidOverride(path) => {
+            CliPreflightPlan::Refuse(invalid_override_message(&path))
+        }
+        MediaPmCliResolution::Missing if !allow_build => {
+            CliPreflightPlan::Refuse(MISSING_MEDIAPM_CLI_MESSAGE.to_string())
+        }
+        MediaPmCliResolution::Missing => match (cargo, manifest) {
+            (Some(cargo), Some(manifest)) => {
+                CliPreflightPlan::Build(cli_build_command(cargo, manifest))
+            }
+            (None, None) => CliPreflightPlan::Refuse(format!(
+                "{MISSING_MEDIAPM_CLI_MESSAGE}; neither CARGO nor CARGO_MANIFEST_DIR is set, so the demo cannot build one"
+            )),
+            (None, Some(_)) => CliPreflightPlan::Refuse(format!(
+                "{MISSING_MEDIAPM_CLI_MESSAGE}; CARGO is not set, so the demo cannot build one"
+            )),
+            (Some(_), None) => CliPreflightPlan::Refuse(format!(
+                "{MISSING_MEDIAPM_CLI_MESSAGE}; CARGO_MANIFEST_DIR is not set, so the demo cannot build one"
+            )),
+        },
+    }
+}
+
+/// The cargo command that builds the CLI from the manifest the running example
+/// was built from.
+///
+/// `--manifest-path` is what keeps the build in the target directory the running
+/// binary came from: the manifest is the one cargo reported for this process, so
+/// `CARGO_TARGET_DIR` and `--target-dir` conventions stay in force. The argv is
+/// assembled here rather than at the spawn so the command a test asserts is the
+/// command that runs.
+fn cli_build_command(cargo: PathBuf, manifest: PathBuf) -> CliBuildCommand {
+    let argv = vec![
+        "build".to_string(),
+        "--package".to_string(),
+        "mediapm".to_string(),
+        "--manifest-path".to_string(),
+        manifest.display().to_string(),
+    ];
+    CliBuildCommand { cargo, manifest, argv }
+}
+
+/// Whether an example may build the CLI it needs.
+///
+/// All three guards must hold: `is_test` is `false` (the examples-as-tests run
+/// reduced mode and the harness owns argv and output), [`ci_mode_detected`] is
+/// `false`, and [`AUTO_BUILD_CLI_ENV`] holds no disable token.
+///
+/// `is_test` is passed in rather than read from `cfg!(test)` here: test-ness is a
+/// property of the compilation unit that asks, so only the caller can answer for
+/// itself — [`ensure_example_cli`] therefore takes it as its own parameter.
+fn allow_build(is_test: bool) -> bool {
+    !is_test && !ci_mode_detected() && auto_build_cli_enabled()
+}
+
+/// Whether [`AUTO_BUILD_CLI_ENV`] leaves the on-demand CLI build enabled.
+///
+/// Mirrors [`run_online_sync_enabled`]'s token parsing with the default inverted:
+/// this switch only subtracts a capability, so absent, empty and unrecognized
+/// values mean enabled, and only `0|false|no|off` (case-insensitive, trimmed)
+/// disable the build.
+fn auto_build_cli_enabled() -> bool {
+    let disabled = std::env::var(AUTO_BUILD_CLI_ENV).is_ok_and(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")
+    });
+    !disabled
+}
+
+/// The `Cargo.toml` of the crate this process was built from.
+///
+/// `cargo run` and `cargo test` set `CARGO_MANIFEST_DIR` for the process they
+/// launch, so an explicit example run carries it. A binary started another way
+/// does not, and a build would then have to guess which manifest to build, so the
+/// preflight refuses instead.
+fn manifest_dir() -> Option<PathBuf> {
+    std::env::var_os(CARGO_MANIFEST_DIR_ENV).map(|dir| PathBuf::from(dir).join("Cargo.toml"))
+}
+
+/// Runs a [`CliBuildCommand`] and resolves the CLI it was built to produce.
+///
+/// Spawns with this process's environment, so `CARGO_TARGET_DIR`, `RUSTFLAGS`,
+/// `RUSTC_WRAPPER` and cargo configuration carry over, and captures both streams:
+/// stdout is a build log, and stderr is what the failure message quotes. There is
+/// no timeout — a first build of this workspace can take minutes, and a truncated
+/// build is worse than a slow one; the line printed before the spawn is the
+/// progress signal.
+fn run_cli_build(command: &CliBuildCommand) -> Result<PathBuf, MediaPmError> {
+    eprintln!("[mediapm] no mediapm CLI found; building one with cargo build --package mediapm");
+    let started = Instant::now();
+    let output = Command::new(&command.cargo).args(&command.argv).output().map_err(|error| {
+        MediaPmError::Workflow(format!(
+            "failed to run '{}' to build the mediapm CLI: {error}",
+            command.cargo.display()
+        ))
+    })?;
+
+    if !output.status.success() {
+        return Err(MediaPmError::Workflow(format!(
+            "`{} {}` failed with {}; the mediapm CLI was not built from '{}'. Last {CLI_BUILD_STDERR_LINES} lines of stderr:\n{}",
+            command.cargo.display(),
+            command.argv.join(" "),
+            output.status,
+            command.manifest.display(),
+            last_stderr_lines(&output.stderr, CLI_BUILD_STDERR_LINES),
+        )));
+    }
+
+    let path = match crate::resolve_mediapm_cli()? {
+        MediaPmCliResolution::Found(path) => path,
+        // The override cannot become invalid during a build (it is checked before
+        // one starts), so both arms are the same failure: the build succeeded but
+        // wrote no CLI this process can find beside its own binary.
+        MediaPmCliResolution::Missing | MediaPmCliResolution::InvalidOverride(_) => {
+            return Err(MediaPmError::Workflow(format!(
+                "the mediapm CLI build from '{}' succeeded, but no CLI appeared beside the running binary; check CARGO_TARGET_DIR and --target-dir",
+                command.manifest.display()
+            )));
+        }
+    };
+    eprintln!("[mediapm] built the mediapm CLI in {}s", started.elapsed().as_secs());
+    Ok(path)
+}
+
+/// The last `limit` lines of a build's stderr, as a failure message quotes them.
+///
+/// Decoded lossily because a cargo log can carry bytes from the tools it invoked.
+/// An empty stream answers `(no stderr)` so the quoting clause never dangles.
+fn last_stderr_lines(stderr: &[u8], limit: usize) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(limit);
+    let tail = lines[start..].join("\n");
+    if tail.is_empty() { "(no stderr)".to_string() } else { tail }
 }
 
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.
@@ -331,5 +590,211 @@ mod tests {
             Some(value) => assert_eq!(std::env::var_os(ARTIFACT_ROOT_ENV), Some(value.clone())),
             None => assert!(std::env::var_os(ARTIFACT_ROOT_ENV).is_none()),
         }
+    }
+
+    /// Restores `AUTO_BUILD_CLI_ENV` to its prior value; the token test below
+    /// holds [`lock_process_env`] for its whole body.
+    fn restore_auto_build_cli_env(previous: Option<OsString>) {
+        // SAFETY: env mutation is serialized by the process-wide env lock.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(AUTO_BUILD_CLI_ENV, value),
+                None => std::env::remove_var(AUTO_BUILD_CLI_ENV),
+            }
+        }
+    }
+
+    /// Unwraps the refusal a preflight plan must be, so each test asserts the
+    /// message it expects instead of silently accepting the wrong branch.
+    fn refuse_message(plan: CliPreflightPlan) -> String {
+        match plan {
+            CliPreflightPlan::Refuse(message) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// The preflight builds only as the last remedy: a resolvable CLI wins over a
+    /// permitted build, and an invalid override is reported rather than built
+    /// over, because building would silently ignore the user's statement of where
+    /// the CLI lives. The `allow_build(true)` row is the examples-as-tests case —
+    /// `allow_build` answers `false` under a test harness — so the decision table
+    /// itself proves a test never reaches the build.
+    #[test]
+    fn cli_preflight_builds_only_when_nothing_resolves() {
+        let cargo = PathBuf::from("/opt/rust/bin/cargo");
+        let manifest = PathBuf::from("/work/src/mediapm/Cargo.toml");
+        let cli = PathBuf::from("/work/target/debug/mediapm");
+        let rejected = PathBuf::from("/work/target/debug/examples/mediapm_demo_online");
+
+        let cases = [
+            (
+                "a resolvable CLI wins over a permitted build",
+                MediaPmCliResolution::Found(cli.clone()),
+                true,
+                CliPreflightPlan::Ready(cli.clone()),
+            ),
+            (
+                "a resolvable CLI wins over a forbidden build",
+                MediaPmCliResolution::Found(cli.clone()),
+                false,
+                CliPreflightPlan::Ready(cli.clone()),
+            ),
+            (
+                "an invalid override is refused even when a build is permitted",
+                MediaPmCliResolution::InvalidOverride(rejected.clone()),
+                true,
+                CliPreflightPlan::Refuse(invalid_override_message(&rejected)),
+            ),
+            (
+                "a missing CLI with building forbidden is refused",
+                MediaPmCliResolution::Missing,
+                false,
+                CliPreflightPlan::Refuse(MISSING_MEDIAPM_CLI_MESSAGE.to_string()),
+            ),
+            (
+                "a missing CLI in a test harness is refused, never built",
+                MediaPmCliResolution::Missing,
+                allow_build(true),
+                CliPreflightPlan::Refuse(MISSING_MEDIAPM_CLI_MESSAGE.to_string()),
+            ),
+            (
+                "a missing CLI with building permitted is built",
+                MediaPmCliResolution::Missing,
+                true,
+                CliPreflightPlan::Build(cli_build_command(cargo.clone(), manifest.clone())),
+            ),
+        ];
+
+        for (case, resolution, build_allowed, expected) in cases {
+            let plan = plan_cli_preflight(
+                resolution,
+                build_allowed,
+                Some(cargo.clone()),
+                Some(manifest.clone()),
+            );
+            assert_eq!(plan, expected, "case: {case}");
+        }
+    }
+
+    /// The embedded-test row of the decision table, now that the caller states
+    /// its own test-ness: an example passing `cfg!(test)` from a test build
+    /// reaches the preflight as `allow_build(true)` and is refused, never built.
+    #[test]
+    fn cli_preflight_is_refused_in_a_test_build() {
+        let cargo = PathBuf::from("/opt/rust/bin/cargo");
+        let manifest = PathBuf::from("/work/src/mediapm/Cargo.toml");
+
+        let plan = plan_cli_preflight(
+            MediaPmCliResolution::Missing,
+            allow_build(true),
+            Some(cargo),
+            Some(manifest),
+        );
+
+        assert_eq!(plan, CliPreflightPlan::Refuse(MISSING_MEDIAPM_CLI_MESSAGE.to_string()));
+    }
+
+    /// A permitted build still needs both cargo inputs, and the refusal names the
+    /// variable that is absent: "cannot build" without a name leaves the reader
+    /// with nothing to set. The missing-CLI remedy stays in front of the clause,
+    /// so the message still says how to get a CLI by hand.
+    #[test]
+    fn cli_preflight_refuses_without_cargo_or_manifest() {
+        let cargo = PathBuf::from("/opt/rust/bin/cargo");
+        let manifest = PathBuf::from("/work/src/mediapm/Cargo.toml");
+
+        let without_cargo =
+            plan_cli_preflight(MediaPmCliResolution::Missing, true, None, Some(manifest));
+        let without_manifest =
+            plan_cli_preflight(MediaPmCliResolution::Missing, true, Some(cargo), None);
+        let without_either = plan_cli_preflight(MediaPmCliResolution::Missing, true, None, None);
+
+        for (case, plan, clause) in [
+            ("no CARGO", without_cargo, "; CARGO is not set, so the demo cannot build one"),
+            (
+                "no CARGO_MANIFEST_DIR",
+                without_manifest,
+                "; CARGO_MANIFEST_DIR is not set, so the demo cannot build one",
+            ),
+        ] {
+            let message = refuse_message(plan);
+            assert!(
+                message.starts_with(MISSING_MEDIAPM_CLI_MESSAGE),
+                "case {case}: keeps the missing-CLI remedy: {message}"
+            );
+            assert!(
+                message.ends_with(clause),
+                "case {case}: names the missing variable: {message}"
+            );
+        }
+
+        let message = refuse_message(without_either);
+        assert!(
+            message.starts_with(MISSING_MEDIAPM_CLI_MESSAGE),
+            "keeps the missing-CLI remedy: {message}"
+        );
+        assert!(
+            message.contains("neither CARGO nor CARGO_MANIFEST_DIR is set"),
+            "names both variables: {message}"
+        );
+    }
+
+    /// The build targets the manifest the running binary came from, so cargo
+    /// resolves the same workspace and writes the CLI beside the binary that
+    /// needs it. A build from another manifest could land in a target directory
+    /// the resolver beside this example never probes.
+    #[test]
+    fn cli_build_argv_targets_the_running_manifest() {
+        let cargo = PathBuf::from("/opt/rust/bin/cargo");
+        let manifest = PathBuf::from("/work/src/mediapm/Cargo.toml");
+
+        let command = cli_build_command(cargo.clone(), manifest.clone());
+
+        assert_eq!(
+            command.argv,
+            vec![
+                "build".to_string(),
+                "--package".to_string(),
+                "mediapm".to_string(),
+                "--manifest-path".to_string(),
+                manifest.display().to_string(),
+            ]
+        );
+        assert_eq!(command.cargo, cargo, "uses the cargo that launched the example");
+        assert_eq!(command.manifest, manifest, "keeps the manifest it passes");
+    }
+
+    /// `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI` only subtracts a capability: the four
+    /// disable tokens (trimmed, case-insensitive) turn the build off, and absent,
+    /// empty and unrecognized values leave a demo that must work out of the box
+    /// able to build.
+    #[test]
+    fn auto_build_cli_parses_disable_tokens() {
+        let _lock = lock_process_env();
+        let previous = std::env::var_os(AUTO_BUILD_CLI_ENV);
+
+        for token in ["0", "false", "no", "off", "FALSE", " Off ", "NO"] {
+            // SAFETY: env mutation is serialized by the process-wide env lock.
+            unsafe {
+                std::env::set_var(AUTO_BUILD_CLI_ENV, token);
+            }
+            assert!(!auto_build_cli_enabled(), "'{token}' disables the build");
+        }
+
+        for token in ["", "1", "true", "yes", "on", "maybe"] {
+            // SAFETY: env mutation is serialized by the process-wide env lock.
+            unsafe {
+                std::env::set_var(AUTO_BUILD_CLI_ENV, token);
+            }
+            assert!(auto_build_cli_enabled(), "'{token}' leaves the build enabled");
+        }
+
+        // SAFETY: env mutation is serialized by the process-wide env lock.
+        unsafe {
+            std::env::remove_var(AUTO_BUILD_CLI_ENV);
+        }
+        assert!(auto_build_cli_enabled(), "an unset variable leaves the build enabled");
+
+        restore_auto_build_cli_env(previous);
     }
 }
