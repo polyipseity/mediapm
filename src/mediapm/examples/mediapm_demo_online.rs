@@ -114,7 +114,10 @@
 //! cargo test -p mediapm --example mediapm_demo_online main_is_exercised
 //! # Full-sync online path (network + external tools) — explicit run only;
 //! # reuses the real user-level tool download cache, persisting tools across runs.
-//! cargo build -p mediapm
+//! # A missing CLI is built on demand with `$CARGO` from this crate's manifest,
+//! # so no separate `cargo build -p mediapm` is required first; set
+//! # `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI=0` to opt out, and note that CI and
+//! # `cargo test` runs never build it.
 //! cargo run -p mediapm --example mediapm_demo_online
 //! ```
 
