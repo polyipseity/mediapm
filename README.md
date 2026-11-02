@@ -66,9 +66,9 @@ cargo test-doc-all         # doctests + rustdoc link gate
 Online integration gate (network + external providers):
 
 ```sh
-MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=300 cargo run -p mediapm --example mediapm_demo_online
+MEDIAPM_RUN_ONLINE_SYNC=1 MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=300 cargo run --all-features -p mediapm --example mediapm_demo_online
 ```
 
-Artifacts land under `src/mediapm/examples/artifacts/demo-online/`. The full-sync path runs only on that explicit `cargo run`; the embedded `main_is_exercised` test runs reduced config-only mode (deterministic, no network, skipped in CI). The explicit run persists downloaded tools in the real user-level cache (`<os-cache-dir>/mediapm/cache`); embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT` tempdirs.
+Artifacts land under `src/mediapm/examples/artifacts/demo-online/`. The demo has two paths and `MEDIAPM_RUN_ONLINE_SYNC` selects between them: unset — and every token but `1|true|yes|on` — runs the full pipeline offline against the stub tool chain and a mocked `MusicBrainz`, which is what the embedded `main_is_exercised` test runs in every gate, and `1` runs against the real upstream, which only the explicit `cargo run` above reaches. The offline path needs `--all-features` for its provider seams; the explicit run persists downloaded tools in the real user-level cache (`<os-cache-dir>/mediapm/cache`); embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT` tempdirs.
 
 Integration tests across workspace crates share one harness: top-level `tests/mod.rs` entrypoint, grouped modules under `tests/e2e/`, `tests/int/`, `tests/prop/`.

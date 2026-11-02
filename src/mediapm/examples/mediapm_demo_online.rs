@@ -8,8 +8,8 @@
 //!   provisions from a mocked upstream whose payload is a chain executable that
 //!   copies its input, and the tagging step asks a mocked `MusicBrainz`. The run
 //!   is the full pipeline and needs no network, so it is what the embedded test
-//!   exercises. It does need the `test-seams` feature, which only
-//!   `--all-features` enables, so every command below carries it; a build
+//!   exercises. It does need the `test-seams` feature, the feature
+//!   `--all-features` turns on, so every command below carries it; a build
 //!   without the feature refuses this route, naming the feature, instead of
 //!   provisioning from the real upstream.
 //! - **Online (opt-in).** `MEDIAPM_RUN_ONLINE_SYNC=1` selects the real providers,
@@ -97,7 +97,9 @@
 //! differ in provenance, not in whether the artist appears.
 //! Their title text is live metadata, so post-sync asserts resolve it from the materialized tree
 //! instead of pinning it; only the media root basename itself is pinned, by
-//! `expected_demo_media_root_name`.
+//! `expected_demo_media_root_name` (the tree above shows the name the real-upstream path
+//! materializes, and offline the name follows the chain probe's pinned `ffprobe` document, which is
+//! why that route asserts the name against the base the run itself resolved).
 //!
 //! See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
 //!
@@ -125,11 +127,11 @@
 //! # Verification
 //!
 //! ```bash
-//! cargo test -p mediapm --all-features demo_hierarchy_golden
-//! cargo test -p mediapm --all-features demo_online_hierarchy_materialization
+//! cargo test-pkg mediapm demo_hierarchy_golden
+//! cargo test-pkg mediapm demo_online_hierarchy_materialization
 //! # The offline path, which the embedded test runs: the full pipeline against the
 //! # stub chain, no network.
-//! cargo test -p mediapm --all-features --example mediapm_demo_online main_is_exercised
+//! cargo test-pkg mediapm --example mediapm_demo_online main_is_exercised
 //! # The same path as a binary; reuses the real user-level tool download cache
 //! # (`<os-cache-dir>/mediapm/cache`), so provisioned tools persist across runs.
 //! cargo run --all-features -p mediapm --example mediapm_demo_online

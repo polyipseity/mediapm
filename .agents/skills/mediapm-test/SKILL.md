@@ -25,11 +25,12 @@ Run both **sequentially** (not parallel) at the end of work:
 
 ```sh
 cargo run --package mediapm --example mediapm_demo
-cargo run --package mediapm --example mediapm_demo_online
+cargo run --all-features --package mediapm --example mediapm_demo_online
 ```
 
-Do not run demos during dev iteration — they require external tools (ffmpeg,
-yt-dlp, rsgain, media-tagger) and network access.
+Both commands run the demos' offline paths, so neither needs network access and neither provisions a real tool binary. `mediapm_demo_online` carries `--all-features` because its stub tool chain lives behind the `test-seams` feature; without it the offline route refuses, naming the feature to add.
+
+Do not run demos during dev iteration. The online path is opt-in and is the only one that needs the external tools (ffmpeg, yt-dlp, rsgain, media-tagger) and network: `MEDIAPM_RUN_ONLINE_SYNC=1 cargo run --all-features --package mediapm --example mediapm_demo_online`.
 
 ## Full workspace validation
 
