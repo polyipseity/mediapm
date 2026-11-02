@@ -23,7 +23,11 @@
 
 # ── UI/UX ──────────────────────────────────────────────────────────────
 # ── Default profile (local dev) ────────────────────────────────────────
-# Per-test timeout: kill a test that runs >60s with no output.
+# `slow-timeout` takes `{ period, terminate-after }`, and `terminate-after` counts
+# periods, not seconds (nextest's own config reference: "`terminate-after`: Number
+# of periods after which to terminate the test"), so a test's budget is
+# `period x terminate-after`: no output for 10s marks it slow, and 60 such periods
+# kill it, i.e. after 600s.
 # Leak detection: warn if a test doesn't clean up child processes within 100ms.
 [profile.default]
 # Collect every failure in one run. Without this the default profile stops
@@ -37,7 +41,8 @@ leak-timeout = "100ms"
 # ── CI profile (more conservative) ─────────────────────────────────────
 # Don't fail fast — collect all failures in one run.
 # Retry flaky tests up to twice before reporting failure.
-# More generous timeout (2min) to account for CI resource contention.
+# More generous budget (15s x 120 = 1800s = 30min) to account for CI resource
+# contention.
 [profile.ci]
 fail-fast = false
 retries = 2
@@ -68,33 +73,40 @@ slow-timeout = { period = "30s", terminate-after = 60 }
 # ── Network-heavy test serialization & timeout ─────────────────────────
 # Demo examples and the all_platform integration tests each download the full
 # managed-tool set (ffmpeg ~163M, etc.) into a fresh empty cache. 3-7 running in
-# parallel saturate bandwidth, so a test can emit no output past the 60s/120s
-# slow-timeout and get killed (exit 124). Serialize them (max-threads = 1) and
-# give a generous terminate-after. `binary()` is exact-match on example binary
-# names; `test(all_platform)` matches the integration tests by name contains.
+# parallel saturate bandwidth, so a test can emit no output past the slow-timeout
+# period and get killed (exit 124). Serialize them (max-threads = 1) and give a
+# generous budget. `binary()` is exact-match on example binary names;
+# `test(all_platform)` matches the integration tests by name contains.
 # Non-network tests in these binaries are fast and just join the group.
-# terminate-after = 600 MUST stay equal to DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS in
-# src/mediapm/examples/mediapm_demo_online.rs (watchdog and runner are synced).
-# That equality binds `default` and `ci`, the profiles the demo is run under
-# locally and in CI. `profile.online` is exempt on purpose: the dispatch job
-# runs the demo as the example binary (`cargo run --example
-# mediapm_demo_online`), so the watched run is the example's own watchdog and
-# not a nextest test paired with the runner's budget. The online budget bounds
-# the two ignored twins, which carry no in-process watchdog and whose work
-# depends on a cold runner's download pace, so it is sized for that work
-# instead of mirroring the demo's constant.
+#
+# The budget is `period x terminate-after` = 60s x 12 = 720s (12 minutes) per
+# test, derived from the demo's own watchdog rather than picked for feel:
+# `DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS` (600s) plus
+# `DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS` (15s) in
+# src/mediapm/examples/mediapm_demo_online.rs is when the demo exits by itself
+# with a diagnosable message, so nextest must terminate strictly later or it
+# replaces that message with its own kill. 615s / 60s = 10.25 periods, so 11
+# periods (660s) clears the deadline by 45s and 12 periods (720s) leaves a whole
+# period of margin for a host where the demo reaches its own deadline slowly.
+# The comparison that holds is therefore a duration against a duration; there is
+# no period count that "equals" the demo's seconds. `default` and `ci` are the
+# profiles the demo runs under locally and in CI, and both override the budget
+# identically. `profile.online` overrides it again for the dispatch job, whose
+# subjects carry no in-process watchdog: that job runs the demo as the example
+# binary (`cargo run --example mediapm_demo_online`), so the watched run is the
+# demo's own watchdog rather than a nextest test.
 [test-groups]
 network = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'binary(mediapm_demo) or binary(mediapm_demo_online) or test(all_platform)'
 test-group = 'network'
-slow-timeout = { period = "60s", terminate-after = 600 }
+slow-timeout = { period = "60s", terminate-after = 12 }
 
 [[profile.ci.overrides]]
 filter = 'binary(mediapm_demo) or binary(mediapm_demo_online) or test(all_platform)'
 test-group = 'network'
-slow-timeout = { period = "60s", terminate-after = 600 }
+slow-timeout = { period = "60s", terminate-after = 12 }
 
 # Every subject of the dispatch job: the demo binaries with their siblings in
 # `default`/`ci`, plus the YouTube twin `test(all_platform)` does not match.
