@@ -116,8 +116,11 @@
 //! # reuses the real user-level tool download cache, persisting tools across runs.
 //! # A missing CLI is built on demand with `$CARGO` from this crate's manifest,
 //! # so no separate `cargo build -p mediapm` is required first; set
-//! # `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI=0` to opt out, and note that CI and
-//! # `cargo test` runs never build it.
+//! # `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI=0` to opt out, and note that a `cargo test`
+//! # run never builds it, nor does a CI run that
+//! # `example_isolation::ci_mode_detected()` recognizes (it reads `CI` and
+//! # `GITHUB_ACTIONS` for the repository's own pipelines, among other provider
+//! # variables), so a CI system setting none of them still builds it.
 //! cargo run -p mediapm --example mediapm_demo_online
 //! ```
 
@@ -3347,7 +3350,10 @@ fn resolve_demo_output_paths(
 /// names a different binary must fail here rather than after the artifact root
 /// is removed and every managed tool has been downloaded. A missing CLI is built
 /// on demand, unless a test harness or a CI run forbids it, and
-/// `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI` opts out of building.
+/// `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI` opts out of building. That build runs inside
+/// this function, under the caller's hard watchdog: `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS`
+/// bounds the whole run, so a cold CLI build spends part of that budget before
+/// the sync starts.
 ///
 /// Shuts the conductor the service owns down before returning:
 /// `Conductor::shutdown` awaits the background pass that would otherwise write

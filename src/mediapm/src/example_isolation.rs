@@ -185,10 +185,12 @@ const CLI_BUILD_STDERR_LINES: usize = 20;
 /// What an example's CLI preflight decided to do.
 ///
 /// A decision, not an action: the caller owns the build's side effects, so every
-/// case is a value a test can assert without spawning anything.
+/// case is a value a test can assert without spawning anything. Crate-private
+/// because [`ensure_example_cli`] is the only public entry point: the plan is
+/// how that function decides, not something a caller acts on.
 #[derive(Debug, PartialEq, Eq)]
 #[must_use]
-pub enum CliPreflightPlan {
+pub(crate) enum CliPreflightPlan {
     /// A usable CLI already resolves; nothing to build.
     Ready(PathBuf),
     /// No CLI resolves; run this command, then resolve again.
@@ -199,16 +201,19 @@ pub enum CliPreflightPlan {
 }
 
 /// The one command an example runs to build the mediapm CLI it needs.
+///
+/// Crate-private with its fields: only [`run_cli_build`] executes it and only
+/// the message helpers quote it, so nothing outside this module builds one.
 #[derive(Debug, PartialEq, Eq)]
-pub struct CliBuildCommand {
+pub(crate) struct CliBuildCommand {
     /// The cargo that launched this process (`CARGO`), never a `PATH` guess.
-    pub cargo: PathBuf,
+    pub(crate) cargo: PathBuf,
     /// The manifest passed as `--manifest-path`, so the build lands in the
     /// target directory the running cargo used.
-    pub manifest: PathBuf,
+    pub(crate) manifest: PathBuf,
     /// The arguments that follow the cargo executable, in order:
     /// `build --package mediapm --manifest-path <manifest>`.
-    pub argv: Vec<String>,
+    pub(crate) argv: Vec<String>,
 }
 
 /// Resolves the mediapm CLI an example needs, building it when none resolves.
@@ -229,6 +234,11 @@ pub struct CliBuildCommand {
 /// Prints one line before the build starts, because a first build of this
 /// workspace can take minutes and there is no timeout to report progress, and one
 /// line with the elapsed whole seconds when it succeeds.
+///
+/// That build is synchronous and untimed, so it spends part of whatever budget
+/// the caller has already armed: the online demo spawns its hard timeout guard
+/// before calling this preflight, so a cold CLI build counts against
+/// `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS`.
 ///
 /// `is_test` is the test-harness guard, and only the caller can state it: pass
 /// `cfg!(test)` from the example's own crate, because a library unit cannot
@@ -406,20 +416,23 @@ fn run_cli_build(command: &CliBuildCommand) -> Result<PathBuf, MediaPmError> {
     Ok(path)
 }
 
-/// What a failed CLI build reports: the command, its status, and cargo's own
-/// last [`CLI_BUILD_STDERR_LINES`] lines.
+/// What a failed CLI build reports: the command, its status, cargo's own last
+/// [`CLI_BUILD_STDERR_LINES`] lines, and the way out for a host that cannot run
+/// the build at all.
 ///
 /// The tail is quoted, not the whole log: a full build log can be thousands of
 /// lines and would bury the status it accompanies. The limit is passed to
 /// [`last_stderr_lines`] from this one constant, so the count the message
-/// promises is the count the reader gets.
+/// promises is the count the reader gets. [`MISSING_MEDIAPM_CLI_MESSAGE`] is
+/// appended inside the first line, ahead of the quoted tail, so a reader on an
+/// offline host is still told where `MEDIAPM_EXECUTABLE` can point instead.
 fn cli_build_failure_message(
     command: &CliBuildCommand,
     status: std::process::ExitStatus,
     stderr: &[u8],
 ) -> String {
     format!(
-        "`{} {}` failed with {}; the mediapm CLI was not built from '{}'. Last {CLI_BUILD_STDERR_LINES} lines of stderr:\n{}",
+        "`{} {}` failed with {}; the mediapm CLI was not built from '{}'; {MISSING_MEDIAPM_CLI_MESSAGE}. Last {CLI_BUILD_STDERR_LINES} lines of stderr:\n{}",
         command.cargo.display(),
         command.argv.join(" "),
         status,
@@ -428,16 +441,61 @@ fn cli_build_failure_message(
     )
 }
 
+/// The profile a bare `cargo build` writes, and so the profile every
+/// [`cli_build_command`] build lands in.
+const DEFAULT_BUILD_PROFILE: &str = "debug";
+
 /// What a successful CLI build reports when no CLI still resolves.
 ///
 /// A successful build that leaves nothing findable beside the running binary is
-/// a target-directory mismatch, not a cargo failure, so the message names the
-/// two variables that decide where the binary landed.
+/// a profile mismatch, not a cargo failure: [`cli_build_command`] passes no
+/// `--profile`, so the build always writes the default `debug` profile, while
+/// resolution probes the profile directory the running binary lives in. Naming
+/// the running profile, when the executable path carries one, is what turns the
+/// message into the command that fixes it.
 fn missing_after_success_message(command: &CliBuildCommand) -> String {
+    missing_after_success_message_for(command, running_profile().as_deref())
+}
+
+/// [`missing_after_success_message`] with the running profile supplied.
+///
+/// Split out so the message a profile-selected run reads is pinned by a test
+/// instead of depending on the profile the test binary itself was built in.
+fn missing_after_success_message_for(
+    command: &CliBuildCommand,
+    running_profile: Option<&str>,
+) -> String {
+    let remedy = match running_profile {
+        Some(profile) if profile == DEFAULT_BUILD_PROFILE => {
+            "this run lives in that same profile, so the build landed in a target directory this binary does not probe".to_string()
+        }
+        Some(profile) => format!(
+            "this run lives in the `{profile}` profile, so a build for this run needs an explicit `cargo build --release -p mediapm`"
+        ),
+        None => "a run from another profile needs an explicit `cargo build --release -p mediapm`".to_string(),
+    };
     format!(
-        "the mediapm CLI build from '{}' succeeded, but no CLI appeared beside the running binary; check CARGO_TARGET_DIR and --target-dir",
+        "the mediapm CLI build from '{}' succeeded, but no CLI appeared beside the running binary; the build writes the default `{DEFAULT_BUILD_PROFILE}` profile, and {remedy}",
         command.manifest.display()
     )
+}
+
+/// The cargo profile directory the running binary lives in, when its path names
+/// one.
+///
+/// A cargo-built binary sits at `<target-dir>[/<triple>]/<profile>/<kind>/<name>`,
+/// with `examples` or `deps` for the two kinds an example runs as, so the profile
+/// is the directory two levels above the executable. The `<kind>` segment is what
+/// makes the guess safe: a binary started under another layout answers `None`
+/// instead of reporting whatever directory happens to enclose it as a profile.
+fn running_profile() -> Option<String> {
+    let current_exe = std::env::current_exe().ok()?;
+    let dir = current_exe.parent()?;
+    if !matches!(dir.file_name().and_then(std::ffi::OsStr::to_str), Some("examples" | "deps")) {
+        return None;
+    }
+    let profile = dir.parent()?.file_name()?;
+    Some(profile.to_string_lossy().into_owned())
 }
 
 /// The last `limit` lines of a build's stderr, as a failure message quotes them.
@@ -638,14 +696,39 @@ mod tests {
         }
     }
 
-    /// Restores `AUTO_BUILD_CLI_ENV` to its prior value; the token test below
-    /// holds [`lock_process_env`] for its whole body.
-    fn restore_auto_build_cli_env(previous: Option<OsString>) {
-        // SAFETY: env mutation is serialized by the process-wide env lock.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var(AUTO_BUILD_CLI_ENV, value),
-                None => std::env::remove_var(AUTO_BUILD_CLI_ENV),
+    /// Sets `AUTO_BUILD_CLI_ENV` and restores it when dropped, so an assertion
+    /// that panics cannot leak the token into the rest of the process.
+    ///
+    /// The caller holds [`lock_process_env`] for the guard's whole lifetime:
+    /// that serializes the mutation against the other env-reading tests, and it
+    /// is why the restore may touch the environment at all.
+    struct AutoBuildCliEnv {
+        previous: Option<OsString>,
+    }
+
+    impl AutoBuildCliEnv {
+        /// Sets the variable to `value`, or removes it for `None`.
+        fn set(value: Option<&str>) -> Self {
+            let previous = std::env::var_os(AUTO_BUILD_CLI_ENV);
+            // SAFETY: the caller holds the process-wide env lock.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(AUTO_BUILD_CLI_ENV, value),
+                    None => std::env::remove_var(AUTO_BUILD_CLI_ENV),
+                }
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for AutoBuildCliEnv {
+        fn drop(&mut self) {
+            // SAFETY: the caller still holds the process-wide env lock.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(AUTO_BUILD_CLI_ENV, value),
+                    None => std::env::remove_var(AUTO_BUILD_CLI_ENV),
+                }
             }
         }
     }
@@ -837,6 +920,9 @@ mod tests {
     /// A failed build's error names the command, its status and cargo's tail —
     /// the last [`CLI_BUILD_STDERR_LINES`] lines only. Quoting `stderr` whole
     /// would bury the status, and quoting it raw would print a build log inline.
+    /// The missing-CLI remedy rides in the first line, ahead of the tail, so a
+    /// host that cannot build at all still learns where `MEDIAPM_EXECUTABLE` can
+    /// point.
     #[test]
     fn cli_build_failure_message_quotes_the_last_stderr_lines() {
         let command = cli_build_command(
@@ -855,8 +941,8 @@ mod tests {
             "names the command that failed: {message}"
         );
         assert!(
-            message.contains(&format!("{status}; the mediapm CLI was not built from '/work/src/mediapm/Cargo.toml'. Last 20 lines of stderr:\n")),
-            "quotes cargo's status and the manifest, and promises 20 lines: {message}"
+            message.contains(&format!("{status}; the mediapm CLI was not built from '/work/src/mediapm/Cargo.toml'; {MISSING_MEDIAPM_CLI_MESSAGE}. Last 20 lines of stderr:\n")),
+            "quotes cargo's status and the manifest, offers the escape hatch, and promises 20 lines: {message}"
         );
         assert_eq!(
             message.lines().skip(1).collect::<Vec<_>>(),
@@ -866,18 +952,59 @@ mod tests {
     }
 
     /// A build that succeeds without producing a findable CLI is reported as a
-    /// target-directory mismatch, naming the variables that decide where the
-    /// binary landed. Its own message, not the failed-build one.
+    /// profile mismatch, not a cargo failure: the build always writes the default
+    /// `debug` profile, so a run built for another profile has to name its own
+    /// build, and a run whose profile cannot be read is told the same without a
+    /// profile name. Its own message, not the failed-build one.
     #[test]
-    fn missing_after_success_message_names_the_target_directory_variables() {
+    fn missing_after_success_message_names_the_debug_profile_and_the_running_one() {
+        let command = cli_build_command(
+            PathBuf::from("/opt/rust/bin/cargo"),
+            PathBuf::from("/work/src/mediapm/Cargo.toml"),
+        );
+        let built = "the mediapm CLI build from '/work/src/mediapm/Cargo.toml' succeeded, but no CLI appeared beside the running binary; the build writes the default `debug` profile, and ";
+
+        assert_eq!(
+            missing_after_success_message_for(&command, Some("release")),
+            format!(
+                "{built}this run lives in the `release` profile, so a build for this run needs an explicit `cargo build --release -p mediapm`"
+            )
+        );
+        assert_eq!(
+            missing_after_success_message_for(&command, Some("debug")),
+            format!(
+                "{built}this run lives in that same profile, so the build landed in a target directory this binary does not probe"
+            )
+        );
+        assert_eq!(
+            missing_after_success_message_for(&command, None),
+            format!(
+                "{built}a run from another profile needs an explicit `cargo build --release -p mediapm`"
+            )
+        );
+    }
+
+    /// The running profile is read from the executable's own layout, so the
+    /// message can name the profile a `--release` run lives in. This asserts the
+    /// wiring through [`running_profile`], which no literals can pin because it
+    /// reads this process's own path.
+    #[test]
+    fn missing_after_success_message_reads_the_running_profile() {
         let command = cli_build_command(
             PathBuf::from("/opt/rust/bin/cargo"),
             PathBuf::from("/work/src/mediapm/Cargo.toml"),
         );
 
-        assert_eq!(
-            missing_after_success_message(&command),
-            "the mediapm CLI build from '/work/src/mediapm/Cargo.toml' succeeded, but no CLI appeared beside the running binary; check CARGO_TARGET_DIR and --target-dir"
+        let message = missing_after_success_message(&command);
+
+        assert!(
+            message.contains("the build writes the default `debug` profile, and "),
+            "keeps the profile explanation: {message}"
+        );
+        assert!(
+            message.contains("`cargo build --release -p mediapm`")
+                || message.contains("a target directory this binary does not probe"),
+            "names the release build or the target-directory cause: {message}"
         );
     }
 
@@ -905,30 +1032,18 @@ mod tests {
     #[test]
     fn auto_build_cli_parses_disable_tokens() {
         let _lock = lock_process_env();
-        let previous = std::env::var_os(AUTO_BUILD_CLI_ENV);
 
         for token in ["0", "false", "no", "off", "FALSE", " Off ", "NO"] {
-            // SAFETY: env mutation is serialized by the process-wide env lock.
-            unsafe {
-                std::env::set_var(AUTO_BUILD_CLI_ENV, token);
-            }
+            let _env = AutoBuildCliEnv::set(Some(token));
             assert!(!auto_build_cli_enabled(), "'{token}' disables the build");
         }
 
         for token in ["", "1", "true", "yes", "on", "maybe"] {
-            // SAFETY: env mutation is serialized by the process-wide env lock.
-            unsafe {
-                std::env::set_var(AUTO_BUILD_CLI_ENV, token);
-            }
+            let _env = AutoBuildCliEnv::set(Some(token));
             assert!(auto_build_cli_enabled(), "'{token}' leaves the build enabled");
         }
 
-        // SAFETY: env mutation is serialized by the process-wide env lock.
-        unsafe {
-            std::env::remove_var(AUTO_BUILD_CLI_ENV);
-        }
+        let _env = AutoBuildCliEnv::set(None);
         assert!(auto_build_cli_enabled(), "an unset variable leaves the build enabled");
-
-        restore_auto_build_cli_env(previous);
     }
 }

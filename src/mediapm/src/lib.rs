@@ -905,6 +905,27 @@ mod tests {
         assert_eq!(resolved, MediaPmCliResolution::Found(cli));
     }
 
+    /// An override that is not the CLI beats a CLI of this workspace sitting
+    /// beside the running binary: the variable is the user's statement of where
+    /// the CLI is, so resolution reports the rejected value instead of quietly
+    /// using a neighbour the user did not name. Only the names matter here — a
+    /// fake executable is an empty file — so the test builds a target directory
+    /// in a temp root and never spawns anything.
+    #[test]
+    fn resolve_prefers_an_invalid_override_over_a_neighbour_cli() {
+        let root = artifact_root();
+        let target_dir = root.path().join("debug");
+        let examples_dir = target_dir.join("examples");
+        std::fs::create_dir_all(&examples_dir).expect("create examples dir");
+        std::fs::write(target_dir.join("mediapm"), b"").expect("write target dir cli stub");
+        let current = examples_dir.join("mediapm_demo_online");
+        std::fs::write(&current, b"").expect("write example stub");
+
+        let resolved = resolve_mediapm_executable_path_in(Some(override_arg(&current)), &current);
+
+        assert_eq!(resolved, MediaPmCliResolution::InvalidOverride(current));
+    }
+
     /// A process that already is the CLI resolves to itself, which is how a
     /// `mediapm` invocation hands its own path to the children it spawns.
     #[test]
