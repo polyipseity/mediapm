@@ -484,7 +484,9 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use crate::media_fixture::{MEDIA_FIXTURE_HEIGHT, MEDIA_FIXTURE_WIDTH};
+    use crate::media_fixture::{
+        MEDIA_FIXTURE_HEIGHT, MEDIA_FIXTURE_PROBE_DURATION, MEDIA_FIXTURE_WIDTH,
+    };
 
     /// Runs the stub with `args` and returns its exit code, stdout and stderr.
     fn run_stub(args: &[&str]) -> (i32, String, String) {
@@ -932,7 +934,10 @@ mod tests {
         assert_eq!(code, 2, "an unknown mode is a usage failure: {stderr}");
         assert!(stderr.contains("unknown mode 'transcode'"), "the failure must name it: {stderr}");
         assert!(
-            stderr.contains("copy") && stderr.contains("emit") && stderr.contains("probe"),
+            stderr.contains("copy")
+                && stderr.contains("emit")
+                && stderr.contains("probe")
+                && stderr.contains("sleep"),
             "the usage line must name every mode a caller can ask for: {stderr}",
         );
     }
@@ -1083,6 +1088,57 @@ mod tests {
         assert!(!missing_output.exists(), "a failed emit must write no destination");
     }
 
+    /// A destination that cannot be written rolls back the entries already written.
+    ///
+    /// Reading every source up front covers the source half of the mode's no-partial-set
+    /// contract; the write half is this: a write that fails halfway leaves the entries
+    /// before it on disk. The caller's hierarchy consumes the whole set, so those entries
+    /// would let a step look complete while the set it was promised is not. The second
+    /// destination's parent is an existing file, which is the shape no write can pass.
+    #[test]
+    fn emit_mode_rolls_back_the_destinations_it_wrote_when_a_later_entry_fails() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let first_source = dir.path().join("first.bin");
+        let second_source = dir.path().join("second.bin");
+        std::fs::write(&first_source, b"first-bytes").expect("write the first source");
+        std::fs::write(&second_source, b"second-bytes").expect("write the second source");
+        let first_output = dir.path().join("first.info.json");
+        let blocked_parent = dir.path().join("blocked");
+        std::fs::write(&blocked_parent, b"a file, not a directory")
+            .expect("write the blocked parent");
+        let second_output = blocked_parent.join("second.info.json");
+        let manifest = dir.path().join("rollback.manifest");
+        std::fs::write(
+            &manifest,
+            format!(
+                "{}\t{}\n{}\t{}\n",
+                first_output.display(),
+                first_source.display(),
+                second_output.display(),
+                second_source.display(),
+            ),
+        )
+        .expect("write the manifest");
+
+        let (code, _, stderr) = run_stub(&[
+            "--mode",
+            "emit",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+        ]);
+
+        assert_eq!(code, 3, "an unwritable destination is an I/O failure: {stderr}");
+        assert!(
+            stderr.contains("cannot create the directory"),
+            "the failure must name the cause: {stderr}",
+        );
+        assert!(
+            !first_output.exists(),
+            "a failed emit must roll back the destination it already wrote",
+        );
+        assert!(!second_output.exists(), "a failed emit must write no destination");
+    }
+
     /// A manifest line that names no destination and source pair is a usage failure.
     ///
     /// A stub that skipped a line it could not read would emit a set that is
@@ -1166,6 +1222,19 @@ mod tests {
         assert!(
             format_name.contains("matroska"),
             "the document must name the fixture's container, got '{format_name}': {stdout}",
+        );
+        // The probed duration is asserted against the fixture's pinned const
+        // rather than against a literal, so a fixture regenerated to another
+        // duration fails here instead of leaving the stub answering with a value
+        // the committed file no longer reports.
+        let duration = payload
+            .get("format")
+            .and_then(|format| format.get("duration"))
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            duration,
+            Some(MEDIA_FIXTURE_PROBE_DURATION),
+            "the document must state the committed fixture's probed duration: {stdout}",
         );
         let streams = payload
             .get("streams")

@@ -22,11 +22,13 @@
 //! line of the manifest is a destination and a source separated by a tab, and
 //! every source is read before the first destination is written, so a source
 //! that is missing fails the step without leaving a partial set behind. A
-//! destination's missing parent directories are created. Paths are used as
-//! given, so the caller decides whether they are absolute or relative to the
-//! stub's working directory. The manifest is the mode's whole input — it names
-//! the files and where they go — so the stub needs no knowledge of which tool
-//! asked for them.
+//! destination's missing parent directories are created. A destination that
+//! cannot be written removes the destinations this invocation already wrote
+//! before it reports the failure, so an emit that stops halfway leaves no
+//! partial set behind either. Paths are used as given, so the caller decides
+//! whether they are absolute or relative to the stub's working directory. The
+//! manifest is the mode's whole input — it names the files and where they go —
+//! so the stub needs no knowledge of which tool asked for them.
 //!
 //! `--mode probe` writes a fixed `ffprobe`-shaped JSON document to stdout. The
 //! document states the committed media fixture's facts, because that is the
@@ -59,9 +61,12 @@ const IO_EXIT: i32 = 3;
 /// at 320x180, and a mono 44.1 kHz AAC audio track, running 10.007 s. The stub is
 /// handed a mode rather than a path, so it cannot read the file it describes; the
 /// document is a constant, and keeping it to the fixture's own facts is what
-/// makes the answer it gives a caller true. A real `ffprobe` prints nothing for a
-/// field it does not know, so the fields the fixture does not carry are absent
-/// rather than empty.
+/// makes the answer it gives a caller true. The probe test asserts the facts
+/// `src/mediapm-test-support/src/media_fixture.rs` pins against this document, so
+/// a fixture regenerated at other dimensions or another probed duration fails the
+/// test rather than leaving the stub answering with what the file no longer says.
+/// A real `ffprobe` prints nothing for a field it does not know, so the fields the
+/// fixture does not carry are absent rather than empty.
 const PROBE_DOCUMENT: &str = r#"{
   "streams": [
     {
@@ -179,6 +184,13 @@ struct EmitEntry {
 
 /// Writes the file set the manifest `--manifest` names.
 ///
+/// Every source is read before the first destination is written, and a
+/// destination that cannot be written rolls back the destinations this
+/// invocation already wrote, so a failure at any point leaves no partial set
+/// behind: the caller's hierarchy consumes the whole set, and a set that is
+/// silently smaller than the one the manifest named is exactly what this mode
+/// exists to make loud.
+///
 /// # Errors
 ///
 /// Returns a usage failure when `--manifest` is absent, when the manifest names
@@ -201,23 +213,43 @@ fn emit(args: &[String]) -> Result<(), StubError> {
         })?;
         contents.push(bytes);
     }
+    // A destination written before a later entry fails is removed again, so the
+    // entries that succeeded do not outlive the entry that did not: the mode's
+    // contract is that a failed invocation leaves no partial set behind.
+    let mut written: Vec<&str> = Vec::with_capacity(entries.len());
     for (entry, bytes) in entries.iter().zip(&contents) {
-        if let Some(parent) = std::path::Path::new(&entry.destination)
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                StubError::io(format!(
-                    "cannot create the directory for '{}': {error}",
-                    entry.destination
-                ))
-            })?;
+        if let Err(error) = write_destination(entry, bytes) {
+            for &destination in &written {
+                let _ = std::fs::remove_file(destination);
+            }
+            return Err(error);
         }
-        std::fs::write(&entry.destination, bytes).map_err(|error| {
-            StubError::io(format!("cannot write output '{}': {error}", entry.destination))
-        })?;
+        written.push(entry.destination.as_str());
     }
     Ok(())
+}
+
+/// Writes one manifest entry's bytes to its destination, creating its parents.
+///
+/// # Errors
+///
+/// Returns an I/O failure when the destination's parent directories cannot be
+/// created or the destination cannot be written.
+fn write_destination(entry: &EmitEntry, bytes: &[u8]) -> Result<(), StubError> {
+    if let Some(parent) = std::path::Path::new(&entry.destination)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            StubError::io(format!(
+                "cannot create the directory for '{}': {error}",
+                entry.destination
+            ))
+        })?;
+    }
+    std::fs::write(&entry.destination, bytes).map_err(|error| {
+        StubError::io(format!("cannot write output '{}': {error}", entry.destination))
+    })
 }
 
 /// Parses an `emit` manifest into its entries.

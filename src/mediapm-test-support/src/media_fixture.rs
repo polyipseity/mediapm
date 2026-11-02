@@ -33,6 +33,19 @@ pub const MEDIA_FIXTURE_FILE_NAME: &str = "demo.mkv";
 /// bounds the measured duration instead of pinning the millisecond.
 pub const MEDIA_FIXTURE_DURATION_SECONDS: f64 = 10.0;
 
+/// Duration the committed fixture's container reports to `ffprobe`, as the
+/// `format.duration` string `ffprobe` prints for it.
+///
+/// The generation command requests [`MEDIA_FIXTURE_DURATION_SECONDS`] whole
+/// seconds and the muxer writes the container's own duration a few milliseconds
+/// past that, so the probed value is longer than the requested one and is pinned
+/// here rather than derived from it. `ffprobe -v error -print_format json
+/// -show_format` reported this for the committed `demo.mkv`, the value the
+/// fixture README's regeneration command produces, and the stub's `--mode probe`
+/// document repeats it so a caller reading the container's duration offline gets
+/// the committed file's answer.
+pub const MEDIA_FIXTURE_PROBE_DURATION: &str = "10.007000";
+
 /// Encoded video width in pixels.
 pub const MEDIA_FIXTURE_WIDTH: u64 = 320;
 
