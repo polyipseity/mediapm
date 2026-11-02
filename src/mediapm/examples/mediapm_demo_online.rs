@@ -9,11 +9,10 @@
 //! conductor's GC reclaims it once the step's instance is superseded.
 //! The embedded test exercises `main()` in reduced (config-only) mode; the
 //! full-sync path (network + external tools) runs only on an explicit
-//! `cargo build -p mediapm` followed by `cargo run -p mediapm --example
-//! mediapm_demo_online`, which reuses the real user-level tool download cache
-//! (`<os-cache-dir>/mediapm/cache`) and persists downloaded tools across runs.
-//! The build step is required because the demo preflights the `mediapm` CLI,
-//! and `cargo run --example` builds only the example.
+//! `cargo run -p mediapm --example mediapm_demo_online`, which reuses the real
+//! user-level tool download cache (`<os-cache-dir>/mediapm/cache`) and persists
+//! downloaded tools across runs. Every tool the workflow runs is either managed
+//! (fetched) or a host builtin (in-process), so no `mediapm` CLI is needed.
 //!
 //! # Expected post-sync hierarchy
 //!
@@ -114,13 +113,6 @@
 //! cargo test -p mediapm --example mediapm_demo_online main_is_exercised
 //! # Full-sync online path (network + external tools) — explicit run only;
 //! # reuses the real user-level tool download cache, persisting tools across runs.
-//! # A missing CLI is built on demand with `$CARGO` from this crate's manifest,
-//! # so no separate `cargo build -p mediapm` is required first; set
-//! # `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI=0` to opt out, and note that a `cargo test`
-//! # run never builds it, nor does a CI run that
-//! # `example_isolation::ci_mode_detected()` recognizes (it reads `CI` and
-//! # `GITHUB_ACTIONS` for the repository's own pipelines, among other provider
-//! # variables), so a CI system setting none of them still builds it.
 //! cargo run -p mediapm --example mediapm_demo_online
 //! ```
 
@@ -3345,16 +3337,6 @@ fn resolve_demo_output_paths(
 
 /// Runs the online demo end to end and returns the paths it wrote.
 ///
-/// Resolves the mediapm CLI before touching the filesystem: managed-tool
-/// launchers dispatch through `MEDIAPM_EXECUTABLE`, so a host whose override
-/// names a different binary must fail here rather than after the artifact root
-/// is removed and every managed tool has been downloaded. A missing CLI is built
-/// on demand, unless a test harness or a CI run forbids it, and
-/// `MEDIAPM_EXAMPLE_AUTO_BUILD_CLI` opts out of building. That build runs inside
-/// this function, under the caller's hard watchdog: `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS`
-/// bounds the whole run, so a cold CLI build spends part of that budget before
-/// the sync starts.
-///
 /// Shuts the conductor the service owns down before returning:
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
 /// into the caller's removed directory.
@@ -3367,12 +3349,6 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .try_init();
-
-    // Preflight before the wipe: a target directory with no mediapm CLI builds
-    // one here instead of failing after the artifact root is removed and the
-    // managed tools are downloaded.
-    let cli = mediapm::example_isolation::ensure_example_cli(cfg!(test))
-        .map_err(|error| format!("online demo preflight failed: {error}"))?;
 
     let (root, _fallback_artifact) = reset_artifact_root()?;
     let workspace_root = root.clone();
@@ -3390,9 +3366,8 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             .map_err(|error| format!("opening filesystem sync service: {error}"))?;
 
     eprintln!(
-        "[demo_online] starting sync (timeout={}s, cli='{}') in '{}'",
+        "[demo_online] starting sync (timeout={}s) in '{}'",
         sync_timeout.as_secs(),
-        cli.display(),
         workspace_root.display()
     );
 

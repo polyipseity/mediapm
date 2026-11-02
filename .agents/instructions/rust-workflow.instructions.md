@@ -21,7 +21,7 @@ When editing Rust source, validate with selective checks first:
 - libtest args (e.g. `--test-threads=8`) go AFTER `--`: `cargo test -p mediapm-utils --features progress -- --test-threads=8`.
 - Stale-artifact gotcha: `passthrough_conductor_tool_run_help_is_routable` in `src/mediapm/src/main.rs` can fail spuriously from stale incremental artifacts affecting clap's `try_parse_from`; clean and rebuild with `cargo clean -p mediapm -p mediapm-conductor`.
 - `prek.toml` runs full workspace validation on `git push`; manual `cargo fmt-check`/`clippy-all`/`test-all` are not required for normal submission.
-- Required manual runtime verification before completion: `cargo run --package mediapm --example mediapm_demo` and `mediapm_demo_online`; the online demo builds a missing mediapm CLI itself, so a `cargo build -p mediapm` first is optional and stays the way to watch that build run.
+- Required manual runtime verification before completion: `cargo run --package mediapm --example mediapm_demo` and `mediapm_demo_online`; neither demo needs a `mediapm` CLI build, because every tool their workflows run is either a fetched payload or a host builtin that runs in-process.
 - For `src/mediapm/**` edits, avoid full online demo runs during normal development; reserve them for push/pre-push unless a reviewer asks for local runtime verification.
 - If source or configs are incomplete, report gaps explicitly instead of inventing commands.
 

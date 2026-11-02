@@ -35,25 +35,11 @@ managed tool content root for rsgain
       hash = "blake3:2f35eeb65805dea80913c417868d9cc021fcf917ee89778a733f5efc249fb477",
       save = true,
     },
-    "blake3:40614d0abc8511b0367ab05810e8d7c71daa8caef55183b5637aef891e383b6f" = {
-      description = m%%"
-managed tool content root for media-tagger; managed tool content root for media-tagger
-"%%,
-      hash = "blake3:40614d0abc8511b0367ab05810e8d7c71daa8caef55183b5637aef891e383b6f",
-      save = true,
-    },
     "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b" = {
       description = m%%"
 managed tool content root for ffmpeg
 "%%,
       hash = "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
-      save = true,
-    },
-    "blake3:6ebab6d643f2e621f7d49757b54f41574d3091317d94a4e2b2cb569bb6d9f066" = {
-      description = m%%"
-managed tool content root for media-tagger
-"%%,
-      hash = "blake3:6ebab6d643f2e621f7d49757b54f41574d3091317d94a4e2b2cb569bb6d9f066",
       save = true,
     },
     "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06" = {
@@ -1132,200 +1118,9 @@ managed tool content root for sd
         max_retries = 0,
       },
     },
-    "media-tagger@blake3:037c7d0be4f09a88be319a915136dd226dd4043659d4c0e978825714e8d86fde" = {
-      command = [
-        "./legacy/media-tagger/tool.bin",
-      ],
-      kind = "executable",
-      name = "media-tagger",
-      runtime = {
-        impure = false,
-        max_concurrent_calls = 0,
-        max_retries = 0,
-      },
-      success_codes = [
-        0,
-      ],
-    },
-    "media-tagger@blake3:7d51827f1043df72adea899d45dbcca6cb1ef16eb1bfd0021662e80715e53b90" = {
-      command = [
-        "${context.os == \"linux\" ? linux/media-tagger : ${context.os == \"macos\" ? macos/media-tagger : windows/media-tagger}}",
-        "${*inputs.leading_args}",
-        "${*inputs.input_content ? --input | ''}",
-        "${*inputs.input_content ? inputs.input_content:file(inputs/input.media) | ''}",
-        "--output",
-        "metadata/output.ffmeta",
-        "${*inputs.option_args}",
-        "${*inputs.acoustid_endpoint ? --acoustid-endpoint | ''}",
-        "${*inputs.acoustid_endpoint}",
-        "${*inputs.musicbrainz_endpoint ? --musicbrainz-endpoint | ''}",
-        "${*inputs.musicbrainz_endpoint}",
-        "${*inputs.cache_dir ? --cache-dir | ''}",
-        "${*inputs.cache_dir}",
-        "${*inputs.cache_expiry_seconds ? --cache-expiry-seconds | ''}",
-        "${*inputs.cache_expiry_seconds}",
-        "${*inputs.strict_identification == \"true\" ? --strict-identification | ''}",
-        "${*inputs.write_all_tags == \"true\" ? --write-all-tags | ''}",
-        "${*inputs.write_all_images == \"true\" ? --write-all-images | ''}",
-        "${*inputs.save_images_to_tags == \"true\" ? --save-images-to-tags | ''}",
-        "${*inputs.embed_only_one_front_image == \"true\" ? --embed-only-one-front-image | ''}",
-        "${*inputs.ca_providers ? --ca-providers | ''}",
-        "${*inputs.ca_providers}",
-        "${*inputs.caa_image_types ? --caa-image-types | ''}",
-        "${*inputs.caa_image_types}",
-        "${*inputs.caa_image_size ? --caa-image-size | ''}",
-        "${*inputs.caa_image_size}",
-        "${*inputs.caa_approved_only == \"true\" ? --caa-approved-only | ''}",
-        "${*inputs.preserve_images == \"true\" ? --preserve-images | ''}",
-        "${*inputs.clear_existing_tags == \"true\" ? --clear-existing-tags | ''}",
-        "${*inputs.enable_tag_saving == \"true\" ? --enable-tag-saving | ''}",
-        "${*inputs.release_ars == \"true\" ? --release-ars | ''}",
-        "${*inputs.cover_art_slot_count ? --cover-art-slot-count | ''}",
-        "${*inputs.cover_art_slot_count}",
-        "${*inputs.recording_mbid ? --recording-mbid | ''}",
-        "${*inputs.recording_mbid}",
-        "${*inputs.release_mbid ? --release-mbid | ''}",
-        "${*inputs.release_mbid}",
-        "${*inputs.acoustid_api_key ? --acoustid-api-key | ''}",
-        "${*inputs.acoustid_api_key}",
-        "${*inputs.enable_acoustid ? --enable-acoustid | ''}",
-        "${*inputs.enable_acoustid}",
-        "${*inputs.trailing_args}",
-      ],
-      default_inputs = {
-        acoustid_api_key = "",
-        acoustid_endpoint = "https://api.acoustid.org/v2/lookup",
-        ca_providers = "caa_release,url_relationships,caa_release_group",
-        caa_approved_only = "false",
-        caa_image_size = "full",
-        caa_image_types = "all,-matrix/runout,-raw/unedited,-watermark",
-        cache_dir = "",
-        cache_expiry_seconds = "86400",
-        clear_existing_tags = "false",
-        cover_art_slot_count = "16",
-        embed_only_one_front_image = "false",
-        enable_acoustid = "",
-        enable_tag_saving = "true",
-        leading_args = [],
-        musicbrainz_endpoint = "https://musicbrainz.org/ws/2",
-        option_args = "",
-        preserve_images = "false",
-        recording_mbid = "",
-        release_ars = "true",
-        release_mbid = "",
-        save_images_to_tags = "true",
-        strict_identification = "true",
-        trailing_args = [],
-        write_all_images = "true",
-        write_all_tags = "true",
-      },
-      inputs = {
-        acoustid_api_key = {
-          kind = "string",
-          required = false,
-        },
-        acoustid_endpoint = {
-          kind = "string",
-          required = false,
-        },
-        ca_providers = {
-          kind = "string",
-          required = false,
-        },
-        caa_approved_only = {
-          kind = "string",
-          required = false,
-        },
-        caa_image_size = {
-          kind = "string",
-          required = false,
-        },
-        caa_image_types = {
-          kind = "string",
-          required = false,
-        },
-        cache_dir = {
-          kind = "string",
-          required = false,
-        },
-        cache_expiry_seconds = {
-          kind = "string",
-          required = false,
-        },
-        clear_existing_tags = {
-          kind = "string",
-          required = false,
-        },
-        cover_art_slot_count = {
-          kind = "string",
-          required = false,
-        },
-        embed_only_one_front_image = {
-          kind = "string",
-          required = false,
-        },
-        enable_acoustid = {
-          kind = "string",
-          required = false,
-        },
-        enable_tag_saving = {
-          kind = "string",
-          required = false,
-        },
-        input_content = {
-          kind = "string",
-          required = false,
-        },
-        leading_args = {
-          kind = "string",
-          required = false,
-        },
-        musicbrainz_endpoint = {
-          kind = "string",
-          required = false,
-        },
-        option_args = {
-          kind = "string",
-          required = false,
-        },
-        preserve_images = {
-          kind = "string",
-          required = false,
-        },
-        recording_mbid = {
-          kind = "string",
-          required = false,
-        },
-        release_ars = {
-          kind = "string",
-          required = false,
-        },
-        release_mbid = {
-          kind = "string",
-          required = false,
-        },
-        save_images_to_tags = {
-          kind = "string",
-          required = false,
-        },
-        strict_identification = {
-          kind = "string",
-          required = false,
-        },
-        trailing_args = {
-          kind = "string",
-          required = false,
-        },
-        write_all_images = {
-          kind = "string",
-          required = false,
-        },
-        write_all_tags = {
-          kind = "string",
-          required = false,
-        },
-      },
-      kind = "executable",
+    "media-tagger" = {
+      builtin_id = "media-tagger",
+      kind = "builtin",
       name = "media-tagger",
       outputs = {
         content = {
@@ -1337,6 +1132,7 @@ managed tool content root for sd
           name = "process_code",
         },
         sandbox_artifacts = {
+          allow_empty = true,
           capture = "folder:coverart",
           name = "sandbox_artifacts",
         },
@@ -1350,18 +1146,10 @@ managed tool content root for sd
         },
       },
       runtime = {
-        content_map = {
-          "linux/media-tagger" = "40614d0abc8511b0367ab05810e8d7c71daa8caef55183b5637aef891e383b6f",
-          "macos/media-tagger" = "40614d0abc8511b0367ab05810e8d7c71daa8caef55183b5637aef891e383b6f",
-          "windows/media-tagger" = "6ebab6d643f2e621f7d49757b54f41574d3091317d94a4e2b2cb569bb6d9f066",
-        },
         impure = true,
         max_concurrent_calls = 0,
         max_retries = 0,
       },
-      success_codes = [
-        0,
-      ],
     },
     "rsgain@blake3:2bb0cb8b71b630a93786770f6e657d73d86f54faf4d4d32c6de59809b2766a3f" = {
       command = [
@@ -1893,10 +1681,8 @@ Local demo pipeline exercising import, ffmpeg, rsgain, and media-tagger
           inputs = {
             ffmpeg_bin = "ffmpeg",
             input_content = "${step_output.step-2-0-rsgain-audio-to-audio.output_content}",
-            leading_args = "[]",
             recording_mbid = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
             release_mbid = "",
-            trailing_args = "[]",
             write_all_images = "false",
           },
           max_retries = 0,

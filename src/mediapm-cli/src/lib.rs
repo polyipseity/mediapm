@@ -395,9 +395,16 @@ pub enum GlobalToolCacheCommand {
 }
 
 /// Builtin command implementations exposed by the `mediapm` executable.
+///
+/// A manual entry point only: a workflow step that names one of these builtins
+/// is dispatched to the runner `mediapm` registers on every run, in-process, and
+/// never spawns `mediapm builtin …`.
 #[derive(Debug, Subcommand)]
 pub enum BuiltinCommand {
-    /// Run internal media-tagger (Picard-based tagging pipeline).
+    /// Run internal media-tagger (Picard-based tagging pipeline) by hand.
+    ///
+    /// A workflow's tagging step runs the same pipeline as a host builtin; this
+    /// subcommand is not the path that reaches it.
     #[cfg(feature = "media-tagger")]
     MediaTagger(InternalMediaTaggerArgs),
 }

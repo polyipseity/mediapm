@@ -258,15 +258,6 @@ impl SourceProducer {
     pub fn launcher(builtin_id: impl Into<String>) -> Self {
         Self::GenerateLauncher { builtin_id: builtin_id.into(), argv_prefix: Vec::new() }
     }
-
-    /// Builds one launcher producer for mediapm `builtin <subcommand>` dispatch.
-    #[must_use]
-    pub fn mediapm_builtin(subcommand: impl Into<String>) -> Self {
-        Self::GenerateLauncher {
-            builtin_id: subcommand.into(),
-            argv_prefix: vec!["builtin".to_string()],
-        }
-    }
 }
 
 /// One resolved source after phase 1.
@@ -3366,11 +3357,14 @@ mod tests {
         assert!(text.contains("$@"));
     }
 
+    /// A producer that declares argv tokens gets them ahead of the builtin id,
+    /// so the launcher dispatches one command line on both OS shapes.
     #[test]
-    fn generate_unix_launcher_with_mediapm_builtin_prefix() {
-        let script = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+    fn generate_unix_launcher_places_an_argv_prefix_before_the_builtin_id() {
+        let prefix = ["dispatch".to_string()];
+        let script = generate_launcher_script("linux", "echo@v1", &prefix);
         let text = String::from_utf8_lossy(&script);
-        assert!(text.contains("builtin media-tagger"));
+        assert!(text.contains("exec \"${MEDIAPM_EXECUTABLE}\" dispatch echo@v1"), "got: {text}");
     }
 
     #[test]
@@ -3388,7 +3382,7 @@ mod tests {
     /// an empty command or an unrelated program.
     #[test]
     fn launcher_script_requires_the_executable_variable() {
-        let unix = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        let unix = generate_launcher_script("linux", "echo@v1", &[]);
         let unix_text = String::from_utf8_lossy(&unix);
         let guard_line = unix_text.lines().nth(1).expect("launcher script has a second line");
         assert!(
@@ -3400,7 +3394,7 @@ mod tests {
             "guard message must name the build remedy, got: {guard_line}"
         );
 
-        let windows = generate_launcher_script("windows", "media-tagger", &["builtin".to_string()]);
+        let windows = generate_launcher_script("windows", "echo@v1", &[]);
         let windows_text = String::from_utf8_lossy(&windows);
         assert!(
             windows_text.contains("if not defined MEDIAPM_EXECUTABLE"),
@@ -3421,7 +3415,7 @@ mod tests {
     /// receives them.
     #[test]
     fn launcher_script_keeps_the_dispatch_behind_the_guard() {
-        let script = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        let script = generate_launcher_script("linux", "echo@v1", &[]);
         let text = String::from_utf8_lossy(&script);
         let guard_index = text
             .lines()
@@ -3437,7 +3431,7 @@ mod tests {
         );
         let exec_line = text.lines().nth(exec_index).expect("exec line is indexed");
         assert!(
-            exec_line.contains("builtin media-tagger"),
+            exec_line.contains("echo@v1"),
             "dispatch must stay on the exec line, got: {exec_line}"
         );
     }
@@ -3451,8 +3445,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let path = dir.path().join("media-tagger-launcher");
-        let script = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        let path = dir.path().join("echo-launcher");
+        let script = generate_launcher_script("linux", "echo@v1", &[]);
         std::fs::write(&path, script).expect("write launcher script");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("mark launcher script executable");
@@ -3483,8 +3477,8 @@ mod tests {
     #[test]
     fn launcher_script_exits_without_the_variable_windows() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let path = dir.path().join("media-tagger-launcher.cmd");
-        let script = generate_launcher_script("windows", "media-tagger", &["builtin".to_string()]);
+        let path = dir.path().join("echo-launcher.cmd");
+        let script = generate_launcher_script("windows", "echo@v1", &[]);
         let text = String::from_utf8_lossy(&script).into_owned();
 
         assert!(
@@ -3496,7 +3490,7 @@ mod tests {
             "batch guard must leave a non-zero exit status, got: {text}"
         );
         assert!(
-            text.contains("\"%MEDIAPM_EXECUTABLE%\" builtin media-tagger %*"),
+            text.contains("\"%MEDIAPM_EXECUTABLE%\" echo@v1 %*"),
             "dispatch must stay on the batch dispatch line with the passthrough, got: {text}"
         );
 
@@ -3534,7 +3528,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-        let launcher = dir.path().join("media-tagger-launcher");
+        let launcher = dir.path().join("echo-launcher");
         let stub = dir.path().join("mediapm-stub");
         let record = dir.path().join("recorded-args.txt");
 
@@ -3543,7 +3537,7 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
             .expect("mark stub executable");
 
-        let script = generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]);
+        let script = generate_launcher_script("linux", "echo@v1", &[]);
         std::fs::write(&launcher, script).expect("write launcher script");
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
             .expect("mark launcher script executable");
@@ -3562,7 +3556,7 @@ mod tests {
         );
         let recorded = std::fs::read_to_string(&record).expect("read the recorded arguments");
         let arguments: Vec<&str> = recorded.lines().collect();
-        assert_eq!(arguments, ["builtin", "media-tagger", "--input"]);
+        assert_eq!(arguments, ["echo@v1", "--input"]);
     }
 
     // ── extract helpers ───────────────────────────────────────────────
@@ -4042,12 +4036,12 @@ mod tests {
         let user_cache = UserLevelCache::from_cache(cache);
 
         let fetch = ResolvedToolFetch {
-            tool_id: "media-tagger".to_string(),
+            tool_id: "echo@v1".to_string(),
             sources: vec![
                 ResolvedSource {
                     os: "linux".to_string(),
                     arch: host_arch_label(),
-                    producer: SourceProducer::mediapm_builtin("media-tagger"),
+                    producer: SourceProducer::launcher("echo@v1"),
                     expected_size: None,
                     size_hint_bytes: None,
                     identity: None,
@@ -4055,7 +4049,7 @@ mod tests {
                 ResolvedSource {
                     os: "macos".to_string(),
                     arch: host_arch_label(),
-                    producer: SourceProducer::mediapm_builtin("media-tagger"),
+                    producer: SourceProducer::launcher("echo@v1"),
                     expected_size: None,
                     size_hint_bytes: None,
                     identity: None,
@@ -4063,7 +4057,7 @@ mod tests {
                 ResolvedSource {
                     os: "windows".to_string(),
                     arch: host_arch_label(),
-                    producer: SourceProducer::mediapm_builtin("media-tagger"),
+                    producer: SourceProducer::launcher("echo@v1"),
                     expected_size: None,
                     size_hint_bytes: None,
                     identity: None,
@@ -4091,16 +4085,16 @@ mod tests {
     /// `fetch_futures` construction), so their bytes exist with no HTTP call
     /// and no cache lookup. A launcher routed through the fetch path instead
     /// would carry the candidate URL it was looked up under — it has no URLs to
-    /// look up — and could not produce the argv-prefixed script asserted here.
+    /// look up — and could not produce the dispatch script asserted here.
     #[tokio::test]
     async fn generate_launcher_sources_produce_their_script_without_a_fetch() {
         let (cache, _cache_dir) = open_tools_cache().await;
         let fetch = ResolvedToolFetch {
-            tool_id: "media-tagger".to_string(),
+            tool_id: "echo@v1".to_string(),
             sources: vec![ResolvedSource {
                 os: "linux".to_string(),
                 arch: host_arch_label(),
-                producer: SourceProducer::mediapm_builtin("media-tagger"),
+                producer: SourceProducer::launcher("echo@v1"),
                 expected_size: None,
                 size_hint_bytes: None,
                 identity: None,
@@ -4121,7 +4115,7 @@ mod tests {
         assert_eq!(entry.actual_url, None, "nothing was fetched, so the entry names no URL");
         assert_eq!(
             entry.bytes,
-            generate_launcher_script("linux", "media-tagger", &["builtin".to_string()]),
+            generate_launcher_script("linux", "echo@v1", &[]),
             "the entry carries the script the generator produces for this OS and argv prefix",
         );
     }

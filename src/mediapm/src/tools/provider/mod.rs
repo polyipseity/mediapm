@@ -2065,7 +2065,8 @@ mod tests {
             }
         }
 
-        // media-tagger is a builtin launcher — all sources are GenerateLauncher.
+        // media-tagger is a host builtin: it has no payload to fetch and no
+        // launcher to generate, so the provider answers with no source at all.
         {
             let (fetch, _metadata) = resolve_tool_fetch(
                 "media-tagger",
@@ -2075,12 +2076,11 @@ mod tests {
             )
             .await
             .unwrap();
-            for source in &fetch.sources {
-                assert!(
-                    matches!(source.producer, super::SourceProducer::GenerateLauncher { .. }),
-                    "media-tagger should only have GenerateLauncher sources"
-                );
-            }
+            assert!(
+                fetch.sources.is_empty(),
+                "a host builtin declares no source, got {:?}",
+                fetch.sources
+            );
         }
     }
 
@@ -2403,7 +2403,7 @@ mod tests {
             std::env::set_var(GITHUB_DOWNLOAD_BASE_ENV, seam);
         }
 
-        for name in ["ffmpeg", "yt-dlp", "deno", "rsgain", "sd", "media-tagger", "import"] {
+        for name in ["ffmpeg", "yt-dlp", "deno", "rsgain", "sd", "import"] {
             let (fetch, _) = resolve_tool_fetch(
                 name,
                 &VersionSpec::Latest,
@@ -2428,7 +2428,7 @@ mod tests {
                     );
                 }
             }
-            if matches!(name, "media-tagger" | "import") {
+            if name == "import" {
                 assert_eq!(payload_urls, 0, "tool {name}: a launcher fetches no payload");
             } else {
                 assert!(
