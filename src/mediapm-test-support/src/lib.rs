@@ -72,11 +72,13 @@
 //! # }
 //! ```
 
+pub mod media_fixture;
 pub mod mock_upstream;
 pub mod seams;
 pub mod stub_payload;
 pub mod stub_tool;
 
+pub use media_fixture::{MatroskaFacts, media_fixture_path, read_matroska_facts};
 pub use mock_upstream::MockUpstream;
 pub use seams::{
     ALL_SEAMS, GITHUB_API_BASE, GITHUB_DOWNLOAD_BASE, JELLYFIN_BASE, MARTIN_RIEDL_BASE, SeamGuard,

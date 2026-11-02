@@ -23,6 +23,8 @@ mod demo_hierarchy_golden;
 mod demo_online;
 /// A local media source stages the bytes its content hash names.
 mod local_source_staging;
+/// The committed media fixture the offline demo and the regression assert against.
+mod media_fixture;
 /// Hermetic media-tagger metadata-stage tests over a mocked network.
 mod media_tagger_hermetic;
 mod online_sync_post_sync_dump;
