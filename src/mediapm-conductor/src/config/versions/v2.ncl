@@ -303,12 +303,31 @@ let migrate_v1_to_v2_fn = fun data =>
                 # ||| value and no merge of two values of one name is left to
                 # ||| the `&` operator to arbitrate.
                 let config_env_vars = if config_rt == null then {} else config_rt.env_vars in
+                # ||| A pair whose value repeats its key is skipped rather than
+                # ||| folded as a literal: that spelling is the down-hop's
+                # ||| encoding of an inherited host name (`migrate_v2_to_v1`
+                # ||| folds `runtime.inherited_env_vars` into `{ name = name }`
+                # ||| in v1.ncl, because the tightened v1 `env_vars` contract
+                # ||| keeps the value a string). Folding it back as a literal
+                # ||| would run the child with the variable set to its own name
+                # ||| — a value no document stated. Leaving the name out is
+                # ||| safe because the child inherits the host environment
+                # ||| anyway: `apply_execution_env` only overlays names the
+                # ||| document states (`orchestration/step_worker/process.rs`),
+                # ||| so the host value flows. Accepted cost: a document that
+                # ||| genuinely writes `FOO = "FOO"` as a literal gets the host
+                # ||| value instead. The skip sits here, where an executable
+                # ||| consumes the config-side map, and not in
+                # ||| `config_runtime_map`: a builtin's pair must still reach
+                # ||| `RejectBuiltinEnvVarsV4` in v4.ncl and fail the load.
                 let merged_env_vars =
                   std.record.fields config_env_vars
                   |> std.array.fold_left
                     (fun acc =>
                       fun name =>
                         if std.record.has_field name base_env_vars then
+                          acc
+                        else if config_env_vars."%{name}" == name then
                           acc
                         else
                           acc & { "%{name}" = config_env_vars."%{name}" })

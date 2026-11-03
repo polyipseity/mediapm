@@ -299,6 +299,25 @@ const V1_DOC_WITH_BUILTIN_TOOL_CONFIG_ENV: &str = r#"{
     external_data = {},
 }"#;
 
+/// A v1 document whose builtin tool's `tool_configs` entry states an
+/// identity pair — the spelling the down-hop writes for an inherited name.
+const V1_DOC_WITH_BUILTIN_IDENTITY_TOOL_CONFIG_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tool_configs = {
+        "echo" = {
+            env_vars = {
+                SOME_NAME = "SOME_NAME",
+            },
+        },
+    },
+    tools = {
+        "echo" = { kind = "builtin", builtin_id = "echo@v1" },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
 /// A latest-version document whose builtin tool declares `env_vars` on the
 /// tool spec itself.
 const V4_DOC_WITH_BUILTIN_ENV: &str = r#"{
@@ -325,6 +344,23 @@ const V4_DOC_WITH_BUILTIN_ENV: &str = r#"{
 fn regression_a_v1_tool_config_env_value_on_a_builtin_is_rejected_at_load() {
     let msg = decode_error(V1_DOC_WITH_BUILTIN_TOOL_CONFIG_ENV);
     println!("REJECTED V1 DIAGNOSTIC: {msg}");
+    assert!(msg.contains("echo"), "the error must name the tool: {msg}");
+    assert!(msg.contains("env_vars"), "the error must name the field: {msg}");
+}
+
+/// A builtin's identity pair — the down-hop's own encoding of an inherited
+/// name — fails the same load with the same shape of diagnostic.
+///
+/// The up-hop's identity skip sits only where an executable consumes the
+/// config-side map: a builtin carries its pair onto the spec unfiltered, so
+/// the pair still reaches `RejectBuiltinEnvVarsV4` and the load refuses the
+/// document instead of silently dropping what it declared. This pins the
+/// interaction between the two rules — filtering the pair for executables
+/// must not close the hole that made a builtin's declaration vanish.
+#[test]
+fn regression_a_builtin_identity_env_pair_is_rejected_at_load() {
+    let msg = decode_error(V1_DOC_WITH_BUILTIN_IDENTITY_TOOL_CONFIG_ENV);
+    println!("REJECTED V1 IDENTITY DIAGNOSTIC: {msg}");
     assert!(msg.contains("echo"), "the error must name the tool: {msg}");
     assert!(msg.contains("env_vars"), "the error must name the field: {msg}");
 }

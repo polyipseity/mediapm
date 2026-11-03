@@ -1163,6 +1163,32 @@ mod tests {
     external_data = {},
 }"#;
 
+    /// A v1 document whose `tool_configs` states an identity pair — a value
+    /// that repeats the key — beside a plain literal.
+    ///
+    /// The identity pair is the spelling the down-hop writes for an inherited
+    /// host name (`migrate_v2_to_v1` in `v1.ncl` folds
+    /// `runtime.inherited_env_vars` into `{ name = name }`), so a document
+    /// that came back from a down-hop carries one without the user ever
+    /// writing it.
+    const V1_DOC_WITH_IDENTITY_TOOL_CONFIG_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tool_configs = {
+        "ffmpeg" = {
+            env_vars = {
+                FFMPEG_HOME = "FFMPEG_HOME",
+                MEDIAPM_TEST_TOOL_CONFIG_LITERAL = "/opt/ffmpeg-log",
+            },
+        },
+    },
+    tools = {
+        "ffmpeg" = { kind = "executable", command = ["ffmpeg"] },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
     /// A v1 document stating one environment variable on both of the v1
     /// surfaces, plus one stated only on `tool_configs`.
     ///
@@ -1211,6 +1237,38 @@ mod tests {
             unified.tools["ffmpeg"].execution_env_vars.get("FFMPEG_HOME"),
             Some(&"/opt/ffmpeg".to_string()),
             "the document's own value must reach the process, not a name copied from the host",
+        );
+    }
+
+    /// An identity pair from `tool_configs` never reaches the executable's
+    /// env map, while a plain value on the same map still lands.
+    ///
+    /// The pair is the down-hop's encoding of an inherited host name, not a
+    /// literal the document asked for: folding it as one would spawn the child
+    /// with the variable set to its own name — a value no document stated —
+    /// instead of leaving the name to the child's normal inheritance, where
+    /// the host value flows (`apply_execution_env` only overlays names the
+    /// document does state). The plain value beside it pins that the skip is
+    /// keyed on the pair repeating its key, not on the surface being
+    /// `tool_configs`.
+    #[test]
+    fn to_unified_skips_a_tool_config_identity_pair_and_keeps_a_literal() {
+        let document = super::super::versions::decode_document(
+            V1_DOC_WITH_IDENTITY_TOOL_CONFIG_ENV.as_bytes(),
+        )
+        .expect("a v1 document stating an identity pair must migrate");
+
+        let unified = document.to_unified();
+
+        assert_eq!(
+            unified.tools["ffmpeg"].execution_env_vars.get("FFMPEG_HOME"),
+            None,
+            "an identity pair must not run the child with the variable set to its own name",
+        );
+        assert_eq!(
+            unified.tools["ffmpeg"].execution_env_vars.get("MEDIAPM_TEST_TOOL_CONFIG_LITERAL"),
+            Some(&"/opt/ffmpeg-log".to_string()),
+            "a plain tool_configs value must still land as the document's literal",
         );
     }
 
