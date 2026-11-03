@@ -241,11 +241,54 @@ let ExternalContentRefV4 = {
 }
 in
 
+# ||| Rejects a builtin tool spec that declares `env_vars`, with a message
+# ||| naming the tool's dictionary key and the field.
+# |||
+# ||| A builtin has no literal environment surface, so a non-empty
+# ||| `tool_configs.<tool>.env_vars` entry cannot take effect: the v1-to-v2
+# ||| migration carries it onto the tool spec (v2.ncl) and this validator
+# ||| fails the load here instead of letting the value be dropped in silence.
+# ||| It runs over the `tools` dictionary before the closed record contract,
+# ||| so the message can quote the tool's key where the record contract's
+# ||| `any_of` failure cannot (a migrated record has no source span to name
+# ||| it from). `std.contract.from_validator` rather than `from_predicate`
+# ||| because only a validator customises the error text (nickel-lang-core
+# ||| 0.18.0, `stdlib/std.ncl`).
+let RejectBuiltinEnvVarsV4 =
+  std.contract.from_validator (fun tools =>
+    if std.typeof tools != 'Record then
+      # Not a dictionary: the contract below reports the shape failure.
+      'Ok
+    else
+      std.array.fold_left
+        (fun acc =>
+          fun key =>
+            if acc != 'Ok then
+              acc
+            else
+              let spec = tools."%{key}" in
+              if std.typeof spec == 'Record
+                 && std.record.has_field "kind" spec
+                 && spec.kind == "builtin"
+                 && std.record.has_field "env_vars" spec
+              then
+                'Error {
+                  message = "tool `%{key}` is a builtin and declares `env_vars`",
+                  notes = [
+                    "A builtin has no literal environment surface: remove `env_vars` from this tool's configuration, or make the tool executable.",
+                  ],
+                }
+              else
+                'Ok)
+        'Ok
+        (std.record.fields tools))
+in
+
 # ||| Top-level persisted Nickel document envelope for schema version 4.
 # ||| Closed record: unknown top-level fields are rejected (S-A1).
 let NickelDocumentV4 = {
   version | VersionFourV4,
-  tools | { _ : ToolSpecV4 } | optional,
+  tools | std.contract.Sequence [RejectBuiltinEnvVarsV4, { _ : ToolSpecV4 }] | optional,
   workflows | Array WorkflowSpecV4 | optional,
   external_data | { _ : ExternalContentRefV4 } | optional,
   runtime | ConductorRuntimeConfigV4 | optional,

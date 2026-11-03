@@ -229,8 +229,11 @@ let migrate_v1_to_v2_fn = fun data =>
                 # ||| `tools.<tool>.env_vars`, so a name stated on both
                 # ||| surfaces resolves to the tools value, and a name stated
                 # ||| only here still lands as a literal. A builtin has no
-                # ||| literal surface to carry one, so its entry contributes
-                # ||| nothing.
+                # ||| literal surface to carry one, so a non-empty entry is
+                # ||| carried onto its tool spec below only to be judged: the
+                # ||| load rejects the document naming the tool and the field
+                # ||| (`RejectBuiltinEnvVarsV4` in v4.ncl, applied by the decode
+                # ||| wrapper in `config/nickel_io.rs`).
                 env_vars =
                   if std.record.has_field "env_vars" tc then tc.env_vars else {},
                 # ||| Partial ToolRuntimeV2. Absent fields are omitted, not
@@ -260,6 +263,19 @@ let migrate_v1_to_v2_fn = fun data =>
             let spec =
               if kind == "builtin" then
                 # BuiltinToolSpecV1 — already has name + version
+                # ||| A builtin has no literal surface for `env_vars`, so a
+                # ||| non-empty `tool_configs` entry is carried onto the spec
+                # ||| as a field rather than dropped: the migrated record then
+                # ||| fails the current envelope contract — `RejectBuiltinEnvVarsV4`
+                # ||| in v4.ncl, applied to every load by the decode wrapper in
+                # ||| `config/nickel_io.rs` — and the load rejects the document
+                # ||| naming the tool and `env_vars`. An empty entry names no
+                # ||| variable and stays dropped.
+                let builtin_env =
+                  if config_rt == null then {}
+                  else if std.array.length (std.record.fields config_rt.env_vars) == 0 then {}
+                  else { env_vars = config_rt.env_vars }
+                in
                 {
                   kind = "builtin",
                   name = key,
@@ -276,7 +292,7 @@ let migrate_v1_to_v2_fn = fun data =>
                       {},
                   default_inputs = if config_rt == null then {} else (config_rt.default_inputs | { _ : InputBindingV2 }),
                   runtime = if config_rt == null then {} else config_rt.runtime,
-                }
+                } & builtin_env
               else
                 # ExecutableToolSpecV1 — use map key as name
                 let cmd_arr = if std.record.has_field "command" t then t.command else [] in

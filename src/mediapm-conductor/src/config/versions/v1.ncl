@@ -278,7 +278,10 @@ let ToolConfigV1 = {
   # Optional runtime environment additions for executable process execution.
   #
   # A builtin tool has no literal surface for this value, so an entry stated
-  # for one contributes nothing.
+  # for one is rejected at load: the v1-to-v2 migration carries a non-empty
+  # map onto the tool spec, and `RejectBuiltinEnvVarsV4` in v4.ncl (applied
+  # to every load by the decode wrapper in `config/nickel_io.rs`) fails the
+  # document naming the tool and `env_vars`.
   env_vars | { _ : String } | optional,
   # Executable sandbox materialization map (`relative_path -> hash`).
   #

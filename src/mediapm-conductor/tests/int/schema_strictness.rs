@@ -275,6 +275,74 @@ fn parity_a_tool_config_env_value_survives_a_v1_round_trip() {
     );
 }
 
+/// A v1 document whose `tool_configs` states an environment value for the
+/// builtin `echo` tool.
+///
+/// The v1 envelope cannot judge this declaration — `tool_configs` is
+/// kind-blind and the tool kind lives on a different record — so the value's
+/// fate is decided downstream, where the load must reject it naming both the
+/// tool and the field instead of migrating it into nothing.
+const V1_DOC_WITH_BUILTIN_TOOL_CONFIG_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tool_configs = {
+        "echo" = {
+            env_vars = {
+                ECHO_PREFIX = "shout",
+            },
+        },
+    },
+    tools = {
+        "echo" = { kind = "builtin", builtin_id = "echo@v1" },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
+/// A latest-version document whose builtin tool declares `env_vars` on the
+/// tool spec itself.
+const V4_DOC_WITH_BUILTIN_ENV: &str = r#"{
+    version = 4,
+    tools = {
+        "echo" = {
+            kind = "builtin",
+            name = "echo",
+            builtin_id = "echo@v1",
+            env_vars = { ECHO_PREFIX = "shout" },
+        },
+    },
+}"#;
+
+/// A v1 `tool_configs.<builtin>.env_vars` declaration fails the load with a
+/// diagnostic naming the tool and the field.
+///
+/// The up-hop used to drop the value in its builtin branch, so a document
+/// stated this and loaded as if it had said nothing — no run ever saw the
+/// declaration and nothing reported its absence. The rejection has to fire on
+/// the load path a real document takes (migrate to the current schema, then
+/// validate), not on the version-locked v1 helper no runtime path calls.
+#[test]
+fn regression_a_v1_tool_config_env_value_on_a_builtin_is_rejected_at_load() {
+    let msg = decode_error(V1_DOC_WITH_BUILTIN_TOOL_CONFIG_ENV);
+    println!("REJECTED V1 DIAGNOSTIC: {msg}");
+    assert!(msg.contains("echo"), "the error must name the tool: {msg}");
+    assert!(msg.contains("env_vars"), "the error must name the field: {msg}");
+}
+
+/// A latest-version builtin declaring `env_vars` fails the same load with the
+/// same shape of diagnostic.
+///
+/// This is the surface a hand-written current-schema document writes the
+/// declaration on, so it must meet the same refusal the migrated v1 document
+/// meets rather than a different one per entry path.
+#[test]
+fn strict_v4_a_builtin_declaring_env_vars_is_rejected_at_load() {
+    let msg = decode_error(V4_DOC_WITH_BUILTIN_ENV);
+    println!("REJECTED V4 DIAGNOSTIC: {msg}");
+    assert!(msg.contains("echo"), "the error must name the tool: {msg}");
+    assert!(msg.contains("env_vars"), "the error must name the field: {msg}");
+}
+
 /// S-A7: `mod.ncl` exports unversioned registry aliases for the latest schema.
 #[test]
 fn parity_mod_ncl_exports_unversioned_aliases() {
