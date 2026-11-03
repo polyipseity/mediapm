@@ -11,8 +11,8 @@ use mediapm_cas::InMemoryCas;
 use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 use mediapm_conductor::tools::provider::{
-    ResolvedSource, ResolvedToolFetch, SourceProducer, fetch_tool_sources, process_tool_sources,
-    resolve_tool_fetch,
+    DownloadedSource, DownloadedSources, ResolvedSource, ResolvedToolFetch, SourceProducer,
+    fetch_tool_sources, process_tool_sources, resolve_tool_fetch,
 };
 use mediapm_utils::progress::{ProviderProgressCallback, ProviderProgressSnapshot};
 
@@ -206,5 +206,55 @@ async fn progress_aggregation_over_a_mocked_fetch_source_covers_every_byte() {
         last.bytes,
         (expected_bytes, expected_bytes),
         "the final snapshot's byte aggregate is the payloads' summed size: {last:?}"
+    );
+}
+
+/// `process_tool_sources` advances the Process items count once per source,
+/// in source order, and finishes at total.
+///
+/// Three already-downloaded binary sources, one budget item each, so the run
+/// needs no network, no download cache, and no launcher payload. Each binary
+/// source fires twice with the same items value — once when its CAS import
+/// completes inside `process_single_source` and once from the per-source loop
+/// fire in `process_tool_sources` — so the exact sequence below pins both
+/// fires per source: dropping either collapses a pair and fails the assertion.
+#[tokio::test]
+async fn process_fires_progress_per_source_entry() {
+    let downloaded = DownloadedSources {
+        tool_id: "mocked".to_string(),
+        entries: ["linux", "macos", "windows"]
+            .into_iter()
+            .map(|os| DownloadedSource {
+                os: os.to_string(),
+                arch: "x86_64".to_string(),
+                producer: SourceProducer::Fetch {
+                    urls: vec![format!("https://example.com/{os}-payload.bin")],
+                },
+                bytes: vec![0x5A; 1_024],
+                expected_size: Some(1_024),
+                actual_url: None,
+            })
+            .collect(),
+        cached_count: 0,
+        warnings: Vec::new(),
+    };
+
+    let snapshots: std::sync::Arc<std::sync::Mutex<Vec<ProviderProgressSnapshot>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = std::sync::Arc::clone(&snapshots);
+    let cb: ProviderProgressCallback = std::sync::Arc::new(move |snap| {
+        recorder.lock().expect("the snapshot recorder is never poisoned").push(snap);
+    });
+
+    let cas = InMemoryCas::default();
+    process_tool_sources(&downloaded, &cas, Some(cb)).await.expect("three binary sources process");
+
+    let all = snapshots.lock().expect("the snapshot recorder is never poisoned").clone();
+    let items: Vec<(u64, u64)> = all.iter().map(|snapshot| snapshot.items).collect();
+    assert_eq!(
+        items,
+        vec![(0, 3), (1, 3), (1, 3), (2, 3), (2, 3), (3, 3), (3, 3)],
+        "one items step per source, in order, each source's step fired by its \
+         in-source completion and the per-source loop fire, ending at total: {all:?}"
     );
 }
