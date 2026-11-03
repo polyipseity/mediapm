@@ -318,6 +318,40 @@ const V1_DOC_WITH_BUILTIN_IDENTITY_TOOL_CONFIG_ENV: &str = r#"{
     external_data = {},
 }"#;
 
+/// A legacy v1 document whose builtin `echo` carries a `tool_configs` entry
+/// that names no environment value — the shape `v2.ncl`'s empty-map guard
+/// arm exists to keep loadable.
+const V1_DOC_WITH_BUILTIN_TOOL_CONFIG_NO_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tool_configs = {
+        "echo" = {
+            max_retries = 3,
+        },
+    },
+    tools = {
+        "echo" = { kind = "builtin", builtin_id = "echo@v1" },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
+/// The empty-map spelling of the same legacy entry: the normalization step
+/// materializes `env_vars = {}` either way, so both spellings reach the
+/// guard arm as a non-null entry.
+const V1_DOC_WITH_BUILTIN_EMPTY_TOOL_CONFIG: &str = r#"{
+    version = 1,
+    runtime = {},
+    tool_configs = {
+        "echo" = {},
+    },
+    tools = {
+        "echo" = { kind = "builtin", builtin_id = "echo@v1" },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
 /// A latest-version document whose builtin tool declares `env_vars` on the
 /// tool spec itself.
 const V4_DOC_WITH_BUILTIN_ENV: &str = r#"{
@@ -392,6 +426,36 @@ fn strict_v4_a_builtin_declaring_env_vars_is_rejected_at_load() {
         msg.contains("is a builtin and declares"),
         "the rejection must be the validator's own sentence, not a source-span accident: {msg}"
     );
+}
+
+/// A legacy `tool_configs.<builtin>` entry that names no environment value
+/// keeps the document loadable, and its non-environment content lands.
+///
+/// Normalization always materializes `env_vars` on a `tool_configs` entry
+/// (v2.ncl), and `RejectBuiltinEnvVarsV4` rejects the field on presence
+/// alone, so the up-hop's empty-map guard arm is the only thing that keeps
+/// `tool_configs.echo = { max_retries = 3 }` and `tool_configs.echo = {}`
+/// readable. Without that arm every such legacy document fails to load, and
+/// no other fixture in the suite reaches the fold with a builtin entry —
+/// this test is what can fail the arm. The `max_retries` assertion proves
+/// the fixture reached the fold with a non-null entry rather than missing
+/// the map entirely.
+#[test]
+fn regression_a_builtin_tool_config_entry_without_env_vars_still_loads() {
+    let doc = decode_document(V1_DOC_WITH_BUILTIN_TOOL_CONFIG_NO_ENV.as_bytes())
+        .expect("a builtin tool_configs entry without env_vars must load");
+    assert_eq!(
+        doc.tools["echo"].kind,
+        ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+        "the builtin must decode as the builtin the document declared"
+    );
+    assert_eq!(
+        doc.tools["echo"].runtime.max_retries, 3,
+        "the entry's non-environment content must survive the migration"
+    );
+
+    decode_document(V1_DOC_WITH_BUILTIN_EMPTY_TOOL_CONFIG.as_bytes())
+        .expect("an empty builtin tool_configs entry must load");
 }
 
 /// S-A7: `mod.ncl` exports unversioned registry aliases for the latest schema.
