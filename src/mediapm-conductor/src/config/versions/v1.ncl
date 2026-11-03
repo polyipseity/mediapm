@@ -277,11 +277,8 @@ let ToolConfigV1 = {
   input_defaults | { _ : InputBindingV1 } | optional,
   # Optional runtime environment additions for executable process execution.
   #
-  # Runtime merges inherited host names first, then merges
-  # `tools.<tool>.env_vars` with `tool_configs.<tool>.env_vars` and rejects
-  # duplicate keys across those two explicit maps.
-  #
-  # This field is invalid for builtin tools.
+  # A builtin tool has no literal surface for this value, so an entry stated
+  # for one contributes nothing.
   env_vars | { _ : String } | optional,
   # Executable sandbox materialization map (`relative_path -> hash`).
   #
@@ -316,10 +313,8 @@ let RuntimeStorageV1 = {
   # Optional additional inherited host environment-variable names keyed by
   # platform.
   #
-  # Runtime always includes host defaults (`SYSTEMROOT`, `WINDIR`, `TEMP`,
-  # `TMP` on Windows; empty default elsewhere). Runtime reads only the active
-  # host platform entry from this map and merges those names after defaults
-  # with case-insensitive de-duplication.
+  # Defaults come from `default_runtime_inherited_env_vars()`
+  # (host-specific per OS); a tool's inherited names are added after them.
   inherited_env_vars | PlatformInheritedEnvVarsV1 | optional,
   # ||| Optional instance GC time-to-live in seconds.
   # ||| Instances older than this value are pruned on state persistence.
