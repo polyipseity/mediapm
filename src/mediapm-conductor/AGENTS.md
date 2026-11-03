@@ -181,7 +181,7 @@ When editing tool/config schema behavior, preserve these invariants:
 1. Tool name is immutable identity and must include version in name (example: `compose@v1`).
 2. Tool-level `version` field is not used.
 3. Builtin tool definitions in persisted config are strict: only `kind`, `name`, and `version` are allowed.
-4. Executable tool definitions may declare `inputs`, `command`, `env_vars`, `success_codes`, and explicit `outputs`.
+4. Executable tool definitions may declare `inputs`, `command`, `env_vars`, `success_codes`, and explicit `outputs`. `env_vars` values are literals the child a step spawns receives: a literal outranks an inherited name of the same key and a platform default, and an empty value means the host's value. `conductor tool run` spawns a tool itself and applies neither surface, so a literal or an inherited name reaches only a step's child.
 5. Workflow step `inputs` are always tool-call input data (for both executable and builtin tools).
 6. For executable tools, step inputs must reference declared executable tool inputs; missing required inputs are errors unless `tools.<tool>.runtime.input_defaults` provides the input. Tool-level defaults under `tools.<tool>.inputs.<input>.default` are unsupported.
 7. For builtin tools, step inputs are pass-through bindings and builtin crates enforce their own strict argument/input contracts.

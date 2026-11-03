@@ -398,7 +398,9 @@ pub struct ToolRuntime {
     /// Environment variable names to inherit from the host process.
     ///
     /// These are resolved at `to_unified()` time against the current host
-    /// environment and merged with runtime-wide inherited env vars.
+    /// environment and merged with runtime-wide inherited env vars. They are not
+    /// the last word on a tool's environment: a literal of the same key in the
+    /// kind's `env_vars` is folded after them and wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inherited_env_vars: Vec<String>,
     /// Maximum concurrent calls allowed for this tool.
@@ -496,6 +498,41 @@ where
         )));
     }
     Ok(names)
+}
+
+/// Deserializes a tool's literal environment map, rejecting a name a child
+/// process cannot be handed unambiguously.
+///
+/// An empty name reaches `Command::env` as a junk `=value` entry, a `=` splits
+/// the name a second time on Windows, and a NUL fails the spawn with an error
+/// that names no document key. All three are refused here, where the error can
+/// still name the tool's field, rather than at the spawn site.
+fn deserialize_env_var_map<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    let map = BTreeMap::<String, String>::deserialize(deserializer)?;
+    for name in map.keys() {
+        if name.is_empty() {
+            return Err(D::Error::custom(
+                "environment variable names must be non-empty (found an empty name)",
+            ));
+        }
+        if name.contains('=') {
+            return Err(D::Error::custom(format!(
+                "environment variable name {name:?} must not contain '=', which separates a name \
+                 from its value in a child's environment"
+            )));
+        }
+        if name.contains('\0') {
+            return Err(D::Error::custom(format!(
+                "environment variable name {name:?} must not contain a NUL"
+            )));
+        }
+    }
+    Ok(map)
 }
 
 /// Platform environment configuration for the conductor runtime.
@@ -625,8 +662,25 @@ pub enum ToolKindSpec {
     Executable {
         /// Executable command (path or name on PATH).
         command: Vec<String>,
-        /// Environment variables for the process.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        /// Environment variables for the process a step spawns, stated as literal values.
+        ///
+        /// These are the document's own statement about a name's value, so they
+        /// outrank every other source of a tool's environment: an inherited name
+        /// of the same key ([`ToolRuntime::inherited_env_vars`], which copies
+        /// whatever the host holds) and a platform default both give way.
+        ///
+        /// An empty value means "inherit the host's value". It is resolved when
+        /// the document is converted for a run, so the map then carries the
+        /// host's value at that moment; a name the host does not define stays
+        /// empty, which is the marker the spawn site reads as "leave it unset".
+        ///
+        /// Names are validated on decode: an empty name, or one carrying `=` or a
+        /// NUL, is refused rather than handed to the child as an ambiguity.
+        #[serde(
+            default,
+            skip_serializing_if = "BTreeMap::is_empty",
+            deserialize_with = "deserialize_env_var_map"
+        )]
         env_vars: BTreeMap<String, String>,
         /// Accepted exit codes (empty = any non-negative).
         #[serde(default)]

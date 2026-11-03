@@ -116,11 +116,11 @@ impl NickelDocument {
             .iter()
             .map(|(name, spec)| {
                 let id = name.clone();
-                let (command_parts, success_codes) = match &spec.kind {
-                    ToolKindSpec::Executable { command, env_vars: _, success_codes } => {
-                        (command.clone(), success_codes.clone())
+                let (command_parts, literal_env_vars, success_codes) = match &spec.kind {
+                    ToolKindSpec::Executable { command, env_vars, success_codes } => {
+                        (command.clone(), env_vars.clone(), success_codes.clone())
                     }
-                    ToolKindSpec::Builtin { .. } => (Vec::new(), vec![0]),
+                    ToolKindSpec::Builtin { .. } => (Vec::new(), BTreeMap::new(), vec![0]),
                 };
 
                 let builtin_id = match &spec.kind {
@@ -170,6 +170,27 @@ impl NickelDocument {
                             if let Ok(val) = std::env::var(name) {
                                 env_vars.insert(name.clone(), val);
                             }
+                        }
+
+                        // 4. The tool's own literal values. Folded last, so the
+                        //    document's statement about a name outranks both an
+                        //    inherited name of the same key and a platform
+                        //    default: a literal is what the document says the
+                        //    value is, while an inherited name is a copy of
+                        //    whatever the host happens to hold.
+                        //
+                        //    An empty literal means "inherit the host's value"
+                        //    and is resolved here, not at spawn, so the map holds
+                        //    the value this run gives the child. A name the host
+                        //    does not define stays empty, and the spawn site
+                        //    reads that as "leave it unset".
+                        for (name, value) in literal_env_vars {
+                            let resolved = if value.is_empty() {
+                                std::env::var(&name).unwrap_or_default()
+                            } else {
+                                value
+                            };
+                            env_vars.insert(name, resolved);
                         }
                         env_vars
                     },
@@ -1042,6 +1063,227 @@ mod tests {
             unified.tools["ffmpeg"].outputs.get("content"),
             Some(&content),
             "a tool's declared capture defaults must reach the unified spec",
+        );
+    }
+
+    /// One executable tool spec carrying `env_vars` and inheriting the names in
+    /// `inherited_env_vars` from the host.
+    ///
+    /// The two environment surfaces sit on different records — the literal
+    /// values on the kind, the inherited names on the runtime — so a test that
+    /// needs both states them on one spec here rather than at each call site.
+    fn executable_tool(
+        name: &str,
+        env_vars: BTreeMap<String, String>,
+        inherited_env_vars: Vec<String>,
+    ) -> ToolSpec {
+        ToolSpec {
+            version: None,
+            kind: ToolKindSpec::Executable {
+                command: vec![name.to_string()],
+                env_vars,
+                success_codes: vec![0],
+            },
+            name: name.to_string(),
+            runtime: ToolRuntime { inherited_env_vars, ..ToolRuntime::default() },
+            ..ToolSpec::default()
+        }
+    }
+
+    /// A tool's own `env_vars` reach the unified spec the step worker reads.
+    ///
+    /// The document states these values itself, so the field is a statement
+    /// about the child's environment rather than a name to copy from the host.
+    /// A bridge that drops the map leaves the value in the document and out of
+    /// every run: the step spawns its process without the variable and nothing
+    /// reports the absence.
+    #[test]
+    fn a_tools_env_var_name_that_a_child_cannot_be_handed_is_refused_on_decode() {
+        // A child's environment cannot express an empty name, a name carrying
+        // `=` (which separates name from value, and splits twice on Windows), or
+        // a NUL (which fails the spawn with an error naming no document key), so
+        // the decode refuses each one instead of writing a key the spawn site
+        // would pass through as junk.
+        for name in ["", "A=B", "A\0B"] {
+            let spec = serde_json::json!({
+                "kind": "executable",
+                "command": ["ffmpeg"],
+                "env_vars": { (name): "value" },
+            });
+            let error = serde_json::from_value::<ToolKindSpec>(spec)
+                .expect_err("a name a child cannot be handed must be refused");
+            assert!(
+                error.to_string().contains("environment variable name"),
+                "the refusal names the surface for {name:?}: {error}"
+            );
+        }
+    }
+
+    /// A document's literal environment value reaches the unified spec.
+    #[test]
+    fn to_unified_carries_a_tools_literal_env_vars() {
+        let document = NickelDocument {
+            tools: BTreeMap::from([(
+                "ffmpeg".to_string(),
+                executable_tool(
+                    "ffmpeg",
+                    BTreeMap::from([("FOO".to_string(), "bar".to_string())]),
+                    Vec::new(),
+                ),
+            )]),
+            ..NickelDocument::default()
+        };
+
+        let unified = document.to_unified();
+
+        assert_eq!(
+            unified.tools["ffmpeg"].execution_env_vars.get("FOO"),
+            Some(&"bar".to_string()),
+            "a tool's declared env var value must reach the process it spawns",
+        );
+    }
+
+    /// The host variable the precedence test installs.
+    ///
+    /// Named after this module so no other test in the process reads it: the
+    /// value stands for whatever the host happens to hold, and a name a sibling
+    /// read would make this test's assertion depend on that sibling.
+    const PRECEDENCE_ENV_NAME: &str = "MEDIAPM_CONDUCTOR_TEST_ENV_VARS_HOST_VALUE";
+
+    /// A host variable the precedence test never defines.
+    ///
+    /// The empty-literal case needs a name whose host value is absent, or the
+    /// test cannot see the difference between "resolved to the host's value" and
+    /// "left as a marker".
+    const UNSET_HOST_ENV_NAME: &str = "MEDIAPM_CONDUCTOR_TEST_ENV_VARS_UNSET_HOST_VALUE";
+
+    /// Serializes the tests in this module that mutate the host environment.
+    ///
+    /// [`NickelDocument::to_unified`] reads the host environment for every name
+    /// a document inherits, so a mutation is visible to any test running in this
+    /// process at the same time. A `std::sync::Mutex` suffices because these
+    /// tests are synchronous and hold the lock across no await point.
+    static HOST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// One host environment value, restored when the guard drops.
+    ///
+    /// The guard restores the value (or absence) the host had before it was
+    /// built, so a panicking assertion cannot leak this test's value into a
+    /// later test in the same process. Its holder keeps [`HOST_ENV_LOCK`] for
+    /// the guard's whole lifetime and declares the lock first, because locals
+    /// drop in reverse order and the restore has to run while the lock is still
+    /// held.
+    struct HostEnvValue {
+        /// Name of the variable this guard installed.
+        name: &'static str,
+        /// What the variable held before the guard, or `None` for absence.
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl HostEnvValue {
+        /// Installs `value` as the host's value for `name`.
+        fn set(name: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(name);
+            // SAFETY: the caller holds HOST_ENV_LOCK for the override window,
+            // as this type's documentation requires.
+            unsafe { std::env::set_var(name, value) };
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for HostEnvValue {
+        /// Restores the value, or the absence, the variable had before.
+        fn drop(&mut self) {
+            // SAFETY: HOST_ENV_LOCK is still held here; the lock guard is
+            // declared before this one and therefore dropped after it.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.name, value),
+                    None => std::env::remove_var(self.name),
+                }
+            }
+        }
+    }
+
+    /// The document's own value outranks a name inherited from the host, and at
+    /// the spawn site an empty value keeps its meaning: inherit the host's
+    /// value.
+    ///
+    /// Both surfaces name one environment variable and the two are not
+    /// equivalent: `runtime.inherited_env_vars` copies whatever the host holds,
+    /// while `env_vars` states the value the document wants the process to run
+    /// with. The literal is the document's own statement, so it is what the
+    /// process gets; spelling a literal empty asks for the host's value, so a
+    /// key in both places behaves as the literal says.
+    #[test]
+    fn to_unified_lets_a_literal_env_var_outrank_an_inherited_one() {
+        let _lock = HOST_ENV_LOCK.lock().expect("host environment lock");
+        let _host = HostEnvValue::set(PRECEDENCE_ENV_NAME, "from-host");
+        let document = NickelDocument {
+            tools: BTreeMap::from([
+                (
+                    "literal".to_string(),
+                    executable_tool(
+                        "literal",
+                        BTreeMap::from([(
+                            PRECEDENCE_ENV_NAME.to_string(),
+                            "from-document".to_string(),
+                        )]),
+                        vec![PRECEDENCE_ENV_NAME.to_string()],
+                    ),
+                ),
+                (
+                    "empty-literal".to_string(),
+                    executable_tool(
+                        "empty-literal",
+                        BTreeMap::from([(PRECEDENCE_ENV_NAME.to_string(), String::new())]),
+                        Vec::new(),
+                    ),
+                ),
+                (
+                    "empty-literal-with-inherited-name".to_string(),
+                    executable_tool(
+                        "empty-literal-with-inherited-name",
+                        BTreeMap::from([(PRECEDENCE_ENV_NAME.to_string(), String::new())]),
+                        vec![PRECEDENCE_ENV_NAME.to_string()],
+                    ),
+                ),
+                (
+                    "empty-literal-with-no-host-value".to_string(),
+                    executable_tool(
+                        "empty-literal-with-no-host-value",
+                        BTreeMap::from([(UNSET_HOST_ENV_NAME.to_string(), String::new())]),
+                        Vec::new(),
+                    ),
+                ),
+            ]),
+            ..NickelDocument::default()
+        };
+
+        let unified = document.to_unified();
+
+        let resolved =
+            |tool: &str, name: &str| unified.tools[tool].execution_env_vars.get(name).cloned();
+        // The four tools differ only in the two environment surfaces, so one
+        // assertion states the whole precedence table: a literal value beats an
+        // inherited copy of the host's, an empty literal resolves to the host's
+        // value whether or not the same key is also inherited, and an empty
+        // literal the host does not define stays empty — the marker the spawn
+        // site reads as "leave it unset".
+        assert_eq!(
+            (
+                resolved("literal", PRECEDENCE_ENV_NAME),
+                resolved("empty-literal", PRECEDENCE_ENV_NAME),
+                resolved("empty-literal-with-inherited-name", PRECEDENCE_ENV_NAME),
+                resolved("empty-literal-with-no-host-value", UNSET_HOST_ENV_NAME),
+            ),
+            (
+                Some("from-document".to_string()),
+                Some("from-host".to_string()),
+                Some("from-host".to_string()),
+                Some(String::new()),
+            ),
+            "a literal outranks an inherited name, and an empty literal means the host's value",
         );
     }
 

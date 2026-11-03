@@ -10,6 +10,10 @@ mod bootstrap;
 /// The test step runs the `mediapm-test-support` stub, so no shell is needed.
 mod step_rpc_layering;
 
+/// A tool's `env_vars` reach the process its step runs, proven through the
+/// stub's emit manifest, whose path the document states.
+mod tool_env_vars;
+
 /// A step whose input is a declared hash reads the declared bytes
 /// (unix-only: the test step is a real `sh` process).
 #[cfg(unix)]
