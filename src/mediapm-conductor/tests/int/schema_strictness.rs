@@ -340,12 +340,21 @@ const V4_DOC_WITH_BUILTIN_ENV: &str = r#"{
 /// declaration and nothing reported its absence. The rejection has to fire on
 /// the load path a real document takes (migrate to the current schema, then
 /// validate), not on the version-locked v1 helper no runtime path calls.
+///
+/// The diagnostic must carry the validator's own sentence (`is a builtin and
+/// declares`): a source-span error that merely quotes `echo` and `env_vars`
+/// satisfies the name assertions without `RejectBuiltinEnvVarsV4` existing,
+/// and asserting the same sentence in both entry paths pins them to one error.
 #[test]
 fn regression_a_v1_tool_config_env_value_on_a_builtin_is_rejected_at_load() {
     let msg = decode_error(V1_DOC_WITH_BUILTIN_TOOL_CONFIG_ENV);
     println!("REJECTED V1 DIAGNOSTIC: {msg}");
     assert!(msg.contains("echo"), "the error must name the tool: {msg}");
     assert!(msg.contains("env_vars"), "the error must name the field: {msg}");
+    assert!(
+        msg.contains("is a builtin and declares"),
+        "the rejection must be the validator's own sentence, not a source-span accident: {msg}"
+    );
 }
 
 /// A builtin's identity pair — the down-hop's own encoding of an inherited
@@ -366,7 +375,9 @@ fn regression_a_builtin_identity_env_pair_is_rejected_at_load() {
 }
 
 /// A latest-version builtin declaring `env_vars` fails the same load with the
-/// same shape of diagnostic.
+/// same diagnostic the migrated v1 document meets: the validator's own
+/// sentence (`is a builtin and declares`), asserted so a source-span error
+/// that merely quotes `echo` and `env_vars` cannot stand in for the check.
 ///
 /// This is the surface a hand-written current-schema document writes the
 /// declaration on, so it must meet the same refusal the migrated v1 document
@@ -377,6 +388,10 @@ fn strict_v4_a_builtin_declaring_env_vars_is_rejected_at_load() {
     println!("REJECTED V4 DIAGNOSTIC: {msg}");
     assert!(msg.contains("echo"), "the error must name the tool: {msg}");
     assert!(msg.contains("env_vars"), "the error must name the field: {msg}");
+    assert!(
+        msg.contains("is a builtin and declares"),
+        "the rejection must be the validator's own sentence, not a source-span accident: {msg}"
+    );
 }
 
 /// S-A7: `mod.ncl` exports unversioned registry aliases for the latest schema.

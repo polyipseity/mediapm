@@ -432,15 +432,14 @@ where
     /// existing tool across ALL config documents (merged view), not just the
     /// target file.
     ///
-    /// This method cannot express a builtin with `env_vars`: the spec it
+    /// This method cannot express a builtin with `env_vars`: the kind it
     /// builds is always [`ToolKindSpec::Executable`](crate::ToolKindSpec::Executable)
-    /// with an empty `env_vars`
-    /// map (`executable` selects the kind, and neither parameter carries an
-    /// environment), so a check here for a builtin declaring `env_vars` would
-    /// be unreachable. The shape is refused where such a document would be
-    /// read instead — at load, by `RejectBuiltinEnvVarsV4` on the envelope's
-    /// `tools` field (see the `ToolConfigV1.env_vars` notes in
-    /// `config/versions/`).
+    /// — `executable` only fills `command` (`None` becomes an empty command,
+    /// still `Executable`) and `content_map` carries no environment — so a
+    /// check here for a builtin declaring `env_vars` would be unreachable.
+    /// The shape is refused where such a document would be read instead —
+    /// at load, by `RejectBuiltinEnvVarsV4` on the envelope's `tools` field
+    /// (see the `ToolConfigV1.env_vars` notes in `config/versions/`).
     ///
     /// # Errors
     ///
