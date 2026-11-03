@@ -21,7 +21,7 @@ mod executor;
 pub(crate) mod inputs;
 #[cfg(test)]
 mod payload_staging;
-mod process;
+pub(crate) mod process;
 pub(crate) mod sandbox;
 pub(crate) mod template;
 

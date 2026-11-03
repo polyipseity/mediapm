@@ -14,6 +14,10 @@ mod step_rpc_layering;
 /// stub's emit manifest, whose path the document states.
 mod tool_env_vars;
 
+/// `conductor tool run` applies the tool's `env_vars` to the process it
+/// spawns directly, proven through the same stub emit manifest.
+mod passthrough_env;
+
 /// A step whose input is a declared hash reads the declared bytes
 /// (unix-only: the test step is a real `sh` process).
 #[cfg(unix)]

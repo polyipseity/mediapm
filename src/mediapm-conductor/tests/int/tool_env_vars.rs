@@ -34,7 +34,7 @@ use mediapm_test_support::{MANIFEST_ENV, stub_tool_path};
 /// # Panics
 ///
 /// Panics when the copy cannot be written.
-fn named_stub_copy(dir: &Path, name: &str) -> PathBuf {
+pub(super) fn named_stub_copy(dir: &Path, name: &str) -> PathBuf {
     let copy = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     std::fs::copy(stub_tool_path(), &copy)
         .unwrap_or_else(|error| panic!("cannot copy the stub to '{}': {error}", copy.display()));

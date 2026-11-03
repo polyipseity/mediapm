@@ -20,6 +20,7 @@ use crate::config::versions;
 use crate::error::ConductorError;
 use crate::orchestration::node::ConductorActorClient;
 use crate::orchestration::protocol::{UnifiedNickelDocument, find_tool_by_name};
+use crate::orchestration::step_worker::process::apply_execution_env;
 use crate::state::{ConductorState, StepRef};
 
 /// Concrete facade over the conductor orchestration runtime.
@@ -522,6 +523,10 @@ where
     ///
     /// Loads the merged unified config, looks up the tool by name, and
     /// executes the configured process command with the supplied arguments.
+    /// The tool's `execution_env_vars` are applied to the child through the
+    /// same empty-means-host resolver the step worker spawns with, so a
+    /// literal or an inherited name reaches this child exactly as it reaches
+    /// a step's child.
     ///
     /// # Errors
     ///
@@ -545,10 +550,13 @@ where
             )));
         };
 
-        let status =
-            tokio::process::Command::new(cmd).args(cmd_args).args(args).status().await.map_err(
-                |e| ConductorError::Workflow(format!("failed to run tool '{tool}': {e}")),
-            )?;
+        let mut command = tokio::process::Command::new(cmd);
+        command.args(cmd_args).args(args);
+        apply_execution_env(&mut command, &tool_spec.execution_env_vars);
+        let status = command
+            .status()
+            .await
+            .map_err(|e| ConductorError::Workflow(format!("failed to run tool '{tool}': {e}")))?;
 
         Ok(status.code().unwrap_or(-1))
     }

@@ -54,6 +54,30 @@ pub(super) struct ExecutionResult {
     pub(crate) exit_code: i32,
 }
 
+/// Applies a tool's execution environment to a command before it is spawned.
+///
+/// This is the one empty-means-host rule for every spawn site: a non-empty
+/// value is set directly on the child, while an empty value means "inherit
+/// the host process value", which is read here and set when the host defines
+/// the name. The step worker's [`run_executable_process`] and
+/// `Conductor::run_tool_passthrough` both route through this function so the
+/// two paths cannot diverge on what an empty value means.
+///
+/// The command's existing environment is otherwise untouched: names absent
+/// from `execution_env_vars` are left to the child's normal inheritance.
+pub(crate) fn apply_execution_env(
+    cmd: &mut Command,
+    execution_env_vars: &BTreeMap<String, String>,
+) {
+    for (key, value) in execution_env_vars {
+        if !value.is_empty() {
+            cmd.env(key, value);
+        } else if let Ok(host_val) = std::env::var(key) {
+            cmd.env(key, host_val);
+        }
+    }
+}
+
 /// Runs an executable process with the given inputs and env vars.
 ///
 /// The child is spawned with piped stdout/stderr and `kill_on_drop`: on a
@@ -89,15 +113,9 @@ pub(super) async fn run_executable_process(
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
 
-    // Apply inherited env vars: non-empty values are set directly, empty
-    // values inherit the host process value.
-    for (key, value) in execution_env_vars {
-        if !value.is_empty() {
-            cmd.env(key, value);
-        } else if let Ok(host_val) = std::env::var(key) {
-            cmd.env(key, host_val);
-        }
-    }
+    // The empty-means-host rule lives in `apply_execution_env`, shared with
+    // the passthrough spawn site.
+    apply_execution_env(&mut cmd, execution_env_vars);
 
     let child = cmd
         .spawn()
