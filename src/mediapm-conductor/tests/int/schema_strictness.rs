@@ -435,9 +435,10 @@ fn strict_v4_a_builtin_declaring_env_vars_is_rejected_at_load() {
 /// (v2.ncl), and `RejectBuiltinEnvVarsV4` rejects the field on presence
 /// alone, so the up-hop's empty-map guard arm is the only thing that keeps
 /// `tool_configs.echo = { max_retries = 3 }` and `tool_configs.echo = {}`
-/// readable. Without that arm every such legacy document fails to load, and
-/// no other fixture in the suite reaches the fold with a builtin entry —
-/// this test is what can fail the arm. The `max_retries` assertion proves
+/// readable. Without that arm every such legacy document fails to load;
+/// this test is the fixture-based detector for the arm, and the parity
+/// round-trip reaches it too through down-hop output. The `max_retries`
+/// assertion proves
 /// the fixture reached the fold with a non-null entry rather than missing
 /// the map entirely.
 #[test]
