@@ -222,13 +222,24 @@ let migrate_v1_to_v2_fn = fun data =>
                     tc.input_defaults
                   else
                     {},
+                # ||| The values are the document's own, so they travel as the
+                # ||| tool's `env_vars` literals rather than being reduced to
+                # ||| names read back from the host: no name is synthesised
+                # ||| here. The executable fold below seeds from
+                # ||| `tools.<tool>.env_vars`, so a name stated on both
+                # ||| surfaces resolves to the tools value, and a name stated
+                # ||| only here still lands as a literal. A builtin has no
+                # ||| literal surface to carry one (v1 declares this field
+                # ||| invalid for builtin tools), so its entry contributes
+                # ||| nothing.
+                env_vars =
+                  if std.record.has_field "env_vars" tc then tc.env_vars else {},
                 # ||| Partial ToolRuntimeV2. Absent fields are omitted, not
                 # ||| set to `null`: explicit `null` is rejected by
                 # ||| `| optional` contracts, so omission keeps the migrated
                 # ||| document valid against the tightened envelope.
                 runtime =
                   (if std.record.has_field "content_map" tc then { content_map = tc.content_map } else {})
-                  & (if std.record.has_field "env_vars" tc then { inherited_env_vars = std.record.fields tc.env_vars } else {})
                   & (if std.record.has_field "max_concurrent_calls" tc then { max_concurrent_calls = tc.max_concurrent_calls } else {})
                   & (if std.record.has_field "max_retries" tc then { max_retries = tc.max_retries } else {})
               }
@@ -271,12 +282,29 @@ let migrate_v1_to_v2_fn = fun data =>
                 # ExecutableToolSpecV1 — use map key as name
                 let cmd_arr = if std.record.has_field "command" t then t.command else [] in
                 let base_env_vars = if std.record.has_field "env_vars" t then t.env_vars else {} in
+                # ||| `tool_configs` values fold in under the tool's own: the
+                # ||| fold seeds from `base_env_vars` and only adds a name the
+                # ||| tool does not state, so a shared name keeps the tools
+                # ||| value and no merge of two values of one name is left to
+                # ||| the `&` operator to arbitrate.
+                let config_env_vars = if config_rt == null then {} else config_rt.env_vars in
+                let merged_env_vars =
+                  std.record.fields config_env_vars
+                  |> std.array.fold_left
+                    (fun acc =>
+                      fun name =>
+                        if std.record.has_field name base_env_vars then
+                          acc
+                        else
+                          acc & { "%{name}" = config_env_vars."%{name}" })
+                    base_env_vars
+                in
                 let base_success_codes = if std.record.has_field "success_codes" t then t.success_codes else [] in
                 {
                   kind = "executable",
                   name = key,
                   command = cmd_arr,
-                  env_vars = base_env_vars,
+                  env_vars = merged_env_vars,
                   success_codes = base_success_codes,
                   inputs =
                     if std.record.has_field "inputs" t then

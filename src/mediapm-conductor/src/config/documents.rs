@@ -1143,6 +1143,105 @@ mod tests {
         );
     }
 
+    /// A v1 document whose `tool_configs` states an environment value for an
+    /// executable tool.
+    ///
+    /// `runtime` is required by the v1 envelope contract, so the fixture
+    /// carries it even though the value under test lives on `tool_configs`.
+    const V1_DOC_WITH_TOOL_CONFIG_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tool_configs = {
+        "ffmpeg" = {
+            env_vars = { FFMPEG_HOME = "/opt/ffmpeg" },
+        },
+    },
+    tools = {
+        "ffmpeg" = { kind = "executable", command = ["ffmpeg"] },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
+    /// A v1 document stating one environment variable on both of the v1
+    /// surfaces, plus one stated only on `tool_configs`.
+    ///
+    /// The two surfaces have to fold into a single literal map, and the two
+    /// halves pin opposite sides of that fold: the shared name shows which
+    /// surface wins, the config-only name shows the other surface still lands
+    /// rather than being reduced to a name read back from the host.
+    const V1_DOC_WITH_DUPLICATED_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tool_configs = {
+        "ffmpeg" = {
+            env_vars = {
+                FFMPEG_HOME = "/opt/from-tool-config",
+                MEDIAPM_TEST_TOOL_CONFIG_ONLY = "/opt/from-tool-config-only",
+            },
+        },
+    },
+    tools = {
+        "ffmpeg" = {
+            kind = "executable",
+            command = ["ffmpeg"],
+            env_vars = { FFMPEG_HOME = "/opt/from-tools" },
+        },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
+    /// A v1 document's `tool_configs.<tool>.env_vars` value reaches the
+    /// unified spec the step worker reads.
+    ///
+    /// The up-hop used to keep only the key, so the document's own value
+    /// became a name copied back from the host and no run ever saw what the
+    /// document said. The unified spec is the surface the spawn reads, so this
+    /// pins migrate → decode → unify rather than one hop of it.
+    #[test]
+    fn to_unified_carries_a_migrated_tool_config_env_value() {
+        let document =
+            super::super::versions::decode_document(V1_DOC_WITH_TOOL_CONFIG_ENV.as_bytes())
+                .expect("a v1 document stating a tool_configs env value must migrate");
+
+        let unified = document.to_unified();
+
+        assert_eq!(
+            unified.tools["ffmpeg"].execution_env_vars.get("FFMPEG_HOME"),
+            Some(&"/opt/ffmpeg".to_string()),
+            "the document's own value must reach the process, not a name copied from the host",
+        );
+    }
+
+    /// The two v1 environment surfaces fold into one literal map, with the
+    /// tool's own value winning the name they share.
+    ///
+    /// Both surfaces state values, so a name stated on both has to resolve to
+    /// one of them rather than to a host copy: `tools.<tool>.env_vars` is the
+    /// statement about the tool and wins, while a name stated only on
+    /// `tool_configs` still lands as the document's literal.
+    #[test]
+    fn to_unified_folds_the_two_v1_env_surfaces_with_the_tools_value_winning() {
+        let document =
+            super::super::versions::decode_document(V1_DOC_WITH_DUPLICATED_ENV.as_bytes())
+                .expect("a v1 document stating both environment surfaces must migrate");
+
+        let unified = document.to_unified();
+        let resolved = |name: &str| unified.tools["ffmpeg"].execution_env_vars.get(name).cloned();
+
+        assert_eq!(
+            resolved("FFMPEG_HOME"),
+            Some("/opt/from-tools".to_string()),
+            "the tool's own value wins a name the two surfaces share",
+        );
+        assert_eq!(
+            resolved("MEDIAPM_TEST_TOOL_CONFIG_ONLY"),
+            Some("/opt/from-tool-config-only".to_string()),
+            "a name stated only on tool_configs lands as the document's literal",
+        );
+    }
+
     /// The host variable the precedence test installs.
     ///
     /// Named after this module so no other test in the process reads it: the

@@ -211,9 +211,67 @@ fn parity_v1_to_v2_migration_output_passes_tightened_envelope() {
     assert!(doc.tools.contains_key("echo"), "echo tool migrated");
     assert_eq!(doc.workflows.len(), 1, "workflow array migrated");
     let ffmpeg = &doc.tools["ffmpeg"];
+    let ToolKindSpec::Executable { env_vars, .. } = &ffmpeg.kind else {
+        panic!("ffmpeg migrates as an executable tool");
+    };
+    assert_eq!(
+        env_vars.get("FFMPEG_HOME").map(String::as_str),
+        Some("/opt/ffmpeg"),
+        "tool_configs env_vars must migrate into the tool's own env_vars as values",
+    );
     assert!(
-        ffmpeg.runtime.inherited_env_vars.iter().any(|s| s == "FFMPEG_HOME"),
-        "tool_configs env_vars must migrate into inherited_env_vars"
+        ffmpeg.runtime.inherited_env_vars.iter().all(|name| name != "FFMPEG_HOME"),
+        "the up-hop must not synthesise a host-inherited name from a value it carries",
+    );
+}
+
+/// S-A8: a `tool_configs` environment value survives a v1 → v2 → v1 round
+/// trip.
+///
+/// The up-hop writes the value onto the tool itself, because
+/// `tools.<tool>.env_vars` is the surface v2 states a value on, so the
+/// down-hop returns it under `tools` rather than under `tool_configs`. That
+/// move is equal meaning: the document still says the same thing about the
+/// same variable for the same tool, and what this pins is the value rather
+/// than the byte layout. Re-migrating the returned document yields the same
+/// value, so the home the down-hop chose is stable rather than a step that
+/// drifts on every pass.
+#[test]
+fn parity_a_tool_config_env_value_survives_a_v1_round_trip() {
+    let document =
+        decode_document(REALISTIC_V1_DOC.as_bytes()).expect("realistic v1 doc must migrate");
+    let ToolKindSpec::Executable { env_vars, .. } = &document.tools["ffmpeg"].kind else {
+        panic!("ffmpeg migrates as an executable tool");
+    };
+    assert_eq!(
+        env_vars.get("FFMPEG_HOME").map(String::as_str),
+        Some("/opt/ffmpeg"),
+        "the up-hop carries the value onto the tool: {env_vars:?}",
+    );
+
+    let encoded = encode_document(document).expect("the migrated document must encode");
+    let encoded = String::from_utf8(encoded).expect("encoded document is UTF-8");
+    let down = validate_v1_document(&encoded).expect("the migrated document must return to v1");
+    assert_eq!(
+        down["tools"]["ffmpeg"]["env_vars"]["FFMPEG_HOME"],
+        serde_json::Value::String("/opt/ffmpeg".to_string()),
+        "the down-hop returns the value, not a synthesised name: {down}",
+    );
+
+    // The down-hop's output is a JSON value rather than source, so it is
+    // rendered back to Nickel before it migrates again — which makes this a
+    // re-migration of the document the down-hop actually produced rather than
+    // of a fixture written to look like it.
+    let source = mediapm_utils::nickel::render_document_as_nickel(&down, "v1 document")
+        .expect("the returned v1 document must render as source");
+    let again = decode_document(&source).expect("the returned v1 document must migrate again");
+    let ToolKindSpec::Executable { env_vars, .. } = &again.tools["ffmpeg"].kind else {
+        panic!("ffmpeg migrates as an executable tool");
+    };
+    assert_eq!(
+        env_vars.get("FFMPEG_HOME").map(String::as_str),
+        Some("/opt/ffmpeg"),
+        "re-migrating the returned document keeps the value: {env_vars:?}",
     );
 }
 
