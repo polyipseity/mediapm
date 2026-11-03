@@ -5083,6 +5083,90 @@ mod tests {
         assert_eq!(super::DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS, 600);
     }
 
+    /// Pins every nextest override that can kill this example above the demo's own watchdog.
+    ///
+    /// The demo exits by itself with a diagnosable message at
+    /// `DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS + DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS`
+    /// (615 s), so an override whose filter matches `binary(mediapm_demo_online)`
+    /// must budget strictly more than that: `period x terminate-after` is a
+    /// duration in seconds because `terminate-after` counts periods, not seconds.
+    /// The test reads `.config/nextest.toml` instead of restating the numbers,
+    /// and requires at least one matching override so deleting or renaming the
+    /// filter fails loudly rather than passing over an empty set.
+    #[test]
+    fn nextest_budget_outlasts_the_hard_watchdog() {
+        let config = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.config/nextest.toml"
+        ))
+        .expect(".config/nextest.toml must be readable beside the workspace root");
+
+        let header = regex::Regex::new(r"(?m)^\[\[profile\.([^\]]+)\.overrides\]\][ \t]*$")
+            .expect("override header regex is valid");
+        let filter = regex::Regex::new(r#"(?m)^filter\s*=\s*['"]([^'"]*)['"]"#)
+            .expect("override filter regex is valid");
+        let period = regex::Regex::new(r#"period\s*=\s*"(\d+)s""#)
+            .expect("slow-timeout period regex is valid");
+        let terminate_after = regex::Regex::new(r"terminate-after\s*=\s*(\d+)")
+            .expect("slow-timeout terminate-after regex is valid");
+
+        // An override body runs from its `[[profile.*.overrides]]` header to the
+        // next header or the end of file, so a profile-level `slow-timeout`
+        // outside any override block is never mistaken for one.
+        let headers: Vec<regex::Captures<'_>> = header.captures_iter(&config).collect();
+        let mut budgets: Vec<(&str, u64)> = Vec::new();
+        for (index, header_caps) in headers.iter().enumerate() {
+            let header_match = header_caps.get(0).expect("override header always matches itself");
+            let body_end = headers.get(index + 1).map_or(config.len(), |next| {
+                next.get(0).expect("override header always matches itself").start()
+            });
+            let body = &config[header_match.end()..body_end];
+            let profile =
+                header_caps.get(1).expect("override header captures a profile name").as_str();
+            let Some(filter_match) = filter.captures(body) else {
+                continue;
+            };
+            if !filter_match[1].contains("binary(mediapm_demo_online)") {
+                continue;
+            }
+            let Some(period_match) = period.captures(body) else {
+                panic!(
+                    "the [{profile}] override matching binary(mediapm_demo_online) declares no \
+                     slow-timeout period to compare with the demo watchdog"
+                );
+            };
+            let Some(terminate_match) = terminate_after.captures(body) else {
+                panic!(
+                    "the [{profile}] override matching binary(mediapm_demo_online) declares no \
+                     slow-timeout terminate-after to compare with the demo watchdog"
+                );
+            };
+            let period_secs: u64 = period_match[1].parse().expect("period digits parse");
+            let periods: u64 = terminate_match[1].parse().expect("terminate-after digits parse");
+            budgets.push((profile, period_secs * periods));
+        }
+
+        let deadline =
+            super::DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS + super::DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS;
+        assert!(
+            !budgets.is_empty(),
+            "no [[profile.*.overrides]] block in .config/nextest.toml filters \
+             binary(mediapm_demo_online); the demo would inherit its profile's own \
+             slow-timeout and the runner could kill it before its watchdog reports \
+             what stalled"
+        );
+        for (profile, budget) in budgets {
+            assert!(
+                budget > deadline,
+                "the [{profile}] override budgets {budget}s for binary(mediapm_demo_online) \
+                 (period x terminate-after), which does not outlast the demo's watchdog \
+                 deadline of {deadline}s ({total}s hard timeout + {grace}s grace)",
+                total = super::DEMO_ONLINE_HARD_TIMEOUT_TOTAL_SECS,
+                grace = super::DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS,
+            );
+        }
+    }
+
     /// Ensures ReplayGain payload detection requires single-track gain/peak
     /// keys plus reference loudness.
     #[test]
