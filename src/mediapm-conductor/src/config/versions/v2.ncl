@@ -229,8 +229,7 @@ let migrate_v1_to_v2_fn = fun data =>
                 # ||| `tools.<tool>.env_vars`, so a name stated on both
                 # ||| surfaces resolves to the tools value, and a name stated
                 # ||| only here still lands as a literal. A builtin has no
-                # ||| literal surface to carry one (v1 declares this field
-                # ||| invalid for builtin tools), so its entry contributes
+                # ||| literal surface to carry one, so its entry contributes
                 # ||| nothing.
                 env_vars =
                   if std.record.has_field "env_vars" tc then tc.env_vars else {},

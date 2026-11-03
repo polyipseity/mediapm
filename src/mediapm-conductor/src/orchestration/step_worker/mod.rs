@@ -21,6 +21,7 @@ mod executor;
 pub(crate) mod inputs;
 #[cfg(test)]
 mod payload_staging;
+/// Crate-visible: the passthrough spawn path applies the shared environment resolver through it.
 pub(crate) mod process;
 pub(crate) mod sandbox;
 pub(crate) mod template;
