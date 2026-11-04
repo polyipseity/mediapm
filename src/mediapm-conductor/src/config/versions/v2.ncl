@@ -263,18 +263,36 @@ let migrate_v1_to_v2_fn = fun data =>
             let spec =
               if kind == "builtin" then
                 # BuiltinToolSpecV1 — already has name + version
-                # ||| A builtin has no literal surface for `env_vars`, so a
-                # ||| non-empty `tool_configs` entry is carried onto the spec
-                # ||| as a field rather than dropped: the migrated record then
-                # ||| fails the current envelope contract — `RejectBuiltinEnvVarsV4`
-                # ||| in v4.ncl, applied to every load by the decode wrapper in
-                # ||| `config/nickel_io.rs` — and the load rejects the document
-                # ||| naming the tool and `env_vars`. An empty entry names no
-                # ||| variable and stays dropped.
+                # ||| A builtin has no literal surface for `env_vars`, so both surfaces a
+                # ||| v1 document can state one on are carried onto the spec as a field
+                # ||| rather than dropped: the non-empty `tool_configs` entry (through
+                # ||| `config_rt`) and the builtin's own tools-side `t.env_vars`, folded
+                # ||| together with the tools side winning a shared name — the precedence
+                # ||| the executable arm below states for its own two surfaces. The
+                # ||| migrated record then fails the current envelope contract —
+                # ||| `RejectBuiltinEnvVarsV4` in v4.ncl, applied to every load by the
+                # ||| decode wrapper in `config/nickel_io.rs` — and the load rejects the
+                # ||| document naming the tool and `env_vars`. Both sides empty (or
+                # ||| absent) names no variable and stays dropped, so a legacy document
+                # ||| that declares nothing keeps loading.
+                let tools_env =
+                  if std.record.has_field "env_vars" t then t.env_vars else {}
+                in
+                let config_env = if config_rt == null then {} else config_rt.env_vars in
+                let merged_env =
+                  std.record.fields config_env
+                  |> std.array.fold_left
+                    (fun acc =>
+                      fun name =>
+                        if std.record.has_field name tools_env then
+                          acc
+                        else
+                          acc & { "%{name}" = config_env."%{name}" })
+                    tools_env
+                in
                 let builtin_env =
-                  if config_rt == null then {}
-                  else if std.array.length (std.record.fields config_rt.env_vars) == 0 then {}
-                  else { env_vars = config_rt.env_vars }
+                  if std.array.length (std.record.fields merged_env) == 0 then {}
+                  else { env_vars = merged_env }
                 in
                 {
                   kind = "builtin",

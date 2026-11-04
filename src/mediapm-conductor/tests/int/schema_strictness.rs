@@ -366,6 +366,55 @@ const V4_DOC_WITH_BUILTIN_ENV: &str = r#"{
     },
 }"#;
 
+/// A legacy v1 document whose builtin states an environment value directly on
+/// its own `tools` entry — the surface beside `tool_configs` a migration used
+/// to read nothing from.
+const V1_DOC_WITH_BUILTIN_TOOLS_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tools = {
+        "echo" = {
+            kind = "builtin",
+            builtin_id = "echo@v1",
+            env_vars = { ECHO_PREFIX = "shout" },
+        },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
+/// The same tools-side surface stating an identity pair — the spelling the
+/// down-hop writes for an inherited name.
+const V1_DOC_WITH_BUILTIN_IDENTITY_TOOLS_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tools = {
+        "echo" = {
+            kind = "builtin",
+            builtin_id = "echo@v1",
+            env_vars = { SOME_NAME = "SOME_NAME" },
+        },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
+/// The empty-map spelling on the tools side: no name is declared, so the
+/// document must keep loading.
+const V1_DOC_WITH_BUILTIN_EMPTY_TOOLS_ENV: &str = r#"{
+    version = 1,
+    runtime = {},
+    tools = {
+        "echo" = {
+            kind = "builtin",
+            builtin_id = "echo@v1",
+            env_vars = {},
+        },
+    },
+    workflows = {},
+    external_data = {},
+}"#;
+
 /// A v1 `tool_configs.<builtin>.env_vars` declaration fails the load with a
 /// diagnostic naming the tool and the field.
 ///
@@ -457,6 +506,66 @@ fn regression_a_builtin_tool_config_entry_without_env_vars_still_loads() {
 
     decode_document(V1_DOC_WITH_BUILTIN_EMPTY_TOOL_CONFIG.as_bytes())
         .expect("an empty builtin tool_configs entry must load");
+}
+
+/// A v1 document's tools-side `env_vars` on a builtin fails the load with a
+/// diagnostic naming the tool and the field.
+///
+/// The up-hop's builtin arm used to read only the `tool_configs` surface, so
+/// this declaration migrated into nothing and the document loaded as if it
+/// had said nothing — the same silence the `tool_configs` carry exists to
+/// end, one surface over. The arm now folds both surfaces onto the spec, so
+/// the load meets the validator instead of dropping the declaration, and the
+/// diagnostic must carry the validator's own sentence (`is a builtin and
+/// declares`): a source-span error that merely quotes `echo` and `env_vars`
+/// satisfies the name assertions without `RejectBuiltinEnvVarsV4` existing.
+#[test]
+fn regression_a_v1_tools_side_env_value_on_a_builtin_is_rejected_at_load() {
+    let msg = decode_error(V1_DOC_WITH_BUILTIN_TOOLS_ENV);
+    println!("REJECTED V1 TOOLS-SIDE DIAGNOSTIC: {msg}");
+    assert!(msg.contains("echo"), "the error must name the tool: {msg}");
+    assert!(msg.contains("env_vars"), "the error must name the field: {msg}");
+    assert!(
+        msg.contains("is a builtin and declares"),
+        "the rejection must be the validator's own sentence, not a source-span accident: {msg}"
+    );
+}
+
+/// A builtin's identity pair stated on the tools side fails the same load
+/// with the same shape of diagnostic.
+///
+/// The executable arm's identity skip governs the config-side map it consumes
+/// and never this surface, so a tools-side pair reaches the validator
+/// unfiltered — pinning the interaction between the pair rule and the carry
+/// on the surface the pair rule does not touch.
+#[test]
+fn regression_a_builtin_identity_tools_side_env_pair_is_rejected_at_load() {
+    let msg = decode_error(V1_DOC_WITH_BUILTIN_IDENTITY_TOOLS_ENV);
+    println!("REJECTED V1 TOOLS-SIDE IDENTITY DIAGNOSTIC: {msg}");
+    assert!(msg.contains("echo"), "the error must name the tool: {msg}");
+    assert!(msg.contains("env_vars"), "the error must name the field: {msg}");
+    assert!(
+        msg.contains("is a builtin and declares"),
+        "the rejection must be the validator's own sentence, not a source-span accident: {msg}"
+    );
+}
+
+/// A builtin whose tools-side `env_vars` is the empty map still loads.
+///
+/// The validator rejects the field on presence alone, so the up-hop's
+/// empty-stays-dropped guard is the only thing keeping this spelling
+/// readable; without it every legacy document that spells the field empty
+/// would fail to load. This asserts the `{}` spelling explicitly, where the
+/// absent-field case is the fixtures above that carry no `env_vars` at all.
+#[test]
+fn regression_a_builtin_with_empty_tools_side_env_vars_still_loads() {
+    let doc = decode_document(V1_DOC_WITH_BUILTIN_EMPTY_TOOLS_ENV.as_bytes())
+        .expect("an empty tools-side env_vars map must load");
+    assert_eq!(
+        doc.tools["echo"].kind,
+        ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+        "the builtin must decode as the builtin the document declared"
+    );
 }
 
 /// S-A7: `mod.ncl` exports unversioned registry aliases for the latest schema.

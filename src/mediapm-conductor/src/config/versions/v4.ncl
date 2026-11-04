@@ -245,9 +245,11 @@ in
 # ||| naming the tool's dictionary key and the field.
 # |||
 # ||| A builtin has no literal environment surface, so a non-empty
-# ||| `tool_configs.<tool>.env_vars` entry cannot take effect: the v1-to-v2
-# ||| migration carries it onto the tool spec (v2.ncl) and this validator
-# ||| fails the load here instead of letting the value be dropped in silence.
+# ||| `tool_configs.<tool>.env_vars` entry or a tools-side
+# ||| `tools.<tool>.env_vars` declaration cannot take effect: the v1-to-v2
+# ||| migration carries both surfaces onto the tool spec (v2.ncl) and this
+# ||| validator fails the load here instead of letting either be dropped in
+# ||| silence.
 # ||| It runs over the `tools` dictionary before the closed record contract,
 # ||| so the message can quote the tool's key where the record contract's
 # ||| `any_of` failure cannot (a migrated record has no source span to name
