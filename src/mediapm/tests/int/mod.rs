@@ -6,11 +6,10 @@ mod demo_hierarchy_golden;
 mod demo_online;
 /// A local media source stages the bytes its content hash names.
 mod local_source_staging;
-/// The committed media fixture the offline demo and the regression assert against.
+/// The committed media fixture the offline demo asserts against.
 mod media_fixture;
 /// Hermetic media-tagger metadata-stage tests over a mocked network.
 mod media_tagger_hermetic;
-mod online_sync_post_sync_dump;
 /// Nickel schema strictness tests (S-C1..S-C10) — validates the strict
 /// closed-contract surface of `v1.ncl`/`mod.ncl` and the contract export.
 mod schema_strictness;

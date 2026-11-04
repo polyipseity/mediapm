@@ -4,17 +4,15 @@
 //! the host it runs on, because the generated conductor document is shared
 //! across platforms: a tool that resolved one slot produces a command selector
 //! with no branch for the others. [`assert_every_managed_tool_covers_every_os`]
-//! is that contract, and both tests in this module run it — the hermetic one
-//! against a mock upstream that answers all four hosts, the other against the
-//! real hosts, which only the `online` workflow's `all_platform` input reaches
-//! (`.github/workflows/online.yml`, dispatched by hand).
+//! is that contract, and the test in this module runs it against a mock
+//! upstream that answers all four hosts.
 //!
 //! The stub upstream this module mounts lives in [`crate::common::stub_upstream`],
 //! shared with the `tool_sync` modules so two tests cannot disagree about the
 //! upstream's shape.
 //!
-//! Both tests drive the provider seams, which every debug build reads, so they
-//! run in every gate with no feature to pass.
+//! The test drives the provider seams, which every debug build reads, so it
+//! runs in every gate with no feature to pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -109,12 +107,11 @@ fn active_tool_spec<'a>(doc: &'a NickelDocument, tool_id: &str) -> &'a ToolSpec 
 ///
 /// Two limits here are deliberate, and both are easy to mistake for stronger
 /// guarantees than they are. The distinctness check holds for the hermetic path
-/// only: the mock gives every slot its own bytes by construction, real upstream
-/// builds are not known to differ across slots, and the `#[ignore]`d twin that
-/// would meet real bytes has never been run. And the per-OS check is slot-level
-/// rather than arch-level: for a dual-arch `macos/` slot a host-arch key alone
-/// satisfies the prefix test, so a dropped non-host-arch payload is not caught
-/// here. That case is covered by
+/// only: the mock gives every slot its own bytes by construction, and real
+/// upstream builds are not known to differ across slots. And the per-OS check
+/// is slot-level rather than arch-level: for a dual-arch `macos/` slot a
+/// host-arch key alone satisfies the prefix test, so a dropped non-host-arch
+/// payload is not caught here. That case is covered by
 /// `dual_arch_slot_keys_carry_arch_and_exec_path_resolves_host_arch` in
 /// mediapm-conductor and by `resolve_tool_fetch_each_fetched_tool_covers_three_oses`.
 ///
@@ -218,28 +215,5 @@ async fn every_managed_tool_provisions_a_payload_for_every_os_slot()
     let doc = read_generated_doc(&service);
     assert_every_managed_tool_covers_every_os(&doc);
     assert_host_builtin_has_no_payload(&doc);
-    Ok(())
-}
-
-/// The same contract against the real upstream hosts.
-///
-/// Ignored by default: it downloads every managed tool's payload for every OS,
-/// which is hundreds of megabytes and needs network access. The `online`
-/// workflow's `all_platform` input is what runs it on a runner
-/// (`.github/workflows/online.yml`); locally the same run is
-/// `cargo test-pkg mediapm -- --ignored all_platform`. Invoke either when
-/// upstream behavior is what is in question; the hermetic test above is the one
-/// that runs in the suite.
-#[tokio::test]
-#[ignore = "downloads every managed tool from the real upstream hosts"]
-async fn every_managed_tool_provisions_a_payload_for_every_os_slot_online()
--> Result<(), mediapm::MediaPmError> {
-    let (mut service, _root, _cache_root) = service_with_cache(all_managed_tools_storage()).await?;
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
-
-    let doc = read_generated_doc(&service);
-    assert_every_managed_tool_covers_every_os(&doc);
     Ok(())
 }
