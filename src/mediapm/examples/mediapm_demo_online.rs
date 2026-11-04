@@ -3,8 +3,7 @@
 //! One `main`, two paths, and the offline one is the default. The switch only
 //! selects; neither path is skipped here, and there is no CI gate.
 //!
-//! - **Offline (default).** An unset `MEDIAPM_RUN_ONLINE_SYNC`, and every value
-//!   but `1|true|yes|on`, selects the stub tool chain: each managed tool
+//! - **Offline (default).** A bare invocation runs the stub tool chain: each managed tool
 //!   provisions from a mocked upstream whose payload is a chain executable that
 //!   copies its input, and the tagging step asks a mocked `MusicBrainz`. The run
 //!   is the full pipeline and needs no network, so it is what the embedded test
@@ -12,7 +11,7 @@
 //!   `--all-features` turns on, so every command below carries it; a build
 //!   without the feature refuses this route, naming the feature, instead of
 //!   provisioning from the real upstream.
-//! - **Online (opt-in).** `MEDIAPM_RUN_ONLINE_SYNC=1` selects the real providers,
+//! - **Online (opt-in).** `cargo run --package mediapm --example mediapm_demo_online -- --online` selects the real providers,
 //!   the real tool binaries and the real `MusicBrainz`, and only an explicit run
 //!   reaches it. Such a run reuses the real user-level tool download cache
 //!   (`<os-cache-dir>/mediapm/cache`) and persists downloaded tools across runs.
@@ -137,7 +136,7 @@
 //! cargo run --all-features -p mediapm --example mediapm_demo_online
 //! # The online path: real providers, real binaries, real MusicBrainz. Nothing in a
 //! # gate reaches it; it downloads from YouTube and takes minutes.
-//! MEDIAPM_RUN_ONLINE_SYNC=1 cargo run --all-features -p mediapm --example mediapm_demo_online
+//! cargo run --package mediapm --example mediapm_demo_online -- --online
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -282,8 +281,6 @@ const DEMO_EXPECTED_YT_DLP_STEP_COUNT: usize = 1;
 /// `mediapm_test_support::mock_musicbrainz` answers for, so an offline run's tagger
 /// finds a route for it and the mock's request record names it.
 const DEMO_MEDIA_TAGGER_RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae";
-
-const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 
 /// Total hard-watchdog deadline.
 ///
@@ -569,26 +566,13 @@ fn unix_timestamp_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
 }
 
-fn online_demo_timeout() -> ExampleResult<Duration> {
-    let Some(raw_value) = std::env::var_os(DEMO_ONLINE_TIMEOUT_SECS_ENV) else {
-        return Ok(Duration::from_secs(DEMO_ONLINE_TIMEOUT_SECS_DEFAULT));
-    };
-
-    let text = raw_value.to_string_lossy().trim().to_string();
-    if text.is_empty() {
-        return Ok(Duration::from_secs(DEMO_ONLINE_TIMEOUT_SECS_DEFAULT));
-    }
-
-    let seconds = text.parse::<u64>().map_err(|error| {
-        format!(
-            "{DEMO_ONLINE_TIMEOUT_SECS_ENV} must be a positive integer number of seconds, got '{text}': {error}"
-        )
-    })?;
-    if seconds == 0 {
-        return Err(format!("{DEMO_ONLINE_TIMEOUT_SECS_ENV} must be greater than 0 seconds").into());
-    }
-
-    Ok(Duration::from_secs(seconds))
+/// The graceful sync budget: the parsed `--timeout-secs` value, or the default.
+///
+/// Infallible by construction — `parse_demo_args` already rejected anything
+/// that is not a positive integer — so the resolver has no error path to
+/// maintain.
+fn demo_timeout(specified: Option<u64>) -> Duration {
+    Duration::from_secs(specified.unwrap_or(DEMO_ONLINE_TIMEOUT_SECS_DEFAULT))
 }
 
 fn configure_demo_conductor_executable_timeout(sync_timeout: Duration) {
@@ -4004,31 +3988,69 @@ fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> Exam
     Ok(find_managed_tool_spec(machine, logical_name)?.name.clone())
 }
 
-/// Rejects arguments the demo does not accept.
+/// The controls the demo accepts on its command line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct DemoArgs {
+    /// `--online`: run against the real upstream instead of the stub chain.
+    online: bool,
+    /// `--timeout-secs <N>`: the graceful sync budget; `None` means the default.
+    timeout_secs: Option<u64>,
+}
+
+/// The demo's entire grammar: `--online`, `--timeout-secs <positive seconds>`,
+/// and nothing else.
 ///
-/// The demo takes no arguments. A stray dispatch into this binary would run a
-/// second demo, and a second demo from a dispatch is what once turned a tagging
-/// step into a 300s timeout, so any argument is an error rather than something
-/// to ignore.
+/// All argv validation happens here — parse, don't validate — so `main` wires a
+/// parsed structure instead of re-checking strings. Every error names the
+/// offending token and the form that would have worked, because a stray
+/// argument historically meant something dispatched into this binary in place
+/// of the mediapm CLI.
 ///
 /// # Errors
 ///
-/// Returns an error naming the first argument when `args` is not empty. The
-/// check reads no process state, so a caller passes the arguments it received
-/// and a test passes the arguments it wants to assert on.
-fn reject_unexpected_arguments<I>(args: I) -> ExampleResult<()>
+/// Returns an error when a token is not a known flag (naming the token and
+/// listing both flags), when `--timeout-secs` has no value, or when its value
+/// is not a positive integer.
+fn parse_demo_args<I>(args: I) -> ExampleResult<DemoArgs>
 where
     I: IntoIterator<Item = std::ffi::OsString>,
 {
-    let Some(first) = args.into_iter().next() else {
-        return Ok(());
-    };
-    Err(format!(
-        "mediapm_demo_online takes no arguments, but was invoked with '{}'; something dispatched into the demo in place of the mediapm CLI — check what named this binary as its executable",
-        first.to_string_lossy()
-    )
-    .into())
+    let mut parsed = DemoArgs::default();
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        match arg.to_string_lossy().as_ref() {
+            "--online" => parsed.online = true,
+            "--timeout-secs" => {
+                let Some(value) = iter.next() else {
+                    return Err(
+                        "`--timeout-secs` needs a value, for example `--timeout-secs 600`".into()
+                    );
+                };
+                let text = value.to_string_lossy();
+                let seconds = text.parse::<u64>().map_err(|error| {
+                    format!(
+                        "`--timeout-secs` must be a positive integer number of seconds, got '{text}': {error}"
+                    )
+                })?;
+                if seconds == 0 {
+                    return Err("`--timeout-secs` must be greater than 0 seconds".into());
+                }
+                parsed.timeout_secs = Some(seconds);
+            }
+            other => {
+                return Err(format!(
+                    "mediapm_demo_online accepts `--online` and `--timeout-secs` <seconds>, but was invoked with '{other}'; something dispatched into the demo in place of the mediapm CLI — check what named this binary as its executable"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(parsed)
 }
+
+/// The one line every offline run opens with, naming the flag that leaves it.
+const OFFLINE_START_NOTICE: &str =
+    "offline demo (stub chain): pass --online to run against the real upstream";
 
 /// Runs the demo against the upstream its route names.
 ///
@@ -4043,33 +4065,38 @@ where
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     // Under `cargo test` the harness owns argv and the embedded test calls
-    // this function, so the check would fire on the harness's own flags. The
-    // helper is unit-tested directly instead.
-    if !cfg!(test) {
-        reject_unexpected_arguments(std::env::args_os().skip(1))?;
-    }
-
-    // The switch's one reader: an unset value and every token but the enabled
-    // ones select the stub chain, so a run has to ask for the real upstream by
-    // name rather than getting it by saying nothing.
-    let route = if example_isolation::online_sync_enabled() {
-        ToolRoute::RealUpstream
+    // this function, so the parse would run on the harness's own flags. The
+    // parser is unit-tested directly instead, and a test's `main` gets the
+    // default (offline) route.
+    let args = if cfg!(test) {
+        DemoArgs::default()
     } else {
-        ToolRoute::StubChain
+        parse_demo_args(std::env::args_os().skip(1))?
     };
 
-    // The refusal lives in `stub_chain_refusal`, which the tests reach directly; the
-    // arm is unconditional and keys on the build profile because every build can take
-    // the offline route into it. It runs before any watchdog is armed, before a
+    // The route has exactly one selector now: `--online`. A bare invocation is
+    // the stub chain, so a run has to ask for the real upstream by name
+    // rather than getting it by saying nothing.
+    let route = if args.online { ToolRoute::RealUpstream } else { ToolRoute::StubChain };
+
+    // The refusal lives in `stub_chain_refusal`, which the tests reach
+    // directly; the arm is unconditional because every build can take the
+    // offline route into it. It runs before any watchdog is armed, before a
     // chain is mounted and before a tool is resolved.
     if let Some(refusal) = stub_chain_refusal(route, cfg!(debug_assertions)) {
         return Err(refusal.into());
     }
 
-    // Watchdog budgets resolve before the route branch so both paths export the
-    // same knobs: a bad timeout env value fails fast everywhere, and the
+    // The offline route says so before any work starts, and names the flag
+    // that leaves it.
+    if !route.is_online() {
+        mediapm::output::print_warning(OFFLINE_START_NOTICE);
+    }
+
+    // Watchdog budgets resolve before the route branch so both paths export
+    // the same knobs: a bad `--timeout-secs` fails fast everywhere, and the
     // conductor sees the same budget whenever it is constructed.
-    let sync_timeout = online_demo_timeout()?;
+    let sync_timeout = demo_timeout(args.timeout_secs);
     configure_demo_conductor_executable_timeout(sync_timeout);
     configure_demo_conductor_rpc_timeout(sync_timeout);
 
@@ -4341,140 +4368,116 @@ mod tests {
         Ok(())
     }
 
-    /// Ensures the switch's disabled tokens select the offline path.
+    /// The demo's default invocation parses to the offline route with the default budget.
     #[test]
-    fn run_sync_override_accepts_disabled_tokens() {
-        let _env_lock = example_isolation::lock_process_env();
-        let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
-
-        // SAFETY: test mutates one process env key in a controlled scope and
-        // restores the previous value before exit.
-        unsafe {
-            std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
-        }
-        let result = example_isolation::online_sync_enabled();
-
-        // SAFETY: restore previous env var value for test isolation.
-        unsafe {
-            if let Some(value) = previous {
-                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
-            } else {
-                std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
-            }
-        }
-
-        assert!(!result, "a disabled token must select the offline path");
+    fn parse_demo_args_accepts_no_arguments() {
+        let args = super::parse_demo_args(std::iter::empty::<std::ffi::OsString>())
+            .expect("the documented bare invocation must parse");
+        assert_eq!(args, super::DemoArgs::default(), "bare means offline with the default timeout");
     }
 
-    /// Ensures demo-online sync override allows unset environment (offline path).
+    /// `--online` is the one token that selects the real upstream.
     #[test]
-    fn run_sync_override_validator_allows_unset_env() {
-        let _env_lock = example_isolation::lock_process_env();
-        let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
-        // SAFETY: test mutates one process env key in a controlled scope and
-        // restores the previous value before exit.
-        unsafe {
-            std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV);
-        }
-
-        let result = example_isolation::online_sync_enabled();
-
-        // SAFETY: restore previous env var value for test isolation.
-        unsafe {
-            if let Some(value) = previous {
-                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
-            }
-        }
-
-        assert!(!result, "an unset switch must select the offline path");
+    fn parse_demo_args_maps_the_online_flag() {
+        let args = super::parse_demo_args([std::ffi::OsString::from("--online")])
+            .expect("`--online` must parse");
+        assert!(args.online, "the flag must select the real-upstream route");
+        assert_eq!(args.timeout_secs, None, "the flag says nothing about the budget");
     }
 
-    /// Ensures the switch reads only the enabled tokens as the real upstream.
-    ///
-    /// The unknown token is the case the retired three-level parser refused
-    /// outright: the two-path rule has no third path for it to select, so it
-    /// resolves to offline like every other non-enabled value.
+    /// `--timeout-secs` carries its value as the next token.
     #[test]
-    fn online_sync_enabled_accepts_only_enabled_tokens() {
-        let _env_lock = example_isolation::lock_process_env();
-        let previous = std::env::var(example_isolation::RUN_ONLINE_SYNC_ENV).ok();
-
-        for (value, expected) in [
-            ("1", true),
-            ("true", true),
-            ("yes", true),
-            ("on", true),
-            ("TRUE", true),
-            ("false", false),
-            ("0", false),
-            ("no", false),
-            ("off", false),
-            ("", false),
-            ("maybe", false),
-        ] {
-            // SAFETY: the process env lock is held for the whole loop.
-            unsafe {
-                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value);
-            }
-            assert_eq!(
-                example_isolation::online_sync_enabled(),
-                expected,
-                "'{value}' must {} the online path",
-                if expected { "select" } else { "not select" }
-            );
-        }
-
-        // SAFETY: restore previous env var value for test isolation.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, value),
-                None => std::env::remove_var(example_isolation::RUN_ONLINE_SYNC_ENV),
-            }
-        }
+    fn parse_demo_args_reads_the_timeout_flag() {
+        let args = super::parse_demo_args(["--timeout-secs", "600"].map(std::ffi::OsString::from))
+            .expect("a positive value must parse");
+        assert_eq!(args.timeout_secs, Some(600), "the value must reach the resolver");
+        assert!(!args.online, "the budget flag says nothing about the route");
     }
 
-    /// Ensures a dispatch into the demo is refused by name.
-    ///
-    /// A caller passing `builtin media-tagger …` would run a second demo if the
-    /// argument list were ignored. The error has to name the first argument,
-    /// because that is what tells a reader which caller dispatched here.
+    /// A value-taking flag with no value is a usage error, not a default.
     #[test]
-    fn rejects_a_dispatch_into_the_demo() {
-        let args = ["builtin", "media-tagger", "--input", "x"].map(std::ffi::OsString::from);
-
-        let error = super::reject_unexpected_arguments(args)
-            .expect_err("a dispatch into the demo must be refused");
-
-        assert_eq!(
-            error.to_string(),
-            "mediapm_demo_online takes no arguments, but was invoked with 'builtin'; something dispatched into the demo in place of the mediapm CLI — check what named this binary as its executable",
-            "the refusal must name the argument it received and say what a dispatch means"
+    fn parse_demo_args_rejects_a_timeout_without_a_value() {
+        let text = super::parse_demo_args([std::ffi::OsString::from("--timeout-secs")])
+            .expect_err("`--timeout-secs` without a value must fail")
+            .to_string();
+        assert!(
+            text.contains("`--timeout-secs` needs a value"),
+            "the error must show the form: {text}"
         );
     }
 
-    /// Ensures the demo accepts the empty argument list it documents.
-    ///
-    /// An explicit `cargo run --example mediapm_demo_online` passes no arguments, so the check
-    /// must not turn the documented entry point into an error.
+    /// A non-integer budget is rejected with the flag named, not coerced.
     #[test]
-    fn accepts_no_arguments() {
-        super::reject_unexpected_arguments(std::iter::empty::<std::ffi::OsString>())
-            .expect("the demo documents an empty argument list");
+    fn parse_demo_args_rejects_a_non_integer_timeout() {
+        let text = super::parse_demo_args(["--timeout-secs", "abc"].map(std::ffi::OsString::from))
+            .expect_err("a non-integer budget must fail")
+            .to_string();
+        assert!(text.contains("positive integer"), "the error must state the form: {text}");
+        assert!(text.contains("abc"), "the error must echo what was passed: {text}");
     }
 
-    /// Ensures any stray argument is refused, including one that looks like a flag.
-    ///
-    /// The demo has no help mode, so `--help` reaching it means something used the demo as a
-    /// CLI; accepting it would reintroduce the dispatch this check exists to refuse.
+    /// Zero budget is rejected: it would fire the watchdog instantly.
+    #[test]
+    fn parse_demo_args_rejects_a_zero_timeout() {
+        let text = super::parse_demo_args(["--timeout-secs", "0"].map(std::ffi::OsString::from))
+            .expect_err("a zero budget must fail")
+            .to_string();
+        assert!(text.contains("greater than 0"), "the error must state the bound: {text}");
+    }
+
+    /// A dispatch into the demo is still refused, and the message lists the flags
+    /// so a human can tell a typo from a wrong executable.
+    #[test]
+    fn parse_demo_args_refuses_a_dispatch_and_lists_the_flags() {
+        let text = super::parse_demo_args(
+            ["builtin", "media-tagger", "--input", "x"].map(std::ffi::OsString::from),
+        )
+        .expect_err("a dispatch into the demo must be refused")
+        .to_string();
+        assert!(text.contains("builtin"), "the message must name the first argument: {text}");
+        assert!(text.contains("`--online`"), "the message must list the valid flags: {text}");
+        assert!(text.contains("`--timeout-secs`"), "the message must list the valid flags: {text}");
+        assert!(text.contains("dispatch"), "the message must still explain what happened: {text}");
+    }
+
+    /// Even a flag-shaped stray argument is a dispatch: the demo has no help mode.
     #[test]
     fn rejects_any_stray_argument() {
-        let error = super::reject_unexpected_arguments([std::ffi::OsString::from("--help")])
-            .expect_err("the demo has no help mode, so `--help` is a dispatch into it");
+        let text = super::parse_demo_args([std::ffi::OsString::from("--help")])
+            .expect_err("the demo has no help mode, so `--help` is a dispatch into it")
+            .to_string();
+        assert!(text.contains("--help"), "the message must name the argument it refused: {text}");
+        assert!(text.contains("`--online`"), "the message must list the valid flags: {text}");
+    }
 
+    /// Every offline run opens by naming the flag that leaves it.
+    #[test]
+    fn offline_notice_names_the_route_flag() {
         assert!(
-            error.to_string().contains("'--help'"),
-            "the message must name the argument it refused: {error}"
+            super::OFFLINE_START_NOTICE.contains("--online"),
+            "the notice must name the flag: {}",
+            super::OFFLINE_START_NOTICE
         );
+        assert!(
+            super::OFFLINE_START_NOTICE.contains("offline"),
+            "the notice must say which route the reader is on: {}",
+            super::OFFLINE_START_NOTICE
+        );
+    }
+
+    /// The resolver falls back to the documented default when no flag was given.
+    #[test]
+    fn demo_timeout_falls_back_to_the_default() {
+        assert_eq!(
+            super::demo_timeout(None),
+            std::time::Duration::from_secs(super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT)
+        );
+    }
+
+    /// The resolver honors the parsed flag verbatim.
+    #[test]
+    fn demo_timeout_uses_the_specified_value() {
+        assert_eq!(super::demo_timeout(Some(42)), std::time::Duration::from_secs(42));
     }
 
     /// The offline route's refusal is one testable decision, not a `cfg` arm.
@@ -4654,9 +4657,7 @@ mod tests {
     }
 
     /// Every env key besides the two example roots that one `main()` run reads.
-    const MAIN_RUN_KNOBS: [&str; 4] = [
-        example_isolation::RUN_ONLINE_SYNC_ENV,
-        super::DEMO_ONLINE_TIMEOUT_SECS_ENV,
+    const MAIN_RUN_KNOBS: [&str; 2] = [
         super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV,
         super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV,
     ];
@@ -4750,8 +4751,6 @@ mod tests {
             // releases it before `main` takes it. The knobs are cleared so a value
             // leaked by a sibling test cannot shadow the computation asserted below.
             unsafe {
-                std::env::set_var(example_isolation::RUN_ONLINE_SYNC_ENV, "false");
-                std::env::remove_var(super::DEMO_ONLINE_TIMEOUT_SECS_ENV);
                 std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV);
                 std::env::set_var(
                     super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV,

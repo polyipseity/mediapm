@@ -11,7 +11,7 @@
 //! declared unsaved — and it stays inside the demo's defining property: it needs
 //! no network, so it cannot include tools that fetch payloads or make network
 //! lookups. Real-binary coverage of the transform and tagging stages lives
-//! behind the `MEDIAPM_RUN_ONLINE_SYNC` gate instead; see
+//! behind the online demo's `--online` flag instead; see
 //! `.agents/instructions/example-execution-policy.instructions.md`.
 //!
 //! The scratch capture is deliberately absent from the tree below: nothing in the

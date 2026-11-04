@@ -15,20 +15,6 @@ pub const ARTIFACT_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_ARTIFACT_ROOT";
 /// Env var overriding the user-level tool download cache root for example runs.
 pub const CACHE_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
 
-/// Env var selecting which of the two paths a network-bound example runs.
-///
-/// [`online_sync_enabled`] is the switch's one reader. The online demo
-/// (`mediapm_demo_online`) runs offline — stub tools and a mocked tagger
-/// backend — unless this holds an enabled token (`1|true|yes|on`), in which
-/// case it runs the real upstream. Unset and every other value, including the
-/// disabled tokens (`false|0|no|off`), select the offline path, whose seams
-/// are read in every debug build.
-///
-/// The offline demo (`mediapm_demo`) reaches no upstream at all and has no
-/// switch, and the `online_sync_post_sync_dump` regression reads none either: it
-/// reaches the real upstream through `#[ignore]`.
-pub const RUN_ONLINE_SYNC_ENV: &str = "MEDIAPM_RUN_ONLINE_SYNC";
-
 /// Process-wide lock serializing `MEDIAPM_EXAMPLE_*` env mutation.
 ///
 /// Examples-as-tests run embedded in one process and can execute in parallel
@@ -90,18 +76,6 @@ pub fn user_level_cache_root() -> PathBuf {
 #[must_use]
 pub fn uses_isolated_cache_root() -> bool {
     std::env::var_os(CACHE_ROOT_ENV).is_some()
-}
-
-/// Whether the real upstream is selected: true only for `1|true|yes|on`.
-///
-/// This is [`RUN_ONLINE_SYNC_ENV`]'s one reader. Unset, empty and every other
-/// value — the disabled tokens `false|0|no|off` among them — select the offline
-/// path, so a reader that wants the real upstream has to ask for it by name
-/// rather than getting it by saying nothing.
-#[must_use]
-pub fn online_sync_enabled() -> bool {
-    std::env::var(RUN_ONLINE_SYNC_ENV)
-        .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.
