@@ -25,7 +25,7 @@ Run both **sequentially** (not parallel) at the end of work:
 
 ```sh
 cargo run --package mediapm --example mediapm_demo
-cargo run --all-features --package mediapm --example mediapm_demo_online
+cargo run --package mediapm --example mediapm_demo_online
 ```
 
 Both commands run the demos' offline paths, so neither needs network access and neither provisions a real tool binary. No feature flag is involved: the demo is offline by default, and a release build refuses the offline route, naming `--release` to drop or `--online` for the real upstream.

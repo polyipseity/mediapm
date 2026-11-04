@@ -63,7 +63,7 @@ cargo test-all             # nextest + tempdir and janitor gates; takes the runn
 cargo test-doc-all         # doctests + rustdoc link gate
 ```
 
-Online integration gate (network + external providers):
+Online run (network + external providers):
 
 ```sh
 cargo run -p mediapm --example mediapm_demo_online -- --online --timeout-secs 300
