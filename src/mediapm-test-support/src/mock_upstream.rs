@@ -28,19 +28,7 @@ pub struct MockUpstream {
 
 impl MockUpstream {
     /// Starts a server with no routes mounted.
-    ///
-    /// The feature check runs directly rather than through a throwaway guard:
-    /// the lock is non-reentrant, so a caller that already holds one and starts
-    /// a second server would deadlock, and a deadlock is indistinguishable from
-    /// a timeout.
-    ///
-    /// # Panics
-    ///
-    /// Panics when this crate was built without `test-seams`: a mock that
-    /// answered while the seams were compiled out would leave the test
-    /// fetching from the real upstream.
     pub async fn start() -> Self {
-        seams::enforce_seam_feature(cfg!(feature = "test-seams"));
         Self { server: MockServer::start().await }
     }
 
@@ -242,7 +230,7 @@ impl MockUpstream {
     }
 }
 
-#[cfg(all(test, feature = "test-seams"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -440,22 +428,5 @@ mod tests {
                 assert!(seams::read_under_lock(name).is_none(), "{name} must be removed again");
             }
         });
-    }
-}
-
-/// The refusal, which is the only behavior a feature-off build can exercise.
-///
-/// `MockUpstream::start` itself refuses without the feature, so every
-/// route-mounting test needs it; the mock must refuse rather than serve routes
-/// that no seam would ever reach.
-#[cfg(all(test, not(feature = "test-seams")))]
-mod without_feature {
-    use super::*;
-
-    /// A build without the feature refuses to start the mock.
-    #[tokio::test]
-    #[should_panic(expected = "test-seams")]
-    async fn starting_the_mock_without_the_feature_refuses() {
-        let _mock = MockUpstream::start().await;
     }
 }

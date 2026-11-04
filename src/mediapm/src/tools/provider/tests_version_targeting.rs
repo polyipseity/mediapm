@@ -8,9 +8,9 @@
 //! rolling ffmpeg legs is refused with the retention reason instead of
 //! silently fetching the wrong bytes.
 //!
-//! Tests that set a `MEDIAPM_*` seam carry `#[cfg(feature = "test-seams")]`,
-//! because a build without the feature ignores the variable and the test would
-//! reach the real network. Every workspace gate passes `--all-features`.
+//! Tests that set a `MEDIAPM_*` seam run in a debug build — the build that
+//! reads the variable — and hold `lock_process_env()` for their mutation
+//! scope, so no sibling can observe a half-installed seam.
 //!
 //! The pure matcher tests at the bottom pin the per-tool asset selection
 //! itself (exact-name for yt-dlp/deno, version-embedded suffix for
@@ -22,12 +22,9 @@
 //! seam test here holds `lock_process_env()` for its mutation scope.
 
 use super::*;
-#[cfg(feature = "test-seams")]
 use crate::example_isolation::lock_process_env;
 use mediapm_conductor::tools::provider::VersionSpecFields;
-#[cfg(feature = "test-seams")]
 use wiremock::matchers::{method, path};
-#[cfg(feature = "test-seams")]
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Builds an `Exact` version spec pinning one git tag.
@@ -43,10 +40,8 @@ fn exact_tag(tag: &str) -> VersionSpec {
 /// resolution needs: the release-by-tag document with its asset list, and the
 /// tag ref whose object carries the commit SHA.
 ///
-/// Gated with the seam: the tests that mount it need
-/// `MEDIAPM_GITHUB_API_BASE`, and a build without the feature compiles both
-/// the seam and this helper out.
-#[cfg(feature = "test-seams")]
+/// Mounted by the seam tests: they need `MEDIAPM_GITHUB_API_BASE` pointed at
+/// a local server.
 async fn mock_lightweight_tag_release(
     server: &MockServer,
     owner: &str,
@@ -79,7 +74,6 @@ async fn mock_lightweight_tag_release(
 /// and builds `releases/download/{tag}/…` URLs — the pinned bytes, not
 /// whatever `latest` currently points at — with the resolved commit hash as
 /// the canonical version.
-#[cfg(feature = "test-seams")]
 #[tokio::test]
 #[expect(
     clippy::await_holding_lock,
@@ -144,7 +138,6 @@ async fn exact_tag_fetches_release_assets_and_builds_pinned_urls() {
 /// A pinned release lacking one platform's asset fails naming the tool, the
 /// tag, the missing pattern, and the OS slot — so a pin typo or an upstream
 /// asset rename is diagnosable without opening the API by hand.
-#[cfg(feature = "test-seams")]
 #[tokio::test]
 #[expect(
     clippy::await_holding_lock,
@@ -228,7 +221,6 @@ async fn btbn_pinned_ffmpeg_is_refused_with_the_retention_reason() {
 /// "commit hash" could never match a real one, so the pinned path errors
 /// instead. The release document itself is served, isolating the refusal to
 /// the ref dereference.
-#[cfg(feature = "test-seams")]
 #[tokio::test]
 #[expect(
     clippy::await_holding_lock,
@@ -290,7 +282,6 @@ async fn pinned_tag_with_a_non_dereferenceable_ref_is_refused() {
 /// hits the ref endpoint and, finding a non-dereferenceable ref, refuses.
 /// The mock's `expect(1)` on both endpoints is the proof: had the cache been
 /// served, neither would have been contacted.
-#[cfg(feature = "test-seams")]
 #[tokio::test]
 #[expect(
     clippy::await_holding_lock,

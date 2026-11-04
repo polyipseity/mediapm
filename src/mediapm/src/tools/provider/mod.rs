@@ -143,64 +143,55 @@ const GITHUB_DOWNLOAD_BASE_DEFAULT: &str = "https://github.com";
 
 /// Environment variable overriding the GitHub REST API base URL.
 ///
-/// Compiled only into a `test-seams` build: a test points it at a local
-/// `wiremock` server to exercise tag-pinned resolution without real network
-/// access. A build without the feature has no such variable.
-#[cfg(feature = "test-seams")]
+/// A test points it at a local `wiremock` server to exercise tag-pinned
+/// resolution without real network access.
 const GITHUB_API_BASE_ENV: &str = "MEDIAPM_GITHUB_API_BASE";
 
 /// Environment variable overriding the GitHub release-download base URL.
 ///
-/// Compiled only into a `test-seams` build, same rule as
-/// [`GITHUB_API_BASE_ENV`].
-#[cfg(feature = "test-seams")]
+/// Same rule as [`GITHUB_API_BASE_ENV`].
 const GITHUB_DOWNLOAD_BASE_ENV: &str = "MEDIAPM_GITHUB_DOWNLOAD_BASE";
 
 /// Returns the GitHub REST API base URL.
 ///
-/// In a build with the `test-seams` feature the value is the
-/// `MEDIAPM_GITHUB_API_BASE` override when set, read per call (never cached in
-/// a `OnceLock`) so per-test `wiremock` servers can each take a turn under the
-/// process env lock. Every other build returns [`GITHUB_API_BASE_DEFAULT`], so
-/// the environment cannot redirect a shipped binary.
+/// In a debug build the value is the `MEDIAPM_GITHUB_API_BASE` override when
+/// set, read per call (never cached in a `OnceLock`) so per-test `wiremock`
+/// servers can each take a turn under the process env lock. A release build
+/// ignores the variable (`cfg!(debug_assertions)` is false), so the
+/// environment cannot redirect a shipped binary.
 ///
 /// `pub(crate)` because a metadata seed outside this module keys the cache by
 /// these URLs; a seed naming the production host would miss under a redirected
 /// seam, so it has to read the same base the resolve does.
 pub(crate) fn github_api_base() -> String {
-    #[cfg(feature = "test-seams")]
-    {
+    if cfg!(debug_assertions) {
         std::env::var(GITHUB_API_BASE_ENV).unwrap_or_else(|_| GITHUB_API_BASE_DEFAULT.to_string())
-    }
-    #[cfg(not(feature = "test-seams"))]
-    {
+    } else {
         GITHUB_API_BASE_DEFAULT.to_string()
     }
 }
 
 /// Returns the base URL GitHub release assets are downloaded from.
 ///
-/// Same feature rule as [`github_api_base`]: the
-/// `MEDIAPM_GITHUB_DOWNLOAD_BASE` override is read per call in a `test-seams`
-/// build, and every other build returns [`GITHUB_DOWNLOAD_BASE_DEFAULT`].
+/// Same profile rule as [`github_api_base`]: the
+/// `MEDIAPM_GITHUB_DOWNLOAD_BASE` override is read per call in a debug build,
+/// and a release build returns [`GITHUB_DOWNLOAD_BASE_DEFAULT`] regardless of
+/// the variable.
 ///
 /// Every GitHub payload URL is built from here rather than from a literal
 /// host: [`github_release_asset_url`] for a tag-pinned asset, and the per-tool
 /// provider modules for the `latest/download` templates a `Latest` spec
 /// resolves — [`yt_dlp`], [`deno`], [`rsgain`], [`sd`], and the `BtbN` legs of
 /// [`ffmpeg`]. A template that hardcoded its host would compile, resolve, and
-/// fetch from the real GitHub even in a `test-seams` build, so
+/// fetch from the real GitHub even with the override set, so
 /// `every_latest_payload_url_is_built_from_the_download_seam` walks every
 /// managed tool's resolved sources and fails on any URL that still names
 /// `github.com`.
 pub(crate) fn github_download_base() -> String {
-    #[cfg(feature = "test-seams")]
-    {
+    if cfg!(debug_assertions) {
         std::env::var(GITHUB_DOWNLOAD_BASE_ENV)
             .unwrap_or_else(|_| GITHUB_DOWNLOAD_BASE_DEFAULT.to_string())
-    }
-    #[cfg(not(feature = "test-seams"))]
-    {
+    } else {
         GITHUB_DOWNLOAD_BASE_DEFAULT.to_string()
     }
 }
@@ -943,10 +934,10 @@ mod tests_version_targeting;
 
 /// Provider tests, including the ones that drive a `MEDIAPM_*` seam.
 ///
-/// A test that sets a seam variable carries `#[cfg(feature = "test-seams")]`,
-/// because a build without the feature ignores that variable: the test would
-/// reach the real network instead of a local server. Every workspace gate
-/// passes `--all-features`, so those tests run wherever the suite runs.
+/// A test that sets a seam variable runs in a debug build — the build that
+/// reads the variable — and takes the process env lock while it reads, so no
+/// sibling can observe a half-installed seam. Every workspace gate builds in
+/// debug, so those tests run wherever the suite runs.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2107,7 +2098,6 @@ mod tests {
     /// GitHub API answers the list endpoint and the first `autobuild-*` tag
     /// is picked from it, proving the URL is built from `github_api_base()`
     /// and not a hardcoded host.
-    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -2283,10 +2273,9 @@ mod tests {
         );
     }
 
-    /// The API seam answers the `MEDIAPM_GITHUB_API_BASE` override in a
-    /// `test-seams` build, which is what lets a test point the provider at a
+    /// The API seam answers the `MEDIAPM_GITHUB_API_BASE` override in a debug
+    /// build, which is what lets a test point the provider at a
     /// local server instead of the real GitHub API.
-    #[cfg(feature = "test-seams")]
     #[test]
     fn github_api_base_returns_the_override_when_the_seam_is_set() {
         let _env = lock_process_env();
@@ -2303,9 +2292,8 @@ mod tests {
     }
 
     /// The download seam answers the `MEDIAPM_GITHUB_DOWNLOAD_BASE` override
-    /// in a `test-seams` build, which is what lets a test serve every managed
+    /// in a debug build, which is what lets a test serve every managed
     /// tool's payload URLs from a local server.
-    #[cfg(feature = "test-seams")]
     #[test]
     fn github_download_base_returns_the_override_when_the_seam_is_set() {
         let _env = lock_process_env();
@@ -2324,7 +2312,6 @@ mod tests {
     /// The release-asset URL is composed from the download seam rather than
     /// from a literal host, so a test can redirect the whole payload path and
     /// a future edit cannot quietly reintroduce `github.com`.
-    #[cfg(feature = "test-seams")]
     #[test]
     fn github_release_asset_url_is_composed_from_the_download_seam() {
         let _env = lock_process_env();
@@ -2355,7 +2342,6 @@ mod tests {
     /// still passed: the resolve phase only rewrites the path segment, never
     /// the host. So this resolves every managed tool and fails on the first
     /// URL that still names `github.com`, naming the tool and the URL.
-    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -2411,42 +2397,6 @@ mod tests {
         // SAFETY: same env-lock scope as the set above.
         unsafe {
             std::env::remove_var(GITHUB_DOWNLOAD_BASE_ENV);
-        }
-    }
-
-    /// Without the `test-seams` feature the environment cannot redirect the
-    /// provider: both bases stay at their production values, and the asset URL
-    /// keeps the production host, even with the variables set.
-    ///
-    /// Run with
-    /// `cargo test -p mediapm --no-default-features --features cli,media-tagger`.
-    /// The plain `--no-default-features` form cannot compile in this workspace:
-    /// with `tool-presets` off, `mediapm-conductor` fails on its optional `zip`
-    /// dependency in `step_worker/capture.rs`. This test cannot run under
-    /// `--all-features` either, which compiles the seam in and would take the
-    /// override branch instead.
-    #[cfg(not(feature = "test-seams"))]
-    #[test]
-    fn github_bases_ignore_the_environment_without_the_seam_feature() {
-        let _env = lock_process_env();
-        // SAFETY: the env lock the guard holds scopes these process-global
-        // variables to this test, per the documented MEDIAPM_* mutation-scope
-        // rule. The names are spelled here rather than through the constants
-        // because this build compiles those constants out.
-        unsafe {
-            std::env::set_var("MEDIAPM_GITHUB_API_BASE", "http://127.0.0.1:9/github-api");
-            std::env::set_var("MEDIAPM_GITHUB_DOWNLOAD_BASE", "http://127.0.0.1:9/assets");
-        }
-        assert_eq!(github_api_base(), GITHUB_API_BASE_DEFAULT);
-        assert_eq!(github_download_base(), GITHUB_DOWNLOAD_BASE_DEFAULT);
-        assert_eq!(
-            github_release_asset_url("yt-dlp", "yt-dlp", "2025.07.15", "yt-dlp_linux"),
-            "https://github.com/yt-dlp/yt-dlp/releases/download/2025.07.15/yt-dlp_linux"
-        );
-        // SAFETY: same env-lock scope as the sets above.
-        unsafe {
-            std::env::remove_var("MEDIAPM_GITHUB_API_BASE");
-            std::env::remove_var("MEDIAPM_GITHUB_DOWNLOAD_BASE");
         }
     }
 }

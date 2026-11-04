@@ -1,10 +1,10 @@
 //! Upstream seam variables and the process-wide lock that scopes them.
 //!
-//! The `mediapm` provider layer reads four base URLs from the environment when
-//! it is built with its `test-seams` feature: the GitHub REST API base, the
-//! GitHub release-download base, the martin-riedl base and the jellyfin base. A
-//! hermetic test points all four at one [`MockUpstream`](crate::MockUpstream)
-//! for the duration of a scope and restores whatever was there before.
+//! The `mediapm` provider layer reads four base URLs from the environment in
+//! debug builds: the GitHub REST API base, the GitHub release-download base,
+//! the martin-riedl base and the jellyfin base. A hermetic test points all
+//! four at one [`MockUpstream`](crate::MockUpstream) for the duration of a
+//! scope and restores whatever was there before.
 //!
 //! Environment mutation is process-global, and an unsynchronized mutation races
 //! every other reader in the same process, so every guard holds a lock for its
@@ -82,27 +82,6 @@ pub fn seam_pairs(base: &str) -> Vec<(&'static str, String)> {
     ALL_SEAMS.iter().map(|name| (*name, base.to_string())).collect()
 }
 
-/// Refuses to install an upstream seam in a build without `test-seams`.
-///
-/// The check takes a boolean rather than sitting inside a `cfg` block so it is
-/// reachable and testable in every build: the call site evaluates
-/// `cfg!(feature = "test-seams")`, and this function keeps the message in one
-/// place. The refusal must be a panic rather than a silent pass, because a
-/// build without the feature ignores the seam variables entirely and a test
-/// that proceeded would fetch from the real upstream.
-///
-/// # Panics
-///
-/// Panics when `enabled` is false.
-pub(crate) fn enforce_seam_feature(enabled: bool) {
-    assert!(
-        enabled,
-        "mediapm-test-support was built without its `test-seams` feature, so the seams it installs \
-         would be ignored and the test would reach the real network; run the test with \
-         `--all-features`, for example `cargo test-pkg mediapm --all-features`"
-    );
-}
-
 /// Reads `name` under this crate's process lock.
 ///
 /// A test that asserts on the environment *after* its guard has dropped needs
@@ -110,7 +89,7 @@ pub(crate) fn enforce_seam_feature(enabled: bool) {
 /// assertion runs, which makes such an assertion fail intermittently under a
 /// threaded `cargo test`. Inside a live guard's scope the guard's own lock
 /// already covers the read, and taking this lock there would deadlock.
-#[cfg(all(test, feature = "test-seams"))]
+#[cfg(test)]
 pub(crate) fn read_under_lock(name: &str) -> Option<OsString> {
     let _lock = ENV_LOCK.lock();
     std::env::var_os(name)
@@ -157,13 +136,8 @@ impl<'a> SeamGuard<'a> {
     /// caller that already owns a mutex names it and no call site can pick the
     /// wrong lock by omission. Pass [`env_lock`] when the consuming crate has
     /// no lock of its own.
-    ///
-    /// # Panics
-    ///
-    /// Panics when this crate was built without `test-seams`.
     #[must_use]
     pub fn new(lock: &'static Mutex<()>, vars: &[(&'static str, String)]) -> Self {
-        enforce_seam_feature(cfg!(feature = "test-seams"));
         let guard = lock.lock();
         let restore = install(vars);
         Self { _lock: HeldLock::Owned(guard), restore }
@@ -180,22 +154,13 @@ impl<'a> SeamGuard<'a> {
     /// letting [`new`][Self::new] take the mutex again. The borrow keeps the
     /// caller's guard from dropping before the restore, which is what puts the
     /// restore before the release here as well.
-    ///
-    /// # Panics
-    ///
-    /// Panics when this crate was built without `test-seams`.
     #[must_use]
     pub fn borrowing(held: &'a MutexGuard<'static, ()>, vars: &[(&'static str, String)]) -> Self {
-        enforce_seam_feature(cfg!(feature = "test-seams"));
         let restore = install(vars);
         Self { _lock: HeldLock::Borrowed(held), restore }
     }
 
     /// Installs every seam variable, all pointing at `base`, under `lock`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when this crate was built without `test-seams`.
     #[must_use]
     pub fn all_seams(lock: &'static Mutex<()>, base: &str) -> Self {
         Self::new(lock, &seam_pairs(base))
@@ -242,7 +207,7 @@ impl Drop for SeamGuard<'_> {
     }
 }
 
-#[cfg(all(test, feature = "test-seams"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -423,48 +388,5 @@ mod tests {
             "env_lock must hand out the mutex lock_process_env guards"
         );
         drop(held);
-    }
-
-    /// The refusal is not triggered by a build that has the feature.
-    #[test]
-    fn the_refusal_accepts_an_enabled_build() {
-        enforce_seam_feature(true);
-    }
-}
-
-/// The refusal message, which both builds compile.
-///
-/// These assertions reach [`enforce_seam_feature`] directly rather than through
-/// a constructor, so they hold whether or not the feature is on.
-#[cfg(test)]
-mod refusal {
-    use super::*;
-
-    /// The refusal names the feature that fixes it.
-    #[test]
-    #[should_panic(expected = "test-seams")]
-    fn the_refusal_names_the_feature() {
-        enforce_seam_feature(false);
-    }
-
-    /// The refusal carries the command a reader needs to run instead.
-    #[test]
-    #[should_panic(expected = "cargo test-pkg mediapm --all-features")]
-    fn the_refusal_names_the_command() {
-        enforce_seam_feature(false);
-    }
-
-    /// A build without the feature refuses to install a seam, so a test that
-    /// reached the real upstream is impossible rather than merely unlikely.
-    ///
-    /// This is the only behavior a feature-off build can exercise, and it is
-    /// the one that matters: the alternative to a loud refusal is a test that
-    /// silently fetches from the real upstream.
-    #[cfg(not(feature = "test-seams"))]
-    #[test]
-    #[should_panic(expected = "test-seams")]
-    fn installing_a_seam_without_the_feature_refuses() {
-        let _guard =
-            SeamGuard::new(env_lock(), &[(GITHUB_API_BASE, "http://mock.example".to_string())]);
     }
 }

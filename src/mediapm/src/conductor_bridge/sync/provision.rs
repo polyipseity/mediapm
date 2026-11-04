@@ -516,9 +516,9 @@ async fn prefetch_expected_sizes(sources: &mut [ResolvedSource]) {
 /// Tests for the provisioning pipeline: phase ordering, progress reporting,
 /// payload identity, and the macOS base-URL seams.
 ///
-/// A test that sets a seam variable carries `#[cfg(feature = "test-seams")]`,
-/// because a build without the feature ignores that variable and the test
-/// would reach the real network. Every workspace gate passes `--all-features`.
+/// A test that sets a seam variable runs in a debug build — the build that
+/// reads the variable — and takes the process env lock while it reads. Every
+/// workspace gate builds in debug.
 #[cfg(test)]
 mod tests {
     use mediapm_cas::storage::in_memory::new_in_memory_cas;
@@ -792,10 +792,7 @@ mod tests {
     /// Builds a minimal zip archive containing one file, for a Fetch source
     /// whose URL extension marks it as an archive.
     ///
-    /// Gated with the seam: the test that uses it drives the macOS base URLs,
-    /// and a build without the feature compiles both the seam and this helper
-    /// out.
-    #[cfg(feature = "test-seams")]
+    /// Used by the test that drives the macOS base URLs through the seams.
     fn test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         use std::io::Write as _;
         use zip::write::SimpleFileOptions;
@@ -821,7 +818,6 @@ mod tests {
     /// deleting that call leaves the resolve-time value and this test fails.
     /// macOS-only sources keep the fetch on the local wiremock server and off
     /// the real `BtbN` endpoints.
-    #[cfg(feature = "test-seams")]
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,

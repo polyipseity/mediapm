@@ -24,10 +24,6 @@ media-tagger = [
   "mediapm-cli?/media-tagger",
 ]
 proptest = []
-# Test-only seam for the provider base URLs. Every gate passes `--all-features`,
-# so the seam is active wherever the suite runs; a release build leaves it off,
-# which is what makes the environment unable to redirect a shipped binary.
-test-seams = []
 
 [lints]
 workspace = true
@@ -101,7 +97,7 @@ build-utils = { path = "../../scripts/build-utils" }
 indicatif = { workspace = true, features = ["in_memory"] }
 mediapm-cas-cli = { path = "../mediapm-cas-cli" }
 mediapm-conductor-cli = { path = "../mediapm-conductor-cli" }
-mediapm-test-support = { path = "../mediapm-test-support", features = ["test-seams"] }
+mediapm-test-support = { path = "../mediapm-test-support" }
 proptest.workspace = true
 same-file.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

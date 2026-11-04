@@ -284,7 +284,7 @@ pub(crate) async fn mount_managed_tool_upstreams(mock: &MockUpstream) {
 ///
 /// # Panics
 ///
-/// Panics when the build lacks `test-seams`, which the guard reports itself.
+/// Panics when the stub payload file cannot be read.
 ///
 /// The returned guard holds the process environment lock, so the caller must not
 /// already hold `example_isolation::env_lock()`: that mutex is not reentrant and

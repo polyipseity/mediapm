@@ -16,13 +16,6 @@ description = "Dev-only mock upstream and synthetic tool payloads for mediapm he
 name = "mediapm-stub-tool"
 path = "src/bin/mediapm-stub-tool.rs"
 
-[features]
-# On by default so this crate's own tests need no flags. A consumer that turns
-# it off gets the loud refusal in `seams::enforce_seam_feature` instead of a
-# silent pass through to the real network.
-default = ["test-seams"]
-test-seams = []
-
 [lints]
 workspace = true
 

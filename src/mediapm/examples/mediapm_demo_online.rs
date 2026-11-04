@@ -359,7 +359,6 @@ impl ToolRoute {
 /// Compiled exactly where [`stub_chain_refusal`] is, and for the same reason: a build
 /// that carries the seams has no reader for it, and this workspace denies warnings, so
 /// an unconditional copy would fail that build as dead code.
-#[cfg(any(test, not(feature = "test-seams")))]
 const STUB_CHAIN_NEEDS_TEST_SEAMS: &str = "the offline demo route needs the `test-seams` \
      feature, and this build does not enable it: the provider base-URL seams it redirects are \
      compiled out, so the run would provision from the real upstream. Rebuild with the \
@@ -381,7 +380,6 @@ const STUB_CHAIN_NEEDS_TEST_SEAMS: &str = "the offline demo route needs the `tes
 /// build, so nothing would fail if this message or the condition were deleted. `main`
 /// evaluates `cfg!(feature = "test-seams")` at its call site, and the tests assert both
 /// values in either build.
-#[cfg(any(test, not(feature = "test-seams")))]
 fn stub_chain_refusal(route: ToolRoute, seams_compiled_in: bool) -> Option<&'static str> {
     (!seams_compiled_in && !route.is_online()).then_some(STUB_CHAIN_NEEDS_TEST_SEAMS)
 }
@@ -4064,12 +4062,11 @@ async fn main() -> ExampleResult<()> {
         ToolRoute::StubChain
     };
 
-    // The refusal lives in `stub_chain_refusal`, which the tests reach directly; this
-    // arm exists only in a build without the feature, so that build is the one that can
-    // take the offline route into it. It runs before any watchdog is armed, before a
+    // The refusal lives in `stub_chain_refusal`, which the tests reach directly; the
+    // arm is unconditional and keys on the build profile because every build can take
+    // the offline route into it. It runs before any watchdog is armed, before a
     // chain is mounted and before a tool is resolved.
-    #[cfg(not(feature = "test-seams"))]
-    if let Some(refusal) = stub_chain_refusal(route, cfg!(feature = "test-seams")) {
+    if let Some(refusal) = stub_chain_refusal(route, cfg!(debug_assertions)) {
         return Err(refusal.into());
     }
 

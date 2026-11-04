@@ -30,23 +30,10 @@
 //!
 //! # Seams
 //!
-//! The provider layer reads its four base URLs from the environment only when
-//! the consuming crate is built with its own `test-seams` feature. [`SeamGuard`]
-//! refuses to install a seam in a build without *this* crate's `test-seams`,
-//! loudly, naming the feature and the command to run instead.
-//!
-//! That refusal cannot see the consumer's feature. `mediapm`'s `test-seams` is
-//! deliberately outside its default feature list, so a build of `mediapm`
-//! without `--all-features` compiles the provider's environment reads out while
-//! this crate's guard is satisfied and would install the variables anyway.
-//! **Seams are therefore only safe under `--all-features`**, which is what every
-//! gate in this repository passes.
-//!
-//! The compile-time half of that guarantee belongs to the consumer, and
-//! `mediapm` now carries it: `tests/int/mod.rs` refuses to build without
-//! `test-seams`, naming the command to run instead. A consumer that never adds
-//! that refusal would still reach the real upstream silently, so this crate
-//! documents the requirement rather than enforcing it.
+//! The provider layer reads its four base URLs from the environment in debug
+//! builds (`cfg!(debug_assertions)`); a release build ignores them, so the
+//! environment cannot redirect a shipped binary. [`SeamGuard`] installs the
+//! values for the duration of a scope and restores whatever was there before.
 //!
 //! Every guard takes its lock as a **required argument**, so no call site can
 //! pick the wrong mutex by omission: `mediapm`'s tests pass

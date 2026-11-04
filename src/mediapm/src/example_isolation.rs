@@ -21,8 +21,8 @@ pub const CACHE_ROOT_ENV: &str = "MEDIAPM_EXAMPLE_CACHE_ROOT";
 /// (`mediapm_demo_online`) runs offline — stub tools and a mocked tagger
 /// backend — unless this holds an enabled token (`1|true|yes|on`), in which
 /// case it runs the real upstream. Unset and every other value, including the
-/// disabled tokens (`false|0|no|off`), select the offline path, which needs the
-/// `test-seams` feature.
+/// disabled tokens (`false|0|no|off`), select the offline path, whose seams
+/// are read in every debug build.
 ///
 /// The offline demo (`mediapm_demo`) reaches no upstream at all and has no
 /// switch, and the `online_sync_post_sync_dump` regression reads none either: it

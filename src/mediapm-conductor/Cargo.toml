@@ -22,10 +22,6 @@ cli = [
 ]
 fetch = ["mediapm-conductor-builtin-import/fetch"]
 proptest = []
-# Test-only seam, the same switch `mediapm` declares. Declared here so a test
-# crate that links the conductor can turn it on by name, and so the feature
-# matrix covers the combination.
-test-seams = []
 # Test-only builtins. Declared so a test target can turn the doubles on by
 # name, and so the feature matrix covers the combination. No production build
 # enables it, and neither `progress` nor `tool-presets` implies it.
@@ -73,7 +69,7 @@ xz2 = { workspace = true, optional = true }
 zip = { workspace = true }
 
 [dev-dependencies]
-mediapm-test-support = { path = "../mediapm-test-support", features = ["test-seams"] }
+mediapm-test-support = { path = "../mediapm-test-support" }
 proptest.workspace = true
 # Paused-time tests: `#[tokio::test(start_paused = true)]` plus `tokio::time::advance`
 # drive the background prune interval without waiting a real tick.

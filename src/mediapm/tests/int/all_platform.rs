@@ -13,11 +13,8 @@
 //! shared with the `tool_sync` modules so two tests cannot disagree about the
 //! upstream's shape.
 //!
-//! Both tests require `--all-features`, because the seams they drive exist only
-//! in a `test-seams` build and `mediapm`'s defaults exclude that feature. The
-//! refusal that enforces it sits in `tests/int/mod.rs`, covering this module and
-//! the `tool_sync` modules together, and every gate in this repository passes
-//! `--all-features`.
+//! Both tests drive the provider seams, which every debug build reads, so they
+//! run in every gate with no feature to pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 

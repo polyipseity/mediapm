@@ -468,8 +468,7 @@ impl ManagedToolUpstreams {
 ///
 /// # Panics
 ///
-/// Panics when this crate was built without `test-seams`: the routes would then
-/// never be reached, and the run would fetch from the real upstream.
+/// Panics when the stub payload file cannot be read.
 #[must_use]
 pub async fn mount_managed_tool_upstreams(mock: &MockUpstream) -> ManagedToolUpstreams {
     let stub = std::fs::read(stub_tool_path())
