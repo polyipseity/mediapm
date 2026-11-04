@@ -354,34 +354,30 @@ impl ToolRoute {
     }
 }
 
-/// The refusal an offline route gets in a build that compiles the provider seams out.
+/// The refusal an offline route gets on a build that cannot read the provider seams.
 ///
-/// Compiled exactly where [`stub_chain_refusal`] is, and for the same reason: a build
-/// that carries the seams has no reader for it, and this workspace denies warnings, so
-/// an unconditional copy would fail that build as dead code.
-const STUB_CHAIN_NEEDS_TEST_SEAMS: &str = "the offline demo route needs the `test-seams` \
-     feature, and this build does not enable it: the provider base-URL seams it redirects are \
-     compiled out, so the run would provision from the real upstream. Rebuild with the \
-     feature, for example `cargo run --all-features -p mediapm --example \
-     mediapm_demo_online`.";
+/// Compiled unconditionally: `main` calls it in every build, so an
+/// unconditional copy is the live one rather than dead code. The message has
+/// to give both exits — drop `--release`, or ask for the real upstream by
+/// name.
+const OFFLINE_ROUTE_NEEDS_DEBUG_BUILD: &str = "the offline demo route needs a debug build: \
+     the provider base-URL seams it redirects are read only when `debug_assertions` is on, so a \
+     release run would provision from the real upstream instead of the mock. Rebuild without \
+     `--release`, for example `cargo run -p mediapm --example mediapm_demo_online`, or pass \
+     `--online` to run against the real upstream on purpose.";
 
-/// Why `route` cannot run in a build whose `test-seams` feature is as given, if it cannot.
+/// Why `route` cannot run on a release build, if it cannot.
 ///
-/// `mediapm`'s own `test-seams` gates the provider base-URL readers: `github_api_base` and
-/// `github_download_base` in `src/mediapm/src/tools/provider/mod.rs` read their overrides
-/// only under that feature. Without it the offline route mounts the chain, installs the
-/// seam variables, and provisions from the real upstream anyway, because nothing reads
-/// them. The support crate's own refusal cannot cover this — it gates on *its*
-/// `test-seams`, which this crate's dev-dependency always enables for an example build.
-///
-/// The feature is a parameter rather than an enclosing `cfg` block for the reason
-/// [`mediapm_test_support::seams::enforce_seam_feature`] takes one: a check that lives
-/// inside `#[cfg(not(feature = "test-seams"))]` is compiled out of every `--all-features`
-/// build, so nothing would fail if this message or the condition were deleted. `main`
-/// evaluates `cfg!(feature = "test-seams")` at its call site, and the tests assert both
-/// values in either build.
-fn stub_chain_refusal(route: ToolRoute, seams_compiled_in: bool) -> Option<&'static str> {
-    (!seams_compiled_in && !route.is_online()).then_some(STUB_CHAIN_NEEDS_TEST_SEAMS)
+/// The seam readers honor their environment variables only when
+/// `cfg!(debug_assertions)` holds, so on a release build the offline route
+/// would mount the chain, install the seam variables, and provision from the
+/// real upstream anyway, because nothing reads them. The boolean is a
+/// parameter rather than an enclosing `cfg` block so the tests assert both
+/// values in either build — a check inside `#[cfg(not(debug_assertions))]`
+/// would be compiled out of every debug build, and nothing would fail if the
+/// message or the condition were deleted.
+fn stub_chain_refusal(route: ToolRoute, debug_build: bool) -> Option<&'static str> {
+    (!debug_build && !route.is_online()).then_some(OFFLINE_ROUTE_NEEDS_DEBUG_BUILD)
 }
 
 static DEMO_FFPROBE_COMMAND: OnceLock<String> = OnceLock::new();
@@ -4483,20 +4479,26 @@ mod tests {
 
     /// The offline route's refusal is one testable decision, not a `cfg` arm.
     ///
-    /// The arm that calls it is compiled out of every `--all-features` build, so an
-    /// assertion reachable only through `main` would never run under a gate and
-    /// deleting the message or the condition would fail nothing. The feature is a
-    /// parameter for exactly that reason, the same shape as
-    /// `mediapm_test_support::seams::enforce_seam_feature`; these assertions hold in
-    /// a feature-less build and a gated one alike.
+    /// The profile is a parameter for the same reason the function documents:
+    /// a check inside `#[cfg(not(debug_assertions))]` would be compiled out of
+    /// every debug build, so nothing would fail if the message or the condition
+    /// were deleted. These assertions hold in a debug build and a release one
+    /// alike.
     #[test]
-    fn the_stub_chain_refusal_stops_only_an_offline_route_without_the_seams() {
+    fn the_stub_chain_refusal_stops_an_offline_route_in_a_release_build() {
         let refusal = super::stub_chain_refusal(super::ToolRoute::StubChain, false)
-            .expect("an offline route in a build without the seams must refuse");
-        assert!(refusal.contains("test-seams"), "the refusal must name the feature: {refusal}");
+            .expect("an offline route on a release build must refuse");
         assert!(
-            refusal.contains("--all-features"),
-            "the refusal must name the flag that enables the feature: {refusal}"
+            refusal.contains("debug build"),
+            "the refusal must name the profile it needs: {refusal}"
+        );
+        assert!(
+            refusal.contains("--release"),
+            "the refusal must name the flag that caused the problem: {refusal}"
+        );
+        assert!(
+            refusal.contains("--online"),
+            "the refusal must name the flag that opts into the real upstream: {refusal}"
         );
         assert!(
             refusal.contains("mediapm_demo_online"),
@@ -4509,7 +4511,7 @@ mod tests {
         );
         assert!(
             super::stub_chain_refusal(super::ToolRoute::StubChain, true).is_none(),
-            "a build that carries the seams has nothing to refuse"
+            "a debug build reads the seams, so the offline route has nothing to refuse"
         );
     }
 
