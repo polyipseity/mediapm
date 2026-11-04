@@ -50,14 +50,14 @@ slow-timeout = { period = "15s", terminate-after = 120 }
 
 # ── Network-heavy test serialization & timeout ─────────────────────────
 # `mediapm_demo`/`mediapm_demo_online` and the hermetic `all_platform` tests
-# share one group: the demos download the full managed-tool set (ffmpeg ~163M,
-# etc.) into a fresh empty cache, and the group's filter matches the
-# `all_platform` module those tests live in. 3-7 running in parallel saturate
-# bandwidth, so a test can emit no output past the slow-timeout period and get
-# killed (exit 124). Serialize them (max-threads = 1) and give a generous
-# budget. `binary()` is exact-match on example binary names;
-# `test(all_platform)` matches the integration tests by name contains.
-# Non-network tests in these binaries are fast and just join the group.
+# share one group: every test in it is hermetic today (the demo tests answer
+# the stub chain and a localhost mock; `all_platform` answers a mock
+# upstream), so nothing downloads and no test reaches the real upstream — the
+# group stays as serialization insurance for these example binaries, and the
+# filter matches the `all_platform` module those tests live in. `binary()` is
+# exact-match on example binary names; `test(all_platform)` matches the
+# integration tests by name contains. Non-network tests in these binaries are
+# fast and just join the group.
 #
 # The budget is `period x terminate-after` = 60s x 12 = 720s (12 minutes) per
 # test, derived from the demo's own watchdog rather than picked for feel:
