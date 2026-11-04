@@ -28,9 +28,9 @@ cargo run --package mediapm --example mediapm_demo
 cargo run --all-features --package mediapm --example mediapm_demo_online
 ```
 
-Both commands run the demos' offline paths, so neither needs network access and neither provisions a real tool binary. `mediapm_demo_online` carries `--all-features` because its stub tool chain lives behind the `test-seams` feature; without it the offline route refuses, naming the feature to add.
+Both commands run the demos' offline paths, so neither needs network access and neither provisions a real tool binary. No feature flag is involved: the demo is offline by default, and a release build refuses the offline route, naming `--release` to drop or `--online` for the real upstream.
 
-Do not run demos during dev iteration. The online path is opt-in and is the only one that needs the external tools (ffmpeg, yt-dlp, rsgain, media-tagger) and network: `MEDIAPM_RUN_ONLINE_SYNC=1 cargo run --all-features --package mediapm --example mediapm_demo_online`.
+Do not run demos during dev iteration. The online path is opt-in and is the only one that needs the external tools (ffmpeg, yt-dlp, rsgain, media-tagger) and network: `cargo run --package mediapm --example mediapm_demo_online -- --online`.
 
 ## Full workspace validation
 

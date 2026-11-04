@@ -1,4 +1,4 @@
-//! The committed media fixture the offline demo and the YouTube regression assert against.
+//! The committed media fixture the online demo's offline route asserts against.
 
 use std::path::Path;
 
@@ -8,11 +8,11 @@ use mediapm_test_support::media_fixture::{
     MEDIA_FIXTURE_WIDTH, media_fixture_path, read_matroska_facts,
 };
 
-/// The committed fixture states the codec and tag facts the offline demo asserts.
+/// The committed fixture states the codec and tag facts the demo's offline route asserts.
 ///
-/// The offline demo and the regression both read the file this test pins, so a
+/// The online demo's offline route reads the file this test pins, so a
 /// fixture that drifts in size, container, codec, or tags must fail here rather
-/// than silently weaken their assertions. The tags and stream facts come from
+/// than silently weaken its assertions. The tags and stream facts come from
 /// the in-process EBML walk in `mediapm_test_support::media_fixture`;
 /// `ffmetadata` parses ffmpeg's ffmetadata text format, not Matroska, so it
 /// cannot read this file.

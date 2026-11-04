@@ -125,7 +125,7 @@ A helper that takes the lock **internally** deadlocks for a caller that already 
 
 ## Related instructions
 
-- `example-execution-policy.instructions.md` : `main_is_exercised`, the two-path model for network-bound examples (stub-chain default offline, real upstream by explicit `MEDIAPM_RUN_ONLINE_SYNC=1`, and `#[ignore]` for a real-upstream twin)
+- `example-execution-policy.instructions.md` : `main_is_exercised`, the two-path model for network-bound examples (stub-chain default offline, real upstream via `--online`)
 - `rust-conventions.instructions.md` — general test isolation, `StoreLocked`, async tests
 - `paths-layout.instructions.md` — `conductor_tmp_dir` and the workspace cache layout
 - `tool-sync-coordinator-and-identity.instructions.md` — hermetic cache override for provisioning

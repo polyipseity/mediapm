@@ -1,16 +1,15 @@
 //! End-to-end online demo exercising managed tool provisioning.
 //!
-//! One `main`, two paths, and the offline one is the default. The switch only
-//! selects; neither path is skipped here, and there is no CI gate.
+//! One `main`, two routes, and the offline one is the default. `--online` only
+//! selects; neither route is skipped here, and there is no CI gate.
 //!
 //! - **Offline (default).** A bare invocation runs the stub tool chain: each managed tool
 //!   provisions from a mocked upstream whose payload is a chain executable that
 //!   copies its input, and the tagging step asks a mocked `MusicBrainz`. The run
 //!   is the full pipeline and needs no network, so it is what the embedded test
-//!   exercises. It does need the `test-seams` feature, the feature
-//!   `--all-features` turns on, so every command below carries it; a build
-//!   without the feature refuses this route, naming the feature, instead of
-//!   provisioning from the real upstream.
+//!   exercises. The provider seams are read in every debug build, so no feature
+//!   is involved; a release run refuses this route, naming `--release`, instead
+//!   of provisioning from the real upstream.
 //! - **Online (opt-in).** `cargo run --package mediapm --example mediapm_demo_online -- --online` selects the real providers,
 //!   the real tool binaries and the real `MusicBrainz`, and only an explicit run
 //!   reaches it. Such a run reuses the real user-level tool download cache
@@ -133,7 +132,7 @@
 //! cargo test-pkg mediapm --example mediapm_demo_online main_is_exercised
 //! # The same path as a binary; reuses the real user-level tool download cache
 //! # (`<os-cache-dir>/mediapm/cache`), so provisioned tools persist across runs.
-//! cargo run --all-features -p mediapm --example mediapm_demo_online
+//! cargo run -p mediapm --example mediapm_demo_online
 //! # The online path: real providers, real binaries, real MusicBrainz. Nothing in a
 //! # gate reaches it; it downloads from YouTube and takes minutes.
 //! cargo run --package mediapm --example mediapm_demo_online -- --online
@@ -333,8 +332,8 @@ const PATH_ENV: &str = "PATH";
 ///
 /// The value is threaded from `main` into every decision the route governs — the
 /// tagger endpoint the document states, which post-sync assertions the run makes,
-/// and whether it records offline evidence — so the switch has one reader and a
-/// run cannot reach the real providers on one decision and the stub chain on
+/// and whether it records offline evidence — so the route is decided in one place
+/// and a run cannot reach the real providers on one decision and the stub chain on
 /// another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolRoute {
@@ -3619,10 +3618,8 @@ impl<'a> OfflineRun<'a> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the chain directory cannot be created, when the
-    /// caller's `PATH` cannot carry the chain's directory, or when this crate was
-    /// built without the `test-seams` feature (which the mocks refuse with a
-    /// message naming it).
+    /// Returns an error when the chain directory cannot be created, or when the
+    /// caller's `PATH` cannot carry the chain's directory.
     async fn mount(env_lock: &'a parking_lot::MutexGuard<'static, ()>) -> ExampleResult<Self> {
         let chain_dir = mediapm_utils::temp::artifact_dir()
             .map_err(|error| format!("cannot create the stub chain directory: {error}"))?;

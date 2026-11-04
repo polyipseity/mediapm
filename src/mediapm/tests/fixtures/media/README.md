@@ -1,7 +1,7 @@
 # Committed media fixture
 
-`demo.mkv` is the small Matroska file the offline demo and the YouTube
-regression run against, so their codec and tag assertions need no network and no
+`demo.mkv` is the small Matroska file the online demo's offline (stub-chain)
+route runs against, so its codec and tag assertions need no network and no
 external probe. The pinned facts live in
 `src/mediapm-test-support/src/media_fixture.rs`, which also holds the bounded
 EBML reader the assertions use; `ffmetadata` parses ffmpeg's ffmetadata text
@@ -36,5 +36,5 @@ the value `MEDIA_FIXTURE_MAX_BYTES` pins and
 ## Consumers
 
 - `src/mediapm/tests/int/media_fixture.rs` pins these facts.
-- The offline demo and the YouTube regression read the same file through
+- The online demo's offline (stub-chain) route reads the same file through
   `mediapm_test_support::media_fixture::media_fixture_path`.
