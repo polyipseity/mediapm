@@ -46,6 +46,8 @@ mod import_payload_rooting;
 /// Explicit invalidation: invalidating a media step must re-execute its
 /// workflow on the next sync even though the step's material is unchanged.
 mod media_step_invalidation;
+/// The service hands its workspace metadata cache to the materializer probe.
+mod metadata_probe_cache_hop;
 /// Re-sync over an unchanged library: the second run must skip no path.
 mod resync;
 /// Runtime root `.gitignore` creation on service construction.

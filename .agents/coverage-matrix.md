@@ -1467,6 +1467,7 @@ A `${media.metadata.*}` probe of bytes the store already holds is answered from 
 | --- | --- | --- |
 | The probe helper spawns the probe once for repeated bytes and persists the answer under a content-hash key | `the_probe_helper_spawns_once_for_repeated_bytes` (unit, `src/mediapm/src/materializer/metadata.rs`: two calls over the same bytes with counting closures, one spawn, equal documents, flushed file keyed `ffprobe:blake3:`) | [covered] |
 | A `${media.metadata.*}` template resolves from the workspace metadata cache without spawning ffprobe | `the_materializer_resolves_variant_metadata_from_the_workspace_cache` (integration, same file: seeded content-keyed entry over non-JSON variant bytes; the materialized entry is named by the cached title; RED before threading: ffprobe ran and failed on those bytes) | [covered] |
+| The service hands its own `MetadataCache` instance into `sync_hierarchy`, so a full `sync_library` resolves a probe-bound template from the workspace `metadata.json` the service opened | `the_service_hands_its_metadata_cache_to_the_materializer` (integration, `src/mediapm/tests/int/metadata_probe_cache_hop.rs`: seed written before construction over unprobeable bytes, sync materializes the entry the cached title names. Mutation RED: `service.rs` hop set to `None`, sync errors on ffprobe asking those bytes) | [covered] |
 
 ## Provision metadata version 2 (2026-11-05)
 
