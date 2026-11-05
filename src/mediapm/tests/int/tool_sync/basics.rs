@@ -1,4 +1,9 @@
-use mediapm::{MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement};
+use std::collections::BTreeMap;
+
+use mediapm::{
+    MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement, load_mediapm_document,
+    save_mediapm_document,
+};
 use mediapm_conductor::{ToolKindSpec, ToolSpec};
 
 use crate::common::stub_upstream::{STUB_COMMIT_SHA, mock_all_managed_tools};
@@ -63,6 +68,45 @@ async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> 
     assert!(generated_path.exists(), "conductor.generated.ncl should exist");
     let doc = read_generated_doc(&service);
     assert!(!doc.tools.is_empty(), "generated doc must have tools");
+    Ok(())
+}
+
+/// The config's platform-inherited names reach the generated document.
+///
+/// `mediapm.ncl` declares which env var names a platform inherits
+/// (`runtime.environment.inherited_env_vars`, keyed by platform); the
+/// generated conductor document carries that same fact as a closed platform
+/// record under `runtime.environment.platform_inherited_env_vars`, which is
+/// what the orchestration runtime's env fold reads. A sync that never writes
+/// it leaves every platform list empty, so an inherited name a document
+/// declares would never reach a tool's execution environment.
+#[tokio::test]
+async fn sync_writes_platform_inherited_env_into_the_generated_document()
+-> Result<(), mediapm::MediaPmError> {
+    let (mut service, _root, _cache_root) =
+        service_with_cache(MediaRuntimeStorage::default()).await?;
+
+    let paths = service.paths().clone();
+    let mut document = load_mediapm_document(&paths.mediapm_ncl)?;
+    document.runtime.environment.inherited_env_vars =
+        Some(BTreeMap::from([("linux".to_string(), vec!["ACOUSTID_API_KEY".to_string()])]));
+    save_mediapm_document(&paths.mediapm_ncl, &document)?;
+
+    service
+        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .await?;
+
+    let generated = read_generated_doc(&service);
+    assert_eq!(
+        generated.runtime.environment.platform_inherited_env_vars.linux,
+        vec!["ACOUSTID_API_KEY".to_string()],
+        "the generated document must carry the linux names the config declares",
+    );
+    assert!(
+        generated.runtime.environment.platform_inherited_env_vars.windows.is_empty()
+            && generated.runtime.environment.platform_inherited_env_vars.macos.is_empty(),
+        "only the platform the config declared may carry names",
+    );
     Ok(())
 }
 

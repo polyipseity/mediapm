@@ -33,7 +33,6 @@ fn report_after_fetched(warnings: Vec<String>) -> ToolSyncReport {
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
     let mut pruned_tools = 0usize;
-    let inherited_env_vars = BTreeMap::new();
 
     let content_map = BTreeMap::from([(
         "macos/aarch64/ffmpeg".to_string(),
@@ -61,7 +60,6 @@ fn report_after_fetched(warnings: Vec<String>) -> ToolSyncReport {
         &mut report,
         &mut live_state,
         &mut pruned_tools,
-        &inherited_env_vars,
         0,
         &progress,
     );

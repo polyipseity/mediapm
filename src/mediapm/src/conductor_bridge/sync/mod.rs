@@ -23,7 +23,7 @@ use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
 use mediapm_conductor::cache::ENTRY_TTL_SECONDS;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
-use mediapm_conductor::config::ExternalDataEntry;
+use mediapm_conductor::config::{ExternalDataEntry, PlatformInheritedEnvVars};
 use mediapm_conductor::provision::{ProvisionCache, ProvisionedTool, retain_only_tool_dirs};
 use mediapm_conductor::runtime_env::{provisioned_payload_dir, write_generated_dotenv};
 use mediapm_conductor::state::OutputSaveMode;
@@ -663,7 +663,6 @@ fn apply_entry_outcome(
     report: &mut ToolSyncReport,
     live_state: &mut HashMap<String, Vec<ToolRegistryEntry>>,
     pruned_tools: &mut usize,
-    inherited_env_vars: &BTreeMap<String, Vec<String>>,
     entry_index: usize,
     progress: &OverallProgress,
 ) {
@@ -723,10 +722,6 @@ fn apply_entry_outcome(
             live_state.entry(tool_id.clone()).or_default().push(record.clone());
             report.tool_records.push(record);
 
-            let inherited = inherited_env_vars.get(tool_id.as_str()).cloned().unwrap_or_default();
-            let mut full_runtime = runtime;
-            full_runtime.inherited_env_vars = inherited;
-
             let tool_key =
                 if map_hash.is_empty() { tool_id.clone() } else { format!("{tool_id}@{map_hash}") };
 
@@ -749,7 +744,7 @@ fn apply_entry_outcome(
             }
 
             generated_doc.tools.insert(tool_key.clone(), spec);
-            tool_runtimes.insert(tool_key, full_runtime);
+            tool_runtimes.insert(tool_key, runtime);
         }
         EntryOutcome::FetchedNone {
             tool_id,
@@ -773,10 +768,7 @@ fn apply_entry_outcome(
             // that reaches the network is), and the entry a run loads is what a
             // step's retry policy reads, so a hardcoded classification here
             // would describe a different tool than the document does.
-            let mut runtime = ToolRuntime {
-                inherited_env_vars: inherited_env_vars.get(&tool_id).cloned().unwrap_or_default(),
-                ..ToolRuntime::default()
-            };
+            let mut runtime = ToolRuntime::default();
             if !is_builtin_code {
                 generated_doc
                     .tools
@@ -1596,6 +1588,17 @@ pub(crate) async fn reconcile_desired_tools(
     // 1. Load or create generated document.
     let mut generated_doc = load_conductor_generated_document(paths)?;
 
+    // The document records which env var names each platform inherits, the
+    // same fact `mediapm.ncl` declares under `inherited_env_vars`. It is
+    // written here rather than per tool because the map is keyed by platform,
+    // not by tool id: it describes the document as a whole, and the
+    // orchestration runtime's env fold reads it from there.
+    generated_doc.runtime.environment.platform_inherited_env_vars = PlatformInheritedEnvVars {
+        windows: inherited_env_vars.get("windows").cloned().unwrap_or_default(),
+        linux: inherited_env_vars.get("linux").cloned().unwrap_or_default(),
+        macos: inherited_env_vars.get("macos").cloned().unwrap_or_default(),
+    };
+
     // 1a. Load the user-owned conductor document, if present, rejecting
     //     reserved-namespace collisions (two-file model, condition 2). The
     //     user doc is never a reconcile save target — manual tools belong
@@ -1765,7 +1768,6 @@ pub(crate) async fn reconcile_desired_tools(
                     &mut report,
                     &mut live_state,
                     &mut pruned_tools,
-                    inherited_env_vars,
                     idx,
                     progress.as_ref(),
                 );

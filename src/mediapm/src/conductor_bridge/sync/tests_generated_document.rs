@@ -101,7 +101,6 @@ fn fetched_none_registers_a_spec_without_a_version() {
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
     let mut pruned_tools = 0usize;
-    let inherited_env_vars = BTreeMap::new();
 
     apply_entry_outcome(
         &entry,
@@ -118,7 +117,6 @@ fn fetched_none_registers_a_spec_without_a_version() {
         &mut report,
         &mut live_state,
         &mut pruned_tools,
-        &inherited_env_vars,
         0,
         &progress,
     );
@@ -176,7 +174,6 @@ fn fetched_none_stamps_the_runtime_its_entry_declares() {
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
     let mut pruned_tools = 0usize;
-    let inherited_env_vars = BTreeMap::new();
 
     apply_entry_outcome(
         &entry,
@@ -193,7 +190,6 @@ fn fetched_none_stamps_the_runtime_its_entry_declares() {
         &mut report,
         &mut live_state,
         &mut pruned_tools,
-        &inherited_env_vars,
         0,
         &progress,
     );
