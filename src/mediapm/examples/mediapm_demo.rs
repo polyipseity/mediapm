@@ -946,6 +946,27 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     {
         return Err(format!("sync_library workflow warnings: {:?}", summary.warnings).into());
     }
+    // Second sync: the demo's idempotency re-run, mirroring the online demo
+    // (`mediapm_demo_online.rs`). A full run re-syncs in the same process so
+    // the artifact a human inspects shows the no-op guarantee rather than
+    // claiming it, and the run refuses to finish if the re-run did work.
+    if maybe_summary.is_some() {
+        eprintln!();
+        eprintln!("re-running sync: it must do nothing");
+        eprintln!();
+        let second_options = mediapm::SyncLibraryOptions {
+            observer: Some(std::sync::Arc::new(mediapm::output::observer::CliSyncObserver)),
+            ..Default::default()
+        };
+        let second = ingest_service.sync_library_with_options(second_options).await?;
+        if second.executed_steps != 0 {
+            return Err(format!(
+                "idempotency re-run executed {} steps, want 0; warnings: {:?}",
+                second.executed_steps, second.warnings
+            )
+            .into());
+        }
+    }
     let service = ingest_service;
     let effective_paths = service
         .resolve_effective_paths()
@@ -1383,6 +1404,27 @@ mod tests {
             state_before["managed_tools"].as_array().map(Vec::len),
             state_after["managed_tools"].as_array().map(Vec::len),
             "second sync must add no managed_tools entry"
+        );
+
+        // S1's canonical proof: the re-run re-publishes `materialization.json`
+        // with what *it* verified, and an idempotency run verifies by standing
+        // still - so both demo records (the untagged leaf and the playlist)
+        // must still be in the file the second run's flush wrote, not dropped
+        // by a flush that treated "nothing rewritten" as "nothing proven".
+        let materialization_json =
+            second_service.paths().workspace_mediapm_cache_dir().join("materialization.json");
+        let materialization_text =
+            std::fs::read_to_string(&materialization_json).expect("read materialization.json");
+        let materialization: serde_json::Value =
+            serde_json::from_str(&materialization_text).expect("materialization.json parses");
+        let outputs = materialization["outputs"]
+            .as_object()
+            .expect("materialization.json holds an outputs object");
+        assert_eq!(
+            outputs.len(),
+            2,
+            "the second sync must leave both demo records (the untagged leaf and the playlist) \
+             in the cache file it just re-published: {materialization_text}"
         );
 
         // Quiesce before the isolated root goes away: this service started a

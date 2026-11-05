@@ -20,7 +20,11 @@ const METADATA_CACHE_ENTRY_TTL_SECONDS: u64 = 86_400;
 /// A file carrying any other version, or none at all, is treated as carrying no
 /// entries. That costs one probe per key, which is what a missing cache costs,
 /// and it keeps numbers a different build wrote from being read as these ones.
-const CACHE_VERSION: u32 = 1;
+/// Version 2 is the `snake_case` access field; version 1 files carry
+/// `lastAccessUnixSeconds` and are discarded rather than migrated, because a
+/// cache miss costs one probe and a migration would cost a reader for every
+/// historical shape.
+const CACHE_VERSION: u32 = 2;
 
 /// Name of the file this cache reads and writes.
 const CACHE_FILE_NAME: &str = "metadata.json";
@@ -31,7 +35,6 @@ struct MetadataCacheEntry {
     /// The cached metadata JSON value.
     value: Value,
     /// Unix epoch seconds of the last access time.
-    #[serde(rename = "lastAccessUnixSeconds")]
     last_access_unix_seconds: u64,
 }
 
@@ -94,6 +97,12 @@ impl MetadataCache {
     }
 
     /// Retrieves a cached value by key, or `None` if missing or expired.
+    ///
+    /// A hit refreshes the entry's access time and, when that time actually
+    /// moves, marks the cache dirty so the flush (or the drop) persists the
+    /// refresh: the access time is the TTL anchor, and a touch that never
+    /// reaches the file lets the next run expire an entry this run just
+    /// proved fresh.
     #[must_use]
     pub(crate) fn get(&self, key: &str) -> Option<Value> {
         let mut entries = self.entries.lock().unwrap();
@@ -106,9 +115,13 @@ impl MetadataCache {
                 *self.dirty.lock().unwrap() = true;
                 return None;
             }
-            // Update access time.
+            // Update access time, and persist the refresh only when it moved:
+            // a same-second repeat read changes nothing on disk.
             let mut entry = entry.clone();
-            entry.last_access_unix_seconds = now;
+            if entry.last_access_unix_seconds != now {
+                entry.last_access_unix_seconds = now;
+                *self.dirty.lock().unwrap() = true;
+            }
             let val = entry.value.clone();
             entries.insert(key.to_string(), entry);
             Some(val)
@@ -379,7 +392,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&text).expect("cache file is json");
         assert_eq!(
             parsed["version"],
-            serde_json::json!(1),
+            serde_json::json!(2),
             "the file names the format version it carries: {text}"
         );
         assert_eq!(
@@ -394,6 +407,57 @@ mod tests {
             keys,
             ["entries", "version"],
             "the file holds the version and the entries and nothing else: {text}"
+        );
+    }
+
+    /// A version-1 file is discarded by a version-2 build and rebuilt in the
+    /// current shape.
+    ///
+    /// The camelCase access field belonged to version 1; reading it under a
+    /// version-2 name (or a version-1 file under version 2) would attribute
+    /// numbers to the wrong scheme. The seed is hand-written in the shape a
+    /// version-1 build actually wrote, independent of this build's encoder.
+    #[test]
+    fn a_version_one_metadata_file_is_discarded_and_rebuilt() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let cache_path = dir.path().join(CACHE_FILE_NAME);
+        let v1_file = serde_json::json!({
+            "version": 1,
+            "entries": {
+                "ffprobe:/library/song.mkv": {
+                    "value": {"format": "matroska"},
+                    "lastAccessUnixSeconds": unix_seconds_now(),
+                }
+            }
+        });
+        fs::write(&cache_path, serde_json::to_string_pretty(&v1_file).expect("encode v1 cache"))
+            .expect("write v1 cache");
+
+        let cache = MetadataCache::open(dir.path());
+        assert_eq!(
+            cache.entry_count(),
+            0,
+            "a version-1 file carries no entry a version-2 build can read"
+        );
+        assert!(cache.get("ffprobe:/library/song.mkv").is_none());
+
+        cache.set("ffprobe:/library/fresh.mkv".to_string(), serde_json::json!({"format": "mp4"}));
+        cache.flush().expect("flush the rebuild");
+
+        let text = fs::read_to_string(&cache_path).expect("read cache file");
+        let parsed: Value = serde_json::from_str(&text).expect("cache file is json");
+        assert_eq!(
+            parsed["version"],
+            serde_json::json!(2),
+            "the rebuilt file names the current format version: {text}"
+        );
+        assert!(
+            text.contains("\"last_access_unix_seconds\""),
+            "the rebuilt file carries the snake_case access field: {text}"
+        );
+        assert!(
+            !text.contains("lastAccessUnixSeconds"),
+            "the rebuilt file no longer carries the version-1 spelling: {text}"
         );
     }
 
@@ -446,7 +510,7 @@ mod tests {
             "entries": {
                 "ffprobe:/library/song.mkv": {
                     "value": {"format": "matroska"},
-                    "lastAccessUnixSeconds": unix_seconds_now(),
+                    "last_access_unix_seconds": unix_seconds_now(),
                 }
             }
         });
@@ -533,6 +597,55 @@ mod tests {
             logged.contains("metadata cache flush on drop failed"),
             "a flush lost at drop names itself rather than leaving the run to look like a cache \
              miss: {logged}"
+        );
+    }
+
+    /// A read that refreshes an entry's access time has to reach the file.
+    ///
+    /// The access time is the TTL anchor: a touch left only in memory reads
+    /// as the old access time to the next run, which then expires an entry
+    /// this run just proved fresh. The seeded time is 100 seconds behind the
+    /// touch, so the two are distinguishable at second granularity.
+    #[test]
+    fn a_read_touch_survives_a_reopen() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let cache_path = dir.path().join(CACHE_FILE_NAME);
+        let seeded_access = unix_seconds_now().saturating_sub(100);
+        let seeded = BTreeMap::from([(
+            "k".to_string(),
+            MetadataCacheEntry {
+                value: serde_json::json!("v"),
+                last_access_unix_seconds: seeded_access,
+            },
+        )]);
+        let seeded_file = CacheFile { version: CACHE_VERSION, entries: seeded };
+        fs::write(
+            &cache_path,
+            serde_json::to_string_pretty(&seeded_file).expect("encode seeded cache"),
+        )
+        .expect("write seeded cache");
+
+        {
+            let cache = MetadataCache::open(dir.path());
+            assert_eq!(
+                cache.get("k"),
+                Some(serde_json::json!("v")),
+                "the seeded entry must answer the read that touches it"
+            );
+            cache.flush().expect("flush the touch");
+        }
+
+        let text = fs::read_to_string(&cache_path).expect("read cache file");
+        // Parsed through the struct rather than a field name in this test:
+        // the persisted field's spelling is Step 8's change, and this test
+        // must hold before and after it.
+        let file: CacheFile = serde_json::from_str(&text).expect("cache file decodes");
+        let entry = file.entries.get("k").expect("the touched entry is persisted");
+        let persisted = entry.last_access_unix_seconds;
+        assert!(
+            persisted > seeded_access,
+            "the touch the read performed must reach the file, so the next run does not expire an \
+             entry this run just proved fresh: {text}"
         );
     }
 

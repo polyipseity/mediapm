@@ -50,6 +50,7 @@ async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_missing_one()
             &NickelDocument::default(),
             Some(Arc::new(recording.clone())),
             Some(Arc::new(overall.clone())),
+            None,
         )
         .await;
 
@@ -85,6 +86,7 @@ async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_missing_one()
             &NickelDocument::default(),
             Some(Arc::new(recording.clone())),
             Some(Arc::new(overall.clone())),
+            None,
         )
         .await;
 
@@ -161,6 +163,7 @@ async fn the_overall_row_finishes_error_when_a_folder_variant_path_is_a_director
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("one blocked variant leaves a report to read; it is not a failed run");
@@ -222,6 +225,7 @@ async fn the_run_fails_when_a_folder_variant_names_bytes_the_store_lost() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await;
 
@@ -281,6 +285,7 @@ async fn the_overall_row_finishes_error_when_a_zip_folder_variant_holds_no_membe
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("one empty archive leaves a report to read; it is not a failed run");
@@ -355,6 +360,7 @@ async fn the_overall_row_finishes_error_when_a_folder_resolves_to_no_variants() 
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("an entry with no variants leaves a report to read; it is not a failed run");
@@ -426,6 +432,7 @@ async fn the_overall_row_finishes_error_when_a_folder_mixes_a_blocked_and_a_good
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("one blocked variant among two leaves a report to read; it is not a failed run");
@@ -493,6 +500,7 @@ async fn the_overall_row_finishes_success_when_every_entry_is_written() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("an entry holding a resolvable variant hash should write");

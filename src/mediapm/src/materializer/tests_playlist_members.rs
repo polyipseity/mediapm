@@ -240,6 +240,7 @@ async fn a_playlist_whose_path_is_a_directory_is_counted_as_missing() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("a playlist that cannot be written leaves a report to read; it is not a failed run");

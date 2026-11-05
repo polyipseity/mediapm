@@ -4201,6 +4201,7 @@ mod tests {
             Some(state),
             generated_doc,
             resolve_ffmpeg_slot_limits(&document),
+            None,
         );
         let source = document.media.get(media_id).expect("source");
         let Err(failure) =
@@ -4308,6 +4309,7 @@ mod tests {
             Some(state),
             generated_doc,
             resolve_ffmpeg_slot_limits(&document),
+            None,
         );
         let source = document.media.get(media_id).expect("source");
         let Err(failure) =
@@ -4809,6 +4811,10 @@ mod tests {
     /// it extracts anything, so the resolution above the defect is real rather than
     /// stubbed.
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the scenario's arrange block - record the pack on every ffmpeg instance, re-key the fixture's recorded instances, resolve the binding, then assert it - has to read as one linear precondition chain; splitting it would separate an assertion from the precondition it depends on"
+    )]
     async fn a_directly_called_zip_member_extraction_failure_is_reported_rather_than_answered_with_the_pack()
      {
         let generated = load_generated_doc();
@@ -4898,8 +4904,13 @@ mod tests {
             "the arm only extracts when the binding carries a member"
         );
 
-        let lookup =
-            MaterializationLookupContext::new(cas.clone(), Some(state), generated, slot_limits);
+        let lookup = MaterializationLookupContext::new(
+            cas.clone(),
+            Some(state),
+            generated,
+            slot_limits,
+            None,
+        );
         let result =
             resolve_variant_source_bytes(&lookup, PINNED_MEDIA_ID, &source, PINNED_VARIANT, false)
                 .await;

@@ -46,6 +46,7 @@ async fn entry_row_total_and_advances(build: impl FnOnce(String) -> MediaPmDocum
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(ProgressBarHandle::disabled())),
+        None,
     )
     .await;
 

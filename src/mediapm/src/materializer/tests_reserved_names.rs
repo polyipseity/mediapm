@@ -72,6 +72,7 @@ async fn a_media_folder_variant_name_the_sanitizer_would_rewrite_is_refused() {
         &NickelDocument::default(),
         None,
         None,
+        None,
     )
     .await;
 
@@ -145,6 +146,7 @@ async fn a_rename_rule_output_is_refused_even_when_sanitize_names_is_enabled() {
         true,
         &ConductorState::new_empty(),
         &NickelDocument::default(),
+        None,
         None,
         None,
     )

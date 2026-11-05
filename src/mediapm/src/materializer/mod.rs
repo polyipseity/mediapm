@@ -31,6 +31,7 @@ use crate::config::hierarchy_types::{
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MaterializationMethod, MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
+use crate::metadata_cache::MetadataCache;
 use crate::output::progress::{ProgressBarApi, ProgressBarHandle, ProgressScreenApi};
 use crate::path_component::{SanitizePolicy, render_relative_path};
 use crate::paths::MediaPmPaths;
@@ -245,6 +246,7 @@ pub async fn sync_hierarchy(
     generated_doc: &NickelDocument,
     progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn ProgressBarApi>>,
+    metadata_cache: Option<Arc<MetadataCache>>,
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
 
@@ -260,6 +262,7 @@ pub async fn sync_hierarchy(
         Some(conductor_state.clone()),
         generated_doc.clone(),
         ffmpeg_slot_limits,
+        metadata_cache,
     );
     metadata::resolve_flattened_entry_paths(&mut flattened, document, &lookup_context).await?;
     let validated = sanitize_and_validate_hierarchy_paths(flattened)?;
@@ -2036,7 +2039,24 @@ impl SyncSharedState {
             self.cas.object_path_for_hash(*hash).filter(|path| path.is_file())
         {
             match file_ops::output_relationship(target_path, &object_path).await {
-                file_ops::OutputRelationship::Linked => return true,
+                file_ops::OutputRelationship::Linked => {
+                    // The output is the object for the expected hash - one
+                    // inode, or a symlink naming it - which is a per-path
+                    // proof of these bytes standing at this path (R-28-04).
+                    // The run verified it, so the record reaches the file the
+                    // flush publishes: without it, a hardlink entry (the
+                    // demo's dominant path) loses its record on every re-run
+                    // that confirms any other path. A target whose metadata
+                    // cannot be read answers true without a record, exactly
+                    // as the write path declines to stamp what it cannot read.
+                    if let Ok(metadata) = tokio::fs::metadata(target_path).await {
+                        let mtime_nanos = outputs::mtime_nanos(&metadata);
+                        self.outputs.confirm(relative_path, hash, metadata.len(), mtime_nanos);
+                    }
+                    return true;
+                }
+                // A mislink proves the output does NOT hold the object, so
+                // there is nothing to record: this run rewrites it.
                 file_ops::OutputRelationship::Mislinked => return false,
                 file_ops::OutputRelationship::Separate => {}
             }
@@ -2054,15 +2074,20 @@ impl SyncSharedState {
     /// from the relationship above, and they have to: a hardlink rewrite
     /// relinks the same inode with the same bytes and the same modification
     /// time, so a modification time cannot tell one from a no-op and a stamp
-    /// read there would be decoration.
+    /// read there would be decoration. The linked arm still *records* its
+    /// proof for the file's truthfulness (the run verified those bytes at that
+    /// path), it just never decides from it.
     ///
     /// The length decides before anything else, because one stat settles the
     /// common case of a file something else replaced, and only a file that
     /// survives it reaches the record.
     ///
-    /// A miss reads the target and, when the bytes hash to `hash`,     /// fresh record from that same read. Confirming a miss rather than only a
-    /// hit is what keeps a library restored from a backup, or written by a
-    /// build without this cache, from paying for two consecutive runs.
+    /// A miss reads the target and, when the bytes hash to `hash`, confirms a
+    /// fresh record from that same read. A hit re-confirms the record it
+    /// matched, so the proof this run just made reaches the file the flush
+    /// publishes. Confirming a miss rather than only a hit is what keeps a
+    /// library restored from a backup, or written by a build without this
+    /// cache, from paying for two consecutive runs.
     async fn separate_output_holds(
         &self,
         relative_path: &str,
@@ -2079,12 +2104,15 @@ impl SyncSharedState {
         if !metadata.is_file() || metadata.len() != expected_len {
             return false;
         }
-        if self.outputs.is_current(
-            relative_path,
-            hash,
-            expected_len,
-            outputs::mtime_nanos(&metadata),
-        ) {
+        let mtime_nanos = outputs::mtime_nanos(&metadata);
+        if self.outputs.is_current(relative_path, hash, expected_len, mtime_nanos) {
+            // The run just proved the record still describes the file, so the
+            // proof is recorded like any other confirmation. Re-confirming
+            // with the same numbers `is_current` matched keeps the published
+            // record identical to the one the hit answered from, and it is
+            // what stops a mixed run (one path rewritten, the rest standing
+            // still) from dropping the standing-still paths at the flush.
+            self.outputs.confirm(relative_path, hash, expected_len, mtime_nanos);
             return true;
         }
         if !file_ops::file_content_matches_hash(target_path, hash).await {

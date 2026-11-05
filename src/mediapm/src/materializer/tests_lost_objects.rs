@@ -50,6 +50,7 @@ async fn run_sync_result(
         &NickelDocument::default(),
         None,
         None,
+        None,
     )
     .await
 }

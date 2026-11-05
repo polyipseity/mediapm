@@ -18,7 +18,8 @@
 use super::file_ops::read_watch::ReadCountGuard;
 use super::outputs::CacheFile;
 use super::tests_common::{
-    FOLDER_PATH, open_hierarchy_cas, resolvable_media_document, run_sync, write_folder_over_archive,
+    FOLDER_PATH, folder_and_playlist_document, open_hierarchy_cas, resolvable_media_document,
+    run_sync, write_folder_over_archive, zip_payload,
 };
 use super::*;
 
@@ -417,5 +418,114 @@ async fn a_linked_output_is_skipped_though_its_record_names_another_hash() {
         (0, 1, 0),
         "the output is what the run would have written, so it has to be left alone whatever its \
          stamp says: {second:?}"
+    );
+}
+
+/// A second run that changed nothing keeps the records it stood still for.
+///
+/// This is the idempotency re-run's half of the record cache's contract: the
+/// first run stamps every member it wrote, the second run confirms none of
+/// them (each one answers from its record without a read), and the file the
+/// second run leaves has to still hold what the first one proved. A flush
+/// that published only what this run confirmed would answer that run with an
+/// empty map, and the run after it would re-read the library the cache exists
+/// to spare.
+#[tokio::test]
+async fn an_unchanged_second_run_keeps_the_records_in_the_cache_file() {
+    let mut entry = write_folder_over_archive(&ARCHIVE_MEMBERS).await;
+    let paths = entry.paths().clone();
+    assert_eq!(
+        read_cache(&paths).outputs.len(),
+        ARCHIVE_MEMBERS.len(),
+        "the first run wrote both members from resolved bytes, so it stamped both, or there \
+         would be no record for the second run to lose"
+    );
+
+    let second = entry.resync(None, None).await;
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths, second.missing_paths),
+        (0, 1, 0),
+        "both members still hold what the document resolves, so the second run writes nothing: \
+         {second:?}"
+    );
+
+    assert_eq!(
+        read_cache(&paths).outputs.len(),
+        ARCHIVE_MEMBERS.len(),
+        "a run that confirmed nothing must leave the records the previous run proved in the file"
+    );
+}
+
+/// A run that confirms one path keeps the records of the paths it stood still
+/// for.
+///
+/// The guard in [`super::outputs::OutputCache::flush`] keeps a wholly
+/// unconfirmed run from overwriting the file, but a mixed run publishes: the
+/// playlist body drifts and is rewritten while the archive folder's members
+/// answer from their records without being read, so the flush has something
+/// to write. What it writes must be everything the run verified (the
+/// rewritten body and the standing-still members), because a flush carrying
+/// only the rewritten body silently drops the record of every path this run
+/// skipped, and the next run re-reads exactly the library the cache was
+/// asked to spare.
+#[tokio::test]
+async fn a_mixed_run_keeps_the_records_of_the_paths_it_stood_still_for() {
+    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(workspace.path());
+    let cas = open_hierarchy_cas(&paths).await;
+    let archive = cas.put(bytes::Bytes::from(zip_payload(&ARCHIVE_MEMBERS))).await.unwrap();
+    let document = folder_and_playlist_document(&archive.to_string());
+    let mut state = MediaPmState::default();
+
+    let first = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    let before = read_cache(&paths);
+    let standing_still = first_member_relative();
+    assert!(
+        before.outputs.contains_key(&standing_still),
+        "the first run extracted the archive, so it stamped its members: {:?}",
+        before.outputs
+    );
+    let playlist_key = before
+        .outputs
+        .keys()
+        .find(|key| {
+            std::path::Path::new(key)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("m3u8"))
+        })
+        .cloned()
+        .expect("the first run wrote a playlist body and stamped it");
+    assert!(
+        first.materialized_paths >= 2,
+        "the fixture has to have written the folder and the playlist, or the run about to be \
+         staged never set up: {first:?}"
+    );
+
+    // The playlist body drifts so this run rewrites exactly one path and
+    // confirms it, while the archive folder's members answer from their
+    // records without being read.
+    let playlist = paths.hierarchy_root_dir.join(&playlist_key);
+    commit::remove_path(&playlist).expect("a readonly managed output is removable");
+    std::fs::write(&playlist, b"replacement body of another length")
+        .expect("the replacement lands on the library");
+
+    let second = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    assert_eq!(
+        (second.materialized_paths, second.skipped_paths, second.missing_paths),
+        (1, 2, 0),
+        "the drifted playlist is written back and the intact entries are left alone: {second:?}"
+    );
+
+    let after = read_cache(&paths);
+    assert!(
+        after.outputs.contains_key(&standing_still),
+        "the member this run verified by standing still has to be in the file the flush \
+         published, not dropped for being confirmed earlier: {:?}",
+        after.outputs
+    );
+    assert!(
+        after.outputs.contains_key(&playlist_key),
+        "the body this run rewrote is confirmed by the write: {:?}",
+        after.outputs
     );
 }

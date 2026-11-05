@@ -43,6 +43,7 @@ async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
         &generated_doc,
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await;
 
@@ -126,6 +127,7 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
         &generated_doc,
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await;
 
@@ -201,6 +203,7 @@ async fn sync_hierarchy_marks_a_missing_entry_warning() {
         &generated_doc,
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await
     .expect("sync_hierarchy should succeed");
@@ -305,6 +308,7 @@ async fn sync_hierarchy_marks_a_failed_folder_entry() {
         &generated_doc,
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await;
 

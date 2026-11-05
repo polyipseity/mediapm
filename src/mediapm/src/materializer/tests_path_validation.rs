@@ -67,6 +67,7 @@ async fn regression_sync_hierarchy_rejects_parent_traversal_component() {
         &generated_doc,
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await;
 
@@ -133,6 +134,7 @@ async fn regression_sync_hierarchy_sanitizes_interpolated_path_component() {
         &generated_doc,
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await;
 

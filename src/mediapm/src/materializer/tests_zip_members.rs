@@ -42,6 +42,7 @@ async fn run_zip_member_sync_with_pack(
         &NickelDocument::default(),
         None,
         None,
+        None,
     )
     .await
 }

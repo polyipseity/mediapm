@@ -267,9 +267,16 @@ impl OutputCache {
 
     /// Write this run's records, and only this run's.
     ///
-    /// Paths this run never confirmed are dropped rather than carried forward, so
-    /// the file tracks the library instead of growing for as long as the
-    /// workspace lives.
+    /// The file holds what the last run verified. Paths this run never
+    /// confirmed are dropped rather than carried forward, so the file tracks
+    /// the library instead of growing for as long as the workspace lives,
+    /// except when this run confirmed nothing at all: a run that verified no
+    /// path has nothing of its own to publish, and it leaves the previous
+    /// file standing rather than replacing a populated proof with an empty
+    /// map. An idempotency re-run is exactly that case, and overwriting here
+    /// would make the run after it re-read the library this cache exists to
+    /// spare. A first run over a workspace with no file writes its records
+    /// normally, because there is no previous proof to preserve.
     ///
     /// # Errors
     ///
@@ -281,6 +288,10 @@ impl OutputCache {
             Ok(confirmed) => confirmed.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         };
+        if confirmed.is_empty() && self.file.exists() {
+            // Nothing was verified this run: the previous proof stands.
+            return Ok(());
+        }
         Self::write_file(&self.file, &confirmed)
     }
 
@@ -491,6 +502,35 @@ mod tests {
             parsed["outputs"]["song"]["hash"],
             serde_json::json!(Hash::from_content(b"seven!").to_string()),
             "every record lives under `outputs`: {text}"
+        );
+    }
+
+    /// A run that confirmed nothing leaves the file the previous run wrote.
+    ///
+    /// The file holds what the last run verified. An idempotency re-run
+    /// confirms nothing (every output was already correct and no path was
+    /// read), and overwriting the file with an empty map at that point would
+    /// discard the proof the first run paid for, so the run after it re-reads
+    /// the whole library. The guard is the file's own existence: with nothing
+    /// confirmed there is nothing to publish, and the previous publish still
+    /// describes the library.
+    #[test]
+    fn a_flush_with_no_confirmations_leaves_the_previous_file_alone() {
+        let (_workspace, paths) = empty_workspace();
+        {
+            let cache = OutputCache::open(&paths);
+            cache.confirm("music/a.mp4", &Hash::from_content(b"video!"), 6, Some(6));
+            cache.flush().expect("the first run writes what it proved");
+        }
+        {
+            let cache = OutputCache::open(&paths);
+            cache.flush().expect("a run that proved nothing still flushes");
+        }
+
+        let text = std::fs::read_to_string(cache_file_path(&paths)).expect("the cache file exists");
+        assert!(
+            text.contains("music/a.mp4"),
+            "a run that confirmed nothing must leave the previous run's records in place: {text}"
         );
     }
 }

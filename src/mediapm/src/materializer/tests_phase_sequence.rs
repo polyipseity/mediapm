@@ -51,6 +51,7 @@ async fn a_folder_row_and_a_playlist_row_advance_and_terminate() {
         &generated_doc,
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await
     .expect("sync_hierarchy should succeed");
@@ -125,6 +126,7 @@ async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await
     .expect("sync_hierarchy should succeed");
@@ -265,6 +267,7 @@ async fn a_written_media_entry_row_advances_and_finishes() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await
     .expect("a media entry holding a resolvable variant hash should write");
@@ -315,6 +318,7 @@ async fn a_failed_playlist_row_carries_the_failure_marker() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
+        None,
     )
     .await;
 

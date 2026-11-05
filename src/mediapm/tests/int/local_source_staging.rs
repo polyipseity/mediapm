@@ -103,10 +103,10 @@ fn seed_ffprobe_cache(root: &Path, payload: &Path) {
                 "artist": "",
                 "description": "",
             },
-            "lastAccessUnixSeconds": now,
+            "last_access_unix_seconds": now,
         }
     });
-    let cache_file = serde_json::json!({ "version": 1, "entries": entries });
+    let cache_file = serde_json::json!({ "version": 2, "entries": entries });
     std::fs::write(
         cache_dir.join("metadata.json"),
         serde_json::to_vec(&cache_file).expect("encode metadata cache"),

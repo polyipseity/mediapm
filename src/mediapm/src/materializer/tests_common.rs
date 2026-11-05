@@ -579,6 +579,7 @@ pub(super) async fn run_sync(
         &NickelDocument::default(),
         progress_group,
         overall_bar,
+        None,
     )
     .await
     .expect("a run over one resolvable entry either writes it or skips it")

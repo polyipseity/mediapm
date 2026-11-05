@@ -253,6 +253,7 @@ async fn a_folder_whose_variant_path_is_a_directory_stays_missing() {
             &NickelDocument::default(),
             Some(Arc::new(recording.clone())),
             Some(Arc::new(overall.clone())),
+            None,
         )
         .await
         .expect("one blocked variant leaves a report to read; it is not a failed run");
@@ -336,6 +337,7 @@ async fn a_folder_member_whose_path_is_a_directory_is_counted_as_missing() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("one refused member leaves a report to read; it is not a failed run");
@@ -435,6 +437,7 @@ async fn a_folder_whose_file_member_lands_first_is_counted_as_missing() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("one member that cannot land leaves a report to read; it is not a failed run");
@@ -507,6 +510,7 @@ async fn a_folder_whose_nested_member_lands_first_is_counted_as_missing() {
         &NickelDocument::default(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
+        None,
     )
     .await
     .expect("one member that cannot land leaves a report to read; it is not a failed run");
@@ -600,6 +604,7 @@ async fn a_folder_whose_member_directory_cannot_be_made_fails_the_run() {
         false,
         &ConductorState::new_empty(),
         &NickelDocument::default(),
+        None,
         None,
         None,
     )
@@ -715,6 +720,7 @@ async fn a_folder_with_one_blocked_variant_stays_missing_though_its_good_one_is_
             &NickelDocument::default(),
             Some(Arc::new(recording.clone())),
             Some(Arc::new(overall.clone())),
+            None,
         )
         .await
         .expect("a blocked variant leaves a report to read; it is not a failed run");

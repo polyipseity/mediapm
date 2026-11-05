@@ -472,6 +472,7 @@ mod tests {
             &NickelDocument::default(),
             None,
             None,
+            None,
         )
         .await
         .expect("a run over one resolvable entry either writes it or says why it did not")

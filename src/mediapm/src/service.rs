@@ -123,7 +123,12 @@ pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + ConstraintApi + Send
     /// Runtime storage overrides passed at construction.
     runtime_storage_overrides: MediaRuntimeStorage,
     /// Persistent local-source metadata cache (`<runtime>/cache/mediapm`).
-    metadata_cache: MetadataCache,
+    ///
+    /// Shared as one handle across the service's lifetime: the materializer
+    /// probes through it during sync, and two instances over one file would
+    /// each rewrite the file from their own map, so the last flush would drop
+    /// the other's entries.
+    metadata_cache: Arc<MetadataCache>,
 }
 
 /// Converts a `PathBuf` into an `Option`, treating empty buffers as `None`
@@ -141,7 +146,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// Runtime storage overrides default to [`MediaRuntimeStorage::default()`].
     #[must_use]
     pub fn new(conductor: Conductor<Cas>, paths: MediaPmPaths) -> Self {
-        let metadata_cache = MetadataCache::open(&paths.workspace_mediapm_cache_dir());
+        let metadata_cache = Arc::new(MetadataCache::open(&paths.workspace_mediapm_cache_dir()));
         Self {
             conductor,
             paths,
@@ -157,7 +162,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         paths: MediaPmPaths,
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Self {
-        let metadata_cache = MetadataCache::open(&paths.workspace_mediapm_cache_dir());
+        let metadata_cache = Arc::new(MetadataCache::open(&paths.workspace_mediapm_cache_dir()));
         Self { conductor, paths, runtime_storage_overrides, metadata_cache }
     }
 
@@ -552,7 +557,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
 
         // Fetch metadata via ffprobe (cache hit skips the probe).
         let metadata =
-            fetch_local_source_metadata(path, ffprobe_command, Some(&self.metadata_cache))?;
+            fetch_local_source_metadata(path, ffprobe_command, Some(self.metadata_cache.as_ref()))?;
         let title = Some(metadata.title.as_str());
         let description = Some(metadata.description.as_str());
 
@@ -1503,6 +1508,7 @@ impl MediaPmService<FileSystemCas> {
             &generated_doc,
             materialize_pg.clone(),
             materialize_overall.clone(),
+            Some(Arc::clone(&self.metadata_cache)),
         )
         .await?;
         if let Some(ref group) = materialize_pg {
