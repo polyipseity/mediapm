@@ -39,7 +39,7 @@ pub use api::{
     resolve_managed_tool_executable_with_filesystem_cas,
 };
 pub use conductor_impl::Conductor;
-pub use config::documents::NickelDocument;
+pub use config::documents::{NickelDocument, tool_literal_env_vars};
 pub use config::versions::{decode_document, encode_document};
 pub use config::{
     ConfigPayloadStaging, ExternalDataEntry, InputBinding, OutputCaptureSpec, OutputPolicy,

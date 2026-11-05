@@ -339,6 +339,7 @@ mod tests {
             command_parts,
             success_codes: vec![0],
             execution_env_vars: BTreeMap::new(),
+            literal_env_vars: BTreeMap::new(),
             outputs: BTreeMap::new(),
             tool_content_map: BTreeMap::new(),
             payload_root: String::new(),

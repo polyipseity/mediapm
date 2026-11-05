@@ -100,7 +100,98 @@ pub fn collect_config_content_hashes(
     hashes
 }
 
+/// The deterministic half of one tool's declared environment: non-empty literals only.
+///
+/// An empty declaration means "inherit this name", so it must stay out of the
+/// map instance-key derivation reads — a name the document did not fix would
+/// put the host's value into the key. The full declared map, empty values
+/// included, belongs to [`NickelDocument::execution_env_vars_for`], which
+/// resolves those names against the host for template resolution.
+#[must_use]
+pub fn tool_literal_env_vars(spec: &ToolSpec) -> BTreeMap<String, String> {
+    let ToolKindSpec::Executable { env_vars, .. } = &spec.kind else {
+        return BTreeMap::new();
+    };
+    env_vars
+        .iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
 impl NickelDocument {
+    /// Resolves the environment one tool's `${env.…}` template references read.
+    ///
+    /// Both worker-side template contexts (command parts and input bindings)
+    /// and the materializer's key-reader context call this — with the same
+    /// document and spec — so a binding resolves to identical bytes on both
+    /// sides of the cache comparison or both sides refuse it together.
+    ///
+    /// The fold order is the rule: hardcoded platform defaults, then the
+    /// document's platform-inherited names, then the tool's inherited names —
+    /// each read from the host at this moment — and the tool's declared
+    /// literals last, so the document's statement outranks an inherited name
+    /// of the same key. An empty literal means "inherit the host's value" and
+    /// is resolved here rather than at spawn; a name the host does not define
+    /// stays empty, which the spawn site reads as "leave it unset".
+    ///
+    /// Side effect: reads the process environment for every inherited name.
+    #[must_use]
+    pub fn execution_env_vars_for(&self, spec: &ToolSpec) -> BTreeMap<String, String> {
+        let literal_env_vars: BTreeMap<String, String> = match &spec.kind {
+            ToolKindSpec::Executable { env_vars, .. } => env_vars.clone(),
+            ToolKindSpec::Builtin { .. } => BTreeMap::new(),
+        };
+        // 1. Hardcoded platform defaults
+        let mut env_vars = default_runtime_inherited_env_vars();
+
+        // 2. Inherit additional env var names from host, selected by current platform
+        let current_platform = if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "unknown"
+        };
+        if let Some(platform_names) =
+            self.runtime.environment.platform_inherited_env_vars.env_names_for(current_platform)
+        {
+            for name in platform_names {
+                if let Ok(val) = std::env::var(name) {
+                    env_vars.insert(name.clone(), val);
+                }
+            }
+        }
+
+        // 3. Tool-level inherited env var names
+        for name in &spec.runtime.inherited_env_vars {
+            if let Ok(val) = std::env::var(name) {
+                env_vars.insert(name.clone(), val);
+            }
+        }
+
+        // 4. The tool's own literal values. Folded last, so the
+        //    document's statement about a name outranks both an
+        //    inherited name of the same key and a platform
+        //    default: a literal is what the document says the
+        //    value is, while an inherited name is a copy of
+        //    whatever the host happens to hold.
+        //
+        //    An empty literal means "inherit the host's value"
+        //    and is resolved here, not at spawn, so the map holds
+        //    the value this run gives the child. A name the host
+        //    does not define stays empty, and the spawn site
+        //    reads that as "leave it unset".
+        for (name, value) in literal_env_vars {
+            let resolved =
+                if value.is_empty() { std::env::var(&name).unwrap_or_default() } else { value };
+            env_vars.insert(name, resolved);
+        }
+        env_vars
+    }
+
     /// Converts this document into a [`UnifiedNickelDocument`] for the
     /// orchestration runtime.
     ///
@@ -116,11 +207,11 @@ impl NickelDocument {
             .iter()
             .map(|(name, spec)| {
                 let id = name.clone();
-                let (command_parts, literal_env_vars, success_codes) = match &spec.kind {
-                    ToolKindSpec::Executable { command, env_vars, success_codes } => {
-                        (command.clone(), env_vars.clone(), success_codes.clone())
+                let (command_parts, success_codes) = match &spec.kind {
+                    ToolKindSpec::Executable { command, success_codes, .. } => {
+                        (command.clone(), success_codes.clone())
                     }
-                    ToolKindSpec::Builtin { .. } => (Vec::new(), BTreeMap::new(), vec![0]),
+                    ToolKindSpec::Builtin { .. } => (Vec::new(), vec![0]),
                 };
 
                 let builtin_id = match &spec.kind {
@@ -136,64 +227,10 @@ impl NickelDocument {
                     builtin_id,
                     command_parts,
                     success_codes,
+                    literal_env_vars: tool_literal_env_vars(spec),
                     inputs: spec.inputs.clone(),
                     default_inputs: spec.default_inputs.clone(),
-                    execution_env_vars: {
-                        // 1. Hardcoded platform defaults
-                        let mut env_vars = default_runtime_inherited_env_vars();
-
-                        // 2. Inherit additional env var names from host, selected by current platform
-                        let current_platform = if cfg!(target_os = "windows") {
-                            "windows"
-                        } else if cfg!(target_os = "linux") {
-                            "linux"
-                        } else if cfg!(target_os = "macos") {
-                            "macos"
-                        } else {
-                            "unknown"
-                        };
-                        if let Some(platform_names) = self
-                            .runtime
-                            .environment
-                            .platform_inherited_env_vars
-                            .env_names_for(current_platform)
-                        {
-                            for name in platform_names {
-                                if let Ok(val) = std::env::var(name) {
-                                    env_vars.insert(name.clone(), val);
-                                }
-                            }
-                        }
-
-                        // 3. Tool-level inherited env var names
-                        for name in &spec.runtime.inherited_env_vars {
-                            if let Ok(val) = std::env::var(name) {
-                                env_vars.insert(name.clone(), val);
-                            }
-                        }
-
-                        // 4. The tool's own literal values. Folded last, so the
-                        //    document's statement about a name outranks both an
-                        //    inherited name of the same key and a platform
-                        //    default: a literal is what the document says the
-                        //    value is, while an inherited name is a copy of
-                        //    whatever the host happens to hold.
-                        //
-                        //    An empty literal means "inherit the host's value"
-                        //    and is resolved here, not at spawn, so the map holds
-                        //    the value this run gives the child. A name the host
-                        //    does not define stays empty, and the spawn site
-                        //    reads that as "leave it unset".
-                        for (name, value) in literal_env_vars {
-                            let resolved = if value.is_empty() {
-                                std::env::var(&name).unwrap_or_default()
-                            } else {
-                                value
-                            };
-                            env_vars.insert(name, resolved);
-                        }
-                        env_vars
-                    },
+                    execution_env_vars: self.execution_env_vars_for(spec),
                     // Bridged: a tool's capture defaults are live. The step
                     // worker merges them with the step's own declarations
                     // before capturing — the tool owns the capture identity of
@@ -1140,6 +1177,45 @@ mod tests {
             unified.tools["ffmpeg"].execution_env_vars.get("FOO"),
             Some(&"bar".to_string()),
             "a tool's declared env var value must reach the process it spawns",
+        );
+    }
+
+    /// Only a non-empty `env_vars` declaration is the literal half.
+    ///
+    /// An empty declaration means "inherit this name" (platform or host), so it
+    /// must stay out of `literal_env_vars` — the map key derivation reads —
+    /// while `execution_env_vars` still carries the name for template
+    /// resolution. Keying a name the document did not fix would let the host's
+    /// value for it move the key later.
+    #[test]
+    fn to_unified_carries_only_non_empty_env_vars_as_literal_env_vars() {
+        let document = NickelDocument {
+            tools: BTreeMap::from([(
+                "ffmpeg".to_string(),
+                executable_tool(
+                    "ffmpeg",
+                    BTreeMap::from([
+                        ("FOO".to_string(), "bar".to_string()),
+                        ("MEDIAPM_T3_INHERITED_ONE".to_string(), String::new()),
+                    ]),
+                    Vec::new(),
+                ),
+            )]),
+            ..NickelDocument::default()
+        };
+
+        let unified = document.to_unified();
+
+        assert_eq!(
+            unified.tools["ffmpeg"].literal_env_vars,
+            BTreeMap::from([("FOO".to_string(), "bar".to_string())]),
+            "only a non-empty declaration is deterministic key material; the empty \
+             name stays inherited and must not enter the literal map",
+        );
+        assert!(
+            unified.tools["ffmpeg"].execution_env_vars.contains_key("MEDIAPM_T3_INHERITED_ONE"),
+            "the inherited name is still present for template resolution, resolved to \
+             the host's value or empty",
         );
     }
 

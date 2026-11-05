@@ -79,7 +79,7 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
         let cmd_ctx = TemplateContext::<C> {
             cas: Some(cas),
             step_outputs: &request.step_outputs,
-            env_vars: &BTreeMap::new(),
+            env_vars: &tool_spec.execution_env_vars,
             tokens: &BTreeMap::new(),
             sandbox_dir: Some(sandbox_dir),
             host_os: std::env::consts::OS,
@@ -152,8 +152,12 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         .iter()
         .map(|input| (input.key.clone(), input.value.as_bytes().to_vec()))
         .collect();
-    let key_material =
-        key_material_for_tool(&tool_spec.command_parts, &input_values, &raw_bindings);
+    let key_material = key_material_for_tool(
+        &tool_spec.command_parts,
+        &input_values,
+        &raw_bindings,
+        &tool_spec.literal_env_vars,
+    );
     let instance_key = derive_instance_key(&tool_call_id, &key_material);
 
     // Tool-level capture defaults merged with the step's own declarations. The
@@ -555,6 +559,7 @@ mod tests {
             command_parts: Vec::new(),
             success_codes: Vec::new(),
             execution_env_vars: BTreeMap::new(),
+            literal_env_vars: BTreeMap::new(),
             outputs: tool_defaults,
             tool_content_map: BTreeMap::new(),
             payload_root: String::new(),

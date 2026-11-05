@@ -636,7 +636,7 @@ async fn resolve_single_step_output_hashes_strict(
         return Ok(StrictStepResolution { outputs: None, unresolved_inputs: unresolved });
     };
 
-    let (conductor_tool_key, _) = find_active_tool_spec(generated_doc, &step.tool)
+    let (conductor_tool_key, tool_spec) = find_active_tool_spec(generated_doc, &step.tool)
         .map(|(key, spec)| (key.clone(), spec))
         .ok_or_else(|| {
             MediaPmError::Workflow(format!(
@@ -644,6 +644,9 @@ async fn resolve_single_step_output_hashes_strict(
                 step.id, step.tool
             ))
         })?;
+    // The same environment the worker's template contexts resolve `${env.…}`
+    // against, so the reader and the worker cannot disagree about a binding.
+    let execution_env_vars = generated_doc.execution_env_vars_for(tool_spec);
 
     let required_output_names =
         required_step_output_names.get(&step.id).cloned().unwrap_or_default();
@@ -654,6 +657,7 @@ async fn resolve_single_step_output_hashes_strict(
         &merged_step_inputs,
         &expected_inputs,
         prior_step_outputs,
+        &execution_env_vars,
     )
     .await?;
     // A binding the worker resolved and this pass could not leaves a term out of
@@ -853,10 +857,12 @@ fn merge_step_inputs_with_tool_defaults(
 /// Rebuilds the key material of one step from a generated document.
 ///
 /// The materializer does not run the command, so it feeds
-/// [`mediapm_conductor::key_material_for_tool`] the same two inputs the executor
-/// derives from: each binding's resolved value bytes, and the bindings
-/// themselves. A selector's source is therefore the hash the binding names,
-/// which is the object the executor would have staged.
+/// [`mediapm_conductor::key_material_for_tool`] the same inputs the executor
+/// derives from: each binding's resolved value bytes, the bindings
+/// themselves, and the tool's non-empty literal `env_vars` — the map that
+/// makes a literal `${env.…}` reference deterministic for both sides. A
+/// selector's source is therefore the hash the binding names, which is the
+/// object the executor would have staged.
 fn materializer_key_material(
     generated_doc: &NickelDocument,
     step_tool: &str,
@@ -872,6 +878,7 @@ fn materializer_key_material(
         tool_command_parts(tool_spec),
         resolved_values,
         merged_bindings,
+        &mediapm_conductor::tool_literal_env_vars(tool_spec),
     ))
 }
 
@@ -922,7 +929,9 @@ impl ResolvedKeyValueBytes {
 /// re-deriving it: a literal binding resolves to the text its template produces
 /// on this host — a `${context.os …}` conditional selects a path — and a
 /// hash-backed binding resolves to the hash text, because the worker holds no
-/// handle to fetch bytes with.
+/// handle to fetch bytes with. `execution_env_vars` is the tool's resolved
+/// environment, so a `${env.…}` reference resolves to the same bytes the worker
+/// resolved it to.
 ///
 /// Two shapes that resolution cannot answer are handled here:
 ///
@@ -939,6 +948,7 @@ async fn build_instance_key_resolved_value_bytes(
     merged_bindings: &BTreeMap<String, String>,
     expected_inputs: &ExpectedStepInputs,
     prior_step_outputs: &StepOutputHashes,
+    execution_env_vars: &BTreeMap<String, String>,
 ) -> Result<ResolvedKeyValueBytes, MediaPmError> {
     let mut engine_bindings = BTreeMap::new();
     let mut resolved = ResolvedKeyValueBytes::default();
@@ -993,6 +1003,7 @@ async fn build_instance_key_resolved_value_bytes(
         &engine_bindings,
         step_inputs,
         prior_step_outputs,
+        execution_env_vars,
     )
     .await;
     resolved.values.extend(engine.values);
@@ -1526,10 +1537,12 @@ mod tests {
                 find_active_tool_spec(&generated, &step.tool).expect("the step's tool spec");
             let merged = merge_step_inputs_with_tool_defaults(&generated, &step.tool, &step.inputs)
                 .expect("merge step inputs with the tool's defaults");
+            let execution_env = generated.execution_env_vars_for(tool_spec);
             let values = resolve_instance_key_input_values::<FileSystemCas>(
                 &merged,
                 &step.inputs,
                 &step_outputs,
+                &execution_env,
             )
             .await;
             assert!(
@@ -1538,8 +1551,12 @@ mod tests {
                 step.id,
                 values.unresolved,
             );
-            let key_material =
-                key_material_for_tool(tool_command_parts(tool_spec), &values.values, &merged);
+            let key_material = key_material_for_tool(
+                tool_command_parts(tool_spec),
+                &values.values,
+                &merged,
+                &mediapm_conductor::tool_literal_env_vars(tool_spec),
+            );
             let instance_key = derive_tool_call_instance_key(tool_call_id, &key_material);
 
             let mut outputs = BTreeMap::new();
@@ -1725,7 +1742,7 @@ mod tests {
                 .into_expected_inputs()
                 .expect("ffmpeg expected inputs");
 
-        let (conductor_tool_key, _) =
+        let (conductor_tool_key, tool_spec) =
             find_active_tool_spec(&generated, &ffmpeg_step.tool).expect("active ffmpeg tool");
         let resolved_values = build_instance_key_resolved_value_bytes(
             &cas,
@@ -1733,6 +1750,7 @@ mod tests {
             &merged_ffmpeg_inputs,
             &expected_inputs,
             &step_outputs,
+            &generated.execution_env_vars_for(tool_spec),
         )
         .await
         .expect("build ffmpeg instance-key resolved values");
@@ -1880,24 +1898,57 @@ mod tests {
     /// key scheme.
     ///
     /// The version is an integer and only moves forward, so a dotted revision
-    /// (`v6.1`) must never appear here: a change to key material is a new
+    /// (`v7.1`) must never appear here: a change to key material is a new
     /// integer, not a patch of this one.
     ///
     /// Re-declared here instead of rendered from `INSTANCE_KEY_SCHEME` or
     /// imported from `instance_key_domain`: this oracle exists to pin the
     /// documented value, so a changed domain string must fail the oracle rather
     /// than move both sides together.
-    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v6";
+    const ORACLE_INSTANCE_KEY_DOMAIN: &str = "mediapm/conductor/tool call instances/v7";
+
+    /// Substitutes every `${env.NAME}` the document fixes with a literal, by the
+    /// oracle's own scan of the part.
+    ///
+    /// `None` when any reference is left for the host to fill — an inherited
+    /// name, or an identifier that does not end at `}` (the selector-shaped
+    /// `${env.NAME:file(...)}` form) — so the caller treats the part as the
+    /// host's to interpret. The scan is deliberately this module's own rather
+    /// than production's `inline_literals`: a filter that moves with production
+    /// cannot detect production being wrong about what the key covers.
+    fn oracle_inline_env(part: &str, literal_env: &BTreeMap<String, String>) -> Option<String> {
+        let mut inlined = String::with_capacity(part.len());
+        let mut remaining = part;
+        while let Some(offset) = remaining.find("${env.") {
+            let after = &remaining[offset + "${env.".len()..];
+            let end = after
+                .find(|character: char| {
+                    !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+                })
+                .unwrap_or(after.len());
+            if !after[end..].starts_with('}') {
+                return None;
+            }
+            let value = literal_env.get(&after[..end])?;
+            inlined.push_str(&remaining[..offset]);
+            inlined.push_str(value);
+            remaining = &after[end + 1..];
+        }
+        inlined.push_str(remaining);
+        Some(inlined)
+    }
 
     /// Returns whether a command part participates in the key, per the
-    /// documented spec: a part reading `${env.` reports whatever the host holds,
-    /// so it is not key material. Everything else is, selectors included.
+    /// documented spec: a part whose `${env.` reference the document does not
+    /// fix with a literal reports whatever the host holds, so it is not key
+    /// material, while a part every reference of which is fixed hashes with the
+    /// literals inlined. Everything else is, selectors included.
     ///
     /// Deliberately a second implementation of the rule rather than a call to
     /// `references_environment`: a filter that moves with production cannot
     /// detect production being wrong about what the key covers.
-    fn oracle_is_key_material(part: &str) -> bool {
-        !part.contains("${env.")
+    fn oracle_is_key_material(part: &str, literal_env: &BTreeMap<String, String>) -> bool {
+        oracle_inline_env(part, literal_env).is_some()
     }
 
     /// Splits a command part into its selectors, as `(destination, source)`
@@ -1939,11 +1990,19 @@ mod tests {
     /// A selector part is key material, so it must report `true` here: the
     /// selector's destination and source hash identify the bytes the step
     /// stages, which is work, even though the part's own text cannot be hashed.
+    ///
+    /// The env cases carry the scheme-7 split: a reference the document fixes
+    /// with a literal is key material (its inlined text is the document's own),
+    /// an inherited one is not, and a selector-shaped reference is not — the
+    /// selector's own parts are keyed instead.
     #[test]
-    fn oracle_is_key_material_refuses_the_environment_and_keeps_selectors() {
+    fn oracle_is_key_material_refuses_inherited_env_and_keeps_selectors() {
+        let literal_env = BTreeMap::from([("MY_VAR".to_string(), "v1".to_string())]);
         let cases = [
             ("${env.HOME}", false),
-            ("--flag ${env.MY_VAR} --other", false),
+            ("--flag ${env.MY_VAR} --other", true),
+            ("--flag ${env.OTHER} --other", false),
+            ("${env.MY_VAR:file(out.txt)}", false),
             ("${inputs.payload:file(payload.txt)}", true),
             ("${inputs.folder:folder(dir)}", true),
             ("mp4", true),
@@ -1953,7 +2012,7 @@ mod tests {
         ];
         for (part, expected) in cases {
             assert_eq!(
-                oracle_is_key_material(part),
+                oracle_is_key_material(part, &literal_env),
                 expected,
                 "part {part:?} must be classified as key material={expected}",
             );
@@ -1995,40 +2054,100 @@ mod tests {
     ///
     /// Resolved bytes when the binding names work, the binding's own text when
     /// it names only the host or the environment, and resolved bytes when the
-    /// input records no binding at all.
-    fn oracle_value_term<'a>(raw_binding: Option<&'a String>, resolved: &'a [u8]) -> &'a [u8] {
+    /// input records no binding at all. A binding that reads no `${context.…`
+    /// whose `${env.` references the document all fixes is the one environment
+    /// case that resolves: its inlined text is the document's own, so the value
+    /// it resolves to is as host-independent as the literal itself. A binding
+    /// that mixes a context selection with fixed literals keeps its text — the
+    /// resolved bytes are the host's branch, and the whole-map term carries the
+    /// literal's staleness.
+    fn oracle_value_term<'a>(
+        raw_binding: Option<&'a String>,
+        resolved: &'a [u8],
+        literal_env: &BTreeMap<String, String>,
+    ) -> &'a [u8] {
         match raw_binding {
+            Some(text)
+                if !oracle_binding_names_work(text)
+                    && text.contains("${env.")
+                    && !text.contains("${context.")
+                    && oracle_inline_env(text, literal_env).is_some() =>
+            {
+                resolved
+            }
             Some(text) if !oracle_binding_names_work(text) => text.as_bytes(),
             _ => resolved,
         }
     }
 
+    /// The whole `env_vars` map as key material: one `composite(name, value)`
+    /// per entry in name order, the shape a builtin's declared inputs take.
+    ///
+    /// Recomputed here rather than delegated to `key_material_for_builtin`: the
+    /// map is the staleness channel for every literal the document fixes,
+    /// including ones no part or binding reads, and an oracle that borrowed the
+    /// production helper could not catch it dropping the term.
+    fn oracle_literal_env_terms(literal_env: &BTreeMap<String, String>) -> Vec<Hash> {
+        literal_env
+            .iter()
+            .map(|(name, value)| {
+                Hash::composite(&[
+                    Hash::from_content(name.as_bytes()),
+                    Hash::from_content(value.as_bytes()),
+                ])
+            })
+            .collect()
+    }
+
     /// Pins the value rule the demo fixture cannot reach.
     ///
     /// No demo builtin binds an input to `${context.` or `${env.`, so the fixture
-    /// comparison alone cannot tell the scheme-6 rule from the dropped-slot rule
-    /// it replaced. Both shapes are named here directly: the context-only
-    /// binding keeps its slot and hashes its own text, and the binding that
-    /// names a step output hashes the bytes it resolves to.
+    /// comparison alone cannot tell the current rule from the rules it
+    /// replaced. Every shape is named here directly: the context-only binding
+    /// keeps its slot and hashes its own text, a binding that names a step
+    /// output hashes the bytes it resolves to, a `${env.` binding the document
+    /// fixes with a literal hashes its resolved value, an inherited one hashes
+    /// its own text, and a binding mixing the context selection with a fixed
+    /// literal hashes its own text too.
     #[test]
     fn oracle_key_material_keeps_a_context_only_binding_and_hashes_its_text() {
         let command_parts: Vec<String> = Vec::new();
         let resolved_values = BTreeMap::from([
+            ("host".to_string(), b"stale-host-value".to_vec()),
+            ("mixed".to_string(), b"deno:deps/deno/other/deno#v1".to_vec()),
             ("runtime".to_string(), b"deno:deps/deno/macos/deno".to_vec()),
             ("source".to_string(), b"blake3:00".to_vec()),
+            ("tag".to_string(), b"v1".to_vec()),
         ]);
         let raw_bindings = BTreeMap::from([
+            ("host".to_string(), "${env.HOME}".to_string()),
+            (
+                "mixed".to_string(),
+                "deno:${context.os == \"macos\" ? deps/deno/macos/deno : deps/deno/other/deno}#${env.T3_TAG}"
+                    .to_string(),
+            ),
             (
                 "runtime".to_string(),
                 "deno:${context.os == \"macos\" ? deps/deno/macos/deno : deps/deno/other/deno}"
                     .to_string(),
             ),
             ("source".to_string(), "${step_output.step-0-0-import.video_untagged}".to_string()),
+            ("tag".to_string(), "${env.T3_TAG}".to_string()),
         ]);
+        let literal_env = BTreeMap::from([("T3_TAG".to_string(), "v1".to_string())]);
 
-        let material = oracle_key_material(&command_parts, &resolved_values, &raw_bindings);
+        let material =
+            oracle_key_material(&command_parts, &resolved_values, &raw_bindings, &literal_env);
 
         let expected = vec![
+            Hash::composite(&[
+                Hash::from_content("host".as_bytes()),
+                Hash::from_content("${env.HOME}".as_bytes()),
+            ]),
+            Hash::composite(&[
+                Hash::from_content("mixed".as_bytes()),
+                Hash::from_content(raw_bindings["mixed"].as_bytes()),
+            ]),
             Hash::composite(&[
                 Hash::from_content("runtime".as_bytes()),
                 Hash::from_content(raw_bindings["runtime"].as_bytes()),
@@ -2037,10 +2156,18 @@ mod tests {
                 Hash::from_content("source".as_bytes()),
                 Hash::from_content(&resolved_values["source"]),
             ]),
+            Hash::composite(&[
+                Hash::from_content("tag".as_bytes()),
+                Hash::from_content(&resolved_values["tag"]),
+            ]),
+            Hash::composite(&[
+                Hash::from_content("T3_TAG".as_bytes()),
+                Hash::from_content("v1".as_bytes()),
+            ]),
         ];
         assert_eq!(
             material, expected,
-            "a context-only binding keeps its slot and hashes its text; a work binding hashes its bytes",
+            "an inherited or mixed binding hashes its text, a fixed-env binding its resolved value, a work binding its bytes, and the map joins after the inputs",
         );
     }
 
@@ -2050,15 +2177,20 @@ mod tests {
     /// `composite(name bytes, value)`. Every other tool keys its command, in
     /// argv order: a plain part contributes `composite(part bytes, the value of
     /// every input it reads)`, a selector part contributes
-    /// `composite(destination bytes, source hash)`, and a part reading
-    /// `${env.` contributes nothing.
+    /// `composite(destination bytes, source hash)`, and a part whose `${env.`
+    /// reference the document does not fix contributes nothing — a fixed one is
+    /// hashed with its literals inlined.
     ///
     /// Every value term is chosen by [`Self::oracle_value_term`], so a binding
-    /// that names only `${context.…}` or `${env.…}` contributes its text while a
-    /// binding that names an input or a step output contributes the bytes it
-    /// resolves to. Both branches use it, including the builtin branch, which
-    /// keeps every declared input's slot: a dropped slot would let two inputs
-    /// collide under distinct names.
+    /// that names only `${context.…}` or an inherited `${env.…}` contributes its
+    /// text while a binding that names an input, a step output, or a
+    /// document-fixed `${env.…}` contributes the bytes it resolves to — except
+    /// a binding that also selects on `${context.…`, which keeps its text. Both
+    /// branches then append the whole `env_vars` map as one
+    /// `composite(name bytes, value)` per entry in name order, which is what
+    /// re-keys an unreferenced literal. The builtin branch uses both, including
+    /// its declared inputs' slots: a dropped slot would let two inputs collide
+    /// under distinct names.
     ///
     /// The composition is written out here rather than delegated to
     /// `key_material_for_tool`: a test that calls the code under test cannot
@@ -2069,30 +2201,32 @@ mod tests {
         command_parts: &[String],
         resolved_values: &BTreeMap<String, Vec<u8>>,
         raw_bindings: &BTreeMap<String, String>,
+        literal_env: &BTreeMap<String, String>,
     ) -> Vec<Hash> {
         if command_parts.is_empty() {
             let mut material = Vec::new();
             for (name, value) in resolved_values {
-                let term = oracle_value_term(raw_bindings.get(name), value);
+                let term = oracle_value_term(raw_bindings.get(name), value, literal_env);
                 material.push(Hash::composite(&[
                     Hash::from_content(name.as_bytes()),
                     Hash::from_content(term),
                 ]));
             }
+            material.extend(oracle_literal_env_terms(literal_env));
             return material;
         }
 
         let mut material = Vec::new();
-        for part in command_parts {
-            if !oracle_is_key_material(part) {
+        for raw_part in command_parts {
+            let Some(part) = oracle_inline_env(raw_part, literal_env) else {
                 continue;
-            }
-            let selectors = oracle_selectors(part);
+            };
+            let selectors = oracle_selectors(&part);
             if selectors.is_empty() {
                 let mut parts = vec![Hash::from_content(part.as_bytes())];
-                for name in oracle_referenced_inputs(part) {
+                for name in oracle_referenced_inputs(&part) {
                     let resolved = resolved_values.get(&name).map_or(&[][..], Vec::as_slice);
-                    let term = oracle_value_term(raw_bindings.get(&name), resolved);
+                    let term = oracle_value_term(raw_bindings.get(&name), resolved, literal_env);
                     parts.push(Hash::from_content(term));
                 }
                 material.push(Hash::composite(&parts));
@@ -2113,6 +2247,7 @@ mod tests {
                 ]));
             }
         }
+        material.extend(oracle_literal_env_terms(literal_env));
         material
     }
 
@@ -2229,6 +2364,7 @@ mod tests {
                 &merged,
                 &expected_inputs,
                 &step_outputs,
+                &generated.execution_env_vars_for(tool_spec),
             )
             .await
             .map_err(|error| {
@@ -2245,6 +2381,7 @@ mod tests {
                 tool_command_parts(tool_spec),
                 &resolved_values.values,
                 &merged,
+                &mediapm_conductor::tool_literal_env_vars(tool_spec),
             );
 
             let mut candidates = Vec::new();
@@ -2307,8 +2444,8 @@ mod tests {
     /// way; see [`Self::oracle_key_material`]. It does use production
     /// *resolution* helpers — `find_active_tool_spec`,
     /// `merge_step_inputs_with_tool_defaults`, `resolve_expected_input_hashes`,
-    /// `build_instance_key_resolved_value_bytes`, and
-    /// `output_hashes_from_instance` —
+    /// `build_instance_key_resolved_value_bytes`, `execution_env_vars_for`,
+    /// `tool_literal_env_vars`, and `output_hashes_from_instance` —
     /// because resolution is not in question here.
     ///
     /// A deliberate change to the instance-key spec — the domain constant, the
@@ -2534,12 +2671,17 @@ mod tests {
                 step.id,
             ));
         };
+        let Some((_, tool_spec)) = find_active_tool_spec(generated, &step.tool) else {
+            return Err(format!("step '{}' references a tool with no active spec", step.id));
+        };
+        let execution_env = generated.execution_env_vars_for(tool_spec);
         let resolved_values = build_instance_key_resolved_value_bytes(
             cas,
             &step.inputs,
             &merged,
             &expected_inputs,
             step_outputs,
+            &execution_env,
         )
         .await
         .map_err(|error| {
@@ -3632,6 +3774,7 @@ mod tests {
             &step_inputs,
             &expected,
             &StepOutputHashes::new(),
+            &BTreeMap::new(),
         )
         .await
         .expect("a vanished archive is an unresolved input, not a hard error");
@@ -3928,6 +4071,7 @@ mod tests {
             &bindings,
             &ExpectedStepInputs::default(),
             &StepOutputHashes::new(),
+            &BTreeMap::new(),
         )
         .await
         .expect("a binding that does not resolve is reported, not raised");

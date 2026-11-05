@@ -1,61 +1,40 @@
 {
   "version": 5,
   "tool_call_instances": {
-    "blake3:1b45c0cdbfeac4d6c633bff2830e9e9735385f4080629fdde1d70ecf91ebbd6a": {
-      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
-      "impure": false,
-      "executed_at": 1785987849261570000,
-      "last_referenced_at": 1785987881255441000,
+    "blake3:2808d6974cf3c6811c543a1cf9e030b3366816f8d2207b3237a9b8a1ae77ca13": {
+      "tool_call_id": "import@v1",
+      "impure": true,
+      "executed_at": 1785987849238789000,
+      "last_referenced_at": 1785987849261165000,
       "step_ids": [
         {
           "workflow_id": "",
-          "step_id": "step-1-ffmpeg"
+          "step_id": "step-0-0-import-video_untagged-to-video_untagged"
         }
       ],
-      "command_args": [
-        "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
-        "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
-        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
-        "blake3:d58b36427fc4344bc233597820ea8e0b670cef773c19fdf4eeb7418621329899",
-        "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
-        "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
-        "blake3:67c63e93bb738a524b00816c702c2069c103002cf66185d616289570c35897d5",
-        "blake3:b51f23dae542295587205003545302aba37bd4cbab75d7d9b8ac8bf73367c149",
-        "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
-        "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
-        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-        "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
-        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-        "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
-        "blake3:26532c4262624ed12a90d98ad2b2126f31255db2ce6a35482e739d5291c94238",
-        "blake3:7bea5b2870ff84310b59dbd7600e7275d42d4a05a442c6d97b1dc9e5c805ba26"
-      ],
+      "command_args": [],
       "env_vars": {},
-      "materialized_inputs": {
-        "linux/": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
-        "macos/": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
-        "windows/": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df"
-      },
+      "materialized_inputs": {},
       "outputs": {
-        "primary": {
-          "hash": "blake3:13c005b65697c8679f7d8319bf869a51ac937ab425cc70257fb214756d9bb665",
-          "capture": null
-        },
         "process_code": {
           "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
           "capture": null
         },
         "stderr": {
-          "hash": "blake3:c953d2f43b5cd3669fa318cab3171d48622a1067d271aaeca71cfedb17d0d763",
+          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
           "capture": null
         },
         "stdout": {
-          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
+          "capture": null
+        },
+        "video_untagged": {
+          "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
           "capture": null
         }
       }
     },
-    "blake3:43b0a684f3d4c112f61613f50e0784e975c6afb93bca5ab22cced980295d4bd2": {
+    "blake3:33c15cd3b9bc2a40795e074b71ffacdafd04c092b78e0c048399eba8beb5660d": {
       "tool_call_id": "media-tagger",
       "impure": true,
       "executed_at": 1785987882536740000,
@@ -94,60 +73,7 @@
         }
       }
     },
-    "blake3:8351cead556fffcbd408316142ded30b8546253d9aaf3b9f8f97b63d4563f270": {
-      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
-      "impure": false,
-      "executed_at": 1785987892263567000,
-      "last_referenced_at": 1785987904018955000,
-      "step_ids": [
-        {
-          "workflow_id": "",
-          "step_id": "step-3-0-media-tagger-audio-to-audio-apply"
-        }
-      ],
-      "command_args": [
-        "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
-        "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
-        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
-        "blake3:2d2f6a73b2dbf5689fcb4fa8a0aa525c0c6a86f1eb154f2dc087249f8d533531",
-        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
-        "blake3:418ff7b43499e11805be95edc47658bbbdca0bb40b1b3819b6c23ab055f36a4b",
-        "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
-        "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
-        "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
-        "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
-        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-        "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
-        "blake3:d63bd9a826af91c1fea371965a64e11ee20f13e46b5f52c59901136605b3a487",
-        "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
-        "blake3:baf570d380d94531b570c45030228cfc20913e898e69e828de642dcff53d241d"
-      ],
-      "env_vars": {},
-      "materialized_inputs": {
-        "linux/": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
-        "macos/": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
-        "windows/": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df"
-      },
-      "outputs": {
-        "primary": {
-          "hash": "blake3:e182b428226d3ea8e226a169a82bed226bd6e656836025b92ee92f6c650e4472",
-          "capture": null
-        },
-        "process_code": {
-          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
-          "capture": null
-        },
-        "stderr": {
-          "hash": "blake3:930e26ffa35f043aca4849b7b2d46d27671bb404afff12fdb982ce6a22505743",
-          "capture": null
-        },
-        "stdout": {
-          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-          "capture": null
-        }
-      }
-    },
-    "blake3:93b50ddabc59c3a1650104bab60df84eb0e0bc78da7f315d8c01ca35b4528286": {
+    "blake3:4967971bb104c24bb8b4eb5cdf34a3e5ce47bc1a9734a95cab1d5801197592eb": {
       "tool_call_id": "rsgain@blake3:754a0e4d9cf5df2cc61b5336d9d543b2765a85cbbbab890cca34a0eee4c2db98",
       "impure": false,
       "executed_at": 1785987881255817000,
@@ -200,35 +126,109 @@
         }
       }
     },
-    "blake3:ef6b1ec092d664c312907501eb84a7fe8694761672ac81c857fa997405254eab": {
-      "tool_call_id": "import@v1",
-      "impure": true,
-      "executed_at": 1785987849238789000,
-      "last_referenced_at": 1785987849261165000,
+    "blake3:bf42f25770d36eabbbeb5f27e763f3c75f38185b0596cd59a7904dd87698361f": {
+      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
+      "impure": false,
+      "executed_at": 1785987892263567000,
+      "last_referenced_at": 1785987904018955000,
       "step_ids": [
         {
           "workflow_id": "",
-          "step_id": "step-0-0-import-video_untagged-to-video_untagged"
+          "step_id": "step-3-0-media-tagger-audio-to-audio-apply"
         }
       ],
-      "command_args": [],
+      "command_args": [
+        "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
+        "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
+        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
+        "blake3:2d2f6a73b2dbf5689fcb4fa8a0aa525c0c6a86f1eb154f2dc087249f8d533531",
+        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
+        "blake3:418ff7b43499e11805be95edc47658bbbdca0bb40b1b3819b6c23ab055f36a4b",
+        "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
+        "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
+        "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
+        "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
+        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+        "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
+        "blake3:d63bd9a826af91c1fea371965a64e11ee20f13e46b5f52c59901136605b3a487",
+        "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
+        "blake3:baf570d380d94531b570c45030228cfc20913e898e69e828de642dcff53d241d"
+      ],
       "env_vars": {},
-      "materialized_inputs": {},
+      "materialized_inputs": {
+        "linux/": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
+        "macos/": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
+        "windows/": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df"
+      },
       "outputs": {
+        "primary": {
+          "hash": "blake3:e182b428226d3ea8e226a169a82bed226bd6e656836025b92ee92f6c650e4472",
+          "capture": null
+        },
         "process_code": {
           "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
           "capture": null
         },
         "stderr": {
-          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "hash": "blake3:930e26ffa35f043aca4849b7b2d46d27671bb404afff12fdb982ce6a22505743",
           "capture": null
         },
         "stdout": {
-          "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
+          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "capture": null
+        }
+      }
+    },
+    "blake3:eaf1af8b96a815f33f4f8a8cbc3cae2127865942402ae25772f5cabb5834dd41": {
+      "tool_call_id": "ffmpeg@blake3:54c0c8ce74ef011a3f4976740ef01b23560772ff19ee4f6c87ad94abe53cc527",
+      "impure": false,
+      "executed_at": 1785987849261570000,
+      "last_referenced_at": 1785987881255441000,
+      "step_ids": [
+        {
+          "workflow_id": "",
+          "step_id": "step-1-ffmpeg"
+        }
+      ],
+      "command_args": [
+        "blake3:101c89341ebce33e556ca053f538691748af7b7deefbbc685b88a422e9b190db",
+        "blake3:dac95592b6229e3b74b82c7b2521a0f7cdd6cf7d02ad30144877835170e0686c",
+        "blake3:f84fc08520c855d9cd8dbce91cfb9c8ec5d0e7de5e9fc70d7fdc42b60f4829d2",
+        "blake3:d58b36427fc4344bc233597820ea8e0b670cef773c19fdf4eeb7418621329899",
+        "blake3:ae3064c0af79be43cbd842610b783e96d7cc767b38ad25bb680e51157f00c8ee",
+        "blake3:08d11189f9a9e68dc1466cbba529ca88661b242391057ec2ebf6d63673c8c37e",
+        "blake3:67c63e93bb738a524b00816c702c2069c103002cf66185d616289570c35897d5",
+        "blake3:b51f23dae542295587205003545302aba37bd4cbab75d7d9b8ac8bf73367c149",
+        "blake3:8a70fcee71193f30041307a47cba5b108877fe40486a7e530aae14fb84c0a209",
+        "blake3:fbe63c7ca66abd70b99e9412f2c6bfa2fc6fc0b3acf3062f1d8abef930bb4911",
+        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+        "blake3:113c7d8a127b21d73c923dad9e35d3f1cf8ec64a8c1fe615ff736fe02470fde9",
+        "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+        "blake3:cafc5c4ed0f23c054ebc31e07b46fa024e4015a18bb2d71bf780bd181ca7f120",
+        "blake3:26532c4262624ed12a90d98ad2b2126f31255db2ce6a35482e739d5291c94238",
+        "blake3:7bea5b2870ff84310b59dbd7600e7275d42d4a05a442c6d97b1dc9e5c805ba26"
+      ],
+      "env_vars": {},
+      "materialized_inputs": {
+        "linux/": "blake3:8594ec45d55c0054fa066b2919ea86296710f3804a7570b1fa7f5ca9e08a5b06",
+        "macos/": "blake3:5395bd8b989dedef9fef28a79bd58f5ef275a4e85c397e7a2d03fcfc2e74b25b",
+        "windows/": "blake3:1dd72c4f2214aa101d0ffd8034786726722ebdae27b3a1a43d8febf7b7c492df"
+      },
+      "outputs": {
+        "primary": {
+          "hash": "blake3:13c005b65697c8679f7d8319bf869a51ac937ab425cc70257fb214756d9bb665",
           "capture": null
         },
-        "video_untagged": {
-          "hash": "blake3:1f88e0efabb673588e0fb93bc882bca077eb4e8ecb1f77c3240b630ede2312ac",
+        "process_code": {
+          "hash": "blake3:4d067153ac729a4a7e8220c97935ffba67487860d58298ceeb23864369867d9f",
+          "capture": null
+        },
+        "stderr": {
+          "hash": "blake3:c953d2f43b5cd3669fa318cab3171d48622a1067d271aaeca71cfedb17d0d763",
+          "capture": null
+        },
+        "stdout": {
+          "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
           "capture": null
         }
       }

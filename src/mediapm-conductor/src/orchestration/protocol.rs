@@ -93,6 +93,14 @@ pub(crate) struct UnifiedToolSpec {
     ///
     /// Builtin tools always carry an empty map here.
     pub execution_env_vars: BTreeMap<String, String>,
+    /// Non-empty `env_vars` the document fixed for this tool: name to value.
+    ///
+    /// Only a non-empty declaration enters this map: an empty value means the
+    /// name is inherited (platform or host), which reaches
+    /// `execution_env_vars` but is never keyed. Key derivation reads this map
+    /// while template resolution reads `execution_env_vars`, so a literal edit
+    /// moves the key and the host's value cannot.
+    pub literal_env_vars: BTreeMap<String, String>,
     /// Declared output capture specs keyed by output name.
     pub outputs: BTreeMap<String, OutputCaptureSpec>,
     /// Per-tool content-map entries to materialize into the execution sandbox.
@@ -254,6 +262,7 @@ mod tests {
                 command_parts: Vec::new(),
                 success_codes: Vec::new(),
                 execution_env_vars: BTreeMap::new(),
+                literal_env_vars: BTreeMap::new(),
                 outputs: BTreeMap::new(),
                 tool_content_map: BTreeMap::new(),
                 payload_root: String::new(),
@@ -293,6 +302,7 @@ mod tests {
             command_parts: Vec::new(),
             success_codes: vec![0],
             execution_env_vars: BTreeMap::new(),
+            literal_env_vars: BTreeMap::new(),
             outputs: BTreeMap::new(),
             tool_content_map: BTreeMap::new(),
             payload_root: String::new(),

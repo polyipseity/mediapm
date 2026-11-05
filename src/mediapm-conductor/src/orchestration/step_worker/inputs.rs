@@ -33,7 +33,7 @@ pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
     let ctx = TemplateContext::<C> {
         cas: None, // step-workers don't have direct CAS for template resolution
         step_outputs: &request.step_outputs,
-        env_vars: &BTreeMap::new(), // env vars are not passed through step execution
+        env_vars: &tool_spec.execution_env_vars, // literals and inherited values, as the run sees them
         tokens: &BTreeMap::new(),
         sandbox_dir: None,
         host_os: std::env::consts::OS,
@@ -101,12 +101,15 @@ pub struct InstanceKeyInputValues {
 /// rather than re-implementing resolution: it builds the context
 /// `resolve_step_inputs` builds — no store handle, the step's own bindings as
 /// `${inputs.…}`, the recorded step outputs as `${step_output.…}`, the host OS
-/// as `${context.os}`, and no environment — and resolves every binding through
-/// the same engine.
+/// as `${context.os}`, and the tool's execution environment — and resolves every
+/// binding through the same engine.
 ///
 /// `bindings` is the step's input map merged with the tool's declared defaults,
 /// which is the map the worker iterates; `step_inputs` is the step's own map,
-/// which is what `${inputs.…}` reads inside a default.
+/// which is what `${inputs.…}` reads inside a default. `execution_env_vars` is
+/// the tool's resolved environment — the same map both worker-side contexts
+/// read — so a binding carrying `${env.…}` resolves to identical bytes on both
+/// sides or the reader reports the same refusal the worker would meet.
 ///
 /// A binding whose template raises is reported in
 /// [`InstanceKeyInputValues::unresolved`] with the engine's own error text
@@ -115,13 +118,13 @@ pub async fn resolve_instance_key_input_values<C: CasApi + Send + Sync>(
     bindings: &BTreeMap<String, String>,
     step_inputs: &BTreeMap<String, String>,
     step_outputs: &BTreeMap<String, BTreeMap<String, Hash>>,
+    execution_env_vars: &BTreeMap<String, String>,
 ) -> InstanceKeyInputValues {
-    let env_vars = BTreeMap::new();
     let tokens = BTreeMap::new();
     let ctx = TemplateContext::<C> {
         cas: None,
         step_outputs,
-        env_vars: &env_vars,
+        env_vars: execution_env_vars,
         tokens: &tokens,
         sandbox_dir: None,
         host_os: std::env::consts::OS,
@@ -228,6 +231,7 @@ mod tests {
             &bindings,
             &step_inputs,
             &step_outputs,
+            &BTreeMap::new(),
         )
         .await;
 
@@ -254,8 +258,18 @@ mod tests {
         };
         let other_values = BTreeMap::from([("js_runtimes".to_string(), other_host)]);
         assert_eq!(
-            crate::instance_key::key_material_for_tool(&parts, &resolved.values, &bindings),
-            crate::instance_key::key_material_for_tool(&parts, &other_values, &bindings),
+            crate::instance_key::key_material_for_tool(
+                &parts,
+                &resolved.values,
+                &bindings,
+                &BTreeMap::new()
+            ),
+            crate::instance_key::key_material_for_tool(
+                &parts,
+                &other_values,
+                &bindings,
+                &BTreeMap::new()
+            ),
             "a binding that reads only the host must key its text, not the branch it selects",
         );
         let composed = Hash::composite(&[
@@ -263,7 +277,12 @@ mod tests {
             Hash::from_content(bindings["js_runtimes"].as_bytes()),
         ]);
         assert_eq!(
-            crate::instance_key::key_material_for_tool(&parts, &resolved.values, &bindings)[1],
+            crate::instance_key::key_material_for_tool(
+                &parts,
+                &resolved.values,
+                &bindings,
+                &BTreeMap::new()
+            )[1],
             composed,
             "the term is the binding's text composed with the part that reads it",
         );
@@ -288,6 +307,7 @@ mod tests {
             &bindings,
             &bindings,
             &step_outputs,
+            &BTreeMap::new(),
         )
         .await;
 
@@ -308,6 +328,7 @@ mod tests {
             &bindings,
             &bindings,
             &step_outputs,
+            &BTreeMap::new(),
         )
         .await;
 
@@ -332,6 +353,7 @@ mod tests {
 
         let resolved = resolve_instance_key_input_values::<mediapm_cas::InMemoryCas>(
             &bindings,
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
         )

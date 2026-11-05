@@ -197,6 +197,7 @@ fn script_tool(
         command_parts: vec![script_key(), ARGUMENT.to_string()],
         success_codes: vec![0],
         execution_env_vars: BTreeMap::new(),
+        literal_env_vars: BTreeMap::new(),
         outputs: BTreeMap::from([(
             "out".to_string(),
             OutputCaptureSpec {
