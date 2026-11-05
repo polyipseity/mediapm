@@ -187,6 +187,14 @@ pub(super) struct CachedValue<T> {
 }
 
 /// JSON cache index for media-tagger HTTP response rows.
+///
+/// Deliberately shaped unlike the conductor cache index: this is a
+/// freshness index - rows carry `fetched_unix_seconds` and age against
+/// their namespace policy - and it has no prune phase, so it holds no
+/// `last_prune_unix_seconds` field. Nothing ages in the background here:
+/// [`MediaTaggerHttpCache`] checks freshness per read and retires stale
+/// and dangling rows in the one `evict_expired` pass it runs at
+/// construction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct MediaTaggerCacheIndex {
     /// Envelope version marker.

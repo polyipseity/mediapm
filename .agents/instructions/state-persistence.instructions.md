@@ -34,7 +34,7 @@ State persisted in `state.json` under `<runtime_root>/` tracks managed file reco
 | `version`           | `String`         | Human-readable version as fetched (informational only)         |
 | `canonical_version` | `String`         | Canonical version identifier used for skip-if-up-to-date logic |
 | `content_map_hash`  | `String`         | blake3 hash of the content_map JSON (content-addressed identity); empty for no-payload tools |
-| `deployed_at`       | `u64`            | Unix-epoch seconds when deployed (0 = not yet)                 |
+| `deployed_at`       | `u64`            | Unix-epoch nanoseconds when deployed (0 = not yet)            |
 | `resolved_tag`      | `Option<String>` | Provenance: resolved upstream git tag, or `None`               |
 | `resolved_version`  | `Option<String>` | Provenance: resolved upstream version, or `None`               |
 | `resolved_vcs_hash` | `Option<String>` | Provenance: resolved upstream VCS commit hash, or `None`       |
@@ -133,7 +133,7 @@ Flat→v2 mapping:
 2. Sort by `deployed_at` descending.
 3. Return the first entry (latest deploy).
 
-`deployed_at` is a Unix-epoch timestamp in seconds. `0` means "not yet deployed".
+`deployed_at` is a Unix-epoch timestamp in nanoseconds. `0` means "not yet deployed".
 
 ## Normalization / retain rules
 
