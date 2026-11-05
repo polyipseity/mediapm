@@ -2160,6 +2160,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "clap_complete",
+ "mediapm-utils",
 ]
 
 [[package]]
@@ -2263,6 +2264,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "clap_complete",
+ "mediapm-utils",
 ]
 
 [[package]]

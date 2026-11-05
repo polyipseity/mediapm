@@ -3,6 +3,7 @@
 //! - [`types`] — `StringMap`, `BinaryInputMap`
 //! - [`path`] — `PathMode` and path resolvers
 //! - [`builtin`] — builtin descriptor helpers and CLI argument parsing
+//! - [`env_registry`] — `EnvVarEntry`/`EnvVarGroup` and the registry composer
 //! - [`timestamp`] — `Timestamp` (Unix-epoch nanoseconds)
 //! - [`generated`] — `GENERATED_FILE_BANNER`, `prepend_banner`
 //! - [`fs`] — atomic publication of a document's bytes
@@ -17,6 +18,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod builtin;
+pub mod env_registry;
 pub mod fs;
 pub mod generated;
 pub mod path;

@@ -25,6 +25,11 @@ workspace = true
 # shipped binary: this crate is only ever a dev-dependency of its consumers.
 wiremock = "0.6"
 flate2.workspace = true
+# The env-var registry table (`env_registry.rs`) is non-test code and uses the
+# shared `EnvVarEntry` type. The type lives in mediapm-utils, not
+# mediapm-conductor: this crate must never depend back on mediapm-conductor,
+# which would close the dev-dependency cycle.
+mediapm-utils.workspace = true
 parking_lot.workspace = true
 serde_json.workspace = true
 tar.workspace = true
@@ -33,7 +38,4 @@ xz2.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
-# Only the stub-payload builder's own tests need a temp directory; no non-test
-# code in this crate references `mediapm-utils`.
-mediapm-utils.workspace = true
 reqwest.workspace = true

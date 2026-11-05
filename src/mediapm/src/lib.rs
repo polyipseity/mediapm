@@ -23,6 +23,7 @@ pub mod config;
 /// Golden demo hierarchy layout contract (examples + tests).
 #[doc(hidden)]
 pub mod demo_hierarchy_spec;
+pub mod env_registry;
 mod error;
 /// Example and test temp isolation (`MEDIAPM_EXAMPLE_*` env overrides, fallback roots, cleanup).
 ///

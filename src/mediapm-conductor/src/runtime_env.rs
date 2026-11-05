@@ -15,6 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::ToolRuntime;
+use crate::env_registry::{EnvVarEntry, EnvVarGroup};
 use crate::error::ConductorError;
 use crate::provision::PAYLOAD_DIR_NAME;
 use crate::provision::helpers::sanitize_tool_id;
@@ -23,36 +24,8 @@ use crate::provision::helpers::sanitize_tool_id;
 pub const RUNTIME_DOTENV_FILE_NAME: &str = ".env";
 /// Machine-generated runtime dotenv file name under one conductor directory root.
 pub const RUNTIME_DOTENV_GENERATED_FILE_NAME: &str = ".env.generated";
-
-/// Canonical generated `.env` template for conductor runtime roots.
-const RUNTIME_DOTENV_TEMPLATE: &str = concat!(
-    "# conductor runtime environment variables\n",
-    "#\n",
-    "# User-authored values go here. This file is loaded automatically by\n",
-    "# conductor before state/workflow operations.\n",
-    "#\n",
-    "# Core mediapm/conductor runtime knobs:\n",
-    "# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS=120\n",
-    "# MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS=300\n",
-    "# MEDIAPM_HTTP_TIMEOUT_SECONDS=180\n",
-    "#\n",
-    "# Media metadata enrichment (AcoustID -> MusicBrainz):\n",
-    "# ACOUSTID_API_KEY=replace-me\n",
-    "#\n",
-    "# Optional manual override for internal media-tagger ffmpeg path\n",
-    "# (normally generated automatically into .env.generated):\n",
-    "# MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN=\n",
-    "#\n",
-    "# Optional manual override for yt-dlp companion paths\n",
-    "# (normally generated automatically into .env.generated):\n",
-    "# MEDIAPM_YT_DLP_FFMPEG_LOCATION=\n",
-    "# MEDIAPM_YT_DLP_JS_RUNTIMES=\n",
-    "#\n",
-    "# Optional proxy passthrough for downloader tools:\n",
-    "# HTTP_PROXY=http://127.0.0.1:7890\n",
-    "# HTTPS_PROXY=http://127.0.0.1:7890\n",
-    "# NO_PROXY=localhost,127.0.0.1\n",
-);
+/// Reference-only example env file name under one conductor directory root.
+pub const RUNTIME_DOTENV_EXAMPLE_FILE_NAME: &str = ".env.example";
 
 /// Canonical generated `.env.generated` template for conductor runtime roots.
 const RUNTIME_DOTENV_GENERATED_TEMPLATE: &str = concat!(
@@ -73,16 +46,26 @@ pub fn runtime_generated_dotenv_path(conductor_dir: &Path) -> PathBuf {
     conductor_dir.join(RUNTIME_DOTENV_GENERATED_FILE_NAME)
 }
 
-/// Ensures runtime dotenv template files exist.
+/// Ensures runtime dotenv files exist and the reference example is current.
 ///
-/// Each file is published through a sibling temporary, so a reader of the
-/// conductor runtime root never opens half a template. The write happens only
-/// when the file is absent, so an existing file is never replaced.
+/// `.env` is seeded from `registry` when absent (comments only: the user
+/// banner plus the registry's grouped entries); `.env.generated` keeps its
+/// tooling template; and `.env.example` is written at the end of every call,
+/// change-detected, so a refresh regenerates the reference file from the
+/// registry instead of leaving a stale one behind.
+///
+/// Each seed is published through a sibling temporary, so a reader of the
+/// conductor runtime root never opens half a template. A seed happens only
+/// when its file is absent, so an existing user file is never replaced.
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError`] when directory creation or file writes fail.
-pub fn ensure_runtime_env_files(conductor_dir: &Path) -> Result<(), ConductorError> {
+/// Returns [`ConductorError`] when directory creation, file reads, or file
+/// writes fail.
+pub fn ensure_runtime_env_files(
+    conductor_dir: &Path,
+    registry: &[EnvVarEntry],
+) -> Result<(), ConductorError> {
     fs::create_dir_all(conductor_dir).map_err(|source| ConductorError::Io {
         operation: "creating conductor runtime environment directory".to_string(),
         path: conductor_dir.to_path_buf(),
@@ -91,12 +74,15 @@ pub fn ensure_runtime_env_files(conductor_dir: &Path) -> Result<(), ConductorErr
 
     let dotenv_path = runtime_dotenv_path(conductor_dir);
     if !dotenv_path.exists() {
-        mediapm_utils::fs::write_bytes_atomically(&dotenv_path, RUNTIME_DOTENV_TEMPLATE.as_bytes())
-            .map_err(|source| ConductorError::Io {
-                operation: "writing conductor runtime .env template".to_string(),
-                path: dotenv_path.clone(),
-                source,
-            })?;
+        mediapm_utils::fs::write_bytes_atomically(
+            &dotenv_path,
+            render_env_seed(registry).as_bytes(),
+        )
+        .map_err(|source| ConductorError::Io {
+            operation: "writing conductor runtime .env template".to_string(),
+            path: dotenv_path.clone(),
+            source,
+        })?;
     }
 
     let generated_dotenv_path = runtime_generated_dotenv_path(conductor_dir);
@@ -112,7 +98,134 @@ pub fn ensure_runtime_env_files(conductor_dir: &Path) -> Result<(), ConductorErr
         })?;
     }
 
+    write_env_example(conductor_dir, registry)?;
+
     Ok(())
+}
+
+/// Fixed header every `.env.example` carries.
+///
+/// The `# @generated` line marks the file as tool-owned, and the second
+/// line states what it is before the third tells the reader not to edit it:
+/// the file is regenerated on every runtime refresh, so an edit would not
+/// survive the next sync.
+const ENV_EXAMPLE_BANNER: &str = concat!(
+    "# @generated\n",
+    "# Example runtime environment variables — reference only.\n",
+    "# Do not edit this file; it is regenerated on every runtime refresh.\n",
+);
+
+/// Writes the reference `.env.example` for one runtime root.
+///
+/// The file is comments only: the `ENV_EXAMPLE_BANNER` banner, a blank line, then
+/// one `# ── <group> ──` section per [`EnvVarGroup`] in declaration order
+/// with each registry entry rendered as `# NAME=default` and its doc on the
+/// next line, so a reader can copy a default without editing the file. The
+/// write is change-detected: identical bytes are left untouched, so a
+/// refresh on an unchanged registry causes no filesystem churn.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when directory creation, the change-detection
+/// read, or the atomic write fails.
+pub fn write_env_example(
+    conductor_dir: &Path,
+    registry: &[EnvVarEntry],
+) -> Result<(), ConductorError> {
+    fs::create_dir_all(conductor_dir).map_err(|source| ConductorError::Io {
+        operation: "creating conductor runtime environment directory".to_string(),
+        path: conductor_dir.to_path_buf(),
+        source,
+    })?;
+    let example_path = conductor_dir.join(RUNTIME_DOTENV_EXAMPLE_FILE_NAME);
+    let content = render_env_example(registry);
+    match fs::read(&example_path) {
+        Ok(existing) if existing == content.as_bytes() => return Ok(()),
+        Ok(_) => {}
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(ConductorError::Io {
+                operation: "reading conductor runtime .env.example".to_string(),
+                path: example_path.clone(),
+                source,
+            });
+        }
+    }
+    mediapm_utils::fs::write_bytes_atomically(&example_path, content.as_bytes()).map_err(
+        |source| ConductorError::Io {
+            operation: "writing conductor runtime .env.example".to_string(),
+            path: example_path,
+            source,
+        },
+    )?;
+    Ok(())
+}
+
+/// Renders the complete `.env.example` body for one registry: the fixed
+/// banner, a blank line, then the grouped sections
+/// ([`render_registry_sections`]).
+fn render_env_example(registry: &[EnvVarEntry]) -> String {
+    let mut content = String::from(ENV_EXAMPLE_BANNER);
+    content.push('\n');
+    content.push_str(&render_registry_sections(registry));
+    content
+}
+
+/// Renders the grouped section body shared by `.env.example` and the `.env`
+/// seed: one `# ── <group> ──` header per non-empty [`EnvVarGroup`], in the
+/// enum's declaration order, followed by that group's entries as
+/// `# NAME=default` plus a `#   <doc>` line. Groups with no entries render
+/// no header. Deterministic for a given registry: the group order is fixed
+/// and entries within a group keep their registry order.
+fn render_registry_sections(registry: &[EnvVarEntry]) -> String {
+    let mut content = String::new();
+    let mut first_group = true;
+    for group in [
+        EnvVarGroup::Core,
+        EnvVarGroup::CliPaths,
+        EnvVarGroup::Timeouts,
+        EnvVarGroup::Concurrency,
+        EnvVarGroup::DebugSeams,
+        EnvVarGroup::Upstream,
+        EnvVarGroup::TestOnly,
+        EnvVarGroup::ToolGenerated,
+    ] {
+        if !registry.iter().any(|entry| entry.group == group) {
+            continue;
+        }
+        if !first_group {
+            content.push('\n');
+        }
+        first_group = false;
+        let _ = writeln!(content, "# ── {group} ──");
+        for entry in registry.iter().filter(|entry| entry.group == group) {
+            let _ = writeln!(content, "# {}={}", entry.name, entry.default);
+            let _ = writeln!(content, "#   {}", entry.doc);
+        }
+    }
+    content
+}
+
+/// User-authored banner every seeded `.env` carries: the header block of the
+/// template this seed replaced, kept byte-identical so an existing user file
+/// and a freshly seeded one read the same at the top.
+const RUNTIME_DOTENV_SEED_BANNER: &str = concat!(
+    "# conductor runtime environment variables\n",
+    "#\n",
+    "# User-authored values go here. This file is loaded automatically by\n",
+    "# conductor before state/workflow operations.\n",
+    "#\n",
+);
+
+/// Renders the seeded `.env` body for one registry: the user banner, then
+/// the grouped sections shared with `.env.example`.
+///
+/// Every line is a comment or blank, so a seeded file is inert until the
+/// user uncomments a value — the seed never assigns a default itself.
+fn render_env_seed(registry: &[EnvVarEntry]) -> String {
+    let mut content = String::from(RUNTIME_DOTENV_SEED_BANNER);
+    content.push_str(&render_registry_sections(registry));
+    content
 }
 
 /// Loads conductor runtime dotenv files in specified order.
@@ -201,7 +314,8 @@ fn append_unique_env_var_name(target: &mut Vec<String>, raw_name: &str) {
 /// Canonical conductor `.gitignore` content for the runtime root.
 ///
 /// Created at startup to keep generated dotenv files out of version control.
-pub const CONDUCTOR_GITIGNORE_CONTENT: &str = concat!("/.env\n", "/.env.generated\n");
+pub const CONDUCTOR_GITIGNORE_CONTENT: &str =
+    concat!("/.env\n", "/.env.generated\n", "/.env.example\n");
 
 /// Canonical `# @generated` header for `.env.generated` files.
 ///
@@ -389,8 +503,13 @@ pub fn ensure_runtime_gitignore(conductor_dir: &Path) -> Result<(), ConductorErr
 
 /// Appends extra entries to the conductor runtime root `.gitignore`.
 ///
-/// Skips entries already present in the file (simple string-contains dedup).
-/// The `extra` string is appended as-is if not already contained.
+/// Deduplicates per line: each non-empty line `extra` names that the file
+/// already holds is skipped, and only missing lines are appended (each
+/// terminated by a newline). Per-line rather than per-block, because a
+/// caller's block may repeat an entry the file already lists beside entries
+/// it does not (a mediapm construction extend carrying the example line next
+/// to new cache entries), where a block-level containment check would append
+/// the whole block and duplicate the shared line.
 ///
 /// # Errors
 ///
@@ -404,10 +523,24 @@ pub fn extend_runtime_gitignore(conductor_dir: &Path, extra: &str) -> Result<(),
         path: gitignore_path.clone(),
         source,
     })?;
-    if content.contains(extra) {
+    let mut missing: Vec<&str> = Vec::new();
+    for line in extra.lines().filter(|line| !line.is_empty()) {
+        if missing.contains(&line) {
+            continue;
+        }
+        if content.lines().any(|existing| existing == line) {
+            continue;
+        }
+        missing.push(line);
+    }
+    if missing.is_empty() {
         return Ok(());
     }
-    let new_content = format!("{content}{extra}");
+    let mut new_content = content;
+    for line in missing {
+        new_content.push_str(line);
+        new_content.push('\n');
+    }
     mediapm_utils::fs::write_bytes_atomically(&gitignore_path, new_content.as_bytes()).map_err(
         |source| ConductorError::Io {
             operation: "extending conductor runtime .gitignore".to_string(),
@@ -452,6 +585,131 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::env_registry::{compose_env_registry, env_registry};
+
+    /// The reference example's ignore line must appear exactly once no
+    /// matter which path wrote the `.gitignore`: the conductor CLI boot
+    /// extends with the full content, a mediapm construction extends with
+    /// its extra block carrying the same line, and both may run repeatedly
+    /// over a base that already lists it.
+    #[test]
+    fn runtime_gitignore_lists_env_example_exactly_once_on_every_path() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let conductor_dir = dir.path().join(".conductor");
+        fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+
+        ensure_runtime_gitignore(&conductor_dir).expect("ensure_runtime_gitignore");
+        let base = fs::read_to_string(conductor_dir.join(".gitignore")).expect("read .gitignore");
+        assert!(
+            base.contains("/.env.example"),
+            "CONDUCTOR_GITIGNORE_CONTENT must list /.env.example\ncontent:\n{base}"
+        );
+
+        // Construction path: a mediapm-style extra block that carries the
+        // example line alongside entries the base does not have yet.
+        let mediapm_extra = "/.env.example\n/cache/\n/tools/\n";
+        extend_runtime_gitignore(&conductor_dir, mediapm_extra).expect("extend mediapm extra");
+        extend_runtime_gitignore(&conductor_dir, mediapm_extra).expect("re-extend mediapm extra");
+
+        // Conductor CLI boot path: extend with the full content, twice.
+        extend_runtime_gitignore(&conductor_dir, CONDUCTOR_GITIGNORE_CONTENT)
+            .expect("extend conductor content");
+        extend_runtime_gitignore(&conductor_dir, CONDUCTOR_GITIGNORE_CONTENT)
+            .expect("re-extend conductor content");
+
+        let content =
+            fs::read_to_string(conductor_dir.join(".gitignore")).expect("read .gitignore");
+        for entry in ["/.env.example", "/cache/", "/tools/"] {
+            let count = content.matches(entry).count();
+            assert_eq!(
+                count, 1,
+                "{entry} must appear exactly once, got {count}\ncontent:\n{content}"
+            );
+        }
+    }
+
+    /// One ensure call owns the runtime root's three env files: the `.env`
+    /// seed and the `.env.example` reference both come from the passed
+    /// registry (so a refresh regenerates the example), while
+    /// `.env.generated` keeps its tooling template. A hand-modified example
+    /// must be restored on the next ensure — regeneration, not append.
+    #[test]
+    fn ensure_runtime_env_files_seeds_pair_and_example_from_the_registry() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let conductor_dir = dir.path().join(".conductor");
+        let registry = compose_env_registry(&[env_registry()]);
+
+        ensure_runtime_env_files(&conductor_dir, &registry).expect("ensure runtime env files");
+
+        let seed = fs::read_to_string(conductor_dir.join(".env")).expect("read .env");
+        assert!(
+            seed.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS=900"),
+            "seed is not registry-driven:\n{seed}"
+        );
+        let example = fs::read_to_string(conductor_dir.join(".env.example")).expect("read example");
+        assert!(
+            example.contains("Do not edit this file; it is regenerated on every runtime refresh."),
+            "example banner missing:\n{example}"
+        );
+
+        fs::write(conductor_dir.join(".env.example"), "# tampered\n").expect("tamper example");
+        ensure_runtime_env_files(&conductor_dir, &registry).expect("re-ensure runtime env files");
+        let restored =
+            fs::read_to_string(conductor_dir.join(".env.example")).expect("read restored example");
+        assert!(
+            restored.contains("Do not edit this file;"),
+            "example was not regenerated:\n{restored}"
+        );
+        assert!(!restored.contains("# tampered"), "tampered line survived");
+        assert!(
+            conductor_dir.join(".env.generated").exists(),
+            ".env.generated must still be seeded"
+        );
+    }
+
+    /// The `.env` seed must stay comments-only so a user can open it and
+    /// fill values in: the old template's user banner survives verbatim and
+    /// every registry entry renders commented with its code default, never
+    /// as a live assignment.
+    #[test]
+    fn render_env_seed_is_all_comments_with_banner_and_entries() {
+        let seed = render_env_seed(&compose_env_registry(&[env_registry()]));
+        assert!(
+            seed.contains("User-authored values go here. This file is loaded automatically by"),
+            "user banner missing:\n{seed}"
+        );
+        assert!(
+            seed.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS=900"),
+            "registry entry missing:\n{seed}"
+        );
+        for line in seed.lines() {
+            assert!(
+                line.starts_with('#') || line.is_empty(),
+                "seed must be comments only, found a live line: {line}\n{seed}"
+            );
+        }
+    }
+
+    /// `.env.example` is reference material: it must carry the fixed
+    /// `# @generated` banner (including the do-not-edit line) and every
+    /// registry entry rendered as a commented `# NAME=default` line with its
+    /// doc underneath, so a reader can copy a default without editing it.
+    #[test]
+    fn write_env_example_renders_the_banner_and_registry_entries() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        write_env_example(dir.path(), &compose_env_registry(&[env_registry()]))
+            .expect("write_env_example");
+        let content =
+            fs::read_to_string(dir.path().join(".env.example")).expect("read .env.example");
+        assert!(
+            content.contains("Do not edit this file; it is regenerated on every runtime refresh."),
+            "banner missing:\n{content}"
+        );
+        assert!(
+            content.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS=900"),
+            "registry entry missing:\n{content}"
+        );
+    }
 
     #[test]
     fn ensure_runtime_gitignore_creates_file() {
@@ -547,8 +805,10 @@ mod tests {
         fs::create_dir_all(&conductor_dir).expect("create conductor dir");
 
         // Call the same sequence as ensure_conductor.
-        ensure_runtime_env_files(&conductor_dir).expect("ensure_runtime_env_files");
-        ensure_runtime_gitignore(&conductor_dir).expect("ensure_runtime_gitignore");
+        ensure_runtime_env_files(&conductor_dir, &compose_env_registry(&[env_registry()]))
+            .expect("ensure_runtime_env_files");
+        extend_runtime_gitignore(&conductor_dir, CONDUCTOR_GITIGNORE_CONTENT)
+            .expect("extend_runtime_gitignore");
 
         let gitignore_path = conductor_dir.join(".gitignore");
         assert!(gitignore_path.exists(), ".gitignore should exist after startup sequence");

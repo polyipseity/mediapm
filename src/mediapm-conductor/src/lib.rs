@@ -14,6 +14,7 @@ pub mod cache_user_level;
 pub mod conductor_impl;
 pub mod config;
 pub mod defaults;
+pub mod env_registry;
 pub mod error;
 pub mod gc;
 pub mod http;

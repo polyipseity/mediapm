@@ -69,6 +69,7 @@
 //! the media tagger is a host builtin, so its lookup needs an answer rather than
 //! an executable.
 
+pub mod env_registry;
 pub mod media_fixture;
 pub mod mock_musicbrainz;
 pub mod mock_upstream;

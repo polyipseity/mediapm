@@ -76,8 +76,10 @@ async fn the_service_hands_its_metadata_cache_to_the_materializer() -> Result<()
     )
     .expect("write seeded metadata cache");
 
-    let mut runtime = MediaRuntimeStorage::default();
-    runtime.cache_root_override = Some(cache_root.path().to_path_buf());
+    let runtime = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..Default::default()
+    };
     let mut service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), runtime).await?;
 

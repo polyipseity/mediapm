@@ -15,6 +15,8 @@
 //! are kept as the definition carried them, and the reasoning that would
 //! otherwise go in them belongs in this module's docs instead.
 
+pub mod env_registry;
+
 use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};

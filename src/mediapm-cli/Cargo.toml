@@ -35,3 +35,7 @@ clap = { workspace = true, features = [
 	"suggestions",
 ] }
 clap_complete.workspace = true
+# `env_registry.rs` catalogues this crate's `env = "` readers with the shared
+# `EnvVarEntry` type from mediapm-utils (not mediapm-conductor: this crate is
+# consumed by mediapm's build script and stays a definition-only crate).
+mediapm-utils.workspace = true

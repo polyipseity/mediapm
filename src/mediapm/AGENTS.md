@@ -301,7 +301,7 @@ Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sampl
 
 Cross-crate data flow, shared invariants, and the full module-layer index are in `mediapm-architecture.instructions.md`. Key mediapm-specific rules:
 
-- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence, and runtime env files. MediaPM delegates gitignore creation to `extend_runtime_gitignore()` at construction and dotenv writing to `write_generated_dotenv()` during tool sync.
+- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence, and runtime env files. MediaPM delegates gitignore creation to `extend_runtime_gitignore()` at construction, dotenv writing to `write_generated_dotenv()` during tool sync, and `.env.example` regeneration to `write_env_example()` at construction and on every refresh.
 - **MediaPM → CAS**: Materialization reads from CAS; all outputs read-only after commit. Hash mismatch means no fallback.
 - **Lock→CAS referential integrity**: Prune must not remove hashes referenced by lock records.
 

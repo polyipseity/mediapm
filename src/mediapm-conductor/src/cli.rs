@@ -162,9 +162,26 @@ async fn ensure_conductor() -> Result<&'static Conductor<ConfiguredCas>, Conduct
                 .unwrap_or_else(|| root.join(defaults::DEFAULT_CONDUCTOR_DIR_NAME));
             let paths = RuntimeStoragePaths::resolve_for(&conductor_dir, &overrides);
             let cas = ConfiguredCas::FileSystem(FileSystemCas::open(&paths.cas_store_dir).await?);
-            // Ensure runtime environment files exist.
-            crate::runtime_env::ensure_runtime_env_files(&conductor_dir)?;
-            crate::runtime_env::ensure_runtime_gitignore(&conductor_dir)?;
+            // Ensure runtime environment files exist; the registry this root
+            // seeds and exemplifies is this crate's table first, then the
+            // conductor CLI's clap readers.
+            let env_registry = crate::env_registry::compose_env_registry(&[
+                crate::env_registry::env_registry(),
+                mediapm_conductor_cli::env_registry::env_registry(),
+            ]);
+            crate::runtime_env::ensure_runtime_env_files(&conductor_dir, &env_registry)?;
+            crate::runtime_env::extend_runtime_gitignore(
+                &conductor_dir,
+                crate::runtime_env::CONDUCTOR_GITIGNORE_CONTENT,
+            )?;
+            // Load the just-seeded pair so user-authored `.env` values reach
+            // this process before any workflow step is dispatched; the
+            // returned names are the boot's own record and nothing else in
+            // this binary needs them.
+            crate::runtime_env::load_runtime_env_files(
+                &conductor_dir,
+                crate::runtime_env::default_runtime_env_file_names(),
+            )?;
             Ok(Conductor::new(paths, cas))
         })
         .await
@@ -507,6 +524,39 @@ mod tests {
     use crate::conductor_impl::Conductor;
     use crate::gc::{ConductorGcReport, GcClassification};
     use crate::state::{CapturedOutput, ConductorState, StepRef, ToolCallInstance};
+
+    /// The conductor CLI boot must load the dotenv pair it seeds: a value a
+    /// user puts in `.env` under the resolved conductor directory becomes
+    /// visible in the process environment after `ensure_conductor`, which is
+    /// the only way user-authored variables reach step execution. The test
+    /// seeds `.env` itself, so the same assertion also proves boot leaves an
+    /// existing user file alone while still loading it.
+    #[tokio::test]
+    async fn conductor_boot_loads_the_seeded_dotenv_pair() {
+        // Safety: this probe variable is unique to this test; no sibling
+        // reads or writes it, so clearing an ambient value cannot race.
+        unsafe {
+            std::env::remove_var("MEDIAPM_T2_BOOT_PROBE");
+        }
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let conductor_dir = dir.path().join(".conductor");
+        std::fs::create_dir_all(&conductor_dir).expect("create conductor dir");
+        std::fs::write(conductor_dir.join(".env"), "MEDIAPM_T2_BOOT_PROBE=loaded-from-dotenv\n")
+            .expect("seed .env");
+        super::set_conductor_overrides(Some(conductor_dir), super::PathOverrides::default());
+
+        super::ensure_conductor().await.expect("ensure conductor");
+
+        assert_eq!(
+            std::env::var("MEDIAPM_T2_BOOT_PROBE").as_deref(),
+            Ok("loaded-from-dotenv"),
+            "the seeded .env value must be visible in-process after boot"
+        );
+        // Safety: unique to this test; removed so the probe cannot outlive it.
+        unsafe {
+            std::env::remove_var("MEDIAPM_T2_BOOT_PROBE");
+        }
+    }
 
     /// Builds the state one command test starts from: a single recorded
     /// instance with an output, so a test can prove the record survives a

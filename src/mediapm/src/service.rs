@@ -13,7 +13,9 @@ use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi, FileSystemCas, InMem
 use mediapm_conductor::cache::{Cache, CacheDomainConfig, ENTRY_TTL_SECONDS};
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 use mediapm_conductor::provision::ProvisionedTool;
-use mediapm_conductor::runtime_env::{ensure_runtime_env_files, extend_runtime_gitignore};
+use mediapm_conductor::runtime_env::{
+    ensure_runtime_env_files, extend_runtime_gitignore, write_env_example,
+};
 use mediapm_conductor::tools::provider::{ConfigVersionSpec, VersionSpec};
 use mediapm_conductor::{Conductor, RuntimeStoragePaths, StepRef};
 use url::Url;
@@ -76,7 +78,7 @@ fn sync_progress_terminal(overrides: SyncProgressOverrides, no_progress: bool) -
 /// Mediapm-specific entries appended to the conductor-managed `.gitignore`
 /// at service construction time. Keeps generated and machine-managed files
 /// out of version control.
-const MEDIAPM_EXTRA_GITIGNORE: &str = concat!("/cache/\n", "/tools/\n");
+const MEDIAPM_EXTRA_GITIGNORE: &str = concat!("/cache/\n", "/tools/\n", "/.env.example\n");
 
 /// Resolves the workspace CAS store used for tool payload import and materialization.
 pub(crate) trait WorkspaceProvisioningCas:
@@ -895,7 +897,11 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         load_runtime_dotenv(&effective_paths.env_file, &effective_paths.env_generated_file);
 
         // Ensure conductor runtime env files exist.
-        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::Conductor)?;
+        ensure_runtime_env_files(
+            &effective_paths.runtime_root,
+            &crate::env_registry::composed_env_registry(),
+        )
+        .map_err(MediaPmError::Conductor)?;
 
         // Export the contract sources this document is validated against.
         export_config_contracts(
@@ -1160,6 +1166,10 @@ impl MediaPmService<FileSystemCas> {
             source: e,
         })?;
         extend_runtime_gitignore(&effective_paths.runtime_root, MEDIAPM_EXTRA_GITIGNORE)?;
+        write_env_example(
+            &effective_paths.runtime_root,
+            &crate::env_registry::composed_env_registry(),
+        )?;
 
         // Bootstrap the mediapm document so a fresh workspace has a default
         // `mediapm.ncl` on disk. Reconstructed workspaces keep their existing

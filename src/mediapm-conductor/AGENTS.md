@@ -394,15 +394,23 @@ This conductor-local guide is the authoritative source for orchestration/config/
 
 ### ensure_runtime_env_files
 
-Creates `.env` and `.env.generated` templates in the conductor runtime root (write-if-absent; existing files are never overwritten). `.env` holds user-authored variables with documented examples; `.env.generated` holds the machine-managed header.
+Creates the `.env` seed and `.env.generated` template in the conductor runtime root (write-if-absent for the seed; existing files are never overwritten) and writes `.env.example`, so one call keeps all three files in step with the passed registry. Signature: `ensure_runtime_env_files(conductor_dir, registry: &[EnvVarEntry])`. The `.env` seed is the registry's banner plus grouped comment entries and assigns nothing live; `.env.generated` keeps the machine-managed header; `.env.example` is written change-detected on every call, so a refresh regenerates the reference file from the same registry.
 
 ### ensure_runtime_gitignore
 
-Creates a `.gitignore` in the conductor runtime root with entries for `/.env` and `/.env.generated` (write-if-absent; preserves existing `.gitignore`).
+Creates a `.gitignore` in the conductor runtime root with entries for `/.env`, `/.env.generated`, and `/.env.example` (write-if-absent; preserves existing `.gitignore`).
 
 ### extend_runtime_gitignore
 
-Appends entries to the conductor runtime root `.gitignore`, skipping entries already present (string-contains dedup).
+Appends missing entries to the conductor runtime root `.gitignore`, deduplicating per line: any line the file already holds is skipped and only new lines are appended (each newline-terminated), so a construction-style extra that repeats `/.env.example` beside new entries cannot duplicate it — block-level containment would have.
+
+### write_env_example
+
+Writes `.env.example` for one env registry: the `# @generated` banner, then one `# ── <label> ──` section per group in `EnvVarGroup` order carrying `# NAME=default` and `#   doc` lines. Change-detected — identical bytes are left on disk. `ensure_runtime_env_files` and the mediapm construction path both call it, so every install and every refresh writes the same reference file.
+
+### env_registry
+
+`EnvVarEntry`, `EnvVarGroup`, and `compose_env_registry` live in `mediapm_utils::env_registry` and are re-exported here (ruling R-28-09: the shared types sit one level below the CLI crates because `mediapm-conductor-cli` cannot depend on this crate — the `cli` feature and its build script would close a cycle). `env_registry()` is this crate's table; the `mediapm` crate's `composed_env_registry` adds its own table and, behind the `cli` feature, `mediapm-cli`'s. Every shared name carries byte-identical default, doc, and group across tables, pinned by `shared_names_carry_identical_entries_across_tables`.
 
 ### RUNTIME_DOTENV_GENERATED_HEADER
 
@@ -414,7 +422,7 @@ Overwrites `.env.generated` with the canonical header and tool binary path entri
 
 ### CLI startup
 
-`ensure_conductor()` in `cli.rs` calls both `ensure_runtime_env_files()` and `ensure_runtime_gitignore()` during initialization.
+`ensure_conductor()` in `cli.rs` composes the registry (this crate's table first, then `mediapm-conductor-cli`'s), calls `ensure_runtime_env_files()` with it, extends the `.gitignore` with `CONDUCTOR_GITIGNORE_CONTENT`, and finally calls `load_runtime_env_files()` with `default_runtime_env_file_names()`, so user-authored `.env` values are in the process environment before any workflow step is dispatched.
 
 ## A. Cross-Crate Data Flow and Shared Invariants
 

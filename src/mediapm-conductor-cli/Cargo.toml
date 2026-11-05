@@ -20,3 +20,8 @@ workspace = true
 # `help` subcommand.
 clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
 clap_complete.workspace = true
+# `env_registry.rs` catalogues this crate's `env = "` readers with the shared
+# `EnvVarEntry` type. The type lives in mediapm-utils, not mediapm-conductor:
+# this crate is a dependency of mediapm-conductor's build, so a back-edge
+# would cycle.
+mediapm-utils.workspace = true
