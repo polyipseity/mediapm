@@ -29,8 +29,15 @@ async fn sync_tool_requires_sync_when_missing() -> Result<(), mediapm::MediaPmEr
 #[tokio::test]
 async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::MediaPmError> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
     // media-tagger is a known tool whose provider resolves without network.
-    let mut overrides = MediaRuntimeStorage::default();
+    // The check resolves through `logical_tool_requires_sync`, which opens
+    // the download cache when the tool is present in state; without this
+    // override it would open the real user-level cache.
+    let mut overrides = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
     overrides.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;

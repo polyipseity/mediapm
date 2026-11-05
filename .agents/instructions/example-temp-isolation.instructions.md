@@ -79,7 +79,7 @@ let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path
 Rules:
 
 - Bind `TempDir` to a local variable for the full test scope (do not leak paths without a cleanup owner.
-- Pass `cache_root_override` whenever the test calls `sync_tools`, provisioning, or full `sync_library`.
+- Pass `cache_root_override` whenever the test calls `sync_tools`, provisioning, full `sync_library`, or a version check that resolves a tool (`logical_tool_requires_sync`, `collect_tools_requiring_sync`): without it the resolve opens the real user-level cache.
 - Drop exclusive CAS handles before reopening the same store path (see `StoreLocked` pattern in `rust-conventions.instructions.md`).
 - Process-global env vars: hold the example env lock (`example_isolation::lock_process_env()`) for the mutation scope, or keep an `IsolatedExampleRoots` guard alive; restore env before the lock/guard is released.
 
