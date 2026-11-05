@@ -18,15 +18,17 @@ use mediapm_utils::env_registry::{EnvVarEntry, EnvVarGroup, compose_env_registry
 
 /// Returns mediapm's own env-var table.
 ///
-/// Every entry corresponds to a `*_ENV` const or a documented literal read
-/// under `src/mediapm/src`: the four provider seams
-/// (`tools/provider/{mod.rs,ffmpeg.rs}`), `MEDIAPM_TOOL_PROVISION_CONCURRENCY`
-/// (`conductor_bridge/sync/mod.rs`), `MEDIAPM_SOURCE_FETCH_CONCURRENCY` and
-/// `MEDIAPM_HTTP_TIMEOUT_SECONDS` (also read by `builtins/media_tagger`),
+/// Every entry corresponds to a `*_ENV` const or a documented literal read:
+/// the four provider seams (`tools/provider/{mod.rs,ffmpeg.rs}`),
+/// `MEDIAPM_TOOL_PROVISION_CONCURRENCY` (`conductor_bridge/sync/mod.rs`),
+/// `MEDIAPM_HTTP_TIMEOUT_SECONDS` (`builtins/media_tagger/musicbrainz.rs`),
 /// `ACOUSTID_API_KEY` and `MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN`
 /// (`builtins/media_tagger/mod.rs`), `MEDIAPM_UPDATE_FIXTURES`
-/// (`materializer/resolve.rs`, cfg(test)), the example-isolation roots
-/// (`example_isolation.rs`) and `MEDIAPM_PROGRESS_DEBUG`. Names shared with
+/// (`materializer/resolve.rs`, cfg(test)) and the example-isolation roots
+/// (`example_isolation.rs`) are read under `src/mediapm/src`, while
+/// `MEDIAPM_SOURCE_FETCH_CONCURRENCY` is read only by `mediapm-conductor`'s
+/// provider (`tools/provider/mod.rs`) and `MEDIAPM_PROGRESS_DEBUG` only by
+/// `mediapm-utils` (`progress/inner/debug.rs`). Names shared with
 /// other tables carry byte-identical `default`, `doc` and `group`, which is
 /// what makes the composer's first-wins dedup render either copy
 /// identically.
