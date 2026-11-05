@@ -42,7 +42,14 @@ impl std::ops::Deref for ProvisionedTool {
 pub(crate) struct Metadata {
     pub(crate) version: u32,
     pub(crate) content_map: BTreeMap<String, Hash>,
-    #[serde(rename = "lastUsedUnixSeconds")]
+    /// When the entry was last used (Unix seconds), serialized as
+    /// `last_used_unix_seconds`.
+    ///
+    /// The alias reads the `lastUsedUnixSeconds` spelling version-1 builds
+    /// wrote so a stale directory reaches the version check instead of
+    /// failing to parse: a version-1 entry is rejected as stale by
+    /// [`Metadata::version`], not mistaken for a corrupt file.
+    #[serde(alias = "lastUsedUnixSeconds")]
     pub(crate) last_used_unix_seconds: u64,
     #[serde(default)]
     pub(crate) execute_bits_verified: bool,

@@ -232,6 +232,13 @@ async fn prune_expired_inner_core(
             for key in &expired_keys {
                 index.entries.remove(key);
             }
+            // A pass that removed something records when it ran; Phase 2
+            // publishes this together with the rows it removed. An empty pass
+            // stamps nothing on purpose: the background loop drives this core
+            // on every tick with no gate, and a stamp over an index with
+            // nothing to prune would close the manual gate for the next day
+            // over work that never happened.
+            index.last_prune_unix_seconds = now;
         }
         // domain_state and index (MutexGuard) dropped here. The snapshot is
         // deliberately *not* taken here: Phase 2 re-reads the live index
@@ -503,7 +510,7 @@ impl Cache {
     /// one domain.
     ///
     /// This method enforces the `PRUNE_INTERVAL_SECONDS` cooldown between
-    /// successive calls per domain. Use `Self::prune_expired_inner` to bypass the
+    /// successive prunes per domain. Use `Self::prune_expired_inner` to bypass the
     /// cooldown.
     ///
     /// # Errors
@@ -527,8 +534,10 @@ impl Cache {
         if now.saturating_sub(last_prune) < PRUNE_INTERVAL_SECONDS {
             return Ok(CachePruneReport::default());
         }
-        // Advance last_prune before proceeding so manual prune has its own
-        // cooldown independent of background loop prunes.
+        // Advance last_prune before proceeding so this call starts its own
+        // cooldown. A pass that removes entries stamps the same field in
+        // `prune_expired_inner_core`, so the gate above counts from the last
+        // prune that did work - this call or any other path's.
         {
             let domain_state = self.domains.get(domain).ok_or_else(|| {
                 ConductorError::Workflow(format!("unknown cache domain '{domain}'"))
@@ -543,8 +552,10 @@ impl Cache {
 
     /// Core prune logic without cooldown check, for one domain.
     ///
-    /// Used by the background maintenance loop so background prunes do not
-    /// interfere with [`Self::prune_expired_entries`] cooldown tracking.
+    /// This is the foreground path into [`prune_expired_inner_core`]:
+    /// [`Self::prune_expired_immediate`] calls it directly and
+    /// [`Self::prune_expired_entries`] calls it after its gate. The background
+    /// maintenance loop calls [`prune_expired_inner_core`] itself.
     ///
     /// Synchronous filesystem I/O (index write, hash-refererence scan) is
     /// offloaded to [`tokio::task::spawn_blocking`] to avoid blocking the
@@ -644,7 +655,9 @@ fn normalize_index_file_name(value: &str) -> String {
 struct CacheIndex {
     /// Envelope version marker.
     version: u32,
-    /// Last time a full prune scan completed (Unix seconds).
+    /// When pruning last ran (Unix seconds): the gated manual call stamps it
+    /// before delegating, and any other pass stamps it when it removes an
+    /// entry.
     #[serde(default)]
     last_prune_unix_seconds: u64,
     /// Cache metadata rows keyed by logical identity key.
@@ -2110,6 +2123,49 @@ mod tests {
         assert!(
             fresh_cas.get(hash).await.is_err(),
             "blob must be deleted when all references expire"
+        );
+    }
+
+    /// Pins that a prune pass which removes entries records its run in the
+    /// index it rewrites.
+    ///
+    /// The stamp used to be written only by the gated `prune_expired_entries`
+    /// call, which production never reaches (`prune_expired_immediate` is the
+    /// foreground entry), so what a real prune did was never recorded. The
+    /// assertion reads the index file back rather than the in-memory index,
+    /// so the stamp has to have been published with the rows the pass
+    /// removed, not merely set.
+    #[tokio::test]
+    async fn the_background_prune_stamps_last_prune() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let clock = TestClock::new(1_000);
+        let cache = Cache::with_test_clock(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: 0,
+            }],
+            &clock,
+        )
+        .await;
+        cache.store_bytes("test", "expiring-key", b"ephemeral").await;
+
+        // The background loop's exact call: the free core, no cooldown gate.
+        let report = super::prune_expired_inner_core(
+            &cache.cas,
+            &cache.domains,
+            "test",
+            clock.handle().now(),
+        )
+        .await
+        .expect("background prune pass");
+        assert_eq!(report.removed_entries, 1, "the pass under test has to have pruned something");
+
+        let reloaded = super::load_index_file_sync(&root.path().join("tools.json"));
+        assert_eq!(
+            reloaded.last_prune_unix_seconds, 1_000,
+            "a prune that removed an entry has to stamp the index it rewrote with the second it ran"
         );
     }
 

@@ -447,7 +447,7 @@ mod tests {
         std::fs::create_dir_all(entry.join(PAYLOAD_DIR_NAME)).expect("payload dir");
         std::fs::write(entry.join(LOCK_FILE_NAME), b"").expect("lock file");
         let metadata = format!(
-            "{{\"version\":{VERSION},\"content_map\":{{}},\"lastUsedUnixSeconds\":{last_used},\"execute_bits_verified\":true}}"
+            "{{\"version\":{VERSION},\"content_map\":{{}},\"last_used_unix_seconds\":{last_used},\"execute_bits_verified\":true}}"
         );
         std::fs::write(entry.join(METADATA_FILE_NAME), metadata).expect("metadata");
     }
@@ -594,6 +594,53 @@ mod tests {
         assert_eq!(
             contents, LOCK_FILE_HEADER,
             "the rebuilt entry's lock file has to carry the header again"
+        );
+    }
+
+    /// A directory the version-1 build wrote is a miss: this build
+    /// re-extracts it under its own version.
+    ///
+    /// The version marker is what tells a stale directory from a current one,
+    /// so a version-1 entry must not answer the fast path even though its
+    /// payload and content map still line up. The miss has to come from the
+    /// version, not from the TTL sweep, so the seed's use time is fresh.
+    #[tokio::test]
+    async fn a_version_one_entry_directory_is_a_miss_and_reextracts() {
+        let _serialized = SWEEP_STATE_LOCK.lock().await;
+        let (tools_dir, cache) = cache_with_payload().await;
+        let entry = tools_dir.path().join("v1-tool");
+        std::fs::create_dir_all(entry.join(PAYLOAD_DIR_NAME)).expect("payload dir");
+        std::fs::write(entry.join(LOCK_FILE_NAME), b"").expect("lock file");
+        // The exact shape a version-1 build wrote: version marker 1 and the
+        // camelCase age field.
+        let v1_metadata = format!(
+            "{{\"version\":1,\"content_map\":{{}},\"lastUsedUnixSeconds\":{},\
+             \"execute_bits_verified\":true}}",
+            now_unix_seconds()
+        );
+        std::fs::write(entry.join(METADATA_FILE_NAME), v1_metadata).expect("v1 metadata");
+        // A payload file only a re-extraction removes: the extraction path
+        // removes the whole entry directory before rebuilding it, while a hit
+        // hands the directory back untouched.
+        let stale = entry.join(PAYLOAD_DIR_NAME).join("stale-v1-artifact");
+        std::fs::write(&stale, b"left by the version-1 build").expect("stale payload");
+
+        let content_map = BTreeMap::new();
+        let guard = cache.materialize("v1-tool", &content_map).await.expect("materialize");
+        let metadata = std::fs::read_to_string(entry.join(METADATA_FILE_NAME)).expect("metadata");
+        drop(guard);
+
+        assert!(
+            metadata.contains("\"version\": 2"),
+            "a version-1 directory has to be rebuilt under this build's version: {metadata}"
+        );
+        assert!(
+            metadata.contains("last_used_unix_seconds"),
+            "the rebuilt metadata carries this build's own field spelling: {metadata}"
+        );
+        assert!(
+            !stale.exists(),
+            "a version-1 directory is re-extracted, not served from: {metadata}"
         );
     }
 

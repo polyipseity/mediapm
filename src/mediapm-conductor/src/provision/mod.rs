@@ -102,7 +102,11 @@ and leaves the directory unprunable; remove the whole directory instead.
 ";
 
 /// On-disk metadata format version.
-pub(crate) const VERSION: u32 = 1;
+///
+/// Version 2 renames the age field `lastUsedUnixSeconds` to
+/// `last_used_unix_seconds`; a directory naming version 1 misses the fast
+/// path and is re-extracted.
+pub(crate) const VERSION: u32 = 2;
 
 /// Serializes the tests that read or reset the process-wide sweep cooldown.
 ///
