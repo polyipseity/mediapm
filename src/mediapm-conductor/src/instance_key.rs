@@ -59,10 +59,6 @@ pub fn instance_key_domain() -> String {
 /// it; [`key_material_for_tool`] is the one function that builds it, so the
 /// executor and the materializer cannot rank the terms differently.
 ///
-/// The environment is not material. A command part reading `${env.VAR}`
-/// resolves to whatever the host holds, so keying it would make one tool mint a
-/// new instance per environment it runs under.
-///
 /// What this key omits is answered by the records it addresses, not by the key.
 /// The stored entry carries its capture spec, and the settlement decides whether
 /// a differing record is divergence or the expected output of impure work.
@@ -765,6 +761,48 @@ mod tests {
             inherited,
             key_material_for_tool(&parts[..1], &BTreeMap::new(), &BTreeMap::new(), &empty),
             "the inherited reference contributes nothing, so its part is dropped like any other",
+        );
+    }
+
+    /// A part mixing a fixed literal with an input keys its inlined text and
+    /// that input's value.
+    ///
+    /// This is the structural half of scheme 7's part rule, where the vacuous
+    /// guard lives: `a_literal_env_value_is_key_material` proves the key moves,
+    /// this proves where — the term's own bytes contain the substituted value,
+    /// so a derivation that skipped the part instead of inlining it cannot
+    /// reproduce this term. The input read beside the literal still carries its
+    /// bytes too, which is the collision class: part participation is decided
+    /// before `referenced_inputs` runs, so a skip would drop the part text and
+    /// its referenced-input term together and two documents differing only in
+    /// that input would share one key.
+    #[test]
+    fn a_mixed_env_and_input_part_keys_the_inlined_text_and_the_input_value() {
+        let parts = vec!["--tag=${env.FIXED}-${inputs.y}".to_string()];
+        let literals = BTreeMap::from([("FIXED".to_string(), "v1".to_string())]);
+        let empty_bindings = BTreeMap::new();
+        let alpha = BTreeMap::from([("y".to_string(), b"alpha".to_vec())]);
+        let beta = BTreeMap::from([("y".to_string(), b"beta".to_vec())]);
+
+        let alpha_material = key_material_for_tool(&parts, &alpha, &empty_bindings, &literals);
+        assert_eq!(
+            alpha_material,
+            vec![
+                Hash::composite(&[
+                    Hash::from_content(b"--tag=v1-${inputs.y}".as_slice()),
+                    Hash::from_content(b"alpha".as_slice()),
+                ]),
+                Hash::composite(&[
+                    Hash::from_content(b"FIXED".as_slice()),
+                    Hash::from_content(b"v1".as_slice()),
+                ]),
+            ],
+            "the part contributes its inlined text with the input's value, then the whole map joins",
+        );
+        assert_ne!(
+            alpha_material,
+            key_material_for_tool(&parts, &beta, &empty_bindings, &literals),
+            "the input beside the fixed literal still decides the key",
         );
     }
 
