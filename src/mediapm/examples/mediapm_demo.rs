@@ -1411,6 +1411,9 @@ mod tests {
         // still - so both demo records (the untagged leaf and the playlist)
         // must still be in the file the second run's flush wrote, not dropped
         // by a flush that treated "nothing rewritten" as "nothing proven".
+        // Keyed rather than counted: a future third record must not be able to
+        // mask one of these two going missing, so each record is named by the
+        // hierarchy-relative path its own setup materializes.
         let materialization_json =
             second_service.paths().workspace_mediapm_cache_dir().join("materialization.json");
         let materialization_text =
@@ -1420,11 +1423,19 @@ mod tests {
         let outputs = materialization["outputs"]
             .as_object()
             .expect("materialization.json holds an outputs object");
-        assert_eq!(
-            outputs.len(),
-            2,
-            "the second sync must leave both demo records (the untagged leaf and the playlist) \
-             in the cache file it just re-published: {materialization_text}"
+        let media_folder =
+            format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}]");
+        let untagged_leaf_key =
+            format!("{DEMO_LIBRARY_ROOT}/{media_folder}/{media_folder}.untagged.mp4");
+        assert!(
+            outputs.contains_key(&untagged_leaf_key),
+            "the second sync must leave the untagged leaf's record ({untagged_leaf_key}) in the \
+             cache file it just re-published: {materialization_text}"
+        );
+        assert!(
+            outputs.contains_key("playlists/local-demo.m3u8"),
+            "the second sync must leave the playlist's record (playlists/local-demo.m3u8) in the \
+             cache file it just re-published: {materialization_text}"
         );
 
         // Quiesce before the isolated root goes away: this service started a
