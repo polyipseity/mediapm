@@ -93,6 +93,16 @@ pub fn derive_instance_key(tool_call_id: &str, key_material: &[Hash]) -> Hash {
 /// An input *binding* that reads `${env.…}` is handled by
 /// `input_value_term_bytes` instead: it contributes its own text, so the input
 /// still occupies its slot and two different variables stay distinct.
+///
+/// A literal whose value itself contains the literal text `${env.` is the one
+/// shape where this check and the test oracle disagree: production inlines the
+/// value and then reads the result as still reading the environment, so the
+/// part is skipped and the binding contributes its own text (the inherited
+/// remainder), while `oracle_inline_env`
+/// (`src/mediapm/src/materializer/resolve.rs:1919`) returns `Some` and keys the
+/// inlined text. Both production sides share this helper, so no user-visible
+/// split exists today, and `demo_fixture_instance_keys_match_independent_spec_oracle`
+/// fails loudly when a fixture ever carries such a value.
 #[must_use]
 pub fn references_environment(source: &str) -> bool {
     source.contains("${env.")

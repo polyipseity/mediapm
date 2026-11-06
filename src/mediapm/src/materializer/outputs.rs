@@ -275,7 +275,12 @@ impl OutputCache {
     /// file standing rather than replacing a populated proof with an empty
     /// map. An idempotency re-run is exactly that case, and overwriting here
     /// would make the run after it re-read the library this cache exists to
-    /// spare. A first run over a workspace with no file writes its records
+    /// spare. A removal-only run confirms nothing too, so the guard skips the
+    /// write and the removed paths' records persist on disk until the next
+    /// confirming run — a corner that is decision-dead ([`Self::is_current`]
+    /// is consulted only after the target exists with matching content) and
+    /// self-healing (any later confirming flush wholesale-replaces the map).
+    /// A first run over a workspace with no file writes its records
     /// normally, because there is no previous proof to preserve.
     ///
     /// # Errors

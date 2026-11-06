@@ -410,7 +410,7 @@ Writes `.env.example` for one env registry: the `# @generated` banner, then one 
 
 ### env_registry
 
-`EnvVarEntry`, `EnvVarGroup`, and `compose_env_registry` live in `mediapm_utils::env_registry` and are re-exported here (ruling R-28-09: the shared types sit one level below the CLI crates because `mediapm-conductor-cli` cannot depend on this crate — the `cli` feature and its build script would close a cycle). `env_registry()` is this crate's table; the `mediapm` crate's `composed_env_registry` adds its own table and, behind the `cli` feature, `mediapm-cli`'s. Every shared name carries byte-identical default, doc, and group across tables, pinned by `shared_names_carry_identical_entries_across_tables`.
+`EnvVarEntry`, `EnvVarGroup`, and `compose_env_registry` live in `mediapm_utils::env_registry` and are re-exported here (ruling R-28-09: the shared types sit one level below the CLI crates because `mediapm-conductor-cli` cannot depend on this crate — the `cli` feature and its build script would close a cycle). `env_registry()` is this crate's table; the `mediapm` crate's `composed_env_registry` adds its own table and, behind the `cli` feature, `mediapm-cli`'s. Every shared name carries byte-identical default, doc, and group across tables, pinned by `shared_names_carry_identical_entries_across_tables`. `ACOUSTID_API_KEY` and `MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN` are mediapm's readers; their documentation and example entries live at the mediapm root (`src/mediapm/src/env_registry.rs`), per the per-crate split.
 
 ### RUNTIME_DOTENV_GENERATED_HEADER
 

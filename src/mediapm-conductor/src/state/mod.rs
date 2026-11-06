@@ -198,9 +198,11 @@ pub struct ToolCallInstance {
 /// Auxiliary metadata attached to the orchestration state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AuxData {
-    /// Conductor GC reference clock — updated to [`Timestamp::now()`] on every
-    /// state commit. Used by `run_conductor_gc()` for grace-period comparisons
-    /// and CAS blob reclamation. Distinct from CAS GC.
+    /// Conductor GC reference clock — assigned when a GC pass runs, in
+    /// [`ConductorState::run_conductor_gc`], not on every state commit; a
+    /// state write persists whatever epoch the last pass recorded, and a pass
+    /// reads it back as the reference time for grace-period comparisons and
+    /// CAS blob reclamation. Distinct from CAS GC.
     pub conductor_gc_epoch: Timestamp,
     /// Instance keys each workflow's most recent successful run produced or
     /// hit, keyed by workflow id.
