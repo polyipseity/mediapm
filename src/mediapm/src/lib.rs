@@ -473,6 +473,7 @@ pub fn merge_runtime_storage(
         },
         lifecycle: config::RuntimeLifecycleConfig {
             instance_ttl_seconds: override_value.lifecycle.instance_ttl_seconds,
+            background_gc_interval_seconds: override_value.lifecycle.background_gc_interval_seconds,
         },
         environment: config::RuntimeEnvironmentConfig {
             inherited_env_vars: merged_inherited_env_vars.unwrap_or_default(),

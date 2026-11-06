@@ -86,6 +86,9 @@ pub const DEFAULT_RECONSTRUCTED_CACHE_TTL_SECONDS: u64 = 3600;
 /// Default instance GC time-to-live in seconds (7 days).
 pub const DEFAULT_INSTANCE_TTL_SECONDS: u64 = 604_800;
 
+/// Default interval between background GC passes in seconds (1 day).
+pub const DEFAULT_BACKGROUND_GC_INTERVAL_SECONDS: u64 = 86_400;
+
 /// Default profiler enabled state.
 pub const DEFAULT_PROFILER_ENABLED: bool = false;
 
@@ -148,6 +151,12 @@ pub fn default_reconstructed_cache_ttl_seconds() -> u64 {
 #[must_use]
 pub fn default_instance_ttl_seconds() -> u64 {
     DEFAULT_INSTANCE_TTL_SECONDS
+}
+
+/// Serde default function returning the background GC interval seconds.
+#[must_use]
+pub fn default_background_gc_interval_seconds() -> u64 {
+    DEFAULT_BACKGROUND_GC_INTERVAL_SECONDS
 }
 
 /// Serde default function returning the profiler enabled state.

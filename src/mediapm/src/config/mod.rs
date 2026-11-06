@@ -281,11 +281,33 @@ pub struct RuntimeCachingConfig {
     pub reconstructed_cache_ttl_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Runtime lifecycle (instance GC and the background sweep cadence).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeLifecycleConfig {
+    /// Conductor instance GC time-to-live in seconds (default 604800).
     #[serde(default = "defaults::default_instance_ttl_seconds")]
     pub instance_ttl_seconds: u64,
+    /// Seconds between background GC passes (default 86400, one day).
+    #[serde(default = "defaults::default_background_gc_interval_seconds")]
+    pub background_gc_interval_seconds: u64,
+}
+
+/// Both lifecycle knobs default to the documented values rather than `0`.
+///
+/// The derived `Default` would zero the plain `u64` fields, and this type sits
+/// behind `MediaRuntimeStorage::default()`, which every constructor path and
+/// the CLI's `MediaRuntimeStorage { ..Default::default() }` build on. A zero
+/// TTL handed to the conductor means immediate eviction on the first sweep, so
+/// the built-in defaults (604800 / 86400) are what an unset lifecycle must
+/// resolve to.
+impl Default for RuntimeLifecycleConfig {
+    fn default() -> Self {
+        Self {
+            instance_ttl_seconds: defaults::default_instance_ttl_seconds(),
+            background_gc_interval_seconds: defaults::default_background_gc_interval_seconds(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

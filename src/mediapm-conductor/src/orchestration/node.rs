@@ -61,6 +61,9 @@ pub(crate) enum ConductorMessage {
         state: ConductorState,
         /// Unified configuration whose hashes protect blobs from reclamation.
         unified: UnifiedNickelDocument,
+        /// Grace period in seconds an unreferenced instance ages under before
+        /// the pass may evict it (the facade's configured GC TTL).
+        ttl_seconds: u64,
         /// Reply channel: the updated state, plus what the pass decided.
         ///
         /// The report travels with the state because a caller cannot derive it:
@@ -140,8 +143,8 @@ where
                 let diagnostics = state.runtime_diagnostics();
                 let _ = reply.send(diagnostics);
             }
-            ConductorMessage::RunGc { state: mut gc_state, unified, reply } => {
-                let result = state.run_gc(&mut gc_state, &unified).await;
+            ConductorMessage::RunGc { state: mut gc_state, unified, ttl_seconds, reply } => {
+                let result = state.run_gc(&mut gc_state, &unified, ttl_seconds).await;
                 let _ = reply.send(result.map(|report| (gc_state, report)));
             }
             ConductorMessage::Shutdown { reply } => {
@@ -279,7 +282,8 @@ impl ConductorActorClient {
     ///
     /// The reachable set is not a parameter: the actor computes it from the
     /// seeds each successful run recorded, which no caller outside the state
-    /// can see.
+    /// can see. `ttl_seconds` is: the facade's configured grace period, which
+    /// the pass applies to every unreferenced instance it judges.
     ///
     /// The reply also carries the pass report, because the distinction between
     /// an abstained pass and a pass over an empty library exists only inside
@@ -293,10 +297,14 @@ impl ConductorActorClient {
         &self,
         state: ConductorState,
         unified: UnifiedNickelDocument,
+        ttl_seconds: u64,
     ) -> Result<(ConductorState, crate::gc::ConductorGcReport), ConductorError> {
         match self
             .actor_ref
-            .call(|reply| ConductorMessage::RunGc { state, unified, reply }, Some(self.rpc_timeout))
+            .call(
+                |reply| ConductorMessage::RunGc { state, unified, ttl_seconds, reply },
+                Some(self.rpc_timeout),
+            )
             .await
         {
             Ok(CallResult::Success(Ok(gc_state))) => Ok(gc_state),

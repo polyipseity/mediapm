@@ -270,6 +270,7 @@ in
 # ||| `MediaRuntimeStorageLatest::lifecycle`).  Closed: no open `..` tail.
 let RuntimeLifecycleConfigV2 = {
   instance_ttl_seconds | IntegerNumberV2 | optional,
+  background_gc_interval_seconds | IntegerNumberV2 | optional,
 }
 in
 

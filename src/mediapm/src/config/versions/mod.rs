@@ -336,6 +336,7 @@ pub fn runtime_boundary(deviations: RuntimeBoundaryDeviations) -> MediaRuntimeSt
             instance_ttl_seconds: Some(
                 instance_ttl_seconds.unwrap_or(defaults::default_instance_ttl_seconds()),
             ),
+            background_gc_interval_seconds: Some(defaults::default_background_gc_interval_seconds()),
         },
         environment: RuntimeEnvironmentConfigLatest {
             inherited_env_vars,
@@ -544,7 +545,9 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
 mod tests {
     use std::path::Path;
 
-    use super::v_latest::{MediaRuntimeStorageLatest, RuntimePathsConfigLatest};
+    use super::v_latest::{
+        MediaRuntimeStorageLatest, RuntimeLifecycleConfigLatest, RuntimePathsConfigLatest,
+    };
     use super::{
         RuntimeBoundaryDeviations, resolve_materialization_preference_order,
         resolve_runtime_storage, runtime_boundary, spelled_path,
@@ -615,6 +618,10 @@ mod tests {
             crate::config::defaults::default_instance_ttl_seconds()
         );
         assert_eq!(
+            resolved.lifecycle.background_gc_interval_seconds,
+            crate::config::defaults::default_background_gc_interval_seconds()
+        );
+        assert_eq!(
             resolved.environment.profiler_enabled,
             crate::config::defaults::default_profiler_enabled()
         );
@@ -622,6 +629,33 @@ mod tests {
             resolved.paths.mediapm_dir,
             MediaRuntimeStorage::default().paths.mediapm_dir,
             "spelled-out paths must survive the round trip into the resolved model"
+        );
+    }
+
+    /// Verifies a document that states a background GC interval keeps it.
+    ///
+    /// The default assertion above proves the spelled-out default resolves;
+    /// this one proves an explicit value is not overwritten on the way to the
+    /// resolved model, which is the whole point of configuring the interval.
+    #[test]
+    fn resolve_runtime_storage_keeps_a_stated_background_gc_interval() {
+        let boundary = runtime_boundary(RuntimeBoundaryDeviations::default());
+        let stated = MediaRuntimeStorageLatest {
+            lifecycle: RuntimeLifecycleConfigLatest {
+                background_gc_interval_seconds: Some(42),
+                ..RuntimeLifecycleConfigLatest::default()
+            },
+            ..boundary
+        };
+
+        let resolved = resolve_runtime_storage(
+            &stated,
+            &RuntimeBasePaths { workspace_root: "/w".into(), mediapm_dir: "/m".into() },
+        );
+
+        assert_eq!(
+            resolved.lifecycle.background_gc_interval_seconds, 42,
+            "a stated interval must reach the resolved model unchanged"
         );
     }
 

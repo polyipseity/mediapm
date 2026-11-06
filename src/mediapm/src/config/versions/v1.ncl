@@ -230,6 +230,7 @@ let MediaRuntimeStorageV1 = {
   verify_on_read_stale_timeout_secs | IntegerNumberV1 | optional,
   reconstructed_cache_ttl_seconds | IntegerNumberV1 | optional,
   instance_ttl_seconds | IntegerNumberV1 | optional,
+  background_gc_interval_seconds | IntegerNumberV1 | optional,
   inherited_env_vars | {
     windows | Array NonEmptyStringV1 | optional,
     linux | Array NonEmptyStringV1 | optional,

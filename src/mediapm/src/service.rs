@@ -1209,7 +1209,10 @@ impl MediaPmService<FileSystemCas> {
                 ],
                 effective_paths.conductor_state_config.clone(),
             );
-        let conductor = Conductor::new(runtime_storage, cas);
+        let conductor = Conductor::new(runtime_storage, cas).with_gc_settings(
+            runtime_storage_overrides.lifecycle.instance_ttl_seconds,
+            runtime_storage_overrides.lifecycle.background_gc_interval_seconds,
+        );
 
         Ok(Self::new_with_runtime_storage_overrides(
             conductor,
@@ -1575,7 +1578,11 @@ impl MediaPmService<InMemoryCas> {
             vec![paths.conductor_user_ncl.clone(), paths.conductor_generated_ncl.clone()],
             paths.conductor_state_config.clone(),
         );
-        let conductor = Conductor::new(runtime_storage, cas);
+        let lifecycle = MediaRuntimeStorage::default().lifecycle;
+        let conductor = Conductor::new(runtime_storage, cas).with_gc_settings(
+            lifecycle.instance_ttl_seconds,
+            lifecycle.background_gc_interval_seconds,
+        );
         Self::new(conductor, paths)
     }
 }

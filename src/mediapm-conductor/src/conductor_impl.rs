@@ -57,6 +57,13 @@ where
     /// [`DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS`](crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS);
     /// tests shorten it because a day is not a test duration.
     background_gc_interval_secs: u64,
+    /// Seconds an unreferenced instance's grace period lasts before either GC
+    /// trigger (the background sweep and the facade's `run_gc`) may evict it.
+    ///
+    /// Production leaves this at
+    /// [`DEFAULT_CONDUCTOR_GC_TTL_SECONDS`](crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS);
+    /// tests shorten it because seven days is not a test duration.
+    gc_ttl_seconds: u64,
 }
 
 impl<C> Conductor<C>
@@ -74,7 +81,29 @@ where
             state_gate: Arc::new(tokio::sync::Mutex::new(())),
             background_maintenance: std::sync::Mutex::new(None),
             background_gc_interval_secs: crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS,
+            gc_ttl_seconds: crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS,
         }
+    }
+
+    /// Configures the two GC knobs both production triggers read.
+    ///
+    /// `ttl_seconds` is the grace period an unreferenced instance ages under
+    /// before a sweep may evict it; `interval_seconds` is how long the
+    /// background loop waits after each pass. The defaults are unchanged at
+    /// [`DEFAULT_CONDUCTOR_GC_TTL_SECONDS`](crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS)
+    /// and
+    /// [`DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS`](crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS),
+    /// so a caller that configures nothing keeps today's behaviour.
+    ///
+    /// Consumes and returns the facade so a construction site can chain it
+    /// (`Conductor::new(paths, cas).with_gc_settings(ttl, interval)`); the
+    /// values must be set before the first workflow run, because that is when
+    /// the background loop captures them.
+    #[must_use]
+    pub fn with_gc_settings(mut self, ttl_seconds: u64, interval_seconds: u64) -> Self {
+        self.gc_ttl_seconds = ttl_seconds;
+        self.background_gc_interval_secs = interval_seconds;
+        self
     }
 
     /// Returns or initialises the conductor actor client.
@@ -129,6 +158,7 @@ where
         let cas = self.cas.clone();
         let paths = self.storage_paths.clone();
         let interval = self.background_gc_interval_secs;
+        let ttl = self.gc_ttl_seconds;
         let handle = tokio::spawn(async move {
             loop {
                 if cancelled_flag.load(Ordering::Relaxed) {
@@ -137,7 +167,7 @@ where
                 if runtime_root_is_gone(&paths) {
                     break;
                 }
-                if let Err(error) = maintenance_pass(&*cas, &paths, &state, &gate).await {
+                if let Err(error) = maintenance_pass(&*cas, &paths, &state, &gate, ttl).await {
                     tracing::warn!("conductor background maintenance failed: {error}");
                 }
                 if cancelled_flag.load(Ordering::Relaxed) {
@@ -669,7 +699,7 @@ where
         let unified = load_unified_config(self.storage_paths())?;
         let _gate = self.state_gate.lock().await;
         let state = self.state.lock().expect("state lock").clone();
-        let (new_state, report) = client.run_gc(state, unified).await?;
+        let (new_state, report) = client.run_gc(state, unified, self.gc_ttl_seconds).await?;
         self.save_state(&new_state)?;
         *self.state.lock().expect("state lock") = new_state;
         Ok(report)
@@ -802,6 +832,7 @@ async fn maintenance_pass<C>(
     paths: &RuntimeStoragePaths,
     state: &std::sync::Mutex<ConductorState>,
     gate: &tokio::sync::Mutex<()>,
+    ttl_seconds: u64,
 ) -> Result<(), ConductorError>
 where
     C: CasApi + CasMaintenanceApi,
@@ -814,13 +845,7 @@ where
     {
         snapshot = persisted;
     }
-    crate::gc::run_conductor_gc(
-        cas,
-        &mut snapshot,
-        &unified,
-        crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS,
-    )
-    .await?;
+    crate::gc::run_conductor_gc(cas, &mut snapshot, &unified, ttl_seconds).await?;
     save_state_file(paths, &snapshot)?;
     *state.lock().expect("state lock") = snapshot;
     Ok(())
@@ -1497,6 +1522,31 @@ mod tests {
         assert!(
             on_disk.tool_call_instances.contains_key(&live),
             "a seeded instance survives the pass and the write",
+        );
+    }
+
+    /// The builder stores both GC knobs where their triggers read them.
+    ///
+    /// The user-level guarantee: a host that configures a grace period and a
+    /// background tick gets exactly those values at both production triggers:
+    /// the loop waits the configured interval between passes, and both the
+    /// background sweep and the facade's `run_gc` age records against the
+    /// configured TTL — so a configured value can never be silently dropped in
+    /// favour of the built-in default.
+    #[test]
+    fn gc_settings_reach_the_loop_interval_and_the_pass_ttl() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let conductor =
+            Conductor::new(RuntimeStoragePaths::new(dir.path()), mediapm_cas::new_in_memory_cas())
+                .with_gc_settings(1, 1);
+
+        assert_eq!(
+            conductor.background_gc_interval_secs, 1,
+            "the background loop must wait the configured interval",
+        );
+        assert_eq!(
+            conductor.gc_ttl_seconds, 1,
+            "both GC passes must age records against the configured TTL",
         );
     }
 

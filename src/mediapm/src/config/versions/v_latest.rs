@@ -163,6 +163,8 @@ pub struct RuntimeCachingConfigLatest {
 pub struct RuntimeLifecycleConfigLatest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ttl_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_gc_interval_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -315,6 +317,10 @@ pub fn resolve_runtime_storage(
                 .lifecycle
                 .instance_ttl_seconds
                 .unwrap_or_else(defaults::default_instance_ttl_seconds),
+            background_gc_interval_seconds: latest
+                .lifecycle
+                .background_gc_interval_seconds
+                .unwrap_or_else(defaults::default_background_gc_interval_seconds),
         },
         environment: super::super::RuntimeEnvironmentConfig {
             inherited_env_vars: latest.environment.inherited_env_vars.clone().unwrap_or_default(),

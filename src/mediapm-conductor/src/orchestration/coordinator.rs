@@ -1211,20 +1211,17 @@ where
     ///
     /// The reachable set is computed by the pass from the seeds the runs
     /// recorded; it is deliberately not a parameter, so no caller can hand the
-    /// sweep a key set that happens to be empty.
+    /// sweep a key set that happens to be empty. The grace period is a
+    /// parameter: it is the facade's configured GC TTL, threaded here from
+    /// `Conductor::with_gc_settings` so the manual sweep and the background
+    /// sweep age records against the same value.
     pub(crate) async fn run_gc(
         &self,
         state: &mut ConductorState,
         unified: &UnifiedNickelDocument,
+        ttl_seconds: u64,
     ) -> Result<crate::gc::ConductorGcReport, ConductorError> {
-        use crate::defaults::DEFAULT_CONDUCTOR_GC_TTL_SECONDS;
-        let report = crate::gc::run_conductor_gc(
-            &*self.cas,
-            state,
-            unified,
-            DEFAULT_CONDUCTOR_GC_TTL_SECONDS,
-        )
-        .await?;
+        let report = crate::gc::run_conductor_gc(&*self.cas, state, unified, ttl_seconds).await?;
         // An abstained pass removed nothing because it judged nothing, and a line
         // that says "completed" beside two zeroes reads as a library with nothing
         // to do. The reason is what an operator acts on.
