@@ -36,6 +36,10 @@ mod cli_surface;
 /// The completion scripts a build script writes agree with the CLIs they describe.
 #[cfg(feature = "cli")]
 mod completion_contract;
+/// The hop from a `mediapm.ncl` lifecycle group to the conductor facade's
+/// GC knobs: document-stated values reach the sweep, a stated service
+/// override beats the document, and an unset pair keeps the defaults.
+mod conductor_gc_settings;
 /// A help request through the conductor passthrough prints what it was asked for.
 #[cfg(feature = "cli")]
 mod conductor_passthrough;

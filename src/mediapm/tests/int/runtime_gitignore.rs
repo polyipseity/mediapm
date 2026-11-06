@@ -84,9 +84,12 @@ async fn mediapm_ncl_preserved_on_reconstruction() {
     let ncl_path = service.paths().mediapm_ncl.clone();
     assert!(ncl_path.exists(), "mediapm.ncl must exist after fresh construction");
 
-    // Append a user comment to the bootstrapped document.
+    // Append a user comment to the bootstrapped document. It must be a
+    // valid Nickel comment (`#`): construction evaluates the document on
+    // every open now, so a marker the parser rejects would fail the
+    // reconstruction instead of surviving it.
     let mut content = std::fs::read_to_string(&ncl_path).expect("read mediapm.ncl");
-    content.push_str("\n// user custom comment\n");
+    content.push_str("\n# user custom comment\n");
     std::fs::write(&ncl_path, &content).expect("write modified mediapm.ncl");
 
     // Drop the first service to release the CAS directory lock.
@@ -97,7 +100,7 @@ async fn mediapm_ncl_preserved_on_reconstruction() {
 
     let final_content = std::fs::read_to_string(&ncl_path).expect("read final mediapm.ncl");
     assert!(
-        final_content.contains("// user custom comment"),
+        final_content.contains("# user custom comment"),
         "user content must be preserved after reconstruction"
     );
 }

@@ -404,6 +404,12 @@ pub fn media_id_from_local_path(hash: &mediapm_cas::Hash) -> String {
 /// Merges config-declared runtime storage with service-level overrides.
 ///
 /// Precedence order is: service override > `mediapm.ncl` value > built-in default.
+/// For the `lifecycle` scalars the override half is read through
+/// `pick_lifecycle`, whose sentinel is the built-in default: an override
+/// equal to the default carries no intent, so those two fields resolve as
+/// service override (a non-default value) > `mediapm.ncl` > built-in
+/// default. The one expression this cannot make is forcing exactly the
+/// built-in default over a document that states something else.
 #[must_use]
 pub fn merge_runtime_storage(
     config_value: &MediaRuntimeStorage,
@@ -472,8 +478,16 @@ pub fn merge_runtime_storage(
             reconstructed_cache_ttl_seconds: override_value.caching.reconstructed_cache_ttl_seconds,
         },
         lifecycle: config::RuntimeLifecycleConfig {
-            instance_ttl_seconds: override_value.lifecycle.instance_ttl_seconds,
-            background_gc_interval_seconds: override_value.lifecycle.background_gc_interval_seconds,
+            instance_ttl_seconds: pick_lifecycle(
+                override_value.lifecycle.instance_ttl_seconds,
+                config_value.lifecycle.instance_ttl_seconds,
+                config::defaults::default_instance_ttl_seconds(),
+            ),
+            background_gc_interval_seconds: pick_lifecycle(
+                override_value.lifecycle.background_gc_interval_seconds,
+                config_value.lifecycle.background_gc_interval_seconds,
+                config::defaults::default_background_gc_interval_seconds(),
+            ),
         },
         environment: config::RuntimeEnvironmentConfig {
             inherited_env_vars: merged_inherited_env_vars.unwrap_or_default(),
@@ -502,6 +516,20 @@ fn pick_path(override_value: &Path, config_value: &Path) -> PathBuf {
     } else {
         override_value.to_path_buf()
     }
+}
+
+/// Picks the service override for a lifecycle scalar unless it equals the
+/// built-in default, in which case the `mediapm.ncl` value applies.
+///
+/// The default is the "not stated" sentinel, mirroring `pick_path`'s empty
+/// buffer: every production override source constructs lifecycle through
+/// `RuntimeLifecycleConfig::default()`, so an override equal to the default
+/// carries no intent. The one expression this cannot make is forcing exactly
+/// the built-in default over a document that states something else; no
+/// caller does, and the resolved model may not grow an `Option` here.
+#[must_use]
+fn pick_lifecycle(override_value: u64, config_value: u64, default_value: u64) -> u64 {
+    if override_value == default_value { config_value } else { override_value }
 }
 
 /// Merges optional platform-keyed inherited env-var maps with deterministic

@@ -1186,6 +1186,19 @@ impl MediaPmService<FileSystemCas> {
             save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
         }
 
+        // The document is the user-facing lifecycle knob; load it unconditionally
+        // (the scaffold above only covers the first run) and merge it with the
+        // service overrides before the facade is built.
+        let document = ensure_and_load_mediapm_document(&effective_paths)?;
+        let base_paths = RuntimeBasePaths {
+            workspace_root: effective_paths.root_dir.clone(),
+            mediapm_dir: effective_paths.runtime_root.clone(),
+        };
+        let resolved_doc_runtime =
+            versions::resolve_runtime_storage(&document.runtime, &base_paths);
+        let merged_runtime =
+            merge_runtime_storage(&resolved_doc_runtime, &runtime_storage_overrides);
+
         // Open the filesystem CAS.
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths);
         std::fs::create_dir_all(&conductor_cas_root).map_err(|e| MediaPmError::Io {
@@ -1210,8 +1223,8 @@ impl MediaPmService<FileSystemCas> {
                 effective_paths.conductor_state_config.clone(),
             );
         let conductor = Conductor::new(runtime_storage, cas).with_gc_settings(
-            runtime_storage_overrides.lifecycle.instance_ttl_seconds,
-            runtime_storage_overrides.lifecycle.background_gc_interval_seconds,
+            merged_runtime.lifecycle.instance_ttl_seconds,
+            merged_runtime.lifecycle.background_gc_interval_seconds,
         );
 
         Ok(Self::new_with_runtime_storage_overrides(
@@ -1578,6 +1591,9 @@ impl MediaPmService<InMemoryCas> {
             vec![paths.conductor_user_ncl.clone(), paths.conductor_generated_ncl.clone()],
             paths.conductor_state_config.clone(),
         );
+        // This path provisions a fresh runtime root with no document on disk,
+        // so the built-in defaults are the correct lifecycle input (there is
+        // no `mediapm.ncl` value to consult yet).
         let lifecycle = MediaRuntimeStorage::default().lifecycle;
         let conductor = Conductor::new(runtime_storage, cas).with_gc_settings(
             lifecycle.instance_ttl_seconds,

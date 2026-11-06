@@ -106,6 +106,16 @@ where
         self
     }
 
+    /// The GC knobs this facade was built with, as
+    /// `(instance_ttl_seconds, background_gc_interval_seconds)`.
+    ///
+    /// Embedding crates (mediapm's hop tests) cannot read the private fields;
+    /// this is the one public observation point for what the sweep will use.
+    #[must_use]
+    pub fn gc_settings(&self) -> (u64, u64) {
+        (self.gc_ttl_seconds, self.background_gc_interval_secs)
+    }
+
     /// Returns or initialises the conductor actor client.
     ///
     /// Spawning the actor is also what starts background maintenance: a facade
