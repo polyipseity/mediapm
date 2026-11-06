@@ -3941,6 +3941,26 @@ async fn run_online_demo(
 
     sync_service.conductor().shutdown().await?;
 
+    // S2's demo clause: the materializer's probe answers through the
+    // service's workspace `MetadataCache` (this demo calls no
+    // `add_local_source`, so the probe is that file's only writer here), and
+    // that cache persists on drop — `MetadataCache::open` touches no disk and
+    // `Drop` is the only production flush, so the file can be checked only
+    // once the service holding the handle is gone. Both routes reach the
+    // probe: every `${media.metadata.*}` name resolves through a variant
+    // binding, answered by the stub chain's PATH `ffprobe` offline and the
+    // host's online.
+    let probe_cache_file = sync_service.paths().workspace_mediapm_cache_dir().join("metadata.json");
+    drop(sync_service);
+    if !probe_cache_file.is_file() {
+        return Err(format!(
+            "the materializer's probe must persist its answer to the workspace metadata cache \
+             at {}",
+            probe_cache_file.display()
+        )
+        .into());
+    }
+
     Ok(DemoRunPaths { artifact_root: root, workspace_root, manifest_path })
 }
 

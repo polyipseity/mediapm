@@ -18,8 +18,8 @@
 use super::file_ops::read_watch::ReadCountGuard;
 use super::outputs::CacheFile;
 use super::tests_common::{
-    FOLDER_PATH, folder_and_playlist_document, open_hierarchy_cas, resolvable_media_document,
-    run_sync, write_folder_over_archive, zip_payload,
+    FOLDER_PATH, folder_and_playlist_document, folder_only_document, open_hierarchy_cas,
+    resolvable_media_document, run_sync, write_folder_over_archive, zip_payload,
 };
 use super::*;
 
@@ -526,6 +526,76 @@ async fn a_mixed_run_keeps_the_records_of_the_paths_it_stood_still_for() {
     assert!(
         after.outputs.contains_key(&playlist_key),
         "the body this run rewrote is confirmed by the write: {:?}",
+        after.outputs
+    );
+}
+
+/// A record for a path the document dropped disappears from the file the next
+/// confirming run publishes.
+///
+/// This is S1's deletion clause at the record level: wholesale replacement
+/// means a later run's flush publishes exactly what that run proved, so an
+/// entry the document no longer names keeps no record once any other path is
+/// confirmed. The paired guards answer the two sides of the same contract —
+/// [`an_unchanged_second_run_keeps_the_records_in_the_cache_file`] pins that a
+/// run confirming nothing keeps the old file whole, and
+/// [`a_mixed_run_keeps_the_records_of_the_paths_it_stood_still_for`] pins that
+/// a confirming run keeps the paths it stood still for; this one pins that the
+/// same confirming run does NOT keep the path it stopped standing still for,
+/// because the document no longer asks for it.
+#[tokio::test]
+async fn a_dropped_entry_record_disappears_after_a_confirming_run() {
+    let workspace = mediapm_utils::temp::artifact_dir().unwrap();
+    let paths = MediaPmPaths::from_root(workspace.path());
+    let cas = open_hierarchy_cas(&paths).await;
+
+    // First run: an archive holding both members, so the file holds a record
+    // for each — the state this test's deletion is about to enter.
+    let archive = cas.put(bytes::Bytes::from(zip_payload(&ARCHIVE_MEMBERS))).await.unwrap();
+    let document = folder_only_document(&archive.to_string());
+    let mut state = MediaPmState::default();
+    let first = run_sync(&paths, &document, &mut state, &cas, None, None).await;
+    assert_eq!(
+        (first.materialized_paths, first.skipped_paths, first.missing_paths),
+        (1, 0, 0),
+        "the first run has nothing recorded for the folder, so it has to write it: {first:?}"
+    );
+
+    let kept = first_member_relative();
+    let dropped = format!("{FOLDER_PATH}/{}", ARCHIVE_MEMBERS[1].0);
+    let before = read_cache(&paths);
+    assert!(
+        before.outputs.contains_key(&kept) && before.outputs.contains_key(&dropped),
+        "the first run stamped both archive members, or the record this test drops is not in \
+         the file to begin with: {:?}",
+        before.outputs
+    );
+
+    // Second run: a different archive that holds only the first member, so
+    // the document no longer names the second one's path. At least one path
+    // is confirmed (the surviving member, whichever way the folder entry
+    // settles), which is what makes this flush publish rather than leave the
+    // previous file standing.
+    let shrunk = cas.put(bytes::Bytes::from(zip_payload(&[ARCHIVE_MEMBERS[0]]))).await.unwrap();
+    let shrunk_document = folder_only_document(&shrunk.to_string());
+    let second = run_sync(&paths, &shrunk_document, &mut state, &cas, None, None).await;
+    assert!(
+        second.materialized_paths + second.skipped_paths >= 1,
+        "a run that confirms nothing keeps the previous file whole, so this run has to confirm \
+         at least one path for the deletion to persist through its flush: {second:?}"
+    );
+
+    let after = read_cache(&paths);
+    assert!(
+        after.outputs.contains_key(&kept),
+        "the surviving member is confirmed by this run, so its record has to be in the file \
+         the flush published: {:?}",
+        after.outputs
+    );
+    assert!(
+        !after.outputs.contains_key(&dropped),
+        "the dropped path's record must not survive a confirming run's wholesale \
+         replacement: {:?}",
         after.outputs
     );
 }
