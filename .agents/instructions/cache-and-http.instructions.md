@@ -12,21 +12,21 @@ applyTo: "src/mediapm-conductor/src/http/**/*.rs, src/mediapm-conductor-builtins
 | --- | --- | --- | --- | --- |
 | **Content cache** (`tools.json`) | 7d | Last-use | Raw downloaded tool payload bytes | Download URI, plus the source's resolved identity when that URI is a moving target — a permalink that redirects, or a `latest`-style alias whose asset is replaced |
 | **Metadata cache** (`tool_metadata.json`) | 1d | Creation-time | GitHub API responses (tag names, versions), the jellyfin macOS repo index, and its per-arch `*-gpl.txt` pointer files | API endpoint URL (any metadata read) |
-| **Provision cache** (RAII) | 24h | Creation-time | Extracted tool binaries (per-platform unpack) | Tool identity hash |
+| **Provision cache** (RAII) | 24h | Last-use | Extracted tool binaries (per-platform unpack) | Tool identity hash |
 
 - Content cache TTL is **last-use based** — `lookup_bytes()` / `store_bytes()` reset the clock.
 - **A moving download URI carries its resolved identity in the key.** Two shapes qualify: a permalink that 302-redirects to a versioned download (the martin-riedl macOS candidates, keyed by the build leg parsed from the redirect target) and a `latest`-style alias whose path never changes while its asset is replaced (the BtbN Windows/Linux downloads, keyed by the resolved autobuild tag). Without the identity such a source is found again on every sync, refreshing its last-use clock and freezing the payload while the state records the newer build; the key is `uri#identity=<id>` for those sources and the bare URI otherwise, and a source whose URL is itself an identity (a versioned download, a pinned build) is keyed by the URL alone. The identity is per source, not per candidate, so every candidate URL a source names is keyed, and a cache hit reports the *requested* URL rather than the key, because the macOS leg is re-derived by parsing the URI that was actually served.
 - Metadata cache TTL is **creation-time based** — never call `touch()`; doing so extends TTL and defeats the 1-day freshness guarantee.
-- Provision cache is **RAII** — the extracted temp dir lives for the `ProvisionCache` handle (24h default).
+- Provision cache entries expire **24h after last use** (`TTL_SECONDS`, pruned by the sweep a `materialize` triggers); the RAII `ProvisionedTool` guard holds the entry's shared lock, so an entry in use survives the sweep.
 - **A download may leave the host it was requested from.** The jellyfin macOS archive 302-redirects to `*.mirror.jellyfin.org` (`sgp1.mirror.jellyfin.org` in practice), so that host is as load-bearing as `repo.jellyfin.org` and degrades the macOS fallback when it is unreachable.
 
-All caches live under `default_mediapm_user_download_cache_root()` (`~/.cache/mediapm/` on Linux, `~/Library/Caches/mediapm/` on macOS):
+All caches live under `default_mediapm_user_download_cache_root()` (`~/.cache/mediapm/cache/` on Linux, `~/Library/Caches/mediapm/cache/` on macOS); the provision cache is not one of them — it lives in the workspace at `<conductor_tools_dir>` (`<runtime_root>/tools/`).
 
 ```text
-<os-cache-dir>/mediapm/
+<os-cache-dir>/mediapm/cache/
   tools.json          # Content cache (7d, last-use)
   tool_metadata.json  # Metadata cache (1d, creation-time)
-  provision/          # RAII provision cache (24h)
+  store/              # CAS objects backing the content cache
 ```
 
 Cache-using examples (`mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`, `mediapm_demo`, `mediapm_demo_online`) resolve this via `mediapm::example_isolation::user_level_cache_root()` so they share the cache with regular syncs. Embedded tests override it with `MEDIAPM_EXAMPLE_CACHE_ROOT` → `MediaRuntimeStorage.cache_root_override` to stay hermetic.
@@ -44,7 +44,7 @@ Both override request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` (minimum 30s). 
 
 ## Hard boundary rules
 
-- Workspace-scoped conductor tool-content storage (`<runtime_root>/tools/`) and user-level download cache (`<os-cache-dir>/mediapm/`) are **never interchangeable**.
+- Workspace-scoped conductor tool-content storage (`<runtime_root>/tools/`) and user-level download cache (`<os-cache-dir>/mediapm/cache/`) are **never interchangeable**.
 - Content cache holds raw downloaded bytes for cross-workspace reuse; tools dir holds materialized binaries for one workspace.
 
 ## HTTP client invariants
