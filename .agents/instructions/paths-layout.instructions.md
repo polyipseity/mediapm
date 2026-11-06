@@ -58,7 +58,7 @@ Override fields come from `MediaRuntimeStorage` in `mediapm.ncl`:
   yt-dlp/           # yt-dlp download cache
   media_tagger/     # media-tagger cache
   mediapm/          # workspace caches, each named for what it holds
-    metadata.json           # ffprobe results keyed ffprobe:<path>, 1-day TTL
+    metadata.json           # ffprobe results keyed ffprobe:<path> (and ffprobe:{blake3(bytes)} for the materializer's content probes), 1-day TTL
     materialization.json    # what a run proved about each managed path
 ```
 
