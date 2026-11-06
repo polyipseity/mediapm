@@ -199,14 +199,17 @@ mod tests {
 
     /// A name two tables catalogue must carry byte-identical `default`,
     /// `doc` and `group` in both, or the composer's first-wins dedup would
-    /// silently render one crate's wording over another's. This guard makes
-    /// that drift a suite failure instead of a render surprise.
+    /// silently render one crate's wording over another's. This guard pairs
+    /// every table the workspace ships — conductor's, this crate's,
+    /// test-support's, `mediapm-cli`'s and `mediapm-conductor-cli`'s — so
+    /// that drift is a suite failure instead of a render surprise.
     #[test]
     fn shared_names_carry_identical_entries_across_tables() {
         let mut tables: Vec<&[EnvVarEntry]> = vec![
             mediapm_conductor::env_registry::env_registry(),
             env_registry(),
             mediapm_test_support::env_registry::env_registry(),
+            mediapm_conductor_cli::env_registry::env_registry(),
         ];
         #[cfg(feature = "cli")]
         tables.push(mediapm_cli::env_registry::env_registry());
