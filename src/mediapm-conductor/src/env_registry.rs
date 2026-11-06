@@ -180,6 +180,12 @@ const CONDUCTOR_ENV_ENTRIES: &[EnvVarEntry] = &[
         group: EnvVarGroup::TestOnly,
     },
     EnvVarEntry {
+        name: "MEDIAPM_T2_BOOT_PROBE",
+        default: "",
+        doc: "test-only: CLI boot probe; the seeded `.env` value must be visible in-process after `ensure_conductor`.",
+        group: EnvVarGroup::TestOnly,
+    },
+    EnvVarEntry {
         name: "MEDIAPM_TEST_TOOL_CONFIG_LITERAL",
         default: "",
         doc: "test-only: fixture name inside a tool-config test document.",
@@ -242,6 +248,7 @@ mod tests {
             "MEDIAPM_CONDUCTOR_TEST_ENV_VARS_HOST_VALUE",
             "MEDIAPM_CONDUCTOR_TEST_ENV_VARS_UNSET_HOST_VALUE",
             "MEDIAPM_CONDUCTOR_TEST_UNSET_VAR",
+            "MEDIAPM_T2_BOOT_PROBE",
             "MEDIAPM_TEST_TOOL_CONFIG_LITERAL",
             "MEDIAPM_TEST_TOOL_CONFIG_ONLY",
             "MEDIAPM_TEST_INHERITED",
