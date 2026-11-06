@@ -13,15 +13,28 @@
 //! set is computed from: a successful run replaces its workflow's seed with the
 //! instances it executed or reused, and a run with a failed step leaves the
 //! previous seed alone.
+//!
+//! The third block drives the facade's own `run_gc`, which reads the TTL the
+//! facade was configured with rather than the built-in default: the recovery
+//! window a fresh unreachable record enjoys, and the eviction once its
+//! configured grace period has passed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mediapm_cas::{Hash, InMemoryCas};
+use bytes::Bytes;
+use mediapm_cas::{CasApi, Hash, InMemoryCas};
 use mediapm_conductor::api::RunWorkflowOptions;
-use mediapm_conductor::{AuxData, Conductor, ConductorState, ToolCallInstance};
+use mediapm_conductor::gc::GcClassification;
+use mediapm_conductor::{
+    AuxData, CapturedOutput, Conductor, ConductorState, RuntimeStoragePaths, ToolCallInstance,
+};
 use mediapm_utils::Timestamp;
 
-use crate::{TestConductor, doc_with_workflows, echo_step, echo_tool, workflow_with_steps};
+use super::gc_automatic::backdate;
+use crate::{
+    TestConductor, doc_with_workflows, echo_step, echo_tool, workflow_with_steps,
+    write_conductor_config,
+};
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -31,7 +44,10 @@ use crate::{TestConductor, doc_with_workflows, echo_step, echo_tool, workflow_wi
 ///
 /// The key is the caller's, not the record's: the instance carries no key of its
 /// own, and the store it is inserted into is what gives it one.
-fn sample_instance(_key: Hash) -> ToolCallInstance {
+///
+/// `pub(crate)` so `gc_automatic` can build the same unreachable record its
+/// background scenarios insert, rather than growing a second builder.
+pub(crate) fn sample_instance(_key: Hash) -> ToolCallInstance {
     ToolCallInstance {
         tool_call_id: "echo@v1".to_string(),
         impure: false,
@@ -290,4 +306,99 @@ async fn the_seed_reaches_the_file_and_a_pass_classifies_with_it() {
         "a pass that classified must evict the unreachable record; keeping it means it abstained",
     );
     tc.shutdown().await;
+}
+
+/// An unreachable record stays recoverable until its grace period passes.
+///
+/// The user-level guarantee: a facade configured with a one-day TTL keeps a
+/// fresh unreachable record and its output blob (the recovery window), then
+/// reclaims both once the record is older than that TTL - so the sweep ages
+/// records against the TTL the facade was configured with, not against a
+/// default that happens to differ. The record is backdated rather than slept
+/// through, and the backdate (90 000 s) sits between the configured TTL
+/// (86 400 s) and the built-in default (604 800 s): only the configured value
+/// evicts it, so a pass that read the default instead would fail here.
+#[tokio::test]
+async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
+    let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    write_conductor_config(
+        dir.path(),
+        doc_with_workflows(
+            BTreeMap::from([("echo@v1".to_string(), echo_tool("echo@v1"))]),
+            vec![workflow_with_steps("default", vec![echo_step("echo@v1", "payload")])],
+        ),
+    );
+    let paths = RuntimeStoragePaths::new(dir.path());
+
+    // The configured TTL is one day; the built-in default is seven. Every
+    // judgement below is written so only the configured value produces the
+    // asserted outcome.
+    let conductor =
+        Conductor::new(paths.clone(), InMemoryCas::new()).with_gc_settings(86_400, 86_400);
+
+    // A run records the seed a pass classifies against.
+    let summary = conductor
+        .run_workflow("default", RunWorkflowOptions::default())
+        .await
+        .expect("the run must complete");
+    assert_eq!(summary.failed_steps, 0, "the seed comes from a clean run: {summary:?}");
+
+    // The candidate: unreachable from the seed, one output blob, fresh clock.
+    let candidate = Hash::from_content(b"unreferenced-recovery-candidate");
+    let blob = conductor
+        .cas()
+        .put(Bytes::from_static(b"bytes the recovery window must keep"))
+        .await
+        .expect("stage the candidate's output blob");
+    let mut state = conductor.get_state().expect("state");
+    let mut instance = sample_instance(candidate);
+    instance.last_referenced_at = Timestamp::now();
+    instance.outputs =
+        BTreeMap::from([("result".to_string(), CapturedOutput { hash: blob, capture: None })]);
+    state.tool_call_instances.insert(candidate, instance);
+    conductor.replace_resolved_state(state).expect("insert the candidate");
+
+    // Pass 1, inside the grace period: the record and its blob survive.
+    let first = conductor.run_gc().await.expect("first pass");
+    assert!(
+        matches!(first.classification, GcClassification::Classified),
+        "the seeded workflow makes this a judged pass: {first:?}",
+    );
+    let after_first = conductor.get_state().expect("state");
+    assert!(
+        after_first.tool_call_instances.contains_key(&candidate),
+        "a fresh unreachable record must stay recoverable inside its TTL",
+    );
+    assert!(
+        conductor.cas().stat(blob).await.is_ok(),
+        "the survivor's output blob must stay readable while the record does",
+    );
+
+    // Beyond the configured TTL, still inside the built-in default.
+    let mut state = conductor.get_state().expect("state");
+    backdate(&mut state, &candidate.to_hex(), 90_000);
+    conductor.replace_resolved_state(state).expect("age the candidate");
+
+    // Pass 2: past the configured TTL the record and its blob are reclaimed,
+    // and the state file carries the eviction for a later process to read.
+    conductor.run_gc().await.expect("second pass");
+    let after = conductor.get_state().expect("state");
+    assert!(
+        !after.tool_call_instances.contains_key(&candidate),
+        "a record older than the configured TTL must be evicted, not kept as if the default applied",
+    );
+    assert!(
+        conductor.cas().stat(blob).await.is_err(),
+        "an evicted record's output blob must be reclaimed with it",
+    );
+    conductor.shutdown().await.expect("shutdown");
+
+    let reopened = Conductor::new(paths, InMemoryCas::new());
+    reopened.ensure_persisted_state_loaded().await.expect("load the persisted state");
+    let on_disk = reopened.get_state().expect("state");
+    assert!(
+        !on_disk.tool_call_instances.contains_key(&candidate),
+        "the eviction must reach the state file, not only the memory snapshot",
+    );
+    reopened.shutdown().await.expect("shutdown");
 }

@@ -13,35 +13,7 @@
 //! `std::env::args()`, which an in-process test cannot set. They are the only
 //! coverage of the path a user actually takes.
 
-use std::process::Command;
-
-/// What one run of the built binary produced.
-struct BinaryRun {
-    /// Whether the process exited with a success status.
-    success: bool,
-    /// Everything the process wrote to standard output.
-    stdout: String,
-    /// Everything the process wrote to standard error.
-    stderr: String,
-}
-
-/// Runs the built conductor binary with `args` and captures its result.
-///
-/// The binary is located through Cargo's `CARGO_BIN_EXE_mediapm-conductor`,
-/// which Cargo sets for integration tests of the package that declares the
-/// binary, so no target-directory path is guessed. A missing binary is a
-/// build-configuration failure, and `.expect` reports it as one.
-fn run_binary(args: &[&str]) -> BinaryRun {
-    let output = Command::new(env!("CARGO_BIN_EXE_mediapm-conductor"))
-        .args(args)
-        .output()
-        .expect("spawn the conductor binary");
-    BinaryRun {
-        success: output.status.success(),
-        stdout: String::from_utf8(output.stdout).expect("conductor stdout is utf-8"),
-        stderr: String::from_utf8(output.stderr).expect("conductor stderr is utf-8"),
-    }
-}
+use crate::run_binary;
 
 /// Returns the usage line of a clap help text, or `None` when it has none.
 ///

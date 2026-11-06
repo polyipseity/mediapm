@@ -12,6 +12,8 @@ compile_error!(
 );
 
 use std::collections::BTreeMap;
+#[cfg(feature = "cli")]
+use std::process::Command;
 
 use mediapm_cas::InMemoryCas;
 use mediapm_conductor::{
@@ -25,6 +27,40 @@ mod int;
 // ---------------------------------------------------------------------------
 // Shared harness helpers
 // ---------------------------------------------------------------------------
+
+/// What one run of the built binary produced.
+///
+/// `cli`-gated: the `CARGO_BIN_EXE_mediapm-conductor` macro below only exists
+/// when Cargo builds the binary, which `required-features = ["cli"]` makes a
+/// feature of its own.
+#[cfg(feature = "cli")]
+struct BinaryRun {
+    /// Whether the process exited with a success status.
+    success: bool,
+    /// Everything the process wrote to standard output.
+    stdout: String,
+    /// Everything the process wrote to standard error.
+    stderr: String,
+}
+
+/// Runs the built conductor binary with `args` and captures its result.
+///
+/// The binary is located through Cargo's `CARGO_BIN_EXE_mediapm-conductor`,
+/// which Cargo sets for integration tests of the package that declares the
+/// binary, so no target-directory path is guessed. A missing binary is a
+/// build-configuration failure, and `.expect` reports it as one.
+#[cfg(feature = "cli")]
+fn run_binary(args: &[&str]) -> BinaryRun {
+    let output = Command::new(env!("CARGO_BIN_EXE_mediapm-conductor"))
+        .args(args)
+        .output()
+        .expect("spawn the conductor binary");
+    BinaryRun {
+        success: output.status.success(),
+        stdout: String::from_utf8(output.stdout).expect("conductor stdout is utf-8"),
+        stderr: String::from_utf8(output.stderr).expect("conductor stderr is utf-8"),
+    }
+}
 
 /// Creates an echo@v1 `ToolSpec`.
 fn echo_tool(name: &str) -> ToolSpec {

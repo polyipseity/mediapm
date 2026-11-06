@@ -25,6 +25,7 @@ mod step_input_external_data;
 
 /// Instance GC with configurable TTL.
 mod gc;
+mod gc_automatic;
 
 /// Cache-probe validity: a hit whose required output blob is gone from the
 /// store re-executes instead of reusing the instance that names it.
@@ -102,3 +103,8 @@ mod progress_labels;
 /// spawns the binary, which Cargo builds only when the `cli` feature is on).
 #[cfg(feature = "cli")]
 mod cli_entry_point;
+
+/// The spawned binary's `gc` subcommand runs the pass and prints its decision
+/// (cli-only, for the same reason as `cli_entry_point`).
+#[cfg(feature = "cli")]
+mod cli_gc;
