@@ -47,12 +47,12 @@ pub(crate) struct Metadata {
     ///
     /// The alias reads the `lastUsedUnixSeconds` spelling version-1 builds
     /// wrote so a stale directory reaches the version check instead of
-    /// failing to parse: a version-1 entry is rejected as stale by the
-    /// read-site gates that compare the marker —
-    /// [`prune_expired_entries`](crate::provision::retain::prune_expired_entries),
-    /// [`try_lock_fast_path`](crate::provision::provisioner::ProvisionCache::try_lock_fast_path),
-    /// and `provision::extract::double_check_hit` —
-    /// not by [`Metadata::version`], which only marks the entry.
+    /// failing to parse: the two lock paths that compare the marker —
+    /// [`try_lock_fast_path`](crate::provision::provisioner::ProvisionCache::try_lock_fast_path)
+    /// and `provision::extract::double_check_hit` — return a miss on such an
+    /// entry, while
+    /// [`prune_expired_entries`](crate::provision::retain::prune_expired_entries)
+    /// keeps it and warns, and [`Metadata::version`] only marks the entry.
     #[serde(alias = "lastUsedUnixSeconds")]
     pub(crate) last_used_unix_seconds: u64,
     #[serde(default)]

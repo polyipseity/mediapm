@@ -182,7 +182,7 @@ const CONDUCTOR_ENV_ENTRIES: &[EnvVarEntry] = &[
     EnvVarEntry {
         name: "MEDIAPM_T2_BOOT_PROBE",
         default: "",
-        doc: "test-only: CLI boot probe; the seeded `.env` value must be visible in-process after `ensure_conductor`.",
+        doc: "test-only: CLI boot probe; the seeded .env value must be visible in-process after ensure_conductor.",
         group: EnvVarGroup::TestOnly,
     },
     EnvVarEntry {
