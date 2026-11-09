@@ -1187,9 +1187,13 @@ impl MediaPmService<FileSystemCas> {
         }
 
         // The document is the user-facing lifecycle knob; load it unconditionally
-        // (the scaffold above only covers the first run) and merge it with the
-        // service overrides before the facade is built.
-        let document = ensure_and_load_mediapm_document(&effective_paths)?;
+        // (the scaffold above only covers the first run), populate tools exactly as
+        // `resolve_effective_runtime_storage` does, and merge with the service
+        // overrides — the facade consumes `lifecycle.*` from that merged result.
+        let mut document = ensure_and_load_mediapm_document(&effective_paths)?;
+        // Tools now live at the document level (not inside runtime).
+        // Populate runtime.tools so merge_runtime_storage sees them.
+        document.runtime.tools = document.tools;
         let base_paths = RuntimeBasePaths {
             workspace_root: effective_paths.root_dir.clone(),
             mediapm_dir: effective_paths.runtime_root.clone(),
