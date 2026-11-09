@@ -58,7 +58,8 @@ async fn a_stated_override_beats_the_document() {
     );
 }
 
-/// No document, no override: the built-in defaults (green both sides).
+/// No lifecycle stated (the scaffold creates a `mediapm.ncl` without
+/// lifecycle values): the built-in defaults (green both sides).
 #[tokio::test]
 async fn defaults_hold_when_nothing_states_a_value() {
     let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
@@ -85,5 +86,39 @@ fn merge_keeps_document_lifecycle_when_the_override_states_nothing() {
         (merged.lifecycle.instance_ttl_seconds, merged.lifecycle.background_gc_interval_seconds),
         (90_000, 42),
         "the document half must survive the merge"
+    );
+}
+
+/// An override equal to the built-in default is the unstated sentinel: the
+/// document must still win (pins R-29-01's stated "cost if wrong" corner).
+#[tokio::test]
+async fn an_override_equal_to_the_default_does_not_usurp_a_stated_document() {
+    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let service = MediaPmService::new_fs_at(root.path()).await.expect("scaffold");
+    drop(service);
+    let ncl = root.path().join("mediapm.ncl");
+    let mut doc = load_mediapm_document(&ncl).expect("scaffolded document loads");
+    doc.runtime.lifecycle.instance_ttl_seconds = Some(90_000);
+    doc.runtime.lifecycle.background_gc_interval_seconds = Some(42);
+    save_mediapm_document(&ncl, &doc).expect("stated document saves");
+    let overrides = MediaRuntimeStorage {
+        lifecycle: RuntimeLifecycleConfig {
+            // Both equal to the built-in defaults: the unstated sentinel.
+            instance_ttl_seconds: mediapm::config::defaults::default_instance_ttl_seconds(),
+            background_gc_interval_seconds:
+                mediapm::config::defaults::default_background_gc_interval_seconds(),
+        },
+        ..MediaRuntimeStorage::default()
+    };
+    let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
+        root.path().to_path_buf(),
+        overrides,
+    )
+    .await
+    .expect("reopen with overrides");
+    assert_eq!(
+        service.conductor().gc_settings(),
+        (90_000, 42),
+        "an override equal to the built-in default is unstated; the document must win"
     );
 }
