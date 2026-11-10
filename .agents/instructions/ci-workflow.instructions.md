@@ -16,7 +16,7 @@ Local git hooks (via `prek.toml`) enforce quality at three stages:
 
 Treat these as the canonical lint/format/check gate; use selective runs during development.
 
-- `-D warnings` holds in CI and locally: `.cargo/config.toml` `[build] rustflags = ["-Dwarnings"]` mirrors CI's `RUSTFLAGS`, so a warning fails the local build before it can fail CI. Fix warnings at the root; lint suppression is banned (see `rust-workflow.instructions.md`).
+- `-D warnings` holds in CI and locally: `.cargo/config.toml` `[build] rustflags = ["-Dwarnings"]` mirrors CI's `RUSTFLAGS`, so a warning fails the local build before it can fail CI. Fix warnings at the root; bare lint suppression is banned (see `rust-workflow.instructions.md`).
 
 ## CI parity
 
