@@ -1,5 +1,6 @@
 [build]
 target-dir = "target"
+rustflags = ["-Dwarnings"]
 
 [alias]
 bin = ["run", "--package", "cargo-bin", "--"]
