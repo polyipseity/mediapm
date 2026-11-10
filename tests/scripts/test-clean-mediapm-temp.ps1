@@ -95,6 +95,12 @@ function Invoke-JanitorAtRoot {
         $env:TMP = $Root
         $env:TMPDIR = $Root
         $env:TEMP = $Root
+        # The exit status is the case under test, so it is read from a variable
+        # that cannot carry a stale value: `$LASTEXITCODE` changes only when a
+        # native command reports one, so a read that followed no report would
+        # answer with whatever an earlier command left behind. Cleared here, a
+        # `$null` afterwards says the child never reported.
+        $global:LASTEXITCODE = $null
         $lines = @(& pwsh -NoProfile -File $janitor @JanitorArgs 2>&1)
         return [pscustomobject]@{
             ExitCode = $LASTEXITCODE
@@ -158,6 +164,9 @@ exit `$LASTEXITCODE
         $env:TMP = $Root
         $env:TMPDIR = $Root
         $env:TEMP = $Root
+        # Cleared for the reason given in Invoke-JanitorAtRoot: the wrapper's own
+        # exit status is what these cases assert.
+        $global:LASTEXITCODE = $null
         $lines = @(& pwsh -NoProfile -File $wrapper -Janitor $janitor -Marker $Marker 2>&1)
         return [pscustomobject]@{
             ExitCode = $LASTEXITCODE
@@ -173,9 +182,18 @@ exit `$LASTEXITCODE
 # --- Preconditions: a missing temp root must fail, an existing empty one passes.
 $missingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mediapm-clean-mediapm-temp-missing-" + [System.Guid]::NewGuid().ToString('N'))
 $missing = Invoke-JanitorAtRoot -Root $missingRoot -JanitorArgs @('--dry-run')
-if ($missing.ExitCode -eq 0) { Fail "janitor exited 0 for a missing temp root ($missingRoot)" }
+# The diagnostic is asserted first because it is the one assertion that names the
+# root the child actually used: a child that resolved a different temp root
+# sweeps it and reports a clean result, and the message below then shows that
+# output instead of only the status the run happened to return.
 if (-not $missing.Output.Contains("no such directory: $missingRoot")) {
     Fail "missing-root diagnostic did not name ${missingRoot}: $($missing.Output)"
+}
+if ($null -eq $missing.ExitCode) {
+    Fail "the janitor reported no exit status for a missing temp root ($missingRoot): $($missing.Output)"
+}
+if ($missing.ExitCode -eq 0) {
+    Fail "janitor exited 0 for a missing temp root ($missingRoot): $($missing.Output)"
 }
 
 $emptyRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mediapm-clean-mediapm-temp-empty-" + [System.Guid]::NewGuid().ToString('N'))

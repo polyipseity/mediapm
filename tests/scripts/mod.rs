@@ -31,7 +31,7 @@
 //! gone, not on how it got there.
 
 use std::any::Any;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -165,13 +165,21 @@ fn path_with_clearing_rm_with_candidates(candidates: &[PathBuf]) -> PathBuf {
 /// `command -v rm` is last because it is whatever the host resolves, which
 /// is the wrapper on the hosts this probe exists for; the probe is what makes
 /// the order safe rather than the paths themselves.
+///
+/// On Windows the list is the shell's answer alone: the POSIX paths above name
+/// nothing a Windows process can run, and a bare `rm` is not on the Windows
+/// `PATH` either, so the only `rm` the janitor's tests can sweep with there is
+/// the one the shell resolves.
 fn candidate_list() -> Vec<PathBuf> {
-    let mut candidates: Vec<PathBuf> =
+    let mut candidates: Vec<PathBuf> = if cfg!(windows) {
+        Vec::new()
+    } else {
         ["/bin/rm", "/usr/bin/rm", "/usr/local/rm", "/usr/local/bin/rm"]
             .into_iter()
             .map(PathBuf::from)
             .filter(|candidate| !is_local_bin_shim(candidate))
-            .collect();
+            .collect()
+    };
     candidates.extend(command_v("rm").filter(|rm| !is_local_bin_shim(rm)));
     candidates
 }
@@ -191,9 +199,14 @@ fn is_local_bin_shim(path: &Path) -> bool {
     path.parent() == Some(Path::new(&home).join(".local").join("bin").as_path())
 }
 
-/// `sh -c 'command -v <name>'` output, or `None` when the shell cannot answer.
+/// `sh -c 'command -v <name>'` output, or `None` when that shell cannot answer.
+///
+/// The answer is asked of a shell because a shell is what resolves the name for
+/// the janitor: on Windows the reply is a Git Bash path (`/usr/bin/rm`), which
+/// is the only form of it the janitor's tests can run there.
 fn command_v(name: &str) -> Option<PathBuf> {
-    let output = Command::new("sh").args(["-c", &format!("command -v {name}")]).output().ok()?;
+    let shell = if cfg!(windows) { "bash" } else { "sh" };
+    let output = Command::new(shell).args(["-c", &format!("command -v {name}")]).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -218,6 +231,11 @@ fn command_v(name: &str) -> Option<PathBuf> {
 /// that hold files too: a wrapper that clears an empty directory but refuses a
 /// non-empty one would pass an empty probe and then fail the janitor's real
 /// run, which is the false defect this probe exists to prevent.
+///
+/// The candidate is run through the shell on Windows: a POSIX path and a bare
+/// `rm` are both meaningless to a Windows process, and the shell is what the
+/// janitor sweeps with there. The probe path is passed as an argument rather
+/// than pasted into the command, so a temp path with a space in it survives.
 fn rm_clears_probe(candidate: &Path) -> bool {
     let seq = SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed);
     let probe = std::env::temp_dir().join(format!("mediapm-rm-probe-{}-{seq}", std::process::id()));
@@ -228,7 +246,14 @@ fn rm_clears_probe(candidate: &Path) -> bool {
         let _ = fs::remove_dir_all(&probe);
         return false;
     }
-    let status = Command::new(candidate).arg("-rf").arg(&probe).status();
+    let status = if cfg!(windows) {
+        Command::new("bash")
+            .args(["-c", &format!("{} -rf \"$1\"", shell_quote(candidate)), "_"])
+            .arg(&probe)
+            .status()
+    } else {
+        Command::new(candidate).arg("-rf").arg(&probe).status()
+    };
     let gone = !probe.exists();
     let _ = fs::remove_dir_all(&probe);
     matches!(status, Ok(status) if status.success()) && gone
@@ -237,6 +262,117 @@ fn rm_clears_probe(candidate: &Path) -> bool {
 /// Single-quotes `path` for the shim's `exec` line.
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// `path` in the one spelling both sides of a comparison are reduced to.
+///
+/// A twin prints the path its shell built, and the shell's spelling differs
+/// from `Path::display` in two ways: the separator (`/` against `\`) and, on
+/// Windows under MSYS, the drive form (`/c/Users/...` against `C:\Users\...`).
+/// Every comparison of a script's message against a test-held path goes through
+/// this function and [`shell_printed`], which share [`one_path_spelling`]. The
+/// comparison is spelling-only, and both the separator and the drive form are
+/// normalized on both sides rather than either side being compared as it prints,
+/// whether the text is this bare path or a message that carries one.
+fn printed_as_shell_path(path: &Path) -> String {
+    one_path_spelling(&path.display().to_string())
+}
+
+/// `text` in that same spelling, for comparison with
+/// [`printed_as_shell_path`].
+///
+/// The comparison is spelling-only, and both the separator and the drive form
+/// are normalized on both sides: a script that printed `/c/Users/...` and a test
+/// holding `C:\Users\...` name one directory. The text is a whole script
+/// message, so the drive form is normalized where the path sits inside it —
+/// `removed: /c/...` included — not only when a message is nothing but a path.
+fn shell_printed(text: &str) -> String {
+    one_path_spelling(text)
+}
+
+/// `text` with its path spelling normalized: every `\` becomes `/`, an MSYS
+/// drive group (`/c/`) becomes a Win32 one (`C:/`) where it starts a path, and
+/// a leading drive letter is uppercased so `c:/` and `C:/` compare equal.
+///
+/// A drive group starts a path at the start of the text, after whitespace, or
+/// after `:`, which is where a janitor line such as `removed: <root>` or
+/// `cannot remove directories under <root>` puts its root. A comparison
+/// therefore sees that root normalized wherever in the message it appears, not
+/// only when the message is a bare path. Every other `/x/` is left alone, so a
+/// one-letter segment that does not start a path, a longer first segment
+/// (`/xy/...`), and a relative path are all compared as they were printed.
+///
+/// The argument is a script's message or a `Path::display`, never a path that is
+/// opened afterwards, so rewriting it cannot change which directory is named:
+/// the spellings this joins are one directory written two ways.
+fn one_path_spelling(text: &str) -> String {
+    let separated = text.replace('\\', "/");
+    let bytes = separated.as_bytes();
+    let mut normalized = String::with_capacity(separated.len());
+    let mut copied = 0;
+    let mut index = 0;
+    while index + 2 < bytes.len() {
+        let starts_a_path = bytes[index] == b'/'
+            && bytes[index + 1].is_ascii_alphabetic()
+            && bytes[index + 2] == b'/';
+        // Slicing is safe here: a `/` byte is a character boundary, and the
+        // group's own bytes are ASCII, so a multi-byte character is never cut.
+        let eligible = starts_a_path
+            && separated[..index]
+                .chars()
+                .next_back()
+                .is_none_or(|preceding| preceding.is_whitespace() || preceding == ':');
+        if eligible {
+            normalized.push_str(&separated[copied..index]);
+            normalized.push(char::from(bytes[index + 1].to_ascii_uppercase()));
+            normalized.push_str(":/");
+            index += 3;
+            copied = index;
+        } else {
+            index += 1;
+        }
+    }
+    normalized.push_str(&separated[copied..]);
+    match normalized.as_bytes() {
+        [letter, b':', b'/', ..] if letter.is_ascii_alphabetic() => {
+            let letter = char::from(letter.to_ascii_uppercase());
+            let tail = &normalized[1..];
+            format!("{letter}{tail}")
+        }
+        _ => normalized,
+    }
+}
+
+/// The drive forms a shell may print compare equal.
+///
+/// The sh twin prints whatever form its shell produced, and under MSYS that is
+/// `/c/Users/...` where the test holds `C:\Users\...`. A comparison normalizing
+/// only the separator would read those as two directories, so a sweep that did
+/// remove the tree would look like it removed nothing. The janitor lines the
+/// harness compares are whole messages with the root inside them, so the interior
+/// form is what those comparisons actually meet. A leading segment that is not a
+/// single letter is not a drive and must stay untouched, or an ordinary Unix path
+/// could be mistaken for one.
+#[test]
+fn printed_paths_compare_in_one_shell_spelling() {
+    let canonical = "C:/Users/me/x";
+    assert_eq!(shell_printed("/c/Users/me/x"), canonical);
+    assert_eq!(shell_printed("C:/Users/me/x"), canonical);
+    assert_eq!(printed_as_shell_path(Path::new(r"C:\Users\me\x")), canonical);
+    assert_eq!(printed_as_shell_path(Path::new("c:/Users/me/x")), canonical);
+
+    assert_eq!(shell_printed("removed: /c/Users/me/x"), "removed: C:/Users/me/x");
+    assert_eq!(
+        shell_printed("cannot remove directories under /d/scope/x"),
+        "cannot remove directories under D:/scope/x"
+    );
+
+    assert_ne!(shell_printed("/x/Users/me"), canonical);
+    assert_ne!(shell_printed("/xy/Users/me"), canonical);
+    assert_ne!(shell_printed("Users/me/x"), canonical);
+    assert_eq!(shell_printed("Users/me/x"), "Users/me/x");
+    assert_eq!(shell_printed("/xy/Users/me"), "/xy/Users/me");
+    assert_eq!(shell_printed("/tmp/mediapm-artifact-x"), "/tmp/mediapm-artifact-x");
 }
 
 /// A `PATH` value whose first `rm` runs `body` as a `/bin/sh` script.
@@ -254,8 +390,33 @@ fn path_with_rm_shim(sandbox: &Path, body: &str) -> OsString {
         let permissions = fs::Permissions::from_mode(0o755);
         fs::set_permissions(&shim, permissions).expect("make rm shim executable");
     }
+    // The shim has to be executable to the shell that runs it, and on Windows
+    // there is no mode bit for the test to write: MSYS2 derives the execute bits
+    // from the file's ACL, and its header check is only the fallback for a volume
+    // that carries no ACLs at all (`fstat_helper` in
+    // `winsup/cygwin/fhandler/disk_file.cc` reads the security descriptor first
+    // and reaches the `#!` test only in the `else` of that call). So the bits are
+    // set through the same shell that will stat the file: `chmod +x` there sets
+    // exactly what its own `stat` reports, which is what the sweeps rely on.
+    #[cfg(windows)]
+    {
+        let chmod = Command::new("bash")
+            .args(["-c", "chmod +x \"$1\"", "_"])
+            .arg(&shim)
+            .status()
+            .expect("spawn chmod for the rm shim");
+        assert!(chmod.success(), "chmod +x failed for the rm shim at {}", shim.display());
+    }
+    //
+    // The child is a shell, so `PATH` is the shell's own path list. That list is
+    // `:`-separated in POSIX form and `;`-separated in Win32 form, and the two
+    // cannot be mixed: a Win32 list is converted element by element at process
+    // start (`conv_path_list` splits on `;` whenever the target is POSIX), so a
+    // `:` after a Win32 path would be swallowed into that element instead of
+    // ending it, and the shim would stop shadowing the host `rm`.
+    let separator = if cfg!(windows) { ";" } else { ":" };
     let mut path = OsString::from(&bin);
-    path.push(":");
+    path.push(separator);
     path.push(std::env::var_os("PATH").unwrap_or_default());
     path
 }
@@ -268,6 +429,24 @@ fn path_with_rm_exec(sandbox: &Path, real_rm: &Path) -> OsString {
 /// A `PATH` value whose first `rm` prints nothing and fails without deleting.
 fn path_with_failing_rm(sandbox: &Path) -> OsString {
     path_with_rm_shim(sandbox, "exit 1\n")
+}
+
+/// Whether `path`'s first `rm` is the failing shim: `rm -rf <scratch>` under that
+/// `PATH` fails and leaves the directory in place.
+///
+/// Spawned through `bash`, which is the shell the janitor run below is spawned
+/// with, so what this proves is the resolution that run depends on. Both halves
+/// matter: a `PATH` whose shim is not reachable falls through to the host `rm`,
+/// which succeeds, and a probe that only checked "something failed" would pass on
+/// any unrelated failure.
+fn failing_rm_shadows(path: &OsStr, scratch: &Path) -> bool {
+    let shown = Command::new("bash")
+        .args(["-c", r#"rm -rf "$1""#, "_"])
+        .arg(scratch)
+        .env("PATH", path)
+        .status()
+        .expect("spawn rm shadow probe");
+    !shown.success() && scratch.is_dir()
 }
 
 /// Runs a script under `program` (e.g. `bash` or `sh`) inside a sandbox,
@@ -472,14 +651,8 @@ fn bash_janitor_dry_run_survives_a_failing_rm() {
     // test would pin nothing.
     let scratch = sandbox.path.join("rm-shadow-probe");
     fs::create_dir_all(&scratch).expect("create rm shadow probe dir");
-    let shadow_shim = Command::new("sh")
-        .args(["-c", r#"rm -rf "$1""#, "_"])
-        .arg(&scratch)
-        .env("PATH", &path)
-        .status()
-        .expect("spawn rm shadow probe");
     assert!(
-        !shadow_shim.success(),
+        failing_rm_shadows(&path, &scratch),
         "the failing rm shim did not shadow the host rm, so the dry run below proves nothing"
     );
 
@@ -530,14 +703,8 @@ fn bash_janitor_refuses_a_failing_rm() {
     // would look like the thing that produced the exit status.
     let scratch = sandbox.path.join("rm-shadow-probe");
     fs::create_dir_all(&scratch).expect("create rm shadow probe dir");
-    let shadow_shim = Command::new("sh")
-        .args(["-c", r#"rm -rf "$1""#, "_"])
-        .arg(&scratch)
-        .env("PATH", &path)
-        .status()
-        .expect("spawn rm shadow probe");
     assert!(
-        !shadow_shim.success(),
+        failing_rm_shadows(&path, &scratch),
         "the failing rm shim did not shadow the host rm, so the refusal below proves nothing"
     );
 
@@ -557,9 +724,9 @@ fn bash_janitor_refuses_a_failing_rm() {
         "the janitor reported removals it did not perform: {}",
         refused.stdout
     );
-    let diagnostic = format!("cannot remove directories under {}", scope.display());
+    let diagnostic = format!("cannot remove directories under {}", printed_as_shell_path(&scope));
     assert!(
-        refused.stderr.contains(&diagnostic),
+        shell_printed(&refused.stderr).contains(&diagnostic),
         "the refusal does not name the sweep root: {}",
         refused.stderr
     );
@@ -607,7 +774,8 @@ fn bash_janitor_reports_a_per_path_failure() {
         partial.stderr
     );
     assert!(
-        partial.stderr.contains(&format!("failed to remove: {}", sealed.display())),
+        shell_printed(&partial.stderr)
+            .contains(&format!("failed to remove: {}", printed_as_shell_path(&sealed))),
         "the stuck tree is not named on stderr: {}",
         partial.stderr
     );
@@ -617,7 +785,8 @@ fn bash_janitor_reports_a_per_path_failure() {
         partial.stderr
     );
     assert!(
-        partial.stdout.contains(&format!("removed: {}", removable.display())),
+        shell_printed(&partial.stdout)
+            .contains(&format!("removed: {}", printed_as_shell_path(&removable))),
         "the sweep stopped before the removable tree: {}",
         partial.stdout
     );
@@ -633,6 +802,24 @@ fn bash_janitor_reports_a_per_path_failure() {
 /// under the tightest limit among the hosts that run the suite (1024 on macOS).
 const DEEP_CHAIN_LEVELS: usize = 300;
 
+/// Depth of the chain on Windows, where `MAX_PATH` bounds the tree that can be
+/// named at all.
+///
+/// Windows cannot address a path past `MAX_PATH` (260 characters, terminator
+/// included) without the `\\?\` prefix, and neither janitor twin uses one, so
+/// this is the platform's real limit rather than a test case. The deepest path
+/// [`seed_deep_chain`] builds at this depth is the temp base
+/// (`C:\Users\<user>\AppData\Local\Temp`, 39 characters on the CI runner) plus
+/// the sandbox name (at most 17, for `mediapm-<pid>-<seq>`), `\scope` (6),
+/// `\mediapm-artifact-fake` (22), two bytes per level (80) and `\leaf` (5):
+/// 169 characters, 90 inside the limit.
+const WINDOWS_DEEP_CHAIN_LEVELS: usize = 40;
+
+/// The chain depth this host can seed and sweep, as deep as the host can name.
+fn deep_chain_levels() -> usize {
+    if cfg!(windows) { WINDOWS_DEEP_CHAIN_LEVELS } else { DEEP_CHAIN_LEVELS }
+}
+
 /// Name of each seeded chain level.
 const DEEP_CHAIN_LEVEL: &str = "d";
 
@@ -640,7 +827,7 @@ const DEEP_CHAIN_LEVEL: &str = "d";
 /// not only empty directories.
 const DEEP_CHAIN_LEAF: &str = "leaf";
 
-/// Seeds `<scope>/<name>/d/d/...` [`DEEP_CHAIN_LEVELS`] deep with a leaf file at
+/// Seeds `<scope>/<name>/d/d/...` [`deep_chain_levels`] deep with a leaf file at
 /// the bottom, and returns the chain root.
 ///
 /// The seeding steps into each level instead of building one long absolute path,
@@ -655,7 +842,7 @@ fn seed_deep_chain(scope: &Path, name: &str) -> PathBuf {
     fs::create_dir_all(&root).expect("create deep chain root");
     let original = std::env::current_dir().expect("read the working directory");
     std::env::set_current_dir(&root).expect("step into the deep chain root");
-    for _ in 1..DEEP_CHAIN_LEVELS {
+    for _ in 1..deep_chain_levels() {
         fs::create_dir(DEEP_CHAIN_LEVEL).expect("create a deep chain level");
         std::env::set_current_dir(DEEP_CHAIN_LEVEL).expect("step into a deep chain level");
     }
@@ -684,7 +871,8 @@ fn assert_deep_chain_removed(script_name: &str, run: impl Fn(&Path, &Path, &[&st
         sweep.stderr
     );
     assert!(
-        sweep.stdout.contains(&format!("removed: {}", root.display())),
+        shell_printed(&sweep.stdout)
+            .contains(&format!("removed: {}", printed_as_shell_path(&root))),
         "the sweep did not report the chain it removed: {}",
         sweep.stdout
     );
@@ -819,7 +1007,8 @@ fn bash_janitor_does_not_call_a_failed_sweep_empty() {
         sweep.stderr
     );
     assert!(
-        sweep.stderr.contains(&format!("failed to remove: {}", sealed.display())),
+        shell_printed(&sweep.stderr)
+            .contains(&format!("failed to remove: {}", printed_as_shell_path(&sealed))),
         "the stuck tree is not named on stderr: {}",
         sweep.stderr
     );
