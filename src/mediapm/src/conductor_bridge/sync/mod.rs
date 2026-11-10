@@ -1617,9 +1617,11 @@ pub(crate) async fn reconcile_desired_tools(
     // cache retain set match the ProvisionCache deployment layout.
     let mut tool_runtimes: BTreeMap<String, ToolRuntime> = BTreeMap::new();
 
-    // Open or create the tool download cache and tool metadata cache.
+    // Resolve the tool download cache root and its two domain configs.
     // Use cache_root_override when provided (for hermetic tests), otherwise
-    // fall back to the default OS-level user cache root.
+    // fall back to the default OS-level user cache root. The open itself
+    // happens below, ahead of the progress bar, so an open failure returns
+    // before a bar exists.
     let cache_root = match cache_root_override {
         Some(root) => root.to_path_buf(),
         None => default_mediapm_user_download_cache_root().ok_or_else(|| {
@@ -1636,16 +1638,23 @@ pub(crate) async fn reconcile_desired_tools(
         index_file_name: "tool_metadata.json".to_string(),
         entry_ttl_seconds: 24 * 60 * 60,
     };
-    let cache = Cache::open(&cache_root, &[content_domain, metadata_domain])
-        .await
-        .map(ToolDownloadCache::from_cache)
-        .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
 
     // Build provisioning entries and in-memory live state index for
     // O(1) skip checking across entries. Must happen before the progress
     // bar setup since the bar total uses entries.len().
     let entries = build_provisioning_entries(&decoded_tools)?;
     let mut live_state = index_managed_tools(&state.managed_tools);
+
+    // Open the download cache after the last fallible step before it and
+    // before the progress bar: a `?` once the bar exists would park an
+    // unfinished yellow row instead of a red `[F]` one, and every statement
+    // from here to the shutdown below — bar setup, dependency edges, the
+    // pool's captured failure — is infallible, so every exit that holds a
+    // handle still passes through that shutdown.
+    let cache = Cache::open(&cache_root, &[content_domain, metadata_domain])
+        .await
+        .map(ToolDownloadCache::from_cache)
+        .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = entries.len() as u64;
@@ -1753,6 +1762,15 @@ pub(crate) async fn reconcile_desired_tools(
         outcome
     })
     .await;
+
+    // The pool was the cache's last use. Stop its background prune task and
+    // wait for it — the task owns a `FileSystemCas` clone of the store, and
+    // dropping the cache only requests an abort the runtime acts on at the
+    // task's next scheduling point — then drop the cache, so every return
+    // path below leaves the store fully released for the next open on this
+    // path in this process.
+    cache.shutdown().await;
+    drop(cache);
 
     match pool_result {
         Ok(outcomes) => {

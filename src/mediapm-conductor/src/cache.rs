@@ -383,6 +383,29 @@ impl Cache {
         })
     }
 
+    /// Stops the background prune loop and waits for it to actually end.
+    ///
+    /// The loop's task owns a [`FileSystemCas`] clone of this cache's store, so
+    /// the store's directory lock stays held until that task is dropped.
+    /// Dropping the cache only requests an abort
+    /// ([`BackgroundMaintenanceGuard::cancel`]), which the runtime acts on at
+    /// the task's next scheduling point rather than when it is requested — a
+    /// caller that opens the same store path again in this process must call
+    /// this first, because when it returns the task is gone — concurrent
+    /// callers are not supported, matching the guard's own contract — and,
+    /// once it has returned, dropping the cache releases the lock
+    /// synchronously.
+    ///
+    /// Foreground cache operations still work afterwards; only the periodic
+    /// prune loop stops. Calling it more than once is safe: the guard takes its
+    /// task handle once, so later calls return as soon as the cancellation
+    /// flag is set.
+    pub async fn shutdown(&self) {
+        if let Some(guard) = self.bg_guard.as_ref() {
+            guard.shutdown().await;
+        }
+    }
+
     /// Prunes expired entries for one domain **immediately**, bypassing the
     /// 24-hour `PRUNE_INTERVAL_SECONDS` cooldown enforced by
     /// [`Cache::prune_expired_entries`].
