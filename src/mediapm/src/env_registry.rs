@@ -125,10 +125,12 @@ pub fn env_registry() -> &'static [EnvVarEntry] {
 /// compose to the same bytes.
 #[must_use]
 pub fn composed_env_registry() -> Vec<EnvVarEntry> {
-    let mut slices: Vec<&[EnvVarEntry]> =
-        vec![mediapm_conductor::env_registry::env_registry(), env_registry()];
-    #[cfg(feature = "cli")]
-    slices.push(mediapm_cli::env_registry::env_registry());
+    let slices: Vec<&[EnvVarEntry]> = vec![
+        mediapm_conductor::env_registry::env_registry(),
+        env_registry(),
+        #[cfg(feature = "cli")]
+        mediapm_cli::env_registry::env_registry(),
+    ];
     compose_env_registry(&slices)
 }
 
