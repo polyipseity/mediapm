@@ -6,8 +6,9 @@
 use mediapm::config::{MediaRuntimeStorage, RuntimeLifecycleConfig};
 use mediapm::{MediaPmService, load_mediapm_document, save_mediapm_document};
 
-/// Document-stated lifecycle values reach the facade (RED today: the
-/// constructor passes the raw override, so the facade holds defaults).
+/// Document-stated lifecycle values reach the facade: the constructor
+/// merges the document with the service overrides before the facade is
+/// built, and this test proves the stated values arrive.
 #[tokio::test]
 async fn document_lifecycle_values_reach_the_conductor_facade() {
     let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
@@ -74,8 +75,8 @@ async fn defaults_hold_when_nothing_states_a_value() {
     );
 }
 
-/// The merge keeps the document half when the override states nothing
-/// (RED today: the override half is taken unconditionally).
+/// The merge keeps the document half when the override states nothing:
+/// an unstated override field must not displace a stated document value.
 #[test]
 fn merge_keeps_document_lifecycle_when_the_override_states_nothing() {
     let mut config = MediaRuntimeStorage::default();
@@ -120,5 +121,40 @@ async fn an_override_equal_to_the_default_does_not_usurp_a_stated_document() {
         service.conductor().gc_settings(),
         (90_000, 42),
         "an override equal to the built-in default is unstated; the document must win"
+    );
+}
+
+/// One override field is the unstated sentinel while the other states a
+/// value: each lifecycle field resolves on its own terms — the sentinel
+/// side falls back to the document, the stated side wins over it.
+#[tokio::test]
+async fn a_mixed_override_resolves_each_field_on_its_own_terms() {
+    let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+    let service = MediaPmService::new_fs_at(root.path()).await.expect("scaffold");
+    drop(service);
+    let ncl = root.path().join("mediapm.ncl");
+    let mut doc = load_mediapm_document(&ncl).expect("scaffolded document loads");
+    doc.runtime.lifecycle.instance_ttl_seconds = Some(90_000);
+    doc.runtime.lifecycle.background_gc_interval_seconds = Some(42);
+    save_mediapm_document(&ncl, &doc).expect("stated document saves");
+    let overrides = MediaRuntimeStorage {
+        lifecycle: RuntimeLifecycleConfig {
+            // Sentinel side: equal to the built-in default, so unstated.
+            instance_ttl_seconds: mediapm::config::defaults::default_instance_ttl_seconds(),
+            // Stated side: not the default, so it wins over the document.
+            background_gc_interval_seconds: 88,
+        },
+        ..MediaRuntimeStorage::default()
+    };
+    let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
+        root.path().to_path_buf(),
+        overrides,
+    )
+    .await
+    .expect("reopen with overrides");
+    assert_eq!(
+        service.conductor().gc_settings(),
+        (90_000, 88),
+        "the sentinel side falls back to the document; the stated side wins"
     );
 }
