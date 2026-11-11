@@ -10,10 +10,8 @@
 #      janitor scope is the temp-root three prefixes ONLY.
 #   3. Temp root preconditions: a --root that does not exist must fail and
 #      name that path; an existing empty one must report a clean sweep.
-#   4. Scan failure: a `find` that dies part way through must fail the
+#   5. Scan failure: a `find` that dies part way through must fail the
 #      janitor, sweep nothing, and leave no listing file behind.
-#   5. Per-path failure: a directory the sweep cannot remove is named on
-#      stderr, still fails the run, and does not stop the rest of the sweep.
 #
 # POSIX sh (driven by the `mediapm-tests` crate via `cargo test-all`; also
 # runnable standalone).
@@ -185,36 +183,6 @@ if [ "$(uname -s)" = "Darwin" ] && [ "$(id -u)" -ne 0 ] && command -v chflags >/
     if [ -e "$(cat "$capture")" ]; then
         fail "an aborted sweep left its listing behind: $(cat "$capture")"
     fi
-fi
-
-# --- Per-path failure: the preflight passes, then one seeded directory cannot
-# be removed. It must be named on stderr, must still fail the run, and must not
-# stop the sweep from removing the rest. The obstacle is a sealed directory
-# (mode 000 holding a child): `chmod -R u+w` cannot reach inside it, so `rm -rf`
-# cannot empty it.
-if [ "$(id -u)" -ne 0 ]; then
-    fail_root="$tmpdir/fail-root"
-    mkdir -p "$fail_root/mediapm-artifact-sealed/inner" "$fail_root/mediapm-cache-ok"
-    chmod 000 "$fail_root/mediapm-artifact-sealed"
-    if "$janitor" --root "$fail_root" >"$tmpdir/fail.out" 2>"$tmpdir/fail.err"; then
-        fail "janitor exited 0 for a directory it cannot remove ($fail_root)"
-    fi
-    # Restore the mode so the EXIT trap can reach inside the tree.
-    chmod -R 700 "$fail_root/mediapm-artifact-sealed"
-    case "$(cat "$tmpdir/fail.err")" in
-        *"failed to remove: $fail_root/mediapm-artifact-sealed"*) ;;
-        *) fail "per-path failure did not name the sealed dir: $(cat "$tmpdir/fail.err")" ;;
-    esac
-    case "$(cat "$tmpdir/fail.err")" in
-        *'1 director(ies) could not be removed'*) ;;
-        *) fail "per-path failure did not summarise the count: $(cat "$tmpdir/fail.err")" ;;
-    esac
-    case "$(cat "$tmpdir/fail.out")" in
-        *"removed: $fail_root/mediapm-cache-ok"*) ;;
-        *) fail "a per-path failure stopped the sweep before the removable dir: $(cat "$tmpdir/fail.out")" ;;
-    esac
-    test -d "$fail_root/mediapm-artifact-sealed" || fail "the sealed dir vanished, so the case proves nothing"
-    test ! -e "$fail_root/mediapm-cache-ok" || fail "the removable dir survived next to a sealed one"
 fi
 
 # --- Static part: migration-era workspace globs must be gone.

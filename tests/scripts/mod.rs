@@ -115,18 +115,6 @@ struct RunOutcome {
     stderr: String,
 }
 
-/// Spawns and waits for a command with `TMPDIR`/`TMP`/`TEMP` sandboxed at
-/// `sandbox`, normalizing CRLF in the captured output.
-fn capture_output(mut cmd: Command, sandbox: &Path) -> RunOutcome {
-    cmd.env("TMPDIR", sandbox).env("TMP", sandbox).env("TEMP", sandbox);
-    let output = cmd.output().expect("spawn and wait for script");
-    RunOutcome {
-        status: output.status,
-        stdout: normalize(&output.stdout),
-        stderr: normalize(&output.stderr),
-    }
-}
-
 /// The `rm` the bash janitor tests hand their children: the first candidate that
 /// exited 0 with the probe directory's source path gone.
 ///
@@ -513,15 +501,36 @@ fn run_script(
 ) -> RunOutcome {
     let mut cmd = Command::new(shell);
     cmd.arg(script).args(flags);
+    // The root goes in the shell's own spelling: a POSIX shell given a Windows
+    // path builds a glob it cannot match, while `C:/…` is a path it resolves.
+    cmd.arg("--root").arg(printed_as_shell_path(sandbox));
     cmd.env("PATH", path_with_rm_exec(sandbox, real_rm));
-    capture_output(cmd, sandbox)
+    capture_output_plain(cmd)
+}
+
+/// Runs a prepared command with the environment left alone.
+///
+/// Janitor invocations name their root with `--root`, so what they sweep must not
+/// depend on the child's environment at all: a POSIX shell on Windows resolves
+/// its own temp root and prints that spelling back, which is what made a
+/// `--root`-less sweep report `removed: /tmp/…` for a Windows directory. The
+/// sandbox still exists for the scripts that read it; only this call stops
+/// telling the child where it is.
+fn capture_output_plain(mut cmd: Command) -> RunOutcome {
+    let output = cmd.output().expect("spawn and wait for script");
+    RunOutcome {
+        status: output.status,
+        stdout: normalize(&output.stdout),
+        stderr: normalize(&output.stderr),
+    }
 }
 
 /// Runs a PowerShell script via `pwsh -NoProfile -File` inside a sandbox.
 fn run_pwsh(script: &Path, sandbox: &Path, flags: &[&str]) -> RunOutcome {
     let mut cmd = Command::new("pwsh");
     cmd.args(["-NoProfile", "-File"]).arg(script).args(flags);
-    capture_output(cmd, sandbox)
+    cmd.arg("--root").arg(sandbox);
+    capture_output_plain(cmd)
 }
 
 /// Probes an interpreter by spawning a harmless command; on absence prints
@@ -785,7 +794,8 @@ fn bash_janitor_reports_a_per_path_failure() {
     let mut cmd = Command::new(shell);
     cmd.arg(&janitor);
     cmd.env("PATH", path_with_rm_exec(&sandbox.path, &rm));
-    let partial = capture_output(cmd, &scope);
+    cmd.arg("--root").arg(printed_as_shell_path(&scope));
+    let partial = capture_output_plain(cmd);
     unseal(&sealed);
 
     assert!(
@@ -1020,7 +1030,8 @@ fn bash_janitor_does_not_call_a_failed_sweep_empty() {
     let mut cmd = Command::new(shell);
     cmd.arg(&janitor);
     cmd.env("PATH", path_with_rm_exec(&sandbox.path, &rm));
-    let sweep = capture_output(cmd, &scope);
+    cmd.arg("--root").arg(printed_as_shell_path(&scope));
+    let sweep = capture_output_plain(cmd);
     unseal(&sealed);
 
     assert!(
