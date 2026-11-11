@@ -480,7 +480,7 @@ pub(crate) async fn resolve_release_asset_names(
     let api_url = format!("{}/repos/{owner}/{repo}/releases/tags/{tag}", github_api_base());
 
     // The guard rejects an empty or non-UTF-8 entry, nothing more: a payload
-    // the commit-dereferencing resolver writes (`{hash}\n{tag}`) would be read
+    // the commit-dereferencing resolver writes (`{hash}\n{names}`) would be read
     // here as names, which is why the two consumers must not serve one tag.
     if let Some(cache) = metadata_cache
         && let Some(bytes) = cache.lookup_bytes(&api_url).await
@@ -871,10 +871,13 @@ pub(crate) async fn resolve_tool_fetch(
                 ResolvedToolMetadata {
                     human_readable_version: canonical_version.clone(),
                     canonical_version,
+                    // Every lookup must be a cache hit: the resolve bar renders
+                    // `N cached` from this flag, so a partially warm cache that
+                    // reported `true` would claim six hits it did not get.
                     metadata_cached: autobuild_cached
-                        || assets_cached
-                        || leg_cached
-                        || jellyfin_cached,
+                        && assets_cached
+                        && leg_cached
+                        && jellyfin_cached,
                     metadata_fetch_count: 0,
                     resolved_tag: Some(autobuild_tag),
                     // WHY: the artifact set mixes FFmpeg-Builds autobuilds,
@@ -1554,6 +1557,81 @@ mod tests {
                 "{}: the shared alias still leads the non-shared one: {urls:?}",
                 source.os
             );
+        }
+    }
+
+    /// A single lookup that misses the metadata cache makes the whole resolve
+    /// report `false`.
+    ///
+    /// `metadata_cached` is the AND of the four per-lookup flags, because the
+    /// resolve bar renders its `N cached` list from it: a partially warm cache
+    /// that reported `true` would claim every one of the six lookups was a hit.
+    /// The tag asset list is the one lookup left unseeded here, and the API base
+    /// answers every route with 404, so that read fails and degrades to the
+    /// aliases. The rest of the cache is warm and the resolve still succeeds,
+    /// which is what makes this a partial cache rather than a failed resolve.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
+    )]
+    async fn resolve_tool_fetch_ffmpeg_reports_uncached_when_one_lookup_misses() {
+        let _env = lock_process_env();
+        let server = wiremock::MockServer::start().await;
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(GITHUB_API_BASE_ENV, server.uri());
+        }
+
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        let api = server.uri();
+        cache
+            .store_bytes(
+                "default",
+                &format!("{api}/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10"),
+                b"autobuild-2025-07-15-12-00",
+            )
+            .await;
+        cache
+            .store_bytes(
+                "default",
+                &format!(
+                    "{}/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+                    ffmpeg::martin_riedl_base()
+                ),
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
+        seed_jellyfin_metadata(&cache, "default").await;
+
+        let resolved = resolve_tool_fetch(
+            "ffmpeg",
+            &VersionSpec::Latest,
+            Some((&*cache, "default")),
+            RecheckPolicy::default(),
+        )
+        .await;
+
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(GITHUB_API_BASE_ENV);
+        }
+
+        let (fetch, metadata) = resolved.expect("a missing asset list must not fail the resolve");
+        assert!(
+            !metadata.metadata_cached,
+            "five of six lookups were cache hits, so the resolve is not fully cached"
+        );
+        assert_eq!(
+            metadata.metadata_fetch_count, 6,
+            "the missed asset list is still one of the six lookups"
+        );
+        for source in fetch.sources.iter().filter(|source| source.os != "macos") {
+            let SourceProducer::Fetch { urls } = &source.producer;
+            assert_eq!(urls.len(), 2, "{}: the degraded leg holds the two aliases", source.os);
         }
     }
 
