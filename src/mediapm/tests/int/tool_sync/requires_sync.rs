@@ -231,12 +231,12 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
 /// spurious `canonical_version != expected_composite` mismatch and a false
 /// "tools require sync" warning.
 ///
-/// The sync cache root is pre-seeded with a `BtbN` autobuild tag the mocked
-/// upstream does not serve, and state records the composite that tag yields,
-/// so the assertion holds only while the warning check reads the sync cache: a
-/// check that fell through to the default cache would resolve from the mock
-/// and compare a different tag. ffmpeg is used (not media-tagger) because its
-/// provider resolves from cache; media-tagger resolves to `MEDIAPM_GIT_HASH`
+/// The sync cache root is pre-seeded with an `FFmpeg-Builds` autobuild tag the
+/// mocked upstream does not serve, and state records the composite that tag
+/// yields, so the assertion holds only while the warning check reads the sync
+/// cache: a check that fell through to the default cache would resolve from the
+/// mock and compare a different tag. ffmpeg is used (not media-tagger) because
+/// its provider resolves from cache; media-tagger resolves to `MEDIAPM_GIT_HASH`
 /// regardless of cache, so it cannot demonstrate the divergence.
 #[tokio::test]
 async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::MediaPmError> {
@@ -247,7 +247,9 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
 
     // A tag no upstream serves, so only this cache can produce it. The macOS
     // leg is left unseeded, so it resolves from the mock and the two cache
-    // roots differ in the tag alone.
+    // roots differ in the tag alone. The tag's asset list is left unseeded on
+    // purpose too: this test needs the tag only, so the asset lookup 404s
+    // against the mock and warns, and that warning is expected here.
     let seeded_tag = "autobuild-1970-01-01-00-00";
     let expected_composite = format!("{seeded_tag}+{STUB_MARTIN_RIEDL_BUILD_ID}");
 
@@ -264,7 +266,8 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
             Cache::open(cache_root.path(), &[metadata_domain]).await.expect("open override cache");
         let user_cache = UserLevelCache::from_cache(cache);
         let api_base = mock.github_api_base();
-        let releases_key = format!("{api_base}/repos/BtbN/FFmpeg-Builds/releases?per_page=10");
+        let releases_key =
+            format!("{api_base}/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10");
         user_cache.store_bytes("tool_metadata", &releases_key, seeded_tag.as_bytes()).await;
         // Drop the handle before the warning check opens the same root
         // (flock contention otherwise fails the cache open).

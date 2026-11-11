@@ -429,8 +429,8 @@ const COMMIT_SHA: &str = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f";
 /// segment indistinguishable from the requester's own version.
 const DENO_COMMIT_SHA: &str = "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e";
 
-/// The `BtbN` autobuild tag the mocked releases list names.
-const BTBN_TAG: &str = "autobuild-2026-01-01-12-00";
+/// The `FFmpeg-Builds` autobuild tag the mocked releases list names.
+const AUTOBUILD_TAG: &str = "autobuild-2026-01-01-12-00";
 
 /// The martin-riedl build id the mocked permalink redirects to.
 const MARTIN_RIEDL_BUILD_ID: &str = "1767225600_N-127260-g7bc3576910";
@@ -649,39 +649,44 @@ async fn mount_sd(mock: &MockUpstream, stub: &[u8]) -> String {
     host_url
 }
 
-/// Mounts ffmpeg's upstream traffic: the `BtbN` alias downloads, the
-/// martin-riedl macOS chain, and the jellyfin macOS fallback.
+/// Mounts ffmpeg's upstream traffic: the `FFmpeg-Builds` tag and alias
+/// downloads, the martin-riedl macOS chain, and the jellyfin macOS fallback.
 ///
-/// Both `BtbN` candidates are mounted, so a run does not depend on which of the
-/// shared and non-shared assets the chain prefers. Both martin-riedl channels
-/// are mounted for the same reason: the chain tries the snapshot permalink
+/// All four assets are mounted, each under the tag's own path and the
+/// `latest/download` alias, so a run does not depend on which of the shared and
+/// non-shared assets the chain prefers, nor on which of the two shapes it
+/// addresses. Both martin-riedl channels are mounted for the same reason: the
+/// chain tries the snapshot permalink
 /// first, and mounting the release permalink too keeps the fixture from encoding
 /// that order. The macOS chain publishes both architectures, so the host arch's
 /// payload carries the stub and the other arch's does not; the jellyfin
 /// fallback's archive is resolved but never downloaded while the permalink
 /// serves, so only its pointer and index routes need to exist.
 async fn mount_ffmpeg(mock: &MockUpstream, stub: &[u8]) -> String {
-    mock.mount_github_release_list("BtbN", "FFmpeg-Builds", &[BTBN_TAG]).await;
+    mock.mount_github_release_list("FFmpeg-Builds", "FFmpeg-Builds", &[AUTOBUILD_TAG]).await;
     let mut host_url = String::new();
 
-    let btb_n = [
+    let tag_assets = [
         ("windows", "ffmpeg-master-latest-win64-gpl-shared.zip", PayloadFormat::Zip),
         ("windows", "ffmpeg-master-latest-win64-gpl.zip", PayloadFormat::Zip),
         ("linux", "ffmpeg-master-latest-linux64-gpl-shared.tar.xz", PayloadFormat::TarXz),
         ("linux", "ffmpeg-master-latest-linux64-gpl.tar.xz", PayloadFormat::TarXz),
     ];
     let mut assets = Vec::new();
-    for (os, name, format) in btb_n {
+    for (os, name, format) in tag_assets {
         if is_host_os(os) {
-            host_url =
-                format!("{}/BtbN/FFmpeg-Builds/releases/download/{BTBN_TAG}/{name}", mock.base());
+            host_url = format!(
+                "{}/FFmpeg-Builds/FFmpeg-Builds/releases/download/{AUTOBUILD_TAG}/{name}",
+                mock.base()
+            );
         }
         assets.push(crate::stub_payload::StubAsset {
             name: name.to_string(),
             bytes: format.pack(&slot_entries("ffmpeg", os, is_host_os(os).then_some(stub))),
         });
     }
-    mock.mount_github_release("BtbN", "FFmpeg-Builds", BTBN_TAG, COMMIT_SHA, &assets).await;
+    mock.mount_github_release("FFmpeg-Builds", "FFmpeg-Builds", AUTOBUILD_TAG, COMMIT_SHA, &assets)
+        .await;
 
     let host_arch = provider_host_arch();
     for (canonical, site_label) in [("aarch64", "arm64"), ("x86_64", "amd64")] {

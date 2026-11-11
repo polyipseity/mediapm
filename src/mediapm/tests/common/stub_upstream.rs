@@ -55,8 +55,8 @@ pub(crate) const STUB_COMMIT_SHA: &str = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f
 /// the requester's. The value is otherwise arbitrary.
 pub(crate) const STUB_DENO_COMMIT_SHA: &str = "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e";
 
-/// The `BtbN` autobuild tag the mocked releases list names.
-pub(crate) const STUB_BTBN_TAG: &str = "autobuild-2026-01-01-12-00";
+/// The `FFmpeg-Builds` autobuild tag the mocked releases list names.
+pub(crate) const STUB_AUTOBUILD_TAG: &str = "autobuild-2026-01-01-12-00";
 
 /// The martin-riedl build id the mocked permalink redirects to.
 ///
@@ -198,18 +198,20 @@ pub(crate) async fn mount_sd(mock: &MockUpstream) {
     mock.mount_github_release("chmln", "sd", STUB_SD_TAG, STUB_COMMIT_SHA, &assets).await;
 }
 
-/// Mounts ffmpeg's upstream traffic: the `BtbN` alias downloads, the
-/// martin-riedl macOS chain, and the jellyfin macOS fallback.
+/// Mounts ffmpeg's upstream traffic: the `FFmpeg-Builds` tag and alias
+/// downloads, the martin-riedl macOS chain, and the jellyfin macOS fallback.
 ///
-/// Both `BtbN` candidates are mounted, so the fixture does not depend on which
-/// of the shared/non-shared assets the chain prefers. Both martin-riedl
-/// channels are mounted for the same reason: the chain tries the snapshot
-/// permalink first, and mounting the release permalink too keeps the fixture
+/// All four assets are mounted, each under the tag's own path and the
+/// `latest/download` alias, so the fixture does not depend on which of the
+/// shared/non-shared assets the chain prefers, nor on which of the two shapes
+/// it addresses. Both martin-riedl channels are mounted for the same reason:
+/// the chain tries the snapshot permalink first, and mounting the release
+/// permalink too keeps the fixture
 /// from encoding that order. The jellyfin index and both pointer files are
 /// read during resolve even though the snapshot permalink serves the fetch, so
 /// a fallback that is never downloaded is still resolved.
 pub(crate) async fn mount_ffmpeg(mock: &MockUpstream) {
-    mock.mount_github_release_list("BtbN", "FFmpeg-Builds", &[STUB_BTBN_TAG]).await;
+    mock.mount_github_release_list("FFmpeg-Builds", "FFmpeg-Builds", &[STUB_AUTOBUILD_TAG]).await;
     let assets = [
         archive_asset(
             "ffmpeg-master-latest-win64-gpl-shared.zip",
@@ -236,8 +238,14 @@ pub(crate) async fn mount_ffmpeg(mock: &MockUpstream) {
             PayloadFormat::TarXz,
         ),
     ];
-    mock.mount_github_release("BtbN", "FFmpeg-Builds", STUB_BTBN_TAG, STUB_COMMIT_SHA, &assets)
-        .await;
+    mock.mount_github_release(
+        "FFmpeg-Builds",
+        "FFmpeg-Builds",
+        STUB_AUTOBUILD_TAG,
+        STUB_COMMIT_SHA,
+        &assets,
+    )
+    .await;
 
     for (canonical, site_label) in [("aarch64", "arm64"), ("x86_64", "amd64")] {
         let payload = PayloadFormat::Zip.pack(&archive_entries("ffmpeg", canonical));

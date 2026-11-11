@@ -119,7 +119,7 @@ pub(crate) struct ResolvedToolMetadata {
     /// `true` when all version/tag lookups were served from the metadata cache.
     pub(crate) metadata_cached: bool,
     /// Number of individual version/tag lookups performed, auto-derived from
-    /// [`MetadataCacheTracker::lookup_bytes`] calls (e.g., ffmpeg = 2, all
+    /// [`MetadataCacheTracker::lookup_bytes`] calls (e.g., ffmpeg = 6, all
     /// others = 1).
     pub(crate) metadata_fetch_count: u32,
     /// Resolved upstream git tag, or `None` when the provider has no tag.
@@ -181,7 +181,7 @@ pub(crate) fn github_api_base() -> String {
 /// Every GitHub payload URL is built from here rather than from a literal
 /// host: [`github_release_asset_url`] for a tag-pinned asset, and the per-tool
 /// provider modules for the `latest/download` templates a `Latest` spec
-/// resolves — [`yt_dlp`], [`deno`], [`rsgain`], [`sd`], and the `BtbN` legs of
+/// resolves — [`yt_dlp`], [`deno`], [`rsgain`], [`sd`], and the `FFmpeg-Builds` legs of
 /// [`ffmpeg`]. A template that hardcoded its host would compile, resolve, and
 /// fetch from the real GitHub even with the override set, so
 /// `every_latest_payload_url_is_built_from_the_download_seam` walks every
@@ -447,6 +447,97 @@ pub(crate) async fn resolve_github_tag_release(
     Ok((commit_hash, asset_names, false))
 }
 
+/// Resolves the asset names one GitHub release tag publishes.
+///
+/// Cached in the metadata domain under the release-by-tag API URL, one asset
+/// name per line. Only a tag consumer that needs names without a commit hash
+/// uses this; [`resolve_github_tag_release`] stores the commit hash followed
+/// by the names under the same URL, so the two must not serve one tag.
+///
+/// An empty asset list is not stored: nothing is remembered from it, and a
+/// caller that needs the list again re-reads it. The caller decides whether an
+/// empty list is usable, because a chain whose fallback covers the platform
+/// still resolves without it.
+///
+/// # HTTP client policy
+///
+/// Uses the process-wide shared client from
+/// [`shared_http_client`](mediapm_conductor::http::client::shared_http_client).
+/// Connection pooling, TLS reuse, and DNS caching are managed centrally.
+/// Do NOT create a [`reqwest::Client`] locally — always use the shared instance.
+///
+/// # Errors
+///
+/// Returns [`mediapm_conductor::ConductorError`] when the HTTP request fails,
+/// the response does not parse, or the document names a different tag than the
+/// one requested.
+pub(crate) async fn resolve_release_asset_names(
+    owner: &str,
+    repo: &str,
+    tag: &str,
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
+) -> Result<(Vec<String>, bool), mediapm_conductor::ConductorError> {
+    let api_url = format!("{}/repos/{owner}/{repo}/releases/tags/{tag}", github_api_base());
+
+    // The guard rejects an empty or non-UTF-8 entry, nothing more: a payload
+    // the commit-dereferencing resolver writes (`{hash}\n{tag}`) would be read
+    // here as names, which is why the two consumers must not serve one tag.
+    if let Some(cache) = metadata_cache
+        && let Some(bytes) = cache.lookup_bytes(&api_url).await
+        && let Ok(text) = String::from_utf8(bytes)
+    {
+        let names: Vec<String> =
+            text.split('\n').filter(|name| !name.is_empty()).map(str::to_string).collect();
+        if !names.is_empty() {
+            return Ok((names, true));
+        }
+    }
+
+    let http_client = mediapm_conductor::http::client::shared_http_client().map_err(|e| {
+        mediapm_conductor::ConductorError::Workflow(format!("HTTP client unavailable: {e}"))
+    })?;
+    let response = http_client.get(&api_url).send().await.map_err(|e| {
+        mediapm_conductor::ConductorError::Workflow(format!(
+            "GitHub API release assets request failed: {e}"
+        ))
+    })?;
+    let release: serde_json::Value = response.json().await.map_err(|e| {
+        mediapm_conductor::ConductorError::Workflow(format!(
+            "GitHub API release assets response parse failed: {e}"
+        ))
+    })?;
+
+    // The tag check keeps a redirect or a moved route from answering for a
+    // different release: the asset names are only meaningful for the tag the
+    // caller asked about.
+    let returned_tag = release["tag_name"].as_str().ok_or_else(|| {
+        mediapm_conductor::ConductorError::Workflow(
+            "GitHub API release assets response missing tag_name".to_string(),
+        )
+    })?;
+    if returned_tag != tag {
+        return Err(mediapm_conductor::ConductorError::Workflow(format!(
+            "GitHub API release assets returned tag {returned_tag} for requested {tag}"
+        )));
+    }
+    let assets = release["assets"].as_array().ok_or_else(|| {
+        mediapm_conductor::ConductorError::Workflow(
+            "GitHub API release assets response missing assets array".to_string(),
+        )
+    })?;
+    let names: Vec<String> =
+        assets.iter().filter_map(|asset| asset["name"].as_str()).map(str::to_string).collect();
+
+    // Do NOT call touch(): the metadata TTL is creation-time based.
+    if !names.is_empty()
+        && let Some(cache) = metadata_cache
+    {
+        cache.store_bytes(&api_url, names.join("\n").as_bytes()).await;
+    }
+
+    Ok((names, false))
+}
+
 /// Returns the tag the version target pins, if the target pins one.
 ///
 /// [`VersionSpec::Exact`] carrying only `vcs_hash`/`version` returns `None`:
@@ -526,7 +617,7 @@ async fn resolve_pinned_github_tool(
 /// Resolves the latest `autobuild-*` tag for `owner/repo` by listing
 /// recent releases.
 ///
-/// Some GitHub repos (e.g. BtbN/FFmpeg-Builds) return `"tag_name":"latest"`
+/// Some GitHub repos (e.g. FFmpeg-Builds/FFmpeg-Builds) return `"tag_name":"latest"`
 /// from the `/releases/latest` endpoint. This function uses the releases list
 /// endpoint (`/releases?per_page=10`) and picks the first non-placeholder release
 /// matching the `autobuild-*` pattern.
@@ -611,7 +702,7 @@ pub(crate) async fn resolve_latest_autobuild_tag(
 /// canonical version is recorded.
 ///
 /// Only ffmpeg uses it today: its canonical version is
-/// `{btbn_tag}+{macos_leg}`, where the leg is the martin-riedl build id or
+/// `{autobuild_tag}+{macos_leg}`, where the leg is the martin-riedl build id or
 /// jellyfin-ffmpeg version parsed from the URL that actually served the
 /// macOS bytes. The rewrite replaces the segment after the first `+` of the
 /// bare version and preserves any `;dep:ver` composite segments, so a
@@ -655,7 +746,7 @@ pub(crate) fn canonical_version_after_fetch(
 /// release-by-tag endpoint and build fetch URLs from its asset list
 /// ([`resolve_github_tag_release`]); `Exact` with only `vcs_hash`/`version`
 /// keeps resolving latest and leaves comparison to the caller's validation
-/// gate. `Exact` of any flavor is refused for ffmpeg (`BtbN` retains no
+/// gate. `Exact` of any flavor is refused for ffmpeg (`FFmpeg-Builds` retains no
 /// historical builds). [`media-tagger`](crate::tools::provider::media_tagger)
 /// and [`import`] are builtins with no upstream release and ignore the target.
 ///
@@ -671,7 +762,7 @@ pub(crate) fn canonical_version_after_fetch(
 ///   the metadata cache.
 /// - `metadata_fetch_count`: number of individual version/tag lookups
 ///   performed, auto-derived by counting [`MetadataCacheTracker::lookup_bytes`]
-///   calls (e.g., ffmpeg = 2, all others = 1).
+///   calls (e.g., ffmpeg = 6, all others = 1).
 /// - `resolved_tag` / `resolved_version` / `resolved_vcs_hash`: resolved
 ///   provenance fields, each `Option<String>` — `None` when the provider has
 ///   no value (empty strings never occur). A `None` field must carry a
@@ -738,16 +829,23 @@ pub(crate) async fn resolve_tool_fetch(
         }
         n if n.eq_ignore_ascii_case("ffmpeg") => {
             if matches!(version_target, VersionSpec::Exact(_)) {
-                // BtbN replaces its rolling "latest" assets on every build and
-                // retains no historical archives; a pin resolved against
+                // FFmpeg-Builds replaces its rolling "latest" assets on every build
+                // and retains no historical archives; a pin resolved against
                 // latest would silently fetch the wrong bytes, so the pin is
                 // refused with the reason instead.
                 return Err(mediapm_conductor::ConductorError::Workflow(
-                    "tool ffmpeg: BtbN does not retain historical builds; pinning ffmpeg's BtbN legs is impossible"
+                    "tool ffmpeg: FFmpeg-Builds does not retain historical builds, \
+                     so a pin is refused"
                         .to_string(),
                 ));
             }
-            let (autobuild_tag, btbn_cached) = ffmpeg::resolve_btbn_tag(tracker_ref).await?;
+            let (autobuild_tag, autobuild_cached) =
+                ffmpeg::resolve_autobuild_tag(tracker_ref).await?;
+            // The tag's own assets are the source that serves; the
+            // `latest/download` aliases trail them as the fallback, so a
+            // release document that cannot be read shortens the chain.
+            let (autobuild_assets, assets_cached) =
+                ffmpeg::resolve_autobuild_assets(&autobuild_tag, tracker_ref).await;
             // The jellyfin fallback is resolved before the leg because the
             // leg records the version the fallback would serve when the
             // permalink probe cannot identify a build. The leg is advisory
@@ -761,22 +859,30 @@ pub(crate) async fn resolve_tool_fetch(
             )
             .await;
             let canonical_version = format!("{autobuild_tag}+{macos_leg}");
-            let fetch =
-                ffmpeg::sources(version_target, jellyfin.as_ref(), &macos_leg, &autobuild_tag);
+            let fetch = ffmpeg::sources(
+                version_target,
+                jellyfin.as_ref(),
+                &macos_leg,
+                &autobuild_tag,
+                &autobuild_assets,
+            );
             (
                 fetch,
                 ResolvedToolMetadata {
                     human_readable_version: canonical_version.clone(),
                     canonical_version,
-                    metadata_cached: btbn_cached || leg_cached || jellyfin_cached,
+                    metadata_cached: autobuild_cached
+                        || assets_cached
+                        || leg_cached
+                        || jellyfin_cached,
                     metadata_fetch_count: 0,
                     resolved_tag: Some(autobuild_tag),
-                    // WHY: the artifact set mixes BtbN autobuilds,
+                    // WHY: the artifact set mixes FFmpeg-Builds autobuilds,
                     // martin-riedl snapshots, and jellyfin-ffmpeg builds —
                     // no single version identifies it; the macOS leg
                     // identifies only that leg.
                     resolved_version: None,
-                    // WHY: deref'ing a BtbN build tag yields the build-script
+                    // WHY: deref'ing an FFmpeg-Builds build tag yields the build-script
                     // repo commit (not the upstream ffmpeg source commit),
                     // and neither martin-riedl build ids nor jellyfin-ffmpeg
                     // versions identify the whole artifact set. Resolvable != meaningful.
@@ -988,7 +1094,7 @@ mod tests {
                         Some("autobuild-2025-07-15-12-00")
                     );
                     // WHY: no single version identifies the mixed
-                    // BtbN+martin-riedl+jellyfin artifact set, and the BtbN
+                    // FFmpeg-Builds+martin-riedl+jellyfin artifact set, and the FFmpeg-Builds
                     // build-repo hash is not the upstream ffmpeg source hash.
                     assert_eq!(metadata.resolved_version, None);
                     assert_eq!(metadata.resolved_vcs_hash, None);
@@ -1101,16 +1207,42 @@ mod tests {
             .await;
     }
 
+    /// The asset names the seeded FFmpeg-Builds autobuild tag publishes.
+    ///
+    /// Shared and non-shared for Windows and Linux, in the order upstream lists
+    /// them. These are the four basenames the `latest/download` aliases also
+    /// carry, so a tag asset and its alias differ only in the path.
+    const FFMPEG_AUTOBUILD_ASSETS: &str = concat!(
+        "ffmpeg-master-latest-win64-gpl-shared.zip\n",
+        "ffmpeg-master-latest-win64-gpl.zip\n",
+        "ffmpeg-master-latest-linux64-gpl-shared.tar.xz\n",
+        "ffmpeg-master-latest-linux64-gpl.tar.xz",
+    );
+
+    /// Seeds the asset list the seeded FFmpeg-Builds autobuild tag publishes.
+    ///
+    /// The resolve reads this list through `resolve_release_asset_names`, whose
+    /// cache key is the release-by-tag API URL. A missing seed is not a resolve
+    /// failure, because the `latest/download` aliases still form a chain, but it
+    /// does reach the network, which is what the provider tests must never do.
+    async fn seed_ffmpeg_tag_assets(cache: &ToolDownloadCache, domain: &str, api: &str) {
+        let key = format!(
+            "{api}/repos/FFmpeg-Builds/FFmpeg-Builds/releases/tags/autobuild-2025-07-15-12-00"
+        );
+        cache.store_bytes(domain, &key, FFMPEG_AUTOBUILD_ASSETS.as_bytes()).await;
+    }
+
     /// Seeds the metadata cache every network-backed managed tool resolves
     /// through, so a test can walk all of them without reaching the network:
     /// the four GitHub release lookups the tag-resolving tools read, the
-    /// `BtbN` autobuild listing and the martin-riedl leg the ffmpeg chain
-    /// probes, and the jellyfin repository lookups behind
-    /// [`seed_jellyfin_metadata`].
+    /// `FFmpeg-Builds` autobuild listing, its tag asset list, and the
+    /// martin-riedl leg the ffmpeg chain probes, and the jellyfin repository
+    /// lookups behind [`seed_jellyfin_metadata`].
     ///
     /// `{tag}\n{hash}` is the shape `resolve_latest_github_tag` stores, so one
     /// entry carries both the tag and the commit hash it dereferences to; the
-    /// autobuild and martin-riedl lookups store a bare tag.
+    /// autobuild and martin-riedl lookups store a bare tag, and the tag asset
+    /// list stores one name per line.
     ///
     /// Every key is built from the seam base the resolve reads —
     /// [`github_api_base`] and [`ffmpeg::martin_riedl_base`] — so a test that
@@ -1129,10 +1261,11 @@ mod tests {
         cache
             .store_bytes(
                 domain,
-                &format!("{api}/repos/BtbN/FFmpeg-Builds/releases?per_page=10"),
+                &format!("{api}/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10"),
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
+        seed_ffmpeg_tag_assets(cache, domain, &api).await;
         cache
             .store_bytes(
                 domain,
@@ -1166,7 +1299,7 @@ mod tests {
                 let jellyfin = ffmpeg::jellyfin_base();
                 (
                     vec![
-                        format!("{api}/repos/BtbN/FFmpeg-Builds/releases?per_page=10"),
+                        format!("{api}/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10"),
                         format!("{martin_riedl}/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"),
                         format!("{jellyfin}/files/ffmpeg/macos/"),
                         format!("{jellyfin}/files/ffmpeg/macos/latest-8.x/arm64/macarm64-gpl.txt"),
@@ -1186,6 +1319,9 @@ mod tests {
         for (url, value) in urls.into_iter().zip(values) {
             cache.store_bytes("default", &url, value).await;
         }
+        if tool_name == "ffmpeg" {
+            seed_ffmpeg_tag_assets(&cache, "default", &github_api_base()).await;
+        }
         (cache, temp_dir)
     }
 
@@ -1197,7 +1333,7 @@ mod tests {
     async fn resolve_tool_fetch_ffmpeg_leaves_version_and_vcs_hash_none() {
         let _env = lock_process_env();
         // Regression: ffmpeg's resolved_version and resolved_vcs_hash must stay
-        // None by design (mixed BtbN + martin-riedl + jellyfin sources; no single
+        // None by design (mixed FFmpeg-Builds + martin-riedl + jellyfin sources; no single
         // version or upstream VCS hash identifies the artifact set). See the
         // why-empty rationale in the ffmpeg provider module doc.
         let (cache, _tmp) = seed_metadata_cache("ffmpeg").await;
@@ -1216,18 +1352,19 @@ mod tests {
              reached the network"
         );
         // The resolve bar's item total, and the number the progress-output and
-        // tool-sync-3-phase-provisioning instructions both name: the BtbN tag, the
-        // martin-riedl build probe, the jellyfin index, and one pointer file per
-        // macOS arch. A new lookup must fail here, not silently make those docs
-        // wrong.
+        // tool-sync-3-phase-provisioning instructions both name: the FFmpeg-Builds tag, the
+        // tag asset list, the martin-riedl build probe, the jellyfin index, and one
+        // pointer file per macOS arch. A new lookup must fail here, not silently
+        // make those docs wrong.
         assert_eq!(
-            metadata.metadata_fetch_count, 5,
-            "ffmpeg resolves 5 metadata lookups (BtbN tag + martin-riedl probe + jellyfin \
-             index + one pointer file per macOS arch)"
+            metadata.metadata_fetch_count, 6,
+            "ffmpeg resolves 6 metadata lookups (FFmpeg-Builds tag + tag asset list + martin-riedl \
+             probe + jellyfin index + one pointer file per macOS arch)"
         );
-        // WHY: no single version identifies the mixed BtbN+martin-riedl+jellyfin artifact set.
+        // WHY: no single version identifies the mixed FFmpeg-Builds,
+        // martin-riedl, and jellyfin artifact set.
         assert_eq!(metadata.resolved_version, None);
-        // WHY: the BtbN build-repo hash is not the upstream ffmpeg source hash.
+        // WHY: the FFmpeg-Builds build-repo hash is not the upstream ffmpeg source hash.
         assert_eq!(metadata.resolved_vcs_hash, None);
     }
 
@@ -1269,12 +1406,12 @@ mod tests {
         }
     }
 
-    /// The resolved `BtbN` autobuild tag is threaded from the resolve into the
+    /// The resolved `FFmpeg-Builds` autobuild tag is threaded from the resolve into the
     /// Windows and Linux sources: both fetch a `releases/latest/download`
     /// alias whose asset is replaced when upstream rotates, so each carries the
     /// tag as its content-cache identity, and a rotated tag is a cache miss
     /// rather than the previous build's bytes served under the new tag's name.
-    /// Seeded metadata only — the tag comes from the seeded `BtbN` entry, not
+    /// Seeded metadata only — the tag comes from the seeded `FFmpeg-Builds` entry, not
     /// the network.
     #[tokio::test]
     #[expect(
@@ -1293,13 +1430,15 @@ mod tests {
         .await
         .expect("ffmpeg resolve should succeed");
 
-        let tag = metadata.resolved_tag.as_deref().expect("the seeded BtbN tag is resolved");
+        let tag =
+            metadata.resolved_tag.as_deref().expect("the seeded FFmpeg-Builds tag is resolved");
         assert_eq!(tag, "autobuild-2025-07-15-12-00", "the seeded tag is what the aliases key");
         for source in fetch.sources.iter().filter(|source| source.os != "macos") {
             assert_eq!(
                 source.identity.as_deref(),
                 Some(tag),
-                "each BtbN alias source records the resolved autobuild tag as its cache identity"
+                "each FFmpeg-Builds alias source records the resolved autobuild tag \
+                 as its cache identity"
             );
         }
     }
@@ -1327,6 +1466,95 @@ mod tests {
         assert_eq!(metadata.resolved_tag, None);
         assert_eq!(metadata.resolved_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(metadata.resolved_vcs_hash.as_deref(), Some(crate::global::MEDIAPM_GIT_HASH));
+    }
+
+    /// A release document that cannot be read shortens the Windows and Linux
+    /// legs to their aliases instead of failing the resolve.
+    ///
+    /// The autobuild tag resolves from the cache and the macOS legs from their
+    /// usual seeds, while the tag asset list is left unseeded and the API base
+    /// points at a server with no routes: the release-by-tag request answers
+    /// 404, which is the unreadable-document case. The aliases are the whole
+    /// fallback contract, so a resolve that failed here would take ffmpeg down
+    /// for a document the chain can do without.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() and github_download_base() reads against the MEDIAPM_GITHUB_API_BASE and MEDIAPM_GITHUB_DOWNLOAD_BASE seam mutation scopes"
+    )]
+    async fn resolve_tool_fetch_ffmpeg_falls_back_to_the_aliases_without_an_asset_list() {
+        let _env = lock_process_env();
+        let server = wiremock::MockServer::start().await;
+        // SAFETY: the env lock the guard holds scopes this process-global seam
+        // to this test, per the documented MEDIAPM_* mutation-scope rule.
+        unsafe {
+            std::env::set_var(GITHUB_API_BASE_ENV, server.uri());
+        }
+
+        let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
+        let cache =
+            ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
+        let api = server.uri();
+        cache
+            .store_bytes(
+                "default",
+                &format!("{api}/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10"),
+                b"autobuild-2025-07-15-12-00",
+            )
+            .await;
+        cache
+            .store_bytes(
+                "default",
+                &format!(
+                    "{}/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+                    ffmpeg::martin_riedl_base()
+                ),
+                b"1759500000_N-127260-g7bc3576910",
+            )
+            .await;
+        seed_jellyfin_metadata(&cache, "default").await;
+
+        let resolved = resolve_tool_fetch(
+            "ffmpeg",
+            &VersionSpec::Latest,
+            Some((&*cache, "default")),
+            RecheckPolicy::default(),
+        )
+        .await;
+
+        // SAFETY: same env-lock scope as the set above.
+        unsafe {
+            std::env::remove_var(GITHUB_API_BASE_ENV);
+        }
+
+        let (fetch, metadata) =
+            resolved.expect("an unreadable asset list must not fail the resolve");
+        assert_eq!(
+            metadata.resolved_tag.as_deref(),
+            Some("autobuild-2025-07-15-12-00"),
+            "the tag still resolves, so the aliases have a version to key"
+        );
+        for source in fetch.sources.iter().filter(|source| source.os != "macos") {
+            let SourceProducer::Fetch { urls } = &source.producer;
+            assert_eq!(
+                urls.len(),
+                2,
+                "{}: the two aliases are the whole chain, got {urls:?}",
+                source.os
+            );
+            for url in urls {
+                assert!(
+                    url.contains("/releases/latest/download/ffmpeg-master-latest-"),
+                    "{}: a degraded leg holds aliases only: {url}",
+                    source.os
+                );
+            }
+            assert!(
+                urls[0].contains("-shared") && !urls[1].contains("-shared"),
+                "{}: the shared alias still leads the non-shared one: {urls:?}",
+                source.os
+            );
+        }
     }
 
     #[tokio::test]
@@ -1370,10 +1598,11 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+                "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
+        seed_ffmpeg_tag_assets(&cache, "default", "https://api.github.com").await;
         cache
             .store_bytes(
                 "default",
@@ -1470,10 +1699,11 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+                "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
+        seed_ffmpeg_tag_assets(&cache, "default", "https://api.github.com").await;
         cache
             .store_bytes(
                 "default",
@@ -1505,19 +1735,13 @@ mod tests {
                 let SourceProducer::Fetch { urls } = &source.producer;
                 for url in urls {
                     // No URL should still contain the /latest/download/ placeholder,
-                    // EXCEPT ffmpeg's BtbN URLs which intentionally keep /latest/download/.
-                    if *tool_name == "ffmpeg" && url.contains("BtbN") {
-                        // ffmpeg BtbN URLs intentionally keep /latest/download/.
-                        assert!(
-                            url.contains("/latest/download/"),
-                            "tool {tool_name}: ffmpeg BtbN URL should keep /latest/download/",
-                        );
-                    } else {
-                        assert!(
-                            !url.contains("/latest/download/"),
-                            "tool {tool_name}: URL {url} still contains placeholder /latest/download/",
-                        );
-                    }
+                    // except ffmpeg's FFmpeg-Builds aliases, which trail the tag
+                    // assets as the fallback.
+                    assert!(
+                        !url.contains("/latest/download/")
+                            || (*tool_name == "ffmpeg" && url.contains("FFmpeg-Builds")),
+                        "tool {tool_name}: URL {url} still contains placeholder /latest/download/",
+                    );
                     // For all tools other than ffmpeg, the URL should contain the resolved tag.
                     if *tool_name != "ffmpeg" {
                         assert!(
@@ -1525,6 +1749,18 @@ mod tests {
                             "tool {tool_name}: URL {url} does not contain resolved tag '{tag}'",
                         );
                     }
+                }
+                // ffmpeg's FFmpeg-Builds legs lead with the tag asset, so the
+                // aliases behind it are the fallback rather than the source.
+                if *tool_name == "ffmpeg"
+                    && urls.first().is_some_and(|url| url.contains("FFmpeg-Builds"))
+                {
+                    assert!(
+                        urls[0].contains("/releases/download/")
+                            && !urls[0].contains("/latest/download/"),
+                        "ffmpeg's FFmpeg-Builds leg must lead with a tag asset: {}",
+                        urls[0]
+                    );
                 }
             }
         }
@@ -1546,18 +1782,44 @@ mod tests {
                 "ffmpeg canonical version mismatch"
             );
             assert!(!fetch.sources.is_empty(), "ffmpeg should have sources");
-            // BtbN sources keep /latest/download/; the martin-riedl permalink
-            // and jellyfin fallback carry no /latest/download/ placeholder.
+            // Each FFmpeg-Builds leg names the tag's shared asset first, then its
+            // non-shared asset, then the two `latest/download` aliases; the
+            // martin-riedl permalink and jellyfin fallback carry neither shape.
             for source in &fetch.sources {
                 let SourceProducer::Fetch { urls } = &source.producer;
-                for url in urls {
-                    if url.contains("BtbN") {
-                        assert!(
-                            url.contains("/latest/download/"),
-                            "ffmpeg BtbN URL should keep /latest/download/: {url}"
-                        );
-                    }
+                if !urls.iter().any(|url| url.contains("FFmpeg-Builds")) {
+                    continue;
                 }
+                assert_eq!(
+                    urls.len(),
+                    4,
+                    "{}: two tag assets plus the two aliases, got {urls:?}",
+                    source.os
+                );
+                for url in &urls[..2] {
+                    assert!(
+                        url.contains("/releases/download/autobuild-2025-07-15-12-00/"),
+                        "{}: a tag asset is addressed by the resolved tag: {url}",
+                        source.os
+                    );
+                }
+                assert!(
+                    urls[0].contains("-shared") && !urls[1].contains("-shared"),
+                    "{}: the shared build is preferred within each pair: {urls:?}",
+                    source.os
+                );
+                for url in &urls[2..] {
+                    assert!(
+                        url.contains("/releases/latest/download/ffmpeg-master-latest-"),
+                        "{}: the aliases trail the tag assets: {url}",
+                        source.os
+                    );
+                }
+                assert!(
+                    urls[2].contains("-shared") && !urls[3].contains("-shared"),
+                    "{}: the shared alias comes before the non-shared one: {urls:?}",
+                    source.os
+                );
             }
         }
     }
@@ -1650,8 +1912,10 @@ mod tests {
             );
         }
 
-        // — ffmpeg (composite canonical, BtbN URLs keep /latest/download/, macOS is
-        //    a martin-riedl permalink + jellyfin fallback chain per arch) —
+        // — ffmpeg (composite canonical; each FFmpeg-Builds leg names the tag's
+        //    shared and non-shared assets first, then keeps the two
+        //    `latest/download` aliases as the fallback; macOS is a martin-riedl
+        //    permalink + jellyfin fallback chain per arch) —
         {
             let (fetch, metadata) = resolve_tool_fetch(
                 "ffmpeg",
@@ -1667,17 +1931,25 @@ mod tests {
                 "ffmpeg canonical version"
             );
             assert_eq!(fetch.sources.len(), 4, "ffmpeg: windows + 2 macOS arches + linux");
-            // windows: BtbN URLs keep /latest/download/ (no substitution)
+            // windows: the tag's two assets, then the two aliases
             let SourceProducer::Fetch { urls } = &fetch.sources[0].producer;
             assert_eq!(fetch.sources[0].os, "windows");
-            assert_eq!(urls.len(), 2);
+            assert_eq!(urls.len(), 4);
             assert!(
-                urls[0].contains("/releases/latest/download/"),
-                "ffmpeg windows primary URL should use /latest/download/"
+                urls[0].contains("/releases/download/autobuild-2025-07-15-12-00/")
+                    && urls[0].contains("ffmpeg-master-latest-win64-gpl-shared.zip"),
+                "ffmpeg windows primary URL is the tag's shared asset: {}",
+                urls[0]
             );
             assert!(
-                urls[0].contains("ffmpeg-master-latest"),
-                "ffmpeg windows primary URL should use master-latest naming"
+                urls[1].contains("ffmpeg-master-latest-win64-gpl.zip"),
+                "ffmpeg windows second URL is the tag's non-shared asset: {}",
+                urls[1]
+            );
+            assert!(
+                urls[2].contains("/releases/latest/download/"),
+                "ffmpeg windows third URL is the shared alias: {}",
+                urls[2]
             );
 
             // macos: one source per arch — snapshot permalink, release
@@ -1708,13 +1980,20 @@ mod tests {
             }
             assert_eq!(fetch.sources[1].arch, "aarch64");
             assert_eq!(fetch.sources[2].arch, "x86_64");
-            // linux: BtbN URLs keep /latest/download/
+            // linux: the tag's two assets, then the two aliases
             let SourceProducer::Fetch { urls } = &fetch.sources[3].producer;
             assert_eq!(fetch.sources[3].os, "linux");
-            assert_eq!(urls.len(), 2);
+            assert_eq!(urls.len(), 4);
             assert!(
-                urls[0].contains("/releases/latest/download/"),
-                "ffmpeg linux primary URL should use /latest/download/"
+                urls[0].contains("/releases/download/autobuild-2025-07-15-12-00/")
+                    && urls[0].contains("ffmpeg-master-latest-linux64-gpl-shared.tar.xz"),
+                "ffmpeg linux primary URL is the tag's shared asset: {}",
+                urls[0]
+            );
+            assert!(
+                urls[3].contains("/releases/latest/download/"),
+                "ffmpeg linux last URL is the non-shared alias: {}",
+                urls[3]
             );
         }
 
@@ -1923,10 +2202,11 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+                "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
+        seed_ffmpeg_tag_assets(&cache, "default", "https://api.github.com").await;
         cache
             .store_bytes(
                 "default",
@@ -1997,10 +2277,11 @@ mod tests {
         cache
             .store_bytes(
                 "default",
-                "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+                "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10",
                 b"autobuild-2025-07-15-12-00",
             )
             .await;
+        seed_ffmpeg_tag_assets(&cache, "default", "https://api.github.com").await;
         cache
             .store_bytes(
                 "default",
@@ -2085,11 +2366,12 @@ mod tests {
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();
         let tracker = MetadataCacheTracker::new(&cache, "default");
-        let api_url = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10";
+        let api_url =
+            "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10";
         cache.store_bytes("default", api_url, b"autobuild-2025-07-15-12-00").await;
 
         let (tag, _metadata_cached) =
-            resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", Some(&tracker))
+            resolve_latest_autobuild_tag("FFmpeg-Builds", "FFmpeg-Builds", Some(&tracker))
                 .await
                 .expect("should return cached autobuild tag");
         assert_eq!(tag, "autobuild-2025-07-15-12-00");
@@ -2111,7 +2393,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/repos/BtbN/FFmpeg-Builds/releases"))
+            .and(path("/repos/FFmpeg-Builds/FFmpeg-Builds/releases"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 { "tag_name": "latest" },
                 { "tag_name": "autobuild-2025-07-15-12-00" },
@@ -2132,7 +2414,7 @@ mod tests {
         }
 
         let (tag, metadata_cached) =
-            resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", Some(&tracker))
+            resolve_latest_autobuild_tag("FFmpeg-Builds", "FFmpeg-Builds", Some(&tracker))
                 .await
                 .expect("seam-routed releases list should resolve");
         assert_eq!(tag, "autobuild-2025-07-15-12-00", "first autobuild-* tag wins");

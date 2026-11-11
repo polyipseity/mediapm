@@ -4,9 +4,9 @@
 //! These protect the plan's user-visible guarantees: an `Exact { tag }` spec
 //! on a GitHub-release tool resolves that tag's release *and* fetches the
 //! tag-pinned asset URLs (never `releases/latest`), a release missing a
-//! platform's asset names the slot it could not fill, and a pin on `BtbN`'s
-//! rolling ffmpeg legs is refused with the retention reason instead of
-//! silently fetching the wrong bytes.
+//! platform's asset names the slot it could not fill, and a pin on an
+//! `FFmpeg-Builds` rolling ffmpeg tag is refused with the retention reason
+//! instead of silently fetching the wrong bytes.
 //!
 //! Tests that set a `MEDIAPM_*` seam run in a debug build — the build that
 //! reads the variable — and hold `lock_process_env()` for their mutation
@@ -174,13 +174,13 @@ async fn exact_tag_missing_asset_names_the_unfilled_slot() {
     assert!(message.contains("macos"), "error names the unfilled OS slot: {message}");
 }
 
-/// Pinning ffmpeg is refused outright, in every `Exact` flavor, because every
-/// ffmpeg leg resolves from `BtbN`'s single rolling release, whose assets are
+/// Pinning ffmpeg is refused outright, in every `Exact` flavor, because
+/// `FFmpeg-Builds` keeps one rolling release for every ffmpeg leg, with assets
 /// replaced on every build — a pin resolved against `latest` would fetch bytes
 /// other than the ones it names. The refusal happens at resolve, before any
 /// HTTP, so all three flavors assert the same retention reason hermetically.
 #[tokio::test]
-async fn btbn_pinned_ffmpeg_is_refused_with_the_retention_reason() {
+async fn ffmpeg_builds_pinned_ffmpeg_is_refused_with_the_retention_reason() {
     let pinned_flavors = [
         ("tag", exact_tag("autobuild-2025-07-15-12-00")),
         (
@@ -208,7 +208,7 @@ async fn btbn_pinned_ffmpeg_is_refused_with_the_retention_reason() {
         };
         let message = error.to_string();
         assert!(
-            message.contains("BtbN does not retain historical builds"),
+            message.contains("FFmpeg-Builds does not retain historical builds"),
             "{flavor} pin refusal states the retention reason: {message}"
         );
     }

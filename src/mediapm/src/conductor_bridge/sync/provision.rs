@@ -88,10 +88,10 @@ pub(super) enum PreResolveOutcome {
         human_readable_version: String,
         /// Whether the version/tag lookups were served from metadata cache.
         metadata_cached: bool,
-        /// Number of individual metadata lookups performed (e.g., ffmpeg = 5: the
-        /// `BtbN` autobuild tag, the martin-riedl macOS-leg probe, and three
-        /// jellyfin fallback reads — the repo index plus one pointer file per macOS
-        /// arch — while every other tool performs 1).
+        /// Number of individual metadata lookups performed (e.g., ffmpeg = 6: the
+        /// `FFmpeg-Builds` autobuild tag, that tag's asset list, the martin-riedl
+        /// macOS-leg probe, and three jellyfin fallback reads — the repo index plus
+        /// one pointer file per macOS arch — while every other tool performs 1).
         metadata_fetch_count: u32,
     },
 }
@@ -174,12 +174,13 @@ pub(crate) fn display_version(version: &str) -> &str {
 /// phase 2 progress bars start with an accurate byte total.
 ///
 /// The resolve bar shows `metadata_fetch_count` items (one per metadata lookup:
-/// ffmpeg has 5 — the `BtbN` autobuild tag, the martin-riedl build probe, and
-/// three jellyfin fallback reads, the repo index plus one pointer file per macOS
-/// arch — while every other tool has 1). When all metadata lookups were cache
+/// ffmpeg has 6 — the `FFmpeg-Builds` autobuild tag, that tag's asset list, the
+/// martin-riedl build probe, and three jellyfin fallback reads, the repo index
+/// plus one pointer file per macOS arch — while every other tool has 1). When
+/// all metadata lookups were cache
 /// hits, the bar shows `"N cached"` where N = `metadata_fetch_count` (e.g.
-/// `5 cached`). When the tool is already up-to-date (Skip), the bar shows
-/// `"skipped, N cached"` (with the count when cached, e.g. `skipped, 5 cached`)
+/// `6 cached`). When the tool is already up-to-date (Skip), the bar shows
+/// `"skipped, N cached"` (with the count when cached, e.g. `skipped, 6 cached`)
 /// or `"skipped"` otherwise. Fetch bar shows
 /// `sources.len()` items (one per source).  Process bar shows the sum
 /// of per-source items: archive sources contribute 2 items (decompress +
@@ -817,7 +818,7 @@ mod tests {
     /// site) can replace the resolve-time leg with the fetched one — so
     /// deleting that call leaves the resolve-time value and this test fails.
     /// macOS-only sources keep the fetch on the local wiremock server and off
-    /// the real `BtbN` endpoints.
+    /// the real `FFmpeg-Builds` endpoints.
     #[tokio::test]
     #[expect(
         clippy::await_holding_lock,
@@ -883,19 +884,20 @@ mod tests {
         }
 
         // Build the real ffmpeg source set against the seam, then keep only the
-        // macOS dual-arch entries so the fetch never touches BtbN's github.com
-        // windows/linux legs.
+        // macOS dual-arch entries so the fetch never touches FFmpeg-Builds'
+        // github.com windows/linux legs.
         // No resolved jellyfin fallback in this test: it drives the
         // martin-riedl primary, which the mock answers first. The resolve-time
         // leg is the same `resolvetime-obs` the metadata below records, so the
         // permalink sources carry the identity this resolve declared. The
-        // autobuild tag only keys the BtbN sources, which are retained away
-        // below.
+        // autobuild tag and its asset list only key the FFmpeg-Builds legs,
+        // which are retained away below.
         let mut fetch = crate::tools::provider::ffmpeg::sources(
             &VersionSpec::Latest,
             None,
             "resolvetime-obs",
             "autobuild-TEST",
+            &[],
         );
         fetch.sources.retain(|source| source.os == "macos");
         assert_eq!(fetch.sources.len(), 2, "expected both macOS arch sources");

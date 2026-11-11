@@ -310,20 +310,20 @@ mod tests {
         assert_eq!(latest_asset, b"linux bytes");
     }
 
-    /// The releases list answers, which is what the `BtbN` autobuild tag
-    /// resolution reads.
+    /// The releases list answers, which is what the `FFmpeg-Builds` autobuild
+    /// tag resolution reads.
     #[tokio::test]
     async fn the_mock_answers_the_releases_list_with_its_query_string() {
         let mock = MockUpstream::start().await;
         mock.mount_github_release_list(
-            "BtbN",
+            "FFmpeg-Builds",
             "FFmpeg-Builds",
             &["autobuild-2026-01-01-12-00", "autobuild-2025-12-01-12-00"],
         )
         .await;
 
         let releases = fetch_json(&format!(
-            "{}/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+            "{}/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10",
             mock.github_api_base()
         ))
         .await;

@@ -1,7 +1,7 @@
 use mediapm::{MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement};
 
 use crate::common::stub_upstream::{
-    STUB_BTBN_TAG, STUB_COMMIT_SHA, STUB_DENO_COMMIT_SHA, STUB_MARTIN_RIEDL_BUILD_ID,
+    STUB_AUTOBUILD_TAG, STUB_COMMIT_SHA, STUB_DENO_COMMIT_SHA, STUB_MARTIN_RIEDL_BUILD_ID,
     mock_all_managed_tools,
 };
 use crate::common::{read_state, service_with_cache, test_sync_progress_overrides};
@@ -158,8 +158,8 @@ async fn sync_composite_carries_same_step_dep_segments() -> Result<(), mediapm::
         deno.canonical_version,
     );
     assert!(
-        own_version_segment(&ffmpeg.canonical_version).starts_with(STUB_BTBN_TAG),
-        "ffmpeg's own version is its BtbN composite: {}",
+        own_version_segment(&ffmpeg.canonical_version).starts_with(STUB_AUTOBUILD_TAG),
+        "ffmpeg's own version is its FFmpeg-Builds composite: {}",
         ffmpeg.canonical_version,
     );
     assert!(

@@ -1,7 +1,9 @@
 //! Provider source definitions for `ffmpeg`.
 //!
-//! Windows and Linux come from BtbN/FFmpeg-Builds (two URL candidates each,
-//! tried in order). macOS is a per-architecture chain: the martin-riedl.de
+//! Windows and Linux come from FFmpeg-Builds/FFmpeg-Builds (up to four URL
+//! candidates each, tried in order): the resolved autobuild tag's shared and
+//! non-shared assets, then the two `releases/latest/download` aliases. macOS is
+//! a per-architecture chain: the martin-riedl.de
 //! `snapshot` permalink (primary), that site's `release` permalink, then the
 //! newest jellyfin-ffmpeg archive. `aarch64` and `x86_64` are two sources on
 //! one OS label, so the sync layer keys their payloads `macos/{arch}/…`. The
@@ -14,11 +16,11 @@
 //! content-cache identity. A martin-riedl permalink redirects to whichever
 //! build the site serves when it is fetched, so those sources carry the
 //! resolved macOS leg — but only while the URL is a permalink, since a pinned
-//! `Exact` build addresses its own versioned download. A `BtbN`
-//! `releases/latest/download` alias serves a fixed path whose asset is
-//! replaced when upstream rotates, and it is what both arms fetch, so the
-//! Windows and Linux sources carry the resolved `BtbN` autobuild tag
-//! unconditionally. A rotated build is then a cache miss instead of the
+//! `Exact` build addresses its own versioned download. The Windows and Linux
+//! legs name the autobuild tag's assets first and its `releases/latest/download`
+//! aliases after them, and both shapes declare the tag: a tag URL carries it in
+//! the path, while an alias serves a fixed path whose asset is replaced when
+//! upstream rotates. A rotated build is then a cache miss instead of the
 //! previous build's payload being re-served — and its last-use clock
 //! refreshed — on every sync under the new build's name.
 //!
@@ -26,7 +28,7 @@
 //! serving endpoint's `.sha256` sibling when one is published, so a corrupt
 //! or stale chain member fails over to the next automatically.
 //!
-//! Canonical version: composite of `autobuild-{tag}` from `BtbN` and the
+//! Canonical version: composite of `autobuild-{tag}` from `FFmpeg-Builds` and the
 //! macOS leg actually fetched — the martin-riedl build id
 //! (`{unixtime}_{buildid}`, e.g. `1759500000_N-127260-g7bc3576910`) when
 //! the primary served, the jellyfin-ffmpeg version (e.g. `8.1.3-1`) when
@@ -36,11 +38,11 @@
 //! [`super::canonical_version_after_fetch`], which re-parses the leg from
 //! the URL that actually served the bytes.
 //!
-//! Resolved provenance fields: `resolved_tag` is the `BtbN` `autobuild-*` tag;
+//! Resolved provenance fields: `resolved_tag` is the `FFmpeg-Builds` `autobuild-*` tag;
 //! `resolved_version` and `resolved_vcs_hash` are always `None` — WHY: the
-//! artifact set mixes `BtbN` autobuilds, martin-riedl snapshots, and
+//! artifact set mixes `FFmpeg-Builds` autobuilds, martin-riedl snapshots, and
 //! jellyfin-ffmpeg builds, so no single version or VCS hash identifies it;
-//! deref'ing a `BtbN` build tag yields the build-script repo commit (not the
+//! deref'ing an `FFmpeg-Builds` build tag yields the build-script repo commit (not the
 //! upstream ffmpeg source commit), a martin-riedl build id embeds an
 //! ffmpeg-source git-describe but does not identify the whole set, and the
 //! jellyfin fork's version carries no upstream git provenance at all.
@@ -410,18 +412,100 @@ pub(crate) fn macos_leg_from_url(url: &str) -> Option<String> {
     martin_riedl_build_id_from_url(url).or_else(|| jellyfin_version_from_archive_name(url))
 }
 
-/// Resolves the latest `autobuild-*` tag for BtbN/FFmpeg-Builds.
+/// Resolves the latest `autobuild-*` tag for FFmpeg-Builds/FFmpeg-Builds.
 ///
-/// `BtbN`'s `/releases/latest` endpoint returns `"tag_name":"latest"`, which
+/// FFmpeg-Builds' `/releases/latest` endpoint returns `"tag_name":"latest"`, which
 /// is useless. This function lists recent releases and picks the first
 /// `autobuild-*` tag.
 ///
 /// Returns `(tag, metadata_cached)` where `metadata_cached` is `true` when
 /// the result was served from the metadata cache.
-pub(crate) async fn resolve_btbn_tag(
+pub(crate) async fn resolve_autobuild_tag(
     metadata_cache: Option<&MetadataCacheTracker<'_>>,
 ) -> Result<(String, bool), mediapm_conductor::ConductorError> {
-    super::resolve_latest_autobuild_tag("BtbN", "FFmpeg-Builds", metadata_cache).await
+    super::resolve_latest_autobuild_tag("FFmpeg-Builds", "FFmpeg-Builds", metadata_cache).await
+}
+
+/// Resolves the asset names the resolved autobuild tag publishes.
+///
+/// Returns `(names, metadata_cached)`. A release document that cannot be read
+/// degrades to an empty list with a warning naming the tag and the cause: the
+/// `latest/download` aliases still form a usable Windows and Linux chain, so a
+/// missing asset list shortens the chain instead of failing the resolve. The
+/// Windows and Linux legs then hold the two aliases and nothing else.
+pub(crate) async fn resolve_autobuild_assets(
+    autobuild_tag: &str,
+    metadata_cache: Option<&MetadataCacheTracker<'_>>,
+) -> (Vec<String>, bool) {
+    match super::resolve_release_asset_names(
+        "FFmpeg-Builds",
+        "FFmpeg-Builds",
+        autobuild_tag,
+        metadata_cache,
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            tracing::warn!(
+                "cannot read the FFmpeg-Builds asset list for {autobuild_tag}: {error}; the \
+                 Windows and Linux legs fall back to the latest/download aliases"
+            );
+            (Vec::new(), false)
+        }
+    }
+}
+
+/// Selects one tag asset by its platform token, container suffix, and build
+/// flavor.
+///
+/// A name qualifies when it contains `token`, ends with `suffix`, and carries
+/// the `-shared` marker exactly when `shared` is true. The marker is matched in
+/// both directions because the two flavors of one platform share a token and a
+/// suffix, so only the marker separates a shared build from a static one.
+fn select_tag_asset<'a>(
+    assets: &'a [String],
+    token: &str,
+    suffix: &str,
+    shared: bool,
+) -> Option<&'a str> {
+    assets.iter().map(String::as_str).find(|name| {
+        name.contains(token) && name.ends_with(suffix) && name.contains("-shared") == shared
+    })
+}
+
+/// Builds one platform leg's candidate URLs for a resolved autobuild tag.
+///
+/// The tag's own assets come first, shared build before non-shared, because
+/// they are the addresses that serve. The two `releases/latest/download`
+/// aliases trail as the fallback, which is why an empty `assets` list still
+/// yields a usable leg rather than an empty one.
+///
+/// The alias names are fixed upstream, so they are built from the same token
+/// and suffix the tag selection reads rather than from the resolved list: an
+/// alias must stay addressable when the list is empty or when a tag asset has
+/// been renamed.
+fn leg_urls(autobuild_tag: &str, assets: &[String], token: &str, suffix: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for shared in [true, false] {
+        if let Some(name) = select_tag_asset(assets, token, suffix, shared) {
+            urls.push(super::github_release_asset_url(
+                "FFmpeg-Builds",
+                "FFmpeg-Builds",
+                autobuild_tag,
+                name,
+            ));
+        }
+    }
+    for shared in [true, false] {
+        let flavor = if shared { "-shared" } else { "" };
+        urls.push(format!(
+            "{}/FFmpeg-Builds/FFmpeg-Builds/releases/latest/download/\
+             ffmpeg-master-latest-{token}{flavor}{suffix}",
+            super::github_download_base()
+        ));
+    }
+    urls
 }
 
 /// Advisory macOS leg recorded when neither the martin-riedl probe nor the
@@ -557,7 +641,7 @@ async fn probe_macos_build_id(permalink: &str) -> Option<String> {
 /// chains the snapshot permalink before the release permalink per
 /// architecture; `Exact { tag }` substitutes the tag as the martin-riedl
 /// build id into a versioned download URL. The tool-level dispatcher refuses
-/// ffmpeg pins before ever building an `Exact` fetch (`BtbN` retains no
+/// ffmpeg pins before ever building an `Exact` fetch (`FFmpeg-Builds` retains no
 /// historical builds), so the `Exact` shape exists for direct callers and its
 /// URL construction is pinned by unit tests.
 ///
@@ -575,24 +659,30 @@ async fn probe_macos_build_id(permalink: &str) -> Option<String> {
 /// directly: its versioned download URL is its own identity, so the macOS
 /// sources declare no identity in that arm.
 ///
-/// `autobuild_tag` is the resolved `BtbN` autobuild the download aliases
-/// address (see [`resolve_btbn_tag`]). Those URLs are
-/// `releases/latest/download` aliases — a fixed path whose asset is replaced
-/// when upstream rotates — so the Windows and Linux sources record the tag as
-/// their content-cache identity, and an entry is only re-served for the tag it
-/// was fetched under. The tag itself comes from the metadata cache, whose
-/// 1-day creation-time TTL bounds how long an upstream rotation can go
-/// unnoticed, so a cold content cache can still fetch newer bytes and store them
-/// under the previous day's tag; that mismatch self-heals when the tag
-/// re-resolves. `Exact` rewrites only the
-/// macOS URLs, so those two sources keep fetching an alias and record the tag
-/// in either arm.
+/// `autobuild_tag` is the resolved `FFmpeg-Builds` autobuild the Windows and
+/// Linux legs address (see [`resolve_autobuild_tag`]). Both shapes those legs
+/// hold declare it: a tag asset URL carries the tag in its path, and a
+/// `releases/latest/download` alias is a fixed path whose asset is replaced
+/// when upstream rotates. An entry is only re-served for the tag it was
+/// fetched under, so a rotated build is a cache miss. The tag itself comes
+/// from the metadata cache, whose 1-day creation-time TTL bounds how long an
+/// upstream rotation can go unnoticed, so a cold content cache can still fetch
+/// newer bytes and store them under the previous day's tag; that mismatch
+/// self-heals when the tag re-resolves. `Exact` rewrites only the macOS URLs,
+/// so those two legs keep the same candidates and record the tag in either
+/// arm.
+///
+/// `autobuild_assets` is the asset-name list the tag publishes (see
+/// [`resolve_autobuild_assets`]). It selects the tag-side half of each leg;
+/// an empty list leaves the two `latest/download` aliases, which is what makes
+/// an unreadable release document a shorter chain rather than a failure.
 #[must_use]
 pub(crate) fn sources(
     target: &VersionSpec,
     jellyfin: Option<&JellyfinMacosFallback>,
     macos_leg: &str,
     autobuild_tag: &str,
+    autobuild_assets: &[String],
 ) -> ResolvedToolFetch {
     let pinned_build_id = match target {
         VersionSpec::Exact(VersionSpecFields { tag, .. }) => tag.as_deref(),
@@ -606,26 +696,17 @@ pub(crate) fn sources(
         Some(_) => None,
         None => (macos_leg != UNRESOLVED_MACOS_LEG).then(|| macos_leg.to_string()),
     };
-    // The `BtbN` alias path never changes, and it is the path both arms fetch
-    // — the pinned shape rewrites only the macOS URLs — so the tag the resolve
-    // picked is what tells one build's bytes from another's either way.
+    // The tag names both shapes these legs hold: a tag asset URL carries it in
+    // the path and an alias path never changes, so the tag the resolve picked
+    // is what tells one build's bytes from another's either way.
     let autobuild_identity: Option<String> = Some(autobuild_tag.to_string());
 
     let mut sources = vec![ResolvedSource {
         os: "windows".to_string(),
-        // WHY: BtbN win64 builds are x86_64-only.
+        // WHY: win64 builds are x86_64-only.
         arch: "x86_64".to_string(),
         producer: SourceProducer::Fetch {
-            urls: vec![
-                format!(
-                    "{}/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl-shared.zip",
-                    super::github_download_base()
-                ),
-                format!(
-                    "{}/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
-                    super::github_download_base()
-                ),
-            ],
+            urls: leg_urls(autobuild_tag, autobuild_assets, "win64-gpl", ".zip"),
         },
         expected_size: None,
         size_hint_bytes: Some(120_000_000),
@@ -659,19 +740,10 @@ pub(crate) fn sources(
 
     sources.push(ResolvedSource {
         os: "linux".to_string(),
-        // WHY: BtbN linux64 builds are x86_64-only.
+        // WHY: linux64 builds are x86_64-only.
         arch: "x86_64".to_string(),
         producer: SourceProducer::Fetch {
-            urls: vec![
-                format!(
-                    "{}/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl-shared.tar.xz",
-                    super::github_download_base()
-                ),
-                format!(
-                    "{}/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz",
-                    super::github_download_base()
-                ),
-            ],
+            urls: leg_urls(autobuild_tag, autobuild_assets, "linux64-gpl", ".tar.xz"),
         },
         expected_size: None,
         size_hint_bytes: Some(80_000_000),
@@ -686,6 +758,15 @@ pub(crate) fn sources(
 /// A test that sets a seam variable runs in a debug build — the build that
 /// reads the variable — and takes the process env lock while it reads. Every
 /// workspace gate builds in debug.
+///
+/// [`sources`] reads the base-URL seams too (`martin_riedl_base`,
+/// `jellyfin_base`, `github_download_base`) on every call, so each test here
+/// that calls it holds [`lock_process_env`] for the whole test: the seam
+/// setters in this module mutate those variables under the same lock, and an
+/// unlocked reader could build a URL against one base and compare it against
+/// one built against another.
+///
+/// [`lock_process_env`]: crate::example_isolation::lock_process_env
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,9 +878,28 @@ mod tests {
     /// chain tests can name one without probing the site.
     const TEST_MACOS_LEG: &str = "1759500000_N-127260-g7bc3576910";
 
-    /// A `BtbN` autobuild tag standing in for a resolved rolling tag, so the
+    /// An autobuild tag standing in for a resolved rolling tag, so the
     /// identity tests can name one without reaching the GitHub API.
     const TEST_AUTOBUILD_TAG: &str = "autobuild-2025-07-15-12-00";
+
+    /// The asset names the mocked autobuild tag publishes, as
+    /// [`super::resolve_autobuild_assets`] returns them.
+    ///
+    /// The names are the four the aliases already carry, because upstream
+    /// publishes one name per flavor and serves it from both the tag and the
+    /// `latest` alias path. A seeded release therefore selects the same
+    /// basenames through the tag as it does through the alias.
+    const TEST_AUTOBUILD_ASSETS: [&str; 4] = [
+        "ffmpeg-master-latest-win64-gpl-shared.zip",
+        "ffmpeg-master-latest-win64-gpl.zip",
+        "ffmpeg-master-latest-linux64-gpl-shared.tar.xz",
+        "ffmpeg-master-latest-linux64-gpl.tar.xz",
+    ];
+
+    /// Returns [`TEST_AUTOBUILD_ASSETS`] in the owned shape `sources` reads.
+    fn test_autobuild_assets() -> Vec<String> {
+        TEST_AUTOBUILD_ASSETS.iter().map(|name| (*name).to_string()).collect()
+    }
 
     /// A hand-built jellyfin fallback standing in for a repository read, so
     /// the chain tests do not depend on the network.
@@ -825,14 +925,15 @@ mod tests {
 
     /// `Latest` builds one chain per macOS architecture — the snapshot
     /// permalink, the release permalink, then the resolved jellyfin archive —
-    /// alongside the unchanged `BtbN` Windows and Linux sources. Two macOS
+    /// alongside the unchanged Windows and Linux sources. Two macOS
     /// sources on one OS label is what makes the sync layer's arch-segmented
     /// content keys kick in.
     #[test]
     fn sources_latest_chains_snapshot_release_then_jellyfin_for_both_arches() {
+        let _env = crate::example_isolation::lock_process_env();
         let jellyfin = test_jellyfin_fallback();
         let fetch =
-            sources(&VersionSpec::Latest, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
+            sources(&VersionSpec::Latest, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG, &[]);
 
         let macos: Vec<&ResolvedSource> =
             fetch.sources.iter().filter(|s| s.os == "macos").collect();
@@ -857,12 +958,117 @@ mod tests {
         assert_eq!(oses, vec!["windows", "macos", "macos", "linux"]);
     }
 
+    /// Returns the URL list one OS leg holds.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fetch holds no source for `os`, since every ffmpeg
+    /// fetch covers Windows, both macOS arches, and Linux.
+    fn leg_urls_of<'a>(fetch: &'a ResolvedToolFetch, os: &str) -> &'a [String] {
+        let source = fetch.sources.iter().find(|source| source.os == os).expect("leg exists");
+        let SourceProducer::Fetch { urls } = &source.producer;
+        urls
+    }
+
+    /// Builds the four URLs one leg is expected to hold: the shared tag asset,
+    /// the non-shared tag asset, then the two `latest/download` aliases.
+    ///
+    /// The strings are spelled out rather than produced through the production
+    /// builder, so a change to the composition fails this assertion instead of
+    /// being restated back to it.
+    fn expected_leg_urls(token: &str, suffix: &str) -> Vec<String> {
+        let download = crate::tools::provider::github_download_base();
+        let tag = TEST_AUTOBUILD_TAG;
+        let alias = |flavor: &str| {
+            format!(
+                "{download}/FFmpeg-Builds/FFmpeg-Builds/releases/latest/download/\
+                 ffmpeg-master-latest-{token}{flavor}{suffix}"
+            )
+        };
+        vec![
+            format!(
+                "{download}/FFmpeg-Builds/FFmpeg-Builds/releases/download/{tag}/\
+                 ffmpeg-master-latest-{token}-shared{suffix}"
+            ),
+            format!(
+                "{download}/FFmpeg-Builds/FFmpeg-Builds/releases/download/{tag}/\
+                 ffmpeg-master-latest-{token}{suffix}"
+            ),
+            alias("-shared"),
+            alias(""),
+        ]
+    }
+
+    /// The Windows and Linux legs prefer the tag's own assets and keep the
+    /// `latest/download` aliases behind them.
+    ///
+    /// The order is the contract: the tag is what serves, and the aliases are a
+    /// fallback a missing asset list can leave on its own. A shared build is
+    /// preferred over the non-shared one in both halves, so a chain that loses
+    /// the shared asset still has three addresses rather than two.
+    #[test]
+    fn sources_prefers_tag_assets_then_keeps_the_latest_fallbacks() {
+        let _env = crate::example_isolation::lock_process_env();
+        let fetch = sources(
+            &VersionSpec::Latest,
+            None,
+            TEST_MACOS_LEG,
+            TEST_AUTOBUILD_TAG,
+            &test_autobuild_assets(),
+        );
+        assert_eq!(
+            leg_urls_of(&fetch, "windows"),
+            expected_leg_urls("win64-gpl", ".zip"),
+            "windows: shared tag asset, non-shared tag asset, then the two aliases"
+        );
+        assert_eq!(
+            leg_urls_of(&fetch, "linux"),
+            expected_leg_urls("linux64-gpl", ".tar.xz"),
+            "linux: shared tag asset, non-shared tag asset, then the two aliases"
+        );
+
+        // One flavor present: the shared tag asset leads and the non-shared
+        // alias is still last, because the alias list does not depend on the
+        // resolved names. Both Windows and Linux legs are checked, since each
+        // selects its own asset pair.
+        let shared_only =
+            vec![TEST_AUTOBUILD_ASSETS[0].to_string(), TEST_AUTOBUILD_ASSETS[2].to_string()];
+        let fetch =
+            sources(&VersionSpec::Latest, None, TEST_MACOS_LEG, TEST_AUTOBUILD_TAG, &shared_only);
+        for (os, token, suffix) in
+            [("windows", "win64-gpl", ".zip"), ("linux", "linux64-gpl", ".tar.xz")]
+        {
+            let urls = leg_urls_of(&fetch, os);
+            assert_eq!(urls.len(), 3, "{os}: one tag asset plus the two aliases: {urls:?}");
+            assert_eq!(
+                urls[0],
+                expected_leg_urls(token, suffix)[0],
+                "{os}: shared tag asset leads"
+            );
+            assert_eq!(
+                urls[2],
+                expected_leg_urls(token, suffix)[3],
+                "{os}: the non-shared alias is still last"
+            );
+        }
+
+        // An empty list is the degraded chain: the aliases alone, in the same
+        // order they take behind a tag asset.
+        let fetch = sources(&VersionSpec::Latest, None, TEST_MACOS_LEG, TEST_AUTOBUILD_TAG, &[]);
+        let full = expected_leg_urls("win64-gpl", ".zip");
+        assert_eq!(leg_urls_of(&fetch, "windows"), &full[2..], "the aliases alone remain");
+        let full = expected_leg_urls("linux64-gpl", ".tar.xz");
+        assert_eq!(leg_urls_of(&fetch, "linux"), &full[2..], "the aliases alone remain");
+    }
+
     /// Without a resolved fallback the macOS chains keep their two
     /// martin-riedl candidates and invent nothing: an unreadable repository
     /// shortens the chain instead of producing a URL for a nameless archive.
     #[test]
     fn sources_latest_omits_jellyfin_when_the_repository_was_unreadable() {
-        let fetch = sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG, TEST_AUTOBUILD_TAG);
+        let _env = crate::example_isolation::lock_process_env();
+        let fetch =
+            sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG, TEST_AUTOBUILD_TAG, &[]);
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
             let SourceProducer::Fetch { urls } = &source.producer;
@@ -884,6 +1090,7 @@ mod tests {
     /// `sources_declare_the_autobuild_tag_as_the_alias_sources_identity`.
     #[test]
     fn sources_exact_builds_versioned_download_urls_for_macos_arches() {
+        let _env = crate::example_isolation::lock_process_env();
         let build_id = "1759500000_N-127260-g7bc3576910";
         let target = VersionSpec::Exact(VersionSpecFields {
             vcs_hash: None,
@@ -891,7 +1098,7 @@ mod tests {
             tag: Some(build_id.to_string()),
         });
         let jellyfin = test_jellyfin_fallback();
-        let fetch = sources(&target, Some(&jellyfin), build_id, TEST_AUTOBUILD_TAG);
+        let fetch = sources(&target, Some(&jellyfin), build_id, TEST_AUTOBUILD_TAG, &[]);
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
             let SourceProducer::Fetch { urls } = &source.producer;
@@ -904,21 +1111,28 @@ mod tests {
         }
     }
 
-    /// The `BtbN` Windows and Linux sources fetch a `releases/latest/download`
-    /// alias: the path never changes and the asset is replaced when upstream
-    /// rotates, so those sources carry the resolved autobuild tag as their
-    /// content-cache identity and a rotated tag is a cache miss rather than
-    /// the previous build's bytes served under the new tag's name. `Exact`
-    /// rewrites only the macOS URLs, so those two sources fetch an alias in
-    /// either arm and key the tag in either arm.
+    /// The Windows and Linux legs hold a candidate list whose head is the tag
+    /// asset and whose tail is the alias: the tag serves, the alias is the
+    /// fallback, so both shapes exist while the tag asset list is readable. The
+    /// tag is the content-cache identity of every candidate, since a tag URL
+    /// carries it in the path and an alias path never changes. `Exact` rewrites
+    /// only the macOS URLs, so those two legs keep the same candidates in
+    /// either arm.
     #[test]
     fn sources_declare_the_autobuild_tag_as_the_alias_sources_identity() {
-        let fetch = sources(&VersionSpec::Latest, None, TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
+        let _env = crate::example_isolation::lock_process_env();
+        let fetch = sources(
+            &VersionSpec::Latest,
+            None,
+            TEST_MACOS_LEG,
+            TEST_AUTOBUILD_TAG,
+            &test_autobuild_assets(),
+        );
         for source in fetch.sources.iter().filter(|s| s.os != "macos") {
             assert_eq!(
                 source.identity.as_deref(),
                 Some(TEST_AUTOBUILD_TAG),
-                "a `latest/download` alias source is keyed by the tag it resolved to"
+                "a tag asset and its alias are keyed by the tag they resolved to"
             );
         }
 
@@ -927,7 +1141,7 @@ mod tests {
             version: None,
             tag: Some(TEST_MACOS_LEG.to_string()),
         });
-        let exact = sources(&target, None, TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
+        let exact = sources(&target, None, TEST_MACOS_LEG, TEST_AUTOBUILD_TAG, &[]);
         for source in exact.sources.iter().filter(|s| s.os != "macos") {
             assert_eq!(
                 source.identity.as_deref(),
@@ -944,9 +1158,10 @@ mod tests {
     /// addresses one versioned download whose URL is its own identity.
     #[test]
     fn sources_declare_the_macos_leg_as_the_permalink_identity() {
+        let _env = crate::example_isolation::lock_process_env();
         let jellyfin = test_jellyfin_fallback();
         let fetch =
-            sources(&VersionSpec::Latest, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
+            sources(&VersionSpec::Latest, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG, &[]);
 
         for source in fetch.sources.iter().filter(|s| s.os == "macos") {
             assert_eq!(
@@ -957,7 +1172,7 @@ mod tests {
         }
 
         let unresolved =
-            sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG, TEST_AUTOBUILD_TAG);
+            sources(&VersionSpec::Latest, None, UNRESOLVED_MACOS_LEG, TEST_AUTOBUILD_TAG, &[]);
         for source in unresolved.sources.iter().filter(|s| s.os == "macos") {
             assert_eq!(
                 source.identity, None,
@@ -970,7 +1185,7 @@ mod tests {
             version: None,
             tag: Some(TEST_MACOS_LEG.to_string()),
         });
-        let exact = sources(&target, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG);
+        let exact = sources(&target, Some(&jellyfin), TEST_MACOS_LEG, TEST_AUTOBUILD_TAG, &[]);
         for source in exact.sources.iter().filter(|s| s.os == "macos") {
             assert_eq!(
                 source.identity, None,
