@@ -84,7 +84,7 @@ fn v2_state_json(resolved: bool) -> serde_json::Value {
 async fn seeded_three_tool_skip_service() -> Result<
     (
         MediaPmService<mediapm_cas::FileSystemCas>,
-        tempfile::TempDir,
+        mediapm_utils::temp::ManagedTempDir,
         mediapm_utils::temp::ManagedTempDir,
     ),
     mediapm::MediaPmError,

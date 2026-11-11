@@ -90,7 +90,7 @@ async fn sync_with_zip_members(
     entries: &[(&str, &[u8])],
     rename_files: Vec<HierarchyFolderRenameRule>,
 ) -> Result<
-    (Result<mediapm::SyncSummary, mediapm::MediaPmError>, tempfile::TempDir),
+    (Result<mediapm::SyncSummary, mediapm::MediaPmError>, mediapm_utils::temp::ManagedTempDir),
     mediapm::MediaPmError,
 > {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");

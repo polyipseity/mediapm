@@ -237,7 +237,7 @@ const SAME_LENGTH_EDIT: &[u8] = b"SAME-NUMBER-OF-BYTES";
 async fn sync_edit_over_the_entry(
     payload: &[u8],
     replacement: &[u8],
-) -> (tempfile::TempDir, MaterializeReport, PathBuf) {
+) -> (mediapm_utils::temp::ManagedTempDir, MaterializeReport, PathBuf) {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;

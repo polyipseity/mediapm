@@ -1270,7 +1270,7 @@ mod tests {
     /// outlive it.
     fn conductor_with_state(
         state: &ConductorState,
-    ) -> (tempfile::TempDir, Conductor<mediapm_cas::InMemoryCas>) {
+    ) -> (mediapm_utils::temp::ManagedTempDir, Conductor<mediapm_cas::InMemoryCas>) {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         save_state_file(&paths, state).expect("seed state file");

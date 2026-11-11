@@ -392,7 +392,7 @@ mod tests {
     /// `create_dir_all`s its tree on first write, so dropping the guard
     /// before the store does would recreate the tree without RAII
     /// ownership and leak `$TMPDIR/mediapm-artifact-*` dirs.
-    async fn test_blob_store() -> (FileSystemBlobStore, tempfile::TempDir) {
+    async fn test_blob_store() -> (FileSystemBlobStore, mediapm_utils::temp::ManagedTempDir) {
         let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let blob = test_blob_store_at(dir.path().join("blobs")).await;
         (blob, dir)

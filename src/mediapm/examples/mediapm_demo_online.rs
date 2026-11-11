@@ -779,7 +779,7 @@ fn display_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
 
-fn reset_artifact_root() -> ExampleResult<(PathBuf, Option<tempfile::TempDir>)> {
+fn reset_artifact_root() -> ExampleResult<(PathBuf, Option<mediapm_utils::temp::ManagedTempDir>)> {
     let root = artifact_root();
     if root.exists()
         && let Err(error) = example_isolation::remove_dir_all_with_retry(&root)
@@ -3607,7 +3607,7 @@ fn resolve_demo_output_paths(
 struct OfflineRun<'a> {
     /// The directory the chain's executables, manifest and record live in, kept
     /// alive for the run.
-    _chain_dir: tempfile::TempDir,
+    _chain_dir: mediapm_utils::temp::ManagedTempDir,
     /// The chain's records: the executables' invocation log and the pairs that
     /// name it.
     chain: OfflineToolChain,
@@ -4710,7 +4710,7 @@ mod tests {
     /// it for the run, and restores every previous value on drop. The tempdirs
     /// live as long as the value, so the run writes into roots that outlive it.
     struct MainRunEnv {
-        artifact: tempfile::TempDir,
+        artifact: mediapm_utils::temp::ManagedTempDir,
         /// Kept alive because the run resolves its user-level cache through the
         /// env override this points at.
         _cache: mediapm_utils::temp::ManagedTempDir,

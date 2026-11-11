@@ -843,9 +843,9 @@ mod tests {
     use crate::hash::Hash;
     use crate::storage::wal::versions as wal_format;
     use bytes::Bytes;
-    use tempfile::TempDir;
+    use mediapm_utils::temp::ManagedTempDir;
 
-    async fn create_test_journal() -> (FileWal, TempDir) {
+    async fn create_test_journal() -> (FileWal, ManagedTempDir) {
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let journal =
             FileWal::create_with_max_size(tmp.path().to_path_buf(), 1024 * 1024).await.unwrap();

@@ -10,7 +10,9 @@ use mediapm_conductor::provision::{link_to_sandbox, link_to_sandbox_filtered};
 
 /// Creates a payload directory with a subdirectory (containing a marker file)
 /// for each of `oses`, plus a sandbox directory.
-fn platform_payload(oses: &[&str]) -> (tempfile::TempDir, tempfile::TempDir) {
+fn platform_payload(
+    oses: &[&str],
+) -> (mediapm_utils::temp::ManagedTempDir, mediapm_utils::temp::ManagedTempDir) {
     let payload = mediapm_utils::temp::artifact_dir().expect("artifact dir for payload");
     let sandbox = mediapm_utils::temp::artifact_dir().expect("artifact dir for sandbox");
     for os in oses {

@@ -118,11 +118,13 @@ thread_local! {
 /// the process-global `TMPDIR` is racy under plain `cargo test`, where
 /// sibling lib-test threads create their own workspaces under the
 /// redirected root.
-fn scratch_workspace_dir() -> std::io::Result<tempfile::TempDir> {
+fn scratch_workspace_dir() -> std::io::Result<mediapm_utils::temp::ManagedTempDir> {
     #[cfg(test)]
     {
         if let Some(root) = WORKSPACE_ROOT_OVERRIDE.with(|slot| slot.borrow().clone()) {
-            return tempfile::Builder::new().tempdir_in(root);
+            return tempfile::Builder::new()
+                .tempdir_in(root)
+                .map(mediapm_utils::temp::ManagedTempDir::new);
         }
     }
     mediapm_utils::temp::artifact_dir()
@@ -229,7 +231,7 @@ mod tests {
     /// drop (including panics). The thread-local override, unlike a
     /// process-global `TMPDIR` redirect, cannot be disturbed by sibling
     /// lib-test threads under plain `cargo test`.
-    struct WorkspaceRootOverride(tempfile::TempDir);
+    struct WorkspaceRootOverride(mediapm_utils::temp::ManagedTempDir);
 
     impl WorkspaceRootOverride {
         fn new() -> Self {

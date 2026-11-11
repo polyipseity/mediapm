@@ -80,7 +80,7 @@ pub fn uses_isolated_cache_root() -> bool {
 
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.
 pub struct IsolatedExampleRoots {
-    artifact_dir: tempfile::TempDir,
+    artifact_dir: mediapm_utils::temp::ManagedTempDir,
     cache_dir: Option<mediapm_utils::temp::ManagedTempDir>,
     previous_artifact_root: Option<OsString>,
     previous_cache_root: Option<OsString>,
@@ -178,7 +178,7 @@ impl Drop for IsolatedExampleRoots {
 /// # Errors
 ///
 /// Returns [`std::io::Error`] when the directory cannot be created.
-pub fn isolated_artifact_dir() -> std::io::Result<(tempfile::TempDir, PathBuf)> {
+pub fn isolated_artifact_dir() -> std::io::Result<(mediapm_utils::temp::ManagedTempDir, PathBuf)> {
     let dir = mediapm_utils::temp::artifact_dir()?;
     let path = dir.path().to_path_buf();
     Ok((dir, path))

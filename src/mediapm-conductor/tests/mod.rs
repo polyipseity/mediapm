@@ -171,7 +171,7 @@ fn write_conductor_config(dir: &std::path::Path, doc: NickelDocument) {
 ///
 /// The tempdir is cleaned up on drop.
 struct TestConductor {
-    dir: tempfile::TempDir,
+    dir: mediapm_utils::temp::ManagedTempDir,
     conductor: Conductor<InMemoryCas>,
 }
 

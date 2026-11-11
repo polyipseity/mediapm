@@ -334,7 +334,7 @@ mod tests {
     ///
     /// The root must outlive the test body: dropping it removes the document the
     /// assertions read back.
-    fn document_with(contents: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+    fn document_with(contents: &[u8]) -> (crate::temp::ManagedTempDir, std::path::PathBuf) {
         let root = crate::temp::artifact_dir().expect("artifact dir");
         let path = root.path().join("state.json");
         std::fs::write(&path, contents).expect("write the initial document");

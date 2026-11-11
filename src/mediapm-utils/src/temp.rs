@@ -25,7 +25,9 @@ pub const MEDIAPM_TEMP_PREFIX: &str = "mediapm-";
 /// writer can reach is removed with retries". Cache roots are written by
 /// background maintenance, whose last write can outlive the owner's drop, so a
 /// cache root is removed through [`remove_dir_all_with_retry`]: it clears
-/// readonly bits and retries a tree a lingering handle is still holding.
+/// readonly bits and retries a tree a lingering handle is still holding. An
+/// artifact root reaches the same helper for its own two reasons, named on
+/// [`artifact_dir`].
 ///
 /// Everything else about the directory is the wrapped [`tempfile::TempDir`],
 /// reached through [`Deref`](std::ops::Deref), so `path()` and the coercions a
@@ -35,6 +37,19 @@ pub struct ManagedTempDir {
     /// The wrapped directory. Taken at most once, by [`Drop`], which then owns
     /// the removal itself.
     dir: Option<tempfile::TempDir>,
+}
+
+impl ManagedTempDir {
+    /// Wraps an already-created directory so its removal takes this module's
+    /// retrying path.
+    ///
+    /// The role helpers build their own directories under `$TMPDIR`. This exists
+    /// for the caller that has to place one under a parent of its choosing, which
+    /// today is the conductor's isolated scratch workspace in tests.
+    #[must_use]
+    pub fn new(dir: tempfile::TempDir) -> Self {
+        Self { dir: Some(dir) }
+    }
 }
 
 impl std::ops::Deref for ManagedTempDir {
@@ -68,11 +83,21 @@ impl Drop for ManagedTempDir {
 
 /// Creates a unique artifact workspace directory under `$TMPDIR`.
 ///
+/// Returns a [`ManagedTempDir`] for two reasons that a cache root's own
+/// contract does not cover. An artifact root usually holds a CAS store, whose
+/// blobs are committed read-only, and Windows refuses to unlink a read-only
+/// file, so a single `remove_dir_all` leaves the whole tree behind; the retrying
+/// removal clears those attributes first. And an artifact root can have a late
+/// writer of its own, a background task whose last write lands after the owner
+/// dropped it, which is the case every retrying removal exists for.
+///
 /// # Errors
 ///
 /// Returns [`io::Error`] when the directory cannot be created.
-pub fn artifact_dir() -> io::Result<tempfile::TempDir> {
-    tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}artifact-")).tempdir()
+pub fn artifact_dir() -> io::Result<ManagedTempDir> {
+    let dir =
+        tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}artifact-")).tempdir()?;
+    Ok(ManagedTempDir::new(dir))
 }
 
 /// Creates a unique user-level download cache directory under `$TMPDIR`.
@@ -82,7 +107,7 @@ pub fn artifact_dir() -> io::Result<tempfile::TempDir> {
 /// Returns [`io::Error`] when the directory cannot be created.
 pub fn cache_dir() -> io::Result<ManagedTempDir> {
     let dir = tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}cache-")).tempdir()?;
-    Ok(ManagedTempDir { dir: Some(dir) })
+    Ok(ManagedTempDir::new(dir))
 }
 
 /// Returns the stable conductor/mediapm runtime tmp root for one workspace.
@@ -238,6 +263,29 @@ mod tests {
         drop(dir);
 
         assert!(!path.exists(), "a managed cache dir must remove its whole tree on drop");
+    }
+
+    /// An artifact root leaves nothing behind, readonly contents included.
+    ///
+    /// The tree an artifact root owns usually holds a CAS store, whose blobs
+    /// are committed read-only, so the readonly clearing [`artifact_dir`] names
+    /// as its first reason has to be what removes them: one `remove_dir_all`
+    /// attempt leaves the tree on Windows.
+    #[test]
+    fn artifact_dir_removes_readonly_contents_on_drop() {
+        let dir = artifact_dir().expect("artifact dir");
+        let path = dir.path().to_path_buf();
+        let nested = path.join("store").join("blobs");
+        fs::create_dir_all(&nested).expect("nested store");
+        let blob = nested.join("object");
+        fs::write(&blob, b"payload").expect("write a blob");
+        let mut permissions = fs::metadata(&blob).expect("blob metadata").permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&blob, permissions).expect("mark the blob readonly");
+
+        drop(dir);
+
+        assert!(!path.exists(), "a managed artifact dir must remove its whole tree on drop");
     }
 
     #[test]

@@ -100,7 +100,7 @@ async fn sync_media_id(
     media_id: &str,
     sanitize_names: SanitizeNamesConfig,
 ) -> Result<
-    (Result<mediapm::SyncSummary, mediapm::MediaPmError>, tempfile::TempDir),
+    (Result<mediapm::SyncSummary, mediapm::MediaPmError>, mediapm_utils::temp::ManagedTempDir),
     mediapm::MediaPmError,
 > {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
@@ -225,7 +225,7 @@ const UNREFERENCED_SPLITTING_MEDIA_ID_PLACEHOLDER: &str = "orphan/b";
 async fn sync_unreferenced_media_id(
     unreferenced_id: &str,
 ) -> Result<
-    (Result<mediapm::SyncSummary, mediapm::MediaPmError>, tempfile::TempDir),
+    (Result<mediapm::SyncSummary, mediapm::MediaPmError>, mediapm_utils::temp::ManagedTempDir),
     mediapm::MediaPmError,
 > {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");

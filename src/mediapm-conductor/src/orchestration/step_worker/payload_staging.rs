@@ -95,7 +95,7 @@ fn companion_key() -> String {
 struct Fixture {
     /// Kept alive for the whole test: the runtime root and the payload live
     /// under it. Read directly by a test that needs a path outside both.
-    tmp: tempfile::TempDir,
+    tmp: mediapm_utils::temp::ManagedTempDir,
     /// Runtime root handed to the worker as `conductor_tmp_dir`.
     runtime_root: PathBuf,
     /// Directory the provisioner would have filled.

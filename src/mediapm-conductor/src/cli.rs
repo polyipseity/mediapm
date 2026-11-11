@@ -591,7 +591,7 @@ mod tests {
     /// directory that must outlive it.
     fn conductor_in_scratch_dir(
         state: &ConductorState,
-    ) -> (tempfile::TempDir, Conductor<InMemoryCas>) {
+    ) -> (mediapm_utils::temp::ManagedTempDir, Conductor<InMemoryCas>) {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let paths = RuntimeStoragePaths::new(dir.path());
         std::fs::create_dir_all(paths.state_file_path.parent().expect("state file parent"))

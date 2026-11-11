@@ -180,7 +180,7 @@ async fn seed_payload(workspace: &Path, payload: Bytes) -> String {
 }
 
 /// Creates a workspace whose library holds the blob its document names.
-async fn workspace_holding_payload() -> tempfile::TempDir {
+async fn workspace_holding_payload() -> mediapm_utils::temp::ManagedTempDir {
     let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
     let hash = seed_payload(workspace.path(), Bytes::from_static(PAYLOAD)).await;
     save_mediapm_document(&workspace.path().join("mediapm.ncl"), &document_naming_one_hash(&hash))
@@ -192,7 +192,7 @@ async fn workspace_holding_payload() -> tempfile::TempDir {
 ///
 /// Nothing is seeded, so the two workspaces differ only in whether the named
 /// blob is readable out of the CAS.
-fn workspace_missing_content() -> tempfile::TempDir {
+fn workspace_missing_content() -> mediapm_utils::temp::ManagedTempDir {
     let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
     save_mediapm_document(
         &workspace.path().join("mediapm.ncl"),
@@ -208,7 +208,7 @@ fn workspace_missing_content() -> tempfile::TempDir {
 /// resolves to no variant at all: it is a path the config asked for and no
 /// workflow has written, which the run reports as a miss rather than as a
 /// failure.
-fn workspace_without_content() -> tempfile::TempDir {
+fn workspace_without_content() -> mediapm_utils::temp::ManagedTempDir {
     let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
     save_mediapm_document(&workspace.path().join("mediapm.ncl"), &document_naming_no_variant())
         .expect("the document is written into the workspace");
@@ -221,7 +221,7 @@ fn workspace_without_content() -> tempfile::TempDir {
 /// Built on [`workspace_holding_payload`], so the only way this workspace
 /// differs from the clean one is the planted directory: the run has its content
 /// and writes it, and the notice is the whole difference in how the run ends.
-async fn workspace_with_one_tool_phase_notice() -> tempfile::TempDir {
+async fn workspace_with_one_tool_phase_notice() -> mediapm_utils::temp::ManagedTempDir {
     let workspace = workspace_holding_payload().await;
     let stale = MediaPmPaths::from_root(workspace.path()).tools_dir.join(STALE_TOOL_PAYLOAD_DIR);
     std::fs::create_dir_all(&stale).expect("an entry directory without its lock file");

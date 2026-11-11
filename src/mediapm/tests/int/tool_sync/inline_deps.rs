@@ -214,7 +214,7 @@ async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
 async fn yt_dlp_with_deno_service() -> Result<
     (
         MediaPmService<mediapm_cas::FileSystemCas>,
-        tempfile::TempDir,
+        mediapm_utils::temp::ManagedTempDir,
         mediapm_utils::temp::ManagedTempDir,
     ),
     mediapm::MediaPmError,

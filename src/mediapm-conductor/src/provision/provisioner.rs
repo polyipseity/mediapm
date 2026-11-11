@@ -425,15 +425,14 @@ fn remove_legacy_prune_marker(tools_dir: &Path) {
 mod tests {
     use std::path::PathBuf;
 
-    use tempfile::TempDir;
-
     use super::*;
     use crate::provision::LOCK_FILE_HEADER;
     use crate::provision::SWEEP_STATE_LOCK;
     use crate::provision::helpers::link_to_sandbox_filtered;
 
     /// Builds a cache over a fresh tools root, with a payload in CAS.
-    async fn cache_with_payload() -> (TempDir, ProvisionCache<mediapm_cas::InMemoryCas>) {
+    async fn cache_with_payload()
+    -> (mediapm_utils::temp::ManagedTempDir, ProvisionCache<mediapm_cas::InMemoryCas>) {
         let tools_dir = mediapm_utils::temp::artifact_dir().expect("tools dir");
         let cas = Arc::new(mediapm_cas::InMemoryCas::new());
         cas.put(bytes::Bytes::from_static(b"tool binary content")).await.expect("cas put");

@@ -116,7 +116,7 @@ fn consumer_step() -> WorkflowStepSpec {
 struct AutomaticGc {
     /// Tempdir owning the workspace root, so the config, state file and store
     /// live exactly as long as the facade reading them.
-    dir: tempfile::TempDir,
+    dir: mediapm_utils::temp::ManagedTempDir,
     /// The facade under test, carrying the scenario's GC settings.
     conductor: Conductor<InMemoryCas>,
     /// The hash the document declares in `external_data`.

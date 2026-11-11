@@ -46,7 +46,7 @@ const EXIT_INCOMPLETE_LIBRARY: i32 = 4;
 ///
 /// `tools` is the only field any test here sets, so a workspace differs from
 /// the next in the tool list alone.
-fn workspace_with_tools(tool_ids: &[&str]) -> tempfile::TempDir {
+fn workspace_with_tools(tool_ids: &[&str]) -> mediapm_utils::temp::ManagedTempDir {
     let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");
     let document = MediaPmDocument {
         tools: tool_ids

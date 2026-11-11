@@ -248,7 +248,9 @@ mod tests {
     ///
     /// Returns the temp root and the path to the file. The root must outlive the
     /// test body: dropping it removes the document the assertions read back.
-    fn state_file_with(contents: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+    fn state_file_with(
+        contents: &[u8],
+    ) -> (mediapm_utils::temp::ManagedTempDir, std::path::PathBuf) {
         let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let path = root.path().join("state.json");
         std::fs::write(&path, contents).expect("write state document");

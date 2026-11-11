@@ -440,7 +440,7 @@ const PLAYLIST_FIRST_BYTE: u8 = b'#';
 pub(super) struct WrittenEntry {
     /// Workspace owning the tree on disk. Dropping it removes the tree, so it
     /// is held for as long as any test reads a path inside it.
-    _workspace: tempfile::TempDir,
+    _workspace: mediapm_utils::temp::ManagedTempDir,
     /// Layout of that workspace, which is what `sync_hierarchy` takes.
     paths: MediaPmPaths,
     /// The file the first run wrote, which is a folder directory for a folder

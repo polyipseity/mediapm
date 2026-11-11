@@ -229,7 +229,7 @@ fn display_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
 
-fn reset_artifact_root() -> ExampleResult<(PathBuf, Option<tempfile::TempDir>)> {
+fn reset_artifact_root() -> ExampleResult<(PathBuf, Option<mediapm_utils::temp::ManagedTempDir>)> {
     let root = artifact_root();
     if root.exists()
         && let Err(error) = example_isolation::remove_dir_all_with_retry(&root)

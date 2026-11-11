@@ -57,7 +57,7 @@ fn write_probe(dir: &Path, name: &str, contents: &str) {
 
 /// Creates an owned scratch directory for scanner-behaviour tests.
 ///
-/// Returns the [`tempfile::TempDir`] **owner**, not its path. Returning the
+/// Returns the temp-directory **owner**, not its path. Returning the
 /// path would drop the owner at the end of this statement, deleting the
 /// directory, and the caller would recreate it with `create_dir_all` and leave
 /// it with no cleanup owner — a `mediapm-artifact-*` tree orphaned in `$TMPDIR`
@@ -69,7 +69,7 @@ fn write_probe(dir: &Path, name: &str, contents: &str) {
 /// binary never gets built and a violation there is reported as a *build*
 /// failure rather than a test failure. A synthetic directory exercises the same
 /// shared scanner with the guard out of the way.
-fn probe_dir() -> tempfile::TempDir {
+fn probe_dir() -> mediapm_utils::temp::ManagedTempDir {
     mediapm_utils::temp::artifact_dir().expect("probe artifact dir")
 }
 

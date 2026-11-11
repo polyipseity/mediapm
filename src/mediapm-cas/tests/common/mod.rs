@@ -13,7 +13,7 @@ pub(crate) async fn put_static(cas: &impl CasApi, data: &'static [u8]) -> mediap
 }
 
 /// Creates a fresh artifact tempdir (RAII guard dropped at end of test).
-pub(crate) fn artifact_dir() -> tempfile::TempDir {
+pub(crate) fn artifact_dir() -> mediapm_utils::temp::ManagedTempDir {
     mediapm_utils::temp::artifact_dir().unwrap()
 }
 
@@ -37,7 +37,7 @@ pub(crate) struct FileCasFixture {
     cas: mediapm_cas::FileSystemCas,
     /// The artifact root the store was opened on. Drops after `cas`. Held for
     /// its `Drop` alone — the leading underscore says the value is never read.
-    _dir: tempfile::TempDir,
+    _dir: mediapm_utils::temp::ManagedTempDir,
 }
 
 impl Deref for FileCasFixture {

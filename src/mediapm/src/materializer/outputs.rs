@@ -353,7 +353,7 @@ mod tests {
 
     /// A workspace nothing has run against, which is the state a fresh one
     /// starts in and the state every unusable cache file falls back to.
-    fn empty_workspace() -> (tempfile::TempDir, MediaPmPaths) {
+    fn empty_workspace() -> (mediapm_utils::temp::ManagedTempDir, MediaPmPaths) {
         let root = mediapm_utils::temp::artifact_dir().unwrap();
         let paths = MediaPmPaths::from_root(root.path());
         (root, paths)

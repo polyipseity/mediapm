@@ -90,7 +90,7 @@ pub(crate) async fn service_with_cache(
 ) -> Result<
     (
         MediaPmService<mediapm_cas::FileSystemCas>,
-        tempfile::TempDir,
+        mediapm_utils::temp::ManagedTempDir,
         mediapm_utils::temp::ManagedTempDir,
     ),
     mediapm::MediaPmError,
@@ -107,8 +107,10 @@ pub(crate) async fn service_with_cache(
 ///
 /// The returned `TempDir` must be kept alive alongside the service (dropping
 /// it deletes the workspace); config-only tests can bind it to `_root`.
-pub(crate) async fn service_in_tempdir()
--> Result<(MediaPmService<mediapm_cas::FileSystemCas>, tempfile::TempDir), mediapm::MediaPmError> {
+pub(crate) async fn service_in_tempdir() -> Result<
+    (MediaPmService<mediapm_cas::FileSystemCas>, mediapm_utils::temp::ManagedTempDir),
+    mediapm::MediaPmError,
+> {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await?;
     Ok((service, root))
