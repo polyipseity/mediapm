@@ -80,7 +80,15 @@ try {
 
 # Runs the janitor in a child pwsh with the temp-root env vars pointed at
 # $Root, so the janitor's own `exit` does not end this self-test. Returns the
-# child exit code and its merged output.
+# child exit code, its merged output, and the temp root that child resolves
+# under the same override.
+#
+# `ResolvedTempRoot` is the evidence the missing-root case needs: the janitor
+# reads its root from `[System.IO.Path]::GetTempPath()`, so a child that
+# resolved a different root than the one it was given sweeps that other root
+# and reports a clean result. Asking the child itself is the only report of
+# what it saw; the self-test's own view of the environment is what was set, not
+# what the child read.
 function Invoke-JanitorAtRoot {
     param(
         [Parameter(Mandatory = $true)]
@@ -95,6 +103,7 @@ function Invoke-JanitorAtRoot {
         $env:TMP = $Root
         $env:TMPDIR = $Root
         $env:TEMP = $Root
+        $resolvedTempRoot = (@(& pwsh -NoProfile -Command '[System.IO.Path]::GetTempPath()') -join "`n").Trim()
         # The exit status is the case under test, so it is read from a variable
         # that cannot carry a stale value: `$LASTEXITCODE` changes only when a
         # native command reports one, so a read that followed no report would
@@ -103,8 +112,9 @@ function Invoke-JanitorAtRoot {
         $global:LASTEXITCODE = $null
         $lines = @(& pwsh -NoProfile -File $janitor @JanitorArgs 2>&1)
         return [pscustomobject]@{
-            ExitCode = $LASTEXITCODE
-            Output   = ($lines -join "`n")
+            ExitCode         = $LASTEXITCODE
+            Output           = ($lines -join "`n")
+            ResolvedTempRoot = $resolvedTempRoot
         }
     } finally {
         $env:TMP = $savedTmp
@@ -187,7 +197,7 @@ $missing = Invoke-JanitorAtRoot -Root $missingRoot -JanitorArgs @('--dry-run')
 # sweeps it and reports a clean result, and the message below then shows that
 # output instead of only the status the run happened to return.
 if (-not $missing.Output.Contains("no such directory: $missingRoot")) {
-    Fail "missing-root diagnostic did not name ${missingRoot}: $($missing.Output)"
+    Fail "missing-root diagnostic did not name ${missingRoot}: $($missing.Output); the child resolved its temp root as $($missing.ResolvedTempRoot)"
 }
 if ($null -eq $missing.ExitCode) {
     Fail "the janitor reported no exit status for a missing temp root ($missingRoot): $($missing.Output)"

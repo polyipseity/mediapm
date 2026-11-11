@@ -6,7 +6,11 @@
 //!
 //! Platform-smart via runtime probes: each interpreter (`bash`, `sh`,
 //! `pwsh`) is probed by spawning a harmless command, and when the binary is
-//! missing the test prints `skipped: ...` and passes without running.
+//! missing the test prints `skipped: ...` and passes without running. The one
+//! exception is the bash shell itself: [`posix_bash`] resolves it by behaviour
+//! rather than by name, because on Windows that name is the WSL launcher and a
+//! probe of the name would skip a host whose Git Bash the janitor can sweep
+//! with.
 //! Sandboxes use the managed `mediapm-` prefix under the real temp dir and
 //! are removed on drop.
 //!
@@ -35,6 +39,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Sequence number for sandbox names (unique per process).
@@ -203,9 +208,11 @@ fn is_local_bin_shim(path: &Path) -> bool {
 ///
 /// The answer is asked of a shell because a shell is what resolves the name for
 /// the janitor: on Windows the reply is a Git Bash path (`/usr/bin/rm`), which
-/// is the only form of it the janitor's tests can run there.
+/// is the only form of it the janitor's tests can run there. That shell is the
+/// resolved POSIX one, never the name `bash`: `%SystemRoot%\System32\bash.exe`
+/// is the WSL launcher, and it answers this question with its own failure.
 fn command_v(name: &str) -> Option<PathBuf> {
-    let shell = if cfg!(windows) { "bash" } else { "sh" };
+    let shell: &Path = if cfg!(windows) { posix_bash()? } else { Path::new("sh") };
     let output = Command::new(shell).args(["-c", &format!("command -v {name}")]).output().ok()?;
     if !output.status.success() {
         return None;
@@ -236,6 +243,9 @@ fn command_v(name: &str) -> Option<PathBuf> {
 /// `rm` are both meaningless to a Windows process, and the shell is what the
 /// janitor sweeps with there. The probe path is passed as an argument rather
 /// than pasted into the command, so a temp path with a space in it survives.
+/// That shell is [`posix_bash`] rather than the name `bash`, and a host with no
+/// candidate answering there rejects every candidate: without a POSIX shell
+/// there is no `rm` for the janitor's tests to sweep with either.
 fn rm_clears_probe(candidate: &Path) -> bool {
     let seq = SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed);
     let probe = std::env::temp_dir().join(format!("mediapm-rm-probe-{}-{seq}", std::process::id()));
@@ -247,7 +257,11 @@ fn rm_clears_probe(candidate: &Path) -> bool {
         return false;
     }
     let status = if cfg!(windows) {
-        Command::new("bash")
+        let Some(shell) = posix_bash() else {
+            let _ = fs::remove_dir_all(&probe);
+            return false;
+        };
+        Command::new(shell)
             .args(["-c", &format!("{} -rf \"$1\"", shell_quote(candidate)), "_"])
             .arg(&probe)
             .status()
@@ -290,6 +304,41 @@ fn shell_printed(text: &str) -> String {
     one_path_spelling(text)
 }
 
+/// `path` in the spelling the PowerShell twin prints for it, for comparison.
+///
+/// A Rust temp path can differ from the same directory's printed form in the
+/// segment names, not only in separators: on Windows `std::env::temp_dir()`
+/// returns the 8.3 short name (`C:\Users\RUNNER~1\...`) while the janitor
+/// child prints the long one (`C:\Users\runneradmin\...`) for the same tree —
+/// the PowerShell twin resolves its root through `GetTempPath` and reports the
+/// long form, which is what the CI log shows. `fs::canonicalize` yields that form,
+/// so the expected side is resolved through it while the path still exists — the
+/// tests that compare a removed tree call this before the sweep.
+///
+/// Only the PowerShell twin goes through this. The sh twin is handed
+/// `TMPDIR`/`TMP`/`TEMP` set to the sandbox path as Rust spells it and prints the
+/// root it globbed from that value, so its expectation stays
+/// [`printed_as_shell_path`]. On Unix the path is already what either shell
+/// prints: `canonicalize` would rewrite `/tmp` to `/private/tmp` on macOS, which
+/// the shell does not, so it is not used there.
+fn path_as_printed(path: &Path) -> String {
+    #[cfg(windows)]
+    if let Ok(resolved) = fs::canonicalize(path) {
+        return printed_as_shell_path(&resolved);
+    }
+    printed_as_shell_path(path)
+}
+
+/// The expected spelling of `path` for the twin named by `script_name`.
+///
+/// See [`path_as_printed`] for why the two twins differ on Windows.
+fn expected_root_spelling(script_name: &str, path: &Path) -> String {
+    let is_pwsh = Path::new(script_name)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ps1"));
+    if is_pwsh { path_as_printed(path) } else { printed_as_shell_path(path) }
+}
+
 /// `text` with its path spelling normalized: every `\` becomes `/`, an MSYS
 /// drive group (`/c/`) becomes a Win32 one (`C:/`) where it starts a path, and
 /// a leading drive letter is uppercased so `c:/` and `C:/` compare equal.
@@ -305,8 +354,22 @@ fn shell_printed(text: &str) -> String {
 /// The argument is a script's message or a `Path::display`, never a path that is
 /// opened afterwards, so rewriting it cannot change which directory is named:
 /// the spellings this joins are one directory written two ways.
+///
+/// A Win32 path can also arrive in the verbatim form Rust's own APIs produce,
+/// `\\?\C:\Users\me\x` and `\\?\UNC\server\share\x` for a UNC path. That prefix
+/// names the same directory as the plain spelling and no shell prints it, so it
+/// is stripped before the separator pass: without this a sweep that did remove
+/// the tree compares unequal to the test's path and reads as one that removed
+/// nothing.
 fn one_path_spelling(text: &str) -> String {
-    let separated = text.replace('\\', "/");
+    let unverbatim = match text.strip_prefix(r"\\?\UNC\") {
+        Some(tail) => format!(r"\\{tail}"),
+        None => match text.strip_prefix(r"\\?\") {
+            Some(tail) => tail.to_string(),
+            None => text.to_string(),
+        },
+    };
+    let separated = unverbatim.replace('\\', "/");
     let bytes = separated.as_bytes();
     let mut normalized = String::with_capacity(separated.len());
     let mut copied = 0;
@@ -361,6 +424,12 @@ fn printed_paths_compare_in_one_shell_spelling() {
     assert_eq!(printed_as_shell_path(Path::new(r"C:\Users\me\x")), canonical);
     assert_eq!(printed_as_shell_path(Path::new("c:/Users/me/x")), canonical);
 
+    // The verbatim form Rust hands back from a canonicalized path names the same
+    // directory, and no shell prints the prefix.
+    assert_eq!(printed_as_shell_path(Path::new(r"\\?\C:\Users\me\x")), canonical);
+    assert_eq!(shell_printed(r"\\?\C:\Users\me\x"), canonical);
+    assert_eq!(printed_as_shell_path(Path::new(r"\\?\UNC\server\share\x")), "//server/share/x");
+
     assert_eq!(shell_printed("removed: /c/Users/me/x"), "removed: C:/Users/me/x");
     assert_eq!(
         shell_printed("cannot remove directories under /d/scope/x"),
@@ -398,11 +467,22 @@ fn path_with_rm_shim(sandbox: &Path, body: &str) -> OsString {
     // and reaches the `#!` test only in the `else` of that call). So the bits are
     // set through the same shell that will stat the file: `chmod +x` there sets
     // exactly what its own `stat` reports, which is what the sweeps rely on.
+    //
+    // Two things about that shell come from the Windows CI job. It is the
+    // resolved POSIX one, not the name `bash`: the name is
+    // `%SystemRoot%\System32\bash.exe`, the WSL launcher, and `chmod +x` through
+    // it fails before it reaches the file. And the path is handed over in `/`
+    // form, the separator every POSIX shell reads, rather than the Win32
+    // `Path::display` spelling whose backslashes are ordinary characters to the
+    // shell. A caller reaching here has already proven a shell exists, so the
+    // expect states an invariant rather than a hope.
     #[cfg(windows)]
     {
-        let chmod = Command::new("bash")
+        let shell =
+            posix_bash().expect("the caller resolved a POSIX bash before seeding an rm shim");
+        let chmod = Command::new(shell)
             .args(["-c", "chmod +x \"$1\"", "_"])
-            .arg(&shim)
+            .arg(shim.display().to_string().replace('\\', "/"))
             .status()
             .expect("spawn chmod for the rm shim");
         assert!(chmod.success(), "chmod +x failed for the rm shim at {}", shim.display());
@@ -434,13 +514,16 @@ fn path_with_failing_rm(sandbox: &Path) -> OsString {
 /// Whether `path`'s first `rm` is the failing shim: `rm -rf <scratch>` under that
 /// `PATH` fails and leaves the directory in place.
 ///
-/// Spawned through `bash`, which is the shell the janitor run below is spawned
-/// with, so what this proves is the resolution that run depends on. Both halves
-/// matter: a `PATH` whose shim is not reachable falls through to the host `rm`,
-/// which succeeds, and a probe that only checked "something failed" would pass on
-/// any unrelated failure.
-fn failing_rm_shadows(path: &OsStr, scratch: &Path) -> bool {
-    let shown = Command::new("bash")
+/// Spawned through `shell`, the shell the janitor run the caller is about to make
+/// is spawned with, so what this proves is the resolution that run depends on.
+/// The shell is a parameter because the callers have already resolved it; asking
+/// the resolver again could answer differently on a host whose environment
+/// changed, and a probe of one shell would then stand for a run of another. Both
+/// halves matter: a `PATH` whose shim is not reachable falls through to the host
+/// `rm`, which succeeds, and a probe that only checked "something failed" would
+/// pass on any unrelated failure.
+fn failing_rm_shadows(shell: &Path, path: &OsStr, scratch: &Path) -> bool {
+    let shown = Command::new(shell)
         .args(["-c", r#"rm -rf "$1""#, "_"])
         .arg(scratch)
         .env("PATH", path)
@@ -449,16 +532,16 @@ fn failing_rm_shadows(path: &OsStr, scratch: &Path) -> bool {
     !shown.success() && scratch.is_dir()
 }
 
-/// Runs a script under `program` (e.g. `bash` or `sh`) inside a sandbox,
-/// with `rm` resolving to `real_rm`.
+/// Runs a script under `shell` (a resolved POSIX shell, or `sh`) inside a
+/// sandbox, with `rm` resolving to `real_rm`.
 fn run_script(
-    program: &str,
+    shell: &Path,
     script: &Path,
     sandbox: &Path,
     flags: &[&str],
     real_rm: &Path,
 ) -> RunOutcome {
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(shell);
     cmd.arg(script).args(flags);
     cmd.env("PATH", path_with_rm_exec(sandbox, real_rm));
     capture_output(cmd, sandbox)
@@ -481,6 +564,88 @@ fn skip_unless(program: &str, args: &[&str]) -> bool {
         println!("skipped: {program} not found");
         false
     }
+}
+
+/// The POSIX shell the bash janitor tests spawn, resolved by behaviour rather
+/// than by name.
+///
+/// On Windows the name `bash` is not a POSIX shell: `%SystemRoot%\System32\bash.exe`
+/// is the WSL launcher, and with no distribution installed it exits non-zero
+/// with `Windows Subsystem for Linux has no installed distributions.` — the text
+/// the Windows CI job captured from this suite. A test that spawned the name
+/// would fail there while a real Git Bash sat on the same host, so every
+/// candidate is asked to answer one POSIX command and the first that does is the
+/// shell. The probe is the resolver, which is what makes the order in
+/// [`posix_bash_candidates`] safe rather than the paths themselves.
+///
+/// Memoized because every spawn in the bash tests goes through it: a host with no
+/// usable shell would otherwise pay one failed probe per spawn.
+fn posix_bash() -> Option<&'static Path> {
+    static RESOLVED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    RESOLVED.get_or_init(resolve_posix_bash).as_deref()
+}
+
+/// [`posix_bash`] or a skip line, in the shape [`skip_unless`] returns.
+///
+/// The bash tests skip through this rather than through [`skip_unless`] on the
+/// name: a skip line for a name that resolves to the WSL launcher would report
+/// the shell as missing while the cause was which `bash` the host resolved.
+fn skip_unless_posix_bash() -> Option<&'static Path> {
+    let shell = posix_bash();
+    if shell.is_none() {
+        println!(
+            "skipped: no POSIX bash on this host (bash resolves to the WSL launcher or is absent)"
+        );
+    }
+    shell
+}
+
+/// The shell [`posix_bash`] resolves, or nothing when no candidate answers a
+/// POSIX command.
+fn resolve_posix_bash() -> Option<PathBuf> {
+    posix_bash_candidates().into_iter().find(|candidate| posix_shell_answers(candidate))
+}
+
+/// Where a POSIX shell may be installed, in the order it is looked for.
+///
+/// On Windows the Git for Windows layouts named by `ProgramFiles`,
+/// `ProgramFiles(x86)` and `LOCALAPPDATA` come first, because a bare `bash`
+/// there is the WSL launcher on the system path. A variable that is unset or
+/// empty is skipped rather than reported: a host without `ProgramFiles(x86)` is
+/// an ordinary 64-bit install, not a broken one. The name `bash` on `PATH` is
+/// the last resort, for a host whose Git Bash is somewhere else again.
+///
+/// Elsewhere the bare name comes first and `/bin/bash` is the fallback, which
+/// keeps the Unix behaviour the suite had when it spawned `bash` unqualified.
+fn posix_bash_candidates() -> Vec<PathBuf> {
+    if !cfg!(windows) {
+        return ["bash", "/bin/bash"].into_iter().map(PathBuf::from).collect();
+    }
+    let mut candidates = Vec::new();
+    for (variable, tail) in [
+        ("ProgramFiles", r"Git\bin\bash.exe"),
+        ("ProgramFiles", r"Git\usr\bin\bash.exe"),
+        ("ProgramFiles(x86)", r"Git\bin\bash.exe"),
+        ("LOCALAPPDATA", r"Programs\Git\bin\bash.exe"),
+    ] {
+        if let Some(base) = std::env::var_os(variable).filter(|base| !base.is_empty()) {
+            candidates.push(Path::new(&base).join(tail));
+        }
+    }
+    candidates.push(PathBuf::from("bash"));
+    candidates
+}
+
+/// Whether `candidate` answers `command -v rm`, which is a shell's own statement
+/// that it is a POSIX shell with a POSIX `PATH`.
+///
+/// The WSL launcher fails this: it exits non-zero and prints its own message, so
+/// it cannot be selected however the name resolves on the host.
+fn posix_shell_answers(candidate: &Path) -> bool {
+    Command::new(candidate)
+        .args(["-c", "command -v rm"])
+        .output()
+        .is_ok_and(|output| output.status.success() && !output.stdout.is_empty())
 }
 
 /// A sandbox whose `scope` subdir holds the dirs named `names`, plus that scope
@@ -617,12 +782,12 @@ fn assert_janitor_sequence(script_name: &str, run: impl Fn(&Path, &Path, &[&str]
 
 #[test]
 fn bash_janitor_dry_run_and_real_run() {
-    if !skip_unless("bash", &["--version"]) {
+    let Some(shell) = skip_unless_posix_bash() else {
         return;
-    }
+    };
     let rm = path_with_clearing_rm();
     assert_janitor_sequence("clean-mediapm-temp.sh", |script, sandbox, flags| {
-        run_script("bash", script, sandbox, flags, &rm)
+        run_script(shell, script, sandbox, flags, &rm)
     });
 }
 
@@ -637,9 +802,9 @@ fn bash_janitor_dry_run_and_real_run() {
 /// fails the test rather than leaving it green and pinning nothing.
 #[test]
 fn bash_janitor_dry_run_survives_a_failing_rm() {
-    if !skip_unless("bash", &["--version"]) {
+    let Some(shell) = skip_unless_posix_bash() else {
         return;
-    }
+    };
     let seeded = &FAKE_MEDIAPM_DIRS[..2];
     let (sandbox, scope) = seeded_scope(seeded);
     let janitor = script_path("clean-mediapm-temp.sh");
@@ -652,11 +817,11 @@ fn bash_janitor_dry_run_survives_a_failing_rm() {
     let scratch = sandbox.path.join("rm-shadow-probe");
     fs::create_dir_all(&scratch).expect("create rm shadow probe dir");
     assert!(
-        failing_rm_shadows(&path, &scratch),
+        failing_rm_shadows(shell, &path, &scratch),
         "the failing rm shim did not shadow the host rm, so the dry run below proves nothing"
     );
 
-    let mut cmd = Command::new("bash");
+    let mut cmd = Command::new(shell);
     cmd.arg(&janitor).arg("--dry-run");
     cmd.env("PATH", &path);
     let dry = capture_output(cmd, &scope);
@@ -689,9 +854,9 @@ fn bash_janitor_dry_run_survives_a_failing_rm() {
 /// would otherwise print it for trees left in place.
 #[test]
 fn bash_janitor_refuses_a_failing_rm() {
-    if !skip_unless("bash", &["--version"]) {
+    let Some(shell) = skip_unless_posix_bash() else {
         return;
-    }
+    };
     let seeded = &FAKE_MEDIAPM_DIRS[..2];
     let (sandbox, scope) = seeded_scope(seeded);
     let janitor = script_path("clean-mediapm-temp.sh");
@@ -704,11 +869,11 @@ fn bash_janitor_refuses_a_failing_rm() {
     let scratch = sandbox.path.join("rm-shadow-probe");
     fs::create_dir_all(&scratch).expect("create rm shadow probe dir");
     assert!(
-        failing_rm_shadows(&path, &scratch),
+        failing_rm_shadows(shell, &path, &scratch),
         "the failing rm shim did not shadow the host rm, so the refusal below proves nothing"
     );
 
-    let mut cmd = Command::new("bash");
+    let mut cmd = Command::new(shell);
     cmd.arg(&janitor);
     cmd.env("PATH", &path);
     let refused = capture_output(cmd, &scope);
@@ -746,9 +911,9 @@ fn bash_janitor_refuses_a_failing_rm() {
 #[cfg(unix)]
 #[test]
 fn bash_janitor_reports_a_per_path_failure() {
-    if !skip_unless("bash", &["--version"]) {
+    let Some(shell) = skip_unless_posix_bash() else {
         return;
-    }
+    };
     if running_as_root() {
         println!("skipped: the sealed-tree case needs a non-root user");
         return;
@@ -761,7 +926,7 @@ fn bash_janitor_reports_a_per_path_failure() {
     let removable = scope.join(FAKE_MEDIAPM_DIRS[1]);
     seal_with_child(&sealed);
 
-    let mut cmd = Command::new("bash");
+    let mut cmd = Command::new(shell);
     cmd.arg(&janitor);
     cmd.env("PATH", path_with_rm_exec(&sandbox.path, &rm));
     let partial = capture_output(cmd, &scope);
@@ -860,6 +1025,9 @@ fn seed_deep_chain(scope: &Path, name: &str) -> PathBuf {
 fn assert_deep_chain_removed(script_name: &str, run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome) {
     let (_sandbox, scope) = seeded_scope(&[]);
     let root = seed_deep_chain(&scope, FAKE_MEDIAPM_DIRS[0]);
+    // Resolved before the sweep: the tree is gone afterwards, and the expected
+    // spelling has to name the directory this twin prints for it.
+    let expected_root = expected_root_spelling(script_name, &root);
     let janitor = script_path(script_name);
 
     let sweep = run(&janitor, &scope, &[]);
@@ -871,8 +1039,7 @@ fn assert_deep_chain_removed(script_name: &str, run: impl Fn(&Path, &Path, &[&st
         sweep.stderr
     );
     assert!(
-        shell_printed(&sweep.stdout)
-            .contains(&format!("removed: {}", printed_as_shell_path(&root))),
+        shell_printed(&sweep.stdout).contains(&format!("removed: {expected_root}")),
         "the sweep did not report the chain it removed: {}",
         sweep.stdout
     );
@@ -953,23 +1120,23 @@ fn assert_root_symlink_not_followed(
 #[cfg(unix)]
 #[test]
 fn bash_janitor_leaves_a_root_symlink_alone() {
-    if !skip_unless("bash", &["--version"]) {
+    let Some(shell) = skip_unless_posix_bash() else {
         return;
-    }
+    };
     let rm = path_with_clearing_rm();
     assert_root_symlink_not_followed("clean-mediapm-temp.sh", |script, sandbox, flags| {
-        run_script("bash", script, sandbox, flags, &rm)
+        run_script(shell, script, sandbox, flags, &rm)
     });
 }
 
 #[test]
 fn bash_janitor_removes_a_deep_chain() {
-    if !skip_unless("bash", &["--version"]) {
+    let Some(shell) = skip_unless_posix_bash() else {
         return;
-    }
+    };
     let rm = path_with_clearing_rm();
     assert_deep_chain_removed("clean-mediapm-temp.sh", |script, sandbox, flags| {
-        run_script("bash", script, sandbox, flags, &rm)
+        run_script(shell, script, sandbox, flags, &rm)
     });
 }
 
@@ -980,9 +1147,9 @@ fn bash_janitor_removes_a_deep_chain() {
 #[cfg(unix)]
 #[test]
 fn bash_janitor_does_not_call_a_failed_sweep_empty() {
-    if !skip_unless("bash", &["--version"]) {
+    let Some(shell) = skip_unless_posix_bash() else {
         return;
-    }
+    };
     if running_as_root() {
         println!("skipped: the sealed-tree case needs a non-root user");
         return;
@@ -994,7 +1161,7 @@ fn bash_janitor_does_not_call_a_failed_sweep_empty() {
     let sealed = scope.join(FAKE_MEDIAPM_DIRS[0]);
     seal_with_child(&sealed);
 
-    let mut cmd = Command::new("bash");
+    let mut cmd = Command::new(shell);
     cmd.arg(&janitor);
     cmd.env("PATH", path_with_rm_exec(&sandbox.path, &rm));
     let sweep = capture_output(cmd, &scope);
@@ -1063,13 +1230,20 @@ fn assert_self_test(
 
 #[test]
 fn bash_janitor_self_test() {
+    // The self-test spawns `sh`, but the working `rm` this test resolves for it
+    // is found through a POSIX shell (`command -v rm`), so this test needs one
+    // just as the direct ones do. Skipping on the bare name would let the WSL
+    // launcher stand for the shell that resolution depends on.
+    if skip_unless_posix_bash().is_none() {
+        return;
+    }
     let rm = path_with_clearing_rm();
     assert_self_test(
         &test_script_path("test-clean-mediapm-temp.sh"),
         "test-clean-mediapm-temp: OK",
         "sh",
         &["-c", "exit 0"],
-        |script, sandbox, flags| run_script("sh", script, sandbox, flags, &rm),
+        |script, sandbox, flags| run_script(Path::new("sh"), script, sandbox, flags, &rm),
     );
 }
 
