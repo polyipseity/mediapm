@@ -2439,7 +2439,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the process env lock serializes this test's github_api_base() reads, which build the releases-list cache key it seeds, against the MEDIAPM_GITHUB_API_BASE seam mutation scope"
+    )]
     async fn resolve_latest_autobuild_tag_returns_cached() {
+        let _env = lock_process_env();
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();

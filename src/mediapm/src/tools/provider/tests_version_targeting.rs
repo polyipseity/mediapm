@@ -14,7 +14,9 @@
 //!
 //! The pure matcher tests at the bottom pin the per-tool asset selection
 //! itself (exact-name for yt-dlp/deno, version-embedded suffix for
-//! rsgain/sd) against synthetic asset lists, with no HTTP at all.
+//! rsgain/sd) against synthetic asset lists, with no HTTP at all. They still
+//! hold `lock_process_env()`: composing a pinned URL reads the download base,
+//! so they are seam readers even though they issue no request.
 //!
 //! HTTP is served by a local `wiremock` server through the
 //! `MEDIAPM_GITHUB_API_BASE` test seam (read per call, never a `OnceLock`),
@@ -360,6 +362,7 @@ async fn stale_tag_as_hash_cache_entry_triggers_reresolve_and_refusal() {
 /// selection.
 #[test]
 fn deno_sources_select_one_host_arch_candidate_per_os() {
+    let _env = lock_process_env();
     let host = host_arch_label();
     let fetch = deno::sources();
     for source in &fetch.sources {
@@ -384,6 +387,7 @@ fn deno_sources_select_one_host_arch_candidate_per_os() {
 /// is explicit either way.
 #[test]
 fn sd_sources_select_one_host_arch_candidate_per_os() {
+    let _env = lock_process_env();
     let host = host_arch_label();
     let fetch = sd::sources();
     for source in &fetch.sources {
@@ -406,6 +410,7 @@ fn sd_sources_select_one_host_arch_candidate_per_os() {
 /// actually chose.
 #[test]
 fn exact_name_matchers_pin_the_matched_asset_url() {
+    let _env = lock_process_env();
     let tag = "2025.07.15";
 
     // yt-dlp: exact names, plus a prefix-sharing decoy that must not match.
@@ -460,6 +465,7 @@ fn exact_name_matchers_pin_the_matched_asset_url() {
 /// the OS slot.
 #[test]
 fn rsgain_suffix_matcher_pins_the_versioned_asset_and_names_a_miss() {
+    let _env = lock_process_env();
     let tag = "v3.7";
     let assets: Vec<String> = [
         "rsgain-3.7-win64.zip",
@@ -509,6 +515,7 @@ fn rsgain_suffix_matcher_pins_the_versioned_asset_and_names_a_miss() {
 /// refuses naming the tool, the tag, the missing pattern, and the OS slot.
 #[test]
 fn sd_suffix_matcher_pins_the_versioned_asset_and_names_a_miss() {
+    let _env = lock_process_env();
     let tag = "v1.1.0";
     let host = host_arch_label();
     let assets: Vec<String> = vec![
