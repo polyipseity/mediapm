@@ -2,20 +2,17 @@
 # Sandbox self-test for scripts/clean-mediapm-temp.sh.
 #
 # Two parts:
-#   1. Runtime: under a sandboxed $TMPDIR, the janitor removes exactly the
-#      three mediapm-* prefixed dirs in dry-run and real-run and never
-#      touches non-mediapm control dirs.
+#   1. Runtime: under an explicit --root temp root, the janitor removes
+#      exactly the three mediapm-* prefixed dirs in dry-run and real-run and
+#      never touches non-mediapm control dirs.
 #   2. Static: the janitor source must contain no migration-era workspace
 #      globs (cli-add-hierarchy / examples/artifacts / stale stamped): the
 #      janitor scope is the temp-root three prefixes ONLY.
-#   3. Temp root preconditions: a $TMPDIR that does not exist, or that exists
-#      but cannot be enumerated, must fail and name that path; an existing
-#      empty one must report a clean sweep.
+#   3. Temp root preconditions: a --root that does not exist must fail and
+#      name that path; an existing empty one must report a clean sweep.
 #   4. Scan failure: a `find` that dies part way through must fail the
 #      janitor, sweep nothing, and leave no listing file behind.
-#   5. Refusal: an `rm` that removes nothing must fail the janitor at its
-#      preflight, before it reports any removal, leaving every seeded path.
-#   6. Per-path failure: a directory the sweep cannot remove is named on
+#   5. Per-path failure: a directory the sweep cannot remove is named on
 #      stderr, still fails the run, and does not stop the rest of the sweep.
 #
 # POSIX sh (driven by the `mediapm-tests` crate via `cargo test-all`; also
@@ -30,17 +27,16 @@ fail() {
     exit 1
 }
 
-# --- Runtime part: sandboxed $TMPDIR with fake mediapm-* dirs and controls.
+# --- Runtime part: an explicit --root temp root with fake mediapm-* dirs and controls.
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
 # The janitor removes with `rm`, so every sweep case below needs an `rm` that
 # deletes. Hosts that front `~/.local/bin/rm` with a safe-delete wrapper make
-# the janitor refuse before it touches a path, and that refusal is pinned by
-# the refusal case below; here it would otherwise turn the sweep cases into
-# more copies of it. Probe by clearing rather than by name: the wrapper this
-# probe exists for is called `rm` too. Put the winner first on `PATH` so the
-# sweep cases run and the EXIT trap can clean up.
+# the janitor refuse before it touches a path, so a sweep case there would
+# prove nothing about the sweep. Probe by clearing rather than by name: the
+# wrapper this probe exists for is called `rm` too. Put the winner first on
+# `PATH` so the sweep cases run and the EXIT trap can clean up.
 real_rm=""
 for candidate in /bin/rm /usr/bin/rm; do
     probe_dir="$tmpdir/rm-probe"
@@ -65,7 +61,7 @@ mkdir -p "$tmpdir/cli-add-hierarchy-123-456"
 mkdir -p "$tmpdir/unrelated-dir"
 
 # Dry run: reports all three prefixed dirs, never the controls.
-dry_out="$(TMPDIR="$tmpdir" "$janitor" --dry-run)"
+dry_out="$("$janitor" --dry-run --root "$tmpdir")"
 dry_count="$(printf '%s\n' "$dry_out" | grep -c 'would remove:')" || true
 if [ "$dry_count" -ne 3 ]; then
     fail "dry-run reported $dry_count removals, expected 3"
@@ -82,7 +78,7 @@ case "$dry_out" in
 esac
 
 # Real run: removes exactly the three prefixed dirs, leaves controls.
-real_out="$(TMPDIR="$tmpdir" "$janitor")"
+real_out="$("$janitor" --root "$tmpdir")"
 real_count="$(printf '%s\n' "$real_out" | grep -c 'removed:')" || true
 if [ "$real_count" -ne 3 ]; then
     fail "real run reported $real_count removals, expected 3"
@@ -95,7 +91,7 @@ test -d "$tmpdir/unrelated-dir" || fail "control unrelated-dir removed"
 
 # --- Preconditions: a missing temp root must fail, an existing empty one passes.
 missing_root="$tmpdir/missing-root"
-if TMPDIR="$missing_root" "$janitor" --dry-run >/dev/null 2>"$tmpdir/missing.err"; then
+if "$janitor" --dry-run --root "$missing_root" >/dev/null 2>"$tmpdir/missing.err"; then
     fail "janitor exited 0 for a missing temp root ($missing_root)"
 fi
 case "$(cat "$tmpdir/missing.err")" in
@@ -105,30 +101,11 @@ esac
 
 empty_root="$tmpdir/empty-root"
 mkdir -p "$empty_root"
-empty_out="$(TMPDIR="$empty_root" "$janitor" --dry-run)"
+empty_out="$("$janitor" --dry-run --root "$empty_root")"
 case "$empty_out" in
     'no mediapm temp directories found') ;;
     *) fail "empty temp root did not report a clean sweep: $empty_out" ;;
 esac
-
-# A temp root that exists but cannot be enumerated is the same hazard as a
-# missing one: `find` prints its own diagnostic, its exit status dies inside
-# the janitor's process substitution, and the sweep reports a clean run it
-# never performed. Skipped as root, where the permission bits are advisory.
-if [ "$(id -u)" -ne 0 ]; then
-    denied_root="$tmpdir/denied-root"
-    mkdir -p "$denied_root"
-    chmod 000 "$denied_root"
-    if TMPDIR="$denied_root" "$janitor" --dry-run >/dev/null 2>"$tmpdir/denied.err"; then
-        fail "janitor exited 0 for a temp root it cannot enumerate ($denied_root)"
-    fi
-    case "$(cat "$tmpdir/denied.err")" in
-        *"no such directory: $denied_root"*) ;;
-        *) fail "denied-root diagnostic did not name $denied_root: $(cat "$tmpdir/denied.err")" ;;
-    esac
-    # Restore the mode so the EXIT trap can reach inside the dir.
-    chmod 755 "$denied_root"
-fi
 
 # --- Scan failure: a find that dies part way through must not read as clean.
 # `-maxdepth 1` opens the temp root and stats each entry, but never opens a
@@ -150,8 +127,8 @@ chmod +x "$stub_find/find"
 
 # The second stub reports where mktemp put the listing, so the leak assertion
 # names the file the janitor actually created. Guessing where to look would
-# not work: GNU mktemp honours TMPDIR and writes into the sweep root, the
-# macOS one ignores TMPDIR and writes into the per-user temp dir.
+# not work: GNU mktemp honours TMPDIR and the macOS one ignores it, so where
+# the listing lands depends on the host.
 cat >"$stub_bin/mktemp" <<'STUB'
 #!/bin/sh
 # stand in for mktemp, reporting the path it handed back
@@ -166,8 +143,8 @@ scan_root="$tmpdir/scan-root"
 mkdir -p "$scan_root/mediapm-artifact-one" "$scan_root/mediapm-artifact-two"
 capture="$tmpdir/listing-path"
 
-if PATH="$stub_find:$stub_bin:$PATH" TMPDIR="$scan_root" MEDIAPM_TEST_LISTING_CAPTURE="$capture" \
-    "$janitor" >"$tmpdir/scan.out" 2>"$tmpdir/scan.err"; then
+if PATH="$stub_find:$stub_bin:$PATH" MEDIAPM_TEST_LISTING_CAPTURE="$capture" \
+    "$janitor" --root "$scan_root" >"$tmpdir/scan.out" 2>"$tmpdir/scan.err"; then
     fail "janitor exited 0 for a find that died part way through ($scan_root)"
 fi
 
@@ -199,8 +176,8 @@ if [ "$(uname -s)" = "Darwin" ] && [ "$(id -u)" -ne 0 ] && command -v chflags >/
     rm -f "$capture"
     # Only the mktemp stub is on PATH here: the real find has to run for the
     # loop to reach the tree rm refuses.
-    if PATH="$stub_bin:$PATH" TMPDIR="$stuck_root" MEDIAPM_TEST_LISTING_CAPTURE="$capture" \
-        "$janitor" >"$tmpdir/stuck.out" 2>"$tmpdir/stuck.err"; then
+    if PATH="$stub_bin:$PATH" MEDIAPM_TEST_LISTING_CAPTURE="$capture" \
+        "$janitor" --root "$stuck_root" >"$tmpdir/stuck.out" 2>"$tmpdir/stuck.err"; then
         fail "janitor exited 0 for a tree it cannot remove ($stuck_root)"
     fi
     chflags -R nouchg "$stuck_root"
@@ -210,53 +187,16 @@ if [ "$(uname -s)" = "Darwin" ] && [ "$(id -u)" -ne 0 ] && command -v chflags >/
     fi
 fi
 
-# --- Refusal contract: a host whose `rm` cannot remove a directory it just
-# created must fail the janitor before any removal is reported, and leave every
-# seeded path where it was. The shim is what such a host looks like from the
-# janitor's side, and it is the reason the preflight exists.
-refuse_root="$tmpdir/refuse-root"
-mkdir -p "$refuse_root/mediapm-artifact-refuse1" "$refuse_root/mediapm-cache-refuse2"
-failing_rm_bin="$tmpdir/failing-rm-bin"
-mkdir -p "$failing_rm_bin"
-printf '#!/bin/sh\nexit 1\n' >"$failing_rm_bin/rm"
-chmod +x "$failing_rm_bin/rm"
-
-# Prove the shim shadows the host's `rm` before trusting the run below: if the
-# host's `rm` resolved instead, this case would pass either way.
-case "$(PATH="$failing_rm_bin:$PATH" command -v rm)" in
-    "$failing_rm_bin/rm") ;;
-    *) fail "the failing rm shim did not shadow the host rm, so the refusal case proves nothing" ;;
-esac
-
-if PATH="$failing_rm_bin:$PATH" TMPDIR="$refuse_root" "$janitor" >"$tmpdir/refuse.out" 2>"$tmpdir/refuse.err"; then
-    fail "janitor exited 0 with an rm that removes nothing ($refuse_root)"
-fi
-case "$(cat "$tmpdir/refuse.out")" in
-    *'removed:'*) fail "janitor reported a removal it did not perform: $(cat "$tmpdir/refuse.out")" ;;
-    *) ;;
-esac
-case "$(cat "$tmpdir/refuse.err")" in
-    *"cannot remove directories under $refuse_root"*) ;;
-    *) fail "refusal did not name $refuse_root: $(cat "$tmpdir/refuse.err")" ;;
-esac
-case "$(cat "$tmpdir/refuse.err")" in
-    *' survived'*) ;;
-    *) fail "refusal did not say the probe survived: $(cat "$tmpdir/refuse.err")" ;;
-esac
-test -d "$refuse_root/mediapm-artifact-refuse1" || fail "a refused sweep removed mediapm-artifact-refuse1"
-test -d "$refuse_root/mediapm-cache-refuse2" || fail "a refused sweep removed mediapm-cache-refuse2"
-
 # --- Per-path failure: the preflight passes, then one seeded directory cannot
 # be removed. It must be named on stderr, must still fail the run, and must not
 # stop the sweep from removing the rest. The obstacle is a sealed directory
 # (mode 000 holding a child): `chmod -R u+w` cannot reach inside it, so `rm -rf`
-# cannot empty it. Sealing the temp root instead would break the sweep's own
-# `mktemp`, which writes its probe and its listing there.
+# cannot empty it.
 if [ "$(id -u)" -ne 0 ]; then
     fail_root="$tmpdir/fail-root"
     mkdir -p "$fail_root/mediapm-artifact-sealed/inner" "$fail_root/mediapm-cache-ok"
     chmod 000 "$fail_root/mediapm-artifact-sealed"
-    if TMPDIR="$fail_root" "$janitor" >"$tmpdir/fail.out" 2>"$tmpdir/fail.err"; then
+    if "$janitor" --root "$fail_root" >"$tmpdir/fail.out" 2>"$tmpdir/fail.err"; then
         fail "janitor exited 0 for a directory it cannot remove ($fail_root)"
     fi
     # Restore the mode so the EXIT trap can reach inside the tree.

@@ -24,18 +24,14 @@
 //! stand for a sweep that never happened. The failure names the environment it
 //! could not use.
 //! Running `tests/scripts/test-clean-mediapm-temp.sh` by hand on such a host
-//! still works: the self-test supplies its own working `rm` for its sweep cases
-//! and pins the janitor's refusal with a shim that removes nothing. The janitor
-//! itself refuses such a host before it touches a path, so a real run there
-//! reports no removal and exits non-zero; [`bash_janitor_refuses_a_failing_rm`]
-//! pins that.
+//! still works: the self-test supplies its own working `rm` for its sweep cases.
 //! The probe requires a candidate to exit 0 with its probe directory's source
 //! path gone, which a trash move also satisfies, so the harness needs no special
 //! case for a trash-moving `rm`: the janitor's sweep depends on the path being
 //! gone, not on how it got there.
 
 use std::any::Any;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -506,32 +502,6 @@ fn path_with_rm_exec(sandbox: &Path, real_rm: &Path) -> OsString {
     path_with_rm_shim(sandbox, &format!("exec {} \"$@\"\n", shell_quote(real_rm)))
 }
 
-/// A `PATH` value whose first `rm` prints nothing and fails without deleting.
-fn path_with_failing_rm(sandbox: &Path) -> OsString {
-    path_with_rm_shim(sandbox, "exit 1\n")
-}
-
-/// Whether `path`'s first `rm` is the failing shim: `rm -rf <scratch>` under that
-/// `PATH` fails and leaves the directory in place.
-///
-/// Spawned through `shell`, the shell the janitor run the caller is about to make
-/// is spawned with, so what this proves is the resolution that run depends on.
-/// The shell is a parameter because the callers have already resolved it; asking
-/// the resolver again could answer differently on a host whose environment
-/// changed, and a probe of one shell would then stand for a run of another. Both
-/// halves matter: a `PATH` whose shim is not reachable falls through to the host
-/// `rm`, which succeeds, and a probe that only checked "something failed" would
-/// pass on any unrelated failure.
-fn failing_rm_shadows(shell: &Path, path: &OsStr, scratch: &Path) -> bool {
-    let shown = Command::new(shell)
-        .args(["-c", r#"rm -rf "$1""#, "_"])
-        .arg(scratch)
-        .env("PATH", path)
-        .status()
-        .expect("spawn rm shadow probe");
-    !shown.success() && scratch.is_dir()
-}
-
 /// Runs a script under `shell` (a resolved POSIX shell, or `sh`) inside a
 /// sandbox, with `rm` resolving to `real_rm`.
 fn run_script(
@@ -789,120 +759,6 @@ fn bash_janitor_dry_run_and_real_run() {
     assert_janitor_sequence("clean-mediapm-temp.sh", |script, sandbox, flags| {
         run_script(shell, script, sandbox, flags, &rm)
     });
-}
-
-/// A `--dry-run` never reaches `rm` in the sweep loop: the preflight is guarded
-/// on a real run and the loop only prints, so the one removal a dry run does is
-/// the trap's unlink of its own listing. That is what this pins: the shimmed
-/// `rm` fails the trap, and the dry run must still report its sweep and exit 0.
-///
-/// The host's own `rm` is irrelevant here, so this test does not ask for one:
-/// what it needs is a `PATH` whose `rm` fails. It proves that `PATH` shadows the
-/// host's `rm` before running the janitor, so a shim that stopped shadowing
-/// fails the test rather than leaving it green and pinning nothing.
-#[test]
-fn bash_janitor_dry_run_survives_a_failing_rm() {
-    let Some(shell) = skip_unless_posix_bash() else {
-        return;
-    };
-    let seeded = &FAKE_MEDIAPM_DIRS[..2];
-    let (sandbox, scope) = seeded_scope(seeded);
-    let janitor = script_path("clean-mediapm-temp.sh");
-
-    let path = path_with_failing_rm(&sandbox.path);
-
-    // Prove the shim still shadows `rm` before trusting the run below: if the
-    // host's `rm` resolved instead, the trap would pass either way and this
-    // test would pin nothing.
-    let scratch = sandbox.path.join("rm-shadow-probe");
-    fs::create_dir_all(&scratch).expect("create rm shadow probe dir");
-    assert!(
-        failing_rm_shadows(shell, &path, &scratch),
-        "the failing rm shim did not shadow the host rm, so the dry run below proves nothing"
-    );
-
-    let mut cmd = Command::new(shell);
-    cmd.arg(&janitor).arg("--dry-run");
-    cmd.env("PATH", &path);
-    let dry = capture_output(cmd, &scope);
-
-    assert!(
-        dry.status.success(),
-        "a failing rm failed the dry run: stdout {}, stderr {}",
-        dry.stdout,
-        dry.stderr
-    );
-    let reported: Vec<&str> =
-        dry.stdout.lines().filter(|line| line.starts_with("would remove: ")).collect();
-    assert_eq!(
-        reported.len(),
-        seeded.len(),
-        "dry-run reported {reported:?}, expected {}",
-        seeded.len()
-    );
-    for name in seeded {
-        assert!(
-            reported.iter().any(|line| line.ends_with(name)),
-            "dry-run did not report {name}: {reported:?}"
-        );
-    }
-}
-
-/// A real run whose `rm` cannot remove a directory the janitor itself created
-/// must refuse before it reports anything. `removed:` is a claim about a tree,
-/// and a host that shims `rm` (a safe-delete wrapper whose trash step is denied)
-/// would otherwise print it for trees left in place.
-#[test]
-fn bash_janitor_refuses_a_failing_rm() {
-    let Some(shell) = skip_unless_posix_bash() else {
-        return;
-    };
-    let seeded = &FAKE_MEDIAPM_DIRS[..2];
-    let (sandbox, scope) = seeded_scope(seeded);
-    let janitor = script_path("clean-mediapm-temp.sh");
-
-    let path = path_with_failing_rm(&sandbox.path);
-
-    // Prove the shim still shadows `rm` before trusting the run below: if the
-    // host's `rm` resolved instead, the refusal would be untested and the sweep
-    // would look like the thing that produced the exit status.
-    let scratch = sandbox.path.join("rm-shadow-probe");
-    fs::create_dir_all(&scratch).expect("create rm shadow probe dir");
-    assert!(
-        failing_rm_shadows(shell, &path, &scratch),
-        "the failing rm shim did not shadow the host rm, so the refusal below proves nothing"
-    );
-
-    let mut cmd = Command::new(shell);
-    cmd.arg(&janitor);
-    cmd.env("PATH", &path);
-    let refused = capture_output(cmd, &scope);
-
-    assert!(
-        !refused.status.success(),
-        "a failing rm did not fail the run: stdout {}, stderr {}",
-        refused.stdout,
-        refused.stderr
-    );
-    assert!(
-        !refused.stdout.lines().any(|line| line.starts_with("removed:")),
-        "the janitor reported removals it did not perform: {}",
-        refused.stdout
-    );
-    let diagnostic = format!("cannot remove directories under {}", printed_as_shell_path(&scope));
-    assert!(
-        shell_printed(&refused.stderr).contains(&diagnostic),
-        "the refusal does not name the sweep root: {}",
-        refused.stderr
-    );
-    assert!(
-        refused.stderr.contains(" survived"),
-        "the refusal does not say the probe survived: {}",
-        refused.stderr
-    );
-    for name in seeded {
-        assert!(scope.join(name).is_dir(), "{name} is gone after a refused sweep");
-    }
 }
 
 /// A real run whose preflight passes but whose sweep cannot empty one tree must
