@@ -385,16 +385,19 @@ impl Cache {
 
     /// Stops the background prune loop and waits for it to actually end.
     ///
+    /// Dropping the cache only requests cancellation
+    /// ([`BackgroundMaintenanceGuard::cancel`]), and the runtime acts on that
+    /// request at the task's next scheduling point rather than when it is
+    /// made. A caller that must observe the stop therefore cannot rely on
+    /// `Drop`: this method is the awaited stop, and when it returns the task is
+    /// gone.
+    ///
     /// The loop's task owns a [`FileSystemCas`] clone of this cache's store, so
-    /// the store's directory lock stays held until that task is dropped.
-    /// Dropping the cache only requests an abort
-    /// ([`BackgroundMaintenanceGuard::cancel`]), which the runtime acts on at
-    /// the task's next scheduling point rather than when it is requested — a
-    /// caller that opens the same store path again in this process must call
-    /// this first, because when it returns the task is gone — concurrent
-    /// callers are not supported, matching the guard's own contract — and,
-    /// once it has returned, dropping the cache releases the lock
-    /// synchronously.
+    /// the store's directory lock stays held until that task is dropped, which
+    /// is why a caller that opens the same store path again in this process has
+    /// to call this first. Concurrent callers are not supported, matching the
+    /// guard's own contract, and once this has returned, dropping the cache
+    /// releases the lock synchronously.
     ///
     /// Foreground cache operations still work afterwards; only the periodic
     /// prune loop stops. Calling it more than once is safe: the guard takes its
