@@ -109,8 +109,10 @@ pub(super) async fn decode_and_fingerprint_audio(
 
     let samples = output
         .stdout
-        .chunks_exact(2)
-        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[low, high]| i16::from_le_bytes([*low, *high]))
         .collect::<Vec<_>>();
 
     if samples.is_empty() {

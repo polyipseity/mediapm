@@ -123,10 +123,9 @@ pub struct BuiltinCliArgs {
 #[cfg(feature = "cli")]
 pub fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
     let mut map = StringMap::new();
-    let mut chunks = pairs.chunks_exact(2);
-    for chunk in &mut chunks {
-        let key = chunk[0].trim();
-        let value = &chunk[1];
+    let (chunks, remainder) = pairs.as_chunks::<2>();
+    for [key, value] in chunks {
+        let key = key.trim();
         if key.is_empty() {
             return Err(format!("invalid {label} entry; key must be non-empty"));
         }
@@ -134,7 +133,7 @@ pub fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, St
             return Err(format!("duplicate {label} entry for key '{key}'"));
         }
     }
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         let option_name = if label == "args" { "arg" } else { "input" };
         return Err(format!(
             "invalid {label} entries; expected repeated '--{option_name} KEY VALUE' pairs"
