@@ -303,7 +303,7 @@ async fn reconcile_media_tagger(
     records: Vec<ToolRegistryEntry>,
     pinned_vcs_hash: &str,
     spec_content_map: BTreeMap<String, String>,
-) -> (tempfile::TempDir, tempfile::TempDir, MediaPmPaths, ToolSyncReport) {
+) -> (tempfile::TempDir, mediapm_utils::temp::ManagedTempDir, MediaPmPaths, ToolSyncReport) {
     let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let paths = MediaPmPaths::from_root(tmp.path());

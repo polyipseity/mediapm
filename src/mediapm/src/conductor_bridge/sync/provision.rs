@@ -1724,7 +1724,8 @@ mod tests {
     // -- Progress bar label format tests (shortened phases + version) --
 
     async fn label_setup()
-    -> (impl CasApi, UserLevelCache, RecordingProgressTracker, tempfile::TempDir) {
+    -> (impl CasApi, UserLevelCache, RecordingProgressTracker, mediapm_utils::temp::ManagedTempDir)
+    {
         let cas = new_in_memory_cas();
         let tmp = mediapm_utils::temp::cache_dir().expect("temp dir");
         let cache = Cache::open(

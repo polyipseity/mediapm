@@ -81,7 +81,7 @@ pub fn uses_isolated_cache_root() -> bool {
 /// RAII guard pointing example env vars at unique prefixed tempdirs for one test run.
 pub struct IsolatedExampleRoots {
     artifact_dir: tempfile::TempDir,
-    cache_dir: Option<tempfile::TempDir>,
+    cache_dir: Option<mediapm_utils::temp::ManagedTempDir>,
     previous_artifact_root: Option<OsString>,
     previous_cache_root: Option<OsString>,
     // Declared last so it drops last: env restore and tempdir cleanup in
@@ -148,7 +148,7 @@ impl IsolatedExampleRoots {
     /// Isolated user-level download cache path when [`Self::with_cache`] was used.
     #[must_use]
     pub fn cache_root_path(&self) -> Option<&Path> {
-        self.cache_dir.as_ref().map(tempfile::TempDir::path)
+        self.cache_dir.as_ref().map(|cache_dir| cache_dir.path())
     }
 }
 

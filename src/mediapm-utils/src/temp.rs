@@ -16,6 +16,56 @@ use std::time::Duration;
 /// The janitor globs and `is_managed_path` derive from this constant.
 pub const MEDIAPM_TEMP_PREFIX: &str = "mediapm-";
 
+/// A role-prefixed temp directory whose removal retries instead of giving up.
+///
+/// A plain [`tempfile::TempDir`] removes its tree with a single `remove_dir_all`
+/// and discards the outcome, so a write that lands just after the tree was
+/// removed leaves an orphan under `$TMPDIR` for the janitor to reclaim later —
+/// see `temp-directory-spec.instructions.md`, "Why a temp root that a late
+/// writer can reach is removed with retries". Cache roots are written by
+/// background maintenance, whose last write can outlive the owner's drop, so a
+/// cache root is removed through [`remove_dir_all_with_retry`]: it clears
+/// readonly bits and retries a tree a lingering handle is still holding.
+///
+/// Everything else about the directory is the wrapped [`tempfile::TempDir`],
+/// reached through [`Deref`](std::ops::Deref), so `path()` and the coercions a
+/// `&TempDir` accepts keep working at every call site.
+#[derive(Debug)]
+pub struct ManagedTempDir {
+    /// The wrapped directory. Taken at most once, by [`Drop`], which then owns
+    /// the removal itself.
+    dir: Option<tempfile::TempDir>,
+}
+
+impl std::ops::Deref for ManagedTempDir {
+    type Target = tempfile::TempDir;
+
+    fn deref(&self) -> &Self::Target {
+        self.dir.as_ref().expect("the directory is only taken by drop")
+    }
+}
+
+impl AsRef<Path> for ManagedTempDir {
+    fn as_ref(&self) -> &Path {
+        self.path()
+    }
+}
+
+impl Drop for ManagedTempDir {
+    fn drop(&mut self) {
+        let Some(dir) = self.dir.take() else {
+            return;
+        };
+        let path = dir.path().to_path_buf();
+        // Hand the removal to this module's retrying path. `forget` keeps the
+        // wrapped `TempDir` from making its own single attempt afterwards: the
+        // tree is already gone when the retry succeeds, and a second removal
+        // would report nothing the first one did not.
+        std::mem::forget(dir);
+        let _ = remove_dir_all_with_retry(&path);
+    }
+}
+
 /// Creates a unique artifact workspace directory under `$TMPDIR`.
 ///
 /// # Errors
@@ -30,8 +80,9 @@ pub fn artifact_dir() -> io::Result<tempfile::TempDir> {
 /// # Errors
 ///
 /// Returns [`io::Error`] when the directory cannot be created.
-pub fn cache_dir() -> io::Result<tempfile::TempDir> {
-    tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}cache-")).tempdir()
+pub fn cache_dir() -> io::Result<ManagedTempDir> {
+    let dir = tempfile::Builder::new().prefix(&format!("{MEDIAPM_TEMP_PREFIX}cache-")).tempdir()?;
+    Ok(ManagedTempDir { dir: Some(dir) })
 }
 
 /// Returns the stable conductor/mediapm runtime tmp root for one workspace.
@@ -165,6 +216,28 @@ mod tests {
         let dir = cache_dir().expect("cache dir");
         let name = dir.path().file_name().and_then(|n| n.to_str()).expect("file name");
         assert!(name.starts_with(MEDIAPM_TEMP_PREFIX));
+    }
+
+    /// A cache root leaves nothing behind, readonly contents included.
+    ///
+    /// The tree a cache owns is exactly the one a background writer can still
+    /// have a handle inside, so its removal must take the retrying route rather
+    /// than one `remove_dir_all` attempt whose failure nobody reads.
+    #[test]
+    fn cache_dir_removes_readonly_contents_on_drop() {
+        let dir = cache_dir().expect("cache dir");
+        let path = dir.path().to_path_buf();
+        let nested = path.join("store").join("blobs");
+        fs::create_dir_all(&nested).expect("nested store");
+        let blob = nested.join("object");
+        fs::write(&blob, b"payload").expect("write a blob");
+        let mut permissions = fs::metadata(&blob).expect("blob metadata").permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&blob, permissions).expect("mark the blob readonly");
+
+        drop(dir);
+
+        assert!(!path.exists(), "a managed cache dir must remove its whole tree on drop");
     }
 
     #[test]

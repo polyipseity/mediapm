@@ -1153,7 +1153,9 @@ mod tests {
     /// ([`github_api_base`], [`ffmpeg::martin_riedl_base`],
     /// [`ffmpeg::jellyfin_base`]), so a test that redirects a seam still finds
     /// its own seeds.
-    async fn seed_metadata_cache(tool_name: &str) -> (ToolDownloadCache, tempfile::TempDir) {
+    async fn seed_metadata_cache(
+        tool_name: &str,
+    ) -> (ToolDownloadCache, mediapm_utils::temp::ManagedTempDir) {
         let temp_dir = mediapm_utils::temp::cache_dir().unwrap();
         let cache =
             ToolDownloadCache::open(temp_dir.path(), "test_metadata.json", 3600).await.unwrap();

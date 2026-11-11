@@ -225,7 +225,7 @@ mod tests {
         let Command::Test(sel) = cli.command else {
             panic!("expected test");
         };
-        assert!(sel.feature_flags().is_empty());
+        assert_eq!(sel.feature_flags().len(), 0, "no feature flags are selected");
     }
 
     #[test]

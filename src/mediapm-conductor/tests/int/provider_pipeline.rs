@@ -28,7 +28,7 @@ async fn resolve_echo() -> ResolvedToolFetch {
 }
 
 /// Opens a fresh user-level cache in a temp dir.
-async fn open_echo_cache() -> (UserLevelCache, tempfile::TempDir) {
+async fn open_echo_cache() -> (UserLevelCache, mediapm_utils::temp::ManagedTempDir) {
     let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
     let cache = UserLevelCache::open(cache_root.path(), "tools.json", ENTRY_TTL_SECONDS)
         .await

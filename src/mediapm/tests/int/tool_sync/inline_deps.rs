@@ -212,7 +212,11 @@ async fn sync_composite_non_transitive() -> Result<(), mediapm::MediaPmError> {
 /// syncing, and keeps the returned workspace and cache roots alive for as long
 /// as the service reads them.
 async fn yt_dlp_with_deno_service() -> Result<
-    (MediaPmService<mediapm_cas::FileSystemCas>, tempfile::TempDir, tempfile::TempDir),
+    (
+        MediaPmService<mediapm_cas::FileSystemCas>,
+        tempfile::TempDir,
+        mediapm_utils::temp::ManagedTempDir,
+    ),
     mediapm::MediaPmError,
 > {
     let mut runtime = MediaRuntimeStorage::default();

@@ -82,7 +82,11 @@ fn v2_state_json(resolved: bool) -> serde_json::Value {
     reason = "the fixture is a whole skip scenario written top to bottom: three tool requirements, the three state entries that have to agree with them, and the three generated-doc specs they skip against, and splitting it would separate a requirement from the entry it must match"
 )]
 async fn seeded_three_tool_skip_service() -> Result<
-    (MediaPmService<mediapm_cas::FileSystemCas>, tempfile::TempDir, tempfile::TempDir),
+    (
+        MediaPmService<mediapm_cas::FileSystemCas>,
+        tempfile::TempDir,
+        mediapm_utils::temp::ManagedTempDir,
+    ),
     mediapm::MediaPmError,
 > {
     use std::collections::BTreeMap;

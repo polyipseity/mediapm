@@ -323,7 +323,7 @@ mod tests {
     /// store beneath it.
     async fn lookup_harness(
         expiry: CacheExpiryPolicy,
-    ) -> (tempfile::TempDir, MediaTaggerHttpCache, wiremock::MockServer) {
+    ) -> (mediapm_utils::temp::ManagedTempDir, MediaTaggerHttpCache, wiremock::MockServer) {
         let server = wiremock::MockServer::start().await;
         let root = mediapm_utils::temp::cache_dir().expect("cache directory");
         let cache = MediaTaggerHttpCache::new(Some(root.path().to_path_buf()), expiry);

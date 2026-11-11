@@ -112,7 +112,11 @@ mod tests {
             "let _ = tempfile::Builder::new().prefix(\"mediapm-\");\nlet _ = tempfile::tempdir();\n",
         )
         .expect("write");
-        assert!(violations_in(&root).expect("scan").is_empty());
+        assert_eq!(
+            violations_in(&root).expect("scan").len(),
+            0,
+            "the scan must report no violations"
+        );
     }
 
     /// A bare `tempfile::tempdir()` anywhere else builds a directory the
@@ -149,7 +153,11 @@ mod tests {
         let root = scratch("clean");
         fs::create_dir_all(root.join("src/mediapm/src")).expect("mkdir");
         fs::write(root.join("src/mediapm/src/lib.rs"), "fn f() {}\n").expect("write");
-        assert!(violations_in(&root).expect("scan").is_empty());
+        assert_eq!(
+            violations_in(&root).expect("scan").len(),
+            0,
+            "the scan must report no violations"
+        );
     }
 
     /// The gate's own verdict, not just its scan: a tree with a bare

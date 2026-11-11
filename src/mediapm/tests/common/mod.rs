@@ -88,7 +88,11 @@ pub(crate) fn read_doc(path: &Path) -> mediapm::MediaPmDocument {
 pub(crate) async fn service_with_cache(
     mut runtime: MediaRuntimeStorage,
 ) -> Result<
-    (MediaPmService<mediapm_cas::FileSystemCas>, tempfile::TempDir, tempfile::TempDir),
+    (
+        MediaPmService<mediapm_cas::FileSystemCas>,
+        tempfile::TempDir,
+        mediapm_utils::temp::ManagedTempDir,
+    ),
     mediapm::MediaPmError,
 > {
     let root = mediapm_utils::temp::artifact_dir().expect("tempdir");

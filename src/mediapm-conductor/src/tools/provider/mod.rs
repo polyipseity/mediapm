@@ -4422,7 +4422,8 @@ mod tests {
 
     /// Opens a hermetic user-level cache with a `tools` domain, for the
     /// fetch-phase tests below.
-    async fn open_tools_cache() -> (crate::cache_user_level::UserLevelCache, tempfile::TempDir) {
+    async fn open_tools_cache()
+    -> (crate::cache_user_level::UserLevelCache, mediapm_utils::temp::ManagedTempDir) {
         let dir = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = crate::cache::Cache::open(
             dir.path(),
