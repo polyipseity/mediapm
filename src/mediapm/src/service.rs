@@ -293,12 +293,19 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
                 index_file_name: "tool_metadata.json".to_string(),
                 entry_ttl_seconds: 24 * 60 * 60,
             };
-            let cache = Cache::open(&cache_root, &[content_domain, metadata_domain])
-                .await
-                .map(ToolDownloadCache::from_cache)
-                .map_err(|e| {
-                    MediaPmError::Workflow(format!("failed to open tool download cache: {e}"))
-                })?;
+            // A warning check is a point-in-time read: it resolves metadata and
+            // returns, so the 24-hour background prune loop a normal open
+            // starts would only hold the store's lock past this call. Opening
+            // without that background loop means the cache's drop releases the
+            // lock immediately, which lets the next check in the same process
+            // open the same store without contending with a lingering task.
+            let cache =
+                Cache::open_without_background(&cache_root, &[content_domain, metadata_domain])
+                    .await
+                    .map(ToolDownloadCache::from_cache)
+                    .map_err(|e| {
+                        MediaPmError::Workflow(format!("failed to open tool download cache: {e}"))
+                    })?;
             // Resolve with the tool's own version target so a tag-pinned
             // tool's canonical version is compared against the pinned
             // release, not against whatever is currently latest.
