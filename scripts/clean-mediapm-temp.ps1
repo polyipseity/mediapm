@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# Remove mediapm-owned temp directories under the OS temp dir.
+# Remove mediapm-owned temp directories under the OS temp dir, or under an explicit --root.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -11,17 +11,42 @@ $dryRun = $false
 $removed = 0
 $failed = 0
 
-foreach ($arg in $args) {
-    switch ($arg) {
+# Usage text, printed by -h/--help and again on a missing --root argument.
+function Write-Usage {
+    param([switch]$ToError)
+
+    $lines = @(
+        "usage: $PSCommandPath [--dry-run] [--root <dir>]"
+        'removes: mediapm-*'
+        '         under the OS temp dir, or under <dir> when --root is given.'
+    )
+    foreach ($line in $lines) {
+        if ($ToError) {
+            [Console]::Error.WriteLine($line)
+        } else {
+            Write-Output $line
+        }
+    }
+}
+
+for ($index = 0; $index -lt $args.Count; $index++) {
+    switch ($args[$index]) {
         '--dry-run' { $dryRun = $true }
+        '--root' {
+            if ($index + 1 -ge $args.Count) {
+                [Console]::Error.WriteLine('missing argument for --root')
+                Write-Usage -ToError
+                exit 1
+            }
+            $index++
+            $tempRoot = $args[$index]
+        }
         { $_ -eq '-h' -or $_ -eq '--help' } {
-            Write-Output "usage: $PSCommandPath [--dry-run]"
-            Write-Output 'removes: mediapm-*'
-            Write-Output '         under the OS temp dir.'
+            Write-Usage
             exit 0
         }
         default {
-            [Console]::Error.WriteLine("unknown argument: $arg")
+            [Console]::Error.WriteLine("unknown argument: $($args[$index])")
             exit 1
         }
     }

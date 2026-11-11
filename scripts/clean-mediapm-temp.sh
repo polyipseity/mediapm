@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Remove mediapm-owned temp directories under $TMPDIR.
+# Remove mediapm-owned temp directories under $TMPDIR, or under an explicit --root.
 set -euo pipefail
 
 tmp_root="${TMPDIR:-/tmp}"
@@ -7,20 +7,35 @@ dry_run=0
 removed=0
 failed=0
 
-for arg in "$@"; do
-    case "$arg" in
+# Usage text, printed by -h/--help and again on a missing --root argument.
+usage() {
+    echo "usage: $0 [--dry-run] [--root <dir>]"
+    echo "removes: mediapm-*"
+    echo "         under \$TMPDIR, or under <dir> when --root is given."
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
         --dry-run) dry_run=1 ;;
+        --root)
+            if [ "$#" -lt 2 ]; then
+                echo "missing argument for --root" >&2
+                usage >&2
+                exit 1
+            fi
+            tmp_root="$2"
+            shift
+            ;;
         -h | --help)
-            echo "usage: $0 [--dry-run]"
-            echo "removes: mediapm-*"
-            echo "         under \$TMPDIR."
+            usage
             exit 0
             ;;
         *)
-            echo "unknown argument: $arg" >&2
+            echo "unknown argument: $1" >&2
             exit 1
             ;;
     esac
+    shift
 done
 
 # A temp root that does not exist, or that cannot be enumerated, produces a
