@@ -2938,7 +2938,7 @@ mod tests {
     /// whose URL is its own identity still keys by the URL alone.
     #[test]
     fn content_cache_key_separates_a_rotated_alias_from_the_url() {
-        let url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/\
+        let url = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/latest/download/\
                    ffmpeg-master-latest-linux64-gpl.tar.xz";
         let build = content_cache_key(url, Some("autobuild-2025-07-15-12-00"));
         let rotated = content_cache_key(url, Some("autobuild-2025-08-01-09-00"));

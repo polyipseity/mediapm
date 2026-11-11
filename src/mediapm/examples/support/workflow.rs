@@ -479,8 +479,8 @@ fn render_states(config: ScreenConfig) -> String {
     /// Seed the coordinator installs on every worker slot, quoted from
     /// `coordinator.rs::worker_slot_label`.
     const WORKFLOW_SEED: &str = "idle";
-    /// ffmpeg's `human_readable_version` is its `BtbN` autobuild tag and the
-    /// martin-riedl macOS-leg build id as one string (`tools/provider/mod.rs`).
+    /// ffmpeg's `human_readable_version` is its `FFmpeg-Builds` autobuild tag and
+    /// the martin-riedl macOS-leg build id as one string (`tools/provider/mod.rs`).
     const FFMPEG_VERSION: &str = "autobuild-2025-10-03-12-00+1759500000_N-127260-g7bc3576910";
     /// sd's reported version.
     const SD_VERSION: &str = "v1.10.0";

@@ -50,7 +50,7 @@ The sync coordinator persists two distinct documents with different write polici
 - **`conductor.generated.ncl` (artifact-driven, change-detected):** Updated only when
   tool content-map hashes (the actual binary payloads) differ from the previous write. Uses `write_bytes_if_changed()` — reads the existing file and skips the write when bytes are identical. This is the artifact manifest (it only changes when deployable artifacts change.
 
-**Rationale:** Canonical version tags (e.g., daily autobuild timestamps from BtbN) can change without producing different binaries. An unconditional conductor-file write would create git noise for every upstream tag rotation. The dual strategy gives zero git churn in the conductor file when payloads are stable, and a complete sync history in state.json for debugging and audit.
+**Rationale:** Canonical version tags (e.g., daily autobuild timestamps from FFmpeg-Builds) can change without producing different binaries. An unconditional conductor-file write would create git noise for every upstream tag rotation. The dual strategy gives zero git churn in the conductor file when payloads are stable, and a complete sync history in state.json for debugging and audit.
 
 ### `ToolSyncReport` fields
 

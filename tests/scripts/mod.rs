@@ -838,12 +838,13 @@ const DEEP_CHAIN_LEVELS: usize = 300;
 ///
 /// Windows cannot address a path past `MAX_PATH` (260 characters, terminator
 /// included) without the `\\?\` prefix, and neither janitor twin uses one, so
-/// this is the platform's real limit rather than a test case. The deepest path
-/// [`seed_deep_chain`] builds at this depth is the temp base
-/// (`C:\Users\<user>\AppData\Local\Temp`, 39 characters on the CI runner) plus
-/// the sandbox name (at most 17, for `mediapm-<pid>-<seq>`), `\scope` (6),
-/// `\mediapm-artifact-fake` (22), two bytes per level (80) and `\leaf` (5):
-/// 169 characters, 90 inside the limit.
+/// this is the platform's real limit rather than a test case. The constant is
+/// the bound of [`seed_deep_chain`]'s loop, which seeds one level per step from
+/// `1`, so it builds 39 directories rather than 40. The deepest path at that
+/// depth is the temp base (`C:\Users\<user>\AppData\Local\Temp`, 39
+/// characters on the CI runner) plus the sandbox name (at most 17, for
+/// `mediapm-<pid>-<seq>`), `\scope` (6), `\mediapm-artifact-fake` (22), two
+/// bytes per level (78) and `\leaf` (5): 167 characters, 92 inside the limit.
 const WINDOWS_DEEP_CHAIN_LEVELS: usize = 40;
 
 /// The chain depth this host can seed and sweep, as deep as the host can name.

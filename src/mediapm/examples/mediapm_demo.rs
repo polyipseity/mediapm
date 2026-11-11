@@ -781,7 +781,7 @@ async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> Exampl
     cache
         .store_bytes(
             METADATA_DOMAIN,
-            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10",
+            "https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10",
             b"autobuild-2025-07-15-12-00",
         )
         .await;

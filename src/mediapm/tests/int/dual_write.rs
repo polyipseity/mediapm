@@ -66,10 +66,10 @@ async fn conductor_ncl_skips_write_when_unchanged() {
 /// upstream metadata churn without payload changes), the conductor generated
 /// document remains untouched.
 ///
-/// This regression test reproduces the original scenario: `BtbN` autobuild
-/// tags change daily (`canonical_version` churn) while the macOS payload
-/// (same `content_map` / runtime hashes) stays identical. The generated NCL
-/// document should not change — state.json absorbs the metadata update.
+/// This regression test reproduces the original scenario: `FFmpeg-Builds`
+/// autobuild tags change daily (`canonical_version` churn) while the macOS
+/// payload (same `content_map` / runtime hashes) stays identical. The generated
+/// NCL document should not change — state.json absorbs the metadata update.
 #[tokio::test]
 async fn regression_state_only_churn_does_not_touch_conductor_file() {
     let mut runtime = MediaRuntimeStorage::default();

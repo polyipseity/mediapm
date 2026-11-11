@@ -58,7 +58,7 @@ by version number. Every later shape change is a version bump.
 `// WHY:` comment on the provider dispatch arm, the per-tool provider module
 doc comment, and the per-tool row in `provider-dispatch.instructions.md`.
 Current `None` fields: ffmpeg `resolved_version`/`resolved_vcs_hash` (mixed
-sources; the BtbN build-repo hash is not the upstream ffmpeg source commit)
+sources; the FFmpeg-Builds build-repo hash is not the upstream ffmpeg source commit)
 and media-tagger `resolved_tag` (builtin launcher, no upstream tag).
 
 ## `ToolRegistryEntry` vs legacy `ActiveToolInstance`

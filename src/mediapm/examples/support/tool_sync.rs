@@ -107,8 +107,10 @@ pub fn render_tool_sync_screen(config: ScreenConfig) -> String {
     /// The number of tools the run provisions or skips, which is what the pinned
     /// overall bar totals.
     const TOOL_COUNT: u64 = 3;
-    /// ffmpeg resolves two metadata URLs, the `BtbN` autobuild tag and the
-    /// martin-riedl build-id probe. yt-dlp and deno resolve one each.
+    /// The resolve bar's item total in this worked example: it draws two of
+    /// ffmpeg's six lookups (the `FFmpeg-Builds` autobuild tag and the
+    /// martin-riedl build-id probe) because the committed transcript is fixed.
+    /// yt-dlp and deno resolve one each.
     const FFMPEG_LOOKUPS: u64 = 2;
     /// Total bytes of the two `deno` payloads the fetch bar tracks.
     const DENO_FETCH_BYTES: u64 = 31_457_280;
@@ -307,14 +309,15 @@ fn render_dense(config: ScreenConfig) -> String {
 /// only way to see one is to leave the parent unfinished.
 ///
 /// Two of the seeds are the longest versions mediapm reports: ffmpeg's composite
-/// of a `BtbN` autobuild tag and the martin-riedl macOS-leg build id, and
+/// of the `FFmpeg-Builds` autobuild tag and the martin-riedl macOS-leg build id, and
 /// media-tagger's package version followed by the build's git hash. Both are
 /// wider than the widest committed transcript, so the head-keeping version
 /// shrink runs at every width here and never has enough room to keep the whole
 /// version.
 #[must_use]
 fn render_states(config: ScreenConfig) -> String {
-    /// ffmpeg resolves the `BtbN` autobuild tag and the martin-riedl build id.
+    /// The resolve bar's item total in this scenario: two of ffmpeg's six
+    /// lookups, the `FFmpeg-Builds` autobuild tag and the martin-riedl build id.
     const FFMPEG_LOOKUPS: u64 = 2;
     /// Total bytes of the two payloads the `deno` fetch bar tracks.
     const DENO_FETCH_BYTES: u64 = 31_457_280;
@@ -459,7 +462,7 @@ const MEDIA_TAGGER_LABEL: &str =
 
 /// Seed for ffmpeg's resolve bar in the `states` scenario.
 ///
-/// ffmpeg reports its `BtbN` autobuild tag and the martin-riedl macOS-leg
+/// ffmpeg reports its `FFmpeg-Builds` autobuild tag and the martin-riedl macOS-leg
 /// build id as one human-readable version (`tools/provider/mod.rs`).
 const FFMPEG_LABEL: &str =
     "ffmpeg autobuild-2025-10-03-12-00+1759500000_N-127260-g7bc3576910 [res]";
