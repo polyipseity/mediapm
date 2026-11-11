@@ -7,7 +7,6 @@
 //! [`output_relationship`] for what each method leaves, and
 //! [`file_content_matches_hash`] for the one case where only bytes can answer.
 
-use std::fs::Metadata;
 use std::io;
 use std::path::Path;
 
@@ -71,10 +70,7 @@ pub(super) async fn output_relationship(
     if !target_metadata.is_file() {
         return OutputRelationship::Separate;
     }
-    let Ok(object_metadata) = tokio::fs::metadata(object_path).await else {
-        return OutputRelationship::Separate;
-    };
-    if describes_one_file(&target_metadata, &object_metadata) {
+    if describes_one_file(target_path, object_path) {
         OutputRelationship::Linked
     } else {
         OutputRelationship::Separate
@@ -113,31 +109,16 @@ pub(super) async fn file_content_matches_hash(path: &Path, expected: &Hash) -> b
     }
 }
 
-/// Whether two `stat` results describe one file rather than two that happen to
-/// agree on length.
+/// Whether two paths name the same file rather than two that happen to agree
+/// on length.
 ///
-/// The platform's own answer to the question: device and inode on unix, volume
-/// serial number and file index on Windows. Windows reports both as optional,
-/// and a pair it declines to report is not evidence of identity, so that case
-/// answers `false` and the caller falls through to comparing content.
-fn describes_one_file(left: &Metadata, right: &Metadata) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-
-        left.dev() == right.dev() && left.ino() == right.ino()
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt as _;
-
-        match (left.volume_serial_number(), left.file_index()) {
-            (Some(volume), Some(index)) => {
-                Some((volume, index)) == (right.volume_serial_number(), right.file_index())
-            }
-            _ => false,
-        }
-    }
+/// Asking the platform is the only answer that does not read the bytes: the
+/// same device and inode on Unix, the same volume and file index on Windows.
+/// A pair the platform declines to identify is not evidence of identity, so
+/// that case answers `false` and the caller falls through to comparing
+/// content.
+fn describes_one_file(left: &Path, right: &Path) -> bool {
+    same_file::is_same_file(left, right).unwrap_or(false)
 }
 
 /// Counting the managed outputs a test asked to have their bytes read.

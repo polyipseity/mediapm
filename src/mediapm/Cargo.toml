@@ -82,6 +82,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 unicode-normalization.workspace = true
+same-file.workspace = true
 zip.workspace = true
 
 [build-dependencies]
