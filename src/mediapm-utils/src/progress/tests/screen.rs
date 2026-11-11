@@ -364,32 +364,64 @@ fn retired_screen_cannot_repaint_the_committed_frame() {
 /// land inside the ticker's upgrade window, so it is evidence that the window
 /// does not normally bite, not a proof that it cannot.  `ProgressScreen::join`
 /// documents what bounds that window.
+///
+/// Both waits poll the screen for the frame they need instead of sleeping past a
+/// fixed number of intervals, because how far the ticker has got is a
+/// scheduling question: a sleep is a hope that the thread ran inside it.
 #[test]
 fn release_holds_with_the_ticker_running() {
     let term = InMemoryTerm::new(ROWS, COLS);
     let terminal = terminal_with(&term, ROWS as usize, true);
     let first = terminal.screen().build();
     first.add_bar(1, "alpha").finish_success();
-    // The ticker's interval is 50 ms; sleep past it so the first screen has been
-    // driven by the thread rather than by an explicit tick.
-    std::thread::sleep(Duration::from_millis(60));
-    let contents = term.contents();
-    assert!(
-        contents.contains("alpha"),
-        "precondition: the ticker drew the first screen: {contents:?}"
-    );
+    // The ticker's first frame is the thread's work, so wait for it rather than
+    // sleeping past one interval and hoping it landed.
+    wait_for_ticker_frame(&term, "the ticker draws the first screen", |contents| {
+        contents.contains("alpha")
+    });
     first.join();
     let second = terminal.screen().build();
     second.add_bar(1, "beta").finish_success();
-    // Three more ticker intervals for the thread to notice the new screen, draw
-    // it, and observe the retired renderer's `Weak` fail.
-    std::thread::sleep(Duration::from_millis(150));
-    let contents = term.contents();
-    assert!(
-        contents.contains("beta"),
-        "second screen never rendered with the ticker running: {contents:?}"
-    );
+    // The thread must notice the new screen, draw it, and observe the retired
+    // renderer's `Weak` fail; each of those is its own scheduling step.
+    wait_for_ticker_frame(&term, "the second screen renders with the ticker running", |contents| {
+        contents.contains("beta")
+    });
 }
+
+/// Waits for the daemon ticker to commit a frame whose contents satisfy
+/// `condition`, polling every [`TICKER_POLL_INTERVAL`] for up to
+/// [`TICKER_WAIT_DEADLINE`].
+///
+/// The ticker is a thread, so how many frames it has committed by the moment a
+/// test looks is a scheduling question rather than a fixed latency. A fixed
+/// sleep is a hope that the thread ran inside it, and under load it may not
+/// have; polling keeps the assertion (the ticker must eventually draw the
+/// frame) while removing the guess. A wait that reaches the deadline reports the
+/// contents it ended on, so a miss names what the screen actually held.
+fn wait_for_ticker_frame(term: &InMemoryTerm, expected: &str, condition: impl Fn(&str) -> bool) {
+    let started = std::time::Instant::now();
+    loop {
+        let contents = term.contents();
+        if condition(&contents) {
+            return;
+        }
+        assert!(
+            started.elapsed() < TICKER_WAIT_DEADLINE,
+            "{expected} within {TICKER_WAIT_DEADLINE:?}: observed contents {contents:?}"
+        );
+        std::thread::sleep(TICKER_POLL_INTERVAL);
+    }
+}
+
+/// How often [`wait_for_ticker_frame`] reads the screen: a fifth of the ticker's
+/// 50 ms interval, so a committed frame is seen on the next poll.
+const TICKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// How long [`wait_for_ticker_frame`] gives the ticker: a hundred intervals, far
+/// past any scheduling delay a loaded machine has shown, and short enough that a
+/// ticker which never draws fails the run instead of hanging it.
+const TICKER_WAIT_DEADLINE: Duration = Duration::from_secs(5);
 
 /// The surviving screen type is reachable only through a terminal and it
 /// implements the dependency-injection trait the conductor consumes.
