@@ -56,6 +56,61 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
     Ok(())
 }
 
+/// A cache root another handle in this process still holds open is transient
+/// contention, not a failed check.
+///
+/// `logical_tool_requires_sync` opens the download cache to resolve a
+/// canonical version, and the store's directory lock refuses a second open.
+/// The provider-failure arm already answers "requires sync" for a
+/// point-in-time question it could not resolve, and an open failure is the
+/// same kind of answer: it must warn and report `Ok(true)` instead of turning
+/// the lock into a failed sync. `media-tagger` is used because it resolves
+/// without network; the holder is dropped at the end of the test so the
+/// tempdir can be removed.
+#[tokio::test]
+async fn sync_requires_sync_when_the_cache_root_is_held_open() -> Result<(), mediapm::MediaPmError>
+{
+    let root = mediapm_utils::temp::artifact_dir().expect("tempdir");
+    let cache_root = mediapm_utils::temp::cache_dir().expect("cache tempdir");
+    let mut overrides = MediaRuntimeStorage {
+        cache_root_override: Some(cache_root.path().to_path_buf()),
+        ..MediaRuntimeStorage::default()
+    };
+    overrides.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    let service =
+        MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
+    let mut state = MediaPmState::default();
+    state.managed_tools.push(ToolRegistryEntry {
+        tool_id: "media-tagger".to_string(),
+        version: String::new(),
+        canonical_version: mediapm::MEDIAPM_GIT_HASH.to_string(),
+        content_map_hash: "blake3:abc".to_string(),
+        deployed_at: mediapm_utils::Timestamp::default(),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    });
+
+    // Held for the whole check: the store's directory lock is what the check's
+    // own open runs into.
+    let _holder = Cache::open(
+        cache_root.path(),
+        &[CacheDomainConfig {
+            domain: "tool_metadata".to_string(),
+            index_file_name: "tool_metadata.json".to_string(),
+            entry_ttl_seconds: 24 * 60 * 60,
+        }],
+    )
+    .await
+    .expect("hold the cache root open");
+
+    assert!(
+        service.logical_tool_requires_sync("media-tagger", &state).await?,
+        "a cache root held open must report the tool as requiring sync, not fail the check",
+    );
+    Ok(())
+}
+
 /// `ToolRegistryEntry.canonical_version` is populated with the canonical version
 /// after sync, not an empty string or requirement version.
 #[tokio::test]

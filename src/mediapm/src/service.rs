@@ -247,6 +247,13 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// (`crate::builtins::is_payload_free_builtin_id`), so its empty map is the
     /// expected shape and never triggers a sync on its own.
     ///
+    /// A cache root another handle still holds open, and a provider lookup that
+    /// fails, both answer `true` as well: the question is a point-in-time one,
+    /// and "could not tell" leans towards syncing rather than failing the
+    /// caller's sync. A cache root that cannot be located at all is the
+    /// different case: nothing is contending to explain it, so it is reported
+    /// as an error.
+    ///
     /// # Panics
     ///
     /// Panics on an internal invariant violation: a `tool_id` declared in
@@ -256,7 +263,8 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// # Errors
     ///
     /// Returns [`MediaPmError`] when effective runtime storage resolution
-    /// fails.
+    /// fails, or when no cache root is configured and the platform default
+    /// tool cache root cannot be determined.
     pub async fn logical_tool_requires_sync(
         &self,
         tool_id: &str,
@@ -299,13 +307,27 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             // without that background loop means the cache's drop releases the
             // lock immediately, which lets the next check in the same process
             // open the same store without contending with a lingering task.
-            let cache =
-                Cache::open_without_background(&cache_root, &[content_domain, metadata_domain])
-                    .await
-                    .map(ToolDownloadCache::from_cache)
-                    .map_err(|e| {
-                        MediaPmError::Workflow(format!("failed to open tool download cache: {e}"))
-                    })?;
+            let cache = match Cache::open_without_background(
+                &cache_root,
+                &[content_domain, metadata_domain],
+            )
+            .await
+            {
+                Ok(cache) => ToolDownloadCache::from_cache(cache),
+                Err(error) => {
+                    // The store's directory lock refuses a second open, so this
+                    // is what a sibling handle on the same cache root looks
+                    // like: transient, and not the caller's failure. The
+                    // provider arm below already answers this point-in-time
+                    // question with "requires sync" when it cannot resolve, so
+                    // an unopenable cache answers the same way and still names
+                    // the tool in the log.
+                    tracing::warn!(
+                        "the tool download cache for '{tool_id}' could not be opened, so the tool is reported as requiring sync: {error}"
+                    );
+                    return Ok(true);
+                }
+            };
             // Resolve with the tool's own version target so a tag-pinned
             // tool's canonical version is compared against the pinned
             // release, not against whatever is currently latest.
