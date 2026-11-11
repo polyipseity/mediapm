@@ -40,7 +40,7 @@ warnings = "deny"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
-async-trait = "0.1.89"
+async-trait = "0.1.92"
 blake3 = "1.8.5"
 bytes = "1.10.1"
 chromaprint-next = "0.1.0"
