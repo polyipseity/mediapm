@@ -60,7 +60,7 @@ mkdir -p "$tmpdir/unrelated-dir"
 
 # Dry run: reports all three prefixed dirs, never the controls.
 dry_out="$("$janitor" --dry-run --root "$tmpdir")"
-dry_count="$(printf '%s\n' "$dry_out" | grep -c 'would remove:')" || true
+dry_count="$(printf '%s\n' "$dry_out" | grep -c 'would remove:')" || true # check-suppress:suppression_doc: `grep -c` exits 1 when nothing matches, and `set -e` would abort before the count is compared to 3.
 if [ "$dry_count" -ne 3 ]; then
     fail "dry-run reported $dry_count removals, expected 3"
 fi
@@ -77,7 +77,7 @@ esac
 
 # Real run: removes exactly the three prefixed dirs, leaves controls.
 real_out="$("$janitor" --root "$tmpdir")"
-real_count="$(printf '%s\n' "$real_out" | grep -c 'removed:')" || true
+real_count="$(printf '%s\n' "$real_out" | grep -c 'removed:')" || true # check-suppress:suppression_doc: `grep -c` exits 1 when nothing matches, and `set -e` would abort before the count is compared to 3.
 if [ "$real_count" -ne 3 ]; then
     fail "real run reported $real_count removals, expected 3"
 fi
