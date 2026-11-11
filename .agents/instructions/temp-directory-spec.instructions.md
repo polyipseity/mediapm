@@ -82,7 +82,8 @@ Test harnesses must not rely on tuple-binding order for this. `mediapm-cas`'s `c
 
 - Use the role helpers only: `artifact_dir()`, `cache_dir()`, `runtime_dir_for_workspace()`. NO bare `tempfile::tempdir()` anywhere in the tree — tests included. The only prefix-capable constructors are the role helpers and the `tempfile::Builder::new().prefix(...)` calls inside `temp.rs`.
 - Never `OnceLock<TempDir>` for workspace dirs (the guard's destructor never runs).
-- Readonly-marked trees must be removed with `mediapm_utils::temp::remove_dir_all_with_retry` (clears readonly bits, retries share violations); plain `remove_dir_all` silently fails on readonly subtrees.
+- Readonly-marked trees must be removed with `mediapm_utils::temp::remove_dir_all_with_retry` (clears readonly bits, retries share violations); plain `remove_dir_all` silently fails on readonly subtrees. `cache_dir()` returns a `ManagedTempDir` that takes that route on drop, because a cache root is exactly the tree whose background writer can outlive its owner; `artifact_dir()` still returns a plain `TempDir`.
+- A janitor invocation names its root with `--root` and never through the environment, and a POSIX-shell invocation passes the root in that shell's own spelling (`C:/…`, not `C:\…`): a shell left to resolve its own temp root on Windows prints the root it swept in its mount form, so an environment-staged root cannot be compared against the path the harness seeded.
 - Helpers that create a store for a lazily-created root must return the owning `TempDir`.
 - Bind every `TempDir` to a local for its full scope; never leak a path without a cleanup owner.
 
