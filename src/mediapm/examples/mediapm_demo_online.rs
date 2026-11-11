@@ -301,15 +301,22 @@ const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV: &str =
 /// `src/mediapm-conductor/src/orchestration/config.rs`.
 const DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV: &str = "MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS";
 
-/// Margin the demo holds back from its overall sync budget when sizing the
-/// conductor's run-level RPC budget, so the conductor-layer timeout error
-/// (which names the budget and the knob) fires before the demo's blind
-/// hard-timeout wrapper.
-const DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS: u64 = 60;
+/// Reserve held back from the demo's overall sync budget for the conductor
+/// budgets it exports, so those budgets sit below the demo's own budget once
+/// the sync budget is large enough for the margin to apply, and a
+/// conductor-layer timeout fires before the hard watchdog.
+const DEMO_CONDUCTOR_BUDGET_MARGIN_SECS: u64 = 60;
 
-const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_DEFAULT_SECS: u64 = 5 * 60;
-
-const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_RESERVE_SECS: u64 = 30;
+/// Floor the exported conductor budgets never drop below, so a short
+/// caller-set budget cannot export a zero or near-zero value the conductor
+/// reads as effectively disabled.
+///
+/// It binds below
+/// `DEMO_CONDUCTOR_BUDGET_MARGIN_SECS + DEMO_CONDUCTOR_BUDGET_FLOOR_SECS`. At or
+/// below `DEMO_CONDUCTOR_BUDGET_FLOOR_SECS - DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS`
+/// the demo's watchdog expires no later than the export, which is the expected
+/// order for a budget that small.
+const DEMO_CONDUCTOR_BUDGET_FLOOR_SECS: u64 = 60;
 
 const DEMO_ONLINE_HARD_TIMEOUT_GRACE_SECS: u64 = 15;
 
@@ -574,45 +581,51 @@ fn demo_timeout(specified: Option<u64>) -> Duration {
     Duration::from_secs(specified.unwrap_or(DEMO_ONLINE_TIMEOUT_SECS_DEFAULT))
 }
 
+/// Exports the conductor's per-executable timeout, sized as the demo's overall
+/// sync budget minus [`DEMO_CONDUCTOR_BUDGET_MARGIN_SECS`] and floored at
+/// [`DEMO_CONDUCTOR_BUDGET_FLOOR_SECS`].
+///
+/// A caller-set knob wins: the function returns before writing when
+/// [`DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV`] already holds a value.
 fn configure_demo_conductor_executable_timeout(sync_timeout: Duration) {
     if std::env::var_os(DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV).is_some() {
         return;
     }
 
-    let sync_seconds = sync_timeout.as_secs();
-    let computed_timeout = sync_seconds
-        .saturating_sub(DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_RESERVE_SECS)
-        .clamp(30, DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_DEFAULT_SECS);
+    let computed = sync_timeout
+        .as_secs()
+        .saturating_sub(DEMO_CONDUCTOR_BUDGET_MARGIN_SECS)
+        .max(DEMO_CONDUCTOR_BUDGET_FLOOR_SECS);
 
     unsafe {
-        std::env::set_var(DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV, computed_timeout.to_string());
+        std::env::set_var(DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV, computed.to_string());
     }
     emit_watchdog_notice(&format!(
-        "demo_online defaulted {DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV}={computed_timeout} to fail long-running external steps before the overall demo timeout; set {DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV} to override"
+        "exec timeout {computed}s {DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV}"
     ));
 }
 
-/// Exports the conductor's run-level RPC budget, sized from the demo's own
-/// overall sync budget minus [`DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS`].
+/// Exports the conductor's run-level RPC budget, sized as the demo's overall
+/// sync budget minus [`DEMO_CONDUCTOR_BUDGET_MARGIN_SECS`] and floored at
+/// [`DEMO_CONDUCTOR_BUDGET_FLOOR_SECS`].
 ///
-/// The conductor captures this budget on first actor use; if the caller has
-/// already set the knob, that value is respected. A
-/// saturating subtraction can compute zero for a sync budget below the
-/// margin, in which case the conductor falls back to its own default (the
-/// demo's wrapper still bounds the run).
+/// A caller-set knob wins: the function returns before writing when
+/// [`DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV`] already holds a value.
 fn configure_demo_conductor_rpc_timeout(sync_timeout: Duration) {
     if std::env::var_os(DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).is_some() {
         return;
     }
 
-    let computed_budget =
-        sync_timeout.as_secs().saturating_sub(DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS);
+    let computed = sync_timeout
+        .as_secs()
+        .saturating_sub(DEMO_CONDUCTOR_BUDGET_MARGIN_SECS)
+        .max(DEMO_CONDUCTOR_BUDGET_FLOOR_SECS);
 
     unsafe {
-        std::env::set_var(DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, computed_budget.to_string());
+        std::env::set_var(DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV, computed.to_string());
     }
     emit_watchdog_notice(&format!(
-        "demo_online defaulted {DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV}={computed_budget} so the conductor's run-workflow watchdog fires (with its diagnosable error) before the demo's hard timeout; set {DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV} to override"
+        "rpc timeout {computed}s {DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV}"
     ));
 }
 
@@ -4114,8 +4127,16 @@ async fn main() -> ExampleResult<()> {
     // the same knobs: a bad `--timeout-secs` fails fast everywhere, and the
     // conductor sees the same budget whenever it is constructed.
     let sync_timeout = demo_timeout(args.timeout_secs);
-    configure_demo_conductor_executable_timeout(sync_timeout);
-    configure_demo_conductor_rpc_timeout(sync_timeout);
+    // The two writes happen inside the configure functions. Holding the process
+    // env lock across both keeps a lock-holding test from observing one knob
+    // written and the other not, and the guard is released before the route
+    // branch, which takes the same non-reentrant lock for the whole run.
+    // SAFETY: the process env lock is held for both env writes.
+    {
+        let _env_lock = example_isolation::lock_process_env();
+        configure_demo_conductor_executable_timeout(sync_timeout);
+        configure_demo_conductor_rpc_timeout(sync_timeout);
+    }
 
     let hard_timeout_guard = spawn_hard_timeout_guard(sync_timeout);
 
@@ -4788,7 +4809,7 @@ mod tests {
         let rpc_budget = std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV)
             .expect("main must export the conductor RPC budget");
         let expected = (super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT
-            - super::DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS)
+            - super::DEMO_CONDUCTOR_BUDGET_MARGIN_SECS)
             .to_string();
         assert_eq!(rpc_budget, expected, "RPC budget must default to sync budget minus the margin");
         assert!(
@@ -4941,11 +4962,79 @@ mod tests {
         );
         assert_ne!(
             CALLER_RPC_BUDGET,
-            (super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT
-                - super::DEMO_CONDUCTOR_RPC_TIMEOUT_MARGIN_SECS)
+            (super::DEMO_ONLINE_TIMEOUT_SECS_DEFAULT - super::DEMO_CONDUCTOR_BUDGET_MARGIN_SECS)
                 .to_string(),
             "the sentinel must differ from the computed budget, or this assertion could not \
              see an overwrite"
+        );
+    }
+
+    /// Both conductor budgets derive from one formula, so neither can sit above
+    /// the other for the same sync budget, and neither can fall below the floor.
+    ///
+    /// The two configure functions answer the same question about the same sync
+    /// budget, so this pins the derivation at a budget above the floor and at one
+    /// below it. A short budget is the case the floor exists for: the subtraction
+    /// saturates to zero, and the exported value must still leave the conductor
+    /// room to report its own timeout.
+    #[test]
+    fn both_conductor_budgets_share_one_derivation() {
+        let _env_lock = example_isolation::lock_process_env();
+        let previous = [
+            (
+                super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV,
+                std::env::var_os(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV),
+            ),
+            (
+                super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV,
+                std::env::var_os(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV),
+            ),
+        ];
+
+        // SAFETY: the process env lock is held for every write and restore here.
+        let above_floor = unsafe {
+            std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV);
+            std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV);
+            super::configure_demo_conductor_executable_timeout(std::time::Duration::from_secs(585));
+            super::configure_demo_conductor_rpc_timeout(std::time::Duration::from_secs(585));
+            (
+                std::env::var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV).ok(),
+                std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).ok(),
+            )
+        };
+
+        // SAFETY: the same lock covers the second pass and the restore below.
+        let at_floor = unsafe {
+            std::env::remove_var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV);
+            std::env::remove_var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV);
+            super::configure_demo_conductor_executable_timeout(std::time::Duration::from_secs(30));
+            super::configure_demo_conductor_rpc_timeout(std::time::Duration::from_secs(30));
+            (
+                std::env::var(super::DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV).ok(),
+                std::env::var(super::DEMO_CONDUCTOR_RPC_TIMEOUT_SECONDS_ENV).ok(),
+            )
+        };
+
+        // SAFETY: the same lock covers the restore, which runs before any assert so a
+        // failure cannot leave the knobs set for a sibling test.
+        unsafe {
+            for (name, value) in previous {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+
+        assert_eq!(
+            above_floor,
+            (Some("525".to_string()), Some("525".to_string())),
+            "585 s minus the 60 s margin is 525 s for both budgets"
+        );
+        assert_eq!(
+            at_floor,
+            (Some("60".to_string()), Some("60".to_string())),
+            "a 30 s budget saturates to zero and the 60 s floor lifts both budgets"
         );
     }
 
