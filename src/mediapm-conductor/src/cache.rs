@@ -849,6 +849,22 @@ impl TestClock {
 /// Flushes all domain indexes on drop so throttle-deferred writes are not lost.
 impl Drop for Cache {
     fn drop(&mut self) {
+        // Stop the maintenance task before touching the tree, but only when this
+        // is the last cache: `Cache` is `Clone` and the guard is an `Arc`, so an
+        // unconditional cancel here would stop the loop out from under every
+        // surviving clone. Once the count drops to one, this is that final drop,
+        // and cancelling first keeps the task from starting a cycle through the
+        // flush below and from writing after the owner removed the root — where
+        // `write_index_file`'s `create_dir_all` would recreate it, the same orphan
+        // the root check below refuses to make itself. Cancelling is synchronous
+        // and idempotent with the guard's own `Drop`; work the task already handed
+        // to `spawn_blocking` still runs to completion, by the guard's contract,
+        // which is why the root check stays.
+        if let Some(guard) = self.bg_guard.as_ref()
+            && Arc::strong_count(guard) == 1
+        {
+            guard.cancel();
+        }
         // Skip the flush when the root no longer exists: a flush would
         // recreate it via `write_index_file`'s `create_dir_all` as an
         // index-only orphan directory (no `store/`). The index is
