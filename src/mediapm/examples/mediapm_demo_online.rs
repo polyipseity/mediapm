@@ -4692,7 +4692,7 @@ mod tests {
         artifact: tempfile::TempDir,
         /// Kept alive because the run resolves its user-level cache through the
         /// env override this points at.
-        _cache: tempfile::TempDir,
+        _cache: mediapm_utils::temp::ManagedTempDir,
         previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
     }
 
