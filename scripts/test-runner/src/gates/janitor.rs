@@ -10,6 +10,7 @@
 //! nothing that reads as a leftover, so a text-only gate would read the
 //! failure as a clean sweep.
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -108,6 +109,29 @@ fn janitor_command(root: &Path) -> (std::ffi::OsString, Vec<std::ffi::OsString>)
     }
 }
 
+/// Describes one leftover path for the verdict, naming what it holds.
+///
+/// The gate fails the job, and the run's log is then the only record left, so the
+/// verdict carries the tree's own entries: their shape is what tells the next
+/// reader which subsystem leaked the directory. A path that cannot be read is
+/// reported as itself, which is also what a stub janitor's invented path gets, so
+/// the verdict text is unchanged when there is nothing to add.
+fn describe_leftover(path: &str) -> String {
+    let Ok(entries) = fs::read_dir(path) else {
+        return format!("would remove: {path}");
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        format!("would remove: {path} (empty)")
+    } else {
+        format!("would remove: {path} (contains: {})", names.join(", "))
+    }
+}
+
 /// Fails when the test run left a mediapm-owned temp directory behind.
 ///
 /// Runs the janitor in dry-run mode, so it reports and never deletes.
@@ -150,12 +174,12 @@ pub fn enforce(root: &Path) -> Result<()> {
     // the per-directory lines, so the verdict names paths rather than
     // repeating the count the gate already implies.
     let mut leftover = false;
-    let mut leftovers: Vec<&str> = Vec::new();
+    let mut leftovers: Vec<String> = Vec::new();
     for line in combined.lines() {
         if line.starts_with("would remove") {
             leftover = true;
-            if line.starts_with("would remove:") {
-                leftovers.push(line);
+            if let Some(path) = line.strip_prefix("would remove: ") {
+                leftovers.push(describe_leftover(path));
             }
         }
         if !is_contract_line(line) {
@@ -373,6 +397,37 @@ mod tests {
         write_stub(&root, &["would remove 1 mediapm temp director(ies)"], 0);
         let err = enforce(&root).expect_err("a count-only leftover must fail the gate");
         assert_eq!(err.to_string(), "test suite left mediapm temp dirs behind");
+    }
+
+    /// A leftover is named together with what it holds.
+    ///
+    /// The gate is the last reader of a failed run's tree, so the verdict is the
+    /// only place the leak's shape can be recorded. A directory whose entries
+    /// cannot be listed still fails the gate on its path alone.
+    #[test]
+    fn a_leftover_names_its_contents() {
+        let root = scratch("leftover-contents");
+        let leaked = root.join("mediapm-cache-leaked");
+        fs::create_dir_all(leaked.join("store")).expect("seed a leaked tree");
+        fs::write(leaked.join("index.json"), b"{}").expect("seed a leaked index");
+        write_stub(
+            &root,
+            &[
+                &format!("would remove: {}", leaked.display()),
+                "would remove 1 mediapm temp director(ies)",
+            ],
+            0,
+        );
+        let err = enforce(&root).expect_err("a leftover must fail the gate");
+        let text = err.to_string();
+        assert!(
+            text.contains("index.json"),
+            "the verdict must name the tree's entries; got: {text}"
+        );
+        assert!(
+            text.contains("store"),
+            "the verdict must name the tree's directories; got: {text}"
+        );
     }
 
     /// The empty-root case, which nothing else covers: a sweep with
