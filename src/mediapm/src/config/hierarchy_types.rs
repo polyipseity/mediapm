@@ -1322,7 +1322,7 @@ mod tests {
     #[test]
     fn flatten_empty_hierarchy_returns_empty_vec() {
         let result = flatten_hierarchy_nodes_for_runtime(&[]).unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0, "flattening an empty hierarchy yields no node");
     }
 
     #[test]

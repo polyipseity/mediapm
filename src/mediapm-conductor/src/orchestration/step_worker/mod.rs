@@ -96,12 +96,12 @@ impl<C: CasApi + ConstraintApi + Send + Sync + 'static> Actor for StepWorkerActo
     type State = StepWorkerState<C>;
     type Arguments = StepWorkerState<C>;
 
-    async fn pre_start(
+    fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
-    ) -> Result<Self::State, ActorProcessingErr> {
-        Ok(args)
+    ) -> impl std::future::Future<Output = Result<Self::State, ActorProcessingErr>> {
+        std::future::ready(Ok(args))
     }
 
     async fn handle(

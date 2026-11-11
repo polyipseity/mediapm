@@ -494,7 +494,11 @@ mod tests {
         let tool = stream_spec("content", "stdout");
         let step = stream_spec("content", "stdout");
 
-        assert!(discarded_step_fields(&tool, &step).is_empty());
+        assert_eq!(
+            discarded_step_fields(&tool, &step).len(),
+            0,
+            "a step restating the tool's declaration discards no field"
+        );
     }
 
     /// Each field the tool overrides is named, in a fixed order.
@@ -528,7 +532,11 @@ mod tests {
         let tool = stream_spec("content", "stdout");
         let step = OutputCaptureSpec { save: SaveMode::Full, ..tool.clone() };
 
-        assert!(discarded_step_fields(&tool, &step).is_empty());
+        assert_eq!(
+            discarded_step_fields(&tool, &step).len(),
+            0,
+            "a save-only step declaration discards no field"
+        );
     }
 
     /// Runs one builtin `echo` step whose tool declares `tool_defaults` as its

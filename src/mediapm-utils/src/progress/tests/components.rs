@@ -279,11 +279,11 @@ fn regression_snapshot_status_code_round_trip() {
 fn prefix_components_from_str_tool_name_only() {
     let result = super::super::inner::prefix_components_from_str("wget");
     assert_eq!(result.tool_name, "wget");
-    assert!(result.marker.is_empty());
-    assert!(result.version.is_empty());
-    assert!(result.phase.is_empty());
-    assert!(result.count.is_empty());
-    assert!(result.total.is_empty());
+    assert_eq!(result.marker.len(), 0, "a bare tool name carries no status marker");
+    assert_eq!(result.version.len(), 0, "a bare tool name carries no version");
+    assert_eq!(result.phase.len(), 0, "a bare tool name carries no phase tag");
+    assert_eq!(result.count.len(), 0, "a bare tool name carries no count");
+    assert_eq!(result.total.len(), 0, "a bare tool name carries no total");
 }
 
 #[test]
@@ -302,10 +302,10 @@ fn prefix_components_from_str_multiword_no_bracket() {
     // tool_name (regression: previously only the first token was kept).
     let result = super::super::inner::prefix_components_from_str("syncing tools");
     assert_eq!(result.tool_name, "syncing tools");
-    assert!(result.version.is_empty());
-    assert!(result.phase.is_empty());
-    assert!(result.count.is_empty());
-    assert!(result.total.is_empty());
+    assert_eq!(result.version.len(), 0, "a multi-word label without a bracket carries no version");
+    assert_eq!(result.phase.len(), 0, "a multi-word label without a bracket carries no phase tag");
+    assert_eq!(result.count.len(), 0, "a multi-word label without a bracket carries no count");
+    assert_eq!(result.total.len(), 0, "a multi-word label without a bracket carries no total");
 }
 
 #[test]
@@ -314,8 +314,16 @@ fn prefix_components_from_str_multiword_with_count_total() {
     // off; the rest of the string stays the tool name.
     let result = super::super::inner::prefix_components_from_str("syncing tools 2/5");
     assert_eq!(result.tool_name, "syncing tools");
-    assert!(result.version.is_empty());
-    assert!(result.phase.is_empty());
+    assert_eq!(
+        result.version.len(),
+        0,
+        "a trailing count/total token does not turn the leading words into a version"
+    );
+    assert_eq!(
+        result.phase.len(),
+        0,
+        "a trailing count/total token does not turn the leading words into a phase tag"
+    );
     assert_eq!(result.count, "2");
     assert_eq!(result.total, "5");
 }
@@ -326,10 +334,10 @@ fn prefix_components_from_str_keeps_no_bracket_trailing_nonslash_word() {
     // string remains the tool name.
     let result = super::super::inner::prefix_components_from_str("materializing files");
     assert_eq!(result.tool_name, "materializing files");
-    assert!(result.version.is_empty());
-    assert!(result.phase.is_empty());
-    assert!(result.count.is_empty());
-    assert!(result.total.is_empty());
+    assert_eq!(result.version.len(), 0, "a trailing non-slash word does not become a version");
+    assert_eq!(result.phase.len(), 0, "a trailing non-slash word does not become a phase tag");
+    assert_eq!(result.count.len(), 0, "a trailing non-slash word does not become a count");
+    assert_eq!(result.total.len(), 0, "a trailing non-slash word does not become a total");
 }
 
 #[test]
@@ -342,8 +350,8 @@ fn shared_state_parses_label_into_components() {
     assert_eq!(snap.prefix_components.tool_name, "ffmpeg");
     assert_eq!(snap.prefix_components.version, "autobuild-2026-07-31");
     assert_eq!(snap.prefix_components.phase, "res");
-    assert!(snap.prefix_components.count.is_empty());
-    assert!(snap.prefix_components.total.is_empty());
+    assert_eq!(snap.prefix_components.count.len(), 0, "a bracketed phase label carries no count");
+    assert_eq!(snap.prefix_components.total.len(), 0, "a bracketed phase label carries no total");
 
     let h = ProgressBarHandle::with_label(100, "syncing tools");
     let snap = h.snapshot();
@@ -351,9 +359,21 @@ fn shared_state_parses_label_into_components() {
 
     let h = ProgressBarHandle::with_label(100, "");
     let snap = h.snapshot();
-    assert!(snap.prefix_components.tool_name.is_empty());
-    assert!(snap.prefix_components.version.is_empty());
-    assert!(snap.prefix_components.phase.is_empty());
+    assert_eq!(
+        snap.prefix_components.tool_name.len(),
+        0,
+        "an empty label parses to an empty tool name"
+    );
+    assert_eq!(
+        snap.prefix_components.version.len(),
+        0,
+        "an empty label parses to an empty version"
+    );
+    assert_eq!(
+        snap.prefix_components.phase.len(),
+        0,
+        "an empty label parses to an empty phase tag"
+    );
 }
 
 #[test]
@@ -366,8 +386,8 @@ fn truncate_parsed_resolve_label_preserves_phase() {
     assert_eq!(result.tool_name, "ffmpeg");
     assert_eq!(result.version, "autobuild-202");
     assert_eq!(result.phase, "res");
-    assert!(result.count.is_empty());
-    assert!(result.total.is_empty());
+    assert_eq!(result.count.len(), 0, "truncation leaves a phase-only label with no count");
+    assert_eq!(result.total.len(), 0, "truncation leaves a phase-only label with no total");
 }
 
 // ---- semantic_truncate_prefix tests (Phase 2) -----------------------

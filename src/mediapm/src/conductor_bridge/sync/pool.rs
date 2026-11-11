@@ -457,6 +457,6 @@ mod tests {
             run_pool(jobs, 4, |_job, _gates, _publisher| async { Ok::<(), ()>(()) })
                 .await
                 .expect("empty pool succeeds");
-        assert!(outcomes.is_empty());
+        assert_eq!(outcomes.len(), 0, "an empty job list produces no outcome");
     }
 }

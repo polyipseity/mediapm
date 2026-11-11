@@ -3484,7 +3484,7 @@ mod tests {
         extract_tar_gz(&tgz, dir.path(), Some(&cb)).expect("extract_tar_gz should succeed");
 
         let positions = recorder.positions();
-        assert!(!positions.is_empty());
+        assert_ne!(positions.len(), 0, "tar.gz extraction reports progress positions");
 
         let mut prev_pos = 0u64;
         for (i, pos) in positions.iter().enumerate() {
@@ -3503,7 +3503,7 @@ mod tests {
         extract_tar_xz(&txz, dir.path(), Some(&cb)).expect("extract_tar_xz should succeed");
 
         let positions = recorder.positions();
-        assert!(!positions.is_empty());
+        assert_ne!(positions.len(), 0, "tar.xz extraction reports progress positions");
 
         let mut prev_pos = 0u64;
         for (i, pos) in positions.iter().enumerate() {

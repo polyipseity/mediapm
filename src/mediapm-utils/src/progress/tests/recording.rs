@@ -51,7 +51,7 @@ fn recording_tracker_clear_resets_ops() {
     let _ = rt.add_bar(20, "b");
     assert_eq!(rt.ops().len(), 2);
     rt.clear();
-    assert!(rt.ops().is_empty());
+    assert_eq!(rt.ops().len(), 0, "clear drops every recorded op");
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn recording_handle_disabled_has_zero_total() {
     let h = RecordingTrackedHandle::disabled();
     assert_eq!(h.total(), 0);
     // Even a disabled handle records ops (it uses a fresh log).
-    assert!(h.ops().is_empty());
+    assert_eq!(h.ops().len(), 0, "a fresh disabled handle has recorded nothing");
     h.advance(1);
     assert_eq!(h.ops(), vec![ProgressOp::Advance { delta: 1 }]);
 }

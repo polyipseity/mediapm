@@ -1031,8 +1031,20 @@ mod tests {
     fn conductor_runtime_config_default_has_no_option_fields() {
         let cfg = ConductorRuntimeConfig::default();
         assert!(!cfg.retry_impure);
-        assert!(cfg.environment.platform_inherited_env_vars.windows.is_empty());
-        assert!(cfg.environment.platform_inherited_env_vars.linux.is_empty());
-        assert!(cfg.environment.platform_inherited_env_vars.macos.is_empty());
+        assert_eq!(
+            cfg.environment.platform_inherited_env_vars.windows.len(),
+            0,
+            "windows inherits no env var by default"
+        );
+        assert_eq!(
+            cfg.environment.platform_inherited_env_vars.linux.len(),
+            0,
+            "linux inherits no env var by default"
+        );
+        assert_eq!(
+            cfg.environment.platform_inherited_env_vars.macos.len(),
+            0,
+            "macos inherits no env var by default"
+        );
     }
 }

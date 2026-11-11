@@ -1165,7 +1165,7 @@ mod tests {
             .expect("rsgain apply step");
         assert_eq!(download.id, "step-0-0-yt-dlp-default-to-default");
         assert_eq!(ffmpeg_step.id, "step-1-ffmpeg");
-        assert!(download.depends_on.is_empty());
+        assert_eq!(download.depends_on.len(), 0, "the download step is the workflow's first");
         assert_eq!(ffmpeg_step.depends_on, vec![download.id.clone()]);
         assert!(
             rsgain_apply.depends_on.iter().any(|dep| dep.contains("sd-rewrite-r128-metadata")),
@@ -1251,7 +1251,7 @@ mod tests {
         assert_eq!(step.tool, "import");
         assert_eq!(step.inputs.get("hash").map(String::as_str), Some(AAA_HASH));
         assert_eq!(step.inputs.get("kind").map(String::as_str), Some("cas_hash"));
-        assert!(step.depends_on.is_empty());
+        assert_eq!(step.depends_on.len(), 0, "the import step has no dependency");
         assert_eq!(step.outputs.get("source").map(|output| output.save), Some(SaveMode::True));
         assert_eq!(
             step.outputs.get("source").map(|output| output.capture.as_str()),

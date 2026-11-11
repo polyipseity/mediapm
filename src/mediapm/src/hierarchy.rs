@@ -265,7 +265,7 @@ mod tests {
         let node = build_hierarchy_preset_node(MediaHierarchyPreset::Local);
         assert_eq!(node.id.as_deref(), Some(HIERARCHY_MEDIA_ROOT_TEMPLATE));
         assert_eq!(node.kind, HierarchyNodeKind::Folder);
-        assert!(!node.children.is_empty());
+        assert_ne!(node.children.len(), 0, "the local preset root has child folders");
         assert_eq!(node.children.len(), 1);
         let artist = &node.children[0];
         assert_eq!(artist.id.as_deref(), Some(HIERARCHY_ARTIST_FOLDER_TEMPLATE));

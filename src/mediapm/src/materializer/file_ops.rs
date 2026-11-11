@@ -517,7 +517,7 @@ mod tests {
         assert!(dest.exists());
         let actual = tokio::fs::read_to_string(&dest).await.unwrap();
         assert_eq!(actual, "hello materializer");
-        assert!(notices.is_empty());
+        assert_eq!(notices.len(), 0, "a copy materialization reports no notice");
     }
 
     #[tokio::test]
@@ -545,7 +545,7 @@ mod tests {
 
         let source = cas.object_path_for_hash(hash).expect("cas object path");
         assert!(same_file::is_same_file(&source, &dest).expect("same_file check"));
-        assert!(notices.is_empty());
+        assert_eq!(notices.len(), 0, "a hardlink materialization reports no notice");
     }
 
     #[tokio::test]
@@ -616,7 +616,7 @@ mod tests {
 
         let source = cas.object_path_for_hash(hash).expect("cas object path");
         assert!(same_file::is_same_file(&source, &dest).expect("same_file check"));
-        assert!(notices.is_empty());
+        assert_eq!(notices.len(), 0, "a hardlink into the media layout reports no notice");
     }
 
     #[tokio::test]
@@ -682,7 +682,7 @@ mod tests {
 
         let source = cas.object_path_for_hash(hash).expect("cas object path");
         assert!(same_file::is_same_file(&source, &dest).expect("same_file check"));
-        assert!(notices.is_empty());
+        assert_eq!(notices.len(), 0, "a hardlink across the mediapm layout reports no notice");
     }
 
     #[tokio::test]

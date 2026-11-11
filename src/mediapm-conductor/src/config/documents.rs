@@ -648,7 +648,7 @@ mod tests {
     fn nickel_document_default_is_empty() {
         let doc = NickelDocument::default();
         assert!(doc.tools.is_empty());
-        assert!(doc.workflows.is_empty());
+        assert_eq!(doc.workflows.len(), 0, "a default document declares no workflows");
     }
 
     /// Verifies `validate_external_data_invariant` passes when all

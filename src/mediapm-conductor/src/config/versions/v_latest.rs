@@ -1450,9 +1450,21 @@ mod tests {
             PayloadStaging::InPlace,
             "a document naming no default stages in place",
         );
-        assert!(cfg.environment.platform_inherited_env_vars.windows.is_empty());
-        assert!(cfg.environment.platform_inherited_env_vars.linux.is_empty());
-        assert!(cfg.environment.platform_inherited_env_vars.macos.is_empty());
+        assert_eq!(
+            cfg.environment.platform_inherited_env_vars.windows.len(),
+            0,
+            "a default runtime config inherits no windows env var"
+        );
+        assert_eq!(
+            cfg.environment.platform_inherited_env_vars.linux.len(),
+            0,
+            "a default runtime config inherits no linux env var"
+        );
+        assert_eq!(
+            cfg.environment.platform_inherited_env_vars.macos.len(),
+            0,
+            "a default runtime config inherits no macos env var"
+        );
     }
 
     use proptest::prelude::*;

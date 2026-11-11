@@ -877,6 +877,6 @@ mod tests {
         );
         assert_eq!(runtime.max_concurrent_calls, 0);
         assert_eq!(runtime.max_retries, 0);
-        assert!(runtime.inherited_env_vars.is_empty());
+        assert_eq!(runtime.inherited_env_vars.len(), 0, "the ffmpeg spec inherits no env var");
     }
 }

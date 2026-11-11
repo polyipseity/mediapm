@@ -890,9 +890,9 @@ mod tests {
     fn suffix_components_status_list_sets_custom_only() {
         let s = SuffixComponents::status_list(&[StatusCount { word: "cached", count: Some(1) }]);
         assert_eq!(s.custom, "1 cached");
-        assert!(s.count.is_empty());
-        assert!(s.total.is_empty());
-        assert!(s.elapsed.is_empty());
+        assert_eq!(s.count.len(), 0, "a status-list suffix renders no count of its own");
+        assert_eq!(s.total.len(), 0, "a status-list suffix renders no total of its own");
+        assert_eq!(s.elapsed.len(), 0, "a status-list suffix renders no elapsed time");
         assert!(s.rate.is_none());
         assert!(s.eta.is_none());
     }

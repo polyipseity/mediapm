@@ -375,7 +375,11 @@ mod tests {
         }];
 
         let selected = select_cover_art_for_tag_embedding(&entries, true);
-        assert!(selected.is_empty());
+        assert_eq!(
+            selected.len(),
+            0,
+            "front-only embedding selects nothing when no entry is a front cover"
+        );
     }
 
     /// Protects explicit override behavior by allowing all selected images when

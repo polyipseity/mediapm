@@ -411,7 +411,7 @@ mod tests {
     fn merge_documents_empty_list() {
         let doc = merge_documents(&[]).unwrap();
         assert!(doc.tools.is_empty());
-        assert!(doc.workflows.is_empty());
+        assert_eq!(doc.workflows.len(), 0, "merging no documents yields no workflows");
     }
 
     /// Documents that grouped-field merge across two documents keeps both

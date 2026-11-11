@@ -104,13 +104,13 @@ where
     type State = WorkflowCoordinator<C>;
     type Arguments = WorkflowCoordinator<C>;
 
-    async fn pre_start(
+    fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
         mut args: Self::Arguments,
-    ) -> Result<Self::State, ActorProcessingErr> {
+    ) -> impl Future<Output = Result<Self::State, ActorProcessingErr>> {
         args.set_supervisor(myself.get_cell());
-        Ok(args)
+        std::future::ready(Ok(args))
     }
 
     async fn handle(

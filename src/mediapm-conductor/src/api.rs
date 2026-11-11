@@ -354,7 +354,7 @@ fn find_executable_in_payload(payload_dir: &Path) -> Option<PathBuf> {
         let entry = entry.ok()?;
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
-        if entry.file_type().ok().is_some_and(|t| t.is_dir()) {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
             if FOREIGN_PLATFORM_DIRS.contains(&name.as_ref()) {
                 continue;
             }
@@ -362,7 +362,7 @@ fn find_executable_in_payload(payload_dir: &Path) -> Option<PathBuf> {
             if let Some(found) = find_first_file_in_dir(&entry.path()) {
                 return Some(found);
             }
-        } else if entry.file_type().ok().is_some_and(|t| t.is_file()) {
+        } else if entry.file_type().is_ok_and(|t| t.is_file()) {
             return Some(entry.path());
         }
     }
@@ -374,7 +374,7 @@ fn find_first_file_in_dir(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries {
         let entry = entry.ok()?;
-        if entry.file_type().ok().is_some_and(|t| t.is_file()) {
+        if entry.file_type().is_ok_and(|t| t.is_file()) {
             return Some(entry.path());
         }
     }

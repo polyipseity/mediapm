@@ -278,7 +278,11 @@ mod tests {
         });
 
         let state = decode_v2_as_v3(v2_json).expect("v2→v3 advance with empty tools");
-        assert!(state.managed_tools.is_empty());
+        assert_eq!(
+            state.managed_tools.len(),
+            0,
+            "an empty V2 tool map advances to no managed tool"
+        );
         assert_eq!(state.version, 3);
     }
 

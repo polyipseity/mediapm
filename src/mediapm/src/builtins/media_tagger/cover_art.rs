@@ -244,8 +244,7 @@ impl MediaTaggerHttpCache {
     /// Creates one cache policy object from optional directory + expiry config.
     #[must_use]
     pub(super) fn new(root_dir: Option<PathBuf>, expiry: CacheExpiryPolicy) -> Self {
-        let normalized_root =
-            root_dir.and_then(|path| if path.as_os_str().is_empty() { None } else { Some(path) });
+        let normalized_root = root_dir.filter(|path| !path.as_os_str().is_empty());
 
         let store_dir = normalized_root.as_ref().map(|path| path.join("store"));
         let index_path =

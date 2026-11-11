@@ -169,7 +169,7 @@ mod tests {
         });
         let decoded = decode_v4(empty).expect("a minimal V4 document must load");
         assert!(decoded.managed_files.is_empty());
-        assert!(decoded.managed_tools.is_empty());
+        assert_eq!(decoded.managed_tools.len(), 0, "a minimal V4 document holds no managed tool");
         assert!(decoded.workflow_states.is_empty());
     }
 }

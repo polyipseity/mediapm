@@ -176,7 +176,7 @@ fn default_state_round_trip() {
     let decoded = from_json_value(value).expect("deserialization must succeed");
 
     assert!(decoded.managed_files.is_empty());
-    assert!(decoded.managed_tools.is_empty());
+    assert_eq!(decoded.managed_tools.len(), 0, "a default state records no managed tool");
     assert_eq!(decoded.version, 5);
 }
 
@@ -264,7 +264,7 @@ fn load_missing_state_returns_default() {
     let state = load_mediapm_state_document(&json_path).expect("load should return default");
     assert_eq!(state.version, 5);
     assert!(state.managed_files.is_empty());
-    assert!(state.managed_tools.is_empty());
+    assert_eq!(state.managed_tools.len(), 0, "a missing state document loads with no managed tool");
 }
 
 // ---------------------------------------------------------------------------

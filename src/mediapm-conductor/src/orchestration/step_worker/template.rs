@@ -2477,7 +2477,11 @@ mod tests {
     fn external_data_hashes_ignores_an_escaped_reference() {
         let hash = Hash::from([25u8; 32]);
 
-        assert!(external_data_hashes(&format!("\\${{external_data.{hash}}}")).is_empty());
+        assert_eq!(
+            external_data_hashes(&format!("\\${{external_data.{hash}}}")).len(),
+            0,
+            "an escaped reference names no external data"
+        );
     }
 
     /// A hash named twice is reported once, in the order it appears.
@@ -2507,13 +2511,17 @@ mod tests {
     fn external_data_hashes_ignores_a_selector_argument() {
         let hash = Hash::from([26u8; 32]);
 
-        assert!(
+        assert_eq!(
             external_data_hashes(&format!("${{inputs.payload:file(${{external_data.{hash}}})}}"))
-                .is_empty()
+                .len(),
+            0,
+            "a `:file` selector argument names no external data"
         );
-        assert!(
+        assert_eq!(
             external_data_hashes(&format!("${{inputs.payload:zip(${{external_data.{hash}}})}}"))
-                .is_empty()
+                .len(),
+            0,
+            "a `:zip` selector argument names no external data"
         );
     }
 
@@ -2521,9 +2529,25 @@ mod tests {
     /// reference at all, name nothing.
     #[test]
     fn external_data_hashes_ignores_values_that_name_no_hash() {
-        assert!(external_data_hashes("${external_data.not-a-hash}").is_empty());
-        assert!(external_data_hashes("${external_data.}").is_empty());
-        assert!(external_data_hashes("plain text").is_empty());
-        assert!(external_data_hashes("${external_data.unclosed").is_empty());
+        assert_eq!(
+            external_data_hashes("${external_data.not-a-hash}").len(),
+            0,
+            "a reference whose name is not a hash reads no external data"
+        );
+        assert_eq!(
+            external_data_hashes("${external_data.}").len(),
+            0,
+            "an empty reference name reads no external data"
+        );
+        assert_eq!(
+            external_data_hashes("plain text").len(),
+            0,
+            "a template with no reference reads no external data"
+        );
+        assert_eq!(
+            external_data_hashes("${external_data.unclosed").len(),
+            0,
+            "an unclosed reference reads no external data"
+        );
     }
 }

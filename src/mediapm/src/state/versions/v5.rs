@@ -395,7 +395,7 @@ mod tests {
         let empty = json!({ "version": 5, "managed_files": {}, "managed_tools": [] });
         let decoded = from_v5_json_value(empty).expect("a minimal V5 document must load");
         assert!(decoded.managed_files.is_empty());
-        assert!(decoded.managed_tools.is_empty());
+        assert_eq!(decoded.managed_tools.len(), 0, "a minimal V5 document holds no managed tool");
     }
 
     /// A single entry is returned unchanged: deduplication groups by

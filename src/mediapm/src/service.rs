@@ -91,11 +91,11 @@ pub(crate) trait WorkspaceProvisioningCas:
 }
 
 impl WorkspaceProvisioningCas for FileSystemCas {
-    async fn workspace_provisioning_cas(
+    fn workspace_provisioning_cas(
         conductor: &Conductor<Self>,
         _effective_paths: &MediaPmPaths,
-    ) -> Result<Arc<FileSystemCas>, MediaPmError> {
-        Ok(Arc::clone(conductor.cas()))
+    ) -> impl std::future::Future<Output = Result<Arc<FileSystemCas>, MediaPmError>> {
+        std::future::ready(Ok(Arc::clone(conductor.cas())))
     }
 }
 

@@ -2034,7 +2034,11 @@ mod tests {
             oracle_selectors("${{*inputs.video ? inputs.video:file(downloads/video.mkv) | ''}}",),
             vec![("downloads/video.mkv".to_string(), "inputs.video".to_string())],
         );
-        assert!(oracle_selectors("--plain").is_empty());
+        assert_eq!(
+            oracle_selectors("--plain").len(),
+            0,
+            "a template with no selector names no oracle selector"
+        );
     }
 
     /// Returns whether a binding source names work rather than the environment

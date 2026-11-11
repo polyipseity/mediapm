@@ -10,7 +10,7 @@ use super::*;
 fn collect_same_step_dep_ids_empty_deps() {
     let req = ToolRequirement::default();
     let ids = collect_same_step_dep_ids("ffmpeg", &req, known_dependency_type);
-    assert!(ids.is_empty());
+    assert_eq!(ids.len(), 0, "a tool with no declared dependency has no same-step dep");
 }
 
 #[test]
@@ -35,7 +35,7 @@ fn collect_same_step_dep_ids_rsgain_ffmpeg() {
     };
     // rsgain has CrossStep dep on ffmpeg → NOT in same-step list
     let ids = collect_same_step_dep_ids("rsgain", &req, known_dependency_type);
-    assert!(ids.is_empty());
+    assert_eq!(ids.len(), 0, "a cross-step dependency is not a same-step dep");
 }
 
 #[allow(clippy::unnecessary_wraps)] // must match the `fn(&str, &str) -> Option<DependencyTypes>` parameter

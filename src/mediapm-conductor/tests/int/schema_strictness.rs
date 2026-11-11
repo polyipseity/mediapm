@@ -199,7 +199,7 @@ fn strict_v2_rejects_empty_env_var_name() {
 fn strict_v2_accepts_valid_minimal_document() {
     let doc = decode_document(r"{ version = 2 }".as_bytes()).expect("minimal v2 doc must decode");
     assert_eq!(doc.tools.len(), 0);
-    assert!(doc.workflows.is_empty());
+    assert_eq!(doc.workflows.len(), 0, "a minimal v2 document declares no workflow");
 }
 
 /// S-A8: the v1→v2 migration output satisfies the tightened v2 envelope.
@@ -1338,7 +1338,11 @@ fn parity_payload_staging_defaults_to_in_place() {
         PayloadStaging::InPlace,
         "and inheriting an absent default still stages in place"
     );
-    assert!(ToolRuntime::default().payload_root.is_empty());
+    assert_eq!(
+        ToolRuntime::default().payload_root.len(),
+        0,
+        "a tool that states no payload root stages from the payload's own tree"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -438,7 +438,7 @@ mod tests {
     fn extract_empty_zip() {
         let data = make_zip(&[]);
         let result = extract_zip_folder_variant_bytes(&data, &[]).unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0, "an empty archive extracts no file");
     }
 
     #[test]
