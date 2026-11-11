@@ -85,6 +85,11 @@ fn normalize_sandbox_relative_path(
 
 /// Ensures one extracted payload file is executable by the current user.
 pub(crate) fn ensure_user_execute_bit(path: &Path) -> Result<(), ConductorError> {
+    // Only a POSIX filesystem spells executability as a permission bit, so every
+    // platform that is not one takes the no-op below and never reads the path.
+    #[cfg(not(unix))]
+    let _ = path;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
