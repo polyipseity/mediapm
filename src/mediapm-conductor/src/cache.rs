@@ -3073,6 +3073,44 @@ mod tests {
         drop(cache);
     }
 
+    /// Dropping an undrained loop-starting cache as the last live handle while
+    /// the thread is already unwinding must not double-panic; the original
+    /// panic must propagate.
+    #[test]
+    fn drop_during_unwind_does_not_double_panic() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            runtime.block_on(async {
+                let _cache = Cache::open(
+                    root.path(),
+                    &[CacheDomainConfig {
+                        domain: "test".to_string(),
+                        index_file_name: "tools.json".to_string(),
+                        entry_ttl_seconds: ENTRY_TTL_SECONDS,
+                    }],
+                )
+                .await
+                .expect("open cache");
+                // Keep shutdown incomplete: the misuse branch runs while the
+                // thread is unwinding, so it must log/return and not replace
+                // this panic.
+                panic!("original panic");
+            });
+        }));
+
+        let panic = payload.expect_err("original panic must propagate");
+        let message = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+        assert_eq!(
+            message,
+            Some("original panic"),
+            "misuse drop during unwind must not replace the original panic"
+        );
+    }
+
     /// A completed shutdown makes dropping the last loop-starting handle safe.
     #[tokio::test]
     async fn shutdown_then_drop_loop_starting_cache_is_ok() {
