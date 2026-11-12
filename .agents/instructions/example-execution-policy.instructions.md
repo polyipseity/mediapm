@@ -66,7 +66,7 @@ Two env-var overrides, set by tests through the shared [`IsolatedExampleRoots`](
 - `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` — artifact root the example mutates. Tests set it to a unique tempdir. Never share the canonical `examples/artifacts/<name>` dir between tests (CAS `store/lock` flock races).
 - `MEDIAPM_EXAMPLE_CACHE_ROOT` — user-level tool download cache root. Tests set it to a unique tempdir mapped to `MediaRuntimeStorage.cache_root_override`, so `sync_tools()`/provisioning never touches the real OS cache (`default_mediapm_user_download_cache_root()`). When unset (explicit `cargo run --example`), the example resolves the real cache via `example_isolation::user_level_cache_root()` (`<os-cache-dir>/mediapm/cache`), sharing it with regular syncs; tests always set it via `IsolatedExampleRoots::with_cache`. `example_isolation::uses_isolated_cache_root()` reports whether the hermetic cache is active.
 
-When canonical artifact roots are locked (Windows share violations), call `example_isolation::isolated_artifact_dir()` and keep the returned `TempDir` alive for the rest of the test or `main()` scope.
+When canonical artifact roots are locked (Windows share violations), call `example_isolation::isolated_artifact_dir()` and keep the returned `ManagedTempDir` alive for the rest of the test or `main()` scope.
 
 `main()` must honor these env vars when set and fall back to canonical paths when unset, so `cargo run --example` behavior is unchanged.
 

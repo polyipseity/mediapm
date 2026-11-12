@@ -30,7 +30,7 @@ All mediapm-owned temp roots share the single `mediapm-` prefix (`mediapm-{role}
 | runtime root   | lazily, first sandbox `create_dir_all`           | coordinator `remove_runtime_tmp_dir` on every `run_workflow` exit; janitor reclaim |
 | per-step sandbox | step worker `create_sandbox`                     | whole runtime tree removal at workflow end                                         |
 
-RAII `TempDir` owners must be bound to a local for the full scope that needs the directory. Helpers that create a store under a lazily-created root must return the owning `TempDir` so the caller controls the lifecycle.
+RAII `ManagedTempDir` owners must be bound to a local for the full scope that needs the directory. Helpers that create a store under a lazily-created root must return the owning `ManagedTempDir` so the caller controls the lifecycle.
 
 ## Runtime tmp lifecycle
 
@@ -67,7 +67,7 @@ Two rules keep that guarantee true when editing the CAS:
 - Lease every operation that can create a directory entry (directory creation, file creation, write-plus-rename pairs) through `CasIoGate::run`. A write through an already-open file handle and a read cannot resurrect a removed tree, so they need no lease. Never hold a lease across an `.await` — take and release it inside the blocking closure, or `close` can deadlock on a `current_thread` runtime.
 - The gate closes on the **last** handle only (an `Arc` token counted in `Drop`), so a dropped clone never closes the store out from under a sibling handle.
 
-Test harnesses must not rely on tuple-binding order for this. `mediapm-cas`'s `common::open_file_cas` returns a `FileCasFixture` whose field order makes the store drop before its `TempDir`; a `(TempDir, FileSystemCas)` tuple makes the same guarantee a convention each call site has to remember.
+Test harnesses must not rely on tuple-binding order for this. `mediapm-cas`'s `common::open_file_cas` returns a `FileCasFixture` whose field order makes the store drop before its `ManagedTempDir`; a `(ManagedTempDir, FileSystemCas)` tuple makes the same guarantee a convention each call site has to remember.
 
 ## Regression gate contract
 
@@ -81,11 +81,11 @@ Test harnesses must not rely on tuple-binding order for this. `mediapm-cas`'s `c
 ## Authoring rules
 
 - Use the role helpers only: `artifact_dir()`, `cache_dir()`, `runtime_dir_for_workspace()`. NO bare `tempfile::tempdir()` anywhere in the tree — tests included. The only prefix-capable constructors are the role helpers and the `tempfile::Builder::new().prefix(...)` calls inside `temp.rs`.
-- Never `OnceLock<TempDir>` for workspace dirs (the guard's destructor never runs).
+- Never `OnceLock<ManagedTempDir>` for workspace dirs, whichever role helper produced the tree (the guard's destructor never runs).
 - Readonly-marked trees must be removed with `mediapm_utils::temp::remove_dir_all_with_retry` (clears readonly bits, retries share violations); plain `remove_dir_all` silently fails on readonly subtrees. Both `artifact_dir()` and `cache_dir()` return a `ManagedTempDir` that takes that route on drop, for the two reasons that apply to either root: a cache root is the tree whose background writer can outlive its owner, and an artifact root usually holds a CAS store whose blobs are committed read-only, which a single `remove_dir_all` leaves in place on Windows.
 - A janitor invocation names its root with `--root` and never through the environment, and a POSIX-shell invocation passes the root in that shell's own spelling (`C:/…`, not `C:\…`): a shell left to resolve its own temp root on Windows prints the root it swept in its mount form, so an environment-staged root cannot be compared against the path the harness seeded.
-- Helpers that create a store for a lazily-created root must return the owning `TempDir`.
-- Bind every `TempDir` to a local for its full scope; never leak a path without a cleanup owner.
+- Helpers that create a store for a lazily-created root must return the owning `ManagedTempDir`.
+- Bind every `ManagedTempDir` to a local for its full scope; never leak a path without a cleanup owner.
 
 ## Env overrides
 

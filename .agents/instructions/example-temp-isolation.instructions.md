@@ -28,7 +28,7 @@ Do not call `tempfile::tempdir()` or `TempDir::new()` directly in workspace code
 | ----- | ------------ | ---------- | ------------------ |
 | **Canonical example artifact root** | `src/mediapm/examples/artifacts/<name>/` | `cargo run --example` when env overrides unset | No — manual runs only; never share between parallel tests |
 | **Isolated artifact root** | `$TMPDIR/mediapm-artifact-*` | `IsolatedExampleRoots` sets `MEDIAPM_EXAMPLE_ARTIFACT_ROOT` | Yes — one unique root per guard |
-| **Fallback artifact root** | `$TMPDIR/mediapm-artifact-*` | `isolated_artifact_dir()` when canonical reset fails (share violation) | Yes — caller holds `TempDir` until drop |
+| **Fallback artifact root** | `$TMPDIR/mediapm-artifact-*` | `isolated_artifact_dir()` when canonical reset fails (share violation) | Yes — caller holds `ManagedTempDir` until drop |
 | **Workspace runtime tree** | `{artifact_root}/.mediapm/` | `MediaPmService::new_fs_at*` | Lives under isolated or canonical artifact root |
 | **Workspace CAS store** | `{artifact_root}/.mediapm/store/` | FileSystem CAS open | Holds `store/lock` flock — parallel opens on same path fail |
 | **Workspace tool cache** | `{artifact_root}/.mediapm/cache/` | sync / materialization | Distinct from user-level download cache |
@@ -55,7 +55,7 @@ Canonical artifact roots are documentation and manual-demo targets; examples-as-
 
 1. **Guard** — `let _guard = IsolatedExampleRoots::with_cache()` or `artifact_only()` creates prefixed tempdirs and sets env vars for the guard's lifetime.
 2. **Run** — `super::main()` or helper runs against isolated paths; example code reads env via `artifact_root()` / `example_runtime_storage()`.
-3. **Fallback** — If reset of canonical artifact root hits Windows share violation (or permission denied / OS error 32), call `isolated_artifact_dir()` and keep the returned `TempDir` alive for the rest of the test or `main()` scope.
+3. **Fallback** — If reset of canonical artifact root hits Windows share violation (or permission denied / OS error 32), call `isolated_artifact_dir()` and keep the returned `ManagedTempDir` alive for the rest of the test or `main()` scope.
 4. **Guard drop** — Restores prior env values, then `remove_dir_all_with_retry` on guard tempdirs (clears readonly bits, retries share violations).
 
 `remove_dir_all_with_retry` is also used when examples reset artifact roots at the start of a run.
@@ -78,7 +78,7 @@ let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path
 
 Rules:
 
-- Bind `TempDir` to a local variable for the full test scope (do not leak paths without a cleanup owner.
+- Bind `ManagedTempDir` to a local variable for the full test scope (do not leak paths without a cleanup owner.
 - Pass `cache_root_override` whenever the test calls `sync_tools`, provisioning, full `sync_library`, or a version check that resolves a tool (`logical_tool_requires_sync`, `collect_tools_requiring_sync`): without it the resolve opens the real user-level cache.
 - Drop exclusive CAS handles before reopening the same store path (see `StoreLocked` pattern in `rust-conventions.instructions.md`).
 - Process-global env vars: hold the example env lock (`example_isolation::lock_process_env()`) for the mutation scope, or keep an `IsolatedExampleRoots` guard alive; restore env before the lock/guard is released.
@@ -117,7 +117,7 @@ A helper that takes the lock **internally** deadlocks for a caller that already 
 
 - [ ] Example `main()` reads `ARTIFACT_ROOT_ENV` / `CACHE_ROOT_ENV` (via `example_isolation` constants), not hardcoded canonical paths only.
 - [ ] Example tests use `IsolatedExampleRoots` : not hand-rolled `tempfile` + `set_var` guards.
-- [ ] Share-violation fallbacks use `isolated_artifact_dir()` and keep the `TempDir` alive until cleanup.
+- [ ] Share-violation fallbacks use `isolated_artifact_dir()` and keep the `ManagedTempDir` alive until cleanup.
 - [ ] Full-sync demos that run tool-update precheck require `with_cache()` so `CACHE_ROOT_ENV` is set.
 - [ ] Integration tests use `artifact_dir()` + `cache_dir()` + `cache_root_override` : never the real OS cache or canonical example artifacts.
 - [ ] No test fixtures written into `src/` or committed artifact trees.
