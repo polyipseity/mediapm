@@ -213,6 +213,14 @@ pub struct Cache {
     root: PathBuf,
     /// Source of every expiry timestamp this cache reads.
     clock: Clock,
+    /// Whether [`Self::shutdown`] completed for this cache instance.
+    ///
+    /// Shared across clones so a shutdown on one handle satisfies the last
+    /// handle that drops.
+    shutdown_completed: Arc<AtomicBool>,
+    /// Identity token whose strong count tracks live [`Cache`] handles for
+    /// this instance; the final drop observes a count of one.
+    lifecycle_token: Arc<()>,
 }
 
 /// Creates the CAS store and loads all domain index files.
@@ -424,6 +432,8 @@ impl Cache {
             bg_guard: None,
             root: root.to_path_buf(),
             clock: Clock::system(),
+            shutdown_completed: Arc::new(AtomicBool::new(false)),
+            lifecycle_token: Arc::new(()),
         };
 
         // Start background prune loop that iterates all domains.
@@ -481,6 +491,8 @@ impl Cache {
             bg_guard: None,
             root: root.to_path_buf(),
             clock: Clock::system(),
+            shutdown_completed: Arc::new(AtomicBool::new(false)),
+            lifecycle_token: Arc::new(()),
         })
     }
 
@@ -554,6 +566,31 @@ impl Cache {
             let index = Arc::clone(&state.index);
             let _ = tokio::task::spawn_blocking(move || drop(index.lock())).await;
         }
+        self.shutdown_completed.store(true, Ordering::SeqCst);
+    }
+
+    /// Opens a loop-starting cache for the duration of `body` and shuts it down
+    /// before returning.
+    ///
+    /// After `body` resolves, [`Self::shutdown`] is awaited so background
+    /// maintenance and any dispatched index writes are quiesced before the
+    /// cache drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError`] when opening the cache fails.
+    pub async fn with_open<R, F>(
+        root: &Path,
+        domains: &[CacheDomainConfig],
+        body: F,
+    ) -> Result<R, ConductorError>
+    where
+        F: for<'a> FnOnce(&'a Self) -> std::pin::Pin<Box<dyn std::future::Future<Output = R> + 'a>>,
+    {
+        let cache = Self::open(root, domains).await?;
+        let result = body(&cache).await;
+        cache.shutdown().await;
+        Ok(result)
     }
 
     /// Prunes expired entries for one domain **immediately**, bypassing the
@@ -999,17 +1036,33 @@ impl TestClock {
 /// Flushes all domain indexes on drop so throttle-deferred writes are not lost.
 impl Drop for Cache {
     fn drop(&mut self) {
+        const LOOP_SHUTDOWN_MESSAGE: &str = "loop-starting cache dropped without completed shutdown; call Cache::shutdown().await before drop";
+
+        let is_last_handle = Arc::strong_count(&self.lifecycle_token) == 1;
+        let is_loop_starting = self.bg_guard.is_some();
+        let shutdown_completed = self.shutdown_completed.load(Ordering::SeqCst);
+        let is_misuse = is_last_handle && is_loop_starting && !shutdown_completed;
+
+        if is_misuse {
+            // Best-effort cooperative cancellation before reporting/panicking so
+            // cleanup is not worse than today's drop behavior.
+            if let Some(guard) = self.bg_guard.as_ref() {
+                guard.cancel();
+            }
+            if std::thread::panicking() {
+                tracing::error!("{LOOP_SHUTDOWN_MESSAGE}");
+                eprintln!("{LOOP_SHUTDOWN_MESSAGE}");
+                return;
+            }
+            panic!("{LOOP_SHUTDOWN_MESSAGE}");
+        }
+
         // Stop the maintenance task before touching the tree, but only when this
-        // is the last cache: `Cache` is `Clone` and the guard is an `Arc`, so an
-        // unconditional cancel here would stop the loop out from under every
-        // surviving clone. Once the count drops to one, this is that final drop,
-        // and cancelling first keeps the task from starting a cycle through the
-        // flush below and from writing after the owner removed the root — where
-        // `write_index_file`'s `create_dir_all` would recreate it, the same orphan
-        // the root check below refuses to make itself. Cancelling is synchronous
-        // and idempotent with the guard's own `Drop`; work the task already handed
-        // to `spawn_blocking` still runs to completion, by the guard's contract,
-        // which is why the root check stays.
+        // is the last cache handle holding the guard: `Cache` is `Clone` and the
+        // guard is an `Arc`, so an unconditional cancel here would stop the loop
+        // out from under every surviving clone. Cancelling is synchronous and
+        // idempotent with the guard's own `Drop`; work the task already handed
+        // to `spawn_blocking` still runs to completion, by the guard's contract.
         if let Some(guard) = self.bg_guard.as_ref()
             && Arc::strong_count(guard) == 1
         {
@@ -1063,6 +1116,20 @@ impl Cache {
         self.bg_guard.clone()
     }
 
+    /// Test-only: returns the number of index writes this domain has dispatched
+    /// to the blocking pool and not yet seen finish.
+    #[must_use]
+    fn in_flight_pending(&self, domain: &str) -> Option<usize> {
+        self.domains.get(domain).map(|state| state.in_flight_writes.pending.load(Ordering::Acquire))
+    }
+
+    /// Test-only: returns the domain's index mutex handle so a test can block a
+    /// dispatched index writer inside the closure after it takes the lease.
+    #[must_use]
+    fn domain_index_mutex(&self, domain: &str) -> Option<Arc<Mutex<CacheIndex>>> {
+        self.domains.get(domain).map(|state| Arc::clone(&state.index))
+    }
+
     /// Test-only: opens a cache at `root` over `clock`, for tests that need to
     /// say which second they mean instead of sleeping towards one.
     ///
@@ -1081,6 +1148,8 @@ impl Cache {
             bg_guard: None,
             root: root.to_path_buf(),
             clock: clock.handle(),
+            shutdown_completed: Arc::new(AtomicBool::new(false)),
+            lifecycle_token: Arc::new(()),
         }
     }
 
@@ -1106,6 +1175,8 @@ impl Cache {
             bg_guard: None,
             root: root.to_path_buf(),
             clock: clock.handle(),
+            shutdown_completed: Arc::new(AtomicBool::new(false)),
+            lifecycle_token: Arc::new(()),
         };
         // Same capture pattern as `Cache::open`: owned clones of the CAS,
         // domain map and clock, so the task never keeps a `Cache` alive past
@@ -1158,6 +1229,8 @@ impl Cache {
             bg_guard: None,
             root: root.to_path_buf(),
             clock: Clock::system(),
+            shutdown_completed: Arc::new(AtomicBool::new(false)),
+            lifecycle_token: Arc::new(()),
         };
         // Capture owned clones of the CAS, domain map and clock instead of a
         // full `Cache` clone: a captured clone would keep the last `Cache`
@@ -1209,6 +1282,8 @@ impl Cache {
             bg_guard: None,
             root: root.to_path_buf(),
             clock: Clock::system(),
+            shutdown_completed: Arc::new(AtomicBool::new(false)),
+            lifecycle_token: Arc::new(()),
         };
         // Capture owned clones of the CAS, domain map and clock instead of a
         // full `Cache` clone: a captured clone would keep the last `Cache`
@@ -2282,6 +2357,106 @@ mod tests {
         );
     }
 
+    /// A production prune dispatch must reserve its in-flight slot before the
+    /// index-write closure can block on domain state.
+    ///
+    /// The real [`Cache::prune_expired_immediate`] path drives
+    /// [`super::prune_expired_inner_core`], which reserves in
+    /// [`super::InFlightIndexWrites`] before handing Phase 2 to the blocking
+    /// pool. A blocking observer grabs the domain index mutex once the
+    /// reservation is visible so the spawned Phase 2 closure blocks on that
+    /// mutex after taking the lease, making pending stay at 1 without any
+    /// test-side `reserve()`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn prune_dispatch_reserves_in_flight_slot_before_blocking_work() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open_without_background(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache without background");
+
+        assert_eq!(
+            cache.in_flight_pending("test"),
+            Some(0),
+            "no index write is in flight before pruning"
+        );
+
+        let index_mutex = cache.domain_index_mutex("test").expect("domain index mutex");
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel::<Result<(), &'static str>>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let observer_cache = cache.clone();
+        let observer_prune_cache = cache.clone();
+        let prune_cache = cache.clone();
+        let mut prune_task =
+            tokio::spawn(async move { prune_cache.prune_expired_immediate("test").await });
+
+        let observer = tokio::task::spawn_blocking(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if observer_cache.in_flight_pending("test") == Some(1) {
+                    if let Ok(guard) = index_mutex.lock() {
+                        let _ = locked_tx.send(Ok(()));
+                        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                        drop(guard);
+                        return;
+                    }
+                    let _ = locked_tx.send(Err("index mutex poisoned"));
+                    return;
+                }
+                if observer_prune_cache.in_flight_pending("test") == Some(0)
+                    && std::time::Instant::now() >= deadline
+                {
+                    let _ = locked_tx.send(Err(
+                        "timed out waiting for production prune dispatch to reserve in-flight slot",
+                    ));
+                    return;
+                }
+                std::thread::yield_now();
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(10), locked_rx)
+            .await
+            .expect("observer did not report reservation state")
+            .expect("observer channel closed")
+            .expect("observer failed to pin production reservation");
+
+        assert_eq!(
+            cache.in_flight_pending("test"),
+            Some(1),
+            "production prune dispatch must reserve an in-flight slot before the blocking index write runs"
+        );
+        assert!(
+            !prune_task.is_finished(),
+            "prune must remain blocked while the domain index mutex is held"
+        );
+
+        let _ = release_tx.send(());
+
+        let report = tokio::time::timeout(Duration::from_secs(10), &mut prune_task)
+            .await
+            .expect("prune task must complete after releasing the domain index mutex")
+            .expect("prune task must not panic")
+            .expect("immediate prune should succeed");
+        assert_eq!(report, super::CachePruneReport::default());
+        assert_eq!(
+            cache.in_flight_pending("test"),
+            Some(0),
+            "in-flight reservation must be released after prune completion"
+        );
+
+        tokio::time::timeout(Duration::from_secs(10), observer)
+            .await
+            .expect("observer task must complete")
+            .expect("observer task must not panic");
+    }
+
     /// Verifies that when two keys in the same index share the same hash
     /// and both expire, the payload blob is only deleted once.
     #[tokio::test]
@@ -2555,21 +2730,10 @@ mod tests {
         cache.shutdown().await;
     }
 
-    /// Verifies that dropping the cache cancels the background prune task.
-    ///
-    /// Nothing awaits between the open and the drop, so the loop's first poll
-    /// never happens and the abort lands before it can run: the drop path is
-    /// this test's subject, and it is the one stop that cannot be followed by
-    /// an observable one.
-    ///
-    /// That ordering is a property of `#[tokio::test]` running this body on a
-    /// current-thread runtime: on a multi-thread runtime the spawned loop could
-    /// be polled on another worker between the open and the drop, and the
-    /// assertion would still pass but stop proving anything about the drop. Do
-    /// not move this test to `#[tokio::test(flavor = "multi_thread")]` without
-    /// giving it an observable stop.
+    /// Verifies that shutting down a loop-starting cache stops the background
+    /// prune task cooperatively before the final handle drops.
     #[tokio::test]
-    async fn background_prune_guard_drop_stops_task() {
+    async fn background_prune_guard_shutdown_stops_task() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
         let cache = Cache::open_with_ttl_and_maintenance_interval(
             root.path(),
@@ -2583,11 +2747,8 @@ mod tests {
             let g = cache.get_bg_guard().expect("bg_guard must exist");
             g.cancelled.clone()
         };
-        drop(cache);
-        assert!(
-            cancelled_flag.load(Ordering::SeqCst),
-            "bg_guard must be cancelled after cache drop"
-        );
+        cache.shutdown().await;
+        assert!(cancelled_flag.load(Ordering::SeqCst), "bg_guard must be cancelled after shutdown");
     }
 
     /// Verifies that cross-domain GC via background prune preserves blobs
@@ -2889,5 +3050,141 @@ mod tests {
         )]
         permissions.set_readonly(false);
         std::fs::set_permissions(path, permissions).expect("make the blob writable");
+    }
+
+    /// Dropping a loop-starting cache as the last live handle without a
+    /// completed shutdown is misuse and must panic with a clear message.
+    #[tokio::test]
+    #[should_panic(
+        expected = "loop-starting cache dropped without completed shutdown; call Cache::shutdown().await before drop"
+    )]
+    async fn dropping_loop_starting_cache_without_shutdown_panics() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        drop(cache);
+    }
+
+    /// A completed shutdown makes dropping the last loop-starting handle safe.
+    #[tokio::test]
+    async fn shutdown_then_drop_loop_starting_cache_is_ok() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        cache.shutdown().await;
+        drop(cache);
+    }
+
+    /// Dropping a clone before the original is shut down is not misuse; only
+    /// the final drop after shutdown must be required.
+    #[tokio::test]
+    async fn clone_drop_before_original_shutdown_is_ok() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        let clone = cache.clone();
+        drop(clone);
+        cache.shutdown().await;
+        drop(cache);
+    }
+
+    /// A cache opened without the background loop is exempt from the
+    /// loop-starting shutdown requirement.
+    #[tokio::test]
+    async fn open_without_background_drop_without_shutdown_is_ok() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open_without_background(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        drop(cache);
+    }
+
+    /// Repeated shutdowns are idempotent for loop-starting caches.
+    #[tokio::test]
+    async fn double_shutdown_is_idempotent() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let cache = Cache::open(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        cache.shutdown().await;
+        cache.shutdown().await;
+        drop(cache);
+    }
+
+    /// The scoped helper opens a loop-starting cache, runs the body, drains on
+    /// return, and propagates the body result.
+    ///
+    /// Successful return implies [`Cache::shutdown`] completed for the opened
+    /// cache before control returned to the caller.
+    #[tokio::test]
+    async fn cache_with_open_runs_body_and_drains_before_return() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let domains = [CacheDomainConfig {
+            domain: "test".to_string(),
+            index_file_name: "tools.json".to_string(),
+            entry_ttl_seconds: ENTRY_TTL_SECONDS,
+        }];
+        let value = Cache::with_open(root.path(), &domains, |cache| {
+            Box::pin(async move {
+                cache.store_bytes("test", "scoped-key", b"scoped").await;
+                cache.lookup_bytes("test", "scoped-key").await
+            })
+        })
+        .await
+        .expect("with_open");
+        assert_eq!(value, Some(b"scoped".to_vec()));
+    }
+
+    /// The scoped helper propagates open errors.
+    #[tokio::test]
+    async fn cache_with_open_propagates_open_error() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let store_path = root.path().join("store");
+        std::fs::write(&store_path, b"not a directory").expect("create blocking file");
+        let domains = [CacheDomainConfig {
+            domain: "test".to_string(),
+            index_file_name: "tools.json".to_string(),
+            entry_ttl_seconds: ENTRY_TTL_SECONDS,
+        }];
+        let result = Cache::with_open(root.path(), &domains, |_cache| Box::pin(async {})).await;
+        assert!(result.is_err(), "open failure must propagate from scoped helper");
     }
 }
