@@ -1,6 +1,3 @@
-#[allow(unused_imports)]
-use super::super::inner::*;
-#[allow(unused_imports)]
 use super::*;
 
 // ---- render_prefix_components tests (Phase 2) -----------------------

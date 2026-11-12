@@ -155,10 +155,12 @@ where
         Ok(())
     }
 
-    // The trait requires the `fn -> impl Future` form because ractor is used
-    // without its `async-trait` feature; `async fn` would not satisfy the
-    // trait signature, so clippy::manual_async_fn cannot apply here.
-    #[allow(unused_variables, clippy::manual_async_fn)]
+    // ractor's supervisor callback is required as `fn -> impl Future + Send`
+    // here; `async fn` is not a compatible trait signature for this impl.
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "ractor Actor handle_supervisor_evt requires fn->impl Future in this configuration; async fn is not trait-compatible"
+    )]
     fn handle_supervisor_evt(
         &self,
         _myself: ActorRef<Self::Msg>,

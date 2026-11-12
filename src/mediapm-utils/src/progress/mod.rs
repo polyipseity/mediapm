@@ -31,10 +31,6 @@ pub use inner::{
     TestDimensionSource, TestTimeSource, TimeSource, TrackSnapshot, TrackStatus,
 };
 
-#[cfg(feature = "progress")]
-#[allow(unused_imports)]
-pub(crate) use inner::{SharedState, format_elapsed, format_rate};
-
 // Shared API traits for dependency injection (feature-gated)
 
 #[cfg(feature = "progress")]

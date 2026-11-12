@@ -361,11 +361,11 @@ pub(super) async fn fetch_and_import_tool_payload(
     };
     // Set fetch bar RHS message if some sources were cache-served.
     if downloaded.cached_count > 0 {
-        #[allow(clippy::cast_possible_truncation)]
+        let cached_count = u32::try_from(downloaded.cached_count).unwrap_or(u32::MAX);
         fetch_bar.set_suffix_components(SuffixComponents {
             custom: SuffixComponents::status_list(&[StatusCount {
                 word: "cached",
-                count: Some(downloaded.cached_count as u32),
+                count: Some(cached_count),
             }])
             .custom,
             ..Default::default()

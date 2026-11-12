@@ -164,7 +164,10 @@ fn resolve_media_variant_output_binding_with_ffmpeg_limits(
     }
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "variant producer registration keeps a fallible Result contract shared with other registration helpers"
+)]
 fn register_import_variant_producers(
     step_index: usize,
     tool: MediaStepTool,
@@ -286,7 +289,10 @@ fn register_per_mapping_variant_producers(
     Ok(())
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "variant producer registration keeps a fallible Result contract shared with other registration helpers"
+)]
 fn register_media_tagger_variant_producers(
     step_index: usize,
     tool: MediaStepTool,

@@ -139,7 +139,10 @@ fn pathbuf_to_opt(p: PathBuf) -> Option<PathBuf> {
     if p.as_os_str().is_empty() { None } else { Some(p) }
 }
 
-#[allow(private_bounds)]
+#[expect(
+    private_bounds,
+    reason = "WorkspaceProvisioningCas is an internal workspace-provisioning seam and widening its visibility is outside this cleanup"
+)]
 impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + Sized + 'static>
     MediaPmService<Cas>
 {

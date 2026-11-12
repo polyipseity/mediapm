@@ -16,7 +16,6 @@ mod terminal;
 mod tests_single_writer;
 mod writer;
 
-#[allow(unused_imports)]
 pub use components::{
     DebugSlotState, DebugTickSnapshot, PrefixComponents, ProgressDebugSink, StatusCount,
     SuffixComponents,
@@ -33,11 +32,13 @@ pub(crate) use debug::detect_progress_debug_env;
 // `renderer.rs` names `WriteGate` through the `super::WriteGate` path, so it is
 // re-exported here.
 pub(crate) use gate::WriteGate;
-// `strip_ansi`/`visible_width` are re-exported so `progress::tests` can reach
-// them via the `super::inner::strip_ansi` path (the `components` submodule is
-// private, so the path only resolves through this re-export). Path-based access
-// does not satisfy the `unused_imports` lint, hence the allow.
-#[allow(unused_imports)]
+// `strip_ansi`/`visible_width` and other helpers are re-exported so
+// `progress::tests` can reach them via the `super::inner::...` path (the
+// `components` submodule is private). Keep this as a narrow internal seam.
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "test-only seam constants used by progress tests")
+)]
 pub(crate) use components::{
     FRAME_OVERHEAD_COLUMNS, MAX_PREFIX_WIDTH, MAX_SLOTS, MAX_SUFFIX_WIDTH, MIN_BAR_FILL,
     MIN_PREFIX_WIDTH, MIN_SUFFIX_WIDTH, PARKED_GLYPH, SPINNER_COLUMN, TICK_CHARS, bar_color_code,

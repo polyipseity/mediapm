@@ -701,7 +701,7 @@ const ANSI_RESET: &str = "\x1b[0m";
 /// constant rather than repeating its value means the assertion pins "the
 /// ceiling" instead of a snapshot of it, and a change to the ceiling shows
 /// up as this test failing rather than silently redefining both.
-const SUFFIX_SLOT: usize = MAX_SUFFIX_WIDTH;
+const SUFFIX_SLOT: usize = super::super::inner::MAX_SUFFIX_WIDTH;
 
 /// The prefix components the budget tests use, chosen so the rendered prefix
 /// is a distinctive 15 columns wide.
@@ -826,7 +826,7 @@ fn client_prefix_budget_is_capped_by_the_prefix_ceiling() {
 
     assert_eq!(
         fixture.recorder.prefix_budget(),
-        Some(MAX_PREFIX_WIDTH - ANSI_RESET.len()),
+        Some(super::super::inner::MAX_PREFIX_WIDTH - ANSI_RESET.len()),
         "clamped prefix budget must be the ceiling less the ANSI reserve",
     );
 }
@@ -888,7 +888,7 @@ fn client_truncated_prefix_fills_exactly_its_budget_and_fits_its_slot() {
     // here because `InMemoryTerm` strips ANSI from what it reports; that the
     // reset is present is asserted by no test, as recorded in the
     // `inner::renderer` module documentation.
-    let expected = MAX_PREFIX_WIDTH - ANSI_RESET.len();
+    let expected = super::super::inner::MAX_PREFIX_WIDTH - ANSI_RESET.len();
     let fixture = BudgetFixture::new(budget_test_components(), WIDE_TERMINAL_COLS);
     let content = fixture.tick();
 

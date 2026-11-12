@@ -38,7 +38,10 @@ fn collect_same_step_dep_ids_rsgain_ffmpeg() {
     assert_eq!(ids.len(), 0, "a cross-step dependency is not a same-step dep");
 }
 
-#[allow(clippy::unnecessary_wraps)] // must match the `fn(&str, &str) -> Option<DependencyTypes>` parameter
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "test helper must match the `fn(&str, &str) -> Option<DependencyTypes>` callback signature"
+)]
 fn both_roles_dep_type(_tool_id: &str, _dep_id: &str) -> Option<DependencyTypes> {
     Some(DependencyTypes::SAME_STEP.combine(DependencyTypes::CROSS_STEP))
 }

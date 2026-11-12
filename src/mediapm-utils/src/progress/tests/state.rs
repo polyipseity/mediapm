@@ -1,5 +1,6 @@
-use super::super::inner::*;
+use super::super::inner::{SharedState, format_elapsed, format_rate};
 use super::*;
+use crate::progress::ProgressTerminal;
 
 // ---- RecordingTrackedHandle elapsed ----------------------------------
 
@@ -55,86 +56,83 @@ fn recording_handle_elapsed_frozen_after_finish_warning() {
 
 #[test]
 fn format_elapsed_zero() {
-    assert_eq!(super::super::format_elapsed(std::time::Duration::ZERO), "0s");
+    assert_eq!(format_elapsed(std::time::Duration::ZERO), "0s");
 }
 
 #[test]
 fn format_elapsed_seconds_only() {
-    assert_eq!(super::super::format_elapsed(std::time::Duration::from_secs(42)), "42s");
+    assert_eq!(format_elapsed(std::time::Duration::from_secs(42)), "42s");
 }
 
 #[test]
 fn format_elapsed_minutes_and_seconds() {
-    assert_eq!(super::super::format_elapsed(std::time::Duration::from_secs(5 * 60 + 3)), "5m3s");
+    assert_eq!(format_elapsed(std::time::Duration::from_secs(5 * 60 + 3)), "5m3s");
 }
 
 #[test]
 fn format_elapsed_hours() {
-    assert_eq!(
-        super::super::format_elapsed(std::time::Duration::from_secs(2 * 3600 + 15 * 60 + 30)),
-        "2h15m"
-    );
+    assert_eq!(format_elapsed(std::time::Duration::from_secs(2 * 3600 + 15 * 60 + 30)), "2h15m");
 }
 
 #[test]
 fn format_elapsed_large_hours() {
-    assert_eq!(super::super::format_elapsed(std::time::Duration::from_hours(100)), "4d4h");
+    assert_eq!(format_elapsed(std::time::Duration::from_hours(100)), "4d4h");
 }
 
 // ---- format_rate (pure formatting) -----------------------------------
 
 #[test]
 fn format_rate_zero() {
-    assert_eq!(super::super::format_rate(0.0), "0/d");
+    assert_eq!(format_rate(0.0), "0/d");
 }
 
 #[test]
 fn format_rate_slow() {
-    assert_eq!(super::super::format_rate(0.000_1), "9/d");
+    assert_eq!(format_rate(0.000_1), "9/d");
 }
 
 #[test]
 fn format_rate_per_minute() {
     // 0.02/s = 1.2/m
-    assert_eq!(super::super::format_rate(0.02), "1/m");
+    assert_eq!(format_rate(0.02), "1/m");
 }
 
 #[test]
 fn format_rate_per_hour() {
     // 0.000_5/s = 1.8/h
-    assert_eq!(super::super::format_rate(0.000_5), "2/h");
+    assert_eq!(format_rate(0.000_5), "2/h");
 }
 
 #[test]
 fn format_rate_single_digit() {
-    assert_eq!(super::super::format_rate(3.5), "3.5/s");
+    assert_eq!(format_rate(3.5), "3.5/s");
 }
 
 #[test]
 fn format_rate_double_digit() {
-    assert_eq!(super::super::format_rate(42.0), "42/s");
+    assert_eq!(format_rate(42.0), "42/s");
 }
 
 #[test]
 fn format_rate_thousands_single() {
-    assert_eq!(super::super::format_rate(1_200.0), "1.2k/s");
+    assert_eq!(format_rate(1_200.0), "1.2k/s");
 }
 
 #[test]
 fn format_rate_thousands_double() {
-    assert_eq!(super::super::format_rate(123_000.0), "123k/s");
+    assert_eq!(format_rate(123_000.0), "123k/s");
 }
 
 #[test]
 fn format_rate_millions() {
-    assert_eq!(super::super::format_rate(3_500_000.0), "3.5M/s");
+    assert_eq!(format_rate(3_500_000.0), "3.5M/s");
 }
 
 // ---- SharedState elapsed --------------------------------------------
 
 #[test]
 fn shared_state_elapsed_starts_near_zero() {
-    let s = super::super::SharedState::new(100, "test");
+    let s = SharedState::new(100, "test");
     let elapsed = s.elapsed();
     assert!(elapsed.as_millis() < 100, "elapsed should start near zero, got {elapsed:?}");
 }
@@ -142,7 +140,7 @@ fn shared_state_elapsed_starts_near_zero() {
 #[test]
 fn shared_state_elapsed_advances() {
     let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-    let s = super::super::SharedState::with_time_source(
+    let s = SharedState::with_time_source(
         100,
         "test",
         std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>,
@@ -155,7 +153,7 @@ fn shared_state_elapsed_advances() {
 #[test]
 fn shared_state_elapsed_frozen_after_mark_finished() {
     let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-    let s = super::super::SharedState::with_time_source(
+    let s = SharedState::with_time_source(
         100,
         "test",
         std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>,
@@ -174,7 +172,7 @@ fn shared_state_elapsed_frozen_after_mark_finished() {
 
 #[test]
 fn shared_state_elapsed_not_frozen_before_finish() {
-    let s = super::super::SharedState::new(100, "test");
+    let s = SharedState::new(100, "test");
     let t0 = s.elapsed();
     // Without calling mark_finished, repeated reads should climb.
     let t1 = s.elapsed();
@@ -184,7 +182,7 @@ fn shared_state_elapsed_not_frozen_before_finish() {
 #[test]
 fn shared_state_elapsed_monotonic() {
     let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-    let s = super::super::SharedState::with_time_source(
+    let s = SharedState::with_time_source(
         100,
         "test",
         std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>,
@@ -877,7 +875,7 @@ fn restart_clears_finished_status() {
 #[test]
 fn restart_clears_frozen_elapsed() {
     let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-    let s = super::super::SharedState::with_time_source(
+    let s = SharedState::with_time_source(
         100,
         "test",
         std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>,
@@ -901,7 +899,7 @@ fn restart_clears_frozen_elapsed() {
 #[test]
 fn restart_resets_start_time() {
     let ts = std::sync::Arc::new(super::super::TestTimeSource::new());
-    let s = super::super::SharedState::with_time_source(
+    let s = SharedState::with_time_source(
         100,
         "test",
         std::sync::Arc::clone(&ts) as std::sync::Arc<dyn super::super::TimeSource>,

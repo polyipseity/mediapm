@@ -15,13 +15,12 @@
 //! observation points, providing redundant coverage against regressions
 //! even when the observation mechanism itself has a bug.
 
-#[allow(unused_imports)]
+pub use super::BarStyle;
 pub use super::recording::{
     BarId, ProgressOp, RecordedProgressOp, RecordingProgressTracker, RecordingTrackedHandle,
 };
-#[allow(unused_imports)]
 pub use super::{
-    BarStyle, PrefixComponents, ProgressBarHandle, ProgressScreen, SuffixComponents, TrackStatus,
+    PrefixComponents, ProgressBarHandle, ProgressScreen, SuffixComponents, TrackStatus,
 };
 pub use std::sync::Arc;
 

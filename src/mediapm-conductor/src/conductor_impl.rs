@@ -790,7 +790,10 @@ impl<C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static> Cond
         async move { self.run_workflow(&wf, options).await }
     }
 
-    #[allow(clippy::manual_async_fn)]
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "ConductorApi requires `fn -> impl Future + Send`; async fn is not compatible with this trait signature"
+    )]
     fn get_runtime_diagnostics(
         &self,
     ) -> impl std::future::Future<Output = Result<RuntimeDiagnostics, ConductorError>> + Send {

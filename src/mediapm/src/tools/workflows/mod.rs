@@ -324,7 +324,10 @@ impl VariantProducer {
     ///
     /// Currently infallible; `Result` keeps the contract stable for future
     /// producer kinds that require configuration validation.
-    #[allow(clippy::unnecessary_wraps)] // must match the fallible binding contract
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "binding conversion stays fallible so future producer kinds can validate configuration without changing the call contract"
+    )]
     pub(crate) fn to_binding(&self) -> Result<(String, Option<String>), MediaPmError> {
         match self {
             Self::ExternalData { hash } => Ok((format!("${{external_data.{hash}}}"), None)),
@@ -496,7 +499,10 @@ fn import_step_output_capture(
 /// Returns [`MediaPmError::Workflow`] when the step declares no `hash` option,
 /// the tool is absent from the generated document, or an output variant carries
 /// no capture spec.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "import step synthesis threads the plan, workflow, source context, and producer state explicitly to avoid hidden mutable coupling"
+)]
 fn synthesize_import_step(
     workflow: &mut WorkflowSpec,
     plan: &mut MediaWorkflowPlan,
@@ -589,7 +595,10 @@ fn synthesize_import_step(
 /// media — the variants its hierarchy entries materialize and where its final
 /// step sits — so no synthesizer has to walk the hierarchy itself. Each one
 /// answers the step's purity from the step it was handed.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "media step synthesis operates over explicit workflow planning inputs and shared producer state without widening scope"
+)]
 fn synthesize_media_steps(
     workflow: &mut WorkflowSpec,
     plan: &mut MediaWorkflowPlan,

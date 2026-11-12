@@ -198,7 +198,10 @@ impl ProgressDebugSink {
 }
 
 /// Format a count with SI suffix: `0`, `999`, `1.2k`, `12.3k`, `123k`, `1.2M`, `12.3M`.
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "human-readable SI formatting intentionally converts large counts to f64 for decimal suffix display"
+)]
 pub(crate) fn format_count(n: u64) -> String {
     if n >= 1_000_000_000 {
         format!("{:.1}G", n as f64 / 1_000_000_000.0)

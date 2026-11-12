@@ -101,10 +101,13 @@ impl Hash {
     }
 
     /// Return the multihash digest length in bytes (always 32 for blake3-256).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the compile-time BLAKE3 digest length does not fit in `u8`.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn size(&self) -> u8 {
-        HASH_SIZE as u8
+        u8::try_from(HASH_SIZE).expect("blake3-256 digest length fits in u8")
     }
 
     /// Encode the hash as multihash storage bytes using the official [`multihash`] crate.

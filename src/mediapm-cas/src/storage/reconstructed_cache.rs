@@ -196,7 +196,12 @@ pub(crate) async fn compute_store_bytes<M: MetadataStore>(metadata: &M) -> Resul
 /// Byte budget for the reconstructed-bytes cache from total store bytes:
 /// `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` of the store, floored at 1 byte.
 pub(crate) fn budget_from_store_bytes(total_store_bytes: u64) -> u64 {
-    #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "cache byte budget is a best-effort heuristic: converting total store bytes to f64 may lose precision for very large stores and truncating the product back to u64 is intentional"
+    )]
     let limit =
         (total_store_bytes as f64 * crate::defaults::CACHE_MAX_FRACTION_OF_TOTAL_SIZE) as u64;
     limit.max(1)

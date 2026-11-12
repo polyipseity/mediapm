@@ -41,8 +41,14 @@ use super::{
 /// `tools.ffmpeg.max_input_slots`, an input variant has no producer, an output
 /// variant is missing / non-generic / has an invalid or duplicate ffmpeg
 /// `idx` outside `tools.ffmpeg.max_output_slots`, or a producer binding fails.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "ffmpeg synthesis validates and wires inputs, outputs, slot limits, and producer dependencies in one explicit planning context"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "ffmpeg synthesis performs ordered validation, slot mapping, dependency wiring, and capture registration that reads most clearly inline"
+)]
 pub(crate) fn synthesize_ffmpeg_step(
     workflow: &mut WorkflowSpec,
     media_id: &str,

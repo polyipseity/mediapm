@@ -37,11 +37,12 @@ pub fn evaluate_nickel_source_to_json(path: &Path) -> Result<Value, MediaPmError
 /// Parses one floating-point value into `u64` when it is a non-negative
 /// integer within representable range.
 #[must_use]
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    clippy::float_cmp
+    clippy::float_cmp,
+    reason = "validating a JSON/Nickel numeric version marker requires exact integer checks and a checked float-to-integer round trip"
 )]
 pub fn parse_non_negative_integral_u64(value: f64) -> Option<u64> {
     if value.is_sign_negative() || value.is_nan() || value.is_infinite() {

@@ -37,8 +37,7 @@ const SIZE_65MIB: u64 = 65 * 1024 * 1024;
 #[tokio::test]
 async fn put_stream_content_len_propagated() {
     let cas = new_in_memory_cas();
-    #[allow(clippy::cast_possible_truncation)]
-    let data = vec![0xABu8; SIZE_1MIB as usize];
+    let data = vec![0xABu8; usize::try_from(SIZE_1MIB).expect("1 MiB fits usize")];
     let expected_hash = Hash::from_content(&data);
 
     let hash = cas.put_stream(&data[..]).await.unwrap();
@@ -53,15 +52,13 @@ async fn put_stream_content_len_propagated() {
 #[tokio::test]
 async fn put_stream_get_to_writer_roundtrip() {
     let cas = new_in_memory_cas();
-    #[allow(clippy::cast_possible_truncation)]
-    let data = vec![0xCDu8; SIZE_1MIB as usize];
+    let data = vec![0xCDu8; usize::try_from(SIZE_1MIB).expect("1 MiB fits usize")];
     let expected_hash = Hash::from_content(&data);
 
     let hash = cas.put_stream(&data[..]).await.unwrap();
     assert_eq!(hash, expected_hash);
 
-    #[allow(clippy::cast_possible_truncation)]
-    let mut buf = Vec::with_capacity(SIZE_1MIB as usize);
+    let mut buf = Vec::with_capacity(usize::try_from(SIZE_1MIB).expect("1 MiB fits usize"));
     cas.get_to_writer(hash, &mut buf).await.unwrap();
     assert_eq!(buf.len() as u64, SIZE_1MIB, "output length must match");
     assert_eq!(buf.as_slice(), &data[..], "output content must match");
@@ -90,16 +87,14 @@ async fn in_memory_get_succeeds_above_wal_inline_limit() {
 #[tokio::test]
 async fn in_memory_large_object_get_to_writer_works() {
     let cas = new_in_memory_cas();
-    #[allow(clippy::cast_possible_truncation)]
-    let data = vec![0xEFu8; SIZE_65MIB as usize];
+    let data = vec![0xEFu8; usize::try_from(SIZE_65MIB).expect("65 MiB fits usize")];
     let expected_hash = Hash::from_content(&data);
     let chunk = Bytes::from(data.clone());
 
     let hash = cas.put(chunk).await.unwrap();
     assert_eq!(hash, expected_hash);
 
-    #[allow(clippy::cast_possible_truncation)]
-    let mut buf = Vec::with_capacity(SIZE_65MIB as usize);
+    let mut buf = Vec::with_capacity(usize::try_from(SIZE_65MIB).expect("65 MiB fits usize"));
     cas.get_to_writer(hash, &mut buf).await.unwrap();
     assert_eq!(buf.len() as u64, SIZE_65MIB);
     assert_eq!(buf.as_slice(), &data[..]);
@@ -115,16 +110,14 @@ async fn in_memory_large_object_get_to_writer_works() {
 #[tokio::test]
 async fn file_system_large_object_get_to_writer_works() {
     let cas = open_file_cas().await;
-    #[allow(clippy::cast_possible_truncation)]
-    let data = vec![0xFEu8; SIZE_65MIB as usize];
+    let data = vec![0xFEu8; usize::try_from(SIZE_65MIB).expect("65 MiB fits usize")];
     let expected_hash = Hash::from_content(&data);
     let chunk = Bytes::from(data.clone());
 
     let hash = cas.put(chunk).await.unwrap();
     assert_eq!(hash, expected_hash);
 
-    #[allow(clippy::cast_possible_truncation)]
-    let mut buf = Vec::with_capacity(SIZE_65MIB as usize);
+    let mut buf = Vec::with_capacity(usize::try_from(SIZE_65MIB).expect("65 MiB fits usize"));
     cas.get_to_writer(hash, &mut buf).await.unwrap();
     assert_eq!(buf.len() as u64, SIZE_65MIB);
     assert_eq!(buf.as_slice(), &data[..]);

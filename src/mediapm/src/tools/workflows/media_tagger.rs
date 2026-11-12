@@ -81,7 +81,10 @@ const MEDIA_TAGGER_APPLY_OUTPUT_FILE_REGEX: &str = r"^output-0(?:[.][^/\\]+)?$";
 /// Returns `MediaPmError::Workflow` when the input variant has no producer,
 /// the `ffmpeg` dependency tool is not active, or the output variant is
 /// missing.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "media-tagger synthesis creates dependent metadata and apply steps while preserving explicit planning inputs and tool resolution state"
+)]
 pub(crate) fn synthesize_media_tagger_step(
     workflow: &mut WorkflowSpec,
     media_id: &str,

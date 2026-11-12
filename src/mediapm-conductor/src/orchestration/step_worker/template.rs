@@ -184,7 +184,10 @@ struct ParsedConditional {
 /// The `ref_expr` is resolved; if non-empty, the true branch is used,
 /// otherwise the false branch.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::struct_field_names)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the true/false expression pair names the ternary branches directly and renaming would obscure template semantics"
+)]
 struct ParsedExistsTernary {
     /// Reference expression to check for existence (may include selectors).
     ref_expr: String,
@@ -686,7 +689,10 @@ fn unquote_string(s: &str) -> Option<&str> {
 
 /// Splits an expression into a base reference string and a list of post-processing
 /// selectors (parsed right-to-left).  Returns `("base_expr", [PostSelector])`.
-#[allow(clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "selector parsing keeps a Result signature to match surrounding template parser fallibility and future validation hooks"
+)]
 fn parse_selectors(expr: &str) -> Result<(String, Vec<PostSelector>), ConductorError> {
     let expr = expr.trim();
     let mut remaining = expr;
@@ -803,7 +809,10 @@ fn split_last_selector(expr: &str) -> Option<(PostSelector, &str)> {
 }
 
 /// Static list of supported selector prefixes and their constructors.
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "the selector dispatch table is a small fixed function-pointer map; introducing a type alias would add indirection without clarity"
+)]
 static SEL_PREFIXES: [(&str, fn(String) -> PostSelector); 3] = [
     (":zip(", |s| PostSelector::Zip(s)),
     (":file(", |s| PostSelector::File(s)),

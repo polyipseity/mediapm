@@ -187,11 +187,9 @@ impl SharedState {
         let sc = self.suffix_components.read().expect("shared_state suffix_components lock");
         let status = match self.status.load(Ordering::Relaxed) {
             0 => TrackStatus::Active,
-            // Code 1 is the canonical Success encoding; the wildcard
-            // fallback also maps to Success for forward-compatibility
-            // with unknown status codes (see snapshot_status_code_round_trip).
-            #[allow(clippy::match_same_arms)]
-            1 => TrackStatus::Success,
+            // Code 1 is the canonical Success encoding; unknown status codes
+            // also fall through to Success for forward-compatibility
+            // (see snapshot_status_code_round_trip).
             2 => TrackStatus::Failed,
             3 => TrackStatus::Warning,
             _ => TrackStatus::Success,

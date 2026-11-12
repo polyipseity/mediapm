@@ -46,7 +46,10 @@ use super::{
 /// # Errors
 ///
 /// Returns [`MediaPmError`] when required configuration is missing or invalid.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "yt-dlp step synthesis threads workflow, planning, source, and producer state explicitly to keep orchestration deterministic"
+)]
 pub(crate) fn synthesize_yt_dlp_step(
     workflow: &mut WorkflowSpec,
     _media_id: &str,

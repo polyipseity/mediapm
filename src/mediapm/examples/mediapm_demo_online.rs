@@ -1884,7 +1884,11 @@ fn configure_demo_ffprobe_command(
     Ok(())
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "demo assertion compares a small runtime concurrency value against a sentinel integer and only needs a diagnostic value"
+)]
 fn assert_yt_dlp_concurrency_policy(
     machine: &NickelDocument,
     yt_dlp_tool_id: &str,
@@ -1908,7 +1912,11 @@ fn assert_yt_dlp_concurrency_policy(
     .into())
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "demo assertion compares a small retry count against a sentinel integer and only needs a diagnostic value"
+)]
 fn assert_yt_dlp_retry_policy(
     machine: &NickelDocument,
     yt_dlp_tool_id: &str,
@@ -2246,7 +2254,10 @@ fn normalize_title_for_comparison(title: &str) -> String {
     title.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "demo-side verification enumerates many hierarchy invariants in order and splitting it would scatter the asserted contract"
+)]
 fn assert_flat_media_root_sidecar_families(
     interpolated_root: &Path,
     expected_output_base: &str,

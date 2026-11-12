@@ -1127,24 +1127,27 @@ where
             // run) are dropped by the status-list builder.
             #[cfg(feature = "progress")]
             if let Some(ref bar) = overall_bar {
-                #[allow(clippy::cast_possible_truncation)]
+                let executed_count = u32::try_from(executed_steps).unwrap_or(u32::MAX);
+                let cached_count = u32::try_from(cached_steps).unwrap_or(u32::MAX);
+                let failed_count = u32::try_from(failed_steps).unwrap_or(u32::MAX);
+                let retried_count = u32::try_from(retried_steps).unwrap_or(u32::MAX);
                 bar.set_suffix_components(mediapm_utils::progress::SuffixComponents::status_list(
                     &[
                         mediapm_utils::progress::StatusCount {
                             word: "executed",
-                            count: Some(executed_steps as u32),
+                            count: Some(executed_count),
                         },
                         mediapm_utils::progress::StatusCount {
                             word: "cached",
-                            count: Some(cached_steps as u32),
+                            count: Some(cached_count),
                         },
                         mediapm_utils::progress::StatusCount {
                             word: "failed",
-                            count: Some(failed_steps as u32),
+                            count: Some(failed_count),
                         },
                         mediapm_utils::progress::StatusCount {
                             word: "retried",
-                            count: Some(retried_steps as u32),
+                            count: Some(retried_count),
                         },
                     ],
                 ));

@@ -55,7 +55,10 @@ const RSGAIN_RUNTIME_INPUT_EXTENSIONS: &[&str] = &[
     clippy::too_many_lines,
     reason = "rsgain chain synthesis keeps the full extract/tag/apply pipeline explicit"
 )]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "rsgain chain synthesis threads workflow, planning, dependency resolution, and producer state explicitly to keep orchestration deterministic"
+)]
 pub(crate) fn synthesize_rsgain_step_chain(
     workflow: &mut WorkflowSpec,
     media_id: &str,
