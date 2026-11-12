@@ -1157,6 +1157,7 @@ mod tests {
                 assert!(!fetch.sources.is_empty(), "tool {name}: should have at least one source");
             }
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1369,6 +1370,7 @@ mod tests {
         assert_eq!(metadata.resolved_version, None);
         // WHY: the FFmpeg-Builds build-repo hash is not the upstream ffmpeg source hash.
         assert_eq!(metadata.resolved_vcs_hash, None);
+        cache.shutdown().await;
     }
 
     /// The resolved macOS leg is threaded from the resolve into the sources:
@@ -1407,6 +1409,7 @@ mod tests {
                 "each macOS permalink source records the resolved leg as its cache identity"
             );
         }
+        cache.shutdown().await;
     }
 
     /// The resolved `FFmpeg-Builds` autobuild tag is threaded from the resolve into the
@@ -1444,6 +1447,7 @@ mod tests {
                  as its cache identity"
             );
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1469,6 +1473,7 @@ mod tests {
         assert_eq!(metadata.resolved_tag, None);
         assert_eq!(metadata.resolved_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(metadata.resolved_vcs_hash.as_deref(), Some(crate::global::MEDIAPM_GIT_HASH));
+        cache.shutdown().await;
     }
 
     /// A release document that cannot be read shortens the Windows and Linux
@@ -1558,6 +1563,7 @@ mod tests {
                 source.os
             );
         }
+        cache.shutdown().await;
     }
 
     /// A single lookup that misses the metadata cache makes the whole resolve
@@ -1633,6 +1639,7 @@ mod tests {
             let SourceProducer::Fetch { urls } = &source.producer;
             assert_eq!(urls.len(), 2, "{}: the degraded leg holds the two aliases", source.os);
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1724,6 +1731,7 @@ mod tests {
                 );
             }
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1900,6 +1908,7 @@ mod tests {
                 );
             }
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1932,6 +1941,7 @@ mod tests {
 
         assert_eq!(tag, expected_tag, "cached tag should be returned without HTTP call");
         assert_eq!(commit_hash, expected_hash, "cached hash should be returned without HTTP call");
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -2213,6 +2223,7 @@ mod tests {
                 ]
             );
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -2317,6 +2328,7 @@ mod tests {
                 "canonical_version for {tool} must be deterministic"
             );
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -2406,6 +2418,7 @@ mod tests {
                 fetch.sources
             );
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -2436,6 +2449,7 @@ mod tests {
                 || msg.contains("GitHub API response"),
             "stale-cache fallthrough should produce an HTTP/transport error, not 'placeholder', got: {msg}"
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -2458,6 +2472,7 @@ mod tests {
                 .await
                 .expect("should return cached autobuild tag");
         assert_eq!(tag, "autobuild-2025-07-15-12-00");
+        cache.shutdown().await;
     }
 
     /// The releases-list lookup routes through the `MEDIAPM_GITHUB_API_BASE`
@@ -2507,6 +2522,7 @@ mod tests {
         unsafe {
             std::env::remove_var(GITHUB_API_BASE_ENV);
         }
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -2536,6 +2552,7 @@ mod tests {
                 .expect("should return cached (tag, hash)");
         assert_eq!(tag, "2025.07.15");
         assert_eq!(commit_hash, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0");
+        cache.shutdown().await;
     }
 
     // ── canonical_version_after_fetch (fetch feedback) ───────────────
@@ -2765,5 +2782,6 @@ mod tests {
         unsafe {
             std::env::remove_var(GITHUB_DOWNLOAD_BASE_ENV);
         }
+        cache.shutdown().await;
     }
 }

@@ -105,7 +105,7 @@ pub(crate) async fn service_with_cache(
 
 /// Creates a filesystem service rooted at a fresh temp artifact dir.
 ///
-/// The returned `TempDir` must be kept alive alongside the service (dropping
+/// The returned `ManagedTempDir` must be kept alive alongside the service (dropping
 /// it deletes the workspace); config-only tests can bind it to `_root`.
 pub(crate) async fn service_in_tempdir() -> Result<
     (MediaPmService<mediapm_cas::FileSystemCas>, mediapm_utils::temp::ManagedTempDir),

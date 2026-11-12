@@ -35,7 +35,7 @@ const SYNC_COMPLETE_MARKER: &str = "sync complete";
 
 /// Creates an isolated workspace holding [`MINIMAL_CONFIG`].
 ///
-/// The returned `TempDir` owns the tree; keep it bound for the whole test so
+/// The returned `ManagedTempDir` owns the tree; keep it bound for the whole test so
 /// the workspace is removed on drop.
 fn isolated_workspace() -> mediapm_utils::temp::ManagedTempDir {
     let workspace = mediapm_utils::temp::artifact_dir().expect("artifact dir");

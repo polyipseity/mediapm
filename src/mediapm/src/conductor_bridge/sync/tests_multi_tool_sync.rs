@@ -11,9 +11,10 @@ use super::*;
 /// Seeds a user-level download cache with yt-dlp metadata (tag+hash)
 /// and three plain-binary payloads (windows/macos/linux).
 ///
-/// Returns the cache root path. The `Cache` handle is dropped before
-/// return, releasing the directory lock; the caller keeps the
-/// underlying `TempDir` alive so the data persists.
+/// Returns the cache root path. The `Cache` handle is stopped with
+/// [`Cache::shutdown`] before return, so the store is released and the
+/// caller's `TempDir` can be removed without a prune pass writing into it;
+/// the caller keeps the `TempDir` alive so the data persists.
 ///
 /// media-tagger is a host builtin mediapm runs in-process: its
 /// `resolve_tool_fetch` arm returns no sources, so no metadata or payload
@@ -62,8 +63,10 @@ async fn seed_two_tool_cache(cache_root: &std::path::Path) {
         );
         cache.store_bytes("tools", &url, payload).await;
     }
-    // Cache handle dropped here — directory lock released, data persists
-    // on disk under the TempDir that the caller holds.
+    // The stop has to be observed before this returns: dropping the handle
+    // only requests it, and the caller's TempDir outlives this call, so a
+    // prune pass could write the index after that directory is removed.
+    cache.shutdown().await;
 }
 
 /// Asserts the overall `syncing tools` bar ended the run at its total (spec AC3).

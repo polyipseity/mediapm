@@ -594,6 +594,7 @@ mod tests {
         )
         .await;
         assert!(resolve_result.is_err(), "resolve_tool_fetch should reject unknown tools");
+        cache.shutdown().await;
     }
 
     /// A bar that already finished keeps its status when a later phase fails.
@@ -671,6 +672,7 @@ mod tests {
             row("[fch]").contains("[F]"),
             "the fetch row is the one that failed, so it carries the red marker:\n{contents}"
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -788,6 +790,7 @@ mod tests {
             Ok(None) => panic!("yt-dlp should return Ok(Some(...)), got Ok(None)"),
             Err(e) => panic!("yt-dlp should succeed, got Err({e:?})"),
         }
+        cache.shutdown().await;
     }
 
     /// Builds a minimal zip archive containing one file, for a Fetch source
@@ -953,6 +956,7 @@ mod tests {
             payload.canonical_version, "autobuild-TEST+resolvetime-obs",
             "the resolve-time leg must have been rewritten away"
         );
+        cache.shutdown().await;
     }
 
     /// A metadata pass that already named the canonical version keeps it.
@@ -1043,6 +1047,7 @@ mod tests {
             Ok(None) => panic!("yt-dlp should return Ok(Some(...)), got Ok(None)"),
             Err(e) => panic!("yt-dlp should succeed, got Err({e:?})"),
         }
+        cache.shutdown().await;
     }
 
     // -- Phase 3: metadata_cached / metadata_fetch_count progress bar tests --
@@ -1084,6 +1089,7 @@ mod tests {
             )),
             "expected SetSuffixComponents(custom=1 cached) in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1124,6 +1130,7 @@ mod tests {
             ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 2 })),
             "expected SetPosition pos=2 in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1172,6 +1179,7 @@ mod tests {
             ops.contains(&ProgressOp::FinishSuccess),
             "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1220,6 +1228,7 @@ mod tests {
             ops.contains(&ProgressOp::FinishSuccess),
             "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1259,6 +1268,7 @@ mod tests {
             )),
             "unexpected SetSuffixComponents(custom=cached) in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1302,6 +1312,7 @@ mod tests {
             ops.iter().any(|op| matches!(op, ProgressOp::SetPosition { pos: 0 })),
             "expected SetPosition pos=0 in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1361,6 +1372,7 @@ mod tests {
             )),
             "unexpected SetSuffixComponents(custom=cached) in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1420,6 +1432,7 @@ mod tests {
             ops.contains(&ProgressOp::FinishSuccess),
             "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1478,6 +1491,7 @@ mod tests {
             ops.contains(&ProgressOp::FinishSuccess),
             "expected FinishSuccess in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[test]
@@ -1769,6 +1783,7 @@ mod tests {
             )),
             "expected AddBar label with 'v7.1' and '[res]' in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1788,6 +1803,7 @@ mod tests {
             )),
             "expected AddBar label exactly 'media-tagger [res]' in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1811,6 +1827,7 @@ mod tests {
             )),
             "expected AddBar label with 'v7.1' and '[res]' in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
@@ -1853,6 +1870,7 @@ mod tests {
             )),
             "unexpected [process] in ops\ngot: {ops:#?}",
         );
+        cache.shutdown().await;
     }
 
     /// Progress labels show the `SemVer` version without build metadata (spec R4).
@@ -1889,5 +1907,6 @@ mod tests {
             recorded.iter().all(|r| !r.contains("cfa32c3182b")),
             "progress labels must not carry build metadata (spec R4); recorded: {recorded:?}"
         );
+        cache.shutdown().await;
     }
 }

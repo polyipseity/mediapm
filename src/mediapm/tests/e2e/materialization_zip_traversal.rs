@@ -80,10 +80,10 @@ fn document_with_zip_variant(
 }
 
 /// Seeds `entries` as the `archive` variant, saves the document, and returns
-/// the sync outcome together with the workspace [`TempDir`] the escaped file
+/// the sync outcome together with the workspace [`ManagedTempDir`] the escaped file
 /// would land in.
 ///
-/// The `TempDir` is returned rather than its path so the caller keeps the
+/// The `ManagedTempDir` is returned rather than its path so the caller keeps the
 /// directory alive: dropping it would delete the very tree whose contents the
 /// escape assertions inspect, turning a real check into a vacuous one.
 async fn sync_with_zip_members(

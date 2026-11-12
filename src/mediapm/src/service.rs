@@ -1708,8 +1708,11 @@ mod tests {
     ///
     /// The key is built from [`crate::tools::provider::github_api_base`], the
     /// same base the provider builds it from, so a redirected seam still finds
-    /// this seed. The `Cache` handle is dropped before return, releasing the
-    /// directory lock the service's own open would otherwise contend with.
+    /// this seed. The `Cache` is stopped with [`Cache::shutdown`] before
+    /// return: dropping the handle only requests that stop, and the
+    /// service's own open contends with the store lock the background task
+    /// still holds, while a prune pass it had in flight would write into a
+    /// root the caller later removes.
     #[cfg(feature = "media-tagger")]
     async fn seed_yt_dlp_latest_metadata(cache_root: &Path) {
         let domain = CacheDomainConfig {
@@ -1729,6 +1732,7 @@ mod tests {
                 format!("{YT_DLP_SEEDED_TAG}\n{YT_DLP_SEEDED_COMMIT}").as_bytes(),
             )
             .await;
+        cache.shutdown().await;
     }
 
     /// Builds the registry record a completed sync writes for one tool.

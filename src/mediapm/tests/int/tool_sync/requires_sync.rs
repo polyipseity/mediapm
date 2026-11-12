@@ -65,8 +65,8 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
 /// point-in-time question it could not resolve, and an open failure is the
 /// same kind of answer: it must warn and report `Ok(true)` instead of turning
 /// the lock into a failed sync. `media-tagger` is used because it resolves
-/// without network; the holder is dropped at the end of the test so the
-/// tempdir can be removed.
+/// without network; the holder is awaited to a stop at the end of the test so
+/// its prune task cannot write into a removed tempdir.
 #[tokio::test]
 async fn sync_requires_sync_when_the_cache_root_is_held_open() -> Result<(), mediapm::MediaPmError>
 {
@@ -93,7 +93,7 @@ async fn sync_requires_sync_when_the_cache_root_is_held_open() -> Result<(), med
 
     // Held for the whole check: the store's directory lock is what the check's
     // own open runs into.
-    let _holder = Cache::open(
+    let holder = Cache::open(
         cache_root.path(),
         &[CacheDomainConfig {
             domain: "tool_metadata".to_string(),
@@ -108,6 +108,12 @@ async fn sync_requires_sync_when_the_cache_root_is_held_open() -> Result<(), med
         service.logical_tool_requires_sync("media-tagger", &state).await?,
         "a cache root held open must report the tool as requiring sync, not fail the check",
     );
+
+    // Await the stop before this scope ends: `Cache::drop` only requests the
+    // abort, and the prune loop persists its index through `spawn_blocking`, so
+    // a write dispatched just before teardown would recreate the cache root
+    // after its owning tempdir is removed and leave an index-only orphan.
+    holder.shutdown().await;
     Ok(())
 }
 
@@ -324,8 +330,11 @@ async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::Media
         let releases_key =
             format!("{api_base}/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10");
         user_cache.store_bytes("tool_metadata", &releases_key, seeded_tag.as_bytes()).await;
-        // Drop the handle before the warning check opens the same root
-        // (flock contention otherwise fails the cache open).
+        // Stop the handle before the warning check opens the same root: the
+        // store's flock is held until every handle is gone, and the drop path
+        // only requests that stop, so the check's own open could still fail
+        // while a prune pass writes into the root.
+        user_cache.shutdown().await;
     }
 
     // Register ffmpeg in state with the matching canonical version and a

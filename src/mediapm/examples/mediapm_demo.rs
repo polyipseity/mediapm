@@ -793,6 +793,12 @@ async fn seed_tool_metadata_cache_for_demo_precheck(cache_root: &Path) -> Exampl
         )
         .await;
 
+    // Stop the seed cache's maintenance loop before returning: the caller's
+    // cache root outlives this call, and dropping the handle only requests
+    // that stop, so a prune pass could otherwise write into the root after
+    // it is removed.
+    cache.shutdown().await;
+
     Ok(())
 }
 

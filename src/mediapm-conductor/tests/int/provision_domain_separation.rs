@@ -48,6 +48,7 @@ async fn download_cache_and_provision_cache_use_different_roots() {
         result.is_err(),
         "provision cache must not find content from download cache's CAS store"
     );
+    download.shutdown().await;
 }
 
 /// Pruning the provision cache must not invalidate download cache entries.
@@ -93,4 +94,5 @@ async fn provision_cache_prune_does_not_affect_download_cache() {
         Some(b"keep-me".to_vec()),
         "download cache entry must survive provision prune"
     );
+    download.shutdown().await;
 }

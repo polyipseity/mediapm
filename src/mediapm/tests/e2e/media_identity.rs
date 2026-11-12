@@ -93,7 +93,7 @@ fn document_with_media_id(
 /// Seeds CAS, saves the document for `media_id`, and runs one library sync
 /// against a fresh workspace.
 ///
-/// The workspace [`TempDir`] is returned rather than its path so the caller
+/// The workspace [`ManagedTempDir`] is returned rather than its path so the caller
 /// keeps it alive: dropping it deletes the very tree the on-disk spelling
 /// assertions inspect, turning a real check into a vacuous one.
 async fn sync_media_id(
@@ -219,9 +219,8 @@ const UNREFERENCED_SPLITTING_MEDIA_ID_PLACEHOLDER: &str = "orphan/b";
 ///
 /// The unreferenced key never reaches the hierarchy walk, so the only
 /// production code that observes it is the workflow-synthesis boundary that
-/// iterates the whole `media` map. The workspace [`TempDir`] is returned rather
+/// iterates the whole `media` map. The workspace [`ManagedTempDir`] is returned rather
 /// than its path so the caller keeps it alive.
-#[allow(dead_code)]
 async fn sync_unreferenced_media_id(
     unreferenced_id: &str,
 ) -> Result<
@@ -259,7 +258,6 @@ async fn sync_unreferenced_media_id(
 /// even though the workflow synthesizer iterates the whole `media` map and
 /// turns every key into a `media/{id}` workflow whose name reaches log lines.
 /// This is the test that pins that gap shut.
-#[allow(dead_code)]
 #[tokio::test]
 async fn sync_rejects_unreferenced_media_id_with_splitting_shape()
 -> Result<(), mediapm::MediaPmError> {

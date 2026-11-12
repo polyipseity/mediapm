@@ -114,6 +114,7 @@ async fn a_builtin_provisions_without_fetching() {
         "a builtin names no executable: {:?}",
         result.os_exec_paths
     );
+    cache.shutdown().await;
 }
 
 /// Fetch progress aggregates every source's bytes: `items` counts completed
@@ -207,6 +208,7 @@ async fn progress_aggregation_over_a_mocked_fetch_source_covers_every_byte() {
         (expected_bytes, expected_bytes),
         "the final snapshot's byte aggregate is the payloads' summed size: {last:?}"
     );
+    cache.shutdown().await;
 }
 
 /// `process_tool_sources` advances the Process items count once per source,

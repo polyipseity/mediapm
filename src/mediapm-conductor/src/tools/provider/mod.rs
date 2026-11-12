@@ -2764,6 +2764,7 @@ mod tests {
             prev_items = snap.items.0;
         }
         assert_eq!(prev_items, 2, "two cached sources must both be counted as completed");
+        cache.shutdown().await;
     }
 
     // ── Regression: cache key using actual URL ───────────────────────
@@ -2822,6 +2823,7 @@ mod tests {
             result.entries[0].bytes, cached_data,
             "returned bytes should match cached content from URL 'b'"
         );
+        cache.shutdown().await;
     }
 
     // ── Identity-keyed content cache ─────────────────────────────────
@@ -2929,6 +2931,7 @@ mod tests {
             fetch_one_source(&server, &cache, &permalink, "build-two").await;
         assert_eq!(moved_downloads, 1, "a different identity is a cache miss");
         assert_eq!(moved_bytes, b"build-one", "the miss re-fetches whatever the permalink serves");
+        cache.shutdown().await;
     }
 
     /// A `latest/download` alias is one stable path whose asset is replaced
@@ -3576,6 +3579,7 @@ mod tests {
             prev_items = snap.items.0;
         }
         assert_eq!(prev_items, 3, "three sources must all be counted as completed");
+        cache.shutdown().await;
     }
 
     /// The fetch progress `items` counter counts *completed sources*, never a
@@ -3727,6 +3731,7 @@ mod tests {
         assert!(downloaded.entries.is_empty(), "no source, no entry: {:?}", downloaded.entries);
         assert_eq!(downloaded.cached_count, 0, "nothing was looked up");
         assert!(downloaded.warnings.is_empty(), "nothing was tried: {:?}", downloaded.warnings);
+        cache.shutdown().await;
     }
 
     // ── Counting mechanism regression tests ─────────────────────────
@@ -4839,6 +4844,7 @@ mod tests {
             cache.lookup_bytes("tools", &primary_url).await.is_none(),
             "a checksum-failed candidate must not be cached"
         );
+        cache.shutdown().await;
     }
 
     /// When every chain member fails — one 404, one checksum mismatch — the
@@ -4889,6 +4895,7 @@ mod tests {
         assert!(message.contains("HTTP 404"), "names the 404 cause: {message}");
         assert!(message.contains(&bad_sum_url), "names the checksum endpoint: {message}");
         assert!(message.contains("sha256 mismatch"), "names the mismatch cause: {message}");
+        cache.shutdown().await;
     }
 
     /// A chain served by a later member is not silent: the failure that
@@ -4955,5 +4962,6 @@ mod tests {
             warning.contains(&fallback_url),
             "names the candidate that served instead: {warning}"
         );
+        cache.shutdown().await;
     }
 }

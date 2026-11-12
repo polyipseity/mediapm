@@ -521,13 +521,15 @@ const UNRESOLVED_MACOS_LEG: &str = "unresolved";
 /// `aarch64` snapshot permalink, or `jellyfin_fallback_version` when the probe
 /// fails.
 ///
-/// The probe is a `HEAD` request through the redirect-following shared
-/// client, so the final URL after all hops is what gets parsed and no zip
-/// body is downloaded. The parsed id is cached (keyed by the permalink URL,
-/// the same URL the fetch phase caches its bytes under). A failed probe is
-/// not an error: the resolve-time leg is advisory — the chain still holds
-/// both candidates, and [`super::canonical_version_after_fetch`] rewrites
-/// the composite from the URL that actually served the fetch.
+/// The probe is a `GET` carrying a one-byte `Range` header through the
+/// redirect-following shared client, so the final URL after all hops is what
+/// gets parsed and the zip body is never read. `HEAD` is not an option:
+/// martin-riedl answers it with 404 and serves only `GET`. The parsed id is
+/// cached (keyed by the permalink URL, the same URL the fetch phase caches its
+/// bytes under). A failed probe is not an error: the resolve-time leg is
+/// advisory — the chain still holds both candidates, and
+/// [`super::canonical_version_after_fetch`] rewrites the composite from the URL
+/// that actually served the fetch.
 ///
 /// Only the `aarch64` permalink is probed: martin-riedl publishes one build
 /// id for both architectures, so a second probe would double the metadata
@@ -1257,6 +1259,7 @@ mod tests {
         unsafe {
             std::env::remove_var(MARTIN_RIEDL_BASE_ENV);
         }
+        cache.shutdown().await;
     }
 
     /// martin-riedl answers `HEAD` with 404 and serves only `GET`, so a probe
@@ -1497,6 +1500,7 @@ mod tests {
         unsafe {
             std::env::remove_var(JELLYFIN_BASE_ENV);
         }
+        cache.shutdown().await;
     }
 
     /// An unreadable index is not a failure: the macOS chain drops to its

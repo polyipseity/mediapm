@@ -353,6 +353,7 @@ async fn stale_tag_as_hash_cache_entry_triggers_reresolve_and_refusal() {
         message.contains(&format!("ref for tag {tag} did not dereference to a commit")),
         "the re-resolved refusal surfaces: {message}"
     );
+    cache.shutdown().await;
 }
 
 /// Deno's per-OS slots carry exactly one candidate each — never a
