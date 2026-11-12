@@ -20,7 +20,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,6 +28,7 @@ use mediapm_cas::{
     BackgroundMaintenanceGuard, CasApi, CasError, FileSystemCas, Hash, VerifyTriggerStrategy,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 use crate::error::ConductorError;
 
@@ -83,6 +84,13 @@ struct DomainState {
     /// 0 means "not persisted yet" — first `touch()` after construction
     /// or restart always persists.
     last_touch_persist: AtomicU64,
+    /// Index writes this domain has dispatched to the blocking pool and not yet
+    /// seen finish.
+    ///
+    /// Shared by every clone of this state, so the background prune task, a
+    /// foreground prune, and the [`Cache`] handle that waits on it count the
+    /// same writes.
+    in_flight_writes: Arc<InFlightIndexWrites>,
 }
 
 impl Clone for DomainState {
@@ -92,7 +100,92 @@ impl Clone for DomainState {
             index: self.index.clone(),
             entry_ttl_seconds: self.entry_ttl_seconds,
             last_touch_persist: AtomicU64::new(self.last_touch_persist.load(Ordering::Relaxed)),
+            in_flight_writes: Arc::clone(&self.in_flight_writes),
         }
+    }
+}
+
+/// Index writes a domain has handed to the blocking pool and not yet seen
+/// finish, with a wakeup for a waiter that must observe the count reach zero.
+///
+/// [`BackgroundMaintenanceGuard::shutdown`] settles the task, not the closures it
+/// dispatched: an abort cannot cancel work the pool has already accepted, so a
+/// write that is queued but not started still runs whenever the pool reaches it.
+/// While it is queued it holds no mutex, so probing one proves nothing about it.
+/// This count is what records it, because the reservation is taken before the
+/// dispatch rather than inside the closure.
+///
+/// Exactly one dispatch site writes an index through the pool: Phase 2 of
+/// [`prune_expired_inner_core`]. The Phase 3 scan there only reads indexes, and
+/// `open_domain_setup`'s creation write is awaited before any [`DomainState`]
+/// exists. The other writers (`touch`, `touch_index_entry`, `remove_index_entry`
+/// and the [`Drop`] flush) write inline on the thread that called them with the
+/// domain mutex held, so they never reach the pool and reserve nothing; the
+/// mutex probe in [`Cache::shutdown`] is what covers a concurrent one of those.
+#[derive(Debug, Default)]
+struct InFlightIndexWrites {
+    /// Dispatched write closures still running or still queued.
+    pending: AtomicUsize,
+    /// Wakes a waiter whenever a closure finishes, so a waiter that registered
+    /// before the count reached zero is not lost.
+    drained: Notify,
+}
+
+impl InFlightIndexWrites {
+    /// Reserves one slot before the closure is handed to the pool.
+    ///
+    /// The returned lease releases the slot when it drops, which is the end of
+    /// the write closure. Reserving here rather than inside the closure is the
+    /// point: a write the pool has not started yet is one
+    /// [`Cache::shutdown`] must still wait for.
+    fn reserve(self: &Arc<Self>) -> InFlightIndexWrite {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        InFlightIndexWrite { writes: Arc::clone(self) }
+    }
+
+    /// Waits until no dispatched write is outstanding.
+    ///
+    /// Returns immediately when nothing is in flight. Each iteration registers
+    /// interest before reading the count, so a completion between the two calls
+    /// still wakes this waiter through `notify_waiters`.
+    ///
+    /// The wait has no ceiling, and needs none. Every reservation is owned by
+    /// the closure it stands for: a dispatch site reserves immediately before
+    /// the dispatch and moves the lease into the closure, which is what Phase 2
+    /// of [`prune_expired_inner_core`] does, so the release is tied to that
+    /// closure's lifetime and happens whether the closure runs to completion,
+    /// panics, or is dropped unrun because the pool discarded it. The count
+    /// therefore falls to zero without help, and this loop terminates.
+    ///
+    /// A dispatch site added later keeps that true by doing the same: reserve
+    /// immediately before [`spawn_blocking`](tokio::task::spawn_blocking) and
+    /// move the lease into the closure. A reservation kept by the dispatching
+    /// task instead has no release tied to the work it counts, and that is the
+    /// only shape that could hang this wait; no such site exists today.
+    async fn wait_until_drained(&self) {
+        loop {
+            let notified = self.drained.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.pending.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// One reservation in [`InFlightIndexWrites`], released when the write it
+/// stands for finishes.
+struct InFlightIndexWrite {
+    /// The counter this reservation holds a slot in.
+    writes: Arc<InFlightIndexWrites>,
+}
+
+impl Drop for InFlightIndexWrite {
+    fn drop(&mut self) {
+        self.writes.pending.fetch_sub(1, Ordering::AcqRel);
+        self.writes.drained.notify_waiters();
     }
 }
 
@@ -177,6 +270,7 @@ async fn open_domain_setup(
                 index: Arc::new(Mutex::new(index)),
                 entry_ttl_seconds: config.entry_ttl_seconds,
                 last_touch_persist: AtomicU64::new(0),
+                in_flight_writes: Arc::new(InFlightIndexWrites::default()),
             },
         );
     }
@@ -269,11 +363,18 @@ async fn prune_expired_inner_core(
         .get(domain)
         .ok_or_else(|| ConductorError::Workflow(format!("unknown cache domain '{domain}'")))?
         .clone();
+    // Reserve before the dispatch, not inside the closure: a closure the pool
+    // has accepted but not started survives the task's abort, and while it is
+    // queued it holds no mutex, so [`Cache::shutdown`] can only wait for it
+    // through this count.
+    let write_lease = write_state.in_flight_writes.reserve();
     tokio::task::spawn_blocking(move || {
         let index = write_state.index.lock().map_err(|_| {
             ConductorError::Internal("locking cache index mutex failed".to_string())
         })?;
-        write_index_file(&write_state.index_path, &index)
+        let result = write_index_file(&write_state.index_path, &index);
+        drop(write_lease);
+        result
     })
     .await
     .map_err(|e| ConductorError::Workflow(format!("prune index join error: {e}")))??;
@@ -383,7 +484,8 @@ impl Cache {
         })
     }
 
-    /// Stops the background prune loop and waits for it to actually end.
+    /// Stops the background prune loop and waits for the index writes it
+    /// dispatched on the blocking pool.
     ///
     /// Dropping the cache only requests cancellation
     /// ([`BackgroundMaintenanceGuard::cancel`]), and the runtime acts on that
@@ -393,19 +495,64 @@ impl Cache {
     /// gone.
     ///
     /// The loop's task owns a [`FileSystemCas`] clone of this cache's store, so
-    /// the store's directory lock stays held until that task is dropped, which
-    /// is why a caller that opens the same store path again in this process has
-    /// to call this first. Concurrent callers are not supported, matching the
-    /// guard's own contract, and once this has returned, dropping the cache
-    /// releases the lock synchronously.
+    /// the store's advisory lock stays held until that task is dropped, which is
+    /// why a caller that opens the same store path again in this process has to
+    /// call this first. Concurrent callers are not supported, matching the
+    /// guard's own contract.
+    ///
+    /// What a return proves is narrower than "the root is free":
+    ///
+    /// - It releases nothing. The lock goes when the last [`Cache`] or
+    ///   [`FileSystemCas`] handle drops, and this takes `&self`; a caller that
+    ///   reopens the same store drops every handle after this returns.
+    /// - It does not make the root removable. On Windows a directory an open
+    ///   handle holds cannot be removed at all, so a caller that deletes the
+    ///   root drops its handles first on every platform rather than relying on
+    ///   this call (`temp-directory-spec.instructions.md`).
+    /// - It does quiesce index writes. Once it returns, no index write this
+    ///   cache dispatched is still running, apart from a foreground call the
+    ///   caller makes itself afterwards.
+    ///
+    /// Awaiting the guard settles the task, not the file work it dispatched: a
+    /// prune pass hands its index write to the blocking pool, and an abort
+    /// cannot cancel a closure the pool has already accepted, so that write
+    /// runs to completion either way. Two waits cover it, and each covers a
+    /// shape the other cannot:
+    ///
+    /// 1. The domain's in-flight count reaches zero. A closure still queued on
+    ///    the pool holds no mutex, so only a reservation taken before the
+    ///    dispatch records it; `InFlightIndexWrites` holds that count.
+    /// 2. The domain's index mutex can be taken. The synchronous writers
+    ///    (`touch`, `touch_index_entry`, `remove_index_entry` and the [`Drop`]
+    ///    flush) write inline on the thread that called them with the mutex held
+    ///    across `write_index_file`, and reserve nothing, so a concurrent one of
+    ///    those is visible to this probe alone.
     ///
     /// Foreground cache operations still work afterwards; only the periodic
     /// prune loop stops. Calling it more than once is safe: the guard takes its
-    /// task handle once, so later calls return as soon as the cancellation
-    /// flag is set.
+    /// task handle once, so a later call's guard step returns as soon as the
+    /// cancellation flag is set, while both waits below still run and complete
+    /// immediately once nothing is in flight.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime, because the mutex probe
+    /// dispatches to the blocking pool and
+    /// [`tokio::task::spawn_blocking`] panics with no runtime to dispatch to.
     pub async fn shutdown(&self) {
         if let Some(guard) = self.bg_guard.as_ref() {
             guard.shutdown().await;
+        }
+        for state in self.domains.values() {
+            // First the writes the abort above could not cancel. A write the
+            // pool has accepted but not started holds no mutex, so this count
+            // is the only record of it.
+            state.in_flight_writes.wait_until_drained().await;
+            // Then the mutex, which is what covers an inline writer running on
+            // another task's thread. The guard is dropped inside the closure,
+            // and a poisoned mutex still proves no writer holds it.
+            let index = Arc::clone(&state.index);
+            let _ = tokio::task::spawn_blocking(move || drop(index.lock())).await;
         }
     }
 
@@ -1112,6 +1259,15 @@ mod tests {
     const _: () = assert!(PRUNE_INTERVAL_SECONDS >= 60 * 60);
     const _: () = assert!(TOUCH_PERSIST_INTERVAL_SECONDS >= 60);
 
+    // Teardown contract for every test in this module: a cache opened by an
+    // opener that starts the maintenance loop is stopped with
+    // `cache.shutdown().await` before its `ManagedTempDir` can drop. Dropping
+    // the cache only requests the stop, and a pass in flight writes the index
+    // on the blocking pool, so a root removed first is recreated as an
+    // index-only orphan that the janitor gate reports. A mid-test `drop(cache)`
+    // that reopens the same store needs the same await, because the loop's
+    // task holds a CAS clone of that store.
+
     /// Protects shared-cache behavior: key-based round trips return
     /// the original payload bytes.
     #[tokio::test]
@@ -1136,6 +1292,62 @@ mod tests {
         // Immediate prune should not remove fresh entry
         let retrieved_after = cache.lookup_bytes("test", key).await;
         assert_eq!(retrieved_after, Some(payload), "fresh entry must survive prune");
+        cache.shutdown().await;
+    }
+
+    /// A dispatched index write the pool has not started yet must hold
+    /// [`Cache::shutdown`] open.
+    ///
+    /// Awaiting the guard settles the task, not the closure it handed to the
+    /// blocking pool, and a queued closure holds no mutex: a probe of the domain
+    /// mutex takes it freely and returns while the write is still pending. This
+    /// test stages exactly that shape, so the bounded wait below fails with a
+    /// message naming the missing wait rather than timing out on a green run:
+    /// without the in-flight count `shutdown` returns before the oneshot is
+    /// released.
+    #[tokio::test]
+    async fn shutdown_waits_for_a_dispatched_index_write() {
+        let root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        // No background loop: the subject is the wait for one dispatch, and a
+        // loop would add passes of its own to the counts this test reads.
+        let cache = Cache::open_without_background(
+            root.path(),
+            &[CacheDomainConfig {
+                domain: "test".to_string(),
+                index_file_name: "tools.json".to_string(),
+                entry_ttl_seconds: ENTRY_TTL_SECONDS,
+            }],
+        )
+        .await
+        .expect("open cache");
+        let state = cache.domains.get("test").expect("test domain must exist");
+        let in_flight = Arc::clone(&state.in_flight_writes);
+        let index = Arc::clone(&state.index);
+        let (release, parked) = tokio::sync::oneshot::channel::<()>();
+        // Stand in for a prune pass's Phase 2 dispatch: the slot is reserved
+        // before the closure reaches the pool, and the closure touches the
+        // index mutex only after the oneshot, as a queued write has not touched
+        // it at all.
+        let lease = in_flight.reserve();
+        let writer = tokio::task::spawn_blocking(move || {
+            let _lease = lease;
+            let _ = parked.blocking_recv();
+            drop(index.lock());
+        });
+
+        let mut shutdown = Box::pin(cache.shutdown());
+        let early = tokio::time::timeout(Duration::from_millis(200), &mut shutdown).await;
+        assert!(
+            early.is_err(),
+            "shutdown returned while a dispatched index write was still queued: it waited on \
+             the domain mutex, which a queued write does not hold, so the in-flight count is \
+             not being awaited"
+        );
+        release.send(()).expect("the parked writer must still be waiting on the oneshot");
+        tokio::time::timeout(Duration::from_secs(10), &mut shutdown)
+            .await
+            .expect("shutdown must return once the in-flight write finishes");
+        writer.await.expect("the writer task must not panic");
     }
 
     /// Regression: teardown must not recreate an already-removed cache dir.
@@ -1146,9 +1358,13 @@ mod tests {
     /// the directory, and `write_index_file`'s `create_dir_all` would
     /// recreate it as an orphan containing only index files (no `store/`).
     ///
-    /// Simulates the exact teardown ordering: cache dropped while the dir
-    /// exists, dir removed, then the background task's captured state
-    /// dropped last.
+    /// This pins the drop ordering, not a late write: the loop is stopped
+    /// first, so no background write can still be pending here. The cache drop
+    /// flushes while the dir exists, the dir is removed, and the guard is
+    /// dropped last, which is the step that must not recreate the directory. A
+    /// late write is unreachable once [`Cache::shutdown`] has waited for the
+    /// in-flight count (`shutdown_waits_for_a_dispatched_index_write` below),
+    /// so staging one here would need a cache that skips that wait on purpose.
     #[tokio::test]
     async fn cache_teardown_does_not_recreate_removed_tempdir() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
@@ -1166,6 +1382,7 @@ mod tests {
         // Dirty the index so any late flush would actually write (and thus
         // recreate the parent directory).
         cache.store_bytes("test", "teardown-key", b"payload").await;
+        cache.shutdown().await;
 
         // Detach the background guard to control teardown ordering: cache
         // drop flushes while the dir exists, the tempdir is then removed,
@@ -1209,6 +1426,11 @@ mod tests {
         // recreate the parent directory.
         cache.store_bytes("test", "removed-root-key", b"payload").await;
 
+        // Stop the loop and drain the WAL first: both are file work the cache
+        // still has in flight, and the root goes away while the handle lives.
+        cache.shutdown().await;
+        cache.cas.flush().await.expect("flush wal to committed blobs");
+
         // Remove the root while the cache handle is still alive — the exact
         // teardown ordering of test helpers that drop their TempDir before
         // their Cache (locals drop in reverse declaration order).
@@ -1238,6 +1460,7 @@ mod tests {
         .expect("open cache");
         let retrieved = cache.lookup_bytes("test", "no-such-key").await;
         assert!(retrieved.is_none(), "nonexistent key must return None");
+        cache.shutdown().await;
     }
 
     /// Verifies that storing a second value under the same key overwrites the
@@ -1260,6 +1483,7 @@ mod tests {
         cache.store_bytes("test", key, b"second-value").await;
         let retrieved = cache.lookup_bytes("test", key).await;
         assert_eq!(retrieved, Some(b"second-value".to_vec()), "second store must overwrite first");
+        cache.shutdown().await;
     }
 
     /// Verifies that prune removes entries whose TTL has expired (TTL = 0).
@@ -1285,6 +1509,7 @@ mod tests {
         assert!(report.removed_entries >= 1, "expired entry must be pruned");
         let retrieved = cache.lookup_bytes("test", key).await;
         assert!(retrieved.is_none(), "pruned entry must not be retrievable");
+        cache.shutdown().await;
     }
 
     /// Verifies that `prune_expired_entries` on a fresh empty cache does not
@@ -1306,6 +1531,7 @@ mod tests {
             cache.prune_expired_entries("test").await.expect("prune on empty cache must succeed");
         assert_eq!(report.removed_entries, 0, "no entries in empty cache");
         assert_eq!(report.removed_payloads, 0, "no payloads in empty cache");
+        cache.shutdown().await;
     }
 
     /// Verifies that storing empty bytes is a no-op (`entry_count` unchanged).
@@ -1328,6 +1554,7 @@ mod tests {
             cache.lookup_bytes("test", "empty-key").await.is_none(),
             "empty key must not be findable"
         );
+        cache.shutdown().await;
     }
 
     /// A touch moves the entry's last access forward, and the boundary is exact.
@@ -1463,6 +1690,7 @@ mod tests {
         // Payload still accessible via metadata domain.
         let retrieved = cache.lookup_bytes("metadata", "key-b").await;
         assert_eq!(retrieved, Some(payload), "payload must survive cross-domain GC");
+        cache.shutdown().await;
     }
 
     /// Pins the cross-domain payload-retention contract in the *drained*
@@ -1520,6 +1748,7 @@ mod tests {
 
         let retrieved = cache.lookup_bytes("metadata", "key-b").await;
         assert_eq!(retrieved, Some(payload), "payload must survive cross-domain GC");
+        cache.shutdown().await;
     }
 
     /// Exercises the prune path the background maintenance loop actually runs,
@@ -1911,6 +2140,7 @@ mod tests {
         // Fresh entry survives because prune didn't run.
         let retrieved = cache.lookup_bytes("test", "fresh-key").await;
         assert_eq!(retrieved, Some(b"fresh".to_vec()));
+        cache.shutdown().await;
     }
 
     /// Verifies that prune deletes the CAS payload blob when no index
@@ -1939,7 +2169,10 @@ mod tests {
         assert!(report.removed_entries >= 1, "expired entry must be pruned");
         assert!(report.removed_payloads >= 1, "payload blob must be reported as removed");
 
-        // Drop cache to release directory lock before opening fresh CAS.
+        // Drop cache to release directory lock before opening fresh CAS. The
+        // await first: the loop's task holds a CAS clone of this store, so a
+        // cancelled-but-live task keeps the lock the reopen needs.
+        cache.shutdown().await;
         drop(cache);
 
         // Verify blob is gone from CAS by opening a fresh FileSystemCas on the
@@ -1991,6 +2224,16 @@ mod tests {
         cache.store_bytes("test", "expiring-key", b"ephemeral").await;
         let first = cache.prune_expired_immediate("test").await.expect("first immediate prune");
         assert!(first.removed_entries >= 1, "expired entry must be pruned");
+        // The prune's own index write must have given its reservation back by
+        // the time the call returns. This catches a reservation that is taken
+        // and never released; it cannot catch a missing reservation on its own,
+        // because a count nothing ever raised is also zero.
+        let state = cache.domains.get("test").expect("test domain must exist");
+        assert_eq!(
+            state.in_flight_writes.pending.load(Ordering::Acquire),
+            0,
+            "a prune pass must release the index write reservation it took"
+        );
 
         // Store a fresh entry, then immediately prune again — cooldown must not
         // block the immediate prune.
@@ -2069,6 +2312,7 @@ mod tests {
         // Both keys gone from index.
         assert!(cache.lookup_bytes("test", "key-a").await.is_none());
         assert!(cache.lookup_bytes("test", "key-b").await.is_none());
+        cache.shutdown().await;
     }
 
     /// Verifies that a blob referenced by two separate domain index files
@@ -2155,7 +2399,10 @@ mod tests {
         cache.prune_expired_entries("content").await.expect("prune content");
         cache.prune_expired_entries("metadata").await.expect("prune metadata");
 
-        // Drop cache to release directory lock before opening fresh CAS.
+        // Drop cache to release directory lock before opening fresh CAS. The
+        // await first: the loop's task holds a CAS clone of this store, so a
+        // cancelled-but-live task keeps the lock the reopen needs.
+        cache.shutdown().await;
         drop(cache);
 
         // Blob must be gone from CAS.
@@ -2259,6 +2506,7 @@ mod tests {
             cache.lookup_bytes("test", "expiring-key").await.is_none(),
             "expired entry must be pruned by background task within 128 virtual waits"
         );
+        cache.shutdown().await;
     }
 
     /// Verifies that the background prune loop preserves fresh entries.
@@ -2304,9 +2552,22 @@ mod tests {
             cache.lookup_bytes("test", "fresh-key").await.is_some(),
             "fresh entry must survive background prune"
         );
+        cache.shutdown().await;
     }
 
     /// Verifies that dropping the cache cancels the background prune task.
+    ///
+    /// Nothing awaits between the open and the drop, so the loop's first poll
+    /// never happens and the abort lands before it can run: the drop path is
+    /// this test's subject, and it is the one stop that cannot be followed by
+    /// an observable one.
+    ///
+    /// That ordering is a property of `#[tokio::test]` running this body on a
+    /// current-thread runtime: on a multi-thread runtime the spawned loop could
+    /// be polled on another worker between the open and the drop, and the
+    /// assertion would still pass but stop proving anything about the drop. Do
+    /// not move this test to `#[tokio::test(flavor = "multi_thread")]` without
+    /// giving it an observable stop.
     #[tokio::test]
     async fn background_prune_guard_drop_stops_task() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
@@ -2375,7 +2636,10 @@ mod tests {
         let retrieved = cache.lookup_bytes("metadata", "key-b").await;
         assert_eq!(retrieved, Some(payload), "blob must survive cross-domain GC");
 
-        // The blob must still exist on disk.
+        // The blob must still exist on disk. The await comes before the drop:
+        // the loop's task holds a CAS clone of this store, which keeps the
+        // lock the reopen below needs.
+        cache.shutdown().await;
         drop(cache);
         let store_dir = root.path().join("store");
         let fresh_cas = FileSystemCas::open(&store_dir).await.expect("open fresh cas");
@@ -2410,6 +2674,10 @@ mod tests {
         cache.store_bytes("test", "persist-key", b"persistent data").await;
         let entry_count = cache.entry_count("test");
         assert_eq!(entry_count, 1, "session 1 must have 1 entry");
+        // The stop has to be observed before the reopen: the loop's task holds
+        // a CAS clone of this store, and a cancelled-but-live task keeps the
+        // lock session 2 opens against.
+        cache.shutdown().await;
         drop(cache);
 
         // ── Session 2: re-open and verify ──
@@ -2430,6 +2698,7 @@ mod tests {
             Some(b"persistent data".to_vec()),
             "payload must survive close-reopen"
         );
+        cache.shutdown().await;
     }
 
     /// Verifies that `touch()` persists the updated timestamp across cache
@@ -2516,7 +2785,10 @@ mod tests {
         // Second touch within the same second — throttle window (5 min)
         // guarantees this is NOT persisted via `touch()` itself.
         cache.touch(domain, key);
-        // Without Drop-flush this in-memory-only update would be lost.
+        // Without Drop-flush this in-memory-only update would be lost. The
+        // await first, for the same CAS clone and store lock the reopen below
+        // needs.
+        cache.shutdown().await;
         drop(cache);
 
         // ── Second session ──
@@ -2537,6 +2809,7 @@ mod tests {
             Some(payload),
             "payload must survive restart when touch() was in-memory-only"
         );
+        cache.shutdown().await;
     }
 
     /// Verifies that `lookup_bytes` keeps the index entry intact when the
@@ -2594,6 +2867,7 @@ mod tests {
         // The index entry must survive — transient errors do NOT remove it.
         let survived = cache.get_entry_hash("test", "key-a");
         assert!(survived.is_some(), "index entry must survive transient CAS error");
+        cache.shutdown().await;
     }
 
     /// Makes a stored object writable so a test can plant corrupt bytes in it.
