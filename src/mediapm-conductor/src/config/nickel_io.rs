@@ -8,7 +8,7 @@
 //!
 //! Each evaluation allocates its own scratch workspace via
 //! `scratch_workspace_dir()` (a `mediapm_utils::temp::artifact_dir()` by
-//! default); the `TempDir` guard removes it on both success and error paths,
+//! default); the `ManagedTempDir` guard removes it on both success and error paths,
 //! so failed decodes never leak scratch files.
 //!
 //! # Cache discipline
@@ -159,7 +159,7 @@ where
     let validator_name = format!("validate_document_v{requested_version}");
     let version_file_name = resolve_version_contract(requested_version, document_kind)?;
 
-    // Per-decode scratch workspace: the `TempDir` guard removes the
+    // Per-decode scratch workspace: the `ManagedTempDir` guard removes the
     // directory on success AND on the `?` error paths below. The previous
     // explicit cleanup ran only on success, so a failed evaluation leaked
     // the scratch files.
