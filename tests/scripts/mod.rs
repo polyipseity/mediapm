@@ -825,13 +825,25 @@ fn bash_janitor_reports_a_per_path_failure() {
     assert!(!removable.exists(), "the removable tree survived next to a stuck one");
 }
 
-/// Depth of the chain [`seed_deep_chain`] seeds.
+/// Depth of the bash janitor's deep-chain case on Unix.
 ///
-/// Deep enough that a recursive tree walk spends real stack on it, shallow
-/// enough that every seeded path stays inside `PATH_MAX`: a one-character name
-/// costs two bytes per level, so this keeps the deepest path near 700 bytes,
-/// under the tightest limit among the hosts that run the suite (1024 on macOS).
-const DEEP_CHAIN_LEVELS: usize = 300;
+/// The bash twin is the cheap path, so it carries the suite's highest Unix
+/// depth: deep enough to stress a recursive removal, shallow enough that every
+/// seeded path stays inside `PATH_MAX` (a one-character name costs two bytes per
+/// level, so this keeps the deepest path near 700 bytes, under macOS's 1024-byte
+/// limit). Both janitor twins remove iteratively today, but this depth still
+/// proves correct deep-tree removal well past any trivial chain.
+const BASH_DEEP_CHAIN_LEVELS: usize = 300;
+
+/// Depth of the pwsh janitor's deep-chain case on Unix.
+///
+/// The PowerShell twin's per-entry work makes a 300-level sweep expensive on
+/// Unix hosts, so it runs a shallower but still deep chain there while the bash
+/// twin keeps the suite's highest Unix depth. 100 levels is deeper than the
+/// Windows `MAX_PATH`-bound case and far past a trivial tree, so it preserves
+/// the removal-contract signal for the pwsh path without repeating the most
+/// expensive depth on the slowest interpreter.
+const PWSH_UNIX_DEEP_CHAIN_LEVELS: usize = 100;
 
 /// Depth of the chain on Windows, where `MAX_PATH` bounds the tree that can be
 /// named at all.
@@ -847,9 +859,21 @@ const DEEP_CHAIN_LEVELS: usize = 300;
 /// bytes per level (78) and `\leaf` (5): 167 characters, 92 inside the limit.
 const WINDOWS_DEEP_CHAIN_LEVELS: usize = 40;
 
-/// The chain depth this host can seed and sweep, as deep as the host can name.
-fn deep_chain_levels() -> usize {
-    if cfg!(windows) { WINDOWS_DEEP_CHAIN_LEVELS } else { DEEP_CHAIN_LEVELS }
+/// The chain depth a deep-chain case seeds for `script_name`, bounded by what
+/// that host and interpreter can name cheaply.
+///
+/// Windows is `MAX_PATH`-bound for both twins. On Unix the bash twin keeps the
+/// suite's highest depth and the pwsh twin uses a shallower but still deep chain
+/// so the pwsh path keeps its removal-contract coverage without the 300-level
+/// interpreter cost.
+fn deep_chain_levels_for(script_name: &str) -> usize {
+    if cfg!(windows) {
+        return WINDOWS_DEEP_CHAIN_LEVELS;
+    }
+    let is_pwsh = Path::new(script_name)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ps1"));
+    if is_pwsh { PWSH_UNIX_DEEP_CHAIN_LEVELS } else { BASH_DEEP_CHAIN_LEVELS }
 }
 
 /// Name of each seeded chain level.
@@ -859,8 +883,8 @@ const DEEP_CHAIN_LEVEL: &str = "d";
 /// not only empty directories.
 const DEEP_CHAIN_LEAF: &str = "leaf";
 
-/// Seeds `<scope>/<name>/d/d/...` [`deep_chain_levels`] deep with a leaf file at
-/// the bottom, and returns the chain root.
+/// Seeds `<scope>/<name>/d/d/...` `levels` deep with a leaf file at the
+/// bottom, and returns the chain root.
 ///
 /// The seeding steps into each level instead of building one long absolute path,
 /// so the test's own writes never depend on the platform's path limit. The chain
@@ -869,12 +893,12 @@ const DEEP_CHAIN_LEAF: &str = "leaf";
 /// through paths (`chmod`/`rm` and `Get-Item`/`Remove-Item` all take one), so a
 /// tree past `PATH_MAX` cannot be named by any of them, and seeding one would
 /// leak a sandbox no removal here can address.
-fn seed_deep_chain(scope: &Path, name: &str) -> PathBuf {
+fn seed_deep_chain(scope: &Path, name: &str, levels: usize) -> PathBuf {
     let root = scope.join(name);
     fs::create_dir_all(&root).expect("create deep chain root");
     let original = std::env::current_dir().expect("read the working directory");
     std::env::set_current_dir(&root).expect("step into the deep chain root");
-    for _ in 1..deep_chain_levels() {
+    for _ in 1..levels {
         fs::create_dir(DEEP_CHAIN_LEVEL).expect("create a deep chain level");
         std::env::set_current_dir(DEEP_CHAIN_LEVEL).expect("step into a deep chain level");
     }
@@ -886,12 +910,13 @@ fn seed_deep_chain(scope: &Path, name: &str) -> PathBuf {
 /// Asserts one twin removes a seeded deep chain whole and still reports the
 /// count it removed.
 ///
-/// The chain is the shape a recursive walk spends its stack on: a sweep that
-/// recurses per level is bounded by the tree's depth, so the failure this pins
-/// is a walk that cannot finish, not a path too long to name.
+/// The depth comes from [`deep_chain_levels_for`]: the bash twin keeps the
+/// suite's highest Unix depth, the pwsh twin uses a shallower but still deep
+/// chain on Unix for runtime, and Windows is `MAX_PATH`-bound for both.
 fn assert_deep_chain_removed(script_name: &str, run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome) {
+    let levels = deep_chain_levels_for(script_name);
     let (_sandbox, scope) = seeded_scope(&[]);
-    let root = seed_deep_chain(&scope, FAKE_MEDIAPM_DIRS[0]);
+    let root = seed_deep_chain(&scope, FAKE_MEDIAPM_DIRS[0], levels);
     // Resolved before the sweep: the tree is gone afterwards, and the expected
     // spelling has to name the directory this twin prints for it.
     let expected_root = expected_root_spelling(script_name, &root);
@@ -901,7 +926,7 @@ fn assert_deep_chain_removed(script_name: &str, run: impl Fn(&Path, &Path, &[&st
 
     assert!(
         sweep.status.success(),
-        "deep-chain sweep failed: stdout {}, stderr {}",
+        "deep-chain sweep failed (levels={levels}): stdout {}, stderr {}",
         sweep.stdout,
         sweep.stderr
     );
