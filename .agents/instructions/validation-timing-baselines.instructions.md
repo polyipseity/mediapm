@@ -144,8 +144,9 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 ## R11 — release and per-combo breakdown evidence (available totals only)
 
 - **Available totals/breakdowns recorded:** local clean release build 415.15s real (`Finished release profile ... 6m 55s`, 3 crates: `mediapm-cas`, `mediapm-conductor`, `mediapm`); CI release job 308s with build release packages 295s (run 43609375823) and 148s with 134s build step (run 43379058938). Feature-matrix totals recorded above (CI and local healthy/unhealthy).
-- **Not yet captured:** per-combo feature-matrix durations from CI or healthy instrumented runs; per-crate/per-phase release build breakdowns (e.g. compile/link/codegen hotspots by crate or phase) beyond job/step totals and Cargo finish messages. No release profiling table by crate/phase is available from collected evidence.
+- **Not yet captured:** per-combo feature-matrix durations from CI or healthy instrumented runs; per-crate aggregate release totals, `rmeta_time`, and complete per-unit phase/link attribution for the captured release `--timings` run (fields not exposed in the HTML/log). No per-crate/per-phase release aggregate table is available from collected evidence.
 - **Action taken in this task:** record available totals and explicitly defer finer breakdown capture to future measurement work.
+- **Follow-up (2026-11-16, Task 3 transcription):** Per-unit hotspot timings from the stable release `--timings` HTML unit timing table (including frontend/codegen splits where shown and all `mediapm*` unit rows) are transcribed in D4.1 from the captured 2026-11-15 artifact/log; no rerun or regeneration was performed.
 
 ## R4 anomalies, context, and gaps
 
@@ -153,7 +154,7 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 - **Disk pressure:** 94-96% used during reruns/partial pass (`/System/Volumes/Data`, as low as ~23 GiB available in clean rerun window; ~15.3 GiB free at end of partial pass per evidence). Timing records should continue to include disk headroom.
 - **Sandbox/toolchain specificity:** srt/Anthropic sandbox, nucleus toolchains/SDK paths, clang 21.1.8/lld 21.1.8 context recorded for clean rerun; partial-run toolchain context less complete.
 - **CI metadata gaps:** runner CPU/memory details, cache state, Rust cache configuration (currently none in CI per plan), queue time, and full step lists for run 43379058938 not fully captured in provided evidence.
-- **Local gaps:** no clean local baseline for `cargo fmt-check`, `cargo bin rumdl check .`, `cargo clippy-all`, or `cargo check --workspace --all-targets --all-features` in the 2026-11-15 sequential rerun set (warm 2026-11-14 pass values recorded). No Windows local runs. No per-test nextest report artifact beyond summary/slow list. No per-combo feature-matrix timing breakdown. No per-phase/per-crate release profiling.
+- **Local gaps:** no clean local baseline for `cargo fmt-check`, `cargo bin rumdl check .`, `cargo clippy-all`, or `cargo check --workspace --all-targets --all-features` in the 2026-11-15 sequential rerun set (warm 2026-11-14 pass values recorded). No Windows local runs. No per-test nextest report artifact beyond summary/slow list. No per-combo feature-matrix timing breakdown. Per-unit frontend/codegen hotspot timings for the captured stable release `--timings` run are transcribed in D4.1; per-crate aggregate totals, `rmeta_time`, and complete per-unit phase/link attribution remain unavailable from the captured artifacts.
 - **Comparability note:** CI and local measurements are different environments (ubuntu/windows runners vs macOS sandbox), different cache/warm states, and different dates/commits; compare only with these caveats.
 
 ## 2026-11-15 residual diagnostics execution record (D0–D7, exhaustive attempt, completed 2026-11-15T15:37Z)
@@ -261,7 +262,76 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 | Nightly attempt (diagnostic) | `cargo +nightly -Z timings build --release -p mediapm-cas -p mediapm-conductor -p mediapm` | pass, `Finished release profile [optimized] in 7m 47s`; warning `nix v0.29.0` future-incompat | 467.37 / 978.88 / 42.83 | `/tmp/mediapm-diag/profiling/nightly-z-timings.log` (heavy; not a recommended baseline) |
 | Prior/CI | local clean release (prior record), CI release steps | pass | 415.15 prior local; CI 299s/295s/134s | baselines + jobs |
 
-**Artifacts/coverage:** HTML timing report captured (per-unit timing UI available). Detailed crate/codegen split can be inspected from the HTML artifact; logs confirm completion/profile totals. `-Z timings` is nightly-only but was attempted successfully as diagnostic evidence (toolchain present for nightly invocation in this env; run completed).
+**Artifacts/coverage:** The stable `--timings` HTML report and build log remain the captured evidence. Per-unit hotspot data visible in the HTML unit timing table (totals, frontend/codegen splits where shown, features, and build-script-run rows) is transcribed below in D4.1. Fields not extractable from the captured HTML/log: `rmeta_time`, complete per-unit phase/link attribution beyond the table's frontend/codegen columns, and per-crate aggregate totals (some crates appear as multiple units with different targets or feature sets). `-Z timings` is nightly-only but was attempted successfully as diagnostic evidence (toolchain present for nightly invocation in this env; run completed).
+
+#### D4.1 release timings hotspot transcription (stable `--timings`, 2026-11-15)
+
+| Field | Value |
+|---|---|
+| Record ID / date | `release-timings-hotspots-2026-11-15-stable` (transcribed 2026-11-16 from diagnostics captured 2026-11-15T14:59Z–15:37Z UTC; build executed 2026-11-15T15:29:56Z–15:33:07Z) |
+| Command | `RUSTC_WRAPPER= cargo --locked build --timings --release -p mediapm-cas -p mediapm-conductor -p mediapm` |
+| Environment / date caveats | Local diagnostics pass, srt/Anthropic sandbox, macOS 27.2.1 (26B131), Darwin 27.2.0 arm64, `aarch64-apple-darwin` host/target. Toolchain: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1` (see D2 environment snapshot), `RUSTC_WRAPPER` unset. Disk ~93% used before/after this captured run per log (`/System/Volumes/Data`). No rerun or regeneration performed for this transcription. |
+| Totals / build metadata (from HTML table + log) | `Finished release profile [optimized] in 3m 11s`; 191.10s real / 679.48s user / 29.71s sys; exit 0. Targets: `mediapm 0.0.0 (lib)`, `mediapm 0.0.0 (mediapm "bin")`, `mediapm-cas 0.0.0 (lib)`, `mediapm-cas 0.0.0 (mediapm-cas "bin")`, `mediapm-conductor 0.0.0 (lib)`, `mediapm-conductor 0.0.0 (mediapm-conductor "bin")`. Profile `release`, fresh units 0, dirty units 582, total units 582, max concurrency 5 (jobs=4 ncpu=10), build start `2026-11-15T15:29:56.577484Z`, total time `191.0s (3m 11.0s)`. |
+| Evidence artifacts | `/tmp/mediapm-diag/profiling/release-timings.log`; `target/cargo-timings/cargo-timing-20261115T152956577Z-b883f48bd893db85.html` (+ symlink in same directory). |
+
+**Top unit timings (HTML unit timing table, ranked by reported unit time):**
+
+| Rank | Unit | Total | Frontend | Codegen | Features / notes |
+|---:|---|---:|---:|---:|---|
+| 1 | `nickel-lang-parser v0.3.0` | 86.2s | 15.6s (18%) | 70.6s (82%) | — |
+| 2 | `mediapm-conductor v0.0.0` | 41.4s | 3.6s (9%) | 37.8s (91%) | `cli, default, fetch, progress, tool-presets` |
+| 3 | `mediapm v0.0.0` | 39.6s | 4.3s (11%) | 35.3s (89%) | `cli, default, media-tagger` |
+| 4 | `nickel-lang-core v0.18.0` | 35.9s | 4.3s (12%) | 31.6s (88%) | `default, doc, format, markdown, repl` |
+| 5 | `mediapm v0.0.0 mediapm "bin"` | 35.7s | — | — | `cli, default, media-tagger`; frontend/codegen split not shown in table |
+| 6 | `mediapm-conductor v0.0.0 mediapm-conductor "bin"` | 28.3s | — | — | `cli, default, fetch, progress, tool-presets`; frontend/codegen split not shown in table |
+| 7 | `malachite-nz v0.9.1` | 19.4s | 4.4s (23%) | 15.0s (77%) | `enable_serde, float_helpers, serde, std` |
+| 8 | `mediapm-cas v0.0.0` | 11.2s | 1.7s (16%) | 9.4s (84%) | `cli, default` |
+| 9 | `musicbrainz_rs v0.13.0` | 10.6s | 2.2s (21%) | 8.4s (79%) | `async, rustls` |
+| 10 | `rustls v0.23.37` | 10.3s | 1.8s (17%) | 8.5s (83%) | `log, logging, ring, std, tls12` |
+| 11 | `reqwest v0.12.28` | 9.2s | 0.8s (9%) | 8.4s (91%) | `__rustls, __rustls-ring, __tls, blocking, json, rustls-tls, rustls-tls-webpki-roots, rustls-tls-webpki-roots-no-provider, stream` |
+| 12 | `regex-automata v0.4.14` | 8.2s | 1.2s (15%) | 7.0s (85%) | large unicode/perf feature set |
+| 13 | `chromaprint-next v0.1.0` | 7.9s | 0.3s (3%) | 7.6s (97%) | `default` |
+| 14 | `mediapm-cas v0.0.0 mediapm-cas "bin"` | 6.6s | — | — | `cli, default`; frontend/codegen split not shown in table |
+| 15 | `clap_builder v4.6.0` | 6.0s | 1.0s (17%) | 5.0s (83%) | `color, env, error-context, help, std, string, suggestions, usage, wrap_help` |
+| 16 | `onig_sys v69.9.1 build-script (run)` | 5.3s | — | — | build-script run; frontend/codegen not applicable |
+| 17 | `tokio v1.52.3` | 5.1s | 1.8s (35%) | 3.3s (65%) | runtime/io feature set |
+| 18 | `comrak v0.49.0` | 5.0s | 1.0s (20%) | 4.0s (80%) | markdown/CLI feature set |
+| 21 | `ring v0.17.14 build-script (run)` | 4.3s | — | — | `alloc, default, dev_urandom_fallback` |
+| 25 | `tree-sitter v0.26.7 build-script (run)` | 3.9s | — | — | `default, std` |
+
+**Workspace crate units visible in the HTML table (all `mediapm*` rows):**
+
+| Rank | Unit | Total | Frontend | Codegen | Features / notes |
+|---:|---|---:|---:|---:|---|
+| 2 | `mediapm-conductor v0.0.0` | 41.4s | 3.6s (9%) | 37.8s (91%) | `cli, default, fetch, progress, tool-presets` |
+| 3 | `mediapm v0.0.0` | 39.6s | 4.3s (11%) | 35.3s (89%) | `cli, default, media-tagger` |
+| 5 | `mediapm v0.0.0 mediapm "bin"` | 35.7s | — | — | frontend/codegen split not shown |
+| 6 | `mediapm-conductor v0.0.0 mediapm-conductor "bin"` | 28.3s | — | — | frontend/codegen split not shown |
+| 8 | `mediapm-cas v0.0.0` | 11.2s | 1.7s (16%) | 9.4s (84%) | `cli, default` |
+| 14 | `mediapm-cas v0.0.0 mediapm-cas "bin"` | 6.6s | — | — | frontend/codegen split not shown |
+| 26 | `mediapm-cli v0.0.0` | 3.5s | 0.3s (9%) | 3.2s (91%) | `media-tagger` |
+| 32 | `mediapm-utils v0.1.0` | 2.8s | 0.4s (14%) | 2.4s (86%) | `nickel, progress, report` |
+| 43 | `mediapm-conductor-builtin-archive v0.1.0` | 2.0s | 0.2s (8%) | 1.9s (92%) | — |
+| 58 | `mediapm-conductor-cli v0.0.0` | 1.4s | 0.2s (11%) | 1.3s (89%) | — |
+| 104 | `mediapm-cas-cli v0.0.0` | 0.7s | 0.1s (12%) | 0.6s (88%) | — |
+| 126 | `mediapm-conductor-builtin-import v0.1.0` | 0.5s | 0.1s (22%) | 0.4s (78%) | `fetch` |
+| 145 | `mediapm-cli v0.0.0` | 0.4s | 0.2s (57%) | 0.2s (43%) | `default, media-tagger`; separate unit from rank 26 |
+| 191 | `mediapm-conductor-builtin-export v0.1.0` | 0.3s | 0.1s (23%) | 0.2s (77%) | — |
+| 198 | `mediapm v0.0.0 build-script` | 0.3s | — | — | `cli, default, media-tagger` |
+| 203 | `mediapm v0.0.0 build-script (run)` | 0.3s | — | — | `cli, default, media-tagger` |
+| 213 | `mediapm-conductor v0.0.0 build-script` | 0.3s | — | — | `cli, default, fetch, progress, tool-presets` |
+| 236 | `mediapm-conductor v0.0.0 build-script (run)` | 0.3s | — | — | `cli, default, fetch, progress, tool-presets` |
+| 237 | `mediapm-conductor-builtin-echo v0.1.0` | 0.3s | 0.1s (19%) | 0.2s (81%) | — |
+| 251 | `mediapm-cas v0.0.0 build-script (run)` | 0.2s | — | — | `cli, default` |
+| 298 | `mediapm-cas v0.0.0 build-script` | 0.2s | — | — | `cli, default` |
+| 336 | `mediapm-conductor-cli v0.0.0` | 0.2s | 0.1s (61%) | 0.1s (39%) | separate unit from rank 58 |
+| 371 | `mediapm-utils v0.1.0` | 0.1s | 0.1s (67%) | 0.0s (33%) | separate unit from rank 32 |
+| 382 | `mediapm-conductor-builtin-fs v0.1.0` | 0.1s | 0.1s (46%) | 0.1s (54%) | — |
+| 423 | `mediapm-cas-cli v0.0.0` | 0.1s | 0.1s (70%) | 0.0s (30%) | separate unit from rank 104 |
+
+**Observed dominance (based on captured unit table only):** By reported unit time, `nickel-lang-parser v0.3.0` is the largest single unit (86.2s, 70.6s codegen / 15.6s frontend). The next largest units are `mediapm-conductor` lib (41.4s), `mediapm` lib (39.6s), `nickel-lang-core` (35.9s), `mediapm` bin (35.7s), and `mediapm-conductor` bin (28.3s). Where frontend/codegen splits are shown, codegen accounts for most of the reported time on these top units. Unit times overlap under concurrency (max 5, jobs=4, ncpu=10), so unit totals do not sum to wall time (191.0s). This transcription makes no causal optimization claim and does not aggregate per-crate totals beyond the unit rows shown.
+
+**Not extractable from captured HTML/log:** `rmeta_time`; explicit per-unit link-phase timing (bins/build-script runs may include linking in reported total but the table does not expose a separate link column); per-crate aggregate totals across repeated units/targets; and any field not present in the unit timing table or build log. The nightly `-Z timings` run remains a separate diagnostic context (467.37s real, 582 units, 0 fresh) and is not mixed into this stable-run transcription.
 
 ### D5 — R5/R7 residual feasibility diagnostics (analysis, no changes)
 
@@ -316,7 +386,7 @@ Sources re-examined: `scripts/test-runner/src/{doc.rs,test.rs,nextest.rs,cargo.r
 | D3.2 | Per-combination command/duration/exit/pass-fail/order for all 58 (healthy run) | captured | `matrix/results.tsv` + per-combo logs (all pass) |
 | D3.3 | CI per-combo extraction or absence evidence | captured (absence) | CI reports totals only, no per-combo rows |
 | D3.4 | Totals/pass-fail/anomalies/comparability | captured | 58/58 clean local and CI; variance/totals recorded |
-| D4.1 | Release per-crate/per-phase diagnostics (`--timings`/logs) | captured-partial | stable `--timings` HTML + totals captured; detailed unit breakdown inspectable in artifact, not fully transcribed |
+| D4.1 | Release per-crate/per-phase diagnostics (`--timings`/logs) | captured (transcribed with noted limits) | Stable `--timings` HTML unit timing table transcribed in D4.1 (top units, frontend/codegen splits where shown, and all `mediapm*` unit rows) with artifact/log refs and totals; `rmeta_time`, complete per-unit phase/link attribution, and per-crate aggregate totals remain unavailable from captured artifacts |
 | D4.2 | Dev/build-all/test-all/test-doc-all phase diagnostics where supported | captured | CI compile/execute/rustdoc/test splits captured; local check/clippy/build-profile markers captured |
 | D4.3 | Unavailable profiling flags/modes attempts/evidence | captured | nightly `-Z timings` attempted successfully (diagnostic), stable `--timings` captured |
 | D5.1 | Re-examine test-runner/CI/prek/cargo/nextest sources and prior findings | captured | source review recorded |
