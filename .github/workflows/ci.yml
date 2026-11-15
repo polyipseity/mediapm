@@ -47,6 +47,17 @@ jobs:
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30
 
+      # R3: run cheap static checks before expensive test/build steps so obvious
+      # failures stop the job early. rumdl runs before fmt-check (approved change).
+      - name: Run cheap checks
+        run: |
+          cargo --locked bin rumdl check
+          cargo --locked fmt-check
+          cargo --locked clippy-all
+
+      # R10: ffmpeg/ffprobe is kept for the build job because test-all runs demo
+      # and network-group example tests; install it after cheap checks so a
+      # lint/format/clippy failure avoids this fixed apt setup cost.
       - name: Install ffprobe for the example tests
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
@@ -57,11 +68,7 @@ jobs:
         run: cargo --locked test-doc-all
 
       - name: Build project
-        run: |
-          cargo --locked bin rumdl check
-          cargo --locked clippy-all
-          cargo --locked fmt-check
-          cargo --locked build-all
+        run: cargo --locked build-all
 
   # Release: the profile the shipped artifacts are built in.
   #
