@@ -14,13 +14,13 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, .rustfmt.toml, .
 
 ## Validation workflow
 
-When editing Rust source, validate with selective checks first:
+Use a **fast inner loop during edits** (targeted iteration), and reserve **full gates for pre-push/CI parity**.
 
-- Prefer `cargo test -p <crate> <test_name>` for tight edit loops; use `cargo build-pkg <crate>` to avoid package-wide churn.
-- Rely on `prek.toml` pre-commit hooks for fmt/type/clippy on commit rather than running them manually.
+- Fast inner loop: prefer targeted checks such as `cargo test -p <crate> <test_name>` for tight edit loops, `cargo test-pkg <crate>` / `cargo clippy-pkg <crate>` / `cargo build-pkg <crate>` for crate-scoped runs, or other selective commands. Avoid slow full-workspace gates on every edit.
+- Pre-commit hooks (`prek.toml`) cover baseline checks and incremental formatting/linting on changed files at commit time; rely on them rather than re-running full formatting/lint gates manually per edit.
+- Full/parity gates: `cargo fmt-check`, `cargo bin rumdl check`, `cargo clippy-all`, `cargo test-all`, `cargo test-doc-all`, and `cargo build-all`/feature-matrix as CI or explicit parity contexts require. `prek.toml` runs the full workspace pre-push gate (`cargo-check`, `clippy`, `test-runner test`, `test-runner doc`); CI mirrors and extends this, so manual full reruns are not required for normal submission.
 - libtest args (e.g. `--test-threads=8`) go AFTER `--`: `cargo test -p mediapm-utils --features progress -- --test-threads=8`.
 - Stale-artifact gotcha: `passthrough_conductor_tool_run_help_is_routable` in `src/mediapm/src/main.rs` can fail spuriously from stale incremental artifacts affecting clap's `try_parse_from`; clean and rebuild with `cargo clean -p mediapm -p mediapm-conductor`.
-- `prek.toml` runs full workspace validation on `git push`; manual `cargo fmt-check`/`clippy-all`/`test-all` are not required for normal submission.
 - Required manual runtime verification before completion: `cargo run --package mediapm --example mediapm_demo` and `mediapm_demo_online`; neither demo needs a `mediapm` CLI build, because every tool their workflows run is either a fetched payload or a host builtin that runs in-process.
 - For `src/mediapm/**` edits, avoid full online demo runs during normal development; reserve them for push/pre-push unless a reviewer asks for local runtime verification.
 - If source or configs are incomplete, report gaps explicitly instead of inventing commands.
