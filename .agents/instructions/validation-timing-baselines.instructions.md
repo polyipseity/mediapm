@@ -137,14 +137,14 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 
 - **Decision (as required):** **Collect timings first — optimization not yet justified by collected data alone; revisit after more CI/per-combo samples if needed.**
 - **Collected evidence:** CI feature-matrix totals 239s check step / 254s job (run 43609375823, 2eee9aaf) and 71s check step / 85s job (run 43379058938, 225a5401). Local healthy clean run: 48.26s total, 58/58 combinations clean. Local partial/unhealthy run (2026-11-14): 121.89s, 42/58 completed, 16 `ring`-related failures in that env (not a healthy baseline).
-- **Not yet available:** per-combination timings and pass/fail breakdown by combination from collected CI evidence. The 58-combination count is known, but no per-combo samples were recorded in the available data.
+- **CI per-combination data not yet available:** per-combination timings and pass/fail breakdowns from collected CI evidence are unavailable because CI logs for runs 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` without per-combination labeled timing rows. Local per-combination timings and pass/fail from the staged 2026-11-15 diagnostics run (`/tmp/mediapm-diag/matrix/results.tsv`, 58/58 pass, sequential real 48.12s) are transcribed in D3.1.
 - **Implication:** no feature-matrix optimization is recommended from currently collected data in this task. Additional CI runs and per-combo timing samples are needed before judging bounded parallelism/sharding/subset strategies.
 - **Task 7 final decision (2026-11-15, SDD implementation pass):** no feature-matrix optimization implemented. Collected totals/samples remain insufficient to justify bounded parallelism, sharding, or subset changes without additional per-combo and post-cache CI evidence; preserve current 58-combo coverage and pass/fail semantics. Revisit only with data-backed justification.
 
 ## R11 — release and per-combo breakdown evidence (available totals only)
 
 - **Available totals/breakdowns recorded:** local clean release build 415.15s real (`Finished release profile ... 6m 55s`, 3 crates: `mediapm-cas`, `mediapm-conductor`, `mediapm`); CI release job 308s with build release packages 295s (run 43609375823) and 148s with 134s build step (run 43379058938). Feature-matrix totals recorded above (CI and local healthy/unhealthy).
-- **Not yet captured:** per-combo feature-matrix durations from CI or healthy instrumented runs; per-crate aggregate release totals, `rmeta_time`, and complete per-unit phase/link attribution for the captured release `--timings` run (fields not exposed in the HTML/log). No per-crate/per-phase release aggregate table is available from collected evidence.
+- **Not yet captured:** per-combo feature-matrix durations from CI. CI runs 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` but emitted no per-combination labeled timing rows. Local healthy per-combination durations, pass/fail, and exit values from the staged 2026-11-15 diagnostics run are transcribed in D3.1 (`/tmp/mediapm-diag/matrix/results.tsv`). Per-crate aggregate release totals, `rmeta_time`, and complete per-unit phase/link attribution for the captured release `--timings` run remain unavailable (fields not exposed in the HTML/log). No per-crate/per-phase release aggregate table is available from collected evidence.
 - **Action taken in this task:** record available totals and explicitly defer finer breakdown capture to future measurement work.
 - **Follow-up (2026-11-16, Task 3 transcription):** Per-unit hotspot timings from the stable release `--timings` HTML unit timing table (including frontend/codegen splits where shown and all `mediapm*` unit rows) are transcribed in D4.1 from the captured 2026-11-15 artifact/log; no rerun or regeneration was performed.
 
@@ -253,6 +253,82 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 - **Local full run (healthy):** all 58 executed sequentially as `RUSTC_WRAPPER= cargo --locked check -p <combo>` with per-combo start/end UTC, disk snapshots, real/user/sys, exit, pass/fail recorded. **58/58 pass, 0 failures.** Sequential total real **48.12s** (min 0.11s, max 12.55s, avg 0.830s). Evidence: `/tmp/mediapm-diag/matrix/results.tsv`, `/tmp/mediapm-diag/matrix/logs/*.log`.
 - **Slowest combos (real s):** `mediapm-conductor --no-default-features` 12.55; `mediapm-conductor-builtin-import --features cli` 4.73; `mediapm-conductor --features cli` 4.03; `mediapm-test-support --no-default-features` 3.36; others ≤2.66.
 - **CI extraction:** 437/436/433 logs all report `58 combinations, all clean` but emit no per-combination labeled timing rows; per-combo CI extraction unavailable (absence evidenced).
+
+#### D3.1 per-combination transcription (2026-11-16 follow-up, staged diagnostics)
+
+| Field | Value |
+|---|---|
+| Record ID / date | `matrix-per-combo-2026-11-15-staged` (transcribed 2026-11-16 from staged diagnostics captured 2026-11-15; no rerun or regeneration) |
+| Enumeration / derivation | 58 combinations from `RUSTC_WRAPPER= cargo --locked run --package test-runner -- feature-matrix --locked --print` (`/tmp/mediapm-diag/matrix/combos.txt`, `scripts/test-runner/src/matrix.rs`) |
+| Command context (captured) | Each row ran sequentially as `RUSTC_WRAPPER= cargo --locked check -p <combo>` in the staged diagnostics pass, where `<combo>` is the package and feature-selection arguments recorded in `results.tsv` (for example, `mediapm --features cli`) |
+| Environment / state caveats | Local diagnostics pass (2026-11-15T14:59Z–15:37Z UTC context recorded in D0–D7), warm/evolved `target/`, disk ~93%→94% used during the diagnostics pass (`/System/Volumes/Data`), `RUSTC_WRAPPER` unset for matrix runs. Per-combo start/end UTC and disk snapshots are recorded in the corresponding log files (for example, `==START … ==`, `==END … ==`, and `df` lines in `/tmp/mediapm-diag/matrix/logs/*.log`) but are not transcribed into the table below; the table records the fields present in `results.tsv`. |
+| Outcome | 58/58 pass, 0 failures, all exit codes 0 |
+| Timing totals (sequential, `results.tsv`) | real 48.12s, user 51.78s, sys 9.37s |
+| Distribution (real s) | min 0.11, max 12.55, avg 0.830 (48.12 / 58) |
+| Slowest combinations (real s) | `mediapm-conductor --no-default-features` 12.55; `mediapm-conductor-builtin-import --features cli` 4.73; `mediapm-conductor --features cli` 4.03; `mediapm-test-support --no-default-features` 3.36; `mediapm-conductor --features test-builtins` 2.66; others ≤2.15 |
+| CI per-combo rows | Not emitted in CI logs for runs 43713782110, 43609375823, and 43379058938; those runs reported `58 combinations, all clean` without per-combination labeled timing rows (absence evidenced). |
+| Evidence artifacts | `/tmp/mediapm-diag/matrix/results.tsv` (header + 58 rows), `/tmp/mediapm-diag/matrix/combos.txt` (58 lines), `/tmp/mediapm-diag/matrix/logs/*.log` (58 index-aligned logs) |
+
+| Index | Combination (`cargo --locked check -p …`) | Status | Exit | Real (s) | User (s) | Sys (s) |
+|---:|---|---|---:|---:|---:|---:|
+| 01 | `build-utils --no-default-features` | pass | 0 | 0.28 | 0.08 | 0.06 |
+| 02 | `build-utils --all-features` | pass | 0 | 0.11 | 0.07 | 0.03 |
+| 03 | `cargo-bin --no-default-features` | pass | 0 | 0.15 | 0.08 | 0.03 |
+| 04 | `cargo-bin --all-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
+| 05 | `mediapm --no-default-features` | pass | 0 | 1.52 | 0.37 | 0.23 |
+| 06 | `mediapm --features cli` | pass | 0 | 1.31 | 0.45 | 0.26 |
+| 07 | `mediapm --features media-tagger` | pass | 0 | 0.73 | 0.44 | 0.21 |
+| 08 | `mediapm --features proptest` | pass | 0 | 1.07 | 0.45 | 0.24 |
+| 09 | `mediapm --all-features` | pass | 0 | 0.76 | 0.44 | 0.23 |
+| 10 | `mediapm-cas --no-default-features` | pass | 0 | 0.14 | 0.08 | 0.04 |
+| 11 | `mediapm-cas --features cli` | pass | 0 | 0.13 | 0.08 | 0.04 |
+| 12 | `mediapm-cas --features large-tests` | pass | 0 | 1.84 | 0.94 | 0.23 |
+| 13 | `mediapm-cas --all-features` | pass | 0 | 0.13 | 0.08 | 0.04 |
+| 14 | `mediapm-cas-cli --no-default-features` | pass | 0 | 0.11 | 0.07 | 0.03 |
+| 15 | `mediapm-cas-cli --all-features` | pass | 0 | 0.11 | 0.07 | 0.03 |
+| 16 | `mediapm-cli --no-default-features` | pass | 0 | 1.36 | 0.87 | 0.22 |
+| 17 | `mediapm-cli --features media-tagger` | pass | 0 | 0.28 | 0.21 | 0.05 |
+| 18 | `mediapm-cli --all-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
+| 19 | `mediapm-conductor --no-default-features` | pass | 0 | 12.55 | 16.53 | 1.70 |
+| 20 | `mediapm-conductor --features cli` | pass | 0 | 4.03 | 4.93 | 0.71 |
+| 21 | `mediapm-conductor --features fetch` | pass | 0 | 0.22 | 0.11 | 0.09 |
+| 22 | `mediapm-conductor --features progress` | pass | 0 | 0.21 | 0.11 | 0.09 |
+| 23 | `mediapm-conductor --features proptest` | pass | 0 | 2.15 | 1.60 | 0.30 |
+| 24 | `mediapm-conductor --features test-builtins` | pass | 0 | 2.66 | 1.72 | 0.34 |
+| 25 | `mediapm-conductor --features tool-presets` | pass | 0 | 0.22 | 0.11 | 0.10 |
+| 26 | `mediapm-conductor --all-features` | pass | 0 | 1.68 | 1.44 | 0.20 |
+| 27 | `mediapm-conductor-builtin-archive --no-default-features` | pass | 0 | 0.74 | 0.94 | 0.15 |
+| 28 | `mediapm-conductor-builtin-archive --features cli` | pass | 0 | 0.32 | 0.21 | 0.08 |
+| 29 | `mediapm-conductor-builtin-archive --all-features` | pass | 0 | 0.12 | 0.08 | 0.04 |
+| 30 | `mediapm-conductor-builtin-echo --no-default-features` | pass | 0 | 0.15 | 0.10 | 0.04 |
+| 31 | `mediapm-conductor-builtin-echo --features cli` | pass | 0 | 0.20 | 0.12 | 0.06 |
+| 32 | `mediapm-conductor-builtin-echo --all-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
+| 33 | `mediapm-conductor-builtin-export --no-default-features` | pass | 0 | 0.16 | 0.10 | 0.05 |
+| 34 | `mediapm-conductor-builtin-export --features cli` | pass | 0 | 0.41 | 0.36 | 0.10 |
+| 35 | `mediapm-conductor-builtin-export --all-features` | pass | 0 | 0.13 | 0.08 | 0.04 |
+| 36 | `mediapm-conductor-builtin-fs --no-default-features` | pass | 0 | 0.16 | 0.10 | 0.04 |
+| 37 | `mediapm-conductor-builtin-fs --features cli` | pass | 0 | 0.19 | 0.12 | 0.06 |
+| 38 | `mediapm-conductor-builtin-fs --all-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
+| 39 | `mediapm-conductor-builtin-import --no-default-features` | pass | 0 | 0.16 | 0.10 | 0.05 |
+| 40 | `mediapm-conductor-builtin-import --features cli` | pass | 0 | 4.73 | 11.10 | 1.50 |
+| 41 | `mediapm-conductor-builtin-import --features fetch` | pass | 0 | 0.15 | 0.09 | 0.05 |
+| 42 | `mediapm-conductor-builtin-import --all-features` | pass | 0 | 0.14 | 0.09 | 0.04 |
+| 43 | `mediapm-conductor-cli --no-default-features` | pass | 0 | 0.21 | 0.14 | 0.05 |
+| 44 | `mediapm-conductor-cli --all-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
+| 45 | `mediapm-conductor-examples-concat-tool --no-default-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
+| 46 | `mediapm-conductor-examples-concat-tool --all-features` | pass | 0 | 0.11 | 0.08 | 0.03 |
+| 47 | `mediapm-test-support --no-default-features` | pass | 0 | 3.36 | 4.71 | 0.79 |
+| 48 | `mediapm-test-support --all-features` | pass | 0 | 0.17 | 0.10 | 0.06 |
+| 49 | `mediapm-tests --no-default-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
+| 50 | `mediapm-tests --all-features` | pass | 0 | 0.12 | 0.07 | 0.03 |
+| 51 | `mediapm-utils --no-default-features` | pass | 0 | 0.13 | 0.08 | 0.03 |
+| 52 | `mediapm-utils --features cli` | pass | 0 | 0.21 | 0.14 | 0.05 |
+| 53 | `mediapm-utils --features nickel` | pass | 0 | 0.20 | 0.13 | 0.05 |
+| 54 | `mediapm-utils --features progress` | pass | 0 | 0.31 | 0.22 | 0.06 |
+| 55 | `mediapm-utils --features report` | pass | 0 | 0.19 | 0.13 | 0.05 |
+| 56 | `mediapm-utils --all-features` | pass | 0 | 0.43 | 0.28 | 0.08 |
+| 57 | `test-runner --no-default-features` | pass | 0 | 0.21 | 0.14 | 0.05 |
+| 58 | `test-runner --all-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
 
 ### D4 — Release/build profiling diagnostics (R11/R5/R7)
 
@@ -382,10 +458,10 @@ Sources re-examined: `scripts/test-runner/src/{doc.rs,test.rs,nextest.rs,cargo.r
 | D2.7 | Local `cargo build-all` diagnostics | captured-partial | not rerun locally as full fresh command; CI build timings captured |
 | D2.8 | Local release build + D4 profiling | captured | stable `--timings` 191.10s exit 0, HTML artifact; nightly `-Z timings` attempted 467.37s exit 0 |
 | D2.9 | Local feature-matrix per D3 | captured | 58/58 pass with per-combo timings |
-| D3.1 | Enumerate all 58 combinations/feature sets | captured | `matrix/combos.txt` |
-| D3.2 | Per-combination command/duration/exit/pass-fail/order for all 58 (healthy run) | captured | `matrix/results.tsv` + per-combo logs (all pass) |
+| D3.1 | Enumerate all 58 combinations/feature sets | captured | `matrix/combos.txt`; combinations transcribed in D3.1 |
+| D3.2 | Per-combination command/duration/exit/pass-fail/order for all 58 (healthy run) | captured | `matrix/results.tsv` + per-combo logs (all pass); per-combo rows transcribed in D3.1 |
 | D3.3 | CI per-combo extraction or absence evidence | captured (absence) | CI reports totals only, no per-combo rows |
-| D3.4 | Totals/pass-fail/anomalies/comparability | captured | 58/58 clean local and CI; variance/totals recorded |
+| D3.4 | Totals/pass-fail/anomalies/comparability | captured | 58/58 clean local and CI; variance/totals recorded; local per-combo totals and distribution transcribed in D3.1 |
 | D4.1 | Release per-crate/per-phase diagnostics (`--timings`/logs) | captured (transcribed with noted limits) | Stable `--timings` HTML unit timing table transcribed in D4.1 (top units, frontend/codegen splits where shown, and all `mediapm*` unit rows) with artifact/log refs and totals; `rmeta_time`, complete per-unit phase/link attribution, and per-crate aggregate totals remain unavailable from captured artifacts |
 | D4.2 | Dev/build-all/test-all/test-doc-all phase diagnostics where supported | captured | CI compile/execute/rustdoc/test splits captured; local check/clippy/build-profile markers captured |
 | D4.3 | Unavailable profiling flags/modes attempts/evidence | captured | nightly `-Z timings` attempted successfully (diagnostic), stable `--timings` captured |
