@@ -131,6 +131,7 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 - **Collected evidence:** CI feature-matrix totals 239s check step / 254s job (run 43609375823, 2eee9aaf) and 71s check step / 85s job (run 43379058938, 225a5401). Local healthy clean run: 48.26s total, 58/58 combinations clean. Local partial/unhealthy run (2026-11-14): 121.89s, 42/58 completed, 16 `ring`-related failures in that env (not a healthy baseline).
 - **Not yet available:** per-combination timings and pass/fail breakdown by combination from collected CI evidence. The 58-combination count is known, but no per-combo samples were recorded in the available data.
 - **Implication:** no feature-matrix optimization is recommended from currently collected data in this task. Additional CI runs and per-combo timing samples are needed before judging bounded parallelism/sharding/subset strategies.
+- **Task 7 final decision (2026-11-15, SDD implementation pass):** no feature-matrix optimization implemented. Collected totals/samples remain insufficient to justify bounded parallelism, sharding, or subset changes without additional per-combo and post-cache CI evidence; preserve current 58-combo coverage and pass/fail semantics. Revisit only with data-backed justification.
 
 ## R11 — release and per-combo breakdown evidence (available totals only)
 
