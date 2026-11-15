@@ -46,6 +46,13 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30
+        with:
+          cache: false
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-build
 
       # R3: run cheap static checks before expensive test/build steps so obvious
       # failures stop the job early. rumdl runs before fmt-check (approved change).
@@ -94,6 +101,13 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30
+        with:
+          cache: false
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-release
 
       - name: Build the completion-generating packages in release
         run: >-
@@ -123,6 +137,13 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30
+        with:
+          cache: false
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-feature-matrix
 
       - name: Check every feature combination
         run: cargo --locked run --package test-runner -- feature-matrix --locked
@@ -137,6 +158,13 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30
+        with:
+          cache: false
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-windows
 
       - name: Run workspace tests
         run: cargo --locked test-pkg mediapm-tests
