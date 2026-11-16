@@ -53,6 +53,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-build
+          cache-on-failure: true
 
       # R3: run cheap static checks before expensive test/build steps so obvious
       # failures stop the job early. rumdl runs before fmt-check (approved change).
@@ -108,6 +109,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-release
+          cache-on-failure: true
 
       - name: Build the completion-generating packages in release
         run: >-
@@ -144,6 +146,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-feature-matrix
+          cache-on-failure: true
 
       - name: Check every feature combination
         run: cargo --locked run --package test-runner -- feature-matrix --locked
@@ -165,6 +168,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-windows
+          cache-on-failure: true
 
       - name: Run workspace tests
         run: cargo --locked test-pkg mediapm-tests
