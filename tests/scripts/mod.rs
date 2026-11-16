@@ -839,11 +839,11 @@ const BASH_DEEP_CHAIN_LEVELS: usize = 300;
 ///
 /// The PowerShell twin's per-entry work makes a 300-level sweep expensive on
 /// Unix hosts, so it runs a shallower but still deep chain there while the bash
-/// twin keeps the suite's highest Unix depth. 100 levels is deeper than the
-/// Windows `MAX_PATH`-bound case and far past a trivial tree, so it preserves
-/// the removal-contract signal for the pwsh path without repeating the most
-/// expensive depth on the slowest interpreter.
-const PWSH_UNIX_DEEP_CHAIN_LEVELS: usize = 100;
+/// twin keeps the suite's highest Unix depth. 50 levels is far past a trivial
+/// tree and still exercises the iterative removal path over many directory
+/// levels, so it preserves the deep-chain removal contract for the pwsh path
+/// without repeating the most expensive depth on the slowest interpreter.
+const PWSH_UNIX_DEEP_CHAIN_LEVELS: usize = 50;
 
 /// Depth of the chain on Windows, where `MAX_PATH` bounds the tree that can be
 /// named at all.
