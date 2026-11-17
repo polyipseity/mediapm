@@ -63,7 +63,7 @@ async fn run_and_take_alpha_hash(tc: &TestConductor) -> mediapm_cas::Hash {
         .values()
         .next()
         .expect("the run must record exactly one instance");
-    instance.outputs["alpha"].hash
+    instance.outputs["alpha"].hash_nk.expect("alpha output hash")
 }
 
 /// A step whose capture says `full` leaves its output marked in the CAS.

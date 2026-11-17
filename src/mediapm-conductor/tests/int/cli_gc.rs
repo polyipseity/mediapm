@@ -13,7 +13,7 @@
 //! pass can race the fixture. The state file is the contract between the two
 //! processes, which is exactly what it is for an operator too.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use bytes::Bytes;
@@ -56,10 +56,16 @@ async fn write_starting_state(
             let mut instance = sample_instance(key);
             instance.outputs = BTreeMap::from([(
                 "result".to_string(),
-                CapturedOutput { hash: blob, capture: None },
+                CapturedOutput {
+                    capture: "stdout".to_string(),
+                    hash_nk: Some(blob),
+                    saved_nk: true,
+                },
             )]);
             state.tool_call_instances.insert(key, instance);
-            state.aux.live_instances.insert(workflow.to_string(), BTreeSet::from([key]));
+            state
+                .step_instances
+                .insert(workflow.to_string(), BTreeMap::from([("s1".to_string(), key)]));
             Some((key, blob))
         }
         None => None,
@@ -71,8 +77,10 @@ async fn write_starting_state(
         .await
         .expect("stage the aged record's output");
     let mut instance = sample_instance(aged);
-    instance.outputs =
-        BTreeMap::from([("result".to_string(), CapturedOutput { hash: aged_blob, capture: None })]);
+    instance.outputs = BTreeMap::from([(
+        "result".to_string(),
+        CapturedOutput { capture: "stdout".to_string(), hash_nk: Some(aged_blob), saved_nk: true },
+    )]);
     state.tool_call_instances.insert(aged, instance);
     super::gc_automatic::backdate(&mut state, &aged.to_hex(), BACKDATE_SECONDS);
 
@@ -138,7 +146,7 @@ async fn the_spawned_gc_pass_starts_the_clock_then_reclaims_the_aged_record() {
     );
     let after_first = read_state(&state_file);
     assert!(
-        after_first.aux.conductor_gc_epoch.as_unix_nanos() > 0,
+        after_first.conductor_gc_ran_at.as_unix_nanos() > 0,
         "the first judged pass must leave the clock running"
     );
 
@@ -227,7 +235,7 @@ async fn the_spawned_gc_pass_abstains_on_a_workflow_that_never_ran() {
         "an abstaining pass must not evict, however old the record is"
     );
     assert_eq!(
-        after.aux.conductor_gc_epoch.as_unix_nanos(),
+        after.conductor_gc_ran_at.as_unix_nanos(),
         0,
         "an abstaining pass records no clock: nothing was judged"
     );

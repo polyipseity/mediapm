@@ -573,15 +573,15 @@ fn regression_a_builtin_with_empty_tools_side_env_vars_still_loads() {
 fn parity_mod_ncl_exports_unversioned_aliases() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(
-        mod_source.contains("validate_document = v4_migration.validate_document_v4"),
+        mod_source.contains("validate_document = v5_migration.validate_document_v5"),
         "mod.ncl must re-export validate_document (unversioned alias)"
     );
     assert!(
-        mod_source.contains("envelope_contract = v4_migration.envelope_contract_v4"),
+        mod_source.contains("envelope_contract = v5_migration.envelope_contract_v5"),
         "mod.ncl must re-export envelope_contract (unversioned alias)"
     );
     assert!(
-        mod_source.contains("supported_versions_val = [1, 2, 3, 4]"),
+        mod_source.contains("supported_versions_val = [1, 2, 3, 4, 5]"),
         "mod.ncl must name every version the build carries a contract for"
     );
 }
@@ -685,7 +685,7 @@ const V2_DOC_WITH_PAYLOAD: &str = r#"{
 fn strict_v3_rejects_an_unknown_staging_strategy() {
     let msg = decode_error(UNKNOWN_STAGING_DOC);
     assert!(
-        msg.contains("PayloadStagingV4") && msg.contains("payload_staging"),
+        msg.contains("PayloadStagingV5") && msg.contains("payload_staging"),
         "the active contract must reject a migrated v3 document's strategy and name the field: {msg}"
     );
 }
@@ -704,7 +704,7 @@ const UNKNOWN_DOCUMENT_STAGING_DOC: &str = r#"{
 fn strict_v4_rejects_an_unknown_document_level_staging_strategy() {
     let msg = decode_error(UNKNOWN_DOCUMENT_STAGING_DOC);
     assert!(
-        msg.contains("PayloadStagingV4") && msg.contains("payload_staging"),
+        msg.contains("PayloadStagingV5") && msg.contains("payload_staging"),
         "the Nickel contract must reject the default and name the field: {msg}"
     );
 }
@@ -775,7 +775,7 @@ fn regression_a_v4_document_round_trips_byte_for_byte() {
 
     let first = encode_document(doc).expect("encode");
     let text = String::from_utf8(first.clone()).expect("encoded document is UTF-8");
-    assert!(text.contains("version = 4"), "the encoder writes the active schema marker: {text}");
+    assert!(text.contains("version = 5"), "the encoder writes the active schema marker: {text}");
     assert!(
         text.contains("payload_staging = \"hard_link\""),
         "the encoder has to write a strategy the default does not already give: {text}"
@@ -1057,7 +1057,7 @@ fn parity_a_tool_strategy_wins_over_the_document_default() {
 fn strict_a_document_level_inherit_is_rejected() {
     let msg = decode_error(r#"{ version = 4, runtime = { payload_staging = "inherit" } }"#);
     assert!(
-        msg.contains("payload_staging") && msg.contains("PayloadStagingV4"),
+        msg.contains("payload_staging") && msg.contains("PayloadStagingV5"),
         "the document-level field must accept only the three strategies: {msg}"
     );
 }
@@ -1087,7 +1087,7 @@ fn strict_an_unknown_staging_name_is_rejected_at_both_levels() {
         decode_error(r#"{ version = 4, runtime = { payload_staging = "symlink" } }"#);
     assert!(
         document_level.contains("payload_staging")
-            && document_level.contains("PayloadStagingV4")
+            && document_level.contains("PayloadStagingV5")
             && document_level.contains("symlink"),
         "the document's unknown default must be refused by the strategy contract: {document_level}"
     );

@@ -72,7 +72,7 @@ fn recorded_result_hash(conductor: &Conductor<InMemoryCas>) -> Hash {
         .expect("the conductor state must be readable after a run")
         .tool_call_instances
         .values()
-        .find_map(|instance| instance.outputs.get("result").map(|record| record.hash))
+        .find_map(|instance| instance.outputs.get("result").and_then(|record| record.hash_nk))
         .expect("the producer must have recorded a `result` output")
 }
 

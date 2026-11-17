@@ -26,7 +26,7 @@ use mediapm_cas::{CasApi, Hash, InMemoryCas};
 use mediapm_conductor::api::RunWorkflowOptions;
 use mediapm_conductor::gc::GcClassification;
 use mediapm_conductor::{
-    AuxData, CapturedOutput, Conductor, ConductorState, RuntimeStoragePaths, ToolCallInstance,
+    CapturedOutput, Conductor, ConductorState, RuntimeStoragePaths, ToolCallInstance,
 };
 use mediapm_utils::Timestamp;
 
@@ -49,16 +49,18 @@ use crate::{
 /// background scenarios insert, rather than growing a second builder.
 pub(crate) fn sample_instance(_key: Hash) -> ToolCallInstance {
     ToolCallInstance {
+        key_version: mediapm_conductor::INSTANCE_KEY_VERSION,
+        attempted_key_version_nk: mediapm_conductor::INSTANCE_KEY_VERSION,
         tool_call_id: "echo@v1".to_string(),
-        impure: false,
-        invalidated_at: None,
-        executed_at: Timestamp::default(),
-        last_referenced_at: Timestamp::from_unix_nanos(0),
-        step_ids: BTreeSet::new(),
         command_args: Vec::new(),
-        env_vars: BTreeMap::new(),
+        env_vars_ck: BTreeMap::new(),
         materialized_inputs: BTreeMap::new(),
         outputs: BTreeMap::new(),
+        impure_nk: false,
+        invalidated_at_nk: None,
+        executed_at_nk: Timestamp::default(),
+        last_referenced_at_nk: Timestamp::from_unix_nanos(0),
+        step_ids_nk: BTreeSet::new(),
     }
 }
 
@@ -66,7 +68,7 @@ pub(crate) fn sample_instance(_key: Hash) -> ToolCallInstance {
 /// be evicted by a zero-TTL sweep.
 fn seed_state_with(keys: &[Hash]) -> ConductorState {
     let mut state = ConductorState::new_empty();
-    state.aux = AuxData { conductor_gc_epoch: Timestamp::now(), live_instances: BTreeMap::new() };
+    state.conductor_gc_ran_at = Timestamp::now();
     state.tool_call_instances = keys.iter().map(|key| (*key, sample_instance(*key))).collect();
     state
 }
@@ -149,10 +151,9 @@ fn recorded_seed(conductor: &Conductor<InMemoryCas>, workflow: &str) -> BTreeSet
     conductor
         .get_state()
         .expect("the conductor state must be readable")
-        .aux
-        .live_instances
+        .step_instances
         .get(workflow)
-        .cloned()
+        .map(|steps| steps.values().copied().collect())
         .unwrap_or_default()
 }
 
@@ -206,13 +207,12 @@ async fn a_successful_run_records_the_instances_it_executed_and_reused() {
     tc.shutdown().await;
 }
 
-/// A run with a failed step leaves the previous seed untouched.
+/// A run with a failed step does not replace the workflow seed wholesale.
 ///
-/// The user-level guarantee: a half-finished run must not shorten the life of
-/// what the last complete run left in place. The second run is configured with
-/// one step fewer and one failing step, so writing its seed would shrink the
-/// live set — the instances of the step that left the workflow would lose their
-/// protection because an unrelated step failed.
+/// A successful run replaces `step_instances` for the workflow with the steps it
+/// declared and settled. A failed run must not do that wholesale replacement,
+/// so a step that settled successfully (including a cache hit) keeps its
+/// recorded mapping and the failed step records no mapping.
 #[tokio::test]
 async fn a_failed_run_leaves_the_previous_seed_in_place() {
     let tc = TestConductor::new();
@@ -230,8 +230,18 @@ async fn a_failed_run_leaves_the_previous_seed_in_place() {
         .await
         .expect("the first run must complete");
     assert_eq!(first.executed_steps, 2, "the first run executes both steps: {first:?}");
-    let previous = recorded_seed(tc.conductor(), "default");
-    assert_eq!(previous.len(), 2, "both executed instances are recorded: {previous:?}");
+    let state = tc.conductor().get_state().expect("the conductor state must be readable");
+    let previous_s1 = state
+        .step_instances
+        .get("default")
+        .and_then(|steps| steps.get("s1"))
+        .copied()
+        .expect("first run records s1");
+    assert!(
+        state.step_instances.get("default").is_some_and(|steps| steps.contains_key("s2")),
+        "first run records s2: {:?}",
+        state.step_instances.get("default"),
+    );
 
     let mut broken_step = echo_step("echo@v1", "unreachable");
     broken_step.id = "broken".to_string();
@@ -249,10 +259,16 @@ async fn a_failed_run_leaves_the_previous_seed_in_place() {
         .expect("a run with a failing step still returns a summary");
     assert_eq!(second.failed_steps, 1, "exactly the broken step fails: {second:?}");
 
+    let state = tc.conductor().get_state().expect("the conductor state must be readable");
+    let steps = state.step_instances.get("default").expect("workflow seed remains");
     assert_eq!(
-        recorded_seed(tc.conductor(), "default"),
-        previous,
-        "a failed run must not replace the seed the last clean run recorded"
+        steps.get("s1").copied(),
+        Some(previous_s1),
+        "a failed run must keep the mapping for a step that settled successfully: {steps:?}",
+    );
+    assert!(
+        !steps.contains_key("broken"),
+        "a failed step must not record a seed mapping: {steps:?}",
     );
     tc.shutdown().await;
 }
@@ -352,9 +368,11 @@ async fn an_unreferenced_instance_is_recoverable_until_its_ttl_passes() {
         .expect("stage the candidate's output blob");
     let mut state = conductor.get_state().expect("state");
     let mut instance = sample_instance(candidate);
-    instance.last_referenced_at = Timestamp::now();
-    instance.outputs =
-        BTreeMap::from([("result".to_string(), CapturedOutput { hash: blob, capture: None })]);
+    instance.last_referenced_at_nk = Timestamp::now();
+    instance.outputs = BTreeMap::from([(
+        "result".to_string(),
+        CapturedOutput { capture: "stdout".to_string(), hash_nk: Some(blob), saved_nk: true },
+    )]);
     state.tool_call_instances.insert(candidate, instance);
     conductor.replace_resolved_state(state).expect("insert the candidate");
 

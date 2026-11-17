@@ -49,7 +49,7 @@ pub(crate) fn backdate(state: &mut ConductorState, key: &str, secs_ago: u64) {
         .tool_call_instances
         .get_mut(&key)
         .expect("backdate target must be a recorded instance");
-    instance.last_referenced_at = Timestamp::from_unix_nanos(backdated);
+    instance.last_referenced_at_nk = Timestamp::from_unix_nanos(backdated);
 }
 
 /// The grace period every fixture in this module configures: one day. It is
@@ -194,7 +194,7 @@ impl AutomaticGc {
         let blobs = state
             .tool_call_instances
             .values()
-            .flat_map(|instance| instance.outputs.values().map(|output| output.hash))
+            .flat_map(|instance| instance.outputs.values().filter_map(|output| output.hash_nk))
             .collect();
         (keys, blobs)
     }
@@ -220,8 +220,10 @@ impl AutomaticGc {
             .expect("stage the orphan's output");
         let mut state = self.conductor.get_state().expect("state");
         let mut instance = sample_instance(key);
-        instance.outputs =
-            BTreeMap::from([("result".to_string(), CapturedOutput { hash: blob, capture: None })]);
+        instance.outputs = BTreeMap::from([(
+            "result".to_string(),
+            CapturedOutput { capture: "stdout".to_string(), hash_nk: Some(blob), saved_nk: true },
+        )]);
         state.tool_call_instances.insert(key, instance);
         backdate(&mut state, &key.to_hex(), BACKDATE_SECONDS);
         self.conductor.replace_resolved_state(state).expect("insert the orphan");

@@ -207,7 +207,7 @@ async fn recorded_output_bytes(tc: &TestConductor, name: &str) -> Vec<u8> {
     let hash = state
         .tool_call_instances
         .values()
-        .find_map(|instance| instance.outputs.get(name).map(|record| record.hash))
+        .find_map(|instance| instance.outputs.get(name).and_then(|record| record.hash_nk))
         .unwrap_or_else(|| panic!("no instance recorded an output named '{name}'"));
     tc.conductor()
         .cas()

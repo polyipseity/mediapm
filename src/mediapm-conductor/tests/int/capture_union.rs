@@ -1,18 +1,14 @@
-//! # Name-addressed captures union into one instance, and disagreeing steps fail
+//! # Distinct output declarations produce distinct instances under key v8
 //!
-//! Instance keys derive from inputs alone, so two steps that run the same work
-//! share one key however differently they declare what they record. What makes
-//! that sharing useful is that the recorded instance grows: each settlement
-//! merges its captures into the entries the instance already holds instead of
-//! replacing them. Without the union, two steps declaring different names would
-//! take turns overwriting each other's record, and neither would ever be served
-//! from cache.
+//! Key v8 includes the output specification (output names and capture tokens)
+//! in the instance key, so steps that declare different outputs do not share an
+//! instance even when their command inputs are identical. Each step records its
+//! own outputs and is served from cache on a steady-state re-run.
 //!
-//! The union is only honest under two rules, and both are pinned here: one name
-//! may not hold two different byte streams for the same work, and two steps in
-//! one run may not claim one name with different capture identities. The second
-//! is a configuration error reported before the run writes anything, not a
-//! last-writer-wins race.
+//! A changed capture declaration changes the key for that step, so only that
+//! step re-executes; steps whose declarations are unchanged remain cache hits.
+//! File-capture byte-identity rules for stale records still apply (pinned by
+//! the fs-tool tests below).
 
 use std::collections::BTreeMap;
 
@@ -72,23 +68,46 @@ fn write_doc(
 /// The single instance this run recorded, asserting there is exactly one.
 fn only_instance(conductor: &Conductor<InMemoryCas>) -> mediapm_conductor::ToolCallInstance {
     let state = conductor.get_state().expect("the conductor state must be readable");
-    assert_eq!(
-        state.tool_call_instances.len(),
-        1,
-        "identical work must be recorded as one instance, not one per step",
-    );
+    assert_eq!(state.tool_call_instances.len(), 1, "expected exactly one recorded instance",);
     state.tool_call_instances.values().next().cloned().expect("the one instance")
 }
 
-/// Two steps that run the same work and declare different capture names end
-/// with one instance holding both names, and the run after executes nothing.
+/// Returns every recorded instance.
+fn all_instances(conductor: &Conductor<InMemoryCas>) -> Vec<mediapm_conductor::ToolCallInstance> {
+    conductor
+        .get_state()
+        .expect("the conductor state must be readable")
+        .tool_call_instances
+        .values()
+        .cloned()
+        .collect()
+}
+
+/// Returns the instance recorded for `workflow/step`.
+fn instance_for_step(
+    conductor: &Conductor<InMemoryCas>,
+    workflow: &str,
+    step: &str,
+) -> mediapm_conductor::ToolCallInstance {
+    let state = conductor.get_state().expect("the conductor state must be readable");
+    let key = *state
+        .step_instances
+        .get(workflow)
+        .and_then(|steps| steps.get(step))
+        .unwrap_or_else(|| panic!("missing step_instances mapping for {workflow}/{step}"));
+    state
+        .tool_call_instances
+        .get(&key)
+        .cloned()
+        .unwrap_or_else(|| panic!("missing instance for {workflow}/{step}"))
+}
+
+/// Two steps that declare different capture names run as distinct instances
+/// under key v8 and are served from cache on the next run.
 ///
-/// The second step depends on the first, so the two settlements are ordered:
-/// the first records `alpha`, then the second executes (it requires `beta`,
-/// which the first never captured) and records `beta`. Replacing the record
-/// rather than unioning into it would leave the instance holding whichever name
-/// settled last, and the next run would re-execute the other one — a pair that
-/// alternates one execution per sync forever.
+/// Different output specifications produce different instance keys, so each
+/// step records its own instance and output. The steady-state guarantee remains:
+/// an unchanged re-run executes nothing.
 #[tokio::test]
 async fn two_disjoint_declarations_union_into_one_instance_and_the_re_run_executes_nothing() {
     let tc = TestConductor::new();
@@ -117,25 +136,18 @@ async fn two_disjoint_declarations_union_into_one_instance_and_the_re_run_execut
     assert_eq!(
         (first.executed_steps, first.cached_steps, first.failed_steps),
         (2, 0, 0),
-        "neither step can reuse a name the other never captured, so both run once: {first:?}",
+        "distinct output specs produce distinct instances, so both steps execute: {first:?}",
     );
 
-    let instance = only_instance(tc.conductor());
-    for name in ["alpha", "beta"] {
-        assert!(
-            instance.outputs.contains_key(name),
-            "the shared instance must record '{name}', got {:?}",
-            instance.outputs.keys().collect::<Vec<_>>(),
-        );
-    }
+    let instances = all_instances(tc.conductor());
+    assert_eq!(instances.len(), 2, "each step records its own instance: {instances:?}");
+    let first_instance = instance_for_step(tc.conductor(), "default", "first");
+    let second_instance = instance_for_step(tc.conductor(), "default", "second");
+    assert_ne!(first_instance.outputs["alpha"].hash_nk, None);
+    assert_ne!(second_instance.outputs["beta"].hash_nk, None);
     assert_eq!(
-        instance.outputs["alpha"].hash, instance.outputs["beta"].hash,
-        "both captures read the same stdout, so they must name the same bytes",
-    );
-    assert_eq!(
-        instance.step_ids.iter().map(|step| step.step_id.as_str()).collect::<Vec<_>>(),
-        vec!["first", "second"],
-        "provenance must name every step the instance served",
+        first_instance.outputs["alpha"].hash_nk, second_instance.outputs["beta"].hash_nk,
+        "both captures read the same stdout bytes",
     );
 
     let second = tc
@@ -146,19 +158,17 @@ async fn two_disjoint_declarations_union_into_one_instance_and_the_re_run_execut
     assert_eq!(
         (second.executed_steps, second.cached_steps, second.failed_steps),
         (0, 2, 0),
-        "the unioned instance must serve both steps on the next run: {second:?}",
+        "unchanged steps are cache hits on the next run: {second:?}",
     );
     tc.shutdown().await;
 }
 
-/// A name the tool declares is recorded by whichever step executes the work,
-/// so a step declaring that name is served by that execution rather than
-/// running the command again.
+/// Tool-declared captures are part of a step's recorded outputs, and a later
+/// step with a different output specification runs under its own instance key.
 ///
-/// The two steps' declarations are disjoint (`alpha` only the first declares,
-/// `shared` only the second), and the tool's default set carries `shared` into
-/// the first step's capture. The user-level guarantee: an artifact declared by
-/// the tool costs one execution however many steps bind it.
+/// Under key v8 the producible output specification is keyed, so a step that
+/// declares `{alpha, shared}` and a step that declares `{shared}` do not share
+/// an instance. Both steps still cache on an unchanged re-run.
 #[tokio::test]
 async fn a_tool_declared_capture_is_recorded_by_the_executing_step() {
     let tc = TestConductor::new();
@@ -186,18 +196,19 @@ async fn a_tool_declared_capture_is_recorded_by_the_executing_step() {
         .expect("the first run must complete");
     assert_eq!(
         (first.executed_steps, first.cached_steps, first.failed_steps),
-        (1, 1, 0),
-        "the step declaring the tool's own capture must reuse the first execution: {first:?}",
+        (2, 0, 0),
+        "different output specifications produce distinct instances: {first:?}",
     );
 
-    let instance = only_instance(tc.conductor());
-    for name in ["alpha", "shared"] {
-        assert!(
-            instance.outputs.contains_key(name),
-            "the shared instance must record '{name}', got {:?}",
-            instance.outputs.keys().collect::<Vec<_>>(),
-        );
-    }
+    let first_instance = instance_for_step(tc.conductor(), "default", "first");
+    let second_instance = instance_for_step(tc.conductor(), "default", "second");
+    assert!(first_instance.outputs.contains_key("alpha"));
+    assert!(first_instance.outputs.contains_key("shared"));
+    assert!(second_instance.outputs.contains_key("shared"));
+    assert_eq!(
+        first_instance.outputs["shared"].hash_nk, second_instance.outputs["shared"].hash_nk,
+        "both executions capture the same stream bytes",
+    );
 
     let second = tc
         .conductor()
@@ -207,18 +218,16 @@ async fn a_tool_declared_capture_is_recorded_by_the_executing_step() {
     assert_eq!(
         (second.executed_steps, second.cached_steps, second.failed_steps),
         (0, 2, 0),
-        "an unchanged re-run must execute nothing once both names are on the instance: {second:?}",
+        "unchanged steps remain cache hits: {second:?}",
     );
     tc.shutdown().await;
 }
 
-/// A changed capture identity under one name re-executes and replaces only that
-/// entry, and the run after it is free again.
+/// A changed capture identity changes the keyed output specification for that
+/// step, so only that step re-executes and records the new capture.
 ///
-/// The user-level guarantee: re-declaring what a name captures invalidates that
-/// name, not the instance and not its other names. The replacement is visible
-/// in the recorded entry's spec, which is what a later probe compares; the
-/// other step's entry must survive it.
+/// Steps with different output declarations use distinct instances under key v8,
+/// so an unchanged sibling remains a cache hit and keeps its recorded output.
 #[tokio::test]
 async fn a_changed_capture_spec_replaces_only_that_entry() {
     let tc = TestConductor::new();
@@ -242,7 +251,9 @@ async fn a_changed_capture_spec_replaces_only_that_entry() {
         .run_workflow("default", RunWorkflowOptions::default())
         .await
         .expect("the first run must complete");
-    let shared_hash = only_instance(tc.conductor()).outputs["beta"].hash;
+    let beta_hash = instance_for_step(tc.conductor(), "default", "second").outputs["beta"]
+        .hash_nk
+        .expect("beta hash");
 
     write_doc(
         &tc,
@@ -271,42 +282,34 @@ async fn a_changed_capture_spec_replaces_only_that_entry() {
         "only the step whose declared identity changed may re-execute: {changed:?}",
     );
 
-    let instance = only_instance(tc.conductor());
+    let first_instance = instance_for_step(tc.conductor(), "default", "first");
+    let second_instance = instance_for_step(tc.conductor(), "default", "second");
+    assert_eq!(first_instance.outputs["alpha"].capture.as_str(), "stderr");
     assert_eq!(
-        instance.outputs["alpha"].capture.as_ref().map(|spec| spec.capture.to_token()).as_deref(),
-        Some("stderr"),
-        "the recorded entry must carry the capture spec that produced it",
-    );
-    assert_ne!(
-        instance.outputs["alpha"].hash, instance.outputs["beta"].hash,
-        "echo writes nothing to stderr, so the replaced entry must hold different bytes",
-    );
-    assert_eq!(
-        instance.outputs["beta"].hash, shared_hash,
-        "an unrelated entry must survive the replacement untouched",
+        second_instance.outputs["beta"].hash_nk,
+        Some(beta_hash),
+        "the unchanged sibling instance and output remain cached",
     );
 
     let after = tc
         .conductor()
         .run_workflow("default", RunWorkflowOptions::default())
         .await
-        .expect("the run after the replacement must complete");
+        .expect("the run after the change must complete");
     assert_eq!(
         (after.executed_steps, after.cached_steps, after.failed_steps),
         (0, 2, 0),
-        "the replaced entry must satisfy the probe from then on: {after:?}",
+        "both steps are cache hits after the changed step re-executes: {after:?}",
     );
     tc.shutdown().await;
 }
 
-/// Two steps in one run that claim one name with different capture identities
-/// fail the run, naming the name, both identities and both steps, before
-/// anything is written.
+/// Two steps in one run may declare the same output name with different
+/// capture identities.
 ///
-/// The user-level guarantee: a configuration whose two steps disagree about
-/// what one name holds is reported as such. Resolving it by settlement order
-/// would make which bytes a dependent reads depend on a race, and it would
-/// leave the losing step re-executing against the winner's record forever.
+/// Under key v8 those declarations produce different output specifications and
+/// therefore different instance keys, so each step records its own instance and
+/// output without a same-instance capture conflict.
 #[tokio::test]
 async fn two_steps_disagreeing_on_one_name_fail_the_run_before_a_write() {
     let tc = TestConductor::new();
@@ -327,48 +330,34 @@ async fn two_steps_disagreeing_on_one_name_fail_the_run_before_a_write() {
         ],
     );
 
-    let error = tc
+    let summary = tc
         .conductor()
         .run_workflow("default", RunWorkflowOptions::default())
         .await
-        .expect_err("two capture identities for one name are a configuration error");
-    let message = error.to_string();
-
-    for needle in ["shared", "claims-stdout", "claims-stderr", "stdout", "stderr"] {
-        assert!(message.contains(needle), "the error must name {needle:?}: {message}");
-    }
-    assert!(
-        !tc.path().join("state.json").exists(),
-        "a run rejected for a capture disagreement must write no state",
+        .expect("distinct output specifications are recorded in distinct instances");
+    assert_eq!(
+        (summary.executed_steps, summary.cached_steps, summary.failed_steps),
+        (2, 0, 0),
+        "both steps execute with distinct instance keys: {summary:?}",
     );
+
+    let stdout_instance = instance_for_step(tc.conductor(), "default", "claims-stdout");
+    let stderr_instance = instance_for_step(tc.conductor(), "default", "claims-stderr");
+    assert_eq!(stdout_instance.outputs["shared"].capture.as_str(), "stdout");
+    assert_eq!(stderr_instance.outputs["shared"].capture.as_str(), "stderr");
     tc.shutdown().await;
 }
 
-/// A cache hit claims nothing and writes nothing back, so a sibling's changed
-/// declaration replaces its own entry instead of colliding with a name it never
-/// declared.
+/// A changed declaration in one sibling does not disturb the other sibling's
+/// cached instance.
 ///
-/// The two steps are siblings (no dependency edge), and the tool admits one call
-/// at a time, so the ready queue's order is the settlement order: the changed
-/// step executes and settles first, then the unchanged one dispatches from the
-/// run-entry snapshot it holds. Nothing links them, so that snapshot is not
-/// refreshed by the sibling's settlement, and the unchanged step's probe still
-/// finds the pre-change record and hits.
-///
-/// A hit produced nothing, so it must not present the stored instance's outputs
-/// as its own claims: doing so makes the unchanged step claim its sibling's name
-/// under the *old* spec, and the run fails with a conflict between two steps
-/// where one never declared the name at all. Nothing is written on that failure,
-/// so it repeats on every sync with `--force-rerun` the only escape. Nor may a
-/// hit write the stored outputs back — its snapshot carries the pre-change
-/// entry, and writing it would undo the sibling's replacement and leave the
-/// changed step re-executing on every later sync.
+/// Under key v8 each sibling's output specification is part of its own instance
+/// key, so a cache hit for the unchanged sibling cannot claim or rewrite the
+/// changed sibling's instance. The run with one changed declaration re-executes
+/// only that step, and the next run is fully cached.
 #[tokio::test]
 async fn a_cache_hit_neither_claims_nor_rewrites_a_siblings_entry() {
     let tc = TestConductor::new();
-    // The one-call cap fixes the settlement order, and the ready queue hands out
-    // ready steps by step id: the changed step sorts first, so the unchanged
-    // step's hit lands after the replacement it must not disturb.
     let write = |beta_stream: &str| {
         let mut tool = echo_tool("echo@v1");
         tool.runtime.max_concurrent_calls = 1;
@@ -401,14 +390,12 @@ async fn a_cache_hit_neither_claims_nor_rewrites_a_siblings_entry() {
     assert_eq!(
         (first.executed_steps, first.cached_steps, first.failed_steps),
         (2, 0, 0),
-        "a sibling's snapshot predates the other's settlement, so both run once: {first:?}",
+        "both siblings execute under distinct instance keys: {first:?}",
     );
-    let recorded = only_instance(tc.conductor());
-    let alpha_hash = recorded.outputs["alpha"].hash;
-    assert_eq!(
-        alpha_hash, recorded.outputs["beta"].hash,
-        "both captures read the same stream, so the shared instance holds one set of bytes",
-    );
+    let alpha_hash =
+        instance_for_step(tc.conductor(), "default", "z-declares-alpha").outputs["alpha"]
+            .hash_nk
+            .expect("alpha hash");
 
     let steady = tc
         .conductor()
@@ -418,7 +405,7 @@ async fn a_cache_hit_neither_claims_nor_rewrites_a_siblings_entry() {
     assert_eq!(
         (steady.executed_steps, steady.cached_steps, steady.failed_steps),
         (0, 2, 0),
-        "the unioned instance must serve both siblings: {steady:?}",
+        "both siblings are cache hits on a steady-state run: {steady:?}",
     );
 
     write("stderr");
@@ -430,19 +417,13 @@ async fn a_cache_hit_neither_claims_nor_rewrites_a_siblings_entry() {
     assert_eq!(
         (changed.executed_steps, changed.cached_steps, changed.failed_steps),
         (1, 1, 0),
-        "only the step whose declaration changed may re-execute: {changed:?}",
+        "only the changed sibling re-executes: {changed:?}",
     );
 
-    let instance = only_instance(tc.conductor());
-    assert_eq!(
-        instance.outputs["beta"].capture.as_ref().map(|spec| spec.capture.to_token()).as_deref(),
-        Some("stderr"),
-        "the changed entry must carry the spec this run declared",
-    );
-    assert_eq!(
-        instance.outputs["alpha"].hash, alpha_hash,
-        "the unchanged sibling's entry must survive the replacement untouched",
-    );
+    let beta_instance = instance_for_step(tc.conductor(), "default", "a-declares-beta");
+    let alpha_instance = instance_for_step(tc.conductor(), "default", "z-declares-alpha");
+    assert_eq!(beta_instance.outputs["beta"].capture.as_str(), "stderr");
+    assert_eq!(alpha_instance.outputs["alpha"].hash_nk, Some(alpha_hash));
 
     let after = tc
         .conductor()
@@ -452,7 +433,7 @@ async fn a_cache_hit_neither_claims_nor_rewrites_a_siblings_entry() {
     assert_eq!(
         (after.executed_steps, after.cached_steps, after.failed_steps),
         (0, 2, 0),
-        "the replacement must stick, so the next run executes nothing: {after:?}",
+        "the replacement sticks and the unchanged sibling remains cached: {after:?}",
     );
     tc.shutdown().await;
 }
@@ -520,7 +501,7 @@ fn write_fs_doc(tc: &TestConductor, impure: bool) {
 
 /// Returns the hash the single instance records for `artifact`.
 fn recorded_artifact(conductor: &Conductor<InMemoryCas>) -> Hash {
-    only_instance(conductor).outputs["artifact"].hash
+    only_instance(conductor).outputs["artifact"].hash_nk.expect("artifact hash")
 }
 
 /// Rewrites the recorded `artifact` hash to a blob this run did not produce,
@@ -547,7 +528,7 @@ async fn seed_stale_recorded_artifact(tc: &TestConductor) -> Hash {
         .outputs
         .get_mut("artifact")
         .expect("the step declared `artifact`")
-        .hash = seeded;
+        .hash_nk = Some(seeded);
     tc.conductor().replace_resolved_state(state).expect("the state must be replaceable");
     seeded
 }
@@ -640,14 +621,11 @@ async fn a_pure_step_producing_a_different_artifact_fails_the_run_naming_the_ste
     tc.shutdown().await;
 }
 
-/// Two same-work siblings dispatched in one parallel cohort both execute.
+/// Two same-work siblings dispatched in one parallel cohort execute separately
+/// under key v8 when they declare different output specifications.
 ///
-/// This is the limitation the contract records as prose rather than as a
-/// defect: each step's probe reads the run-entry snapshot, and neither sees the
-/// other's settlement, so the second cannot learn that the first already did the
-/// work. The union is what keeps that from becoming an alternating loop — both
-/// settlements land on one instance, both names survive, and the run after it
-/// executes neither.
+/// Different output specs produce different instance keys. The steady-state
+/// guarantee remains: the next run serves both steps from cache.
 #[tokio::test]
 async fn two_same_work_siblings_in_one_cohort_both_execute_and_then_share_the_instance() {
     let tc = TestConductor::new();
@@ -676,24 +654,9 @@ async fn two_same_work_siblings_in_one_cohort_both_execute_and_then_share_the_in
     assert_eq!(
         (first.executed_steps, first.cached_steps, first.failed_steps),
         (2, 0, 0),
-        "neither sibling can see the other's settlement, so both run once: {first:?}",
+        "distinct output specifications produce distinct instances: {first:?}",
     );
-
-    let instance = only_instance(tc.conductor());
-    assert_eq!(
-        instance.step_ids,
-        std::collections::BTreeSet::from([
-            mediapm_conductor::StepRef {
-                workflow_id: "default".to_string(),
-                step_id: "first".to_string(),
-            },
-            mediapm_conductor::StepRef {
-                workflow_id: "default".to_string(),
-                step_id: "second".to_string(),
-            },
-        ]),
-        "one instance must name both siblings it served, each qualified by its workflow",
-    );
+    assert_eq!(all_instances(tc.conductor()).len(), 2);
 
     let second = tc
         .conductor()
@@ -703,7 +666,7 @@ async fn two_same_work_siblings_in_one_cohort_both_execute_and_then_share_the_in
     assert_eq!(
         (second.executed_steps, second.cached_steps, second.failed_steps),
         (0, 2, 0),
-        "the unioned instance must serve both siblings from then on: {second:?}",
+        "both instances are cache hits on the next run: {second:?}",
     );
     tc.shutdown().await;
 }

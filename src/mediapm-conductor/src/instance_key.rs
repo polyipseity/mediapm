@@ -499,11 +499,16 @@ struct SelectorSource {
 /// command parts: each selector's sandbox-relative destination mapped to the
 /// hash of the bytes it would stage, in destination order.
 ///
-/// Staging records `Hash::from_content` of the bytes written, so the predicted
-/// hash is the content hash of the resolved source bytes available from
-/// `input_values` when the selector sources an input; selectors whose source is
-/// not an `inputs.*` reference cannot be predicted from input values alone and
-/// are omitted (callers must fall back to recorded material where needed).
+/// Staging records `Hash::from_content` of the bytes written. For a selector
+/// whose source is an input, the resolved input value is either a literal's raw
+/// bytes or the textual hash of a stored object; the staged bytes are that
+/// content or the object those bytes name, so the predicted hash follows the
+/// same rule as the selector's key term: a parseable hash string names the
+/// object, and anything else is hashed as content.
+///
+/// Selectors whose source is not an `inputs.*` reference cannot be predicted
+/// from input values alone and are omitted (callers must fall back to recorded
+/// material where needed).
 #[must_use]
 pub fn predicted_materialized_inputs(
     command_parts: &[String],
@@ -525,7 +530,11 @@ pub fn predicted_materialized_inputs(
         for selector in selector_sources(part) {
             if let Some(name) = selector.source.strip_prefix("inputs.") {
                 if let Some(value) = input_values.get(name) {
-                    predicted.insert(selector.destination, Hash::from_content(value));
+                    let staged_hash = std::str::from_utf8(value)
+                        .ok()
+                        .and_then(|text| text.parse::<Hash>().ok())
+                        .unwrap_or_else(|| Hash::from_content(value));
+                    predicted.insert(selector.destination, staged_hash);
                 }
             }
         }

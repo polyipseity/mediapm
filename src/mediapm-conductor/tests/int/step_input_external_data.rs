@@ -122,7 +122,7 @@ async fn a_step_reading_a_declared_hash_sees_the_declared_bytes() {
     let bytes = tc
         .conductor()
         .cas()
-        .get(echoed.hash)
+        .get(echoed.hash_nk.expect("echoed hash"))
         .await
         .expect("the captured stdout must be in the store");
 
