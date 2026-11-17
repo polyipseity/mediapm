@@ -38,7 +38,7 @@
 //!
 //! The walk decides how long a record lives; the mode its capture spec recorded
 //! decides whether the bytes outlive the producing instance. An output captured
-//! with [`SaveMode::False`] is not a root once its producer leaves the closure,
+//! with [`crate::config::SaveMode::False`] is not a root once its producer leaves the closure,
 //! so the next pass reclaims the blob while the record waits out its grace
 //! period. While the producer is still reachable those bytes stay rooted: the
 //! loop runs independently of the application, and a pass landing between one

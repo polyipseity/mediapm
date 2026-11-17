@@ -69,7 +69,7 @@ pub(super) enum LookupResult {
 /// Identity is the key (capture tokens are key material in v8), so the probe
 /// does not compare capture tokens. A `null` record serves only a requirement
 /// whose declared `allow_empty` is true.
-fn satisfies_requirements(
+pub(super) fn satisfies_requirements(
     instance: &ToolCallInstance,
     required: &BTreeMap<String, OutputCaptureSpec>,
 ) -> bool {

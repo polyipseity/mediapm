@@ -253,6 +253,78 @@ async fn capture_folder_output(
         .map(CaptureResolution::Store)
 }
 
+/// Resolves one capture spec against the execution result and sandbox.
+///
+/// `Stdout`, `stderr`, and `process_code` read from `execution`; file and folder
+/// captures read from `sandbox_dir`. A missing allowed-empty match becomes
+/// [`CaptureResolution::AllowedEmpty`]; a missing strict match becomes
+/// [`CaptureResolution::Missing`].
+async fn resolve_capture_spec(
+    spec: &OutputCaptureSpec,
+    execution: &ExecutionResult,
+    sandbox_dir: &Path,
+) -> Result<CaptureResolution, ConductorError> {
+    match &spec.capture {
+        crate::config::CaptureKind::Stdout => {
+            Ok(CaptureResolution::Store(execution.stdout.clone()))
+        }
+        crate::config::CaptureKind::Stderr => {
+            Ok(CaptureResolution::Store(execution.stderr.clone()))
+        }
+        crate::config::CaptureKind::ProcessCode => {
+            Ok(CaptureResolution::Store(execution.exit_code.to_string().into_bytes()))
+        }
+        crate::config::CaptureKind::File(relative_path) => {
+            let full_path = sandbox_dir.join(relative_path);
+            match tokio::fs::read(&full_path).await {
+                Ok(data) => Ok(CaptureResolution::Store(data)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if spec.allow_empty {
+                        Ok(CaptureResolution::AllowedEmpty)
+                    } else {
+                        Ok(CaptureResolution::Missing)
+                    }
+                }
+                Err(error) => Err(ConductorError::Workflow(format!(
+                    "failed to read capture '{}' (token '{}') at '{}': {error}",
+                    spec.name,
+                    spec.capture.to_token(),
+                    full_path.display(),
+                ))),
+            }
+        }
+        crate::config::CaptureKind::FileRegex(pattern) => {
+            let regex = regex::Regex::new(pattern).map_err(|e| {
+                ConductorError::Workflow(format!("invalid file_regex pattern '{pattern}': {e}"))
+            })?;
+            capture_file_regex_output(&regex, sandbox_dir, spec.allow_empty).await
+        }
+        crate::config::CaptureKind::FolderRegex(pattern)
+        | crate::config::CaptureKind::FolderFlatRegex(pattern) => {
+            let regex = regex::Regex::new(pattern).map_err(|e| {
+                ConductorError::Workflow(format!("invalid folder_regex pattern '{pattern}': {e}"))
+            })?;
+            capture_folder_regex_output(
+                &regex,
+                sandbox_dir,
+                spec.allow_empty,
+                spec.capture.includes_topmost_folder(),
+            )
+            .await
+        }
+        crate::config::CaptureKind::Folder(relative_path)
+        | crate::config::CaptureKind::FolderFlat(relative_path) => {
+            capture_folder_output(
+                sandbox_dir,
+                relative_path,
+                spec.allow_empty,
+                spec.capture.includes_topmost_folder(),
+            )
+            .await
+        }
+    }
+}
+
 /// Captures declared outputs from the execution result and persists to CAS.
 ///
 /// Every record returned carries the spec that produced it, including the
@@ -296,69 +368,7 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
 
     for spec in combined_specs.values() {
         let saved_nk = !matches!(spec.save, SaveMode::False);
-        let resolution = match &spec.capture {
-            crate::config::CaptureKind::Stdout => {
-                CaptureResolution::Store(execution.stdout.clone())
-            }
-            crate::config::CaptureKind::Stderr => {
-                CaptureResolution::Store(execution.stderr.clone())
-            }
-            crate::config::CaptureKind::ProcessCode => {
-                CaptureResolution::Store(execution.exit_code.to_string().into_bytes())
-            }
-            crate::config::CaptureKind::File(relative_path) => {
-                let full_path = sandbox_dir.join(relative_path);
-                match tokio::fs::read(&full_path).await {
-                    Ok(data) => CaptureResolution::Store(data),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        if spec.allow_empty {
-                            CaptureResolution::AllowedEmpty
-                        } else {
-                            CaptureResolution::Missing
-                        }
-                    }
-                    Err(error) => {
-                        return Err(ConductorError::Workflow(format!(
-                            "failed to read capture '{}' (token '{}') at '{}': {error}",
-                            spec.name,
-                            spec.capture.to_token(),
-                            full_path.display(),
-                        )));
-                    }
-                }
-            }
-            crate::config::CaptureKind::FileRegex(pattern) => {
-                let regex = regex::Regex::new(pattern).map_err(|e| {
-                    ConductorError::Workflow(format!("invalid file_regex pattern '{pattern}': {e}"))
-                })?;
-                capture_file_regex_output(&regex, sandbox_dir, spec.allow_empty).await?
-            }
-            crate::config::CaptureKind::FolderRegex(pattern)
-            | crate::config::CaptureKind::FolderFlatRegex(pattern) => {
-                let regex = regex::Regex::new(pattern).map_err(|e| {
-                    ConductorError::Workflow(format!(
-                        "invalid folder_regex pattern '{pattern}': {e}"
-                    ))
-                })?;
-                capture_folder_regex_output(
-                    &regex,
-                    sandbox_dir,
-                    spec.allow_empty,
-                    spec.capture.includes_topmost_folder(),
-                )
-                .await?
-            }
-            crate::config::CaptureKind::Folder(relative_path)
-            | crate::config::CaptureKind::FolderFlat(relative_path) => {
-                capture_folder_output(
-                    sandbox_dir,
-                    relative_path,
-                    spec.allow_empty,
-                    spec.capture.includes_topmost_folder(),
-                )
-                .await?
-            }
-        };
+        let resolution = resolve_capture_spec(spec, execution, sandbox_dir).await?;
 
         match resolution {
             CaptureResolution::Store(data) => {

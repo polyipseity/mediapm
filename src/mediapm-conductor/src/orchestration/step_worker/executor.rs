@@ -532,7 +532,9 @@ fn discarded_step_fields(tool: &OutputCaptureSpec, step: &OutputCaptureSpec) -> 
 /// of the name permits an empty match, and whether its materialization keeps the
 /// family, do not change which bytes the capture reads. That is also why the
 /// probe compares capture identity rather than the whole spec
-/// ([`super::cache::probe_cache`]): `save` is recorded beside the entry for
+/// ([`super::cache::lookup_instance`] and [`super::cache::satisfies_requirements`]
+/// implement the probe and requirement logic, and v8 keys include capture tokens):
+/// `save` is recorded beside the entry for
 /// provenance, but a reused entry is byte-for-byte the same artifact whether the
 /// reusing step persists it or not, so letting it decide a miss would put two
 /// steps with different persistence on a forever-re-executing loop.
