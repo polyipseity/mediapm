@@ -226,6 +226,27 @@ pub(crate) struct StepExecutionBundle {
     /// input terms (`materialized_inputs` destination/hash pairs). Derivation
     /// is selected by key version, not inferred from outputs.
     pub instance_key: Hash,
+    /// Previous key this instance was filed under before a migration re-key.
+    ///
+    /// When a hit migrates to a new key, settlement must remove the old entry
+    /// from `tool_call_instances`, store the instance under `instance_key`, and
+    /// move `step_instances` to `instance_key` in the same write.
+    pub rekeyed_from: Option<Hash>,
+    /// Instance mutations produced by lookup maintenance that are not the
+    /// settled instance itself (for example, `attempted_key_version_nk = LATEST`
+    /// recorded on a different-content miss's mapped instance). Settlement
+    /// upserts each entry after storing the settled instance.
+    pub lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
+    /// A lookup-maintenance re-key that must be preserved when the lookup hit
+    /// cannot be reused and the step falls back to execution (for example, a
+    /// migrated hit rejected solely for missing blobs).
+    ///
+    /// Settlement removes `old_key`, expects the migrated instance at `new_key`
+    /// in [`Self::lookup_side_effects`], and moves `step_instances` to
+    /// `new_key` if necessary so the map never names a key that is not stored.
+    /// The settled step result's pointer may supersede this move in the same
+    /// settlement.
+    pub maintenance_rekey: Option<(Hash, Hash)>,
     /// Whether this result came from a cache hit (vs. fresh execution).
     pub cache_hit: bool,
     /// The names this execution declared it could produce, each under the spec

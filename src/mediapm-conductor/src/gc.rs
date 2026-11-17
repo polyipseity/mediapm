@@ -171,14 +171,34 @@ pub(crate) fn reachability_closure(state: &ConductorState) -> BTreeSet<Hash> {
     reached
 }
 
-/// Drops seed entries for workflows the merged document no longer declares.
+/// Drops seed entries for workflows or steps the merged document no longer
+/// declares.
 ///
-/// A deleted workflow cannot run again, so its seed would otherwise protect its
-/// instances for as long as the state file lives. Removing the entry makes those
-/// instances unreachable, which is what starts their grace period.
-fn prune_seeds_for_removed_workflows(state: &mut ConductorState, unified: &UnifiedNickelDocument) {
+/// A deleted workflow cannot run again, and a removed step cannot be scheduled
+/// by the declared workflow, so keeping their seed entries would protect
+/// instances that no longer participate in the declared work. Removing the
+/// entry makes those instances unreachable, which is what starts their grace
+/// period. This is declaration-based pruning and runs only when the pass can
+/// vouch for the document (non-abstention).
+///
+/// Per-step pruning runs only when the workflow declares at least one step, so
+/// a stub/underspecified workflow record with an empty step list does not cause
+/// unrelated seeded entries to be discarded.
+fn prune_seeds_for_removed_declarations(
+    state: &mut ConductorState,
+    unified: &UnifiedNickelDocument,
+) {
     let workflows = &unified.workflows;
-    state.step_instances.retain(|workflow, _| workflows.contains_key(workflow));
+    state.step_instances.retain(|workflow, steps| {
+        let Some(spec) = workflows.get(workflow) else {
+            return false;
+        };
+        if !spec.steps.is_empty() {
+            let declared: BTreeSet<&str> = spec.steps.iter().map(|step| step.id.as_str()).collect();
+            steps.retain(|step_id, _| declared.contains(step_id.as_str()));
+        }
+        !steps.is_empty()
+    });
 }
 
 /// Earliest phase of the cycle: evict the instance records the reachability walk
@@ -230,10 +250,10 @@ pub(crate) fn run_instance_gc(
     };
 
     let Some(reason) = unseeded_reason else {
-        // Pruning is skipped while abstaining: a seed for a workflow the
-        // document does not declare is only evidence of deletion when the
-        // document is otherwise describing the same world.
-        prune_seeds_for_removed_workflows(state, unified);
+        // Declaration-based pruning is skipped while abstaining: a seed for a
+        // workflow or step the document does not declare is only evidence of
+        // deletion when the document is otherwise describing the same world.
+        prune_seeds_for_removed_declarations(state, unified);
         let reachable = reachability_closure(state);
         let reachable_instances = reachable.len();
         let superseded_instances =
@@ -244,6 +264,11 @@ pub(crate) fn run_instance_gc(
         );
         let instance_count_before = state.tool_call_instances.len();
         state.run_conductor_gc(&reachable, ttl_seconds);
+        // Prune dangling step_instances mappings and empty workflow records.
+        for steps in state.step_instances.values_mut() {
+            steps.retain(|_, key| state.tool_call_instances.contains_key(key));
+        }
+        state.step_instances.retain(|_, steps| !steps.is_empty());
         return InstanceGcCounts {
             instances_removed: instance_count_before
                 .saturating_sub(state.tool_call_instances.len()),
@@ -254,6 +279,11 @@ pub(crate) fn run_instance_gc(
     };
 
     tracing::info!("conductor GC phase 1/3: {reason}, so this pass refreshes and evicts nothing");
+    // Even when abstaining, drop mappings that point to no instance record.
+    for steps in state.step_instances.values_mut() {
+        steps.retain(|_, key| state.tool_call_instances.contains_key(key));
+    }
+    state.step_instances.retain(|_, steps| !steps.is_empty());
     InstanceGcCounts { abstention: Some(reason), ..InstanceGcCounts::default() }
 }
 
@@ -745,9 +775,13 @@ mod tests {
         let cas = InMemoryCas::new();
         let seeded = Hash::from_content(b"seeded");
         let kept = instance("kept", &[], &[seeded]);
+        let kept_key = kept.key;
         let mut state = state_with(
             vec![kept],
-            BTreeMap::from([("removed".to_string(), BTreeSet::from([seeded]))]),
+            // This seed points at a live instance record; the pass must not
+            // drop it merely because the document is not something it can vouch
+            // for (workflow-level seed pruning is gated on non-abstention).
+            BTreeMap::from([("removed".to_string(), BTreeSet::from([kept_key]))]),
         );
 
         // "declared" has no seed, so this pass abstains.
@@ -757,10 +791,7 @@ mod tests {
             state.step_instances.contains_key("removed"),
             "an abstaining pass must not prune a seed it cannot replace",
         );
-        assert!(
-            state.tool_call_instances.contains_key(&Hash::from_content(b"kept")),
-            "and evicts nothing either",
-        );
+        assert!(state.tool_call_instances.contains_key(&kept_key), "and evicts nothing either",);
     }
 
     /// Two instances that consume each other's outputs terminate.
@@ -1158,5 +1189,117 @@ mod tests {
             "an abstained pass does not know the producer is disposable, so it keeps its bytes"
         );
         assert_eq!(report.orphans_removed, 0, "an abstained pass reclaims nothing");
+    }
+
+    fn unified_with_workflow_steps(name: &str, step_ids: &[&str]) -> UnifiedNickelDocument {
+        use crate::config::WorkflowStepSpec;
+        UnifiedNickelDocument {
+            tools: BTreeMap::new(),
+            workflows: BTreeMap::from([(
+                name.to_string(),
+                WorkflowSpec {
+                    name: name.to_string(),
+                    display_name: None,
+                    description: None,
+                    impure: false,
+                    steps: step_ids
+                        .iter()
+                        .map(|id| WorkflowStepSpec {
+                            id: (*id).to_string(),
+                            tool: "echo".to_string(),
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            max_retries: 0,
+                            depends_on: Vec::new(),
+                        })
+                        .collect(),
+                },
+            )]),
+            tool_content_hashes: BTreeSet::new(),
+            external_data_policies: BTreeMap::new(),
+            runtime: ConductorRuntimeConfig::default(),
+        }
+    }
+
+    /// The seed is the union of step_instances values (restricted to stored
+    /// instances), so a reachability closure starts from every mapped step.
+    #[test]
+    fn seed_is_the_union_of_step_instances() {
+        let a = instance("a", &[], &[]);
+        let b = instance("b", &[], &[]);
+        let a_key = a.key;
+        let b_key = b.key;
+        let state = state_with(
+            vec![a, b],
+            BTreeMap::from([("wf".to_string(), BTreeSet::from([a_key, b_key]))]),
+        );
+
+        let reached = reachability_closure(&state);
+        assert!(reached.contains(&a_key));
+        assert!(reached.contains(&b_key));
+        assert_eq!(reached.len(), 2);
+    }
+
+    /// A removed step's `step_instances` entry is pruned on a non-abstaining
+    /// pass when the merged document no longer declares that step.
+    #[tokio::test]
+    async fn a_removed_steps_entry_is_pruned() {
+        let cas = InMemoryCas::new();
+        let kept = instance("kept", &[], &[]);
+        let gone = instance("gone", &[], &[]);
+        let kept_key = kept.key;
+        let gone_key = gone.key;
+        let mut state = state_with(
+            vec![kept, gone],
+            BTreeMap::from([("wf".to_string(), BTreeSet::from([kept_key, gone_key]))]),
+        );
+        // Give the instances named step ids matching what the helper builds.
+        // state_with assigns step-0, step-1 by insertion order of the set
+        // (BTreeSet sorted by hash), so override explicitly for determinism.
+        state.step_instances.insert(
+            "wf".to_string(),
+            BTreeMap::from([("keep".to_string(), kept_key), ("gone".to_string(), gone_key)]),
+        );
+        keep_records_within_their_grace_period(&mut state);
+
+        run_conductor_gc(
+            &cas,
+            &mut state,
+            &unified_with_workflow_steps("wf", &["keep"]),
+            A_GRACE_PERIOD_THAT_OUTLASTS_THE_TEST,
+        )
+        .await
+        .expect("gc");
+
+        let steps = state.step_instances.get("wf").expect("workflow remains declared");
+        assert!(steps.contains_key("keep"), "declared step entry must remain");
+        assert!(!steps.contains_key("gone"), "removed step's entry must be pruned");
+    }
+
+    /// Dangling `step_instances` mappings are pruned even on an abstaining pass,
+    /// because they do not name any live instance record.
+    #[tokio::test]
+    async fn dangling_step_instances_are_pruned_on_abstention() {
+        let cas = InMemoryCas::new();
+        let kept = instance("kept", &[], &[]);
+        let kept_key = kept.key;
+        let dangling_key = Hash::from_content(b"no-such-instance");
+        let mut state = state_with(vec![kept], BTreeMap::new());
+        // "removed" workflow seed points to a live instance (kept from
+        // workflow-seed pruning) and to a dangling key; abstention must keep the
+        // workflow seed but drop the dangling mapping.
+        state.step_instances.insert(
+            "removed".to_string(),
+            BTreeMap::from([
+                ("live".to_string(), kept_key),
+                ("dangling".to_string(), dangling_key),
+            ]),
+        );
+
+        run_conductor_gc(&cas, &mut state, &unified_with(&["declared"]), 0).await.expect("gc");
+
+        let steps = state.step_instances.get("removed").expect("workflow seed kept on abstention");
+        assert!(steps.contains_key("live"), "live mapping must remain");
+        assert!(!steps.contains_key("dangling"), "dangling mapping must be pruned");
     }
 }

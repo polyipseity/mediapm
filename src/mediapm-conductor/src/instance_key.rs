@@ -495,6 +495,44 @@ struct SelectorSource {
     source: String,
 }
 
+/// Returns the predicted `materialized_inputs` map for v8 key derivation from
+/// command parts: each selector's sandbox-relative destination mapped to the
+/// hash of the bytes it would stage, in destination order.
+///
+/// Staging records `Hash::from_content` of the bytes written, so the predicted
+/// hash is the content hash of the resolved source bytes available from
+/// `input_values` when the selector sources an input; selectors whose source is
+/// not an `inputs.*` reference cannot be predicted from input values alone and
+/// are omitted (callers must fall back to recorded material where needed).
+#[must_use]
+pub fn predicted_materialized_inputs(
+    command_parts: &[String],
+    input_values: &BTreeMap<String, Vec<u8>>,
+    literal_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, Hash> {
+    let mut predicted = BTreeMap::new();
+    for raw_part in command_parts {
+        let inlined;
+        let part = if raw_part.contains("${env.") {
+            inlined = inline_literals(raw_part, literal_env);
+            if references_environment(&inlined) {
+                continue;
+            }
+            inlined.as_str()
+        } else {
+            raw_part.as_str()
+        };
+        for selector in selector_sources(part) {
+            if let Some(name) = selector.source.strip_prefix("inputs.") {
+                if let Some(value) = input_values.get(name) {
+                    predicted.insert(selector.destination, Hash::from_content(value));
+                }
+            }
+        }
+    }
+    predicted
+}
+
 impl SelectorSource {
     /// Key material of this selector: its destination and its source, composed.
     ///

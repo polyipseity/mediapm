@@ -887,9 +887,33 @@ where
                         let StepExecutionBundle {
                             instance,
                             instance_key,
+                            rekeyed_from,
+                            lookup_side_effects,
+                            maintenance_rekey,
                             cache_hit,
                             producible_outputs,
                         } = bundle;
+                        // Preserve lookup-maintenance re-key state even when a
+                        // migrated hit was rejected for missing blobs and the
+                        // step fell back to execution. This keeps the map from
+                        // naming a removed key before the settled result's
+                        // pointer is written below.
+                        if let Some((old_key, maintenance_new_key)) = maintenance_rekey {
+                            if old_key != maintenance_new_key {
+                                state.tool_call_instances.remove(&old_key);
+                            }
+                            if let Some(updated) = lookup_side_effects.get(&maintenance_new_key) {
+                                state
+                                    .tool_call_instances
+                                    .insert(maintenance_new_key, updated.clone());
+                            }
+                            state
+                                .step_instances
+                                .entry(workflow_name.to_string())
+                                .or_default()
+                                .insert(step_id.clone(), maintenance_new_key);
+                        }
+
                         // The two conflict rules are enforced as steps settle:
                         // a claim that contradicts an earlier one in this run
                         // fails the run before it writes anything, and long
@@ -917,6 +941,27 @@ where
                                     .insert(name.clone(), hash);
                             }
                         }
+                        // Apply lookup-maintenance side effects (e.g. a mapped
+                        // instance whose `attempted_key_version_nk` was advanced
+                        // on a different-content miss). These update instances
+                        // other than the settled one and must not disturb the
+                        // step_instances pointer.
+                        for (key, updated) in lookup_side_effects {
+                            if key != instance_key {
+                                state.tool_call_instances.insert(key, updated);
+                            }
+                        }
+                        // A migration re-key moves the instance to a new key in
+                        // the same settlement write as storing the migrated
+                        // instance. The old key is removed so the instance is
+                        // filed under exactly one key; the step pointer is moved
+                        // below together with every successful settlement.
+                        let stored_lookup_key = rekeyed_from.unwrap_or(instance_key);
+                        if let Some(old_key) = rekeyed_from {
+                            if old_key != instance_key {
+                                state.tool_call_instances.remove(&old_key);
+                            }
+                        }
                         // Insert executed instance into state so subsequent
                         // steps (and future runs) can find cache hits, with the
                         // GC last-reference clock set to this settlement. A run
@@ -936,7 +981,7 @@ where
                         // execution produced. A replacement would drop a
                         // sibling's step-only name and put the pair on a
                         // forever-re-executing loop.
-                        let stored = state.tool_call_instances.get(&instance_key);
+                        let stored = state.tool_call_instances.get(&stored_lookup_key);
                         let mut incoming = instance;
                         if let Some(stored) = stored {
                             // A hit produced no artifact, so it contributes only
@@ -963,11 +1008,27 @@ where
                         }
                         let mut instance = with_accumulated_step_ids(stored, incoming);
                         instance.last_referenced_at_nk = Timestamp::now();
+                        // Prune step_ids_nk entries for steps no longer declared.
+                        instance.step_ids_nk.retain(|sr| {
+                            unified
+                                .workflows
+                                .get(&sr.workflow_id)
+                                .is_some_and(|wf| wf.steps.iter().any(|s| s.id == sr.step_id))
+                        });
                         let contribution = StepStateContribution { instance, instance_key };
                         state
                             .tool_call_instances
                             .insert(instance_key, contribution.instance.clone());
                         step_state_contributions.insert(step_id.clone(), contribution);
+                        // `step_instances` is written only after the instance has
+                        // been stored, on every successful run (hit or executed,
+                        // including a re-keyed hit), so the map never names a key
+                        // that is not there even if the workflow later fails.
+                        state
+                            .step_instances
+                            .entry(workflow_name.to_string())
+                            .or_default()
+                            .insert(step_id.clone(), instance_key);
                         #[cfg(feature = "progress")]
                         if options.progress_group.is_some() {
                             worker_steps_succeeded[worker_idx] += 1;
@@ -1157,24 +1218,34 @@ where
             }
 
             // Record this run as the workflow's live set: the instances it
-            // executed and the ones it reused. That set is the seed of the GC
-            // reachability walk, so it decides which recorded work a later pass
-            // keeps — the keys a hit added are as live as the keys a run
-            // produced.
-            //
-            // Replaced wholesale, never merged: a step that left the workflow
-            // must stop protecting what it used to read. A run with a failed
-            // step records nothing and leaves the previous seed in place, since
-            // the instances the failed step would have replaced were never
-            // replaced.
+            // executed and the ones it reused. Replaced wholesale so a step that
+            // left the workflow stops protecting what it used to read. A failed
+            // run records nothing and leaves the previous seed in place.
             if failed_steps == 0 {
-                // v6 seeds by step -> instance key. Mechanical adaptation: record
-                // the last settled instance key per step id in this workflow.
+                // Maintain step_instances for all declared steps of this workflow
+                // and drop entries for steps no longer declared. Settled
+                // contributions provide the final (possibly re-keyed) instance
+                // key for steps that ran in this pass.
                 let mut by_step: BTreeMap<String, Hash> = BTreeMap::new();
-                for (step_id, contribution) in &step_state_contributions {
-                    by_step.insert(step_id.clone(), contribution.instance_key);
+                for step in &workflow.steps {
+                    if let Some(contribution) = step_state_contributions.get(&step.id) {
+                        by_step.insert(step.id.clone(), contribution.instance_key);
+                    } else if let Some(existing) = state
+                        .step_instances
+                        .get(workflow_name)
+                        .and_then(|m| m.get(&step.id))
+                        .copied()
+                    {
+                        // Preserve an existing pointer for a declared step not
+                        // settled in this contribution map (defensive).
+                        by_step.insert(step.id.clone(), existing);
+                    }
                 }
-                state.step_instances.insert(workflow_name.to_string(), by_step);
+                if by_step.is_empty() {
+                    state.step_instances.remove(workflow_name);
+                } else {
+                    state.step_instances.insert(workflow_name.to_string(), by_step);
+                }
             }
 
             Ok(RunSummary {

@@ -13,12 +13,16 @@ use mediapm_utils::Timestamp;
 
 use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
+use crate::instance_key::{
+    INSTANCE_KEY_VERSION, input_binding_to_string, key_material_for_tool,
+    predicted_materialized_inputs,
+};
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec, find_tool_entry_by_name,
 };
 use crate::state::{ResolvedInput, StepRef, ToolCallInstance};
 
-use super::cache::probe_cache;
+use super::cache::{CurrentMaterial, LookupResult, lookup_instance};
 use super::capture::{capture_outputs, implicit_stream_specs};
 use super::inputs::resolve_step_inputs;
 use super::process::{ExecutionResult, run_builtin, run_executable_process};
@@ -27,7 +31,6 @@ use super::sandbox::{
     resolve_executable_under_payload_root,
 };
 use super::template::{ResolvedCommandParts, StagedInputs, TemplateContext, resolve_command_parts};
-use crate::instance_key::{derive_instance_key, input_binding_to_string, key_material_for_tool};
 
 /// One dispatched execution: what the tool produced, the argv it ran, and the
 /// inputs its command staged on the way.
@@ -140,10 +143,7 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
                 ))
             })?;
 
-    // The key material is what the command asks the store for, in the order it
-    // asks. A selector contributes its destination and its source hash, taken
-    // from the resolved input rather than from the bytes it stages: those bytes
-    // land in a sandbox named for the key, so the key has to exist first.
+    // Key material (argv/inputs) and current material for v8 lookup/derivation.
     let mut raw_bindings = request.step.inputs.clone();
     for (key, binding) in &tool_spec.default_inputs {
         raw_bindings.entry(key.clone()).or_insert_with(|| input_binding_to_string(binding));
@@ -158,123 +158,195 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         &raw_bindings,
         &tool_spec.literal_env_vars,
     );
-    let instance_key = derive_instance_key(&tool_call_id, &key_material);
 
-    // Tool-level capture defaults merged with the step's own declarations. The
-    // tool owns the capture identity of every name it declares (its selector,
-    // `allow_empty` and `include_topmost_folder`); a step declaring the same
-    // name contributes only `save`, and a step-only name is kept whole. That is
-    // the set the capture phase records below, and the set a probe hit has to
-    // satisfy, because one instance is shared by every step running this work:
-    // a step able to re-select a tool-declared name would make two steps
-    // disagree about bytes one execution produced.
+    // Tool-level capture defaults merged with the step's own declarations.
     let merged_outputs = merge_output_specs(&tool_spec.outputs, &request.step.outputs);
+    let producible_outputs = producible_output_specs(&merged_outputs);
 
-    // Captures are not key material. An instance recorded by the same work
-    // holds the names a reusing step binds, addressed by name and carrying the
-    // spec that produced each one; the key answers only whether the work itself
-    // has been done, which inputs alone can answer.
+    let predicted_materialized_inputs = predicted_materialized_inputs(
+        &tool_spec.command_parts,
+        &input_values,
+        &tool_spec.literal_env_vars,
+    );
+    let output_tokens: BTreeMap<String, String> = producible_outputs
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.capture.to_token()))
+        .collect();
+    let current = CurrentMaterial {
+        command_args: key_material.clone(),
+        output_tokens,
+        materialized_inputs: predicted_materialized_inputs,
+    };
+    let k_latest = current.key(&tool_call_id, INSTANCE_KEY_VERSION).ok_or_else(|| {
+        ConductorError::Internal(format!(
+            "failed to derive v{INSTANCE_KEY_VERSION} instance key for tool '{}'",
+            tool_call_id
+        ))
+    })?;
+
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
-
-    // Environment values are stored hashed (never literally); the minimal set
-    // is the non-empty configured execution env vars.
     let env_vars = build_env_vars(&tool_spec.execution_env_vars);
 
-    // Cache probe. `force_rerun` is the run-scoped explicit invalidation: it
-    // skips the probe so every step executes fresh, no matter how recently
-    // its instance was recorded. Time never invalidates an instance;
-    // changed key material or this flag does.
-    //
-    // A hit requires every name this step binds — the dependents' references
-    // unioned with the step's own declarations — to be recorded under the
-    // capture identity the producible set gives it. A name recorded another way,
-    // or recorded as `None` by the v2 migration, is a miss: reusing it would hand
-    // the step bytes it would not have produced. Whether the store still holds
-    // the bytes is a separate fact state cannot answer, so the CAS is asked
-    // directly; a missing blob turns the hit into a miss instead of failing
-    // later, mid-materialization, with no route back to the step that produced
-    // it.
-    //
-    // A required name the work cannot produce is not a probe condition: no
-    // instance this step's work records can hold it, so the dependent's
-    // reference fails at resolution instead. That filter is what the blob check
-    // is handed, rather than the raw requirement, because a name absent from the
-    // producible set can never resolve and checking it would force a
-    // re-execution on every run of a workflow that is going to fail anyway.
-    let producible_outputs = producible_output_specs(&merged_outputs);
     let required_output_specs: BTreeMap<String, OutputCaptureSpec> = request
         .required_output_names
         .iter()
         .filter_map(|name| producible_outputs.get(name).map(|spec| (name.clone(), spec.clone())))
         .collect();
-    let cached_instance = if request.force_rerun {
-        None
-    } else {
-        match probe_cache(&instance_key, &request.state_snapshot, &required_output_specs) {
-            Some(instance)
-                if required_output_blobs_exist(cas, &instance, &required_output_specs).await =>
-            {
-                Some(instance)
-            }
-            _ => None,
-        }
-    };
 
-    if let Some(mut cached) = cached_instance {
-        // A hit records the reusing step before returning: `step_ids` is the
-        // provenance the demo fixture pairs through, and a shared instance
-        // must name every step it served, not only the one that executed it.
-        // The insert is idempotent — an id the set already holds leaves it as
-        // it was, so a steady-state sync returns a record identical to the
-        // stored one. Returning the bundle is what persists the addition: the
-        // coordinator merges the bundle's instance into the run state, while
-        // GC refresh still happens through the referenced-keys set at GC
-        // time, not by per-hit mutation.
-        cached.step_ids_nk.insert(StepRef {
-            workflow_id: request.workflow_id.clone(),
-            step_id: request.step.id.clone(),
-        });
-        // A hit declares nothing: it produced no artifact this run, so the
-        // settlement may add the reusing step to `step_ids` and must leave the
-        // recorded outputs exactly as the store holds them.
-        return Ok(StepExecutionBundle {
-            instance: cached,
-            instance_key,
-            cache_hit: true,
-            producible_outputs: BTreeMap::new(),
-        });
+    if !request.force_rerun {
+        let decision = lookup_instance(
+            &request.workflow_id,
+            &request.step.id,
+            &tool_call_id,
+            &current,
+            &request.state_snapshot,
+            &required_output_specs,
+        );
+        match decision {
+            LookupResult::Hit { instance, instance_key, rekeyed_from } => {
+                // A hit requires the recorded blobs to still be present.
+                if required_output_blobs_exist(cas, &instance, &required_output_specs).await {
+                    // Record the settling step (idempotent union at settlement).
+                    let mut instance = instance;
+                    instance.step_ids_nk.insert(StepRef {
+                        workflow_id: request.workflow_id.clone(),
+                        step_id: request.step.id.clone(),
+                    });
+                    return Ok(StepExecutionBundle {
+                        instance,
+                        instance_key,
+                        rekeyed_from,
+                        lookup_side_effects: BTreeMap::new(),
+                        maintenance_rekey: None,
+                        cache_hit: true,
+                        producible_outputs: BTreeMap::new(),
+                    });
+                }
+
+                // Missing blobs turn the hit into a miss, but lookup/migration
+                // maintenance is independent of reuse and must not be discarded.
+                // Persist the migrated/attempted state so subsequent runs do not
+                // repeat migration work unnecessarily, then execute fresh.
+                let maintenance_rekey = rekeyed_from.map(|old_key| (old_key, instance_key));
+                let lookup_side_effects = BTreeMap::from([(instance_key, instance)]);
+                return execute_miss(
+                    cas,
+                    &request,
+                    &tool_call_id,
+                    &tool_spec,
+                    &resolved_inputs,
+                    &key_material,
+                    &producible_outputs,
+                    &merged_outputs,
+                    k_latest,
+                    executed_at,
+                    env_vars,
+                    lookup_side_effects,
+                    maintenance_rekey,
+                )
+                .await;
+            }
+            LookupResult::Miss { side_effects } => {
+                return execute_miss(
+                    cas,
+                    &request,
+                    &tool_call_id,
+                    &tool_spec,
+                    &resolved_inputs,
+                    &key_material,
+                    &producible_outputs,
+                    &merged_outputs,
+                    k_latest,
+                    executed_at,
+                    env_vars,
+                    side_effects,
+                    None,
+                )
+                .await;
+            }
+        }
     }
 
-    let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &instance_key).await?;
+    execute_miss(
+        cas,
+        &request,
+        &tool_call_id,
+        &tool_spec,
+        &resolved_inputs,
+        &key_material,
+        &producible_outputs,
+        &merged_outputs,
+        k_latest,
+        executed_at,
+        env_vars,
+        BTreeMap::new(),
+        None,
+    )
+    .await
+}
+
+/// Executes a step on cache miss (or forced rerun/blob-miss fallback).
+#[allow(clippy::too_many_arguments)]
+async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
+    cas: &C,
+    request: &StepExecutionRequest,
+    tool_call_id: &str,
+    tool_spec: &UnifiedToolSpec,
+    resolved_inputs: &[ResolvedInput],
+    key_material: &[Hash],
+    producible_outputs: &BTreeMap<String, OutputCaptureSpec>,
+    merged_outputs: &BTreeMap<String, OutputCaptureSpec>,
+    k_latest: Hash,
+    executed_at: Timestamp,
+    env_vars: BTreeMap<String, Hash>,
+    lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
+    maintenance_rekey: Option<(Hash, Hash)>,
+) -> Result<StepExecutionBundle, ConductorError> {
+    // Sandbox is named by the predicted LATEST key for determinism.
+    let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &k_latest).await?;
     prepare_tool_payload(cas, tool_spec, &sandbox_dir).await?;
 
     let dispatched = dispatch_tool_execution(
         cas,
         tool_spec,
-        &request,
-        &resolved_inputs,
+        request,
+        resolved_inputs,
         &sandbox_dir,
-        &key_material,
+        key_material,
     )
     .await?;
 
-    // Capture outputs: the merged set computed before the probe, so the probe
-    // and the capture phase cannot disagree about which names exist.
-    let captured = capture_outputs(cas, &merged_outputs, &dispatched.result, &sandbox_dir).await?;
+    let captured = capture_outputs(cas, merged_outputs, &dispatched.result, &sandbox_dir).await?;
+
+    // Derive the stored v8 key from actual material (actual staged inputs).
+    let actual_output_tokens: BTreeMap<String, String> = producible_outputs
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.capture.to_token()))
+        .collect();
+    let actual_materialized_inputs = dispatched.materialized_inputs.clone();
+    let actual_key = crate::instance_key::derive_instance_key_for_version(
+        INSTANCE_KEY_VERSION,
+        tool_call_id,
+        &dispatched.command_args,
+        Some(&crate::instance_key::V8KeyMaterial {
+            output_tokens: &actual_output_tokens,
+            materialized_inputs: &actual_materialized_inputs,
+        }),
+    )
+    .unwrap_or(k_latest);
 
     let instance = ToolCallInstance {
-        key_version: crate::instance_key::INSTANCE_KEY_VERSION,
-        attempted_key_version_nk: crate::instance_key::INSTANCE_KEY_VERSION,
-        tool_call_id,
+        key_version: INSTANCE_KEY_VERSION,
+        attempted_key_version_nk: INSTANCE_KEY_VERSION,
+        tool_call_id: tool_call_id.to_string(),
         command_args: dispatched.command_args,
         env_vars_ck: env_vars
             .into_iter()
             .map(|(k, hash_ck)| (k, crate::state::EnvVarEntry { hash_ck, source_nk: None }))
             .collect(),
-        materialized_inputs: dispatched.materialized_inputs,
+        materialized_inputs: actual_materialized_inputs,
         outputs: captured.records,
         impure_nk: tool_spec.is_impure,
-        // A fresh execution clears any marker.
         invalidated_at_nk: None,
         executed_at_nk: executed_at,
         last_referenced_at_nk: executed_at,
@@ -284,7 +356,15 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         }]),
     };
 
-    Ok(StepExecutionBundle { instance, instance_key, cache_hit: false, producible_outputs })
+    Ok(StepExecutionBundle {
+        instance,
+        instance_key: actual_key,
+        rekeyed_from: None,
+        lookup_side_effects,
+        maintenance_rekey,
+        cache_hit: false,
+        producible_outputs: producible_outputs.clone(),
+    })
 }
 
 /// Returns whether every required output still resolves in the store.
@@ -598,15 +678,12 @@ mod tests {
         execute_step(cas, request).await.expect("the echo builtin runs")
     }
 
-    /// The captures a step declares are not key material.
+    /// The declared output specification is key material in v8.
     ///
-    /// Two steps running the same tool with the same inputs have done the same
-    /// work, so one execution serves both however differently they name what
-    /// they record. Hashing the declarations instead put the second step under
-    /// its own key, so it re-ran the command and the fixture's shared instances
-    /// could not exist.
+    /// Two steps running the same tool with the same inputs but different
+    /// declared/producible output specs produce different instance keys.
     #[tokio::test]
-    async fn declared_captures_are_not_key_material() {
+    async fn declared_output_spec_is_key_material_in_v8() {
         let cas = mediapm_cas::new_in_memory_cas();
         let tool_defaults =
             BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]);
@@ -620,13 +697,13 @@ mod tests {
         )
         .await;
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
-        assert!(
-            first.instance.invalidated_at_nk.is_none(),
-            "a fresh execution must record the instance without an invalidation marker",
-        );
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(first.instance_key, first.instance.clone());
+        state.step_instances.insert(
+            "test-workflow".to_string(),
+            BTreeMap::from([("step-a-echo".to_string(), first.instance_key)]),
+        );
 
         let second = execute_echo_step(
             &cas,
@@ -639,12 +716,12 @@ mod tests {
         .await;
 
         assert!(
-            second.cache_hit,
-            "identical work must be reused however each step names what it captures",
+            !second.cache_hit,
+            "different declared output specs must not reuse the same instance in v8",
         );
-        assert_eq!(
+        assert_ne!(
             second.instance_key, first.instance_key,
-            "a step's declared captures must not move the instance key",
+            "a step's declared output spec must move the instance key in v8",
         );
     }
 
@@ -758,6 +835,87 @@ mod tests {
     /// The probe's producible set is the merged declarations plus the stream
     /// captures every execution records.
     ///
+    /// A lookup hit rejected solely for missing blobs must not discard
+    /// migration/re-key maintenance before falling back to execution.
+    ///
+    /// The hit's metadata migration is independent of reuse: even when the
+    /// recorded blobs are absent and the step must execute fresh, the migrated
+    /// record (re-keyed and/or with `attempted_key_version_nk` advanced) is
+    /// preserved as lookup maintenance so subsequent runs do not repeat the
+    /// migration work unnecessarily.
+    #[tokio::test]
+    async fn blob_missing_migrated_hit_preserves_rekey_maintenance() {
+        use crate::instance_key::{
+            INSTANCE_KEY_VERSION, V7_INSTANCE_KEY_VERSION, V8KeyMaterial,
+            derive_instance_key_for_version, derive_instance_key_v7,
+        };
+
+        let cas = mediapm_cas::new_in_memory_cas();
+        let tool_defaults =
+            BTreeMap::from([("result".to_string(), stream_spec("result", "stdout"))]);
+        let required = BTreeSet::from(["result".to_string()]);
+
+        let first = execute_echo_step(
+            &cas,
+            ConductorState::new_empty(),
+            "step-a-echo",
+            tool_defaults.clone(),
+            BTreeMap::new(),
+            required.clone(),
+        )
+        .await;
+        assert!(!first.cache_hit, "first run must execute");
+
+        let mut downgraded = first.instance.clone();
+        downgraded.key_version = V7_INSTANCE_KEY_VERSION;
+        downgraded.attempted_key_version_nk = V7_INSTANCE_KEY_VERSION;
+        let result_output =
+            downgraded.outputs.get_mut("result").expect("echo step records result output");
+        result_output.hash_nk = Some(Hash::from_content(b"missing-blob"));
+        let v7_key = derive_instance_key_v7(&downgraded.tool_call_id, &downgraded.command_args);
+        assert_ne!(v7_key, first.instance_key);
+
+        let output_tokens: BTreeMap<String, String> = downgraded
+            .outputs
+            .iter()
+            .map(|(name, recorded)| (name.clone(), recorded.capture.clone()))
+            .collect();
+        let migrated_v8_key = derive_instance_key_for_version(
+            INSTANCE_KEY_VERSION,
+            &downgraded.tool_call_id,
+            &downgraded.command_args,
+            Some(&V8KeyMaterial {
+                output_tokens: &output_tokens,
+                materialized_inputs: &downgraded.materialized_inputs,
+            }),
+        )
+        .expect("v8 key derivable for migrated record");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(v7_key, downgraded);
+        state.step_instances.insert(
+            "test-workflow".to_string(),
+            BTreeMap::from([("step-a-echo".to_string(), v7_key)]),
+        );
+
+        let bundle =
+            execute_echo_step(&cas, state, "step-a-echo", tool_defaults, BTreeMap::new(), required)
+                .await;
+
+        assert!(!bundle.cache_hit, "missing blobs must force fresh execution");
+        assert_eq!(
+            bundle.maintenance_rekey,
+            Some((v7_key, migrated_v8_key)),
+            "migrated blob-missing hit must preserve its re-key maintenance",
+        );
+        let maintained = bundle
+            .lookup_side_effects
+            .get(&migrated_v8_key)
+            .expect("migrated maintenance instance must be preserved");
+        assert_eq!(maintained.key_version, INSTANCE_KEY_VERSION);
+        assert_eq!(maintained.attempted_key_version_nk, INSTANCE_KEY_VERSION);
+    }
+
     /// A dependent may bind `${step_output.<step>.stdout}`, a name neither the
     /// tool nor the step declares. The capture phase records it regardless, so
     /// the probe has to treat it as producible; filtering against the merged map
