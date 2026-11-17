@@ -57,26 +57,62 @@ impl From<crate::config::SaveMode> for v5::SaveModeV5 {
     }
 }
 
+fn capture_kind_from_state_wire(
+    capture: &str,
+    include_topmost_folder: bool,
+) -> crate::config::CaptureKind {
+    if let Some(rest) = capture.strip_prefix("folder:") {
+        if include_topmost_folder {
+            crate::config::CaptureKind::Folder(rest.to_string())
+        } else {
+            crate::config::CaptureKind::FolderFlat(rest.to_string())
+        }
+    } else if let Some(rest) = capture.strip_prefix("folder_regex:") {
+        if include_topmost_folder {
+            crate::config::CaptureKind::FolderRegex(rest.to_string())
+        } else {
+            crate::config::CaptureKind::FolderFlatRegex(rest.to_string())
+        }
+    } else {
+        crate::config::CaptureKind::parse_token(capture)
+            .unwrap_or_else(|_| crate::config::CaptureKind::File(capture.to_string()))
+    }
+}
+
+fn capture_kind_to_state_wire(capture: &crate::config::CaptureKind) -> (String, bool) {
+    match capture {
+        crate::config::CaptureKind::Folder(path) => (format!("folder:{path}"), true),
+        crate::config::CaptureKind::FolderFlat(path) => (format!("folder:{path}"), false),
+        crate::config::CaptureKind::FolderRegex(pattern) => {
+            (format!("folder_regex:{pattern}"), true)
+        }
+        crate::config::CaptureKind::FolderFlatRegex(pattern) => {
+            (format!("folder_regex:{pattern}"), false)
+        }
+        other => (other.to_token(), true),
+    }
+}
+
 impl From<v5::OutputCaptureSpecV5> for crate::config::OutputCaptureSpec {
     fn from(spec: v5::OutputCaptureSpecV5) -> Self {
         Self {
-            name: spec.name,
-            capture: spec.capture,
+            name: spec.name.clone(),
+            capture: capture_kind_from_state_wire(&spec.capture, spec.include_topmost_folder),
             save: spec.save.into(),
             allow_empty: spec.allow_empty,
-            include_topmost_folder: spec.include_topmost_folder,
         }
     }
 }
 
 impl From<crate::config::OutputCaptureSpec> for v5::OutputCaptureSpecV5 {
     fn from(spec: crate::config::OutputCaptureSpec) -> Self {
+        let (capture, include_topmost_folder) = capture_kind_to_state_wire(&spec.capture);
         Self {
             name: spec.name,
-            capture: spec.capture,
+            capture,
             save: spec.save.into(),
             allow_empty: spec.allow_empty,
-            include_topmost_folder: spec.include_topmost_folder,
+            include_topmost_folder,
         }
     }
 }
@@ -337,10 +373,9 @@ mod tests {
     fn sample_spec() -> OutputCaptureSpec {
         OutputCaptureSpec {
             name: "stdout".to_string(),
-            capture: "stdout".to_string(),
+            capture: crate::config::CaptureKind::Stdout,
             save: SaveMode::False,
             allow_empty: true,
-            include_topmost_folder: false,
         }
     }
 

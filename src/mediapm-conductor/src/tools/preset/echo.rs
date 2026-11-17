@@ -32,20 +32,18 @@ pub fn apply(os_exec_paths: &BTreeMap<String, String>) -> (ToolSpec, ToolRuntime
                 "stdout".into(),
                 OutputCaptureSpec {
                     name: "stdout".into(),
-                    capture: "stdout".into(),
+                    capture: crate::config::CaptureKind::Stdout,
                     save: SaveMode::True,
                     allow_empty: false,
-                    include_topmost_folder: true,
                 },
             ),
             (
                 "stderr".into(),
                 OutputCaptureSpec {
                     name: "stderr".into(),
-                    capture: "stderr".into(),
+                    capture: crate::config::CaptureKind::Stderr,
                     save: SaveMode::True,
                     allow_empty: false,
-                    include_topmost_folder: true,
                 },
             ),
         ]),

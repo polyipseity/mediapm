@@ -195,7 +195,7 @@ fn echo_producer_step(id: &str, text: &str, depends_on: &[&str]) -> WorkflowStep
             "result".to_string(),
             OutputCaptureSpec {
                 name: "result".to_string(),
-                capture: "stdout".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::Stdout,
                 ..OutputCaptureSpec::default()
             },
         )]),

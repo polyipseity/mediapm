@@ -304,6 +304,104 @@ in
 # ||| marker. A tool that names its own strategy keeps it.
 let migrate_v3_to_v4_fn = fun data => (drop_field "version" data) & { version = 4 } in
 
+# ||| Splits a capture token on the first `:` and returns { prefix, remainder }.
+# ||| If there is no `:`, remainder is "".
+let split_capture_token_v4 = fun token =>
+  let parts = std.string.split ":" token in
+  if std.array.length parts <= 1 then
+    { prefix = token, remainder = "" }
+  else
+    {
+      prefix = std.array.first parts,
+      remainder = std.string.join ":" (std.array.drop_first parts),
+    }
+in
+
+# ||| Migrates one v5 output capture spec down to v4.
+# |||
+# ||| `folder_flat`/`folder_flat_regex` become `folder`/`folder_regex` with
+# ||| `include_topmost_folder = false`. `folder`/`folder_regex` keep their token
+# ||| and omit `include_topmost_folder` (v4 default is true). Other tokens pass
+# ||| through unchanged.
+let migrate_output_capture_spec_v5_to_v4 = fun spec =>
+  let capture = spec.capture in
+  let parts = split_capture_token_v4 capture in
+  let capture_v4 =
+    if parts.prefix == "folder_flat" then
+      "folder:%{parts.remainder}"
+    else if parts.prefix == "folder_flat_regex" then
+      "folder_regex:%{parts.remainder}"
+    else
+      capture
+  in
+  let base = (drop_field "capture" spec) & { capture = capture_v4 } in
+  if parts.prefix == "folder_flat" || parts.prefix == "folder_flat_regex" then
+    base & { include_topmost_folder = false }
+  else
+    drop_field "include_topmost_folder" base
+in
+
+# ||| Migrates a map of output capture specs from v5 to v4.
+let migrate_output_capture_specs_v5_to_v4 = fun outputs =>
+  outputs |> std.record.map (fun _name => fun spec => migrate_output_capture_spec_v5_to_v4 spec)
+in
+
+# ||| Migrates one v5 tool spec's output capture specs to v4.
+let migrate_tool_spec_v5_to_v4 = fun spec =>
+  if std.record.has_field "outputs" spec then
+    (std.record.remove "outputs" spec)
+    & { outputs = migrate_output_capture_specs_v5_to_v4 spec.outputs }
+  else
+    spec
+in
+
+# ||| Migrates one v5 workflow step's output capture specs to v4.
+let migrate_workflow_step_v5_to_v4 = fun step =>
+  if std.record.has_field "outputs" step then
+    (std.record.remove "outputs" step)
+    & { outputs = migrate_output_capture_specs_v5_to_v4 step.outputs }
+  else
+    step
+in
+
+# ||| Migrates one v5 workflow spec's step outputs to v4.
+let migrate_workflow_v5_to_v4 = fun workflow =>
+  if std.record.has_field "steps" workflow then
+    (std.record.remove "steps" workflow)
+    & { steps = std.array.map migrate_workflow_step_v5_to_v4 workflow.steps }
+  else
+    workflow
+in
+
+# ||| v5 → v4: restores the `include_topmost_folder` boolean from folder layout
+# ||| tokens. `folder_flat*` becomes `folder*` with `include_topmost_folder =
+# ||| false`; other tokens pass through unchanged.
+let migrate_v5_to_v4_fn = fun data =>
+  let tools_v4 =
+    if std.record.has_field "tools" data then
+      data.tools |> std.record.map (fun _key => fun spec => migrate_tool_spec_v5_to_v4 spec)
+    else
+      {}
+  in
+  let workflows_v4 =
+    if std.record.has_field "workflows" data then
+      std.array.map migrate_workflow_v5_to_v4 data.workflows
+    else
+      []
+  in
+  let base = drop_field "tools" (drop_field "workflows" (drop_field "version" data)) in
+  let with_tools =
+    if std.record.has_field "tools" data then base & { tools = tools_v4 } else base
+  in
+  let with_workflows =
+    if std.record.has_field "workflows" data then
+      with_tools & { workflows = workflows_v4 }
+    else
+      with_tools
+  in
+  with_workflows & { version = 4 }
+in
+
 {
   # ||| Validates one Nickel value as schema v4.
   validate_document_v4 = fun data => data | NickelDocumentV4,
@@ -313,4 +411,7 @@ let migrate_v3_to_v4_fn = fun data => (drop_field "version" data) & { version = 
 
   # ||| Migrates a v3 document to schema v4.
   migrate_v3_to_v4 = migrate_v3_to_v4_fn,
+
+  # ||| Migrates a v5 document down to schema v4.
+  migrate_v5_to_v4 = migrate_v5_to_v4_fn,
 }

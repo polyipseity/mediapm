@@ -1077,7 +1077,8 @@ mod tests {
     fn to_unified_carries_a_tools_declared_output_captures() {
         let content = super::super::OutputCaptureSpec {
             name: "content".to_string(),
-            capture: "file:out.mkv".to_string(),
+            capture: crate::config::CaptureKind::parse_token("file:out.mkv")
+                .expect("valid capture"),
             ..super::super::OutputCaptureSpec::default()
         };
         let document = NickelDocument {

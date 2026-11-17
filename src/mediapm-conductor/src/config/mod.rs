@@ -143,11 +143,6 @@ const fn default_allow_empty() -> bool {
     false
 }
 
-/// Default for `OutputCaptureSpec.include_topmost_folder`: include folder name.
-const fn default_include_topmost_folder() -> bool {
-    true
-}
-
 /// Input binding: a single string or an array of strings.
 ///
 /// Used in `default_inputs` to support both scalar and list defaults.
@@ -178,21 +173,162 @@ impl From<Vec<String>> for InputBinding {
     }
 }
 
+/// Capture kind for a step output.
+///
+/// The token is the kind and the kind is the layout: folder-style captures
+/// encode whether the topmost folder is included in the token itself. Parsing
+/// splits on the first `:` and rejoins the remainder, so a pattern or path that
+/// contains `:` survives intact. Unknown prefixes and empty remainders are
+/// rejected with the offending token named.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CaptureKind {
+    /// Capture the child process's standard output stream.
+    Stdout,
+    /// Capture the child process's standard error stream.
+    Stderr,
+    /// Capture the child process's exit code as text.
+    ProcessCode,
+    /// Capture bytes from one sandbox file at `<path>`.
+    File(String),
+    /// Capture bytes from the single sandbox file matching `<pattern>`.
+    FileRegex(String),
+    /// Zip everything under `<path>`, with member paths relative to the sandbox root.
+    Folder(String),
+    /// Zip everything under `<path>`, with member paths relative to `<path>`.
+    FolderFlat(String),
+    /// Zip the matching folder, with member paths relative to the sandbox root.
+    FolderRegex(String),
+    /// Zip the matching folder, with member paths relative to that folder.
+    FolderFlatRegex(String),
+}
+
+impl CaptureKind {
+    /// Parses one capture token into a [`CaptureKind`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the token when the prefix is unknown or the
+    /// remainder after the first `:` is empty for a kind that requires one.
+    pub fn parse_token(token: &str) -> Result<Self, String> {
+        match token {
+            "stdout" => Ok(Self::Stdout),
+            "stderr" => Ok(Self::Stderr),
+            "process_code" => Ok(Self::ProcessCode),
+            _ => {
+                let Some((prefix, remainder)) = token.split_once(':') else {
+                    return Err(format!("unknown capture token '{token}'"));
+                };
+                if remainder.is_empty() {
+                    return Err(format!(
+                        "capture token '{token}' has an empty remainder after '{prefix}:'"
+                    ));
+                }
+                match prefix {
+                    "file" => Ok(Self::File(remainder.to_string())),
+                    "file_regex" => Ok(Self::FileRegex(remainder.to_string())),
+                    "folder" => Ok(Self::Folder(remainder.to_string())),
+                    "folder_flat" => Ok(Self::FolderFlat(remainder.to_string())),
+                    "folder_regex" => Ok(Self::FolderRegex(remainder.to_string())),
+                    "folder_flat_regex" => Ok(Self::FolderFlatRegex(remainder.to_string())),
+                    _ => Err(format!("unknown capture token '{token}'")),
+                }
+            }
+        }
+    }
+
+    /// Renders this capture kind back to its token form.
+    #[must_use]
+    pub fn to_token(&self) -> String {
+        match self {
+            Self::Stdout => "stdout".to_string(),
+            Self::Stderr => "stderr".to_string(),
+            Self::ProcessCode => "process_code".to_string(),
+            Self::File(path) => format!("file:{path}"),
+            Self::FileRegex(pattern) => format!("file_regex:{pattern}"),
+            Self::Folder(path) => format!("folder:{path}"),
+            Self::FolderFlat(path) => format!("folder_flat:{path}"),
+            Self::FolderRegex(pattern) => format!("folder_regex:{pattern}"),
+            Self::FolderFlatRegex(pattern) => format!("folder_flat_regex:{pattern}"),
+        }
+    }
+
+    /// Returns whether a folder-style capture includes the topmost folder name
+    /// in archived member paths.
+    ///
+    /// This is a compatibility helper for code paths that still reason about the
+    /// legacy boolean layout flag; the flag is encoded in the capture kind.
+    #[must_use]
+    pub const fn includes_topmost_folder(&self) -> bool {
+        match self {
+            Self::Folder(_) | Self::FolderRegex(_) => true,
+            Self::FolderFlat(_) | Self::FolderFlatRegex(_) => false,
+            Self::Stdout
+            | Self::Stderr
+            | Self::ProcessCode
+            | Self::File(_)
+            | Self::FileRegex(_) => true,
+        }
+    }
+
+    /// Returns the path/pattern remainder for kinds that carry one.
+    #[must_use]
+    pub fn remainder(&self) -> Option<&str> {
+        match self {
+            Self::Stdout | Self::Stderr | Self::ProcessCode => None,
+            Self::File(value)
+            | Self::FileRegex(value)
+            | Self::Folder(value)
+            | Self::FolderFlat(value)
+            | Self::FolderRegex(value)
+            | Self::FolderFlatRegex(value) => Some(value),
+        }
+    }
+}
+
+impl std::fmt::Display for CaptureKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_token())
+    }
+}
+
+impl std::str::FromStr for CaptureKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_token(s)
+    }
+}
+
+impl Serialize for CaptureKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_token())
+    }
+}
+
+impl<'de> Deserialize<'de> for CaptureKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let token = String::deserialize(deserializer)?;
+        Self::parse_token(&token).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Capture/output spec for a step.
 ///
-/// Describes how output bytes are captured from a tool execution:
-/// - `stdout` / `stderr`: capture standard streams,
-/// - `process_code`: capture exit code as text,
-/// - `file:<path>`: capture bytes from a relative file path,
-/// - `file_regex:<pattern>`: capture bytes from a file matching a regex.
+/// Describes how output bytes are captured from a tool execution via a parsed
+/// [`CaptureKind`] token plus persistence/tolerance settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputCaptureSpec {
     /// Logical output name.
     pub name: String,
-    /// Capture source selector (`stdout`, `stderr`, `process_code`, `file:<path>`,
-    /// `file_regex:<pattern>`, etc.).
-    pub capture: String,
+    /// Parsed capture source selector.
+    pub capture: CaptureKind,
     /// The persistence intent this record carries, one of `"false"`, `"true"`,
     /// `"full"`.
     ///
@@ -204,12 +340,9 @@ pub struct OutputCaptureSpec {
     /// optimizer never stores it as a delta against another blob.
     ///
     /// This is the one field a step may set on a name its tool already
-    /// declares: the tool owns the capture itself (selector, `allow_empty`,
-    /// `include_topmost_folder`) and the step owns only whether the bytes are
-    /// kept. Persistence is a decision about the store, not about what the work
-    /// produces, so it never decides whether a recorded instance can be reused —
-    /// [`OutputCaptureSpec::same_capture_identity`] excludes it, and two steps
-    /// that persist differently still share one instance.
+    /// declares: the tool owns the capture itself (selector and `allow_empty`)
+    /// and the step owns only whether the bytes are kept. Persistence is a
+    /// decision about the store, not about what the work produces.
     #[serde(default = "default_save_mode", skip_serializing_if = "is_save_mode_true")]
     pub save: SaveMode,
     /// Whether an empty capture result (e.g. missing file) is acceptable.
@@ -217,61 +350,16 @@ pub struct OutputCaptureSpec {
     /// silently skipping the output.
     #[serde(default = "default_allow_empty")]
     pub allow_empty: bool,
-    /// Whether `folder:` capture listings include the topmost folder name.
-    /// When `true` (default), paths in the listing are relative to the
-    /// sandbox root (including the topmost folder). When `false`, paths
-    /// are relative to the captured folder itself.
-    #[serde(default = "default_include_topmost_folder")]
-    pub include_topmost_folder: bool,
 }
 
 impl Default for OutputCaptureSpec {
     fn default() -> Self {
         Self {
             name: String::new(),
-            capture: String::new(),
+            capture: CaptureKind::Stdout,
             save: SaveMode::True,
             allow_empty: false,
-            include_topmost_folder: true,
         }
-    }
-}
-
-impl OutputCaptureSpec {
-    /// Returns whether `self` and `other` would capture the same bytes from the
-    /// same execution.
-    ///
-    /// Capture identity is the selector plus the two settings that change which
-    /// bytes it reads: `allow_empty`, which turns "matched nothing" into an
-    /// empty record instead of an absent one, and `include_topmost_folder`,
-    /// which changes the archive layout a folder capture produces. Two specs
-    /// that agree on those three name the same artifact for the same run, so
-    /// the bytes recorded under either can serve a step asking for the other.
-    ///
-    /// `save` is deliberately excluded: it is a persistence instruction rather
-    /// than a property of the bytes, and it is the one field the tool/step
-    /// merge leaves to the step. `name` is excluded for the same kind of
-    /// reason: it is the map key on both sides, so it carries no information a
-    /// name lookup has not already used.
-    #[must_use]
-    pub fn same_capture_identity(&self, other: &Self) -> bool {
-        self.capture == other.capture
-            && self.allow_empty == other.allow_empty
-            && self.include_topmost_folder == other.include_topmost_folder
-    }
-
-    /// Renders the fields [`Self::same_capture_identity`] compares, for error
-    /// messages that have to name both sides of a disagreement.
-    ///
-    /// Crate-internal: its only caller is the settlement conflict message, and
-    /// the rendering exists to make that diagnostic readable rather than to be
-    /// a value any outside consumer formats.
-    #[must_use]
-    pub(crate) fn capture_identity(&self) -> String {
-        format!(
-            "capture '{}' with allow_empty={} and include_topmost_folder={}",
-            self.capture, self.allow_empty, self.include_topmost_folder,
-        )
     }
 }
 
@@ -948,15 +1036,40 @@ mod tests {
         }
     }
 
+    impl proptest::arbitrary::Arbitrary for CaptureKind {
+        type Parameters = ();
+        type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+        fn arbitrary_with((): ()) -> Self::Strategy {
+            use proptest::strategy::Strategy;
+            let nonempty = "[a-zA-Z0-9_./:-]{1,24}";
+            prop_oneof![
+                Just(CaptureKind::Stdout),
+                Just(CaptureKind::Stderr),
+                Just(CaptureKind::ProcessCode),
+                nonempty.prop_map(CaptureKind::File),
+                nonempty.prop_map(CaptureKind::FileRegex),
+                nonempty.prop_map(CaptureKind::Folder),
+                nonempty.prop_map(CaptureKind::FolderFlat),
+                nonempty.prop_map(CaptureKind::FolderRegex),
+                nonempty.prop_map(CaptureKind::FolderFlatRegex),
+            ]
+            .boxed()
+        }
+    }
+
     impl proptest::arbitrary::Arbitrary for OutputCaptureSpec {
         type Parameters = ();
         type Strategy = proptest::strategy::BoxedStrategy<Self>;
 
         fn arbitrary_with((): ()) -> Self::Strategy {
             use proptest::strategy::Strategy;
-            (any::<String>(), any::<String>(), any::<SaveMode>(), any::<bool>(), any::<bool>())
-                .prop_map(|(name, capture, save, allow_empty, include_topmost_folder)| {
-                    OutputCaptureSpec { name, capture, save, allow_empty, include_topmost_folder }
+            (any::<String>(), any::<CaptureKind>(), any::<SaveMode>(), any::<bool>())
+                .prop_map(|(name, capture, save, allow_empty)| OutputCaptureSpec {
+                    name,
+                    capture,
+                    save,
+                    allow_empty,
                 })
                 .boxed()
         }
@@ -968,10 +1081,9 @@ mod tests {
     fn output_capture_spec_full_roundtrip() {
         let spec = OutputCaptureSpec {
             name: "output1".to_string(),
-            capture: "stdout".to_string(),
+            capture: CaptureKind::Stdout,
             save: SaveMode::Full,
             allow_empty: true,
-            include_topmost_folder: false,
         };
         let json = serde_json::to_string(&spec).expect("serialize");
         let back: OutputCaptureSpec = serde_json::from_str(&json).expect("deserialize");
@@ -990,7 +1102,7 @@ mod tests {
     fn output_capture_spec_default_save_skipped_in_json() {
         let spec = OutputCaptureSpec {
             name: "out".to_string(),
-            capture: "stdout".to_string(),
+            capture: CaptureKind::Stdout,
             save: SaveMode::True,
             ..Default::default()
         };
@@ -1002,7 +1114,7 @@ mod tests {
     fn output_capture_spec_false_save_present_in_json() {
         let spec = OutputCaptureSpec {
             name: "out".to_string(),
-            capture: "stdout".to_string(),
+            capture: CaptureKind::Stdout,
             save: SaveMode::False,
             ..Default::default()
         };
@@ -1014,7 +1126,7 @@ mod tests {
     fn output_capture_spec_full_save_present_in_json() {
         let spec = OutputCaptureSpec {
             name: "out".to_string(),
-            capture: "stdout".to_string(),
+            capture: CaptureKind::Stdout,
             save: SaveMode::Full,
             ..Default::default()
         };
@@ -1046,5 +1158,91 @@ mod tests {
             0,
             "macos inherits no env var by default"
         );
+    }
+
+    // ── CaptureKind (T1) ──────────────────────────────────────────────────
+
+    #[test]
+    fn capture_kind_roundtrips_all_eight_tokens() {
+        let cases = [
+            ("stdout", CaptureKind::Stdout),
+            ("stderr", CaptureKind::Stderr),
+            ("process_code", CaptureKind::ProcessCode),
+            ("file:out.mkv", CaptureKind::File("out.mkv".to_string())),
+            (
+                "file_regex:^downloads/.+[.]json$",
+                CaptureKind::FileRegex("^downloads/.+[.]json$".to_string()),
+            ),
+            ("folder:downloads", CaptureKind::Folder("downloads".to_string())),
+            ("folder_flat:downloads", CaptureKind::FolderFlat("downloads".to_string())),
+            ("folder_regex:^downloads/.+$", CaptureKind::FolderRegex("^downloads/.+$".to_string())),
+            (
+                "folder_flat_regex:^downloads/.+$",
+                CaptureKind::FolderFlatRegex("^downloads/.+$".to_string()),
+            ),
+        ];
+        for (token, expected) in cases {
+            let parsed = CaptureKind::parse_token(token).expect(token);
+            assert_eq!(parsed, expected, "parse mismatch for {token}");
+            assert_eq!(parsed.to_token(), token, "render mismatch for {token}");
+            let json = serde_json::to_string(&OutputCaptureSpec {
+                name: "x".to_string(),
+                capture: parsed.clone(),
+                ..OutputCaptureSpec::default()
+            })
+            .expect("serialize");
+            assert!(
+                json.contains(&format!("\"capture\":\"{}\"", token.replace('\\', "\\\\"))),
+                "{json}"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_kind_preserves_remainder_after_first_colon() {
+        let token = "folder_flat_regex:^foo:bar:(.+)$";
+        let parsed = CaptureKind::parse_token(token).expect("parse");
+        assert_eq!(parsed, CaptureKind::FolderFlatRegex("^foo:bar:(.+)$".to_string()));
+        assert_eq!(parsed.to_token(), token);
+    }
+
+    #[test]
+    fn capture_kind_rejects_unknown_prefix_naming_token() {
+        let err = CaptureKind::parse_token("bogus:path").expect_err("must fail");
+        assert!(err.contains("unknown capture token"), "{err}");
+        assert!(err.contains("bogus:path"), "{err}");
+    }
+
+    #[test]
+    fn capture_kind_rejects_unknown_bare_token_naming_token() {
+        let err = CaptureKind::parse_token("nope").expect_err("must fail");
+        assert!(err.contains("unknown capture token"), "{err}");
+        assert!(err.contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn capture_kind_rejects_empty_remainder_naming_token() {
+        for token in [
+            "file:",
+            "file_regex:",
+            "folder:",
+            "folder_flat:",
+            "folder_regex:",
+            "folder_flat_regex:",
+        ] {
+            let err = CaptureKind::parse_token(token).expect_err(token);
+            assert!(err.contains("empty remainder"), "{err}: {token}");
+            assert!(err.contains(token), "{err}: {token}");
+        }
+    }
+
+    #[test]
+    fn output_capture_spec_rejects_unknown_capture_token() {
+        let err =
+            serde_json::from_str::<OutputCaptureSpec>(r#"{"name":"x","capture":"wat:thing"}"#)
+                .expect_err("must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("unknown capture token"), "{msg}");
+        assert!(msg.contains("wat:thing"), "{msg}");
     }
 }

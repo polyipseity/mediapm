@@ -537,7 +537,7 @@ mod tests {
         for output in saved.instance.outputs.values_mut() {
             output.capture = Some(crate::config::OutputCaptureSpec {
                 name: String::new(),
-                capture: "stdout".to_string(),
+                capture: crate::config::CaptureKind::Stdout,
                 save: mode,
                 ..crate::config::OutputCaptureSpec::default()
             });

@@ -37,40 +37,38 @@ pub fn apply(
             "content".into(),
             OutputCaptureSpec {
                 name: "content".into(),
-                capture: "file:inputs/input.ffmeta".into(),
+                capture: crate::config::CaptureKind::parse_token("file:inputs/input.ffmeta")
+                    .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "sandbox_artifacts".into(),
             OutputCaptureSpec {
                 name: "sandbox_artifacts".into(),
-                capture: "folder:inputs".into(),
+                capture: crate::config::CaptureKind::parse_token("folder:inputs")
+                    .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stdout".into(),
             OutputCaptureSpec {
                 name: "stdout".into(),
-                capture: "stdout".into(),
+                capture: crate::config::CaptureKind::Stdout,
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stderr".into(),
             OutputCaptureSpec {
                 name: "stderr".into(),
-                capture: "stderr".into(),
+                capture: crate::config::CaptureKind::Stderr,
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
     ]);

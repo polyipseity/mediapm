@@ -333,13 +333,22 @@ fn record_capture_claims(
             continue;
         };
         match claims.get(&(instance_key, name.clone())) {
-            Some((claimed, claimed_by)) if !capture.same_capture_identity(claimed) => {
+            Some((claimed, claimed_by))
+                if !(capture.capture == claimed.capture
+                    && capture.allow_empty == claimed.allow_empty) =>
+            {
                 return Err(ConductorError::Workflow(format!(
                     "steps '{claimed_by}' and '{step_id}' both capture output '{name}' for the \
                      same work with different capture specs ({} vs {}); one output name must \
                      name one artifact",
-                    claimed.capture_identity(),
-                    capture.capture_identity(),
+                    format!(
+                        "capture '{}' with allow_empty={}",
+                        claimed.capture, claimed.allow_empty
+                    ),
+                    format!(
+                        "capture '{}' with allow_empty={}",
+                        capture.capture, capture.allow_empty
+                    ),
                 )));
             }
             Some(_) => {}
@@ -1393,7 +1402,7 @@ mod tests {
                 "result".to_string(),
                 crate::config::OutputCaptureSpec {
                     name: "result".to_string(),
-                    capture: "stdout".to_string(),
+                    capture: crate::config::CaptureKind::Stdout,
                     ..crate::config::OutputCaptureSpec::default()
                 },
             )]),

@@ -18,13 +18,14 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    ConfigPayloadStaging, NickelDocument, OutputCaptureSpec, PayloadStaging, SaveMode,
+    CaptureKind, ConfigPayloadStaging, NickelDocument, OutputCaptureSpec, PayloadStaging, SaveMode,
     ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
     WorkflowStepSpec,
 };
+use crate::error::ConductorError;
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
-pub(crate) const NICKEL_VERSION_LATEST: u32 = 4;
+pub(crate) const NICKEL_VERSION_LATEST: u32 = 5;
 
 // ---------------------------------------------------------------------------
 // Persisted envelope types — these match the `v4.ncl` Nickel contract exactly
@@ -103,7 +104,7 @@ impl<'de> Deserialize<'de> for SaveModeLatest {
 pub(crate) struct OutputCaptureSpecLatest {
     /// Logical output name.
     pub(crate) name: String,
-    /// Capture source selector.
+    /// Capture source selector token.
     pub(crate) capture: String,
     /// Whether to persist this output to CAS.
     #[serde(default = "default_save_output", skip_serializing_if = "is_save_mode_true_latest")]
@@ -111,17 +112,10 @@ pub(crate) struct OutputCaptureSpecLatest {
     /// Whether an empty capture result is acceptable.
     #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) allow_empty: bool,
-    /// Whether `folder:` listings include the topmost folder name.
-    #[serde(default = "default_include_topmost_folder", skip_serializing_if = "is_true")]
-    pub(crate) include_topmost_folder: bool,
 }
 
 const fn default_save_output() -> SaveModeLatest {
     SaveModeLatest::True
-}
-
-const fn default_include_topmost_folder() -> bool {
-    true
 }
 
 #[expect(
@@ -130,14 +124,6 @@ const fn default_include_topmost_folder() -> bool {
 )]
 const fn is_save_mode_true_latest(v: &SaveModeLatest) -> bool {
     matches!(*v, SaveModeLatest::True)
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde skip_serializing_if invokes the predicate with &T"
-)]
-const fn is_true(v: &bool) -> bool {
-    *v
 }
 
 #[expect(
@@ -787,15 +773,23 @@ pub(crate) struct NickelEnvelopeLatest {
 // Bridge: persisted envelope → runtime config types
 // ---------------------------------------------------------------------------
 
-impl From<NickelEnvelopeLatest> for NickelDocument {
-    fn from(envelope: NickelEnvelopeLatest) -> Self {
-        NickelDocument {
-            tools: envelope
-                .tools
-                .into_iter()
-                .map(|(name, spec)| (name, tool_spec_from_latest(spec)))
-                .collect(),
-            workflows: envelope.workflows.into_iter().map(workflow_spec_from_latest).collect(),
+impl TryFrom<NickelEnvelopeLatest> for NickelDocument {
+    type Error = ConductorError;
+
+    fn try_from(envelope: NickelEnvelopeLatest) -> Result<Self, Self::Error> {
+        let tools = envelope
+            .tools
+            .into_iter()
+            .map(|(name, spec)| Ok::<_, ConductorError>((name, tool_spec_from_latest(spec)?)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let workflows = envelope
+            .workflows
+            .into_iter()
+            .map(workflow_spec_from_latest)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(NickelDocument {
+            tools,
+            workflows,
             external_data: envelope
                 .external_data
                 .into_iter()
@@ -821,7 +815,7 @@ impl From<NickelEnvelopeLatest> for NickelDocument {
                 })
                 .collect(),
             runtime: envelope.runtime.into(),
-        }
+        })
     }
 }
 
@@ -901,8 +895,30 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
     }
 }
 
-fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
-    ToolSpec {
+fn output_capture_spec_from_latest(
+    o: OutputCaptureSpecLatest,
+) -> Result<OutputCaptureSpec, ConductorError> {
+    let capture =
+        CaptureKind::parse_token(&o.capture).map_err(|err| ConductorError::Workflow(err))?;
+    Ok(OutputCaptureSpec {
+        name: o.name,
+        capture,
+        save: match o.save {
+            SaveModeLatest::False => SaveMode::False,
+            SaveModeLatest::True => SaveMode::True,
+            SaveModeLatest::Full => SaveMode::Full,
+        },
+        allow_empty: o.allow_empty,
+    })
+}
+
+fn tool_spec_from_latest(spec: ToolSpecLatest) -> Result<ToolSpec, ConductorError> {
+    let outputs = spec
+        .outputs
+        .into_iter()
+        .map(|(name, o)| Ok::<_, ConductorError>((name, output_capture_spec_from_latest(o)?)))
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(ToolSpec {
         kind: match spec.kind {
             ToolKindLatest::Builtin { builtin_id } => ToolKindSpec::Builtin { builtin_id },
             ToolKindLatest::Executable { command, env_vars, success_codes } => {
@@ -934,28 +950,21 @@ fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
             .into_iter()
             .map(|(k, v)| (k, super::super::InputBinding::from(v)))
             .collect(),
-        outputs: spec
-            .outputs
-            .into_iter()
-            .map(|(name, o)| {
-                let name_clone = name.clone();
-                (
-                    name,
-                    OutputCaptureSpec {
-                        name: name_clone,
-                        capture: o.capture,
-                        save: match o.save {
-                            SaveModeLatest::False => SaveMode::False,
-                            SaveModeLatest::True => SaveMode::True,
-                            SaveModeLatest::Full => SaveMode::Full,
-                        },
-                        allow_empty: o.allow_empty,
-                        include_topmost_folder: o.include_topmost_folder,
-                    },
-                )
-            })
-            .collect(),
+        outputs,
         runtime: tool_runtime_from_latest(spec.runtime),
+    })
+}
+
+fn output_capture_spec_to_latest(o: OutputCaptureSpec) -> OutputCaptureSpecLatest {
+    OutputCaptureSpecLatest {
+        name: o.name,
+        capture: o.capture.to_token(),
+        save: match o.save {
+            SaveMode::False => SaveModeLatest::False,
+            SaveMode::True => SaveModeLatest::True,
+            SaveMode::Full => SaveModeLatest::Full,
+        },
+        allow_empty: o.allow_empty,
     }
 }
 
@@ -999,23 +1008,7 @@ fn tool_spec_to_latest(spec: ToolSpec, document_default: PayloadStaging) -> Tool
         outputs: spec
             .outputs
             .into_iter()
-            .map(|(name, o)| {
-                let name_clone = name.clone();
-                (
-                    name,
-                    OutputCaptureSpecLatest {
-                        name: name_clone,
-                        capture: o.capture,
-                        save: match o.save {
-                            SaveMode::False => SaveModeLatest::False,
-                            SaveMode::True => SaveModeLatest::True,
-                            SaveMode::Full => SaveModeLatest::Full,
-                        },
-                        allow_empty: o.allow_empty,
-                        include_topmost_folder: o.include_topmost_folder,
-                    },
-                )
-            })
+            .map(|(name, o)| (name, output_capture_spec_to_latest(o)))
             .collect(),
         runtime: tool_runtime_to_latest(spec.runtime, document_default),
     }
@@ -1065,14 +1058,14 @@ fn tool_runtime_to_latest(rt: ToolRuntime, document_default: PayloadStaging) -> 
     }
 }
 
-fn workflow_spec_from_latest(spec: WorkflowSpecLatest) -> WorkflowSpec {
-    WorkflowSpec {
+fn workflow_spec_from_latest(spec: WorkflowSpecLatest) -> Result<WorkflowSpec, ConductorError> {
+    Ok(WorkflowSpec {
         name: spec.name,
         display_name: spec.display_name,
         description: spec.description,
         impure: spec.impure,
-        steps: spec.steps.into_iter().map(step_spec_from_latest).collect(),
-    }
+        steps: spec.steps.into_iter().map(step_spec_from_latest).collect::<Result<Vec<_>, _>>()?,
+    })
 }
 
 fn workflow_spec_to_latest(spec: WorkflowSpec) -> WorkflowSpecLatest {
@@ -1085,35 +1078,20 @@ fn workflow_spec_to_latest(spec: WorkflowSpec) -> WorkflowSpecLatest {
     }
 }
 
-fn step_spec_from_latest(step: WorkflowStepSpecLatest) -> WorkflowStepSpec {
-    WorkflowStepSpec {
+fn step_spec_from_latest(step: WorkflowStepSpecLatest) -> Result<WorkflowStepSpec, ConductorError> {
+    let outputs = step
+        .outputs
+        .into_iter()
+        .map(|(name, o)| Ok::<_, ConductorError>((name, output_capture_spec_from_latest(o)?)))
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(WorkflowStepSpec {
         id: step.id,
         tool: step.tool,
         inputs: step.inputs,
-        outputs: step
-            .outputs
-            .into_iter()
-            .map(|(name, o)| {
-                let name_clone = name.clone();
-                (
-                    name,
-                    OutputCaptureSpec {
-                        name: name_clone,
-                        capture: o.capture,
-                        save: match o.save {
-                            SaveModeLatest::False => SaveMode::False,
-                            SaveModeLatest::True => SaveMode::True,
-                            SaveModeLatest::Full => SaveMode::Full,
-                        },
-                        allow_empty: o.allow_empty,
-                        include_topmost_folder: o.include_topmost_folder,
-                    },
-                )
-            })
-            .collect(),
+        outputs,
         max_retries: step.max_retries,
         depends_on: step.depends_on,
-    }
+    })
 }
 
 fn step_spec_to_latest(step: WorkflowStepSpec) -> WorkflowStepSpecLatest {
@@ -1124,23 +1102,7 @@ fn step_spec_to_latest(step: WorkflowStepSpec) -> WorkflowStepSpecLatest {
         outputs: step
             .outputs
             .into_iter()
-            .map(|(name, o)| {
-                let name_clone = name.clone();
-                (
-                    name,
-                    OutputCaptureSpecLatest {
-                        name: name_clone,
-                        capture: o.capture,
-                        save: match o.save {
-                            SaveMode::False => SaveModeLatest::False,
-                            SaveMode::True => SaveModeLatest::True,
-                            SaveMode::Full => SaveModeLatest::Full,
-                        },
-                        allow_empty: o.allow_empty,
-                        include_topmost_folder: o.include_topmost_folder,
-                    },
-                )
-            })
+            .map(|(name, o)| (name, output_capture_spec_to_latest(o)))
             .collect(),
         max_retries: step.max_retries,
         depends_on: step.depends_on,
@@ -1176,7 +1138,7 @@ mod tests {
             external_data: BTreeMap::new(),
         };
 
-        let doc: NickelDocument = envelope.clone().into();
+        let doc = NickelDocument::try_from(envelope.clone()).expect("envelope converts");
         let back: NickelEnvelopeLatest = doc.into();
 
         assert_eq!(envelope.version, back.version);
@@ -1240,10 +1202,10 @@ mod tests {
                         "content".to_string(),
                         OutputCaptureSpec {
                             name: "content".to_string(),
-                            capture: "file:metadata/output.ffmeta".to_string(),
+                            capture: CaptureKind::parse_token("file:metadata/output.ffmeta")
+                                .expect("valid capture"),
                             save: SaveMode::Full,
                             allow_empty: false,
-                            include_topmost_folder: true,
                         },
                     )]),
                     max_retries: 0,
@@ -1299,10 +1261,9 @@ mod tests {
                             "output".to_string(),
                             OutputCaptureSpec {
                                 name: "output".to_string(),
-                                capture: "stdout".to_string(),
+                                capture: CaptureKind::Stdout,
                                 save: SaveMode::False,
                                 allow_empty: false,
-                                include_topmost_folder: true,
                             },
                         )]),
                         runtime: ToolRuntime {

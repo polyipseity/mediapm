@@ -65,7 +65,7 @@ fn write_declared_input_workflow(tc: &TestConductor, hash: Hash) {
             "echoed".into(),
             OutputCaptureSpec {
                 name: "echoed".to_string(),
-                capture: "stdout".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::Stdout,
                 ..OutputCaptureSpec::default()
             },
         )]),

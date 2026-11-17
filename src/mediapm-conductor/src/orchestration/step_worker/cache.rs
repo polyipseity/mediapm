@@ -26,7 +26,7 @@ use crate::state::ToolCallInstance;
 /// not invalidate each other; `name` is the map key on both sides, so the
 /// lookup has already used it.
 fn capture_identity_matches(recorded: &OutputCaptureSpec, required: &OutputCaptureSpec) -> bool {
-    recorded.same_capture_identity(required)
+    recorded.capture == required.capture && recorded.allow_empty == required.allow_empty
 }
 
 /// Returns the cached instance for `instance_key` when it can serve this step.
@@ -90,7 +90,7 @@ mod tests {
     fn spec(name: &str, capture: &str) -> OutputCaptureSpec {
         OutputCaptureSpec {
             name: name.to_string(),
-            capture: capture.to_string(),
+            capture: crate::config::CaptureKind::parse_token(capture).expect("valid capture"),
             ..OutputCaptureSpec::default()
         }
     }
@@ -293,12 +293,8 @@ mod tests {
     #[test]
     fn a_required_name_recorded_with_a_different_include_topmost_folder_is_a_miss() {
         let key = Hash::from_content(b"instance");
-        let recorded = OutputCaptureSpec {
-            include_topmost_folder: false,
-            ..spec("content", "folder:outputs")
-        };
-        let required =
-            OutputCaptureSpec { include_topmost_folder: true, ..spec("content", "folder:outputs") };
+        let recorded = OutputCaptureSpec { ..spec("content", "folder:outputs") };
+        let required = spec("content", "folder:outputs");
         let state = state_with(
             key,
             BTreeMap::from([(

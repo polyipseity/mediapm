@@ -39,10 +39,9 @@ fn build_document() -> NickelDocument {
                     "result".into(),
                     mediapm_conductor::OutputCaptureSpec {
                         name: "result".into(),
-                        capture: "stdout".to_string(),
+                        capture: mediapm_conductor::config::CaptureKind::Stdout,
                         save: mediapm_conductor::SaveMode::Full,
                         allow_empty: false,
-                        include_topmost_folder: true,
                     },
                 )]),
                 max_retries: 0,

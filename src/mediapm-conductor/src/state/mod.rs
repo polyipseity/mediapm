@@ -432,15 +432,10 @@ enum MergeDecision {
 ///   predates this rule, and stating it keeps it from being read as something
 ///   impurity covered.
 ///
-/// Capture identity is one comparison for every capture kind:
-/// [`crate::config::OutputCaptureSpec::same_capture_identity`] compares the
-/// selector and the two settings that change which bytes it reads. That means
-/// `include_topmost_folder` is compared even for a `file:` capture, which
-/// cannot honour it. The alternative — a per-kind field list — would have to be
-/// kept in step with the capture phase's own reading of each selector, and a
-/// mismatch there is a miss on every sync. A needless field in the comparison
-/// only costs a re-execution of the rare declaration that sets it on a
-/// non-folder capture.
+/// Capture identity compares the selector token/kind and `allow_empty`, the
+/// settings that decide which bytes are read. Folder layout is part of the
+/// capture token, so `folder` and `folder_flat` differ by identity even when
+/// they name the same path.
 ///
 /// `declared` is the name-to-spec map the executing step declared it could
 /// produce this run — the tool defaults merged under its declarations, plus the
@@ -487,9 +482,7 @@ pub(crate) fn merge_captured_outputs(
                 ) {
                     MergeDecision::Replace
                 } else if existing.hash == incoming.hash
-                    || is_diagnostic_stream(
-                        existing.capture.as_ref().map(|spec| spec.capture.as_str()),
-                    )
+                    || is_diagnostic_stream(existing.capture.as_ref().map(|spec| &spec.capture))
                 {
                     // Same bytes: the stored entry already says everything,
                     // `save` included — persistence is the executing step's
@@ -537,8 +530,11 @@ pub(crate) fn merge_captured_outputs(
 /// work are exactly what the byte-identity rule exists to surface. `None` is
 /// the migration's unknown spec and is not exempt either, because nothing
 /// recorded says the bytes came from a stream.
-fn is_diagnostic_stream(selector: Option<&str>) -> bool {
-    matches!(selector, Some("stdout" | "stderr"))
+fn is_diagnostic_stream(selector: Option<&crate::config::CaptureKind>) -> bool {
+    matches!(
+        selector,
+        Some(crate::config::CaptureKind::Stdout | crate::config::CaptureKind::Stderr)
+    )
 }
 
 /// Returns whether two recorded capture identities name the same artifact.
@@ -547,12 +543,17 @@ fn is_diagnostic_stream(selector: Option<&str>) -> bool {
 /// declared spec; two such records match each other, because the migration
 /// gives every entry of one instance the same unknown state and there is no
 /// declared identity for either to contradict.
+///
+/// Identity here is the same config-level comparison used elsewhere: selector
+/// token/kind and `allow_empty`.
 fn same_recorded_capture_identity(
     existing: Option<&crate::config::OutputCaptureSpec>,
     incoming: Option<&crate::config::OutputCaptureSpec>,
 ) -> bool {
     match (existing, incoming) {
-        (Some(existing), Some(incoming)) => existing.same_capture_identity(incoming),
+        (Some(existing), Some(incoming)) => {
+            existing.capture == incoming.capture && existing.allow_empty == incoming.allow_empty
+        }
         (None, None) => true,
         (Some(_), None) | (None, Some(_)) => false,
     }
@@ -583,7 +584,8 @@ mod tests {
     fn spec(name: &str, selector: &str, save: SaveMode) -> OutputCaptureSpec {
         OutputCaptureSpec {
             name: name.to_string(),
-            capture: selector.to_string(),
+            capture: crate::config::CaptureKind::parse_token(selector)
+                .expect("valid capture token"),
             save,
             ..OutputCaptureSpec::default()
         }
@@ -819,8 +821,8 @@ mod tests {
                 .expect("an identity change is allowed");
 
         assert_eq!(
-            merged["content"].capture.as_ref().map(|spec| spec.capture.as_str()),
-            Some("stderr"),
+            merged["content"].capture.as_ref().map(|spec| spec.capture.clone()),
+            Some(crate::config::CaptureKind::Stderr),
             "the fresh capture spec must replace the recorded one",
         );
         assert_eq!(merged["content"].hash, Hash::from_content(b"C"));
@@ -895,8 +897,8 @@ mod tests {
             "the fresh entry must replace the stored one although the bytes are equal",
         );
         assert_eq!(
-            merged["content"].capture.as_ref().map(|spec| spec.capture.as_str()),
-            Some("stderr"),
+            merged["content"].capture.as_ref().map(|spec| spec.capture.clone()),
+            Some(crate::config::CaptureKind::Stderr),
             "the recorded spec must be the one this execution declared",
         );
     }

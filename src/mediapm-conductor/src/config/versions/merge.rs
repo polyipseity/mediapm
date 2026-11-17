@@ -346,7 +346,7 @@ impl MergeState {
         // Defaults applied once at the end: the merged document is definite
         // for all merge-relevant fields (save_mode, retry_impure, and the
         // staging default).
-        let doc: NickelDocument = self.merged.into();
+        let doc = NickelDocument::try_from(self.merged)?;
         doc.validate_external_data_invariant()?;
         doc.validate_payload_staging_invariant()?;
         Ok(doc)

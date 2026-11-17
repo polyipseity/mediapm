@@ -351,11 +351,10 @@ fn producible_output_specs(
 ///
 /// A step may restate a tool-declared name for any reason, so silence here would
 /// leave a declaration that has no effect looking as though it had one: the tool
-/// keeps `capture`, `allow_empty` and `include_topmost_folder`, and only `save`
-/// survives. Comparing values rather than presence is deliberate — a step that
-/// repeats the tool's own selector is declaring what already holds and deserves
-/// no warning, while one that names a different selector is stating an intent
-/// that is being discarded.
+/// keeps `capture` and `allow_empty`, and only `save` survives. Comparing values
+/// rather than presence is deliberate — a step that repeats the tool's own
+/// selector is declaring what already holds and deserves no warning, while one
+/// that names a different selector is stating an intent that is being discarded.
 ///
 /// The order is fixed so the diagnostic reads the same way every run.
 ///
@@ -371,19 +370,16 @@ fn discarded_step_fields(tool: &OutputCaptureSpec, step: &OutputCaptureSpec) -> 
     if step.allow_empty != tool.allow_empty {
         discarded.push("allow_empty");
     }
-    if step.include_topmost_folder != tool.include_topmost_folder {
-        discarded.push("include_topmost_folder");
-    }
     discarded
 }
 
 /// Merges tool-level output specs (defaults) with step-level output specs.
 ///
-/// The tool owns the meaning of every artifact name it declares: its `capture`,
-/// `allow_empty` and `include_topmost_folder` are kept, and a step declaring
-/// the same name contributes only its `save`. A step's full declaration is
-/// authoritative only for a name the tool does not declare, and a name only
-/// the tool declares is kept unchanged.
+/// The tool owns the meaning of every artifact name it declares: its `capture`
+/// and `allow_empty` are kept, and a step declaring the same name contributes
+/// only its `save`. A step's full declaration is authoritative only for a name
+/// the tool does not declare, and a name only the tool declares is kept
+/// unchanged.
 ///
 /// The reason is that one instance is shared by every step running the same
 /// work, and a name-addressed record is reusable only when the capture beside it
@@ -423,8 +419,8 @@ fn merge_output_specs(
                 if !discarded.is_empty() {
                     tracing::warn!(
                         "output '{name}' is declared by the tool, so the step's {} {} ignored; \
-                         the tool's capture, allow_empty and include_topmost_folder apply, and \
-                         only `save` is taken from the step",
+                         the tool's capture and allow_empty apply, and only `save` is taken \
+                         from the step",
                         discarded.join(", "),
                         if discarded.len() == 1 { "is" } else { "are" },
                     );
@@ -479,7 +475,7 @@ mod tests {
     fn stream_spec(name: &str, stream: &str) -> OutputCaptureSpec {
         OutputCaptureSpec {
             name: name.to_string(),
-            capture: stream.to_string(),
+            capture: crate::config::CaptureKind::parse_token(stream).expect("valid capture"),
             ..OutputCaptureSpec::default()
         }
     }
@@ -503,24 +499,21 @@ mod tests {
 
     /// Each field the tool overrides is named, in a fixed order.
     ///
-    /// A step's selector, `allow_empty` and `include_topmost_folder` are all
-    /// dropped for a tool-declared name, and a declaration that silently lost
-    /// one of them would look as though it still applied.
+    /// A step's selector and `allow_empty` are dropped for a tool-declared name,
+    /// and a declaration that silently lost one of them would look as though it
+    /// still applied. Folder layout is part of the capture token.
     #[test]
     fn every_overridden_step_field_is_named_in_order() {
         let tool = stream_spec("content", "stdout");
         let step = OutputCaptureSpec {
             name: "content".to_string(),
-            capture: "file:out.bin".to_string(),
+            capture: crate::config::CaptureKind::parse_token("file:out.bin")
+                .expect("valid capture"),
             save: SaveMode::False,
             allow_empty: true,
-            include_topmost_folder: false,
         };
 
-        assert_eq!(
-            discarded_step_fields(&tool, &step),
-            vec!["capture", "allow_empty", "include_topmost_folder"],
-        );
+        assert_eq!(discarded_step_fields(&tool, &step), vec!["capture", "allow_empty"],);
     }
 
     /// A `save`-only step declaration discards nothing.
@@ -774,7 +767,8 @@ mod tests {
     #[test]
     fn producible_outputs_include_the_implicit_streams() {
         let declared_stdout = OutputCaptureSpec {
-            capture: "file:out.txt".to_string(),
+            capture: crate::config::CaptureKind::parse_token("file:out.txt")
+                .expect("valid capture"),
             ..stream_spec("stdout", "stdout")
         };
         let merged = BTreeMap::from([
@@ -870,7 +864,8 @@ mod tests {
                 "links".to_string(),
                 OutputCaptureSpec {
                     name: "links".to_string(),
-                    capture: "file:downloads/links.list".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("file:downloads/links.list")
+                        .expect("valid capture"),
                     allow_empty: true,
                     ..OutputCaptureSpec::default()
                 },
@@ -879,7 +874,8 @@ mod tests {
                 "thumbnails".to_string(),
                 OutputCaptureSpec {
                     name: "thumbnails".to_string(),
-                    capture: "file:downloads/thumbs.list".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("file:downloads/thumbs.list")
+                        .expect("valid capture"),
                     allow_empty: true,
                     ..OutputCaptureSpec::default()
                 },
@@ -895,7 +891,8 @@ mod tests {
                 "links".to_string(),
                 OutputCaptureSpec {
                     name: "links".to_string(),
-                    capture: "file:downloads/links.list".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("file:downloads/links.list")
+                        .expect("valid capture"),
                     allow_empty: false,
                     ..OutputCaptureSpec::default()
                 },
@@ -917,7 +914,8 @@ mod tests {
                 "thumbnails".to_string(),
                 OutputCaptureSpec {
                     name: "thumbnails".to_string(),
-                    capture: "file:downloads/thumbs.list".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("file:downloads/thumbs.list")
+                        .expect("valid capture"),
                     allow_empty: false,
                     ..OutputCaptureSpec::default()
                 },
@@ -987,17 +985,17 @@ mod tests {
     fn a_tool_declared_name_keeps_the_tool_specification() {
         let tool_spec = OutputCaptureSpec {
             name: "links".to_string(),
-            capture: "folder_regex:^downloads/links/.+$".to_string(),
+            capture: crate::config::CaptureKind::parse_token("folder_regex:^downloads/links/.+$")
+                .expect("valid capture"),
             save: SaveMode::True,
             allow_empty: true,
-            include_topmost_folder: false,
         };
         let step_spec = OutputCaptureSpec {
             name: "links".to_string(),
-            capture: "folder:downloads/links".to_string(),
+            capture: crate::config::CaptureKind::parse_token("folder:downloads/links")
+                .expect("valid capture"),
             save: SaveMode::False,
             allow_empty: false,
-            include_topmost_folder: true,
         };
 
         let merged = merge_output_specs(
@@ -1021,10 +1019,9 @@ mod tests {
         let tool_spec = stream_spec("content", "file:out.mkv");
         let step_spec = OutputCaptureSpec {
             name: "scratch".to_string(),
-            capture: "stderr".to_string(),
+            capture: crate::config::CaptureKind::Stderr,
             save: SaveMode::False,
             allow_empty: true,
-            include_topmost_folder: false,
         };
 
         let merged = merge_output_specs(
@@ -1043,7 +1040,6 @@ mod tests {
         let content = stream_spec("content", "file:out.mkv");
         let links = OutputCaptureSpec {
             allow_empty: true,
-            include_topmost_folder: false,
             ..stream_spec("links", "folder_regex:^downloads/links/.+$")
         };
 
@@ -1082,7 +1078,9 @@ mod tests {
         assert_eq!(merged["links"].name, "links", "a tool-declared name takes its map key");
         assert_eq!(merged["result"].name, "result", "a step-only name takes its map key");
         assert_eq!(
-            merged["links"].capture, "file:downloads/thumbs.list",
+            merged["links"].capture,
+            crate::config::CaptureKind::parse_token("file:downloads/thumbs.list")
+                .expect("valid capture"),
             "normalizing the name must not disturb the selector it was declared with",
         );
     }

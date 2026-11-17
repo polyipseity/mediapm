@@ -42,8 +42,10 @@ pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
 pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
 /// Source of the v3 Nickel contract (needed for migration down from v4).
 pub(crate) const V3_NCL_SOURCE: &str = include_str!("v3.ncl");
-/// Source of the v4 Nickel contract.
+/// Source of the v4 Nickel contract (needed for migration down from v5).
 pub(crate) const V4_NCL_SOURCE: &str = include_str!("v4.ncl");
+/// Source of the v5 Nickel contract.
+pub(crate) const V5_NCL_SOURCE: &str = include_str!("v5.ncl");
 
 /// Fixed embedded migration helper module.
 pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
@@ -65,6 +67,7 @@ pub fn contract_sources() -> &'static [(&'static str, &'static str)] {
         ("v2.ncl", V2_NCL_SOURCE),
         ("v3.ncl", V3_NCL_SOURCE),
         ("v4.ncl", V4_NCL_SOURCE),
+        ("v5.ncl", V5_NCL_SOURCE),
     ]
 }
 
@@ -74,7 +77,7 @@ pub fn contract_sources() -> &'static [(&'static str, &'static str)] {
 /// version both read this list, so a version added to the arms alone cannot
 /// reach a document while staying out of the message that says which versions
 /// exist.
-pub(crate) const SUPPORTED_VERSIONS: &[u32] = &[1, 2, 3, 4];
+pub(crate) const SUPPORTED_VERSIONS: &[u32] = &[1, 2, 3, 4, 5];
 
 /// Resolves one requested schema marker to the embedded Nickel contract file name.
 pub(super) fn resolve_version_contract(
@@ -86,6 +89,7 @@ pub(super) fn resolve_version_contract(
         2 => Ok("v2.ncl"),
         3 => Ok("v3.ncl"),
         4 => Ok("v4.ncl"),
+        5 => Ok("v5.ncl"),
         _ => {
             let supported = SUPPORTED_VERSIONS.iter().map(u32::to_string).collect::<Vec<_>>();
             Err(ConductorError::Workflow(format!(
@@ -127,7 +131,7 @@ pub(super) fn resolve_version_contract(
 pub(crate) fn from_boundary(source: &str) -> Result<crate::config::NickelDocument, ConductorError> {
     let envelope: v_latest::NickelEnvelopeLatest =
         evaluate_document_source(source, "configuration document")?;
-    let doc: crate::config::NickelDocument = envelope.into();
+    let doc = crate::config::NickelDocument::try_from(envelope)?;
     doc.validate_external_data_invariant()?;
     doc.validate_payload_staging_invariant()?;
     Ok(doc)
@@ -480,6 +484,287 @@ mod tests {
                     .and_then(|runtime| runtime.get("payload_staging"))
                     .is_none(),
             "in_place is what v3 means by absent, so the hop writes nothing: {downgraded}"
+        );
+    }
+
+    /// T1: v4→v5 migration folds folder layout into capture tokens for tool and step outputs.
+    #[test]
+    fn t1_v4_to_v5_migrates_folder_capture_layout_tokens() {
+        let source = r#"{
+            version = 4,
+            tools = {
+                "t" = {
+                    kind = "executable",
+                    name = "t",
+                    command = ["true"],
+                    outputs = {
+                        "a" = { name = "a", capture = "folder:out", include_topmost_folder = false },
+                        "b" = { name = "b", capture = "folder:out", include_topmost_folder = true },
+                        "c" = { name = "c", capture = "folder:out" },
+                        "d" = { name = "d", capture = "folder_regex:^a:b:(.+)$", include_topmost_folder = false },
+                        "e" = { name = "e", capture = "folder_regex:^a:b:(.+)$", include_topmost_folder = true },
+                        "f" = { name = "f", capture = "folder_regex:^a:b:(.+)$" },
+                        "g" = { name = "g", capture = "file:out.txt", include_topmost_folder = false },
+                    },
+                },
+            },
+            workflows = [
+                {
+                    name = "w",
+                    steps = [
+                        {
+                            id = "s",
+                            tool = "t",
+                            outputs = {
+                                "x" = { name = "x", capture = "folder:step", include_topmost_folder = false },
+                            },
+                        },
+                    ],
+                },
+            ],
+        }"#;
+        let migrated: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                source,
+                5,
+                "configuration document",
+            )
+            .expect("v4 document must migrate to v5");
+        assert_eq!(migrated["version"].as_f64(), Some(5.0));
+        let outputs = &migrated["tools"]["t"]["outputs"];
+        assert_eq!(outputs["a"]["capture"], "folder_flat:out");
+        assert!(outputs["a"].get("include_topmost_folder").is_none());
+        assert_eq!(outputs["b"]["capture"], "folder:out");
+        assert!(outputs["b"].get("include_topmost_folder").is_none());
+        assert_eq!(outputs["c"]["capture"], "folder:out");
+        assert!(outputs["c"].get("include_topmost_folder").is_none());
+        assert_eq!(outputs["d"]["capture"], "folder_flat_regex:^a:b:(.+)$");
+        assert_eq!(outputs["e"]["capture"], "folder_regex:^a:b:(.+)$");
+        assert_eq!(outputs["f"]["capture"], "folder_regex:^a:b:(.+)$");
+        assert_eq!(outputs["g"]["capture"], "file:out.txt");
+        assert!(outputs["g"].get("include_topmost_folder").is_none());
+        let step_out = &migrated["workflows"][0]["steps"][0]["outputs"]["x"];
+        assert_eq!(step_out["capture"], "folder_flat:step");
+        assert!(step_out.get("include_topmost_folder").is_none());
+    }
+
+    /// T1: v5→v4 migration restores include_topmost_folder from folder layout tokens.
+    #[test]
+    fn t1_v5_to_v4_migrates_folder_capture_layout_tokens() {
+        let source = r#"{
+            version = 5,
+            tools = {
+                "t" = {
+                    kind = "executable",
+                    name = "t",
+                    command = ["true"],
+                    outputs = {
+                        "a" = { name = "a", capture = "folder_flat:out" },
+                        "b" = { name = "b", capture = "folder:out" },
+                        "c" = { name = "c", capture = "folder_flat_regex:^a:b:(.+)$" },
+                        "d" = { name = "d", capture = "folder_regex:^a:b:(.+)$" },
+                        "e" = { name = "e", capture = "file:out.txt" },
+                    },
+                },
+            },
+            workflows = [
+                {
+                    name = "w",
+                    steps = [
+                        {
+                            id = "s",
+                            tool = "t",
+                            outputs = {
+                                "x" = { name = "x", capture = "folder_flat:step" },
+                            },
+                        },
+                    ],
+                },
+            ],
+        }"#;
+        let migrated: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                source,
+                4,
+                "configuration document",
+            )
+            .expect("v5 document must migrate down to v4");
+        assert_eq!(migrated["version"].as_f64(), Some(4.0));
+        let outputs = &migrated["tools"]["t"]["outputs"];
+        assert_eq!(outputs["a"]["capture"], "folder:out");
+        assert_eq!(outputs["a"]["include_topmost_folder"], false);
+        assert_eq!(outputs["b"]["capture"], "folder:out");
+        assert!(
+            outputs["b"].get("include_topmost_folder").is_none()
+                || outputs["b"]["include_topmost_folder"] == serde_json::json!(true)
+        );
+        assert_eq!(outputs["c"]["capture"], "folder_regex:^a:b:(.+)$");
+        assert_eq!(outputs["c"]["include_topmost_folder"], false);
+        assert_eq!(outputs["d"]["capture"], "folder_regex:^a:b:(.+)$");
+        assert!(
+            outputs["d"].get("include_topmost_folder").is_none()
+                || outputs["d"]["include_topmost_folder"] == serde_json::json!(true)
+        );
+        assert_eq!(outputs["e"]["capture"], "file:out.txt");
+        assert!(
+            outputs["e"].get("include_topmost_folder").is_none()
+                || outputs["e"]["include_topmost_folder"] == serde_json::json!(true)
+        );
+        let step_out = &migrated["workflows"][0]["steps"][0]["outputs"]["x"];
+        assert_eq!(step_out["capture"], "folder:step");
+        assert_eq!(step_out["include_topmost_folder"], false);
+    }
+
+    /// T1: v4↔v5 migration preserves remainder after first `:` and round-trips semantics.
+    #[test]
+    fn t1_v4_v5_folder_capture_migration_round_trips() {
+        let v4_source = r#"{
+            version = 4,
+            tools = {
+                "t" = {
+                    kind = "executable",
+                    name = "t",
+                    command = ["true"],
+                    outputs = {
+                        "a" = { name = "a", capture = "folder_regex:^foo:bar:(.+)$", include_topmost_folder = false },
+                        "b" = { name = "b", capture = "folder_regex:^foo:bar:(.+)$", include_topmost_folder = true },
+                    },
+                },
+            },
+        }"#;
+        let to_v5: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                v4_source,
+                5,
+                "configuration document",
+            )
+            .expect("v4->v5");
+        assert_eq!(
+            to_v5["tools"]["t"]["outputs"]["a"]["capture"],
+            "folder_flat_regex:^foo:bar:(.+)$"
+        );
+        assert_eq!(to_v5["tools"]["t"]["outputs"]["b"]["capture"], "folder_regex:^foo:bar:(.+)$");
+
+        let v5_source = r#"{
+            version = 5,
+            tools = {
+                "t" = {
+                    kind = "executable",
+                    name = "t",
+                    command = ["true"],
+                    outputs = {
+                        "a" = { name = "a", capture = "folder_flat_regex:^foo:bar:(.+)$" },
+                        "b" = { name = "b", capture = "folder_regex:^foo:bar:(.+)$" },
+                    },
+                },
+            },
+        }"#;
+        let to_v4: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                v5_source,
+                4,
+                "configuration document",
+            )
+            .expect("v5->v4");
+        assert_eq!(to_v4["tools"]["t"]["outputs"]["a"]["capture"], "folder_regex:^foo:bar:(.+)$");
+        assert_eq!(to_v4["tools"]["t"]["outputs"]["a"]["include_topmost_folder"], false);
+        assert_eq!(to_v4["tools"]["t"]["outputs"]["b"]["capture"], "folder_regex:^foo:bar:(.+)$");
+        assert!(
+            to_v4["tools"]["t"]["outputs"]["b"].get("include_topmost_folder").is_none()
+                || to_v4["tools"]["t"]["outputs"]["b"]["include_topmost_folder"]
+                    == serde_json::json!(true)
+        );
+
+        // And migrating the downgraded result back to v5 preserves the layout tokens.
+        let roundtripped_v5: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                v5_source,
+                5,
+                "configuration document",
+            )
+            .expect("v5 identity");
+        assert_eq!(
+            roundtripped_v5["tools"]["t"]["outputs"]["a"]["capture"],
+            "folder_flat_regex:^foo:bar:(.+)$"
+        );
+        assert_eq!(
+            roundtripped_v5["tools"]["t"]["outputs"]["b"]["capture"],
+            "folder_regex:^foo:bar:(.+)$"
+        );
+    }
+
+    /// T1: v5 config documents accept all 8 capture tokens and reject unknown/empty-remainder tokens at boundary.
+    #[test]
+    fn t1_v5_capture_tokens_parse_and_reject_as_specified() {
+        let ok = |capture: &str| {
+            format!(
+                r#"{{
+                    version = 5,
+                    tools = {{
+                        "t" = {{
+                            kind = "executable",
+                            name = "t",
+                            command = ["true"],
+                            outputs = {{
+                                "o" = {{ name = "o", capture = "{capture}" }},
+                            }},
+                        }},
+                    }},
+                }}"#
+            )
+        };
+        for capture in [
+            "stdout",
+            "stderr",
+            "process_code",
+            "file:out.txt",
+            "file_regex:^out.+$",
+            "folder:out",
+            "folder_flat:out",
+            "folder_regex:^out/.+$",
+            "folder_flat_regex:^foo:bar:(.+)$",
+        ] {
+            decode_document(ok(capture).as_bytes())
+                .unwrap_or_else(|err| panic!("v5 should accept capture {capture:?}: {err}"));
+        }
+
+        for capture in ["bogus:x", "folder_flat:", "folder_flat_regex:", "unknown:value"] {
+            let err = decode_document(ok(capture).as_bytes()).expect_err("must reject");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(capture)
+                    || msg.contains("unknown capture kind prefix")
+                    || msg.contains("capture token must not have an empty remainder")
+                    || msg.contains("empty"),
+                "error should name the token/problem for {capture:?}: {msg}"
+            );
+        }
+    }
+
+    /// T1: v5 rejects include_topmost_folder as an unknown field.
+    #[test]
+    fn t1_v5_contract_rejects_include_topmost_folder() {
+        let source = r#"{
+            version = 5,
+            tools = {
+                "t" = {
+                    kind = "executable",
+                    name = "t",
+                    command = ["true"],
+                    outputs = {
+                        "o" = { name = "o", capture = "folder:out", include_topmost_folder = false },
+                    },
+                },
+            },
+        }"#;
+        let err =
+            decode_document(source.as_bytes()).expect_err("v5 must reject include_topmost_folder");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("include_topmost_folder")
+                || msg.contains("extra field")
+                || msg.contains("unknown"),
+            "error should mention unknown field: {msg}"
         );
     }
 }

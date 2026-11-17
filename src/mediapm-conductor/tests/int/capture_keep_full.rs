@@ -22,7 +22,7 @@ use mediapm_conductor::{OutputCaptureSpec, SaveMode, WorkflowStepSpec};
 fn stdout_spec(name: &str, save: SaveMode) -> OutputCaptureSpec {
     OutputCaptureSpec {
         name: name.to_string(),
-        capture: "stdout".to_string(),
+        capture: mediapm_conductor::config::CaptureKind::Stdout,
         save,
         ..OutputCaptureSpec::default()
     }

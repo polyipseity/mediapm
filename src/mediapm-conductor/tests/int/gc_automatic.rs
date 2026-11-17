@@ -78,7 +78,7 @@ fn producer_step(text: &str) -> WorkflowStepSpec {
             "result".to_string(),
             OutputCaptureSpec {
                 name: "result".to_string(),
-                capture: "stdout".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::Stdout,
                 ..OutputCaptureSpec::default()
             },
         )]),
@@ -102,7 +102,7 @@ fn consumer_step() -> WorkflowStepSpec {
             "result".to_string(),
             OutputCaptureSpec {
                 name: "result".to_string(),
-                capture: "stdout".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::Stdout,
                 ..OutputCaptureSpec::default()
             },
         )]),

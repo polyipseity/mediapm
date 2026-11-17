@@ -202,10 +202,10 @@ fn script_tool(
             "out".to_string(),
             OutputCaptureSpec {
                 name: "out".to_string(),
-                capture: "file:downloads/out.txt".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file:downloads/out.txt")
+                    .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         )]),
         tool_content_map: content_map,

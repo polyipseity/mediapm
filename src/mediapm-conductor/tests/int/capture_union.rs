@@ -29,7 +29,8 @@ use mediapm_conductor::{
 fn stream_spec(name: &str, stream: &str) -> OutputCaptureSpec {
     OutputCaptureSpec {
         name: name.to_string(),
-        capture: stream.to_string(),
+        capture: mediapm_conductor::config::CaptureKind::parse_token(&stream)
+            .expect("valid capture"),
         ..OutputCaptureSpec::default()
     }
 }
@@ -272,7 +273,7 @@ async fn a_changed_capture_spec_replaces_only_that_entry() {
 
     let instance = only_instance(tc.conductor());
     assert_eq!(
-        instance.outputs["alpha"].capture.as_ref().map(|spec| spec.capture.as_str()),
+        instance.outputs["alpha"].capture.as_ref().map(|spec| spec.capture.to_token()).as_deref(),
         Some("stderr"),
         "the recorded entry must carry the capture spec that produced it",
     );
@@ -434,7 +435,7 @@ async fn a_cache_hit_neither_claims_nor_rewrites_a_siblings_entry() {
 
     let instance = only_instance(tc.conductor());
     assert_eq!(
-        instance.outputs["beta"].capture.as_ref().map(|spec| spec.capture.as_str()),
+        instance.outputs["beta"].capture.as_ref().map(|spec| spec.capture.to_token()).as_deref(),
         Some("stderr"),
         "the changed entry must carry the spec this run declared",
     );
@@ -492,7 +493,8 @@ fn fs_step(content: &str) -> WorkflowStepSpec {
             "artifact".to_string(),
             OutputCaptureSpec {
                 name: "artifact".to_string(),
-                capture: "file:artifact.txt".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::parse_token("file:artifact.txt")
+                    .expect("valid capture"),
                 ..OutputCaptureSpec::default()
             },
         )]),

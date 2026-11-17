@@ -22,19 +22,22 @@ use super::process::ExecutionResult;
 /// probe's CAS presence check even though every instance of that work records
 /// the name.
 pub(super) fn implicit_stream_specs() -> BTreeMap<String, OutputCaptureSpec> {
-    ["stdout", "stderr", "process_code"]
-        .into_iter()
-        .map(|name| {
-            let spec = OutputCaptureSpec {
-                name: name.to_string(),
-                capture: name.to_string(),
-                save: SaveMode::True,
-                allow_empty: false,
-                include_topmost_folder: true,
-            };
-            (spec.name.clone(), spec)
-        })
-        .collect()
+    [
+        ("stdout", crate::config::CaptureKind::Stdout),
+        ("stderr", crate::config::CaptureKind::Stderr),
+        ("process_code", crate::config::CaptureKind::ProcessCode),
+    ]
+    .into_iter()
+    .map(|(name, capture)| {
+        let spec = OutputCaptureSpec {
+            name: name.to_string(),
+            capture,
+            save: SaveMode::True,
+            allow_empty: false,
+        };
+        (spec.name.clone(), spec)
+    })
+    .collect()
 }
 
 /// Captured step outputs: content-addressed records, each with its spec.
@@ -119,6 +122,16 @@ async fn archive_sandbox_relative_files_as_zip(
     sandbox_dir: &Path,
     relative_paths: &[String],
 ) -> Result<Vec<u8>, ConductorError> {
+    archive_sandbox_relative_files_as_zip_with_names(sandbox_dir, relative_paths, relative_paths)
+        .await
+}
+
+/// Archives sandbox files into one ZIP blob using explicit archive entry names.
+async fn archive_sandbox_relative_files_as_zip_with_names(
+    sandbox_dir: &Path,
+    archive_names: &[String],
+    source_relative_paths: &[String],
+) -> Result<Vec<u8>, ConductorError> {
     use std::io::Write;
 
     let cursor = std::io::Cursor::new(Vec::new());
@@ -126,7 +139,7 @@ async fn archive_sandbox_relative_files_as_zip(
     let options =
         zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
-    for relative in relative_paths {
+    for (entry_name, relative) in archive_names.iter().zip(source_relative_paths.iter()) {
         let full_path = sandbox_dir.join(relative);
         let bytes = tokio::fs::read(&full_path).await.map_err(|source| {
             ConductorError::Workflow(format!(
@@ -134,7 +147,7 @@ async fn archive_sandbox_relative_files_as_zip(
                 full_path.display()
             ))
         })?;
-        let entry_name = relative.replace('\\', "/");
+        let entry_name = entry_name.replace('\\', "/");
         writer.start_file(entry_name.clone(), options).map_err(|source| {
             ConductorError::Workflow(format!("failed to start ZIP entry '{entry_name}': {source}"))
         })?;
@@ -153,20 +166,33 @@ async fn capture_folder_regex_output(
     regex: &regex::Regex,
     sandbox_dir: &Path,
     allow_empty: bool,
+    include_topmost_folder: bool,
 ) -> Result<Vec<u8>, ConductorError> {
     let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
-    let file_list: Vec<String> = file_paths
+    let mut entries: Vec<(String, String)> = file_paths
         .iter()
         .filter_map(|path| sandbox_relative_path(path, sandbox_dir))
         .filter(|relative| regex.is_match(relative))
+        .filter_map(|relative| {
+            let archive_name = if include_topmost_folder {
+                relative.clone()
+            } else {
+                relative.split_once('/').map(|(_, rest)| rest.to_string()).unwrap_or_default()
+            };
+            if archive_name.is_empty() { None } else { Some((archive_name, relative)) }
+        })
         .collect();
+    entries.sort();
+    entries.dedup_by(|a, b| a.0 == b.0);
+    let file_list: Vec<String> = entries.iter().map(|(_, source)| source.clone()).collect();
+    let archive_names: Vec<String> = entries.into_iter().map(|(name, _)| name).collect();
     if file_list.is_empty() && !allow_empty {
         return Err(ConductorError::Workflow(format!(
             "folder_regex capture matched zero sandbox files for pattern '{}'",
             regex.as_str()
         )));
     }
-    archive_sandbox_relative_files_as_zip(sandbox_dir, &file_list).await
+    archive_sandbox_relative_files_as_zip_with_names(sandbox_dir, &archive_names, &file_list).await
 }
 
 /// Captures declared outputs from the execution result and persists to CAS.
@@ -211,12 +237,11 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
         .collect();
 
     for spec in combined_specs.values() {
-        let data = match spec.capture.as_str() {
-            "stdout" => execution.stdout.clone(),
-            "stderr" => execution.stderr.clone(),
-            "process_code" => execution.exit_code.to_string().into_bytes(),
-            capture if capture.starts_with("file:") => {
-                let relative_path = &capture[5..];
+        let data = match &spec.capture {
+            crate::config::CaptureKind::Stdout => execution.stdout.clone(),
+            crate::config::CaptureKind::Stderr => execution.stderr.clone(),
+            crate::config::CaptureKind::ProcessCode => execution.exit_code.to_string().into_bytes(),
+            crate::config::CaptureKind::File(relative_path) => {
                 let full_path = sandbox_dir.join(relative_path);
                 match tokio::fs::read(&full_path).await {
                     Ok(data) => data,
@@ -224,8 +249,7 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
                     Err(_) => continue,
                 }
             }
-            capture if capture.starts_with("file_regex:") => {
-                let pattern = &capture[12..];
+            crate::config::CaptureKind::FileRegex(pattern) => {
                 let regex = regex::Regex::new(pattern).map_err(|e| {
                     ConductorError::Workflow(format!("invalid file_regex pattern '{pattern}': {e}"))
                 })?;
@@ -234,20 +258,26 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
                     None => continue,
                 }
             }
-            capture if capture.starts_with("folder_regex:") => {
-                let pattern = &capture[13..];
+            crate::config::CaptureKind::FolderRegex(pattern)
+            | crate::config::CaptureKind::FolderFlatRegex(pattern) => {
                 let regex = regex::Regex::new(pattern).map_err(|e| {
                     ConductorError::Workflow(format!(
                         "invalid folder_regex pattern '{pattern}': {e}"
                     ))
                 })?;
-                capture_folder_regex_output(&regex, sandbox_dir, spec.allow_empty).await?
+                capture_folder_regex_output(
+                    &regex,
+                    sandbox_dir,
+                    spec.allow_empty,
+                    spec.capture.includes_topmost_folder(),
+                )
+                .await?
             }
-            capture if capture.starts_with("folder:") => {
-                let relative_path = &capture[7..];
+            crate::config::CaptureKind::Folder(relative_path)
+            | crate::config::CaptureKind::FolderFlat(relative_path) => {
                 let full_path = sandbox_dir.join(relative_path);
                 let file_paths = walk_and_collect_file_paths(&full_path).await?;
-                let file_list: Vec<String> = if spec.include_topmost_folder {
+                let file_list: Vec<String> = if spec.capture.includes_topmost_folder() {
                     file_paths
                         .iter()
                         .filter_map(|p| p.strip_prefix(sandbox_dir).ok())
@@ -268,7 +298,6 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
                 }
                 archive_sandbox_relative_files_as_zip(sandbox_dir, &file_list).await?
             }
-            _ => continue,
         };
 
         let hash = cas.put(bytes::Bytes::from(data)).await.map_err(ConductorError::Cas)?;
@@ -302,10 +331,9 @@ mod tests {
             "stdout".to_string(),
             OutputCaptureSpec {
                 name: "stdout".to_string(),
-                capture: "stdout".to_string(),
+                capture: crate::config::CaptureKind::Stdout,
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
@@ -325,10 +353,9 @@ mod tests {
             "stderr".to_string(),
             OutputCaptureSpec {
                 name: "stderr".to_string(),
-                capture: "stderr".to_string(),
+                capture: crate::config::CaptureKind::Stderr,
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
@@ -347,10 +374,9 @@ mod tests {
             "process_code".to_string(),
             OutputCaptureSpec {
                 name: "process_code".to_string(),
-                capture: "process_code".to_string(),
+                capture: crate::config::CaptureKind::ProcessCode,
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
@@ -371,10 +397,10 @@ mod tests {
             "test_file".to_string(),
             OutputCaptureSpec {
                 name: "test_file".to_string(),
-                capture: "file:test.txt".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file:test.txt")
+                    .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
@@ -395,10 +421,10 @@ mod tests {
             "log".to_string(),
             OutputCaptureSpec {
                 name: "log".to_string(),
-                capture: "file_regex:result\\.\\w+".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file_regex:result\\.\\w+")
+                    .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
@@ -425,10 +451,12 @@ mod tests {
             "yt_dlp_infojson_file".to_string(),
             OutputCaptureSpec {
                 name: "yt_dlp_infojson_file".to_string(),
-                capture: "file_regex:^downloads/.+(?:__mediapm__)?[.]info[.]json$".to_string(),
+                capture: crate::config::CaptureKind::parse_token(
+                    "file_regex:^downloads/.+(?:__mediapm__)?[.]info[.]json$",
+                )
+                .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
@@ -450,10 +478,12 @@ mod tests {
             "yt_dlp_subtitle_artifacts".to_string(),
             OutputCaptureSpec {
                 name: "yt_dlp_subtitle_artifacts".to_string(),
-                capture: "folder_regex:^downloads/(.+?)(?:__mediapm__)?[.]vtt$".to_string(),
+                capture: crate::config::CaptureKind::parse_token(
+                    "folder_regex:^downloads/(.+?)(?:__mediapm__)?[.]vtt$",
+                )
+                .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
@@ -478,10 +508,12 @@ mod tests {
             "yt_dlp_subtitle_artifacts".to_string(),
             OutputCaptureSpec {
                 name: "yt_dlp_subtitle_artifacts".to_string(),
-                capture: "folder_regex:^downloads/(.+?)(?:__mediapm__)?[.]vtt$".to_string(),
+                capture: crate::config::CaptureKind::parse_token(
+                    "folder_regex:^downloads/(.+?)(?:__mediapm__)?[.]vtt$",
+                )
+                .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let error = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap_err();
@@ -505,10 +537,10 @@ mod tests {
             "folder_out".to_string(),
             OutputCaptureSpec {
                 name: "folder_out".to_string(),
-                capture: "folder:subdir".to_string(),
+                capture: crate::config::CaptureKind::parse_token("folder:subdir")
+                    .expect("valid capture"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
@@ -561,17 +593,17 @@ mod tests {
 
         let file_spec = OutputCaptureSpec {
             name: "content".to_string(),
-            capture: "file:out.mkv".to_string(),
+            capture: crate::config::CaptureKind::parse_token("file:out.mkv")
+                .expect("valid capture"),
             save: SaveMode::False,
             allow_empty: true,
-            include_topmost_folder: false,
         };
         let folder_spec = OutputCaptureSpec {
             name: "artifacts".to_string(),
-            capture: "folder_regex:^downloads/.+[.]vtt$".to_string(),
+            capture: crate::config::CaptureKind::parse_token("folder_regex:^downloads/.+[.]vtt$")
+                .expect("valid capture"),
             save: SaveMode::True,
             allow_empty: true,
-            include_topmost_folder: false,
         };
         let output_specs = BTreeMap::from([
             ("content".to_string(), file_spec.clone()),
@@ -607,7 +639,7 @@ mod tests {
                 .as_ref()
                 .unwrap_or_else(|| panic!("implicit output `{name}` must record its spec"));
             assert_eq!(spec.name, name);
-            assert_eq!(spec.capture, name);
+            assert_eq!(spec.capture.to_token(), name);
         }
     }
 
@@ -628,10 +660,10 @@ mod tests {
             ExecutionResult { stdout: b"from-stream".to_vec(), stderr: Vec::new(), exit_code: 0 };
         let declared = OutputCaptureSpec {
             name: "stdout".to_string(),
-            capture: "file:out.txt".to_string(),
+            capture: crate::config::CaptureKind::parse_token("file:out.txt")
+                .expect("valid capture"),
             save: SaveMode::True,
             allow_empty: false,
-            include_topmost_folder: true,
         };
 
         let outputs = capture_outputs(
