@@ -70,6 +70,9 @@ pub struct EnvVarEntry {
 }
 
 /// One captured output: capture token, nullable hash fact, and retention fact.
+///
+/// `allow_empty` is not part of the claim identity; a changed answer is caught
+/// by the merge's presence check, not by the instance key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapturedOutput {
     /// Capture token/kind string (for example `file:downloads/out.mkv`).
@@ -195,10 +198,10 @@ enum MergeDecision {
     Keep,
     /// Pure work diverged for one capture identity.
     Diverge {
-        /// Hash the instance recorded.
-        stored: Hash,
-        /// Hash the re-execution produced.
-        produced: Hash,
+        /// Hash the instance recorded, or `None` when the capture was absent.
+        stored: Option<Hash>,
+        /// Hash the re-execution produced, or `None` when the capture was absent.
+        produced: Option<Hash>,
     },
 }
 
@@ -209,6 +212,9 @@ enum MergeDecision {
 /// `allow_empty`/spec objects), treats `hash_nk: None` as an empty-capture fact,
 /// and preserves existing union/diagnostic-stream/impure-divergence behavior as
 /// much as feasible.
+///
+/// `allow_empty` is not part of the claim identity; a changed answer is caught
+/// by this presence check, not by the instance key.
 pub(crate) fn merge_captured_outputs(
     stored: &BTreeMap<String, CapturedOutput>,
     declared: &BTreeMap<String, crate::config::OutputCaptureSpec>,
@@ -238,11 +244,8 @@ pub(crate) fn merge_captured_outputs(
                     MergeDecision::Keep
                 } else if settling.impure {
                     MergeDecision::Replace
-                } else if let (Some(stored), Some(produced)) = (existing.hash_nk, incoming.hash_nk)
-                {
-                    MergeDecision::Diverge { stored, produced }
                 } else {
-                    MergeDecision::Replace
+                    MergeDecision::Diverge { stored: existing.hash_nk, produced: incoming.hash_nk }
                 }
             }
         };
@@ -252,13 +255,33 @@ pub(crate) fn merge_captured_outputs(
             }
             MergeDecision::Keep => {}
             MergeDecision::Diverge { stored, produced } => {
-                return Err(ConductorError::Workflow(format!(
-                    "step '{}' captured output '{name}' as {stored} and a re-execution of the \
-                     same work produced {produced}; identical work must produce identical \
-                     artifacts, so a differing record means the tool is non-deterministic or two \
-                     different executions were recorded under one instance key",
-                    settling.step_id,
-                )));
+                let message = match (stored, produced) {
+                    (Some(stored), Some(produced)) => format!(
+                        "step '{}' captured output '{name}' as {stored} and a re-execution of the \
+                         same work produced {produced}; identical work must produce identical \
+                         artifacts, so a differing record means the tool is non-deterministic or two \
+                         different executions were recorded under one instance key",
+                        settling.step_id,
+                    ),
+                    (Some(stored), None) => format!(
+                        "step '{}' captured output '{name}' as {stored} on the stored run and absent on \
+                         re-execution; identical work must produce identical artifacts, so a differing \
+                         record means the tool is non-deterministic or two different executions were \
+                         recorded under one instance key",
+                        settling.step_id,
+                    ),
+                    (None, Some(produced)) => format!(
+                        "step '{}' captured output '{name}' as absent on the stored run and {produced} on \
+                         re-execution; identical work must produce identical artifacts, so a differing \
+                         record means the tool is non-deterministic or two different executions were \
+                         recorded under one instance key",
+                        settling.step_id,
+                    ),
+                    (None, None) => unreachable!(
+                        "identical absent captures take the equality path and never diverge"
+                    ),
+                };
+                return Err(ConductorError::Workflow(message));
             }
         }
     }
@@ -300,6 +323,14 @@ mod tests {
             capture: spec(name, selector, SaveMode::True).capture.to_token(),
             hash_nk: Some(Hash::from_content(bytes)),
             saved_nk,
+        }
+    }
+
+    fn captured_absent(name: &str, selector: &str) -> CapturedOutput {
+        CapturedOutput {
+            capture: spec(name, selector, SaveMode::True).capture.to_token(),
+            hash_nk: None,
+            saved_nk: false,
         }
     }
 
@@ -421,6 +452,44 @@ mod tests {
         assert!(message.contains("'content'"), "{message}");
         assert!(message.contains(&Hash::from_content(b"A").to_string()), "{message}");
         assert!(message.contains(&Hash::from_content(b"C").to_string()), "{message}");
+    }
+
+    #[test]
+    fn a_pure_reexecution_that_loses_an_artifact_is_a_divergence() {
+        let stored = BTreeMap::from([(
+            "content".to_string(),
+            captured("content", "file:a.bin", b"A", true),
+        )]);
+        let fresh =
+            BTreeMap::from([("content".to_string(), captured_absent("content", "file:a.bin"))]);
+
+        let error = merge_captured_outputs(&stored, &declared_of(&fresh), fresh, pure_settlement())
+            .expect_err("pure work cannot produce a hash and then nothing under the same token");
+        let message = error.to_string();
+
+        assert!(message.contains("'s1'"), "{message}");
+        assert!(message.contains("'content'"), "{message}");
+        assert!(message.contains(&Hash::from_content(b"A").to_string()), "{message}");
+        assert!(message.contains("re-execution") && message.contains("absent"), "{message}");
+    }
+
+    #[test]
+    fn a_pure_reexecution_that_gains_an_artifact_is_a_divergence() {
+        let stored =
+            BTreeMap::from([("content".to_string(), captured_absent("content", "file:a.bin"))]);
+        let fresh = BTreeMap::from([(
+            "content".to_string(),
+            captured("content", "file:a.bin", b"A", true),
+        )]);
+
+        let error = merge_captured_outputs(&stored, &declared_of(&fresh), fresh, pure_settlement())
+            .expect_err("pure work cannot produce nothing and then a hash under the same token");
+        let message = error.to_string();
+
+        assert!(message.contains("'s1'"), "{message}");
+        assert!(message.contains("'content'"), "{message}");
+        assert!(message.contains(&Hash::from_content(b"A").to_string()), "{message}");
+        assert!(message.contains("stored") && message.contains("absent"), "{message}");
     }
 
     #[test]
