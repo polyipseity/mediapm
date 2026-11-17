@@ -968,8 +968,9 @@ mod tests {
     /// hash and stores nothing in CAS.
     #[tokio::test]
     async fn allowed_empty_file_regex_records_null_and_stores_nothing() {
-        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
         let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let cas_root = tmp.path().join("store");
+        let cas = mediapm_cas::FileSystemCas::open(&cas_root).await.expect("open filesystem CAS");
         // Non-empty streams so their legitimate stored bytes do not collide with
         // the empty-bytes blob a buggy implementation would have stored for this
         // allowed-empty-no-match capture.
@@ -993,6 +994,14 @@ mod tests {
         assert_eq!(record.capture, "file_regex:^nope\\.txt$");
         assert!(record.hash_nk.is_none(), "matched nothing => hash_nk must be null");
         assert!(record.saved_nk, "SaveMode::Full is a saved retention fact");
+        let would_store: &[u8] = b"";
+        let blob_path = cas
+            .object_path_for_hash(mediapm_cas::Hash::from_content(would_store))
+            .expect("filesystem store exposes object paths");
+        assert!(
+            !blob_path.exists(),
+            "no bytes may be stored for an allowed-empty capture that matched nothing"
+        );
     }
 
     /// An allowed-empty folder capture that matches nothing records a null hash
