@@ -609,6 +609,10 @@ fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptu
     use crate::conductor_bridge::constants::{OUTPUT_CONTENT, OUTPUT_SANDBOX_ARTIFACTS};
 
     let mut outputs = BTreeMap::new();
+    // Slot file outputs are conditional on which output slots a command produces.
+    // The tool declares every slot up to `max_output_slots`, but a given run only
+    // writes the slots it binds. Keep these tolerant at the tool level; a step
+    // that declares a slot output regains strictness for it via the merge rules.
     outputs.insert(
         OUTPUT_CONTENT.to_string(),
         OutputCaptureSpec {
@@ -619,7 +623,7 @@ fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptu
             ))
             .expect("valid ffmpeg content capture token"),
             save: SaveMode::True,
-            allow_empty: false,
+            allow_empty: true,
         },
     );
     for index in 0..max_output_slots {
@@ -632,7 +636,7 @@ fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptu
                 capture: CaptureKind::parse_token(&format!("file_regex:{path_regex}"))
                     .expect("valid ffmpeg primary capture token"),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
             },
         );
         outputs.insert(
@@ -642,7 +646,7 @@ fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptu
                 capture: CaptureKind::parse_token(&format!("file_regex:{path_regex}"))
                     .expect("valid ffmpeg primary capture token"),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
             },
         );
     }
