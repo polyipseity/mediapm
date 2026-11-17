@@ -41,6 +41,8 @@ Per-tool `build_<tool>_spec()` wraps presets to produce final `(ToolSpec, ToolRu
 | `coverart/`  | Extracted cover art images                          |
 | `inputs/`    | Step input files staged by the conductor            |
 
+A `file_regex:` capture matches the sandbox-relative path, so a staged input is anchored at `inputs/`.
+
 ## Per-preset dependency type registry
 
 Each preset module with dependencies provides a `dependency_types()` function returning `BTreeMap<&'static str, DependencyTypes>`, mapping companion tool IDs to role flags (`SAME_STEP`, `CROSS_STEP`, or a `combine()` of both). No default role — every edge is classified explicitly. `known_dependency_type()` in `src/mediapm/src/tools/dependency.rs` resolves a dependency's role flags without user config.
