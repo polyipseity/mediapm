@@ -476,3 +476,81 @@ Sources re-examined: `scripts/test-runner/src/{doc.rs,test.rs,nextest.rs,cargo.r
 | D7.2 | Every residual follow-up has completed diagnostic entry; no unspecified/unattempted diagnostic remains | captured | all D0–D7 attempted and recorded (captured or captured-partial with explicit blocker/evidence) |
 
 **Remaining gaps and exclusions (not resolved in this pass):** The approved migration and transcriptions are complete: this record is the primary baselines location (`.github/docs/` removed), release `--timings` hotspots are transcribed in D4.1, and local staged per-combination matrix data are transcribed in D3.1. Remaining items are explicit constraints or exclusions: warmed post-cache CI sampling remains excluded (D1 captured the absence of a warmed-cache before/after dataset; no campaign was run). Fresh local full-suite R4 reruns as a single isolated `test-all`/`test-doc-all`/`build-all` bundle remain excluded; D2 partials stand with CI and prior local evidence. CI logs still emit no per-combination labeled timing rows for the sampled runs (D3.3). Per-crate aggregate release totals, `rmeta_time`, and complete per-unit phase/link attribution remain unavailable from the captured stable `--timings` artifacts (D4.1). Runner hardware/image/queue internals are not exposed (D6.2). Windows-local runs and a real-online `--online` demo run were not performed here (D6.3) and are recorded as environment/data constraints only, with no follow-up tasks added. Staged diagnostics under `/tmp/mediapm-diag/` (including `/tmp/mediapm-diag/matrix/results.tsv`, the matrix logs cited in D3.1, and `/tmp/mediapm-diag/profiling/release-timings.log`) may be ephemeral outside this environment; the captured `target/cargo-timings/cargo-timing-20261115T152956577Z-b883f48bd893db85.html` artifact and the transcriptions in D3.1/D4.1 are the durable references. These items are recorded as environment/data constraints or explicit exclusions, not as unattempted diagnostics. D5 no-gos and the R12 exclusion remain in force (D0 scope, D5); any future rerun campaign, instrumentation, or behavior/optimization change requires separate explicit owner approval.
+
+## 2026-11-17 Task 8 rerun: complete gate battery (HEAD 5338e5ec)
+
+| Field | Value |
+|---|---|
+| Record ID / date | `local-task-8-rerun-2026-11-17` (2026-11-17T20:00:03Z–2026-11-17T20:14:33Z UTC) |
+| Commit SHA(s) | `5338e5ece7736cb07f04bcbf40ff1de1aae0e0e7` — `fix(conductor): clear capture clippy and rustdoc links` (HEAD). Preceded by `7c04cbba336b901405cf60e25b17d18ca6f0e312` `fix(mediapm-tests): clear coverage gate clippy and rustdoc links` as T8 remediation fixes for issues found in the earlier partial T8 run (clippy in `mediapm-tests`, rustdoc/doc links). |
+| Environment | Local, srt/Anthropic sandbox, macOS 27.2.1 (26B131), Darwin 27.2.0 arm64 (`aarch64-apple-darwin`) |
+| Toolchain | `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`, stable-aarch64-apple-darwin per `rust-toolchain.toml` |
+| Build toolchain context | Not fully re-probed in this pass; nucleus toolchains/SDK context as in prior records may apply. `RUSTC_WRAPPER` unset for all cargo/rustc commands in this run. |
+| `RUSTC_WRAPPER` state | unset (`RUSTC_WRAPPER=`) for every gate/command below |
+| Disk/headroom (pre-flight) | `/System/Volumes/Data`: 482746452 KB total, 373200000 KB used, 18880000 KB available, 96% capacity, 3324929 iused / 189127400 ifree (2% iused). `target/` 5.1G. Free space above 2% threshold at pre-flight; no pre-flight cleanup required. |
+| Disk/headroom (end) | `/System/Volumes/Data`: 384000000 KB used, 8080000 KB available, 98% capacity, 3332764 iused / 80949680 ifree. `target/` 15G. Disk fell to ~8.1G available during/after online demo runs; no ENOSPC/"no space" errors observed in logs. |
+| Temp-artifact cleanup | `scripts/clean-mediapm-temp.sh` run after initial `test-all` janitor-gate failure (repo temp artifacts accumulated/left by that run; cleanup allowed): removed `/tmp/claude/mediapm-cache-Tt6ft3` (1 directory). `scripts/clean-mediapm-temp.sh --dry-run` reported no mediapm temp directories after feature-matrix, after offline demo, before online rerun, and at end. |
+| Commands (in order) | `cargo fmt-check`, `cargo clippy-all`, `cargo test-all`, `cargo test-doc-all`, `cargo build-all`, `cargo run -p test-runner -- feature-matrix --locked`, `cargo test-pkg mediapm-tests`, `cargo test-pkg mediapm`, `cargo test -p mediapm-conductor --test mod --features test-builtins` (plain, then hostile env), `cargo run -p mediapm --example mediapm_demo`, `cargo run -p mediapm --example mediapm_demo_online -- --online --timeout-secs 600` |
+| Outcome | 12 of 13 listed gate commands passed in their final recorded state; `mediapm_demo_online` failed in both the initial run and the required single rerun with the same upstream-related step-capture failures (not an ENOSPC/environment-exhaustion failure and not treated as a code defect in this repo). |
+
+### Gate results and timings
+
+| Gate / command | Result | Real (s) | User (s) | Sys (s) | Notes |
+|---|---|---:|---:|---:|---|
+| `cargo fmt-check` | PASS | 0.77 | 0.60 | 0.06 | exit 0 |
+| `cargo clippy-all` | PASS | 4.82 | 7.74 | 2.04 | exit 0; `Finished dev profile` 4.71s |
+| `cargo test-all` (initial) | FAIL (gate) | 115.16 | 201.70 | 53.63 | exit 1. Nextest: `2988 tests run: 2988 passed (1 slow), 0 skipped` (summary 85.228s); all tests passed including `mediapm-tests::scripts pwsh_janitor_self_test` (2.313s). Failed at post-test janitor/temp-dir gate: `error: test suite left mediapm temp dirs behind: would remove: /tmp/claude/mediapm-cache-Tt6ft3 (contains: tools.json)`. Disk after: ~15920000 KB avail, `target/` 8.2G. |
+| repo temp cleanup | done | — | — | — | `scripts/clean-mediapm-temp.sh` removed `/tmp/claude/mediapm-cache-Tt6ft3` (1 dir). |
+| `cargo test-all` (rerun after cleanup) | PASS | 98.39 | 133.03 | 56.56 | exit 0. `2988 tests run: 2988 passed (1 slow), 0 skipped` (summary 90.604s). `pwsh_janitor_self_test` passed (2.615s). No leftovers. Disk after: ~15920000 KB avail, `target/` 8.2G. |
+| `cargo test-doc-all` | PASS | 15.54 | 17.55 | 3.82 | exit 0. Doctests: 9 total passed, 0 failed (`mediapm` 2, `mediapm-cas` 1, `mediapm-test-support` 1 compile-ok, `mediapm-utils` 5; others 0). Rustdoc link gate completed (`Generated ... target/doc/...`, `Finished dev profile` 4.82s). Disk after: ~15560000 KB avail, `target/` 8.5G. |
+| `cargo build-all` | PASS | 16.54 | 50.38 | 10.15 | exit 0; `Finished dev profile` 16.44s |
+| `cargo run -p test-runner -- feature-matrix --locked` | PASS | 90.37 | 124.61 | 15.77 | exit 0; `feature matrix: 58 combinations, all clean`. Disk after sequence reached ~12960000 KB avail, `target/` 10G (no mediapm temp dirs to clean). |
+| `cargo test-pkg mediapm-tests` | PASS | 11.20 | 6.61 | 6.30 | exit 0; `15 tests run: 15 passed, 0 skipped` (summary 10.154s) |
+| `cargo test-pkg mediapm` | PASS | 101.98 | 194.55 | 21.26 | exit 0; `1208 tests run: 1208 passed, 0 skipped` (summary 59.245s). Disk after: ~10560000 KB avail, `target/` 14G. |
+| `cargo test -p mediapm-conductor --test mod --features test-builtins` (plain) | PASS | 35.44 | 45.85 | 3.71 | exit 0; `185 passed; 0 failed; 0 ignored` (finished in 19.05s) |
+| `cargo test -p mediapm-conductor --test mod --features test-builtins` (hostile env) | PASS | 35.36 | 25.53 | 1.33 | exit 0; env set for this command: `MEDIAPM_STUB_MANIFEST=/nonexistent/manifest MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS=1`; `185 passed; 0 failed; 0 ignored` (finished in 18.98s). Disk after: ~10080000 KB avail, `target/` 15G. |
+| `cargo run -p mediapm --example mediapm_demo` | PASS | 14.91 | 1.01 | 0.40 | exit 0; tools synced added=0/updated=0/pruned=0/removed=0, workflow `executed=0 cached=2 failed=0`, materialized `paths=0 skipped=2 removed=0`, `sync executed: true`. |
+| `cargo run -p mediapm --example mediapm_demo_online -- --online --timeout-secs 600` (initial) | FAIL | 102.97 | 47.48 | 12.97 | exit 1. Pre-run (2026-11-17T20:10:21Z): 9600000 KB avail, `target/` 15G. 6 workflow steps failed with required-capture misses (yt-dlp sidecars): `step-0-1-yt-dlp-description-to-description`, `step-0-2-yt-dlp-infojson-to-infojson`, `step-0-3-yt-dlp-links-to-links`, `step-0-4-yt-dlp-subtitles-to-subtitles`, `step-0-5-yt-dlp-subtitles_en-to-subtitles_en`, `step-0-6-yt-dlp-thumbnails-to-thumbnails` (`ERROR mediapm_conductor::orchestration::coordinator: ... failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?...')` matched nothing). Summary: `workflow executed=11 cached=0 failed=6`, `materialized paths=4 skipped=0 removed=0 missing=12`, `sync complete executed=11 materialized=4 missing=12 added_tools=7 failed=6`, warning `workflow 'mediapm.media.youtube.dQw4w9WgXcQ' had 6 failed step(s)`. Post-sync verification error: `Error: "expected exactly one demo media root under '/Users/polyipseity/dev/monorepo/self/mediapm/src/mediapm/examples/artifacts/demo-online/media/music videos', observed 0 (dirs: [\"Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]\"])"`. No `ENOSPC`/`No space` errors found in log; disk after: ~8120000 KB avail. Failure treated as external/upstream-related for rerun decision (not disk-exhaustion/environment ENOSPC). |
+| `cargo run -p mediapm --example mediapm_demo_online -- --online --timeout-secs 600` (rerun, required once) | FAIL (repeat) | 90.49 | 44.09 | 9.91 | exit 1. Pre-rerun (2026-11-17T20:12:48Z): 8120000 KB avail. Repeated same 6 capture-step failures and same terminal outcome: `workflow executed=11 cached=0 failed=6`, `materialized paths=4 skipped=0 removed=0 missing=12`, same post-sync verification error and directory listing as initial run. No `ENOSPC`/`No space` errors found in log. Disk after: ~8080000 KB avail, `target/` 15G. |
+
+### Online demo evidence (quoted)
+
+Initial run (excerpted key failures/outcome):
+
+```text
+2026-11-17T20:11:15.479787Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-1-yt-dlp-description-to-description' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:11:19.579404Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-2-yt-dlp-infojson-to-infojson' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:11:23.932434Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-3-yt-dlp-links-to-links' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:11:27.853938Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-4-yt-dlp-subtitles-to-subtitles' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:11:31.729175Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-5-yt-dlp-subtitles_en-to-subtitles_en' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:11:35.788414Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-6-yt-dlp-thumbnails-to-thumbnails' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+✗ workflow    executed=11  cached=0  failed=6
+✗ materialized    paths=4  skipped=0  removed=0  missing=12
+✗ sync complete    executed=11  materialized=4  missing=12  added_tools=7  failed=6
+  Δ workflow 'mediapm.media.youtube.dQw4w9WgXcQ' had 6 failed step(s)
+[demo_online] running post-sync verification and artifact summary...
+Error: "expected exactly one demo media root under '/Users/polyipseity/dev/monorepo/self/mediapm/src/mediapm/examples/artifacts/demo-online/media/music videos', observed 0 (dirs: [\"Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]\"])"
+```
+
+Rerun (same step set and terminal outcome):
+
+```text
+2026-11-17T20:13:32.304443Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-1-yt-dlp-description-to-description' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:13:36.262457Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-2-yt-dlp-infojson-to-infojson' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:13:40.190573Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-3-yt-dlp-links-to-links' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:13:43.850749Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-4-yt-dlp-subtitles-to-subtitles' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:13:48.061352Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-5-yt-dlp-subtitles_en-to-subtitles_en' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+2026-11-17T20:13:52.053198Z ERROR mediapm_conductor::orchestration::coordinator: step 'step-0-6-yt-dlp-thumbnails-to-thumbnails' failed: required capture 'content' (token 'file_regex:^downloads/.+(?:__mediapm__)?[.](?:...
+✗ workflow    executed=11  cached=0  failed=6
+✗ materialized    paths=4  skipped=0  removed=0  missing=12
+✗ sync complete    executed=11  materialized=4  missing=12  added_tools=7  failed=6
+  Δ workflow 'mediapm.media.youtube.dQw4w9WgXcQ' had 6 failed step(s)
+[demo_online] running post-sync verification and artifact summary...
+Error: "expected exactly one demo media root under '/Users/polyipseity/dev/monorepo/self/mediapm/src/mediapm/examples/artifacts/demo-online/media/music videos', observed 0 (dirs: [\"Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ]\"])"
+```
+
+### Interpretation
+
+- `cargo test-all` initially exited non-zero only because the post-suite janitor/temp-dir gate found a leftover mediapm temp directory (`/tmp/claude/mediapm-cache-Tt6ft3`) produced during the run; all 2988 tests passed in that run. After cleaning the repo temp artifact and rerunning, `cargo test-all` passed cleanly with the same test count. `pwsh_janitor_self_test` passed in the initial test-all run, the rerun, and `cargo test-pkg mediapm-tests`.
+- The `mediapm_demo_online` failure repeated once with identical failed-step classes (yt-dlp sidecar capture misses for description/infojson/links/subtitles/subtitles_en/thumbnails), identical counts, and identical post-sync verification error. No `ENOSPC`/`No space` signatures were observed, although available disk was low (~8 GB). Per brief, the repeat is recorded as an upstream/external finding rather than a code defect in this repository.
+- Disk stayed above the 2%-free cleanup threshold throughout, but declined materially (to ~8.08 GB available, `target/` 15G) during the later gates and online demo runs; only repository temp artifacts were cleaned (`scripts/clean-mediapm-temp.sh`), and no `cargo clean` was performed.
