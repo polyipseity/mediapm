@@ -271,13 +271,18 @@ impl TestConductor {
 /// pins it to one so its snapshots are the pipeline's schedule rather than a
 /// race. Holding the lock covers that `set_var` too.
 ///
-/// Sibling workflow tests read the knob at client init *without* this
-/// lock, so the pre-push gate (nextest, one process per test) is the safe
-/// runner; `cargo test` threads mode is best-effort for these tests. The
-/// lock is a `tokio::sync::Mutex` because the mutation window spans
-/// `.await` points (client init and the workflow calls), which a
-/// `std::sync::MutexGuard` cannot cover (`clippy::await_holding_lock`,
-/// and it is not `Send`).
+/// Tests that once asserted a knob was absent now take this lock and control
+/// their own variables, so a developer shell's exported
+/// `MEDIAPM_STUB_MANIFEST` or `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` does not
+/// decide their result. A shell's knob can still affect tests that do not take
+/// the lock or do not control a variable they read, and nextest is the exact
+/// runner.
+///
+/// Sibling workflow tests read the knob at client init *without* this lock, so
+/// `cargo test` threads mode is best-effort for these tests. The lock is a
+/// `tokio::sync::Mutex` because the mutation window spans `.await` points
+/// (client init and the workflow calls), which a `std::sync::MutexGuard`
+/// cannot cover (`clippy::await_holding_lock`, and it is not `Send`).
 ///
 /// Note: the lib-side constant is `orchestration::config::ENV_RPC_TIMEOUT_SECONDS`,
 /// which is not visible from this integration-test crate; the literal here

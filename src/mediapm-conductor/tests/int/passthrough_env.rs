@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use super::tool_env_vars::named_stub_copy;
-use crate::{EnvVarGuard, TestConductor, doc_with_workflows, rpc_env_lock};
+use crate::{EnvVarGuard, RpcEnvGuard, TestConductor, doc_with_workflows, rpc_env_lock};
 use mediapm_conductor::{ToolKindSpec, ToolRuntime, ToolSpec};
 use mediapm_test_support::MANIFEST_ENV;
 
@@ -26,29 +26,40 @@ use mediapm_test_support::MANIFEST_ENV;
 /// The proof is a real child process writing a file no other surface names:
 /// the stub emits the destinations of the manifest `MEDIAPM_STUB_MANIFEST`
 /// points at, and the only place that variable is stated is the tool's
-/// `env_vars`. The exit code and the emitted bytes are asserted together so a
-/// run that failed and one that wrote the wrong bytes are distinguishable, and
-/// the failure message names the variable a missing literal leaves unset.
+/// `env_vars`. The host holds a decoy manifest that points at a different
+/// destination, so the real destination proves the document's literal reached
+/// the child and the decoy destination proves the host value did not.
+///
+/// The exit code and the emitted bytes are asserted together so a run that
+/// failed and one that wrote the wrong bytes are distinguishable, and the
+/// failure message names the variable a missing literal leaves unset.
 #[tokio::test]
 async fn a_passthrough_run_applies_the_tools_environment() {
-    // The child inherits the conductor's environment, so an ambient value would
-    // make this test pass with the env application reverted. Fail loudly
-    // instead, because the proof is that the document is the only source of
-    // the name.
-    assert!(
-        std::env::var(MANIFEST_ENV).is_err(),
-        "{MANIFEST_ENV} is set in this test process, so the child would inherit it and the \
-         document's literal would prove nothing; unset it and re-run"
-    );
+    // The lock serialises this process-wide mutation against sibling tests
+    // that mutate the environment; it is declared before the guards so locals
+    // drop in reverse order and every guard restores while the lock is still
+    // held.
+    let _env_lock = rpc_env_lock().await;
+    let _rpc_timeout = RpcEnvGuard::remove();
 
     let tc = TestConductor::new();
     let executable = named_stub_copy(tc.path(), "yt-dlp");
     let manifest = tc.path().join("emit.manifest");
     let source = tc.path().join("manifest-source.txt");
     let destination = tc.path().join("emitted.txt");
+    let decoy_manifest = tc.path().join("decoy.manifest");
+    let decoy_source = tc.path().join("decoy-source.txt");
+    let decoy_destination = tc.path().join("decoy-emitted.txt");
     std::fs::write(&source, b"written by the stub").expect("write the manifest source");
     std::fs::write(&manifest, format!("{}\t{}\n", destination.display(), source.display()))
         .expect("write the emit manifest");
+    std::fs::write(&decoy_source, b"written by the decoy").expect("write the decoy source");
+    std::fs::write(
+        &decoy_manifest,
+        format!("{}\t{}\n", decoy_destination.display(), decoy_source.display()),
+    )
+    .expect("write the decoy manifest");
+    let _host_manifest = EnvVarGuard::set(MANIFEST_ENV, &decoy_manifest.display().to_string());
 
     let emitter = ToolSpec {
         version: None,
@@ -82,6 +93,11 @@ async fn a_passthrough_run_applies_the_tools_environment() {
          usage error naming the unset variable, so the document's literal never reached the \
          passthrough child",
         destination.display(),
+    );
+    assert!(
+        !decoy_destination.exists(),
+        "the host's decoy manifest must not drive the child: the document's literal manifest is \
+         the one that must reach the process"
     );
     tc.shutdown().await;
 }
@@ -128,10 +144,11 @@ async fn a_passthrough_empty_env_var_value_reads_the_host_value() {
     ));
 
     // The lock serialises this process-wide mutation against the sibling tests
-    // that mutate the environment; it is declared before the guard so locals
-    // drop in reverse order and the guard restores the host value while the
-    // lock is still held.
+    // that mutate the environment; it is declared before the guards so locals
+    // drop in reverse order and every guard restores while the lock is still
+    // held.
     let _env_lock = rpc_env_lock().await;
+    let _rpc_timeout = RpcEnvGuard::remove();
     let _host_manifest = EnvVarGuard::set(MANIFEST_ENV, &manifest.display().to_string());
 
     let exit_code = tc
