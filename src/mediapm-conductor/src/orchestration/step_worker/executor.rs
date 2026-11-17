@@ -185,7 +185,7 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
     })?;
 
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
-    let env_vars = build_env_vars(&tool_spec.execution_env_vars);
+    let env_vars = build_env_vars(&tool_spec.execution_env_vars, &tool_spec.literal_env_vars);
 
     let required_output_specs: BTreeMap<String, OutputCaptureSpec> = request
         .required_output_names
@@ -298,7 +298,7 @@ async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
     merged_outputs: &BTreeMap<String, OutputCaptureSpec>,
     k_latest: Hash,
     executed_at: Timestamp,
-    env_vars: BTreeMap<String, Hash>,
+    env_vars: BTreeMap<String, crate::state::EnvVarEntry>,
     lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
     maintenance_rekey: Option<(Hash, Hash)>,
 ) -> Result<StepExecutionBundle, ConductorError> {
@@ -340,10 +340,7 @@ async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
         attempted_key_version_nk: INSTANCE_KEY_VERSION,
         tool_call_id: tool_call_id.to_string(),
         command_args: dispatched.command_args,
-        env_vars_ck: env_vars
-            .into_iter()
-            .map(|(k, hash_ck)| (k, crate::state::EnvVarEntry { hash_ck, source_nk: None }))
-            .collect(),
+        env_vars_ck: env_vars,
         materialized_inputs: actual_materialized_inputs,
         outputs: captured.records,
         impure_nk: tool_spec.is_impure,
@@ -525,13 +522,30 @@ fn merge_output_specs(
 /// Builds the recorded environment set from configured execution env vars:
 /// only non-empty values, each content-hashed (never stored literally).
 ///
-/// Recorded, never key material: the instance-key derivation takes no env term,
-/// so a changed variable re-runs nothing implicitly.
-fn build_env_vars(execution_env_vars: &BTreeMap<String, String>) -> BTreeMap<String, Hash> {
+/// Each entry is tagged by provenance: a name the document fixed as a
+/// non-empty literal (`literal_env_vars`) records [`EnvVarSource::Literal`];
+/// any other configured execution var records [`EnvVarSource::Inherited`].
+/// New executions always store `Some(...)`. Recorded, never key material: the
+/// instance-key derivation takes no env term, so a changed host/inherited value
+/// re-runs nothing implicitly while a changed literal still moves the key
+/// through the tool's literal-env key material.
+fn build_env_vars(
+    execution_env_vars: &BTreeMap<String, String>,
+    literal_env_vars: &BTreeMap<String, String>,
+) -> BTreeMap<String, crate::state::EnvVarEntry> {
+    use crate::state::{EnvVarEntry, EnvVarSource};
+
     execution_env_vars
         .iter()
         .filter(|(_, value)| !value.is_empty())
-        .map(|(name, value)| (name.clone(), Hash::from_content(value.as_bytes())))
+        .map(|(name, value)| {
+            let source_nk = if literal_env_vars.contains_key(name) {
+                Some(EnvVarSource::Literal)
+            } else {
+                Some(EnvVarSource::Inherited)
+            };
+            (name.clone(), EnvVarEntry { hash_ck: Hash::from_content(value.as_bytes()), source_nk })
+        })
         .collect()
 }
 
@@ -1340,15 +1354,18 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Env minimal-set cleaning
+    // Env minimal-set cleaning and provenance
     // -----------------------------------------------------------------------
 
     #[test]
     fn env_vars_minimal_set_filters_empty_values() {
-        let records = build_env_vars(&BTreeMap::from([
-            ("KEEP".to_string(), "value".to_string()),
-            ("EMPTY".to_string(), String::new()),
-        ]));
+        let records = build_env_vars(
+            &BTreeMap::from([
+                ("KEEP".to_string(), "value".to_string()),
+                ("EMPTY".to_string(), String::new()),
+            ]),
+            &BTreeMap::new(),
+        );
         assert_eq!(records.len(), 1);
         assert!(records.contains_key("KEEP"));
         assert!(!records.contains_key("EMPTY"));
@@ -1356,15 +1373,49 @@ mod tests {
 
     #[test]
     fn env_vars_values_hashed_never_literal() {
-        let records =
-            build_env_vars(&BTreeMap::from([("FOO".to_string(), "raw-secret".to_string())]));
+        let records = build_env_vars(
+            &BTreeMap::from([("FOO".to_string(), "raw-secret".to_string())]),
+            &BTreeMap::new(),
+        );
         let record = &records["FOO"];
-        assert_eq!(*record, Hash::from_content(b"raw-secret"));
-        assert_ne!(*record, Hash::from_content(b"raw-secret-other"));
+        assert_eq!(record.hash_ck, Hash::from_content(b"raw-secret"));
+        assert_ne!(record.hash_ck, Hash::from_content(b"raw-secret-other"));
     }
 
     #[test]
     fn env_vars_empty_input_yields_empty_records() {
-        assert!(build_env_vars(&BTreeMap::new()).is_empty());
+        assert!(build_env_vars(&BTreeMap::new(), &BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn build_env_vars_tags_literal_and_inherited_provenance() {
+        let records = build_env_vars(
+            &BTreeMap::from([
+                ("DOC".to_string(), "fixed".to_string()),
+                ("HOST".to_string(), "ambient".to_string()),
+            ]),
+            &BTreeMap::from([("DOC".to_string(), "fixed".to_string())]),
+        );
+
+        assert_eq!(
+            records["DOC"].source_nk,
+            Some(crate::state::EnvVarSource::Literal),
+            "a name in literal_env_vars must record literal provenance",
+        );
+        assert_eq!(
+            records["HOST"].source_nk,
+            Some(crate::state::EnvVarSource::Inherited),
+            "an execution env var not fixed by the document must record inherited provenance",
+        );
+        assert_eq!(
+            records["DOC"].hash_ck,
+            Hash::from_content(b"fixed"),
+            "literal entries are still hashed, never stored literally",
+        );
+        assert_eq!(
+            records["HOST"].hash_ck,
+            Hash::from_content(b"ambient"),
+            "inherited entries are still hashed, never stored literally",
+        );
     }
 }

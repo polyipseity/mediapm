@@ -1138,6 +1138,70 @@ mod tests {
         );
     }
 
+    /// Changing a literal env value moves the instance key; changing only an
+    /// inherited host value does not.
+    #[test]
+    fn changed_literal_env_moves_key_but_changed_host_value_does_not() {
+        let parts = vec!["echo".to_string(), "--out=${env.OUT}".to_string()];
+        let literals_a = BTreeMap::from([("OUT".to_string(), "/tmp/a".to_string())]);
+        let literals_b = BTreeMap::from([("OUT".to_string(), "/tmp/b".to_string())]);
+        let empty = BTreeMap::new();
+
+        let key_literal_a = derive_instance_key_v8(
+            "echo@v1",
+            &key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_a),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let key_literal_b = derive_instance_key_v8(
+            "echo@v1",
+            &key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_b),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        assert_ne!(
+            key_literal_a, key_literal_b,
+            "editing a document-fixed literal env value must move the key",
+        );
+
+        // An inherited ${env.HOME} reference contributes no key material, so the
+        // host's value is not part of derivation and cannot move the key.
+        let inherited_parts = vec!["echo".to_string(), "${env.HOME}".to_string()];
+        let inherited_material =
+            key_material_for_tool(&inherited_parts, &BTreeMap::new(), &BTreeMap::new(), &empty);
+        assert_eq!(
+            inherited_material,
+            key_material_for_tool(
+                &["echo".to_string()],
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &empty
+            ),
+            "an inherited env reference is dropped from key material",
+        );
+        let key_inherited = derive_instance_key_v8(
+            "echo@v1",
+            &inherited_material,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            key_inherited,
+            derive_instance_key_v8(
+                "echo@v1",
+                &key_material_for_tool(
+                    &["echo".to_string()],
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &empty,
+                ),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            ),
+            "a changed host/inherited env value is outside key derivation and must not move the key",
+        );
+    }
+
     /// A part mixing a fixed literal with an input keys its inlined text and
     /// that input's value.
     #[test]
