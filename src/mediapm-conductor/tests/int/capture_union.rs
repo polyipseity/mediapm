@@ -25,7 +25,7 @@ use mediapm_conductor::{
 fn stream_spec(name: &str, stream: &str) -> OutputCaptureSpec {
     OutputCaptureSpec {
         name: name.to_string(),
-        capture: mediapm_conductor::config::CaptureKind::parse_token(&stream)
+        capture: mediapm_conductor::config::CaptureKind::parse_token(stream)
             .expect("valid capture"),
         ..OutputCaptureSpec::default()
     }
@@ -68,7 +68,7 @@ fn write_doc(
 /// The single instance this run recorded, asserting there is exactly one.
 fn only_instance(conductor: &Conductor<InMemoryCas>) -> mediapm_conductor::ToolCallInstance {
     let state = conductor.get_state().expect("the conductor state must be readable");
-    assert_eq!(state.tool_call_instances.len(), 1, "expected exactly one recorded instance",);
+    assert_eq!(state.tool_call_instances.len(), 1, "expected exactly one recorded instance");
     state.tool_call_instances.values().next().cloned().expect("the one instance")
 }
 

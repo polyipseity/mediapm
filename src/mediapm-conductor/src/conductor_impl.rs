@@ -1922,136 +1922,119 @@ mod tests {
         assert_eq!(load_state_file(&paths).expect("load state file"), Some(state));
     }
 
-    /// A migrated cache hit must keep `step_instances` consistent even when the
-    /// workflow later fails.
-    ///
-    /// Re-keying removes the old instance key and stores the migrated instance
-    /// under the new key in the same settlement write, so the step pointer must
-    /// move to that live key immediately. A later step failure must not leave
-    /// the pointer dangling at the removed key.
-    #[tokio::test]
-    async fn migrated_hit_keeps_step_instance_pointer_consistent_after_later_workflow_failure() {
+    fn migrated_hit_echo_tool() -> crate::config::ToolSpec {
+        crate::config::ToolSpec {
+            kind: crate::config::ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
+            name: "echo".to_string(),
+            ..crate::config::ToolSpec::default()
+        }
+    }
+
+    #[cfg(windows)]
+    fn migrated_hit_fail_tool() -> crate::config::ToolSpec {
+        crate::config::ToolSpec {
+            kind: crate::config::ToolKindSpec::Executable {
+                command: vec!["cmd".to_string(), "/C".to_string(), "exit 1".to_string()],
+                env_vars: std::collections::BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            name: "fail".to_string(),
+            ..crate::config::ToolSpec::default()
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn migrated_hit_fail_tool() -> crate::config::ToolSpec {
+        crate::config::ToolSpec {
+            kind: crate::config::ToolKindSpec::Executable {
+                command: vec!["/bin/sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+                env_vars: std::collections::BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            name: "fail".to_string(),
+            ..crate::config::ToolSpec::default()
+        }
+    }
+
+    fn migrated_hit_workflow_doc(fail_second: bool) -> crate::config::NickelDocument {
         use crate::config::{
-            CaptureKind, OutputCaptureSpec, SaveMode, ToolKindSpec, ToolSpec, WorkflowSpec,
-            WorkflowStepSpec,
+            CaptureKind, OutputCaptureSpec, SaveMode, WorkflowSpec, WorkflowStepSpec,
         };
+
+        let second = if fail_second {
+            WorkflowStepSpec {
+                id: "step-b".to_string(),
+                tool: "fail".to_string(),
+                inputs: std::collections::BTreeMap::new(),
+                outputs: std::collections::BTreeMap::new(),
+                max_retries: 0,
+                depends_on: vec!["step-a".to_string()],
+            }
+        } else {
+            WorkflowStepSpec {
+                id: "step-b".to_string(),
+                tool: "echo".to_string(),
+                inputs: std::collections::BTreeMap::from([(
+                    "text".to_string(),
+                    "world".to_string(),
+                )]),
+                outputs: std::collections::BTreeMap::from([(
+                    "out".to_string(),
+                    OutputCaptureSpec {
+                        name: "out".to_string(),
+                        capture: CaptureKind::parse_token("stdout").expect("capture"),
+                        save: SaveMode::True,
+                        allow_empty: false,
+                    },
+                )]),
+                max_retries: 0,
+                depends_on: vec!["step-a".to_string()],
+            }
+        };
+
+        let mut tools =
+            std::collections::BTreeMap::from([("echo@v1".to_string(), migrated_hit_echo_tool())]);
+        if fail_second {
+            tools.insert("fail@v1".to_string(), migrated_hit_fail_tool());
+        }
+
+        crate::config::NickelDocument {
+            tools,
+            workflows: vec![WorkflowSpec {
+                name: "default".to_string(),
+                steps: vec![
+                    WorkflowStepSpec {
+                        id: "step-a".to_string(),
+                        tool: "echo".to_string(),
+                        inputs: std::collections::BTreeMap::from([(
+                            "text".to_string(),
+                            "hello".to_string(),
+                        )]),
+                        outputs: std::collections::BTreeMap::from([(
+                            "out".to_string(),
+                            OutputCaptureSpec {
+                                name: "out".to_string(),
+                                capture: CaptureKind::parse_token("stdout").expect("capture"),
+                                save: SaveMode::True,
+                                allow_empty: false,
+                            },
+                        )]),
+                        max_retries: 0,
+                        depends_on: Vec::new(),
+                    },
+                    second,
+                ],
+                ..WorkflowSpec::default()
+            }],
+            ..crate::config::NickelDocument::default()
+        }
+    }
+
+    fn downgrade_step_a_instance_to_v7(
+        state: &mut crate::state::ConductorState,
+    ) -> mediapm_cas::Hash {
         use crate::instance_key::{V7_INSTANCE_KEY_VERSION, derive_instance_key_v7};
 
-        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
-
-        fn echo_tool() -> ToolSpec {
-            ToolSpec {
-                kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
-                name: "echo".to_string(),
-                ..ToolSpec::default()
-            }
-        }
-
-        #[cfg(windows)]
-        fn fail_tool() -> ToolSpec {
-            ToolSpec {
-                kind: ToolKindSpec::Executable {
-                    command: vec!["cmd".to_string(), "/C".to_string(), "exit 1".to_string()],
-                    env_vars: BTreeMap::new(),
-                    success_codes: vec![0],
-                },
-                name: "fail".to_string(),
-                ..ToolSpec::default()
-            }
-        }
-
-        #[cfg(not(windows))]
-        fn fail_tool() -> ToolSpec {
-            ToolSpec {
-                kind: ToolKindSpec::Executable {
-                    command: vec!["/bin/sh".to_string(), "-c".to_string(), "exit 1".to_string()],
-                    env_vars: BTreeMap::new(),
-                    success_codes: vec![0],
-                },
-                name: "fail".to_string(),
-                ..ToolSpec::default()
-            }
-        }
-
-        fn workflow_doc(fail_second: bool) -> NickelDocument {
-            let second = if fail_second {
-                WorkflowStepSpec {
-                    id: "step-b".to_string(),
-                    tool: "fail".to_string(),
-                    inputs: BTreeMap::new(),
-                    outputs: BTreeMap::new(),
-                    max_retries: 0,
-                    depends_on: vec!["step-a".to_string()],
-                }
-            } else {
-                WorkflowStepSpec {
-                    id: "step-b".to_string(),
-                    tool: "echo".to_string(),
-                    inputs: BTreeMap::from([("text".to_string(), "world".to_string())]),
-                    outputs: BTreeMap::from([(
-                        "out".to_string(),
-                        OutputCaptureSpec {
-                            name: "out".to_string(),
-                            capture: CaptureKind::parse_token("stdout").expect("capture"),
-                            save: SaveMode::True,
-                            allow_empty: false,
-                        },
-                    )]),
-                    max_retries: 0,
-                    depends_on: vec!["step-a".to_string()],
-                }
-            };
-
-            let mut tools = BTreeMap::from([("echo@v1".to_string(), echo_tool())]);
-            if fail_second {
-                tools.insert("fail@v1".to_string(), fail_tool());
-            }
-
-            NickelDocument {
-                tools,
-                workflows: vec![WorkflowSpec {
-                    name: "default".to_string(),
-                    steps: vec![
-                        WorkflowStepSpec {
-                            id: "step-a".to_string(),
-                            tool: "echo".to_string(),
-                            inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
-                            outputs: BTreeMap::from([(
-                                "out".to_string(),
-                                OutputCaptureSpec {
-                                    name: "out".to_string(),
-                                    capture: CaptureKind::parse_token("stdout").expect("capture"),
-                                    save: SaveMode::True,
-                                    allow_empty: false,
-                                },
-                            )]),
-                            max_retries: 0,
-                            depends_on: Vec::new(),
-                        },
-                        second,
-                    ],
-                    ..WorkflowSpec::default()
-                }],
-                ..NickelDocument::default()
-            }
-        }
-
-        let config_path = dir.path().join("conductor.ncl");
-        std::fs::write(
-            &config_path,
-            versions::encode_document(workflow_doc(false)).expect("encode config"),
-        )
-        .expect("write config");
-
-        let paths = RuntimeStoragePaths::new(dir.path());
-        let conductor = Conductor::new(paths.clone(), mediapm_cas::new_in_memory_cas());
-        conductor
-            .run_workflow("default", crate::RunWorkflowOptions::default())
-            .await
-            .expect("initial workflow run");
-
-        // Downgrade step-a's stored instance to v7 so the next run must migrate it.
-        let mut state = conductor.get_state().expect("state");
         let step_a_key = state
             .step_instances
             .get("default")
@@ -2065,29 +2048,60 @@ mod tests {
         step_a.key_version = V7_INSTANCE_KEY_VERSION;
         step_a.attempted_key_version_nk = V7_INSTANCE_KEY_VERSION;
         state.tool_call_instances.remove(&step_a_key);
-        state.tool_call_instances.insert(v7_key, step_a.clone());
+        state.tool_call_instances.insert(v7_key, step_a);
         state
             .step_instances
             .get_mut("default")
             .expect("workflow map")
             .insert("step-a".to_string(), v7_key);
+        v7_key
+    }
+
+    /// A migrated cache hit must keep `step_instances` consistent even when the
+    /// workflow later fails.
+    ///
+    /// Re-keying removes the old instance key and stores the migrated instance
+    /// under the new key in the same settlement write, so the step pointer must
+    /// move to that live key immediately. A later step failure must not leave
+    /// the pointer dangling at the removed key.
+    #[tokio::test]
+    async fn migrated_hit_keeps_step_instance_pointer_consistent_after_later_workflow_failure() {
+        // Arrange: run once so step-a is recorded, then downgrade it to v7.
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let config_path = dir.path().join("conductor.ncl");
+        std::fs::write(
+            &config_path,
+            versions::encode_document(migrated_hit_workflow_doc(false)).expect("encode config"),
+        )
+        .expect("write config");
+
+        let paths = RuntimeStoragePaths::new(dir.path());
+        let conductor = Conductor::new(paths.clone(), mediapm_cas::new_in_memory_cas());
+        conductor
+            .run_workflow("default", crate::RunWorkflowOptions::default())
+            .await
+            .expect("initial workflow run");
+
+        let mut state = conductor.get_state().expect("state");
+        let v7_key = downgrade_step_a_instance_to_v7(&mut state);
         conductor.replace_resolved_state(state).expect("replace downgraded state");
         save_state_file(&paths, conductor.get_state().as_ref().expect("state"))
             .expect("persist downgraded state");
 
-        // Reconfigure so step-b fails after step-a is reused/migrated.
         std::fs::write(
             &config_path,
-            versions::encode_document(workflow_doc(true)).expect("encode config"),
+            versions::encode_document(migrated_hit_workflow_doc(true)).expect("encode config"),
         )
         .expect("write failing config");
 
+        // Act: re-run so step-a migrates on a cache hit, then step-b fails.
         let run = conductor.run_workflow("default", crate::RunWorkflowOptions::default()).await;
         assert!(
             run.is_err() || run.as_ref().is_ok_and(|summary| summary.failed_steps > 0),
             "workflow must fail because step-b fails: {run:?}"
         );
 
+        // Assert: the pointer moved off the removed v7 key and remains live.
         let state = conductor.get_state().expect("state after failed run");
         let mapped = state
             .step_instances

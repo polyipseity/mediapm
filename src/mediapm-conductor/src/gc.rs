@@ -791,7 +791,7 @@ mod tests {
             state.step_instances.contains_key("removed"),
             "an abstaining pass must not prune a seed it cannot replace",
         );
-        assert!(state.tool_call_instances.contains_key(&kept_key), "and evicts nothing either",);
+        assert!(state.tool_call_instances.contains_key(&kept_key), "and evicts nothing either");
     }
 
     /// Two instances that consume each other's outputs terminate.
@@ -1221,7 +1221,7 @@ mod tests {
         }
     }
 
-    /// The seed is the union of step_instances values (restricted to stored
+    /// The seed is the union of `step_instances` values (restricted to stored مارچ
     /// instances), so a reachability closure starts from every mapped step.
     #[test]
     fn seed_is_the_union_of_step_instances() {

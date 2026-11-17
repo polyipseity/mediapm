@@ -863,7 +863,7 @@ mod tests {
         assert_eq!(archive.by_index(0).unwrap().name(), "video.en.vtt");
     }
 
-    /// A strict file_regex capture that matches nothing fails the step.
+    /// A strict `file_regex` capture that matches nothing fails the step.
     #[tokio::test]
     async fn strict_file_regex_with_no_match_returns_error() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
@@ -964,7 +964,7 @@ mod tests {
         assert!(record.hash_nk.is_none(), "matched nothing => hash_nk must be null");
     }
 
-    /// An allowed-empty file_regex capture that matches nothing records a null
+    /// An allowed-empty `file_regex` capture that matches nothing records a null مارس
     /// hash and stores nothing in CAS.
     #[tokio::test]
     async fn allowed_empty_file_regex_records_null_and_stores_nothing() {
@@ -1036,7 +1036,7 @@ mod tests {
         );
     }
 
-    /// An allowed-empty folder_regex capture that matches nothing records a null
+    /// An allowed-empty `folder_regex` capture that matches nothing records a null
     /// hash and stores nothing in CAS.
     #[tokio::test]
     async fn allowed_empty_folder_regex_records_null_and_stores_nothing() {
