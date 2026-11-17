@@ -31,6 +31,7 @@ use super::{
     AutoSaveContext, FfmpegSlotLimits, VariantProducer, media_step_id, resolve_variant_save,
     step_option_input_bindings, variant_to_output_capture_spec,
 };
+use crate::config::output_types::{OutputCaptureKind, default_yt_dlp_capture_kind_for_kind};
 
 /// Synthesizes yt-dlp workflow steps from one media step definition.
 ///
@@ -181,6 +182,11 @@ pub(crate) fn synthesize_yt_dlp_step(
 }
 
 /// Builds workflow-step capture selectors for one yt-dlp output variant.
+///
+/// The regex is selected by [`crate::config::YtDlpOutputKind`] and never
+/// rewritten; the capture family follows `config.capture_kind` when set and
+/// otherwise [`default_yt_dlp_capture_kind_for_kind`], producing a
+/// `file_regex:` or `folder_regex:` token from that same regex.
 #[must_use]
 pub(crate) fn yt_dlp_variant_capture_and_save(
     config: &crate::config::YtDlpOutputVariantConfig,
@@ -191,19 +197,23 @@ pub(crate) fn yt_dlp_variant_capture_and_save(
 ) -> (CaptureKind, mediapm_conductor::SaveMode) {
     use crate::config::YtDlpOutputKind;
 
-    let capture = match config.kind {
-        YtDlpOutputKind::Primary => format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
-        YtDlpOutputKind::Subtitles => format!("folder_regex:{YT_DLP_SUBTITLE_ARTIFACTS_REGEX}"),
-        YtDlpOutputKind::Thumbnails => format!("folder_regex:{YT_DLP_THUMBNAIL_ARTIFACTS_REGEX}"),
-        YtDlpOutputKind::Chapters => format!("folder_regex:{YT_DLP_CHAPTER_ARTIFACTS_REGEX}"),
-        YtDlpOutputKind::Description => format!("file_regex:{YT_DLP_DESCRIPTION_OUTPUT_REGEX}"),
+    let regex = match config.kind {
+        YtDlpOutputKind::Primary => YT_DLP_OUTPUT_CONTENT_REGEX,
+        YtDlpOutputKind::Subtitles => YT_DLP_SUBTITLE_ARTIFACTS_REGEX,
+        YtDlpOutputKind::Thumbnails => YT_DLP_THUMBNAIL_ARTIFACTS_REGEX,
+        YtDlpOutputKind::Chapters => YT_DLP_CHAPTER_ARTIFACTS_REGEX,
+        YtDlpOutputKind::Description => YT_DLP_DESCRIPTION_OUTPUT_REGEX,
         // yt-dlp stores comments in the info JSON rather than in a separate comment.* file.
-        YtDlpOutputKind::Infojson | YtDlpOutputKind::Comment => {
-            format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}")
-        }
-        YtDlpOutputKind::Archive => format!("file_regex:{YT_DLP_ARCHIVE_OUTPUT_REGEX}"),
-        YtDlpOutputKind::Annotation => format!("file_regex:{YT_DLP_ANNOTATION_OUTPUT_REGEX}"),
-        YtDlpOutputKind::Links => format!("folder_regex:{YT_DLP_LINK_ARTIFACTS_REGEX}"),
+        YtDlpOutputKind::Infojson | YtDlpOutputKind::Comment => YT_DLP_INFOJSON_OUTPUT_REGEX,
+        YtDlpOutputKind::Archive => YT_DLP_ARCHIVE_OUTPUT_REGEX,
+        YtDlpOutputKind::Annotation => YT_DLP_ANNOTATION_OUTPUT_REGEX,
+        YtDlpOutputKind::Links => YT_DLP_LINK_ARTIFACTS_REGEX,
+    };
+    let effective_kind =
+        config.capture_kind.unwrap_or_else(|| default_yt_dlp_capture_kind_for_kind(config.kind));
+    let capture = match effective_kind {
+        OutputCaptureKind::File => format!("file_regex:{regex}"),
+        OutputCaptureKind::Folder => format!("folder_regex:{regex}"),
     };
     let save = resolve_variant_save(config.save, variant, step_index, context, step_impure);
     let capture = CaptureKind::parse_token(&capture)
@@ -745,6 +755,90 @@ mod tests {
             format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}"),
             "comment output must be captured from the info JSON",
         );
+    }
+
+    /// A folder-shaped yt-dlp kind with no override defaults to a folder capture.
+    #[test]
+    fn yt_dlp_folder_shaped_kind_defaults_to_folder_capture() {
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = crate::tools::workflows::variant_to_output_capture_spec(
+            OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
+            "subtitles",
+            &crate::config::OutputVariantValue::YtDlp(crate::config::YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Subtitles,
+                ..crate::config::YtDlpOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert_eq!(
+            spec.capture.to_token(),
+            format!("folder_regex:{YT_DLP_SUBTITLE_ARTIFACTS_REGEX}")
+        );
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// A file-shaped yt-dlp kind with no override defaults to a file capture.
+    #[test]
+    fn yt_dlp_file_shaped_kind_defaults_to_file_capture() {
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = crate::tools::workflows::variant_to_output_capture_spec(
+            crate::tools::workflows::OUTPUT_PRIMARY,
+            "primary",
+            &crate::config::OutputVariantValue::YtDlp(crate::config::YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Primary,
+                ..crate::config::YtDlpOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert_eq!(spec.capture.to_token(), format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"));
+        assert!(!spec.allow_empty, "a file capture does not tolerate an empty match");
+    }
+
+    /// An explicit file override forces a file capture for a folder-shaped kind.
+    #[test]
+    fn yt_dlp_explicit_file_override_on_folder_shaped_kind() {
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = crate::tools::workflows::variant_to_output_capture_spec(
+            OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
+            "subtitles",
+            &crate::config::OutputVariantValue::YtDlp(crate::config::YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Subtitles,
+                capture_kind: Some(OutputCaptureKind::File),
+                ..crate::config::YtDlpOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert_eq!(
+            spec.capture.to_token(),
+            format!("file_regex:{YT_DLP_SUBTITLE_ARTIFACTS_REGEX}")
+        );
+        assert!(!spec.allow_empty, "a file capture does not tolerate an empty match");
+    }
+
+    /// An explicit folder override forces a folder capture for a file-shaped kind.
+    #[test]
+    fn yt_dlp_explicit_folder_override_on_file_shaped_kind() {
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = crate::tools::workflows::variant_to_output_capture_spec(
+            crate::tools::workflows::OUTPUT_PRIMARY,
+            "primary",
+            &crate::config::OutputVariantValue::YtDlp(crate::config::YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Primary,
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::YtDlpOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert_eq!(spec.capture.to_token(), format!("folder_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"));
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
     }
 
     #[test]

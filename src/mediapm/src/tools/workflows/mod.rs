@@ -36,6 +36,7 @@ pub(crate) use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
 use crate::config::hierarchy_types::{
     hierarchy_consumed_variants, hierarchy_entry_paths_for_variant, validate_media_ids,
 };
+use crate::config::output_types::default_generic_capture_kind_for_kind;
 use crate::config::output_types::{ResolvedStepVariantFlow, resolve_step_variant_flow};
 use crate::config::source_types::step_option_scalar;
 use crate::config::{
@@ -204,6 +205,11 @@ pub(crate) fn resolve_selected_dependency_tool_id(
 /// matches. The two differ for the tools whose capture keys are logical output
 /// names (yt-dlp's `yt_dlp_subtitle_artifacts`, ffmpeg's `primary`), so the save
 /// policy is resolved against `variant`.
+///
+/// The capture family follows the variant's `capture_kind` override when set
+/// and otherwise the kind's default, so `allow_empty` follows that effective
+/// family: a folder capture tolerates nothing being captured, a file capture
+/// does not. That coupling is intentional per the strictness model.
 #[must_use]
 pub(crate) fn variant_to_output_capture_spec(
     name: &str,
@@ -230,6 +236,10 @@ pub(crate) fn variant_to_output_capture_spec(
 }
 
 /// Builds the capture selector and save mode of one generic output variant.
+///
+/// The capture family follows `config.capture_kind` when set and otherwise
+/// [`default_generic_capture_kind_for_kind`], emitting `file:<kind>` or
+/// `folder:<kind>` for the resolved family.
 fn generic_variant_capture_and_save(
     config: &GenericOutputVariantConfig,
     variant: &str,
@@ -237,9 +247,11 @@ fn generic_variant_capture_and_save(
     context: &AutoSaveContext,
     step_impure: bool,
 ) -> (CaptureKind, SaveMode) {
-    let capture = match config.capture_kind {
-        Some(OutputCaptureKind::Folder) => format!("folder:{}", config.kind),
-        _ => format!("file:{}", config.kind),
+    let effective_kind =
+        config.capture_kind.unwrap_or_else(|| default_generic_capture_kind_for_kind(&config.kind));
+    let capture = match effective_kind {
+        OutputCaptureKind::File => format!("file:{}", config.kind),
+        OutputCaptureKind::Folder => format!("folder:{}", config.kind),
     };
     let save = resolve_variant_save(config.save, variant, step_index, context, step_impure);
     let capture = CaptureKind::parse_token(&capture)
@@ -926,24 +938,84 @@ mod tests {
         assert_eq!(step_index_of("step-12-1-import-primary-to-media"), Some(12));
     }
 
-    /// A generic folder variant captures the folder named by its kind.
-    ///
-    /// Folder captures use the `folder:` token with the kind as the path, so
-    /// the conductor can match the directory as a folder capture rather than as
-    /// an unmatchable file glob.
+    /// A generic folder-shaped kind with no override defaults to a folder
+    /// capture. This is a deliberate behavior fix: folder-shaped kinds used to
+    /// emit `file:<kind>` when `capture_kind` was unset.
     #[test]
-    fn generic_folder_variant_emits_folder_capture_token() {
-        let config = crate::config::GenericOutputVariantConfig {
-            kind: "subtitles".to_string(),
-            capture_kind: Some(OutputCaptureKind::Folder),
-            ..crate::config::GenericOutputVariantConfig::default()
-        };
+    fn generic_folder_shaped_kind_defaults_to_folder_capture() {
         let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
-        let (capture, _save) =
-            generic_variant_capture_and_save(&config, "subs", 0, &context, false);
-        let token = capture.to_token();
-        assert!(token.starts_with("folder:"), "expected a folder capture token, got {token}");
-        assert_eq!(token, "folder:subtitles");
+        let spec = variant_to_output_capture_spec(
+            "subs",
+            "subs",
+            &OutputVariantValue::Generic(crate::config::GenericOutputVariantConfig {
+                kind: "subtitles".to_string(),
+                ..crate::config::GenericOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert_eq!(spec.capture.to_token(), "folder:subtitles");
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// A generic file-shaped kind with no override defaults to a file capture.
+    #[test]
+    fn generic_file_shaped_kind_defaults_to_file_capture() {
+        let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = variant_to_output_capture_spec(
+            "primary",
+            "primary",
+            &OutputVariantValue::Generic(crate::config::GenericOutputVariantConfig {
+                kind: "output_content".to_string(),
+                ..crate::config::GenericOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert_eq!(spec.capture.to_token(), "file:output_content");
+        assert!(!spec.allow_empty, "a file capture does not tolerate an empty match");
+    }
+
+    /// An explicit file override forces a file capture for a folder-shaped kind.
+    #[test]
+    fn generic_explicit_file_override_on_folder_shaped_kind() {
+        let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = variant_to_output_capture_spec(
+            "subs",
+            "subs",
+            &OutputVariantValue::Generic(crate::config::GenericOutputVariantConfig {
+                kind: "subtitles".to_string(),
+                capture_kind: Some(OutputCaptureKind::File),
+                ..crate::config::GenericOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert_eq!(spec.capture.to_token(), "file:subtitles");
+        assert!(!spec.allow_empty, "a file capture does not tolerate an empty match");
+    }
+
+    /// An explicit folder override forces a folder capture for a file-shaped kind.
+    #[test]
+    fn generic_explicit_folder_override_on_file_shaped_kind() {
+        let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = variant_to_output_capture_spec(
+            "primary",
+            "primary",
+            &OutputVariantValue::Generic(crate::config::GenericOutputVariantConfig {
+                kind: "output_content".to_string(),
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::GenericOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert_eq!(spec.capture.to_token(), "folder:output_content");
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
     }
 
     /// One index resolves to every id a fan-out wrote for it.
