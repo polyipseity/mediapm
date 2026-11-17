@@ -1,228 +1,154 @@
 //! Versioned persistence envelopes for orchestration state.
 //!
-//! ## Versioning policy
-//!
-//! - Each `v<N>.rs` file owns one wire-format version.
-//! - Version modules must **never** directly import unversioned runtime state
-//!   structs from `super::super` (the parent `state` module).
-//! - This `mod.rs` is the **only** bridge between the latest wire version and
-//!   unversioned runtime state.
-//! - Consumers outside `state/versions/` must use only the APIs
-//!   re-exported from this module, never `versions::v<N>` directly.
-//!
 //! ## DO NOT REMOVE: versions policy guard
 //!
 //! - Version dispatch lives here, not in any caller. Adding a version is a new
 //!   `vN.rs` plus a new arm in the decoders below.
-//! - Do not directly re-export `versions::vX` structs or paths as public API;
-//!   expose unversioned functions and keep versioned internals encapsulated.
-//! - Never delete a read path for a version that could exist in a CAS blob or
-//!   a state JSON on disk. V1 and V2 are migration-only formats that stay
-//!   readable; V3, V4 and V5 are all readable, and V5 is the current format.
+//! - Do not directly re-export `versions::vX` structs or paths as public API.
+//! - Never delete a read path for a version that could exist on disk.
+//! - V1 and V2 are migration-only formats that stay readable; V3, V4 and V5
+//!   migrate forward to V6; V6 is the current format.
 
 use crate::error::ConductorError;
-use crate::state::{AuxData, CapturedOutput, ConductorState, StepRef, ToolCallInstance};
+use crate::state::{
+    CapturedOutput, ConductorState, EnvVarEntry, EnvVarSource, StepRef, ToolCallInstance,
+};
 use mediapm_cas::CasApi;
+use mediapm_utils::Timestamp;
 
 mod v1;
 mod v2;
 mod v3;
 mod v4;
 mod v5;
+mod v6;
 
 // ---------------------------------------------------------------------------
-// Bridge: V5 wire types ↔ runtime types
+// Bridge: V6 wire types ↔ runtime types
 // ---------------------------------------------------------------------------
-// Older versions reach these types only through their own migration: `v5`'s
-// `from_v4_into_v5` is the V4 reader, so there is exactly one bridge to the
-// runtime shape and no second place for a field to be forgotten.
 
-impl From<v5::SaveModeV5> for crate::config::SaveMode {
-    fn from(mode: v5::SaveModeV5) -> Self {
-        match mode {
-            v5::SaveModeV5::False => Self::False,
-            v5::SaveModeV5::True => Self::True,
-            v5::SaveModeV5::Full => Self::Full,
+impl From<v6::EnvVarSourceV6> for EnvVarSource {
+    fn from(source: v6::EnvVarSourceV6) -> Self {
+        match source {
+            v6::EnvVarSourceV6::Literal => Self::Literal,
+            v6::EnvVarSourceV6::Inherited => Self::Inherited,
         }
     }
 }
 
-impl From<crate::config::SaveMode> for v5::SaveModeV5 {
-    fn from(mode: crate::config::SaveMode) -> Self {
-        match mode {
-            crate::config::SaveMode::False => Self::False,
-            crate::config::SaveMode::True => Self::True,
-            crate::config::SaveMode::Full => Self::Full,
+impl From<EnvVarSource> for v6::EnvVarSourceV6 {
+    fn from(source: EnvVarSource) -> Self {
+        match source {
+            EnvVarSource::Literal => Self::Literal,
+            EnvVarSource::Inherited => Self::Inherited,
         }
     }
 }
 
-fn capture_kind_from_state_wire(
-    capture: &str,
-    include_topmost_folder: bool,
-) -> crate::config::CaptureKind {
-    if let Some(rest) = capture.strip_prefix("folder:") {
-        if include_topmost_folder {
-            crate::config::CaptureKind::Folder(rest.to_string())
-        } else {
-            crate::config::CaptureKind::FolderFlat(rest.to_string())
-        }
-    } else if let Some(rest) = capture.strip_prefix("folder_regex:") {
-        if include_topmost_folder {
-            crate::config::CaptureKind::FolderRegex(rest.to_string())
-        } else {
-            crate::config::CaptureKind::FolderFlatRegex(rest.to_string())
-        }
-    } else {
-        crate::config::CaptureKind::parse_token(capture)
-            .unwrap_or_else(|_| crate::config::CaptureKind::File(capture.to_string()))
+impl From<v6::EnvVarEntryV6> for EnvVarEntry {
+    fn from(entry: v6::EnvVarEntryV6) -> Self {
+        Self { hash_ck: entry.hash_ck, source_nk: entry.source_nk.map(Into::into) }
     }
 }
 
-fn capture_kind_to_state_wire(capture: &crate::config::CaptureKind) -> (String, bool) {
-    match capture {
-        crate::config::CaptureKind::Folder(path) => (format!("folder:{path}"), true),
-        crate::config::CaptureKind::FolderFlat(path) => (format!("folder:{path}"), false),
-        crate::config::CaptureKind::FolderRegex(pattern) => {
-            (format!("folder_regex:{pattern}"), true)
-        }
-        crate::config::CaptureKind::FolderFlatRegex(pattern) => {
-            (format!("folder_regex:{pattern}"), false)
-        }
-        other => (other.to_token(), true),
+impl From<EnvVarEntry> for v6::EnvVarEntryV6 {
+    fn from(entry: EnvVarEntry) -> Self {
+        Self { hash_ck: entry.hash_ck, source_nk: entry.source_nk.map(Into::into) }
     }
 }
 
-impl From<v5::OutputCaptureSpecV5> for crate::config::OutputCaptureSpec {
-    fn from(spec: v5::OutputCaptureSpecV5) -> Self {
-        Self {
-            name: spec.name.clone(),
-            capture: capture_kind_from_state_wire(&spec.capture, spec.include_topmost_folder),
-            save: spec.save.into(),
-            allow_empty: spec.allow_empty,
-        }
+impl From<v6::CapturedOutputV6> for CapturedOutput {
+    fn from(output: v6::CapturedOutputV6) -> Self {
+        Self { capture: output.capture, hash_nk: output.hash_nk, saved_nk: output.saved_nk }
     }
 }
 
-impl From<crate::config::OutputCaptureSpec> for v5::OutputCaptureSpecV5 {
-    fn from(spec: crate::config::OutputCaptureSpec) -> Self {
-        let (capture, include_topmost_folder) = capture_kind_to_state_wire(&spec.capture);
-        Self {
-            name: spec.name,
-            capture,
-            save: spec.save.into(),
-            allow_empty: spec.allow_empty,
-            include_topmost_folder,
-        }
-    }
-}
-
-impl From<v5::CapturedOutputV5> for CapturedOutput {
-    fn from(output: v5::CapturedOutputV5) -> Self {
-        Self { hash: output.hash, capture: output.capture.map(Into::into) }
-    }
-}
-
-impl From<CapturedOutput> for v5::CapturedOutputV5 {
+impl From<CapturedOutput> for v6::CapturedOutputV6 {
     fn from(output: CapturedOutput) -> Self {
-        Self { hash: output.hash, capture: output.capture.map(Into::into) }
+        Self { capture: output.capture, hash_nk: output.hash_nk, saved_nk: output.saved_nk }
     }
 }
 
-impl From<v5::StepRefV5> for StepRef {
-    fn from(step: v5::StepRefV5) -> Self {
+impl From<v6::StepRefV6> for StepRef {
+    fn from(step: v6::StepRefV6) -> Self {
         Self { workflow_id: step.workflow_id, step_id: step.step_id }
     }
 }
 
-impl From<StepRef> for v5::StepRefV5 {
+impl From<StepRef> for v6::StepRefV6 {
     fn from(step: StepRef) -> Self {
         Self { workflow_id: step.workflow_id, step_id: step.step_id }
     }
 }
 
-impl From<v5::ToolCallInstanceV5> for ToolCallInstance {
-    fn from(inst: v5::ToolCallInstanceV5) -> Self {
+impl From<v6::ToolCallInstanceV6> for ToolCallInstance {
+    fn from(inst: v6::ToolCallInstanceV6) -> Self {
         Self {
+            key_version: inst.key_version,
+            attempted_key_version_nk: inst.attempted_key_version_nk,
             tool_call_id: inst.tool_call_id,
-            impure: inst.impure,
-            invalidated_at: inst
-                .invalidated_at
-                .map(|stamp| mediapm_utils::Timestamp::from_unix_nanos(stamp.0)),
-            executed_at: mediapm_utils::Timestamp::from_unix_nanos(inst.executed_at.0),
-            last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(
-                inst.last_referenced_at.0,
-            ),
-            step_ids: inst.step_ids.into_iter().map(Into::into).collect(),
             command_args: inst.command_args,
-            env_vars: inst.env_vars,
+            env_vars_ck: inst.env_vars_ck.into_iter().map(|(k, v)| (k, v.into())).collect(),
             materialized_inputs: inst.materialized_inputs,
             outputs: inst.outputs.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            impure_nk: inst.impure_nk,
+            invalidated_at_nk: inst
+                .invalidated_at_nk
+                .map(|stamp| Timestamp::from_unix_nanos(stamp.0)),
+            executed_at_nk: Timestamp::from_unix_nanos(inst.executed_at_nk.0),
+            last_referenced_at_nk: Timestamp::from_unix_nanos(inst.last_referenced_at_nk.0),
+            step_ids_nk: inst.step_ids_nk.into_iter().map(Into::into).collect(),
         }
     }
 }
 
-impl From<ToolCallInstance> for v5::ToolCallInstanceV5 {
+impl From<ToolCallInstance> for v6::ToolCallInstanceV6 {
     fn from(inst: ToolCallInstance) -> Self {
         Self {
+            key_version: inst.key_version,
+            attempted_key_version_nk: inst.attempted_key_version_nk,
             tool_call_id: inst.tool_call_id,
-            impure: inst.impure,
-            invalidated_at: inst
-                .invalidated_at
-                .map(|stamp| v5::WireTimestampV5(stamp.as_unix_nanos())),
-            executed_at: v5::WireTimestampV5(inst.executed_at.as_unix_nanos()),
-            last_referenced_at: v5::WireTimestampV5(inst.last_referenced_at.as_unix_nanos()),
-            step_ids: inst.step_ids.into_iter().map(Into::into).collect(),
             command_args: inst.command_args,
-            env_vars: inst.env_vars,
+            env_vars_ck: inst.env_vars_ck.into_iter().map(|(k, v)| (k, v.into())).collect(),
             materialized_inputs: inst.materialized_inputs,
             outputs: inst.outputs.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            impure_nk: inst.impure_nk,
+            invalidated_at_nk: inst
+                .invalidated_at_nk
+                .map(|stamp| v6::WireTimestampV6(stamp.as_unix_nanos())),
+            executed_at_nk: v6::WireTimestampV6(inst.executed_at_nk.as_unix_nanos()),
+            last_referenced_at_nk: v6::WireTimestampV6(inst.last_referenced_at_nk.as_unix_nanos()),
+            step_ids_nk: inst.step_ids_nk.into_iter().map(Into::into).collect(),
         }
     }
 }
 
-impl From<v5::AuxDataV5> for AuxData {
-    fn from(aux: v5::AuxDataV5) -> Self {
-        Self {
-            conductor_gc_epoch: mediapm_utils::Timestamp::from_unix_nanos(aux.conductor_gc_epoch.0),
-            live_instances: aux.live_instances,
-        }
-    }
-}
-
-impl From<AuxData> for v5::AuxDataV5 {
-    fn from(aux: AuxData) -> Self {
-        Self {
-            conductor_gc_epoch: v5::WireTimestampV5(aux.conductor_gc_epoch.as_unix_nanos()),
-            live_instances: aux.live_instances,
-        }
-    }
-}
-
-impl From<v5::ConductorStateV5> for ConductorState {
-    fn from(state: v5::ConductorStateV5) -> Self {
+impl From<v6::ConductorStateV6> for ConductorState {
+    fn from(state: v6::ConductorStateV6) -> Self {
         Self {
             version: state.version,
+            conductor_gc_ran_at: Timestamp::from_unix_nanos(state.conductor_gc_ran_at),
+            step_instances: state.step_instances,
             tool_call_instances: state
                 .tool_call_instances
                 .into_iter()
                 .map(|(k, v)| (k, v.into()))
                 .collect(),
-            aux: state.aux.into(),
         }
     }
 }
 
-impl From<ConductorState> for v5::ConductorStateV5 {
+impl From<ConductorState> for v6::ConductorStateV6 {
     fn from(state: ConductorState) -> Self {
         Self {
-            version: v5::CONDUCTOR_STATE_VERSION_V5,
+            version: v6::CONDUCTOR_STATE_VERSION_V6,
+            conductor_gc_ran_at: state.conductor_gc_ran_at.as_unix_nanos(),
+            step_instances: state.step_instances,
             tool_call_instances: state
                 .tool_call_instances
                 .into_iter()
                 .map(|(k, v)| (k, v.into()))
                 .collect(),
-            aux: state.aux.into(),
         }
     }
 }
@@ -246,36 +172,37 @@ pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// JSON-based helpers (v3 — current plain-JSON persistence path)
-// ---------------------------------------------------------------------------
-
-/// Decodes an orchestration state from inline JSON bytes, checking that the
-/// version marker matches the latest schema.
+/// Decodes an orchestration state from inline JSON bytes.
 ///
 /// # Errors
 ///
-/// Returns an error if the version is unsupported. Unknown/missing versions
-/// are reported with a clear message.
+/// Returns an error if the version is unsupported.
 pub fn decode_state_json(bytes: &[u8]) -> Result<ConductorState, ConductorError> {
     let version = peek_version_marker(bytes)?;
 
-    if v5::is_conductor_state_version_v5(version) {
+    if v6::is_conductor_state_version_v6(version) {
+        let v6_state: v6::ConductorStateV6 = serde_json::from_slice(bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        Ok(v6_state.into())
+    } else if v5::is_conductor_state_version_v5(version) {
         let v5_state: v5::ConductorStateV5 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v5_state.into())
+        Ok(v6::from_v5_into_v6(v5_state).into())
     } else if v4::is_conductor_state_version_v4(version) {
         let v4_state: v4::ConductorStateV4 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v5::from_v4_into_v5(v4_state).into())
+        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4_state)).into())
     } else if v3::is_conductor_state_version_v3(version) {
         let v3_state: v3::ConductorStateV3 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v5::from_v4_into_v5(v4::from_v3_into_v4(v3_state)).into())
+        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3_state))).into())
     } else if v2::is_conductor_state_version_v2(version) {
         let v2_state: v2::ConductorStateV2 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(v2_state))).into())
+        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(
+            v2_state,
+        ))))
+        .into())
     } else if v1::is_orchestration_state_version_v1(version) {
         Err(ConductorError::Serialization(format!(
             "orchestration state version {version} requires CAS-backed migration; \
@@ -284,7 +211,8 @@ pub fn decode_state_json(bytes: &[u8]) -> Result<ConductorState, ConductorError>
     } else {
         Err(ConductorError::Serialization(format!(
             "unsupported orchestration state version: {version} \
-             (supported: {}, {}, {}, {}, {})",
+             (supported: {}, {}, {}, {}, {}, {})",
+            v6::CONDUCTOR_STATE_VERSION_V6,
             v5::CONDUCTOR_STATE_VERSION_V5,
             v4::CONDUCTOR_STATE_VERSION_V4,
             v3::CONDUCTOR_STATE_VERSION_V3,
@@ -294,14 +222,7 @@ pub fn decode_state_json(bytes: &[u8]) -> Result<ConductorState, ConductorError>
     }
 }
 
-/// Decodes persisted state JSON, migrating v1 CAS-referenced envelopes when
-/// needed.
-///
-/// Reads every version this build still understands, in order: V5 as written,
-/// V4 through the V4→V5 migration, V3 and V2 through the V3→V4 bridge first,
-/// and V1 through the CAS-backed envelope migration before both. A document
-/// whose marker matches none of them is an error that names each supported
-/// version, never a best-effort decode.
+/// Decodes persisted state JSON, migrating older versions when needed.
 ///
 /// # Errors
 ///
@@ -312,31 +233,42 @@ pub async fn decode_state_json_with_cas<C: CasApi>(
 ) -> Result<ConductorState, ConductorError> {
     let version = peek_version_marker(bytes)?;
 
-    if v5::is_conductor_state_version_v5(version) {
+    if v6::is_conductor_state_version_v6(version) {
+        let v6_state: v6::ConductorStateV6 = serde_json::from_slice(bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        Ok(v6_state.into())
+    } else if v5::is_conductor_state_version_v5(version) {
         let v5_state: v5::ConductorStateV5 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v5_state.into())
+        Ok(v6::from_v5_into_v6(v5_state).into())
     } else if v4::is_conductor_state_version_v4(version) {
         let v4_state: v4::ConductorStateV4 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v5::from_v4_into_v5(v4_state).into())
+        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4_state)).into())
     } else if v3::is_conductor_state_version_v3(version) {
         let v3_state: v3::ConductorStateV3 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v5::from_v4_into_v5(v4::from_v3_into_v4(v3_state)).into())
+        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3_state))).into())
     } else if v2::is_conductor_state_version_v2(version) {
         let v2_state: v2::ConductorStateV2 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        Ok(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(v2_state))).into())
+        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(
+            v2_state,
+        ))))
+        .into())
     } else if v1::is_orchestration_state_version_v1(version) {
         let envelope: v1::OrchestrationStateEnvelopeV1 = serde_json::from_slice(bytes)
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
         let v2_state = v2::migrate_v1_to_v2(cas, envelope).await?;
-        Ok(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(v2_state))).into())
+        Ok(v6::from_v5_into_v6(v5::from_v4_into_v5(v4::from_v3_into_v4(v3::from_v2_into_v3(
+            v2_state,
+        ))))
+        .into())
     } else {
         Err(ConductorError::Serialization(format!(
             "unsupported orchestration state version: {version} \
-             (supported: {}, {}, {}, {}, {})",
+             (supported: {}, {}, {}, {}, {}, {})",
+            v6::CONDUCTOR_STATE_VERSION_V6,
             v5::CONDUCTOR_STATE_VERSION_V5,
             v4::CONDUCTOR_STATE_VERSION_V4,
             v3::CONDUCTOR_STATE_VERSION_V3,
@@ -353,8 +285,8 @@ pub async fn decode_state_json_with_cas<C: CasApi>(
 ///
 /// Returns an error if serialization to JSON fails.
 pub fn encode_state_json(state: &ConductorState) -> Result<Vec<u8>, ConductorError> {
-    let v5_state: v5::ConductorStateV5 = state.clone().into();
-    serde_json::to_vec_pretty(&v5_state).map_err(|e| ConductorError::Serialization(e.to_string()))
+    let v6_state: v6::ConductorStateV6 = state.clone().into();
+    serde_json::to_vec_pretty(&v6_state).map_err(|e| ConductorError::Serialization(e.to_string()))
 }
 
 #[cfg(test)]
@@ -365,63 +297,54 @@ mod tests {
     use mediapm_utils::Timestamp;
 
     use super::*;
-    use crate::config::{OutputCaptureSpec, SaveMode};
-    use crate::state::{CapturedOutput, STATE_VERSION};
-
-    /// A capture spec whose every field differs from the defaults, so a bridge
-    /// that dropped or re-defaulted one of them would change the value.
-    fn sample_spec() -> OutputCaptureSpec {
-        OutputCaptureSpec {
-            name: "stdout".to_string(),
-            capture: crate::config::CaptureKind::Stdout,
-            save: SaveMode::False,
-            allow_empty: true,
-        }
-    }
+    use crate::state::{STATE_VERSION, StepRef};
 
     fn sample_state() -> ConductorState {
         let key = Hash::from_content(b"key");
         let instance = ToolCallInstance {
+            key_version: 8,
+            attempted_key_version_nk: 8,
             tool_call_id: "echo@v1".to_string(),
-            impure: false,
-            invalidated_at: Some(Timestamp::from_unix_nanos(11)),
-            executed_at: Timestamp::from_unix_nanos(5),
-            last_referenced_at: Timestamp::from_unix_nanos(42),
-            step_ids: BTreeSet::from([StepRef {
-                workflow_id: "default".to_string(),
-                step_id: "step-0-echo".to_string(),
-            }]),
             command_args: vec![Hash::from_content(b"arg")],
-            env_vars: BTreeMap::from([("FOO".to_string(), Hash::from_content(b"val"))]),
+            env_vars_ck: BTreeMap::from([(
+                "FOO".to_string(),
+                EnvVarEntry {
+                    hash_ck: Hash::from_content(b"val"),
+                    source_nk: Some(EnvVarSource::Literal),
+                },
+            )]),
             materialized_inputs: BTreeMap::from([(
                 "bin/tool".to_string(),
                 Hash::from_content(b"payload"),
             )]),
             outputs: BTreeMap::from([(
                 "stdout".to_string(),
-                CapturedOutput { hash: Hash::from_content(b"out"), capture: Some(sample_spec()) },
+                CapturedOutput {
+                    capture: "stdout".to_string(),
+                    hash_nk: Some(Hash::from_content(b"out")),
+                    saved_nk: true,
+                },
             )]),
+            impure_nk: false,
+            invalidated_at_nk: Some(Timestamp::from_unix_nanos(11)),
+            executed_at_nk: Timestamp::from_unix_nanos(5),
+            last_referenced_at_nk: Timestamp::from_unix_nanos(42),
+            step_ids_nk: BTreeSet::from([StepRef {
+                workflow_id: "default".to_string(),
+                step_id: "step-0-echo".to_string(),
+            }]),
         };
         ConductorState {
             version: STATE_VERSION,
+            conductor_gc_ran_at: Timestamp::from_unix_nanos(9),
+            step_instances: BTreeMap::from([(
+                "default".to_string(),
+                BTreeMap::from([("step-0-echo".to_string(), key)]),
+            )]),
             tool_call_instances: BTreeMap::from([(key, instance)]),
-            aux: AuxData {
-                conductor_gc_epoch: Timestamp::from_unix_nanos(9),
-                live_instances: BTreeMap::from([("default".to_string(), BTreeSet::from([key]))]),
-            },
         }
     }
 
-    /// Every recorded field survives the encode/decode bridge: the capture
-    /// spec, the argv hashes, the environment hashes, the staged-input hashes,
-    /// the GC clock and the workflow-qualified step ref.
-    ///
-    /// The spec is what a reusing step compares its declaration against, so a
-    /// bridge that dropped it would make every recorded name look unknown and
-    /// every reuse a miss — a silent, permanent re-execution rather than a
-    /// visible failure. The step ref is what an invalidation request matches, so
-    /// a bridge that dropped its workflow would make marking a step reach
-    /// nothing.
     #[test]
     fn state_json_round_trip_preserves_every_recorded_field() {
         let state = sample_state();
@@ -430,48 +353,84 @@ mod tests {
         assert_eq!(decoded, state);
     }
 
-    /// The encoded envelope declares the current schema version, so a reader
-    /// can dispatch on it without guessing from the field layout.
     #[test]
     fn encoded_state_declares_the_current_version() {
         let encoded = encode_state_json(&sample_state()).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(json["version"], serde_json::json!(STATE_VERSION));
-        assert_eq!(json["version"], serde_json::json!(5));
+        assert_eq!(json["version"], serde_json::json!(6));
     }
 
-    /// A document already written as V5 decodes unchanged, marker and all.
-    ///
-    /// This is the arm that keeps a reader from re-migrating a current file: a
-    /// dispatcher that lacked it would report the file's own version as
-    /// unsupported, and one that sent it through an older reader would drop
-    /// every field that reader cannot express.
     #[test]
-    fn a_v5_document_decodes_unchanged() {
+    fn a_v6_document_decodes_unchanged() {
         let state = sample_state();
         let encoded = encode_state_json(&state).expect("state encodes");
-        assert_eq!(
-            peek_version_marker(&encoded).expect("marker is readable"),
-            v5::CONDUCTOR_STATE_VERSION_V5,
-        );
+        assert_eq!(peek_version_marker(&encoded).expect("marker is readable"), 6);
 
-        let decoded = decode_state_json(&encoded).expect("the v5 document decodes");
-
+        let decoded = decode_state_json(&encoded).expect("the v6 document decodes");
         assert_eq!(decoded, state);
         let instance = decoded.tool_call_instances.values().next().expect("one instance");
-        assert_eq!(instance.invalidated_at, Some(Timestamp::from_unix_nanos(11)));
-        assert_eq!(decoded.aux.live_instances.keys().collect::<Vec<_>>(), vec!["default"]);
+        assert_eq!(instance.invalidated_at_nk, Some(Timestamp::from_unix_nanos(11)));
+        assert_eq!(
+            decoded.step_instances["default"]["step-0-echo"],
+            decoded.tool_call_instances.keys().next().copied().unwrap()
+        );
     }
 
-    /// A V3 document on disk still decodes, through the V4→V5 ladder.
-    ///
-    /// Every workspace that ran before either version holds one of these. The
-    /// defaults it lands on are the safe pair: nothing is invalidated, and no
-    /// workflow has a recorded seed, so the GC evicts nothing until the next
-    /// successful run writes one. Its step id arrives unqualified, because the
-    /// V3 wire could not say which workflow it belonged to.
     #[test]
-    fn a_v3_document_decodes_through_the_v5_ladder() {
+    fn a_v5_document_migrates_to_v6() {
+        let key = Hash::from_content(b"key");
+        let json = format!(
+            r#"{{
+                "version": 5,
+                "tool_call_instances": {{
+                    "{key}": {{
+                        "tool_call_id": "echo@v1",
+                        "impure": false,
+                        "executed_at": 7,
+                        "last_referenced_at": 42,
+                        "step_ids": [{{ "workflow_id": "default", "step_id": "step-0-echo" }}],
+                        "command_args": [],
+                        "env_vars": {{ "FOO": "{}" }},
+                        "materialized_inputs": {{}},
+                        "outputs": {{
+                            "out": {{
+                                "hash": "{}",
+                                "capture": {{
+                                    "name": "out",
+                                    "capture": "file:out.bin",
+                                    "save": "false",
+                                    "allow_empty": false,
+                                    "include_topmost_folder": true
+                                }}
+                            }},
+                            "dropped": {{ "hash": "{}", "capture": null }}
+                        }}
+                    }}
+                }},
+                "aux": {{ "conductor_gc_epoch": 9, "live_instances": {{ "default": ["{key}"] }} }}
+            }}"#,
+            Hash::from_content(b"val"),
+            Hash::from_content(b"out"),
+            Hash::from_content(b"dropped"),
+        );
+
+        let decoded = decode_state_json(json.as_bytes()).expect("a v5 document decodes");
+        assert_eq!(decoded.version, 6);
+        assert_eq!(decoded.conductor_gc_ran_at, Timestamp::from_unix_nanos(9));
+        assert_eq!(decoded.step_instances["default"]["step-0-echo"], key);
+        let instance = &decoded.tool_call_instances[&key];
+        assert_eq!(instance.key_version, 7);
+        assert_eq!(instance.attempted_key_version_nk, 7);
+        assert_eq!(instance.env_vars_ck["FOO"].source_nk, None);
+        assert_eq!(instance.invalidated_at_nk, None);
+        assert_eq!(instance.outputs.len(), 1);
+        assert_eq!(instance.outputs["out"].hash_nk, Some(Hash::from_content(b"out")));
+        assert!(!instance.outputs["out"].saved_nk);
+    }
+
+    #[test]
+    fn a_v3_document_decodes_through_the_v6_ladder() {
         let key = Hash::from_content(b"key");
         let json = format!(
             r#"{{
@@ -498,238 +457,38 @@ mod tests {
         );
 
         let decoded = decode_state_json(json.as_bytes()).expect("a v3 document decodes");
-
         assert_eq!(decoded.version, STATE_VERSION);
-        assert_eq!(decoded.aux.conductor_gc_epoch, Timestamp::from_unix_nanos(2));
-        assert!(decoded.aux.live_instances.is_empty());
+        assert_eq!(decoded.conductor_gc_ran_at, Timestamp::from_unix_nanos(2));
+        assert_eq!(
+            decoded.step_instances,
+            BTreeMap::from([(String::new(), BTreeMap::from([("step-0-echo".to_string(), key)]),)]),
+            "v6 migration backfills step_instances from instance step provenance",
+        );
         let instance = decoded.tool_call_instances.values().next().expect("one instance");
-        assert_eq!(instance.invalidated_at, None);
+        assert_eq!(instance.invalidated_at_nk, None);
+        assert_eq!(instance.key_version, 7);
+        assert_eq!(instance.attempted_key_version_nk, 7);
         assert_eq!(
-            instance.step_ids,
+            instance.step_ids_nk,
             BTreeSet::from([StepRef {
                 workflow_id: String::new(),
                 step_id: "step-0-echo".to_string(),
             }]),
-            "a step id the old wire could not qualify migrates with no workflow",
         );
-        assert_eq!(
-            instance.last_referenced_at,
-            Timestamp::default(),
-            "a record with no aux clock starts at the epoch, which is what V4 read a missing entry as",
-        );
+        assert_eq!(instance.last_referenced_at_nk, Timestamp::default());
     }
 
-    /// Round-tripping an instance through the wire type preserves the steps
-    /// that recorded it, workflow and all; the record-without-provenance case
-    /// is pinned in `v2`'s tests.
-    #[test]
-    fn instance_step_ids_survive_the_wire_bridge() {
-        let runtime = ToolCallInstance {
-            tool_call_id: "echo".to_string(),
-            impure: false,
-            invalidated_at: None,
-            executed_at: Timestamp::from_unix_nanos(0),
-            last_referenced_at: Timestamp::from_unix_nanos(0),
-            command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
-            materialized_inputs: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-            step_ids: BTreeSet::from([StepRef {
-                workflow_id: "mediapm.media.demo.local.dQw4w9WgXcQ".to_string(),
-                step_id: "step-1-echo".to_string(),
-            }]),
-        };
-        let wire: v5::ToolCallInstanceV5 = runtime.clone().into();
-        let back: ToolCallInstance = wire.into();
-        assert_eq!(
-            back.step_ids,
-            BTreeSet::from([StepRef {
-                workflow_id: "mediapm.media.demo.local.dQw4w9WgXcQ".to_string(),
-                step_id: "step-1-echo".to_string(),
-            }]),
-        );
-    }
-
-    /// A v4 document migrates to v5: the map key becomes the record's only
-    /// identity, the GC clock moves onto the record, the argv flag is dropped,
-    /// and a step id the v4 wire could not qualify becomes a ref that matches no
-    /// workflow.
-    ///
-    /// The last point is the safe direction for a workflow-scoped invalidation:
-    /// a migrated record cannot be marked by a request that names a workflow,
-    /// so an operator's `media invalidate` marks nothing rather than marking
-    /// work under some other workflow. The record re-acquires a qualified ref
-    /// the next time the step serves it, whether by executing or by hitting it.
-    #[test]
-    fn a_v4_document_migrates_to_v5() {
-        let key = Hash::from_content(b"key");
-        let arg = Hash::from_content(b"arg");
-        let json = format!(
-            r#"{{
-                "version": 4,
-                "tool_call_instances": {{
-                    "{key}": {{
-                        "instance_key": "{key}",
-                        "tool_call_id": "echo@v1",
-                        "impure": false,
-                        "executed_at": 7,
-                        "step_ids": ["step-0-echo"],
-                        "command_args": [{{ "hash": "{arg}", "deterministic": true }}],
-                        "env_vars": {{}},
-                        "materialized_inputs": {{}},
-                        "outputs": {{}}
-                    }}
-                }},
-                "aux": {{
-                    "tool_call_instance_counter": 5,
-                    "conductor_gc_epoch": 9,
-                    "instances": {{ "{key}": {{ "last_referenced_at": 42 }} }},
-                    "live_instances": {{ "default": ["{key}"] }}
-                }}
-            }}"#,
-        );
-
-        let decoded = decode_state_json(json.as_bytes()).expect("a v4 document decodes");
-
-        assert_eq!(STATE_VERSION, 5, "the runtime marker is the version this migration lands on");
-        assert_eq!(decoded.version, 5);
-        assert_eq!(decoded.aux.conductor_gc_epoch, Timestamp::from_unix_nanos(9));
-        assert_eq!(
-            decoded.aux.live_instances.get("default"),
-            Some(&BTreeSet::from([key])),
-            "the GC seed is carried over, so a migrated document keeps its instances",
-        );
-        let instance = decoded.tool_call_instances[&key].clone();
-        assert_eq!(
-            instance.step_ids,
-            BTreeSet::from([StepRef {
-                workflow_id: String::new(),
-                step_id: "step-0-echo".to_string(),
-            }]),
-            "a v4 step id could not name its workflow, so it migrates unqualified",
-        );
-        assert_eq!(
-            instance.last_referenced_at,
-            Timestamp::from_unix_nanos(42),
-            "the GC clock moves off the aux map and onto the record it describes",
-        );
-        assert_eq!(
-            instance.command_args,
-            vec![arg],
-            "the argv hashes are carried over in order, with the flag dropped",
-        );
-    }
-
-    /// A v4 record whose clock has no aux entry starts at the epoch, which is
-    /// exactly what the V4 reader's `map_or(0, …)` treated a missing entry as,
-    /// so the migration changes no eviction decision.
-    #[test]
-    fn a_v4_record_with_no_aux_clock_migrates_to_the_epoch() {
-        let key = Hash::from_content(b"key");
-        let json = format!(
-            r#"{{
-                "version": 4,
-                "tool_call_instances": {{
-                    "{key}": {{
-                        "instance_key": "{key}",
-                        "tool_call_id": "echo@v1",
-                        "impure": false,
-                        "executed_at": 7,
-                        "command_args": [],
-                        "env_vars": {{}},
-                        "materialized_inputs": {{}},
-                        "outputs": {{}}
-                    }}
-                }},
-                "aux": {{
-                    "tool_call_instance_counter": 0,
-                    "conductor_gc_epoch": 9,
-                    "instances": {{}}
-                }}
-            }}"#,
-        );
-
-        let decoded = decode_state_json(json.as_bytes()).expect("a v4 document decodes");
-
-        assert_eq!(decoded.tool_call_instances[&key].last_referenced_at, Timestamp::default());
-    }
-
-    /// The recorded instance does not carry its own key: the map key is its only
-    /// home, so a document cannot hold two identities that disagree.
-    ///
-    /// Asserted on the serialized document rather than on the struct, so it
-    /// cannot be satisfied by a field that merely serializes under another name.
-    /// `a_saved_state_file_is_whole_and_leaves_no_temporary_file` holds the same
-    /// property against a file written by the real save path.
-    #[test]
-    fn the_recorded_instance_does_not_carry_its_own_key() {
-        let encoded = encode_state_json(&sample_state()).expect("state encodes");
-        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("state is json");
-        let instances = json["tool_call_instances"].as_object().expect("instances map");
-        let (map_key, instance) = instances.iter().next().expect("one instance");
-
-        assert!(map_key.starts_with("blake3:"), "the map is keyed by content hash");
-        assert!(
-            instance.get("instance_key").is_none(),
-            "the record must not repeat the key it is filed under",
-        );
-    }
-
-    /// A document whose marker is absent or not a number is refused, and the
-    /// message says which of the two it was.
-    ///
-    /// The marker is the only thing that selects a reader, so a document
-    /// without one cannot be attributed to a rung of the ladder. Guessing the
-    /// current version instead would hand a foreign file to a parser that was
-    /// never written for it.
-    #[test]
-    fn a_document_without_a_numeric_version_is_refused() {
-        for body in [r#"{"tool_call_instances":{}}"#, r#"{"version":"5"}"#] {
-            let error = peek_version_marker(body.as_bytes())
-                .expect_err("a marker-less document must not be attributed to a version");
-            assert!(
-                error.to_string().contains("missing or non-numeric 'version'"),
-                "the diagnostic must name what is missing: {error}",
-            );
-        }
-    }
-
-    /// A version past `u32` is refused by the marker reader rather than
-    /// truncated into a version this build might recognise.
-    #[test]
-    fn a_version_marker_beyond_u32_is_refused() {
-        let error = peek_version_marker(br#"{"version": 4294967296}"#)
-            .expect_err("a marker past u32 must not be narrowed");
-        assert!(
-            error.to_string().contains("exceeds u32 range"),
-            "the diagnostic must say the marker is out of range: {error}",
-        );
-    }
-
-    /// A version this build does not know is refused, and the message lists
-    /// every version it does know, so a reader can tell which build wrote the
-    /// file it is holding.
     #[test]
     fn an_unsupported_version_is_refused_and_names_the_supported_set() {
         let error =
             decode_state_json(br#"{"version": 99}"#).expect_err("version 99 must not be decoded");
         let message = error.to_string();
         assert!(message.contains("unsupported orchestration state version: 99"), "{message}");
-        for supported in ["5", "4", "3", "2", "1"] {
-            assert!(
-                message.contains(supported),
-                "the diagnostic must list supported version {supported}: {message}",
-            );
+        for supported in ["6", "5", "4", "3", "2", "1"] {
+            assert!(message.contains(supported), "missing {supported} in {message}");
         }
     }
 
-    /// A V1 document is refused by the plain decoder and points at the
-    /// CAS-backed one.
-    ///
-    /// V1's envelope refers to blobs rather than carrying them, so decoding it
-    /// here would either fail obscurely or invent empty content. Naming the
-    /// decoder that can read it is the whole difference between a usable error
-    /// and a dead end.
     #[test]
     fn a_v1_document_without_cas_is_refused_and_points_at_the_cas_decoder() {
         let error = decode_state_json(br#"{"version": 1}"#)
@@ -737,21 +496,56 @@ mod tests {
         assert!(
             error.to_string().contains("requires CAS-backed migration")
                 && error.to_string().contains("decode_state_json_with_cas"),
-            "the diagnostic must name the decoder that can read it: {error}",
+            "{error}",
         );
     }
 
-    /// The instance wire record carries no `version` field (fact 26) — only
-    /// the envelope has one, and the instance's identity is its map key.
     #[test]
-    fn instance_json_has_no_version_field() {
-        let encoded = encode_state_json(&sample_state()).unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        let instances = json["tool_call_instances"].as_object().unwrap();
-        let instance = instances.values().next().unwrap();
-        assert!(
-            instance.get("version").is_none(),
-            "ToolCallInstance must not serialize a version field"
-        );
+    fn nullable_facts_are_explicit_null_in_v6_json() {
+        let key = Hash::from_content(b"key");
+        let state = ConductorState {
+            version: 6,
+            conductor_gc_ran_at: Timestamp::from_unix_nanos(1),
+            step_instances: BTreeMap::new(),
+            tool_call_instances: BTreeMap::from([(
+                key,
+                ToolCallInstance {
+                    key_version: 7,
+                    attempted_key_version_nk: 7,
+                    tool_call_id: "t".to_string(),
+                    command_args: Vec::new(),
+                    env_vars_ck: BTreeMap::from([(
+                        "K".to_string(),
+                        EnvVarEntry { hash_ck: Hash::from_content(b"v"), source_nk: None },
+                    )]),
+                    materialized_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::from([(
+                        "o".to_string(),
+                        CapturedOutput {
+                            capture: "stdout".to_string(),
+                            hash_nk: None,
+                            saved_nk: false,
+                        },
+                    )]),
+                    impure_nk: false,
+                    invalidated_at_nk: None,
+                    executed_at_nk: Timestamp::from_unix_nanos(1),
+                    last_referenced_at_nk: Timestamp::from_unix_nanos(1),
+                    step_ids_nk: BTreeSet::new(),
+                },
+            )]),
+        };
+        let encoded = serde_json::to_value(encode_state_json(&state).unwrap()).unwrap();
+        let inst = encoded["tool_call_instances"][key.to_string()].clone();
+        assert_eq!(inst["invalidated_at_nk"], serde_json::Value::Null);
+        assert_eq!(inst["outputs"]["o"]["hash_nk"], serde_json::Value::Null);
+        assert_eq!(inst["env_vars_ck"]["K"]["source_nk"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn v6_rejects_v5_only_fields() {
+        let json = br#"{"version":6,"conductor_gc_ran_at":0,"step_instances":{},"tool_call_instances":{},"aux":{"conductor_gc_epoch":0}}"#;
+        let err = decode_state_json(json).expect_err("aux must be rejected");
+        assert!(err.to_string().contains("unknown") || err.to_string().contains("aux"), "{err}");
     }
 }

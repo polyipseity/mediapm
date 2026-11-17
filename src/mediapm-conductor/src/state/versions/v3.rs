@@ -421,32 +421,33 @@ mod tests {
             "a migrated document declares the current schema version",
         );
         let instance = state.tool_call_instances.values().next().expect("one instance");
-        assert_eq!(
-            instance.outputs["content"].capture, None,
-            "a v2 entry recorded no spec, so it must carry the unknown-spec sentinel",
+        assert!(
+            !instance.outputs.contains_key("content"),
+            "a v2 entry recorded no capture spec; v6 migration drops sentinel-captured outputs rather than inventing a spec",
         );
         assert_eq!(
-            instance.last_referenced_at.as_unix_nanos(),
+            instance.last_referenced_at_nk.as_unix_nanos(),
             7,
             "the per-instance clock survives the migration and lands on the record",
         );
+        assert_eq!(instance.key_version, 7);
+        assert_eq!(instance.attempted_key_version_nk, 7);
 
         let re_encoded =
             super::super::encode_state_json(&state).expect("the migrated state encodes");
         let value: serde_json::Value = serde_json::from_slice(&re_encoded).expect("valid JSON");
         assert_eq!(value["version"], json!(crate::state::STATE_VERSION));
         assert!(
-            value["aux"].get("instances").is_none(),
-            "the per-instance aux map is gone from the current wire shape: {value:?}",
+            value.get("aux").is_none(),
+            "the aux map is gone from the current wire shape: {value:?}",
         );
         let encoded_instance = value["tool_call_instances"]
             .as_object()
             .and_then(|instances| instances.values().next())
             .expect("one encoded instance");
-        assert_eq!(
-            encoded_instance["outputs"]["content"]["capture"],
-            serde_json::Value::Null,
-            "an unknown spec is written as null, never as a synthesized spec",
+        assert!(
+            encoded_instance["outputs"].get("content").is_none(),
+            "dropped sentinel output is not written: {value:?}",
         );
     }
 
@@ -615,9 +616,13 @@ mod tests {
             .expect("a v3 document predating step_ids still decodes");
         let instance = state.tool_call_instances.values().next().expect("one instance");
         assert!(
-            instance.step_ids.is_empty(),
+            instance.step_ids_nk.is_empty(),
             "an instance recorded before reuse was tracked names no step: {:?}",
-            instance.step_ids,
+            instance.step_ids_nk,
+        );
+        assert!(
+            state.step_instances.is_empty(),
+            "with no step provenance, v6 backfill has no step_instances to seed"
         );
     }
 

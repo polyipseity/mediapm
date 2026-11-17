@@ -183,18 +183,12 @@ pub struct MigratedKeyMaterial {
 
 /// Extracts output capture tokens from a recorded instance.
 ///
-/// Returns `None` when any recorded output lacks a capture spec, because v8's
-/// output-spec terms cannot be formed without inventing data.
+/// v6 stores the capture token string directly on each output.
 #[must_use]
 pub fn output_tokens_from_outputs(
     outputs: &BTreeMap<String, CapturedOutput>,
 ) -> Option<BTreeMap<String, String>> {
-    outputs
-        .iter()
-        .map(|(name, output)| {
-            output.capture.as_ref().map(|spec| (name.clone(), spec.capture.to_token()))
-        })
-        .collect()
+    Some(outputs.iter().map(|(name, output)| (name.clone(), output.capture.clone())).collect())
 }
 
 /// Migrates instance-key material from `from_version` to `to_version`.
@@ -772,7 +766,6 @@ pub fn instance_matches_stored_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CaptureKind, OutputCaptureSpec, SaveMode};
 
     /// Deriving twice from identical material yields identical keys.
     #[test]
@@ -892,30 +885,22 @@ mod tests {
         );
 
         // Captured output hashes are results; v8 material carries names/tokens
-        // only, so two records with different produced hashes but identical spec
-        // material derive the same key.
+        // only, so two records with different produced hashes but identical
+        // capture tokens derive the same key.
         let outputs_a = BTreeMap::from([(
             "video".to_string(),
             CapturedOutput {
-                hash: Hash::from_content(b"bytes-a"),
-                capture: Some(OutputCaptureSpec {
-                    name: "video".to_string(),
-                    capture: CaptureKind::File("out.mkv".to_string()),
-                    save: SaveMode::True,
-                    allow_empty: false,
-                }),
+                capture: "file:out.mkv".to_string(),
+                hash_nk: Some(Hash::from_content(b"bytes-a")),
+                saved_nk: true,
             },
         )]);
         let outputs_b = BTreeMap::from([(
             "video".to_string(),
             CapturedOutput {
-                hash: Hash::from_content(b"bytes-b"),
-                capture: Some(OutputCaptureSpec {
-                    name: "video".to_string(),
-                    capture: CaptureKind::File("out.mkv".to_string()),
-                    save: SaveMode::False,
-                    allow_empty: true,
-                }),
+                capture: "file:out.mkv".to_string(),
+                hash_nk: Some(Hash::from_content(b"bytes-b")),
+                saved_nk: false,
             },
         )]);
         let tokens_a = output_tokens_from_outputs(&outputs_a).expect("tokens");
@@ -924,7 +909,7 @@ mod tests {
         assert_eq!(
             derive_instance_key_v8("tool@v1", &command_args, &tokens_a, &materialized_inputs),
             derive_instance_key_v8("tool@v1", &command_args, &tokens_b, &materialized_inputs),
-            "captured output hashes and non-key spec fields must not move the v8 key",
+            "captured output hashes and non-key record facts must not move the v8 key",
         );
     }
 
@@ -972,13 +957,9 @@ mod tests {
         let outputs = BTreeMap::from([(
             "video".to_string(),
             CapturedOutput {
-                hash: Hash::from_content(b"produced-hash"),
-                capture: Some(OutputCaptureSpec {
-                    name: "video".to_string(),
-                    capture: CaptureKind::File("out.mkv".to_string()),
-                    save: SaveMode::True,
-                    allow_empty: false,
-                }),
+                capture: "file:out.mkv".to_string(),
+                hash_nk: Some(Hash::from_content(b"produced-hash")),
+                saved_nk: true,
             },
         )]);
 
@@ -1008,36 +989,17 @@ mod tests {
         );
     }
 
-    /// Migration fails for unregistered pairs or missing output capture data.
+    /// Migration fails for unregistered pairs.
     #[test]
-    fn migrate_terms_rejects_unregistered_pairs_and_missing_data() {
+    fn migrate_terms_rejects_unregistered_pairs() {
         let command_args = [Hash::from_content(b"argv")];
         let materialized_inputs = BTreeMap::new();
-        let outputs = BTreeMap::from([(
-            "video".to_string(),
-            CapturedOutput { hash: Hash::from_content(b"produced-hash"), capture: None },
-        )]);
-        assert!(
-            migrate_terms(
-                V7_INSTANCE_KEY_VERSION,
-                INSTANCE_KEY_VERSION,
-                &command_args,
-                &outputs,
-                &materialized_inputs,
-            )
-            .is_none(),
-            "missing capture spec means missing v8 data",
-        );
         let complete_outputs = BTreeMap::from([(
             "video".to_string(),
             CapturedOutput {
-                hash: Hash::from_content(b"produced-hash"),
-                capture: Some(OutputCaptureSpec {
-                    name: "video".to_string(),
-                    capture: CaptureKind::Stdout,
-                    save: SaveMode::True,
-                    allow_empty: false,
-                }),
+                capture: "stdout".to_string(),
+                hash_nk: Some(Hash::from_content(b"produced-hash")),
+                saved_nk: true,
             },
         )]);
         assert!(

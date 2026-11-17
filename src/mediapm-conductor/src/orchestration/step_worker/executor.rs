@@ -230,7 +230,7 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         // coordinator merges the bundle's instance into the run state, while
         // GC refresh still happens through the referenced-keys set at GC
         // time, not by per-hit mutation.
-        cached.step_ids.insert(StepRef {
+        cached.step_ids_nk.insert(StepRef {
             workflow_id: request.workflow_id.clone(),
             step_id: request.step.id.clone(),
         });
@@ -263,27 +263,25 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
     let captured = capture_outputs(cas, &merged_outputs, &dispatched.result, &sandbox_dir).await?;
 
     let instance = ToolCallInstance {
+        key_version: crate::instance_key::INSTANCE_KEY_VERSION,
+        attempted_key_version_nk: crate::instance_key::INSTANCE_KEY_VERSION,
         tool_call_id,
-        impure: tool_spec.is_impure,
-        // A fresh execution clears any marker: the bytes below were produced
-        // now, under the config in hand, so they may be reused again. Without
-        // this, re-executing invalidated work would leave the record marked and
-        // the next run would miss forever on a key it cannot change.
-        invalidated_at: None,
-        executed_at,
-        // The record starts its GC clock at the run that produced it. The
-        // settlement refreshes it to the run's reference time, so this seed only
-        // matters for the window between the two; taking it from `executed_at`
-        // keeps the record's own two clocks consistent.
-        last_referenced_at: executed_at,
-        step_ids: BTreeSet::from([StepRef {
+        command_args: dispatched.command_args,
+        env_vars_ck: env_vars
+            .into_iter()
+            .map(|(k, hash_ck)| (k, crate::state::EnvVarEntry { hash_ck, source_nk: None }))
+            .collect(),
+        materialized_inputs: dispatched.materialized_inputs,
+        outputs: captured.records,
+        impure_nk: tool_spec.is_impure,
+        // A fresh execution clears any marker.
+        invalidated_at_nk: None,
+        executed_at_nk: executed_at,
+        last_referenced_at_nk: executed_at,
+        step_ids_nk: BTreeSet::from([StepRef {
             workflow_id: request.workflow_id.clone(),
             step_id: request.step.id.clone(),
         }]),
-        command_args: dispatched.command_args,
-        env_vars,
-        materialized_inputs: dispatched.materialized_inputs,
-        outputs: captured.records,
     };
 
     Ok(StepExecutionBundle { instance, instance_key, cache_hit: false, producible_outputs })
@@ -316,7 +314,11 @@ async fn required_output_blobs_exist<C: CasApi>(
         let Some(record) = instance.outputs.get(name) else {
             return false;
         };
-        if cas.stat(record.hash).await.is_err() {
+        let Some(hash) = record.hash_nk else {
+            // An allowed-empty capture that matched nothing has no blob to verify.
+            continue;
+        };
+        if cas.stat(hash).await.is_err() {
             return false;
         }
     }
@@ -619,7 +621,7 @@ mod tests {
         .await;
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
         assert!(
-            first.instance.invalidated_at.is_none(),
+            first.instance.invalidated_at_nk.is_none(),
             "a fresh execution must record the instance without an invalidation marker",
         );
 
@@ -681,13 +683,11 @@ mod tests {
             "the merged declarations are recorded beside the implicit stream captures",
         );
         assert_eq!(
-            bundle.instance.outputs["result"].capture,
-            Some(stream_spec("result", "stdout")),
+            bundle.instance.outputs["result"].capture, "stdout",
             "the tool's default must be recorded under the spec that produced it",
         );
         assert_eq!(
-            bundle.instance.outputs["override"].capture,
-            Some(stream_spec("override", "stderr")),
+            bundle.instance.outputs["override"].capture, "stderr",
             "the step's declaration must be the spec the name is recorded under",
         );
         assert_eq!(
@@ -840,8 +840,7 @@ mod tests {
             "an instance recorded under a different spec for the name must not serve this step",
         );
         assert_eq!(
-            second.instance.outputs["result"].capture,
-            Some(stream_spec("result", "stderr")),
+            second.instance.outputs["result"].capture, "stderr",
             "the re-execution records the spec the step declares",
         );
     }
@@ -1101,7 +1100,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            bundle.instance.step_ids,
+            bundle.instance.step_ids_nk,
             BTreeSet::from([StepRef {
                 workflow_id: "test-workflow".to_string(),
                 step_id: "step-7-echo".to_string(),
@@ -1136,7 +1135,7 @@ mod tests {
         .await;
         assert!(!first.cache_hit, "the first run of this work has no instance to reuse");
         assert_eq!(
-            first.instance.step_ids,
+            first.instance.step_ids_nk,
             BTreeSet::from([StepRef {
                 workflow_id: "test-workflow".to_string(),
                 step_id: "step-a-echo".to_string(),
@@ -1157,7 +1156,7 @@ mod tests {
         .await;
         assert!(second.cache_hit, "identical work must hit the instance the first step recorded");
         assert_eq!(
-            second.instance.step_ids,
+            second.instance.step_ids_nk,
             BTreeSet::from([
                 StepRef {
                     workflow_id: "test-workflow".to_string(),

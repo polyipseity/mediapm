@@ -20,7 +20,7 @@ use mediapm_utils::progress::{BarStyle, ProgressBarApi};
 #[cfg(feature = "progress")]
 use super::progress_labels::WorkerBarLabel;
 
-use crate::config::{OutputCaptureSpec, WorkflowStepSpec};
+use crate::config::WorkflowStepSpec;
 use crate::error::ConductorError;
 use crate::state::{ConductorState, SettlingStep, ToolCallInstance, merge_captured_outputs};
 
@@ -300,7 +300,7 @@ fn with_accumulated_step_ids(
     mut incoming: ToolCallInstance,
 ) -> ToolCallInstance {
     if let Some(stored) = stored {
-        incoming.step_ids.extend(stored.step_ids.iter().cloned());
+        incoming.step_ids_nk.extend(stored.step_ids_nk.iter().cloned());
     }
     incoming
 }
@@ -323,37 +323,24 @@ fn with_accumulated_step_ids(
 /// here as a conflict: `probe_cache` already turns that into a miss, so there is
 /// no second mechanism to disagree with it.
 fn record_capture_claims(
-    claims: &mut BTreeMap<(Hash, String), (OutputCaptureSpec, String)>,
+    claims: &mut BTreeMap<(Hash, String), (String, String)>,
     instance: &ToolCallInstance,
     instance_key: Hash,
     step_id: &str,
 ) -> Result<(), ConductorError> {
     for (name, output) in &instance.outputs {
-        let Some(capture) = output.capture.as_ref() else {
-            continue;
-        };
+        let capture = output.capture.clone();
         match claims.get(&(instance_key, name.clone())) {
-            Some((claimed, claimed_by))
-                if !(capture.capture == claimed.capture
-                    && capture.allow_empty == claimed.allow_empty) =>
-            {
+            Some((claimed, claimed_by)) if claimed != &capture => {
                 return Err(ConductorError::Workflow(format!(
                     "steps '{claimed_by}' and '{step_id}' both capture output '{name}' for the \
-                     same work with different capture specs ({} vs {}); one output name must \
-                     name one artifact",
-                    format!(
-                        "capture '{}' with allow_empty={}",
-                        claimed.capture, claimed.allow_empty
-                    ),
-                    format!(
-                        "capture '{}' with allow_empty={}",
-                        capture.capture, capture.allow_empty
-                    ),
+                     same work with different capture specs ({claimed} vs {capture}); one output \
+                     name must name one artifact",
                 )));
             }
             Some(_) => {}
             None => {
-                claims.insert((instance_key, name.clone()), (capture.clone(), step_id.to_string()));
+                claims.insert((instance_key, name.clone()), (capture, step_id.to_string()));
             }
         }
     }
@@ -665,7 +652,7 @@ where
             // second claim naming a different identity is a configuration
             // error reported at settlement, not resolved by settlement order
             // (see `record_capture_claims`).
-            let mut run_capture_claims: BTreeMap<(Hash, String), (OutputCaptureSpec, String)> =
+            let mut run_capture_claims: BTreeMap<(Hash, String), (String, String)> =
                 BTreeMap::new();
 
             // Ready-queue dispatch: a step becomes eligible the moment its
@@ -923,10 +910,12 @@ where
                             )?;
                         }
                         for (name, record) in &instance.outputs {
-                            step_outputs
-                                .entry(step_id.clone())
-                                .or_default()
-                                .insert(name.clone(), record.hash);
+                            if let Some(hash) = record.hash_nk {
+                                step_outputs
+                                    .entry(step_id.clone())
+                                    .or_default()
+                                    .insert(name.clone(), hash);
+                            }
                         }
                         // Insert executed instance into state so subsequent
                         // steps (and future runs) can find cache hits, with the
@@ -963,7 +952,7 @@ where
                                 // enough: the byte-identity error is only
                                 // meaningful when both agree it is
                                 // reproducible.
-                                let impure = stored.impure || incoming.impure;
+                                let impure = stored.impure_nk || incoming.impure_nk;
                                 merge_captured_outputs(
                                     &stored.outputs,
                                     &producible_outputs,
@@ -973,7 +962,7 @@ where
                             };
                         }
                         let mut instance = with_accumulated_step_ids(stored, incoming);
-                        instance.last_referenced_at = Timestamp::now();
+                        instance.last_referenced_at_nk = Timestamp::now();
                         let contribution = StepStateContribution { instance, instance_key };
                         state
                             .tool_call_instances
@@ -1179,11 +1168,13 @@ where
             // the instances the failed step would have replaced were never
             // replaced.
             if failed_steps == 0 {
-                let live: BTreeSet<Hash> = step_state_contributions
-                    .values()
-                    .map(|contribution| contribution.instance_key)
-                    .collect();
-                state.aux.live_instances.insert(workflow_name.to_string(), live);
+                // v6 seeds by step -> instance key. Mechanical adaptation: record
+                // the last settled instance key per step id in this workflow.
+                let mut by_step: BTreeMap<String, Hash> = BTreeMap::new();
+                for (step_id, contribution) in &step_state_contributions {
+                    by_step.insert(step_id.clone(), contribution.instance_key);
+                }
+                state.step_instances.insert(workflow_name.to_string(), by_step);
             }
 
             Ok(RunSummary {
@@ -1441,16 +1432,18 @@ mod tests {
     /// name for it and is used only where the fixture files the record.
     fn test_instance(_instance_key: Hash) -> ToolCallInstance {
         ToolCallInstance {
+            key_version: 8,
+            attempted_key_version_nk: 8,
             tool_call_id: "echo@v1".to_string(),
-            impure: false,
-            invalidated_at: None,
-            executed_at: Timestamp::default(),
-            last_referenced_at: Timestamp::default(),
-            step_ids: BTreeSet::new(),
             command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
+            env_vars_ck: BTreeMap::new(),
             materialized_inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            impure_nk: false,
+            invalidated_at_nk: None,
+            executed_at_nk: Timestamp::default(),
+            last_referenced_at_nk: Timestamp::default(),
+            step_ids_nk: BTreeSet::new(),
         }
     }
 
@@ -1466,16 +1459,16 @@ mod tests {
     fn a_fresh_settlement_clears_the_invalidation_marker() {
         let key = Hash::from_content(b"instance");
         let mut stored = test_instance(key);
-        stored.invalidated_at = Some(Timestamp::from_unix_nanos(5));
+        stored.invalidated_at_nk = Some(Timestamp::from_unix_nanos(5));
         let recorded =
             StepRef { workflow_id: "default".to_string(), step_id: "step-0-echo".into() };
-        stored.step_ids = BTreeSet::from([recorded.clone()]);
+        stored.step_ids_nk = BTreeSet::from([recorded.clone()]);
         let incoming = test_instance(key);
 
         let settled = with_accumulated_step_ids(Some(&stored), incoming);
 
-        assert_eq!(settled.invalidated_at, None);
-        assert_eq!(settled.step_ids, BTreeSet::from([recorded]));
+        assert_eq!(settled.invalidated_at_nk, None);
+        assert_eq!(settled.step_ids_nk, BTreeSet::from([recorded]));
     }
 
     /// Verifies the ancestor closure is transitive (a join sees its root),
@@ -1620,18 +1613,18 @@ mod tests {
         let step_a = StepRef { workflow_id: "default".to_string(), step_id: "step-a".into() };
         let step_b = StepRef { workflow_id: "default".to_string(), step_id: "step-b".into() };
         let mut stored = test_instance(key);
-        stored.step_ids = BTreeSet::from([step_a.clone()]);
+        stored.step_ids_nk = BTreeSet::from([step_a.clone()]);
         stored.tool_call_id = "stale@v1".to_string();
-        stored.impure = false;
+        stored.impure_nk = false;
         let mut incoming = test_instance(key);
-        incoming.step_ids = BTreeSet::from([step_b.clone()]);
+        incoming.step_ids_nk = BTreeSet::from([step_b.clone()]);
         incoming.tool_call_id = "fresh@v2".to_string();
-        incoming.impure = true;
+        incoming.impure_nk = true;
 
         let merged = with_accumulated_step_ids(Some(&stored), incoming);
 
         assert_eq!(
-            merged.step_ids,
+            merged.step_ids_nk,
             BTreeSet::from([step_a, step_b]),
             "a stored id survives alongside the incoming one"
         );
@@ -1639,7 +1632,7 @@ mod tests {
             merged.tool_call_id, "fresh@v2",
             "fields other than step_ids come from the incoming record"
         );
-        assert!(merged.impure, "a re-execution's classification is the incoming one");
+        assert!(merged.impure_nk, "a re-execution's classification is the incoming one");
 
         let first = test_instance(key);
         assert_eq!(

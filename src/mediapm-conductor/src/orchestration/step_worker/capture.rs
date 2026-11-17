@@ -300,6 +300,7 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
             }
         };
 
+        let data_is_empty = data.is_empty();
         let hash = cas.put(bytes::Bytes::from(data)).await.map_err(ConductorError::Cas)?;
 
         // After the put, so the mark can only describe an object that exists.
@@ -307,7 +308,12 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
             cas.mark_keep_full(hash).await.map_err(ConductorError::Cas)?;
         }
 
-        records.insert(spec.name.clone(), CapturedOutput { hash, capture: Some((*spec).clone()) });
+        let saved_nk = !matches!(spec.save, SaveMode::False);
+        let hash_nk = if data_is_empty && spec.allow_empty { None } else { Some(hash) };
+        records.insert(
+            spec.name.clone(),
+            CapturedOutput { capture: spec.capture.to_token(), hash_nk, saved_nk },
+        );
     }
 
     Ok(CapturedOutputs { records })
@@ -338,7 +344,7 @@ mod tests {
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("stdout").unwrap();
-        let data = cas.get(out.hash).await.unwrap();
+        let data = cas.get(out.hash_nk.expect("hash")).await.unwrap();
         assert_eq!(data.as_ref(), b"hello");
     }
 
@@ -360,7 +366,7 @@ mod tests {
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("stderr").unwrap();
-        let data = cas.get(out.hash).await.unwrap();
+        let data = cas.get(out.hash_nk.expect("hash")).await.unwrap();
         assert_eq!(data.as_ref(), b"error output");
     }
 
@@ -381,7 +387,7 @@ mod tests {
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("process_code").unwrap();
-        let data = cas.get(out.hash).await.unwrap();
+        let data = cas.get(out.hash_nk.expect("hash")).await.unwrap();
         assert_eq!(data.as_ref(), b"42");
     }
 
@@ -405,7 +411,7 @@ mod tests {
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("test_file").unwrap();
-        let data = cas.get(out.hash).await.unwrap();
+        let data = cas.get(out.hash_nk.expect("hash")).await.unwrap();
         assert_eq!(data.as_ref(), b"file content");
     }
 
@@ -429,7 +435,7 @@ mod tests {
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("log").unwrap();
-        let data = cas.get(out.hash).await.unwrap();
+        let data = cas.get(out.hash_nk.expect("hash")).await.unwrap();
         assert_eq!(data.as_ref(), b"regex match");
     }
 
@@ -461,7 +467,7 @@ mod tests {
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("yt_dlp_infojson_file").unwrap();
-        let data = cas.get(out.hash).await.unwrap();
+        let data = cas.get(out.hash_nk.expect("hash")).await.unwrap();
         assert_eq!(data.as_ref(), b"infojson");
     }
 
@@ -488,7 +494,7 @@ mod tests {
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("yt_dlp_subtitle_artifacts").unwrap();
-        let data = cas.get(out.hash).await.unwrap();
+        let data = cas.get(out.hash_nk.expect("hash")).await.unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data.as_ref())).unwrap();
         assert_eq!(archive.len(), 1);
         let mut entry = archive.by_index(0).unwrap();
@@ -545,7 +551,7 @@ mod tests {
         );
         let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap();
         let out = outputs.records.get("folder_out").unwrap();
-        let data = cas.get(out.hash).await.unwrap();
+        let data = cas.get(out.hash_nk.expect("hash")).await.unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data.as_ref())).unwrap();
         assert_eq!(archive.len(), 2);
         let mut names = Vec::new();
@@ -568,9 +574,9 @@ mod tests {
         let stdout_out = outputs.records.get("stdout").unwrap();
         let stderr_out = outputs.records.get("stderr").unwrap();
         let code_out = outputs.records.get("process_code").unwrap();
-        assert_eq!(cas.get(stdout_out.hash).await.unwrap().as_ref(), b"hello");
-        assert_eq!(cas.get(stderr_out.hash).await.unwrap().as_ref(), b"error");
-        assert_eq!(cas.get(code_out.hash).await.unwrap().as_ref(), b"1");
+        assert_eq!(cas.get(stdout_out.hash_nk.expect("hash")).await.unwrap().as_ref(), b"hello");
+        assert_eq!(cas.get(stderr_out.hash_nk.expect("hash")).await.unwrap().as_ref(), b"error");
+        assert_eq!(cas.get(code_out.hash_nk.expect("hash")).await.unwrap().as_ref(), b"1");
     }
 
     /// A recorded output carries the exact spec that produced it, including
@@ -615,13 +621,12 @@ mod tests {
             .await
             .expect("both captures match a sandbox file");
 
-        assert_eq!(outputs.records["content"].capture.as_ref(), Some(&file_spec));
-        assert_eq!(outputs.records["artifacts"].capture.as_ref(), Some(&folder_spec));
+        assert_eq!(outputs.records["content"].capture, file_spec.capture.to_token());
+        assert_eq!(outputs.records["artifacts"].capture, folder_spec.capture.to_token());
     }
 
     /// The always-captured process streams are generated, not declared, and
-    /// each still records the spec that produced it: a step that later binds
-    /// `stdout` is comparing against a spec it never wrote.
+    /// each records the capture token that produced it.
     #[tokio::test]
     async fn an_implicitly_captured_stream_records_the_spec_that_produced_it() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
@@ -634,12 +639,7 @@ mod tests {
             .expect("implicit captures never fail");
 
         for name in ["stdout", "stderr", "process_code"] {
-            let spec = outputs.records[name]
-                .capture
-                .as_ref()
-                .unwrap_or_else(|| panic!("implicit output `{name}` must record its spec"));
-            assert_eq!(spec.name, name);
-            assert_eq!(spec.capture.to_token(), name);
+            assert_eq!(outputs.records[name].capture, name);
         }
     }
 
@@ -677,12 +677,12 @@ mod tests {
 
         let record = &outputs.records["stdout"];
         assert_eq!(
-            record.capture.as_ref(),
-            Some(&declared),
+            record.capture,
+            declared.capture.to_token(),
             "the declared spec must be the spec recorded for the name",
         );
         assert_eq!(
-            cas.get(record.hash).await.unwrap().as_ref(),
+            cas.get(record.hash_nk.expect("hash")).await.unwrap().as_ref(),
             b"from-file",
             "the declared capture, not the process stream, decides the bytes",
         );

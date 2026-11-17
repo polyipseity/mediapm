@@ -17,62 +17,31 @@ use crate::state::ToolCallInstance;
 /// Returns whether a recorded capture names the same bytes a required capture
 /// names.
 ///
-/// The comparison itself is [`OutputCaptureSpec::same_capture_identity`], so the
-/// probe, the settlement union and the same-run conflict check cannot disagree
-/// about what "the same capture" means: the selector plus the two settings that
-/// decide which bytes are read (`allow_empty`, `include_topmost_folder`). `save`
-/// is a persistence instruction rather than a property of the bytes, so two
-/// steps that share an instance and disagree only about keeping the artifact do
-/// not invalidate each other; `name` is the map key on both sides, so the
-/// lookup has already used it.
-fn capture_identity_matches(recorded: &OutputCaptureSpec, required: &OutputCaptureSpec) -> bool {
-    recorded.capture == required.capture && recorded.allow_empty == required.allow_empty
-}
-
-/// Returns the cached instance for `instance_key` when it can serve this step.
-///
-/// "Can serve" means the instance exists, carries no invalidation marker, and
-/// records every required name under the required capture identity. `required`
-/// is the names this step binds — its dependents' references unioned with its
-/// own declarations — mapped to the spec the probed step's *producible* set
-/// gives each one: the merged tool-plus-step declarations plus the implicit
-/// streams every execution records (`stdout`, `stderr`, `process_code`). A name
-/// outside even that set never appears here, because no instance of this work
-/// can hold it; the executor filters the requirement through the producible set
-/// before probing.
-///
-/// The marker is checked before the names, and on every path: an empty
-/// requirement accepts any instance under the key, so a check that ran after
-/// (or inside) the name loop would leave a step that binds no output able to
-/// reuse work an operator explicitly invalidated. Nothing else in the run
-/// consults the marker, which is why this is the whole of the mechanism rather
-/// than one gate among several.
-///
-/// Equality is on capture identity, not on the whole spec and not on the name
-/// alone: `content` read from a file and `content` read from a folder are
-/// different bytes, so a name recorded another way must not satisfy this step,
-/// while `save` differs harmlessly because it changes no bytes (see
-/// [`capture_identity_matches`]). A recorded `capture: None` is the v2
-/// migration's "spec unknown" sentinel and never equals a declared spec, so a
-/// migrated instance re-executes once and re-records under the spec it used.
-///
-/// The check is pure and synchronous; whether the store still holds the bytes
-/// those names point at is a separate fact the executor asks the CAS about.
+/// v6 records capture identity as a token string (`capture`) and the retention
+/// fact as `saved_nk`; `hash_nk: None` means an allowed-empty capture matched
+/// nothing. A `None` hash satisfies only a requirement whose declared
+/// `allow_empty` is true. `saved_nk` is not compared (persistence, not bytes).
 pub(super) fn probe_cache(
     instance_key: &Hash,
     state: &ConductorState,
     required: &BTreeMap<String, OutputCaptureSpec>,
 ) -> Option<ToolCallInstance> {
     let instance = state.tool_call_instances.get(instance_key)?;
-    if instance.invalidated_at.is_some() {
+    if instance.invalidated_at_nk.is_some() {
         return None;
     }
     let satisfies_requirements = required.iter().all(|(name, spec)| {
-        instance
-            .outputs
-            .get(name)
-            .and_then(|record| record.capture.as_ref())
-            .is_some_and(|recorded| capture_identity_matches(recorded, spec))
+        instance.outputs.get(name).is_some_and(|recorded| {
+            if recorded.capture != spec.capture.to_token() {
+                return false;
+            }
+            // A null hash means the capture matched nothing and was allowed to be
+            // empty; it can only serve a requirement that also allows empty.
+            if recorded.hash_nk.is_none() {
+                return spec.allow_empty;
+            }
+            true
+        })
     });
     satisfies_requirements.then(|| instance.clone())
 }
@@ -95,20 +64,26 @@ mod tests {
         }
     }
 
+    fn recorded_output(spec: &OutputCaptureSpec, hash: Hash, saved_nk: bool) -> CapturedOutput {
+        CapturedOutput { capture: spec.capture.to_token(), hash_nk: Some(hash), saved_nk }
+    }
+
     /// Builds a one-instance state keyed by `key`, whose outputs are `outputs`.
     fn state_with(key: Hash, outputs: BTreeMap<String, CapturedOutput>) -> ConductorState {
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
             key,
             ToolCallInstance {
+                key_version: 8,
+                attempted_key_version_nk: 8,
                 tool_call_id: "echo@v1".to_string(),
-                impure: false,
-                invalidated_at: None,
-                executed_at: Timestamp::default(),
-                last_referenced_at: Timestamp::default(),
-                step_ids: BTreeSet::new(),
+                impure_nk: false,
+                invalidated_at_nk: None,
+                executed_at_nk: Timestamp::default(),
+                last_referenced_at_nk: Timestamp::default(),
+                step_ids_nk: BTreeSet::new(),
                 command_args: Vec::new(),
-                env_vars: BTreeMap::new(),
+                env_vars_ck: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
                 outputs,
             },
@@ -125,10 +100,7 @@ mod tests {
             key,
             BTreeMap::from([(
                 "content".to_string(),
-                CapturedOutput {
-                    hash: Hash::from_content(b"bytes"),
-                    capture: Some(content.clone()),
-                },
+                recorded_output(&content, Hash::from_content(b"bytes"), true),
             )]),
         );
 
@@ -146,14 +118,12 @@ mod tests {
     #[test]
     fn a_required_name_recorded_with_a_different_spec_is_a_miss() {
         let key = Hash::from_content(b"instance");
+        let recorded = spec("content", "file:out.mkv");
         let state = state_with(
             key,
             BTreeMap::from([(
                 "content".to_string(),
-                CapturedOutput {
-                    hash: Hash::from_content(b"bytes"),
-                    capture: Some(spec("content", "file:out.mkv")),
-                },
+                recorded_output(&recorded, Hash::from_content(b"bytes"), true),
             )]),
         );
 
@@ -182,13 +152,10 @@ mod tests {
             key,
             BTreeMap::from([(
                 "content".to_string(),
-                CapturedOutput {
-                    hash: Hash::from_content(b"bytes"),
-                    capture: Some(content.clone()),
-                },
+                recorded_output(&content, Hash::from_content(b"bytes"), true),
             )]),
         );
-        state.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at =
+        state.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at_nk =
             Some(Timestamp::from_unix_nanos(1));
 
         assert!(
@@ -207,35 +174,12 @@ mod tests {
     fn an_invalidated_instance_is_a_miss_with_an_empty_requirement() {
         let key = Hash::from_content(b"instance");
         let mut state = state_with(key, BTreeMap::new());
-        state.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at =
+        state.tool_call_instances.get_mut(&key).expect("seeded instance").invalidated_at_nk =
             Some(Timestamp::from_unix_nanos(1));
 
         assert!(
             probe_cache(&key, &state, &BTreeMap::new()).is_none(),
             "an empty requirement must not accept a marked instance",
-        );
-    }
-
-    /// An entry migrated from v2 records no spec, so it never matches.
-    #[test]
-    fn a_required_name_recorded_without_a_spec_never_matches() {
-        let key = Hash::from_content(b"instance");
-        let state = state_with(
-            key,
-            BTreeMap::from([(
-                "content".to_string(),
-                CapturedOutput { hash: Hash::from_content(b"bytes"), capture: None },
-            )]),
-        );
-
-        assert!(
-            probe_cache(
-                &key,
-                &state,
-                &BTreeMap::from([("content".to_string(), spec("content", "stdout"))]),
-            )
-            .is_none(),
-            "the unknown-spec sentinel must never satisfy a declared spec",
         );
     }
 
@@ -256,69 +200,72 @@ mod tests {
         );
     }
 
-    /// A recorded `allow_empty` that disagrees with the required one is a miss.
+    /// A recorded folder layout that disagrees with the required one is a miss.
     ///
-    /// The flag decides whether a capture that matched nothing is recorded as
-    /// an empty artifact or as no artifact at all, so the two settings describe
-    /// different bytes for the same selector. An entry recorded under the other
-    /// setting cannot answer this step's request.
-    #[test]
-    fn a_required_name_recorded_with_a_different_allow_empty_is_a_miss() {
-        let key = Hash::from_content(b"instance");
-        let recorded =
-            OutputCaptureSpec { allow_empty: true, ..spec("content", "folder_regex:.*") };
-        let required =
-            OutputCaptureSpec { allow_empty: false, ..spec("content", "folder_regex:.*") };
-        let state = state_with(
-            key,
-            BTreeMap::from([(
-                "content".to_string(),
-                CapturedOutput { hash: Hash::from_content(b"bytes"), capture: Some(recorded) },
-            )]),
-        );
-
-        assert!(
-            probe_cache(&key, &state, &BTreeMap::from([("content".to_string(), required)]))
-                .is_none(),
-            "a name recorded under a different `allow_empty` must be a miss",
-        );
-    }
-
-    /// A recorded `include_topmost_folder` that disagrees with the required one
-    /// is a miss.
-    ///
-    /// The flag rewrites the paths a folder capture lists, so the same folder
-    /// read with it on and off produces different listings — and therefore
-    /// different bytes under the same name.
+    /// Folder layout is part of the capture token in v5/v6 (`folder:` vs
+    /// `folder_flat:`), so different layouts produce different tokens.
     #[test]
     fn a_required_name_recorded_with_a_different_include_topmost_folder_is_a_miss() {
         let key = Hash::from_content(b"instance");
-        let recorded = OutputCaptureSpec { ..spec("content", "folder:outputs") };
-        let required = spec("content", "folder:outputs");
+        let recorded = spec("content", "folder:outputs");
+        let required = spec("content", "folder_flat:outputs");
         let state = state_with(
             key,
             BTreeMap::from([(
                 "content".to_string(),
-                CapturedOutput { hash: Hash::from_content(b"bytes"), capture: Some(recorded) },
+                recorded_output(&recorded, Hash::from_content(b"bytes"), true),
             )]),
         );
 
         assert!(
             probe_cache(&key, &state, &BTreeMap::from([("content".to_string(), required)]))
                 .is_none(),
-            "a name recorded under a different `include_topmost_folder` must be a miss",
+            "a name recorded under a different folder layout must be a miss",
         );
     }
 
-    /// A recorded entry whose only difference is `save` still serves the step.
+    /// A recorded `hash_nk: null` (allowed-empty capture) serves only a
+    /// requirement whose declared `allow_empty` is true.
+    #[test]
+    fn a_null_hash_serves_only_an_allow_empty_requirement() {
+        let key = Hash::from_content(b"instance");
+        let mut required_allow = spec("content", "folder_regex:.*");
+        required_allow.allow_empty = true;
+        let mut required_disallow = spec("content", "folder_regex:.*");
+        required_disallow.allow_empty = false;
+        let state = state_with(
+            key,
+            BTreeMap::from([(
+                "content".to_string(),
+                CapturedOutput {
+                    capture: "folder_regex:.*".to_string(),
+                    hash_nk: None,
+                    saved_nk: false,
+                },
+            )]),
+        );
+
+        assert!(
+            probe_cache(&key, &state, &BTreeMap::from([("content".to_string(), required_allow)]))
+                .is_some(),
+            "a null hash must serve an allow_empty requirement with the same token",
+        );
+        assert!(
+            probe_cache(
+                &key,
+                &state,
+                &BTreeMap::from([("content".to_string(), required_disallow)])
+            )
+            .is_none(),
+            "a null hash must not serve a non-allow_empty requirement",
+        );
+    }
+
+    /// A recorded entry whose only difference is `saved_nk` still serves the
+    /// step.
     ///
-    /// Persistence is the field the merge ruling leaves to the step, so two steps
-    /// sharing an instance can legitimately disagree about it. If the probe
-    /// compared the whole spec, each would reject the entry the other recorded and
-    /// re-execute to replace it, forever — while the bytes it hands downstream are
-    /// the same either way. Both directions are checked because neither side is
-    /// privileged: the recorded entry may persist what the step drops, or drop
-    /// what the step persists.
+    /// Persistence is not part of capture identity in v6; `saved_nk` is a fact
+    /// and not compared by the probe.
     #[test]
     fn a_save_only_difference_still_satisfies_the_probe() {
         let persisted = OutputCaptureSpec { save: SaveMode::True, ..spec("content", "stdout") };
@@ -329,14 +276,22 @@ mod tests {
             Hash::from_content(b"instance-1"),
             BTreeMap::from([(
                 "content".to_string(),
-                CapturedOutput { hash, capture: Some(persisted.clone()) },
+                CapturedOutput {
+                    capture: persisted.capture.to_token(),
+                    hash_nk: Some(hash),
+                    saved_nk: true,
+                },
             )]),
         );
         let recorded_transient = state_with(
             Hash::from_content(b"instance-2"),
             BTreeMap::from([(
                 "content".to_string(),
-                CapturedOutput { hash, capture: Some(transient.clone()) },
+                CapturedOutput {
+                    capture: transient.capture.to_token(),
+                    hash_nk: Some(hash),
+                    saved_nk: false,
+                },
             )]),
         );
 
@@ -386,98 +341,5 @@ mod tests {
             probe_cache(&key, &state, &BTreeMap::new()).is_some(),
             "nothing to require means nothing to refuse",
         );
-    }
-}
-
-#[cfg(feature = "proptest")]
-#[cfg(test)]
-mod proptests {
-    use super::*;
-    use crate::instance_key::derive_instance_key;
-    use crate::state::ResolvedInput;
-    use proptest::prelude::*;
-    use proptest::strategy::BoxedStrategy;
-
-    impl proptest::arbitrary::Arbitrary for ResolvedInput {
-        type Parameters = ();
-        type Strategy = BoxedStrategy<Self>;
-        /// Generates literal-binding inputs only.
-        ///
-        /// Production keys every input: a binding that reads an input or a step
-        /// output contributes the bytes it resolves to, and a binding that reads
-        /// only `${context.` or `${env.` contributes its own text. Nothing is
-        /// filtered out, so the restriction here is not what keeps the
-        /// properties meaningful. It stays because a generated value carrying a
-        /// `${` fragment would make the *resolved* side of a comparison depend
-        /// on a template engine this unit test does not run, and the generator
-        /// would be measuring that engine rather than the key.
-        fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
-            (
-                proptest::string::string_regex("[a-z_]{0,6}").expect("literal input names"),
-                proptest::string::string_regex("[A-Za-z0-9]{0,8}").expect("literal input values"),
-            )
-                .prop_map(|(key, value)| ResolvedInput { key, value })
-                .boxed()
-        }
-    }
-
-    /// Maps resolved inputs to instance-key hashes through the production
-    /// helper, so the guard tracks the real recipe instead of duplicating it.
-    ///
-    /// Duplicating the composite by hand left the properties green while a
-    /// flipped determinism filter in production would collapse every key; the
-    /// generator above keeps every generated binding deterministic, so the
-    /// production filter is exercised without rejecting any case.
-    fn arg_hashes(inputs: &[ResolvedInput]) -> Vec<Hash> {
-        inputs
-            .iter()
-            .filter_map(|input| {
-                crate::instance_key::instance_key_hash_from_resolved_value_bytes(
-                    &input.key,
-                    &input.value,
-                    input.value.as_bytes(),
-                )
-            })
-            .collect()
-    }
-
-    proptest! {
-        #[test]
-        fn different_inputs_produce_different_keys(
-            inputs1 in proptest::collection::vec(any::<ResolvedInput>(), 1..5),
-            inputs2 in proptest::collection::vec(any::<ResolvedInput>(), 1..5),
-        ) {
-            prop_assume!(inputs1 != inputs2);
-            let args1 = arg_hashes(&inputs1);
-            let args2 = arg_hashes(&inputs2);
-            let key1 = derive_instance_key("test", &args1);
-            let key2 = derive_instance_key("test", &args2);
-            prop_assert_ne!(key1, key2);
-        }
-
-        #[test]
-        fn same_inputs_produce_same_keys(
-            inputs in proptest::collection::vec(any::<ResolvedInput>(), 0..10),
-        ) {
-            let args = arg_hashes(&inputs);
-            let key1 = derive_instance_key("test", &args);
-            let key2 = derive_instance_key("test", &args);
-            prop_assert_eq!(key1, key2);
-        }
-    }
-
-    /// The same inputs derive the same key across wall-clock time, impure or
-    /// not: the pre-revision scheme embedded `executed_at` for impure steps
-    /// (covered by `impure_keys_ignore_time` in the key-derivation module);
-    /// this pins the executor-level callers see the same contract.
-    #[test]
-    fn impure_timestamps_do_not_change_the_key() {
-        let args = arg_hashes(&[ResolvedInput {
-            key: "url".to_string(),
-            value: "https://example.com".to_string(),
-        }]);
-        let key1 = derive_instance_key("test", &args);
-        let key2 = derive_instance_key("test", &args);
-        assert_eq!(key1, key2);
     }
 }

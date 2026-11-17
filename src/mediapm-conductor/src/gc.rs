@@ -24,7 +24,7 @@
 //!
 //! Retention is decided by reachability, not by the clock alone. A run records
 //! the instances it produced or hit as its seed
-//! ([`crate::state::AuxData::live_instances`]), and the instances a live
+//! (`step_instances`), and the instances a live
 //! workflow can still reach are found by walking that seed outward along the
 //! edges the records already carry: a consumer's `materialized_inputs` name a
 //! hash, and a producer's `outputs` name the hash it wrote, so the producer of
@@ -59,7 +59,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, Hash, PruneReport};
 
-use crate::config::SaveMode;
 use crate::error::ConductorError;
 use crate::orchestration::protocol::UnifiedNickelDocument;
 
@@ -140,15 +139,16 @@ pub(crate) fn reachability_closure(state: &ConductorState) -> BTreeSet<Hash> {
     let mut producers: BTreeMap<Hash, Vec<Hash>> = BTreeMap::new();
     for (instance_key, instance) in &state.tool_call_instances {
         for record in instance.outputs.values() {
-            producers.entry(record.hash).or_default().push(*instance_key);
+            if let Some(hash) = record.hash_nk {
+                producers.entry(hash).or_default().push(*instance_key);
+            }
         }
     }
 
     let mut reached: BTreeSet<Hash> = state
-        .aux
-        .live_instances
+        .step_instances
         .values()
-        .flatten()
+        .flat_map(|steps| steps.values())
         .filter(|key| state.tool_call_instances.contains_key(*key))
         .copied()
         .collect();
@@ -178,7 +178,7 @@ pub(crate) fn reachability_closure(state: &ConductorState) -> BTreeSet<Hash> {
 /// instances unreachable, which is what starts their grace period.
 fn prune_seeds_for_removed_workflows(state: &mut ConductorState, unified: &UnifiedNickelDocument) {
     let workflows = &unified.workflows;
-    state.aux.live_instances.retain(|workflow, _| workflows.contains_key(workflow));
+    state.step_instances.retain(|workflow, _| workflows.contains_key(workflow));
 }
 
 /// Earliest phase of the cycle: evict the instance records the reachability walk
@@ -215,7 +215,7 @@ pub(crate) fn run_instance_gc(
     let unseeded: Vec<String> = unified
         .workflows
         .keys()
-        .filter(|workflow| !state.aux.live_instances.contains_key(*workflow))
+        .filter(|workflow| !state.step_instances.contains_key(*workflow))
         .cloned()
         .collect();
 
@@ -259,11 +259,9 @@ pub(crate) fn run_instance_gc(
 
 /// Whether a captured output recorded itself as not worth keeping.
 ///
-/// Only `false` is unsaved: `true` and `full` both ask for the bytes. A record
-/// with no capture spec is saved, because the spec is what records the mode and
-/// a record too old to carry one is no evidence that its bytes are disposable.
+/// v6 records retention as `saved_nk`.
 fn output_is_unsaved(record: &CapturedOutput) -> bool {
-    record.capture.as_ref().is_some_and(|spec| spec.save == SaveMode::False)
+    !record.saved_nk
 }
 
 /// Whether an instance's captured output is a root for this pass.
@@ -345,8 +343,10 @@ where
     let reachable = counts.abstention.is_none().then(|| reachability_closure(state));
     for (instance_key, instance) in &state.tool_call_instances {
         for record in instance.outputs.values() {
-            if keeps_output(record, instance_key, reachable.as_ref()) {
-                root_set.insert(record.hash);
+            if let Some(hash) = record.hash_nk {
+                if keeps_output(record, instance_key, reachable.as_ref()) {
+                    root_set.insert(hash);
+                }
             }
         }
     }
@@ -445,7 +445,7 @@ mod tests {
     use crate::config::{ConductorRuntimeConfig, SaveMode, WorkflowSpec};
     use std::ops::{Deref, DerefMut};
 
-    use crate::state::{AuxData, CapturedOutput, ToolCallInstance};
+    use crate::state::{CapturedOutput, ToolCallInstance};
 
     /// A grace period longer than any test run, so no record is evicted and the
     /// root set alone decides which bytes survive.
@@ -494,14 +494,11 @@ mod tests {
     /// under `out-{i}`.
     fn recorded_instance(inputs: &[Hash], outputs: &[Hash]) -> ToolCallInstance {
         ToolCallInstance {
+            key_version: 8,
+            attempted_key_version_nk: 8,
             tool_call_id: "echo@v1".to_string(),
-            impure: false,
-            invalidated_at: None,
-            executed_at: Timestamp::default(),
-            last_referenced_at: Timestamp::from_unix_nanos(0),
-            step_ids: BTreeSet::new(),
             command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
+            env_vars_ck: BTreeMap::new(),
             materialized_inputs: inputs
                 .iter()
                 .enumerate()
@@ -511,9 +508,21 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, hash)| {
-                    (format!("out-{index}"), CapturedOutput { hash: *hash, capture: None })
+                    (
+                        format!("out-{index}"),
+                        CapturedOutput {
+                            capture: format!("file:out-{index}"),
+                            hash_nk: Some(*hash),
+                            saved_nk: true,
+                        },
+                    )
                 })
                 .collect(),
+            impure_nk: false,
+            invalidated_at_nk: None,
+            executed_at_nk: Timestamp::default(),
+            last_referenced_at_nk: Timestamp::from_unix_nanos(0),
+            step_ids_nk: BTreeSet::new(),
         }
     }
 
@@ -526,21 +535,28 @@ mod tests {
         let mut state = ConductorState::new_empty();
         state.tool_call_instances =
             instances.into_iter().map(|fixture| (fixture.key, fixture.instance)).collect();
-        state.aux = AuxData { conductor_gc_epoch: Timestamp::now(), live_instances: seeds };
+        state.conductor_gc_ran_at = Timestamp::now();
+        state.step_instances = seeds
+            .into_iter()
+            .map(|(wf, keys)| {
+                (
+                    wf,
+                    keys.into_iter()
+                        .enumerate()
+                        .map(|(i, k)| (format!("step-{i}"), k))
+                        .collect::<BTreeMap<_, _>>(),
+                )
+            })
+            .collect();
         state
     }
 
-    /// `recorded` with every output recording `mode` as the capture spec it ran
-    /// under, which is the fact the root set reads.
+    /// `recorded` with every output recording `mode` as the retention fact it
+    /// ran under, which is what the root set reads in v6.
     fn instance_saving(recorded: FixtureInstance, mode: SaveMode) -> FixtureInstance {
         let mut saved = recorded;
         for output in saved.instance.outputs.values_mut() {
-            output.capture = Some(crate::config::OutputCaptureSpec {
-                name: String::new(),
-                capture: crate::config::CaptureKind::Stdout,
-                save: mode,
-                ..crate::config::OutputCaptureSpec::default()
-            });
+            output.saved_nk = !matches!(mode, SaveMode::False);
         }
         saved
     }
@@ -554,7 +570,7 @@ mod tests {
     fn keep_records_within_their_grace_period(state: &mut ConductorState) {
         let now = Timestamp::now();
         for instance in state.tool_call_instances.values_mut() {
-            instance.last_referenced_at = now;
+            instance.last_referenced_at_nk = now;
         }
     }
 
@@ -738,7 +754,7 @@ mod tests {
         run_conductor_gc(&cas, &mut state, &unified_with(&["declared"]), 0).await.expect("gc");
 
         assert!(
-            state.aux.live_instances.contains_key("removed"),
+            state.step_instances.contains_key("removed"),
             "an abstaining pass must not prune a seed it cannot replace",
         );
         assert!(
@@ -890,7 +906,7 @@ mod tests {
         let cas = InMemoryCas::new();
         let blob = cas.put(bytes::Bytes::from_static(b"marked payload")).await.expect("put");
         let mut producer = instance("producer", &[], &[blob]);
-        producer.invalidated_at = Some(Timestamp::now());
+        producer.invalidated_at_nk = Some(Timestamp::now());
         let producer_key = producer.key;
         let consumer = instance("consumer", &[blob], &[]);
         let consumer_key = consumer.key;
@@ -911,7 +927,7 @@ mod tests {
                 .tool_call_instances
                 .get(&producer_key)
                 .expect("producer")
-                .invalidated_at
+                .invalidated_at_nk
                 .is_some(),
             "GC must not clear the marker; only a re-execution does that"
         );
@@ -941,7 +957,7 @@ mod tests {
         let report = run_conductor_gc(&cas, &mut state, &unified, 0).await.expect("gc");
 
         assert!(
-            !state.aux.live_instances.contains_key("gone"),
+            !state.step_instances.contains_key("gone"),
             "a workflow the document no longer declares must not keep its seed"
         );
         assert!(
@@ -1068,11 +1084,7 @@ mod tests {
         let full = cas.put(bytes::Bytes::from_static(b"full payload")).await.expect("put");
         let producer = instance("producer", &[], &[saved, full]);
         let mut producer = instance_saving(producer, SaveMode::True);
-        producer.outputs.get_mut("out-1").expect("second output").capture =
-            Some(crate::config::OutputCaptureSpec {
-                save: SaveMode::Full,
-                ..crate::config::OutputCaptureSpec::default()
-            });
+        producer.outputs.get_mut("out-1").expect("second output").saved_nk = true;
         let mut state =
             state_with(vec![producer], BTreeMap::from([("default".to_string(), BTreeSet::new())]));
         keep_records_within_their_grace_period(&mut state);

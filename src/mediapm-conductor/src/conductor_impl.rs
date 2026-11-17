@@ -412,15 +412,15 @@ where
         self.update_state(|state| {
             let mut counts = InstanceMarkerCounts::default();
             for instance in state.tool_call_instances.values_mut() {
-                if instance.step_ids.is_disjoint(steps) {
+                if instance.step_ids_nk.is_disjoint(steps) {
                     continue;
                 }
-                let already_set = instance.invalidated_at.is_some() == invalidated;
+                let already_set = instance.invalidated_at_nk.is_some() == invalidated;
                 if already_set {
                     counts.unchanged += 1;
                     continue;
                 }
-                instance.invalidated_at =
+                instance.invalidated_at_nk =
                     if invalidated { Some(mediapm_utils::Timestamp::now()) } else { None };
                 counts.changed += 1;
             }
@@ -479,7 +479,7 @@ where
     /// check here for a builtin declaring `env_vars` would be unreachable.
     /// The shape is refused where such a document would be read instead —
     /// at load, by `RejectBuiltinEnvVarsV4` on the envelope's `tools` field
-    /// (see the `ToolConfigV1.env_vars` notes in `config/versions/`).
+    /// (see the `ToolConfigV1.env_vars_ck` notes in `config/versions/`).
     ///
     /// # Errors
     ///
@@ -1297,16 +1297,18 @@ mod tests {
         state.tool_call_instances.insert(
             key,
             crate::state::ToolCallInstance {
+                key_version: 8,
+                attempted_key_version_nk: 8,
                 tool_call_id: "echo@v1".to_string(),
-                impure: false,
-                invalidated_at: None,
-                executed_at: mediapm_utils::Timestamp::default(),
-                last_referenced_at: mediapm_utils::Timestamp::default(),
-                step_ids: BTreeSet::from([step.clone()]),
                 command_args: Vec::new(),
-                env_vars: BTreeMap::new(),
+                env_vars_ck: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
+                impure_nk: false,
+                invalidated_at_nk: None,
+                executed_at_nk: mediapm_utils::Timestamp::default(),
+                last_referenced_at_nk: mediapm_utils::Timestamp::default(),
+                step_ids_nk: BTreeSet::from([step.clone()]),
             },
         );
         (state, key)
@@ -1349,11 +1351,11 @@ mod tests {
             .expect("load state file")
             .expect("state file must exist");
         assert!(
-            on_disk.tool_call_instances[&left_key].invalidated_at.is_some(),
+            on_disk.tool_call_instances[&left_key].invalidated_at_nk.is_some(),
             "the targeted workflow's instance must be marked",
         );
         assert_eq!(
-            on_disk.tool_call_instances[&right_key].invalidated_at, None,
+            on_disk.tool_call_instances[&right_key].invalidated_at_nk, None,
             "another workflow's same-named step must be untouched",
         );
     }
@@ -1378,7 +1380,7 @@ mod tests {
             .expect("load state file")
             .expect("state file must exist");
         let marked_at = on_disk.tool_call_instances[&key]
-            .invalidated_at
+            .invalidated_at_nk
             .expect("the marker must reach the file");
 
         // A repeated mark reports the state it found and keeps the timestamp, so
@@ -1388,7 +1390,7 @@ mod tests {
         let on_disk = load_state_file(conductor.storage_paths())
             .expect("load state file")
             .expect("state file must exist");
-        assert_eq!(on_disk.tool_call_instances[&key].invalidated_at, Some(marked_at));
+        assert_eq!(on_disk.tool_call_instances[&key].invalidated_at_nk, Some(marked_at));
 
         // A step no instance served reaches nothing and says so.
         let unrelated = conductor
@@ -1402,7 +1404,7 @@ mod tests {
         let on_disk = load_state_file(conductor.storage_paths())
             .expect("load state file")
             .expect("state file must exist");
-        assert_eq!(on_disk.tool_call_instances[&key].invalidated_at, None);
+        assert_eq!(on_disk.tool_call_instances[&key].invalidated_at_nk, None);
     }
 
     /// Clearing a marker that is not there changes nothing, including the file.
@@ -1476,16 +1478,18 @@ mod tests {
     /// reachable only if a seed names it.
     fn bare_instance(_key: Hash) -> crate::state::ToolCallInstance {
         crate::state::ToolCallInstance {
+            key_version: 8,
+            attempted_key_version_nk: 8,
             tool_call_id: "echo@v1".to_string(),
-            impure: false,
-            invalidated_at: None,
-            executed_at: mediapm_utils::Timestamp::default(),
-            last_referenced_at: mediapm_utils::Timestamp::default(),
-            step_ids: BTreeSet::new(),
             command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
+            env_vars_ck: BTreeMap::new(),
             materialized_inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            impure_nk: false,
+            invalidated_at_nk: None,
+            executed_at_nk: mediapm_utils::Timestamp::default(),
+            last_referenced_at_nk: mediapm_utils::Timestamp::default(),
+            step_ids_nk: BTreeSet::new(),
         }
     }
 
@@ -1507,17 +1511,14 @@ mod tests {
         // Each record is judged on its own clock, so the seeded one is what
         // survives and the one stamped at the epoch is what ages out.
         let mut live_instance = bare_instance(live);
-        live_instance.last_referenced_at = mediapm_utils::Timestamp::now();
+        live_instance.last_referenced_at_nk = mediapm_utils::Timestamp::now();
         let mut superseded_instance = bare_instance(superseded);
-        superseded_instance.last_referenced_at = mediapm_utils::Timestamp::from_unix_nanos(0);
+        superseded_instance.last_referenced_at_nk = mediapm_utils::Timestamp::from_unix_nanos(0);
         state.tool_call_instances.insert(live, live_instance);
         state.tool_call_instances.insert(superseded, superseded_instance);
-        state.aux = crate::state::AuxData {
-            // A pass measures the grace period against the epoch it finds, so a
-            // current epoch is what puts the unseeded record past its deadline.
-            conductor_gc_epoch: mediapm_utils::Timestamp::now(),
-            live_instances: BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]),
-        };
+        state.conductor_gc_ran_at = mediapm_utils::Timestamp::now();
+        state.step_instances =
+            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
@@ -1708,8 +1709,8 @@ mod tests {
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(live, bare_instance(live));
-        state.aux.live_instances =
-            BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]);
+        state.step_instances =
+            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
@@ -1720,7 +1721,7 @@ mod tests {
 
         drop(dir);
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let after_stopping = conductor.get_state().expect("state").aux.conductor_gc_epoch;
+        let after_stopping = conductor.get_state().expect("state").conductor_gc_ran_at;
         assert!(
             after_stopping > mediapm_utils::Timestamp::from_unix_nanos(0),
             "the first loop must have run a pass before it stopped: {after_stopping:?}",
@@ -1730,7 +1731,7 @@ mod tests {
         write_single_workflow_config(&root, "default");
         conductor.start_background_maintenance();
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let after_restarting = conductor.get_state().expect("state").aux.conductor_gc_epoch;
+        let after_restarting = conductor.get_state().expect("state").conductor_gc_ran_at;
         conductor.shutdown().await.expect("shutdown");
 
         // Removed before the assertion, not after: the tempdir that owned this
@@ -1781,8 +1782,8 @@ mod tests {
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(live, bare_instance(live));
-        state.aux.live_instances =
-            BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]);
+        state.step_instances =
+            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let mut conductor = Conductor::new(paths, mediapm_cas::new_in_memory_cas());
@@ -1794,15 +1795,15 @@ mod tests {
         conductor.shutdown().await.expect("shutdown");
         let after = conductor.get_state().expect("state");
         assert!(
-            after.aux.conductor_gc_epoch > mediapm_utils::Timestamp::from_unix_nanos(0),
+            after.conductor_gc_ran_at > mediapm_utils::Timestamp::from_unix_nanos(0),
             "at least one pass must have completed: {:?}",
-            after.aux.conductor_gc_epoch,
+            after.conductor_gc_ran_at,
         );
         let on_disk = load_state_file(conductor.storage_paths())
             .expect("load state file")
             .expect("state file must exist");
         assert_eq!(
-            on_disk.aux.conductor_gc_epoch, after.aux.conductor_gc_epoch,
+            on_disk.conductor_gc_ran_at, after.conductor_gc_ran_at,
             "the pass must publish the state it computed",
         );
     }
@@ -1823,8 +1824,8 @@ mod tests {
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(live, bare_instance(live));
-        state.aux.live_instances =
-            BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]);
+        state.step_instances =
+            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let cas = mediapm_cas::new_in_memory_cas();
@@ -1847,9 +1848,9 @@ mod tests {
         conductor.shutdown().await.expect("shutdown");
         let swept = conductor.get_state().expect("state");
         assert!(
-            swept.aux.conductor_gc_epoch > mediapm_utils::Timestamp::from_unix_nanos(0),
+            swept.conductor_gc_ran_at > mediapm_utils::Timestamp::from_unix_nanos(0),
             "the background pass must have run, or neither half proves anything: {:?}",
-            swept.aux.conductor_gc_epoch,
+            swept.conductor_gc_ran_at,
         );
         assert!(
             conductor.cas().get(declared).await.is_ok(),
@@ -1876,8 +1877,8 @@ mod tests {
         let live = Hash::from_content(b"live");
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(live, bare_instance(live));
-        state.aux.live_instances =
-            BTreeMap::from([("default".to_string(), BTreeSet::from([live]))]);
+        state.step_instances =
+            BTreeMap::from([("default".to_string(), BTreeMap::from([("step".to_string(), live)]))]);
         save_state_file(&paths, &state).expect("seed state file");
 
         let state_path = paths.state_file_path.clone();
@@ -1896,8 +1897,8 @@ mod tests {
             .expect("load state file")
             .expect("state file must exist");
         assert_eq!(
-            later.aux.conductor_gc_epoch,
-            settled.aux.conductor_gc_epoch,
+            later.conductor_gc_ran_at,
+            settled.conductor_gc_ran_at,
             "a dropped facade must not keep passing over {}",
             state_path.display(),
         );
