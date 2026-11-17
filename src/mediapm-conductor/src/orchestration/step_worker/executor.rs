@@ -584,8 +584,8 @@ fn merge_output_specs(
 /// only non-empty values, each content-hashed (never stored literally).
 ///
 /// Each entry is tagged by provenance: a name the document fixed as a
-/// non-empty literal (`literal_env_vars`) records [`EnvVarSource::Literal`];
-/// any other configured execution var records [`EnvVarSource::Inherited`].
+/// non-empty literal (`literal_env_vars`) records [`crate::state::EnvVarSource::Literal`];
+/// any other configured execution var records [`crate::state::EnvVarSource::Inherited`].
 /// New executions always store `Some(...)`. Recorded, never key material: the
 /// instance-key derivation takes no env term, so a changed host/inherited value
 /// re-runs nothing implicitly while a changed literal still moves the key

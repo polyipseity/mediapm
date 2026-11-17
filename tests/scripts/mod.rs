@@ -1253,18 +1253,17 @@ mod coverage_matrix {
     /// Recursively scans `dir` for Rust source files and records symbol names
     /// declared in them.
     fn collect_symbol_names_from_dir(dir: &Path, names: &mut HashSet<String>) {
-        let entries = match fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(_) => return,
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 collect_symbol_names_from_dir(&path, names);
-            } else if path.extension() == Some(OsStr::new("rs")) {
-                if let Ok(text) = fs::read_to_string(&path) {
-                    collect_symbol_names_from_rust(&text, names);
-                }
+            } else if path.extension() == Some(OsStr::new("rs"))
+                && let Ok(text) = fs::read_to_string(&path)
+            {
+                collect_symbol_names_from_rust(&text, names);
             }
         }
     }
@@ -1303,7 +1302,6 @@ mod coverage_matrix {
                     }
                     names.insert(source[name_start..j].to_string());
                     i = j;
-                    continue;
                 }
             }
         }
