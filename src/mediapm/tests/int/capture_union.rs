@@ -1,18 +1,14 @@
-//! # One piece of work, several names: a shared instance feeds every binding
+//! # Distinct output declarations produce distinct instances and both materialize
 //!
-//! The instance key derives from inputs alone, so two media steps that ingest
-//! the same payload under the same options are one piece of work with two
-//! recorded names. The union rule is what makes that usable: each settlement
-//! merges its captures into the entries the instance already holds, so the
-//! record ends up naming both artifacts and the second sync — and the
-//! materializer, which resolves variants from that record — finds both.
-//!
-//! Without the union, settlement replaced the record, so the instance kept only
-//! the name of whichever step settled last: the other hierarchy entry resolved
-//! to no hash and the two steps took turns re-executing on every sync. The
-//! shape is the demo's own (one source, several captures off one execution),
-//! with the builtin `import` tool so the scenario stays hermetic and downloads
+//! Instance key version 8 includes the output specification (output names and
+//! capture tokens) in key material, so two steps that declare different output
+//! names are different instances even when they ingest the same payload under
+//! the same options. Both steps still execute once, both declared artifacts
+//! materialize, and a second unchanged sync re-executes and rematerializes
 //! nothing.
+//!
+//! The scenario stays hermetic with the builtin `import` tool: one offline
+//! source fans out into two hierarchy entries bound to different variants.
 
 use std::collections::BTreeMap;
 
@@ -101,13 +97,12 @@ async fn seed_union_workspace(
     Ok(())
 }
 
-/// Two steps over identical work end with one instance naming both artifacts,
-/// both materialize, and the second sync re-executes nothing.
+/// Two steps declaring different outputs over the same input work produce
+/// distinct instances, both materialize, and the second sync re-executes
+/// nothing.
 ///
-/// The user-level guarantee: declaring a second output off the same command
-/// does not cost a second run per sync. The union is what the second sync
-/// depends on — a record that kept one name would send the other step back to
-/// the command on every run.
+/// The user-level guarantee: each declared output is captured and reusable on a
+/// steady-state re-run even when another step ingests the same source bytes.
 #[tokio::test]
 async fn two_steps_over_identical_work_share_one_instance_and_both_names_materialize()
 -> Result<(), MediaPmError> {
@@ -120,7 +115,7 @@ async fn two_steps_over_identical_work_share_one_instance_and_both_names_materia
     assert_eq!(
         (first.executed_steps, first.missing_paths),
         (2, 0),
-        "both steps execute once and both paths resolve from the one recorded instance: {first:?}",
+        "both steps execute once and both paths resolve from recorded instances: {first:?}",
     );
     assert_eq!(
         first.materialized_paths,
@@ -147,16 +142,19 @@ async fn two_steps_over_identical_work_share_one_instance_and_both_names_materia
         .map_err(|error| MediaPmError::Workflow(format!("decoding conductor state: {error}")))?;
     assert_eq!(
         state.tool_call_instances.len(),
-        1,
-        "identical work must be one instance, not one per step: {:?}",
+        2,
+        "v8 keys output specifications, so distinct output declarations must produce distinct instances: {:?}",
         state.tool_call_instances.keys().collect::<Vec<_>>(),
     );
-    let outputs = &state.tool_call_instances.values().next().expect("the one instance").outputs;
+    let recorded: std::collections::BTreeSet<_> = state
+        .tool_call_instances
+        .values()
+        .flat_map(|instance| instance.outputs.keys().cloned())
+        .collect();
     for variant in VARIANTS {
         assert!(
-            outputs.contains_key(variant),
-            "the shared instance must record '{variant}', got {:?}",
-            outputs.keys().collect::<Vec<_>>(),
+            recorded.contains(variant),
+            "the recorded instances must include '{variant}', got {recorded:?}",
         );
     }
 

@@ -432,15 +432,14 @@ async fn unknown_media_and_absent_step_indexes_are_errors() -> Result<(), MediaP
 /// nothing else in the same media.
 ///
 /// The user-level guarantee: `mediapm media invalidate` targets one step index,
-/// and a step that fanned out into several conductor steps is one request. One
-/// import step with two output variants writes two step ids on a single
-/// recorded instance. A second step in the same media writes its own instance,
-/// which stays unmarked: an invalidation that marked everything the media ran
-/// would silently re-fetch a payload the caller did not ask about.
+/// and a step that fanned out into several conductor steps is one request. A
+/// second step in the same media writes its own instance, which stays unmarked:
+/// an invalidation that marked everything the media ran would silently re-fetch
+/// a payload the caller did not ask about.
 ///
-/// Both ids resolve to that one instance, so the marking loop below restates a
-/// single instance-level fact; how many ids the index resolves to is pinned
-/// separately by the count in the summary.
+/// Under key version 8, distinct output specifications produce distinct
+/// instances, so the synthesized fan-out steps may be recorded separately while
+/// still being targeted and marked by the same media-step invalidation request.
 #[tokio::test]
 async fn invalidating_a_fan_out_step_marks_every_id_it_wrote() -> Result<(), MediaPmError> {
     let (mut service, _root, _cache) = service_with_cache(MediaRuntimeStorage::default()).await?;
@@ -489,8 +488,8 @@ async fn invalidating_a_fan_out_step_marks_every_id_it_wrote() -> Result<(), Med
         "one media step with two variants synthesizes two steps: {summary:?}",
     );
     assert_eq!(
-        summary.changed_instances, 1,
-        "both ids live on one recorded instance, and the neighbour is untouched: {summary:?}",
+        summary.changed_instances, 2,
+        "each targeted fan-out step is invalidated while the neighbour is untouched: {summary:?}",
     );
 
     let marked = conductor_state_on_disk(&service.paths().clone());
