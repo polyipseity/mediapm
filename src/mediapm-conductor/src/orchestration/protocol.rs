@@ -220,6 +220,11 @@ pub(crate) struct StepExecutionBundle {
     /// map key is the identity, and a consumer that needs the key to name a
     /// sandbox or to file the settlement has to be handed it rather than read a
     /// second copy off the record.
+    ///
+    /// The key is versioned: v7 keys command material only, while v8 adds
+    /// output-spec terms (sorted output names and capture tokens) and staged
+    /// input terms (`materialized_inputs` destination/hash pairs). Derivation
+    /// is selected by key version, not inferred from outputs.
     pub instance_key: Hash,
     /// Whether this result came from a cache hit (vs. fresh execution).
     pub cache_hit: bool,

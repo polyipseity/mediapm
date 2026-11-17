@@ -48,10 +48,13 @@ pub use config::{
 };
 pub use error::ConductorError;
 pub use instance_key::{
-    input_binding_to_string, instance_key_hash_from_resolved_value_bytes,
-    instance_key_value_bytes_for_context_only_binding, instance_matches_stored_key,
-    key_material_for_builtin, key_material_for_command_parts, key_material_for_tool,
-    merge_step_input_bindings, references_environment,
+    INSTANCE_KEY_VERSION, MigratedKeyMaterial, V7_INSTANCE_KEY_VERSION, V8KeyMaterial,
+    derive_instance_key, derive_instance_key_for_version, derive_instance_key_v7,
+    derive_instance_key_v8, derive_migrated_v8_key, input_binding_to_string, instance_key_domain,
+    instance_key_hash_from_resolved_value_bytes, instance_key_value_bytes_for_context_only_binding,
+    instance_matches_stored_key, instance_output_tokens, key_material_for_builtin,
+    key_material_for_command_parts, key_material_for_tool, merge_step_input_bindings,
+    migrate_terms, output_tokens_from_outputs, references_environment,
 };
 pub use orchestration::step_worker::inputs::{
     InstanceKeyInputValues, resolve_instance_key_input_values,

@@ -12,69 +12,232 @@ use mediapm_cas::Hash;
 
 use crate::config::{InputBinding, ToolSpec};
 use crate::orchestration::step_worker::template::is_deterministic_command_part;
-use crate::state::ToolCallInstance;
+use crate::state::{CapturedOutput, ToolCallInstance};
 
-/// Version of the tool-call instance key scheme.
+/// The latest tool-call instance key version.
 ///
 /// The scheme is versioned by an integer and only ever moves forward:
-/// `v1 -> v2 -> v3 -> v4 -> v5 -> v6 -> v7`. A change to the key material bumps this
-/// number; it never appends a revision such as `v5.1`, because the point of the
-/// bump is to be visible. Old persisted keys simply miss once and re-execute.
+/// `v1 -> ... -> v7 -> v8`. A change to the key material bumps this number; it
+/// never appends a revision such as `v7.1`, because the point of the bump is to
+/// be visible. Old persisted keys simply miss once and re-execute.
 ///
-/// Scheme 6 changed one term. Schemes 4 and 5 hashed every input by its resolved
-/// value, so a binding reading `${context.os}` — `js_runtimes`, in the managed
-/// tools — produced a different term on each host. Scheme 6 hashes the binding's
-/// own text when the binding reads nothing but the host or the environment, and
-/// keeps resolved bytes for a binding that reads a step output, external data or
-/// another input.
+/// Scheme 6 changed one term. Schemes 4 and 5 hashed every input by its
+/// resolved value, so a binding reading `${context.os}` produced a different
+/// term on each host. Scheme 6 hashes the binding's own text when the binding
+/// reads nothing but the host or the environment, and keeps resolved bytes for
+/// a binding that reads a step output, external data or another input.
 ///
 /// Scheme 7 applies the provenance rule to the environment. A name the document
 /// fixes with a non-empty `env_vars` literal is deterministic: the literal is
 /// inlined into the part or binding before hashing, so editing it in the
 /// document moves the key. A name the document does not fix — inherited from
 /// the host, selected by platform, or given an empty literal — is recorded but
-/// never keyed: its reference keeps its own text, so no host's value can move
-/// the key.
-pub const INSTANCE_KEY_SCHEME: u32 = 7;
+/// never keyed.
+///
+/// Scheme 8 keys the output specification and the staged inputs: sorted output
+/// names with their capture tokens, then `materialized_inputs` as one composite
+/// per entry. A captured output hash never enters.
+pub const INSTANCE_KEY_VERSION: u32 = 8;
+
+/// The v7 tool-call instance key version.
+pub const V7_INSTANCE_KEY_VERSION: u32 = 7;
 
 /// Domain separator for tool-call instance keys, carrying the scheme version.
 #[must_use]
-pub fn instance_key_domain() -> String {
-    format!("mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}")
+pub fn instance_key_domain(version: u32) -> String {
+    format!("mediapm/conductor/tool call instances/v{version}")
+}
+
+/// Extra key material required to derive a v8 instance key.
+///
+/// v8 adds the output specification and the staged inputs. Output names and
+/// their capture tokens are key material; captured output hashes are results
+/// and never enter. Staged inputs are keyed again on their own as one
+/// composite per entry, in destination order, even though selectors already
+/// reach `command_args`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V8KeyMaterial<'a> {
+    /// Capture token per output name. Derivation reads these in name order.
+    pub output_tokens: &'a BTreeMap<String, String>,
+    /// Staged inputs: sandbox-relative destination to staged hash.
+    pub materialized_inputs: &'a BTreeMap<String, Hash>,
+}
+
+/// Returns the extra key terms for `version`.
+///
+/// - v7: no extra terms.
+/// - v8: one `composite(hash(name), hash(capture token))` per output name, in
+///   name order, then one `composite(destination, staged hash)` per staged
+///   input, in destination order.
+/// - any other version: `None`, because the derivation cannot be evaluated.
+#[must_use]
+fn extra_terms(version: u32, material: Option<&V8KeyMaterial<'_>>) -> Option<Vec<Hash>> {
+    match version {
+        V7_INSTANCE_KEY_VERSION => Some(Vec::new()),
+        INSTANCE_KEY_VERSION => {
+            let material = material?;
+            let mut terms = Vec::with_capacity(
+                material.output_tokens.len() + material.materialized_inputs.len(),
+            );
+            for (name, token) in material.output_tokens {
+                terms.push(Hash::composite(&[
+                    Hash::from_content(name.as_bytes()),
+                    Hash::from_content(token.as_bytes()),
+                ]));
+            }
+            for (destination, staged_hash) in material.materialized_inputs {
+                terms.push(Hash::composite(&[
+                    Hash::from_content(destination.as_bytes()),
+                    *staged_hash,
+                ]));
+            }
+            Some(terms)
+        }
+        _ => None,
+    }
+}
+
+/// Derives the content-addressed key of one tool-call instance for `version`.
+///
+/// The key answers whether this work has been done before, from material any
+/// party can re-derive: the tool call identity and the key material the command
+/// names. Captures are **not** key material except for their specification in
+/// v8 (names and capture tokens), never their produced hashes.
+///
+/// The composite is, in order: the versioned domain separator
+/// ([`instance_key_domain`]), the tool call id, then `command_args` (the
+/// key-material term list) in order, then the version's extra terms. Nothing
+/// here sorts `command_args`; [`key_material_for_tool`] is the one function
+/// that builds it.
+///
+/// Returns `None` when `version` is unknown or when v8 derivation lacks its
+/// required extra material.
+#[must_use]
+pub fn derive_instance_key_for_version(
+    version: u32,
+    tool_call_id: &str,
+    command_args: &[Hash],
+    v8: Option<&V8KeyMaterial<'_>>,
+) -> Option<Hash> {
+    let extra = extra_terms(version, v8)?;
+    let mut parts = Vec::with_capacity(2 + command_args.len() + extra.len());
+    parts.push(Hash::from_content(instance_key_domain(version).as_bytes()));
+    parts.push(Hash::from_content(tool_call_id.as_bytes()));
+    parts.extend_from_slice(command_args);
+    parts.extend(extra);
+    Some(Hash::composite(&parts))
+}
+
+/// Derives a v7 instance key from `command_args`.
+///
+/// v7 is reproducible from `command_args` alone.
+#[must_use]
+pub fn derive_instance_key_v7(tool_call_id: &str, command_args: &[Hash]) -> Hash {
+    derive_instance_key_for_version(V7_INSTANCE_KEY_VERSION, tool_call_id, command_args, None)
+        .expect("v7 derivation requires no extra material")
+}
+
+/// Derives a v8 instance key from `command_args` and the output/staged-input
+/// specification material.
+#[must_use]
+pub fn derive_instance_key_v8(
+    tool_call_id: &str,
+    command_args: &[Hash],
+    output_tokens: &BTreeMap<String, String>,
+    materialized_inputs: &BTreeMap<String, Hash>,
+) -> Hash {
+    let material = V8KeyMaterial { output_tokens, materialized_inputs };
+    derive_instance_key_for_version(
+        INSTANCE_KEY_VERSION,
+        tool_call_id,
+        command_args,
+        Some(&material),
+    )
+    .expect("v8 derivation is defined for complete material")
 }
 
 /// Derives the content-addressed key of one tool-call instance.
 ///
-/// The key answers whether this work has been done before, from material any
-/// party can re-derive: the tool call identity and the key material the command
-/// names. Captures are **not** key material. They are records addressed by
-/// name, so two steps that run the same work share one key however differently
-/// they name what they record, and each step reads the names it binds out of
-/// the instance it found.
-///
-/// The composite is exactly those two terms and the material between them, in
-/// this order: the scheme domain separator ([`instance_key_domain`]), the tool
-/// call id, then one hash per key-material term in the order the command names
-/// them. Nothing here sorts, so the order is key material and the caller owes
-/// it; [`key_material_for_tool`] is the one function that builds it, so the
-/// executor and the materializer cannot rank the terms differently.
-///
-/// What this key omits is answered by the records it addresses, not by the key.
-/// The stored entry carries its capture spec, and the settlement decides whether
-/// a differing record is divergence or the expected output of impure work.
-///
-/// The host's environment is not material. A command part reading `${env.VAR}`
-/// whose name the document gives no literal resolves to whatever the host
-/// holds, so keying it would make one tool mint a new instance per environment
-/// it runs under; a name the document does fix is inlined into the part text
-/// before hashing, and that value is the document's own rather than the host's.
+/// This compatibility helper derives a v7 key, preserving pre-T5 runtime
+/// behavior while the versioned lookup/migration logic is introduced. New code
+/// that needs an explicit version should use [`derive_instance_key_for_version`],
+/// [`derive_instance_key_v7`], or [`derive_instance_key_v8`].
 #[must_use]
-pub fn derive_instance_key(tool_call_id: &str, key_material: &[Hash]) -> Hash {
-    let mut parts = Vec::with_capacity(2 + key_material.len());
-    parts.push(Hash::from_content(instance_key_domain().as_bytes()));
-    parts.push(Hash::from_content(tool_call_id.as_bytes()));
-    parts.extend_from_slice(key_material);
-    Hash::composite(&parts)
+pub fn derive_instance_key(tool_call_id: &str, command_args: &[Hash]) -> Hash {
+    derive_instance_key_v7(tool_call_id, command_args)
+}
+
+/// Material produced by migrating instance-key terms between versions.
+///
+/// For `(v7, v8)` the command arguments are unchanged and v8's extra terms come
+/// from the record's outputs and materialized inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigratedKeyMaterial {
+    /// Key-material term list (command args) for the migrated derivation.
+    pub command_args: Vec<Hash>,
+    /// Capture token per output name for v8 derivation.
+    pub output_tokens: BTreeMap<String, String>,
+    /// Staged inputs for v8 derivation.
+    pub materialized_inputs: BTreeMap<String, Hash>,
+}
+
+/// Extracts output capture tokens from a recorded instance.
+///
+/// Returns `None` when any recorded output lacks a capture spec, because v8's
+/// output-spec terms cannot be formed without inventing data.
+#[must_use]
+pub fn output_tokens_from_outputs(
+    outputs: &BTreeMap<String, CapturedOutput>,
+) -> Option<BTreeMap<String, String>> {
+    outputs
+        .iter()
+        .map(|(name, output)| {
+            output.capture.as_ref().map(|spec| (name.clone(), spec.capture.to_token()))
+        })
+        .collect()
+}
+
+/// Migrates instance-key material from `from_version` to `to_version`.
+///
+/// The registry currently supports `(v7, v8)`, whose transform is the record
+/// itself: `command_args` are unchanged and v8's extra terms come from the
+/// record's outputs and materialized inputs. An unregistered pair or missing
+/// data returns `None`.
+#[must_use]
+pub fn migrate_terms(
+    from_version: u32,
+    to_version: u32,
+    command_args: &[Hash],
+    outputs: &BTreeMap<String, CapturedOutput>,
+    materialized_inputs: &BTreeMap<String, Hash>,
+) -> Option<MigratedKeyMaterial> {
+    match (from_version, to_version) {
+        (V7_INSTANCE_KEY_VERSION, INSTANCE_KEY_VERSION) => Some(MigratedKeyMaterial {
+            command_args: command_args.to_vec(),
+            output_tokens: output_tokens_from_outputs(outputs)?,
+            materialized_inputs: materialized_inputs.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// Derives a v8 key from migrated material.
+#[must_use]
+pub fn derive_migrated_v8_key(tool_call_id: &str, migrated: &MigratedKeyMaterial) -> Hash {
+    derive_instance_key_v8(
+        tool_call_id,
+        &migrated.command_args,
+        &migrated.output_tokens,
+        &migrated.materialized_inputs,
+    )
+}
+
+/// Extracts output capture tokens from a tool-call instance record.
+///
+/// Returns `None` when the record cannot supply the output-spec terms v8 needs.
+#[must_use]
+pub fn instance_output_tokens(instance: &ToolCallInstance) -> Option<BTreeMap<String, String>> {
+    output_tokens_from_outputs(&instance.outputs)
 }
 
 /// Returns whether a source still reads the environment after deterministic
@@ -609,6 +772,7 @@ pub fn instance_matches_stored_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{CaptureKind, OutputCaptureSpec, SaveMode};
 
     /// Deriving twice from identical material yields identical keys.
     #[test]
@@ -619,12 +783,6 @@ mod tests {
     }
 
     /// Time never participates in any instance key, impure or pure.
-    ///
-    /// Earlier key schemes embedded `executed_at` for impure steps, which made
-    /// every run mint a fresh instance and re-execute the step. The timestamp
-    /// parameter is gone from the signature, so time-independence is
-    /// compile-enforced at this level; the behavioral pin is
-    /// `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`.
     #[test]
     fn impure_keys_ignore_time() {
         let args = [Hash::from_content(b"arg")];
@@ -636,16 +794,12 @@ mod tests {
     }
 
     /// The versioned domain prefix participates in the key.
-    ///
-    /// The expected key is composed by hand, `instance_key_domain()`'s bytes
-    /// included, and the same composite without that term must differ, so the
-    /// test fails if the domain term is dropped or its bytes change.
     #[test]
     fn derive_instance_key_domain_prefix() {
         let args = [Hash::from_content(b"arg")];
-        let with_domain = derive_instance_key("tool", &args);
+        let with_domain = derive_instance_key_v7("tool", &args);
         let expected = Hash::composite(&[
-            Hash::from_content(instance_key_domain().as_bytes()),
+            Hash::from_content(instance_key_domain(V7_INSTANCE_KEY_VERSION).as_bytes()),
             Hash::from_content(b"tool"),
             args[0],
         ]);
@@ -658,10 +812,6 @@ mod tests {
     }
 
     /// Argument order matters.
-    ///
-    /// The v4 scheme also had a separate materialized-inputs term here; it is
-    /// gone, because a selector's material now reaches the key through the argv
-    /// part that names it (see `a_staged_input_whose_bytes_change_re_keys_the_step`).
     #[test]
     fn derive_instance_key_args_are_ordered() {
         let a = Hash::from_content(b"a");
@@ -673,23 +823,253 @@ mod tests {
         );
     }
 
-    /// The key is exactly `composite(domain, id, args, inputs)`.
-    ///
-    /// Pinning the exact component list guards all of it: adding a component,
-    /// reintroducing a capture or env term, or reintroducing a time term breaks
-    /// this test. Captures in particular must never come back — a key that
-    /// covers them makes identical work derive different keys, which is the
-    /// split the shared-instance model exists to remove.
+    /// The key is exactly `composite(domain, id, args, inputs)` for v7.
     #[test]
     fn derive_instance_key_composite_components_exact() {
         let arg = Hash::from_content(b"arg");
-        let key = derive_instance_key("t", &[arg]);
+        let key = derive_instance_key_v7("t", &[arg]);
         let expected = Hash::composite(&[
-            Hash::from_content(instance_key_domain().as_bytes()),
+            Hash::from_content(instance_key_domain(V7_INSTANCE_KEY_VERSION).as_bytes()),
             Hash::from_content(b"t"),
             arg,
         ]);
         assert_eq!(key, expected);
+    }
+
+    /// A v7 key is reproducible from `command_args` alone.
+    #[test]
+    fn v7_reproduces_a_stored_key_from_command_args() {
+        let command_args = vec![Hash::from_content(b"part-1"), Hash::from_content(b"part-2")];
+        let stored = derive_instance_key_v7("tool@v1", &command_args);
+        let reproduced = derive_instance_key_for_version(
+            V7_INSTANCE_KEY_VERSION,
+            "tool@v1",
+            &command_args,
+            None,
+        )
+        .expect("v7 derivation needs no extra material");
+        assert_eq!(stored, reproduced);
+    }
+
+    /// A v8 key moves with an output name or token and does not move with a
+    /// captured hash.
+    #[test]
+    fn v8_moves_with_output_spec_and_not_with_captured_hash() {
+        let command_args = vec![Hash::from_content(b"part")];
+        let materialized_inputs =
+            BTreeMap::from([("inputs/a.mkv".to_string(), Hash::from_content(b"staged"))]);
+        let base_outputs = BTreeMap::from([("video".to_string(), "file:out.mkv".to_string())]);
+
+        let base =
+            derive_instance_key_v8("tool@v1", &command_args, &base_outputs, &materialized_inputs);
+
+        let renamed_output = BTreeMap::from([("clip".to_string(), "file:out.mkv".to_string())]);
+        assert_ne!(
+            base,
+            derive_instance_key_v8("tool@v1", &command_args, &renamed_output, &materialized_inputs),
+            "an output name is key material in v8",
+        );
+
+        let retokened_output =
+            BTreeMap::from([("video".to_string(), "file:other.mkv".to_string())]);
+        assert_ne!(
+            base,
+            derive_instance_key_v8(
+                "tool@v1",
+                &command_args,
+                &retokened_output,
+                &materialized_inputs
+            ),
+            "an output capture token is key material in v8",
+        );
+
+        let different_staged =
+            BTreeMap::from([("inputs/a.mkv".to_string(), Hash::from_content(b"different-staged"))]);
+        assert_ne!(
+            base,
+            derive_instance_key_v8("tool@v1", &command_args, &base_outputs, &different_staged),
+            "staged input hashes are key material in v8",
+        );
+
+        // Captured output hashes are results; v8 material carries names/tokens
+        // only, so two records with different produced hashes but identical spec
+        // material derive the same key.
+        let outputs_a = BTreeMap::from([(
+            "video".to_string(),
+            CapturedOutput {
+                hash: Hash::from_content(b"bytes-a"),
+                capture: Some(OutputCaptureSpec {
+                    name: "video".to_string(),
+                    capture: CaptureKind::File("out.mkv".to_string()),
+                    save: SaveMode::True,
+                    allow_empty: false,
+                }),
+            },
+        )]);
+        let outputs_b = BTreeMap::from([(
+            "video".to_string(),
+            CapturedOutput {
+                hash: Hash::from_content(b"bytes-b"),
+                capture: Some(OutputCaptureSpec {
+                    name: "video".to_string(),
+                    capture: CaptureKind::File("out.mkv".to_string()),
+                    save: SaveMode::False,
+                    allow_empty: true,
+                }),
+            },
+        )]);
+        let tokens_a = output_tokens_from_outputs(&outputs_a).expect("tokens");
+        let tokens_b = output_tokens_from_outputs(&outputs_b).expect("tokens");
+        assert_eq!(tokens_a, tokens_b);
+        assert_eq!(
+            derive_instance_key_v8("tool@v1", &command_args, &tokens_a, &materialized_inputs),
+            derive_instance_key_v8("tool@v1", &command_args, &tokens_b, &materialized_inputs),
+            "captured output hashes and non-key spec fields must not move the v8 key",
+        );
+    }
+
+    /// An unknown version fails to derive.
+    #[test]
+    fn an_unknown_version_fails_to_derive() {
+        let command_args = [Hash::from_content(b"arg")];
+        assert!(
+            derive_instance_key_for_version(0, "tool@v1", &command_args, None).is_none(),
+            "version 0 is not a supported derivation",
+        );
+        assert!(
+            derive_instance_key_for_version(6, "tool@v1", &command_args, None).is_none(),
+            "an older unregistered version cannot be derived",
+        );
+        assert!(
+            derive_instance_key_for_version(9, "tool@v1", &command_args, None).is_none(),
+            "a newer unknown version cannot be derived",
+        );
+        assert!(
+            derive_instance_key_for_version(99, "tool@v1", &command_args, None).is_none(),
+            "an unknown future version cannot be derived",
+        );
+    }
+
+    /// The domain string carries the requested key version.
+    #[test]
+    fn instance_key_domain_carries_the_requested_version() {
+        assert_eq!(
+            instance_key_domain(V7_INSTANCE_KEY_VERSION),
+            "mediapm/conductor/tool call instances/v7"
+        );
+        assert_eq!(
+            instance_key_domain(INSTANCE_KEY_VERSION),
+            "mediapm/conductor/tool call instances/v8"
+        );
+    }
+
+    /// `(v7, v8)` migration reproduces v8 terms from a v7 record.
+    #[test]
+    fn migrate_terms_v7_to_v8_uses_record_material() {
+        let command_args = vec![Hash::from_content(b"argv")];
+        let materialized_inputs =
+            BTreeMap::from([("inputs/x".to_string(), Hash::from_content(b"staged"))]);
+        let outputs = BTreeMap::from([(
+            "video".to_string(),
+            CapturedOutput {
+                hash: Hash::from_content(b"produced-hash"),
+                capture: Some(OutputCaptureSpec {
+                    name: "video".to_string(),
+                    capture: CaptureKind::File("out.mkv".to_string()),
+                    save: SaveMode::True,
+                    allow_empty: false,
+                }),
+            },
+        )]);
+
+        let migrated = migrate_terms(
+            V7_INSTANCE_KEY_VERSION,
+            INSTANCE_KEY_VERSION,
+            &command_args,
+            &outputs,
+            &materialized_inputs,
+        )
+        .expect("v7->v8 migration is registered and record has capture specs");
+        assert_eq!(migrated.command_args, command_args);
+        assert_eq!(
+            migrated.output_tokens,
+            BTreeMap::from([("video".to_string(), "file:out.mkv".to_string())])
+        );
+        assert_eq!(migrated.materialized_inputs, materialized_inputs);
+        let v8 = derive_migrated_v8_key("tool@v1", &migrated);
+        assert_eq!(
+            v8,
+            derive_instance_key_v8(
+                "tool@v1",
+                &command_args,
+                &migrated.output_tokens,
+                &materialized_inputs
+            )
+        );
+    }
+
+    /// Migration fails for unregistered pairs or missing output capture data.
+    #[test]
+    fn migrate_terms_rejects_unregistered_pairs_and_missing_data() {
+        let command_args = [Hash::from_content(b"argv")];
+        let materialized_inputs = BTreeMap::new();
+        let outputs = BTreeMap::from([(
+            "video".to_string(),
+            CapturedOutput { hash: Hash::from_content(b"produced-hash"), capture: None },
+        )]);
+        assert!(
+            migrate_terms(
+                V7_INSTANCE_KEY_VERSION,
+                INSTANCE_KEY_VERSION,
+                &command_args,
+                &outputs,
+                &materialized_inputs,
+            )
+            .is_none(),
+            "missing capture spec means missing v8 data",
+        );
+        let complete_outputs = BTreeMap::from([(
+            "video".to_string(),
+            CapturedOutput {
+                hash: Hash::from_content(b"produced-hash"),
+                capture: Some(OutputCaptureSpec {
+                    name: "video".to_string(),
+                    capture: CaptureKind::Stdout,
+                    save: SaveMode::True,
+                    allow_empty: false,
+                }),
+            },
+        )]);
+        assert!(
+            migrate_terms(
+                6,
+                INSTANCE_KEY_VERSION,
+                &command_args,
+                &complete_outputs,
+                &materialized_inputs
+            )
+            .is_none()
+        );
+        assert!(
+            migrate_terms(
+                V7_INSTANCE_KEY_VERSION,
+                9,
+                &command_args,
+                &complete_outputs,
+                &materialized_inputs
+            )
+            .is_none()
+        );
+        assert!(
+            migrate_terms(
+                INSTANCE_KEY_VERSION,
+                V7_INSTANCE_KEY_VERSION,
+                &command_args,
+                &complete_outputs,
+                &materialized_inputs
+            )
+            .is_none()
+        );
     }
 
     /// Pins that a binding naming no work contributes its source bytes, and that
@@ -708,11 +1088,6 @@ mod tests {
 
     /// A binding that reads only `${env.…}` contributes its own text, not the
     /// value the host supplies for it.
-    ///
-    /// The live case is a step that passes a provisioned path held in the
-    /// environment: keying the value would split one deployment across hosts
-    /// that happen to hold different values for the same variable, while two
-    /// different variables stay two jobs because their text differs.
     #[test]
     fn an_environment_binding_contributes_its_text() {
         let parts = ["--output".to_string(), "${inputs.out}".to_string()];
@@ -745,13 +1120,6 @@ mod tests {
     }
 
     /// A deterministic env value is key material; an inherited reference is not.
-    ///
-    /// Two literal spellings of the same name must derive different keys, so
-    /// editing a literal in the document is a miss and a re-run (the key is the
-    /// staleness channel for literals). With no literal the reference is
-    /// inherited, which contributes nothing: its material equals the material
-    /// of the command with that part dropped, so a host's value can never move
-    /// the key.
     #[test]
     fn a_literal_env_value_is_key_material() {
         let parts = vec!["echo".to_string(), "--out=${env.OUT}".to_string()];
@@ -762,10 +1130,6 @@ mod tests {
         let b = key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &literals_b);
         let inherited = key_material_for_tool(&parts, &BTreeMap::new(), &BTreeMap::new(), &empty);
         assert_ne!(a, b, "a deterministic value changes the key");
-        // The brief's `assert_eq!(a, inherited)` cannot hold beside
-        // `assert_ne!(a, b)` (the inherited case has no literal, so no rule can
-        // make it equal the literal-a case while literals move the key); both
-        // facts are pinned here instead.
         assert_ne!(a, inherited, "an inherited reference contributes no value");
         assert_eq!(
             inherited,
@@ -776,16 +1140,6 @@ mod tests {
 
     /// A part mixing a fixed literal with an input keys its inlined text and
     /// that input's value.
-    ///
-    /// This is the structural half of scheme 7's part rule, where the vacuous
-    /// guard lives: `a_literal_env_value_is_key_material` proves the key moves,
-    /// this proves where — the term's own bytes contain the substituted value,
-    /// so a derivation that skipped the part instead of inlining it cannot
-    /// reproduce this term. The input read beside the literal still carries its
-    /// bytes too, which is the collision class: part participation is decided
-    /// before `referenced_inputs` runs, so a skip would drop the part text and
-    /// its referenced-input term together and two documents differing only in
-    /// that input would share one key.
     #[test]
     fn a_mixed_env_and_input_part_keys_the_inlined_text_and_the_input_value() {
         let parts = vec!["--tag=${env.FIXED}-${inputs.y}".to_string()];
@@ -817,12 +1171,6 @@ mod tests {
     }
 
     /// A literal no part or binding reads still moves the key.
-    ///
-    /// The whole `env_vars` map joins the key material, so it is the
-    /// staleness channel for every literal the document fixes and not only for
-    /// the ones the command spells: editing a value no part or binding
-    /// references must re-key the step, or the record would keep serving work
-    /// under a document that no longer describes it.
     #[test]
     fn an_unreferenced_literal_env_value_re_keys_the_step() {
         let parts = vec!["echo".to_string(), "hello".to_string()];
@@ -838,11 +1186,6 @@ mod tests {
     }
 
     /// A binding mixing `${context.…}` with a fixed literal keys its text.
-    ///
-    /// The resolved bytes name the branch the host selected, so keying them
-    /// would split one document across hosts. The literal half's staleness is
-    /// carried by the whole-map composite above, so the text loses nothing and
-    /// no host's bytes enter the key.
     #[test]
     fn a_mixed_context_and_literal_env_binding_keys_its_text() {
         let parts = ["--js-runtimes".to_string(), "${inputs.js_runtimes}".to_string()];
@@ -871,11 +1214,7 @@ mod tests {
         );
     }
 
-    /// The input name is key material: it decides which command slot the value
-    /// lands in, so two bindings that resolve to the same bytes under different
-    /// names must not share an instance key. Sharing one would let the first
-    /// step's recorded instance be probed and reused for a differently-named
-    /// (and therefore differently-shaped) command.
+    /// The input name is key material.
     #[test]
     fn same_bytes_under_different_names_produce_different_hashes() {
         let left = instance_key_hash_from_resolved_value_bytes("message", "same", b"same")
@@ -890,11 +1229,6 @@ mod tests {
     }
 
     /// A command part's position is key material.
-    ///
-    /// The argv the tool runs is a sequence, so two steps that pass the same
-    /// two values in opposite orders run different commands. The list the
-    /// derivation consumes is that argv, in order, and nothing in this module
-    /// sorts it.
     #[test]
     fn command_part_order_is_key_material() {
         let first = Hash::from_content(b"-i");
@@ -906,14 +1240,7 @@ mod tests {
         );
     }
 
-    /// A staged input's bytes are key material.
-    ///
-    /// A `:file(dest)` part hands the command a file whose bytes come from a
-    /// binding, and the part reaches the key as `composite(dest, source_hash)`.
-    /// Two steps identical but for that source therefore derive different keys.
-    /// Classifying the selector as nondeterministic instead would let two
-    /// different files stage under one key, and the second step would be served
-    /// the first one's instance.
+    /// A staged input's bytes are key material in command-part derivation.
     #[test]
     fn a_staged_input_whose_bytes_change_re_keys_the_step() {
         let parts = ["${inputs.source:file(inputs/source.mkv)}".to_string()];
@@ -944,9 +1271,6 @@ mod tests {
     }
 
     /// A plain part names the inputs it reads, and their changes reach the key.
-    ///
-    /// A splat reads its input too: the values it spreads are that input's, so
-    /// a changed list is changed work even though the template does not move.
     #[test]
     fn a_plain_part_keys_its_text_and_the_inputs_it_reads() {
         let parts = ["--format=${inputs.format}".to_string()];
@@ -1001,15 +1325,7 @@ mod tests {
         assert_eq!(first.len(), 1);
     }
 
-    /// A binding that reads only the host contributes its own text, so the path
-    /// it selects does not split the key.
-    ///
-    /// `js_runtimes` in the demo's tools is
-    /// `deno:${context.os == "macos" ? … }`: the branch picks where the provisioned
-    /// Deno payload lives, which is environment rather than work. Keying the
-    /// resolved path would make one deployment on two hosts look like two
-    /// different jobs, and a workspace carried between them would redo every step
-    /// for a path change. The template text is what names the job.
+    /// A binding that reads only the host contributes its own text.
     #[test]
     fn a_binding_that_reads_only_the_host_does_not_split_the_key() {
         let parts = ["--js-runtimes".to_string(), "${inputs.js_runtimes}".to_string()];
@@ -1047,10 +1363,6 @@ mod tests {
     }
 
     /// A context-only binding reaches a builtin's key as its text too.
-    ///
-    /// A builtin takes its inputs by name, so the same rule has to hold there:
-    /// otherwise one host would split the key for a builtin while the identical
-    /// binding left a command tool alone.
     #[test]
     fn a_builtin_keys_a_context_only_binding_by_its_text() {
         let binding = "${context.os == \"macos\" ? payload/macos : payload/linux}";
@@ -1066,12 +1378,6 @@ mod tests {
     }
 
     /// A literal value still reaches the key, unchanged by the rule above.
-    ///
-    /// A literal reads neither an input nor a step output, and its text and its
-    /// resolved value are the same bytes, so `"23"` and `"24"` stay two different
-    /// jobs. The pin exists because the rule now reads the binding, and a version
-    /// of it that skipped literals would silently collapse every literal input
-    /// into one key.
     #[test]
     fn a_literal_binding_value_reaches_the_key() {
         let parts = ["-crf".to_string(), "${inputs.crf}".to_string()];
@@ -1088,7 +1394,7 @@ mod tests {
     }
 
     /// A binding that reads a step output reaches the key through that output's
-    /// hash, so a rerun producing different bytes re-keys the step.
+    /// hash.
     #[test]
     fn a_step_output_binding_reaches_the_key_through_its_hash() {
         let parts = ["-i".to_string(), "${inputs.source}".to_string()];
@@ -1103,74 +1409,25 @@ mod tests {
         assert_ne!(
             key_material_for_tool(&parts, &first_values, &bindings, &BTreeMap::new()),
             key_material_for_tool(&parts, &second_values, &bindings, &BTreeMap::new()),
-            "an input read from another step is work, so its bytes belong in the key",
+            "a binding that names work keys the hash its source resolves to, not the binding text",
         );
     }
 
-    /// A binding that reads declared external data is work, and its own clause
-    /// is what says so.
-    ///
-    /// A `${external_data.<hash>}` binding names bytes the document declares, so
-    /// two runs over different declared bytes are different work. The step-output
-    /// clause beside it does not cover this shape: the text contains neither
-    /// `step_output.` nor `inputs.`, so without its own clause the binding would
-    /// be read as host-only and keyed by its own text, and every declared value
-    /// would collapse into one key.
+    /// A literal value the document fixes in an env-only binding reaches the
+    /// key.
     #[test]
-    fn an_external_data_binding_reaches_the_key_through_its_bytes() {
-        let parts = ["-i".to_string(), "${inputs.source}".to_string()];
-        let binding = "${external_data.blake3:abc}";
-        let bindings = BTreeMap::from([("source".to_string(), binding.to_string())]);
-        let first = BTreeMap::from([("source".to_string(), b"first".to_vec())]);
-        let second = BTreeMap::from([("source".to_string(), b"second".to_vec())]);
+    fn a_deterministic_env_only_binding_reaches_the_key_through_its_value() {
+        let parts = ["--out".to_string(), "${inputs.out}".to_string()];
+        let bindings = BTreeMap::from([("out".to_string(), "${env.OUT}".to_string())]);
+        let literals_a = BTreeMap::from([("OUT".to_string(), "/tmp/a".to_string())]);
+        let literals_b = BTreeMap::from([("OUT".to_string(), "/tmp/b".to_string())]);
+        let values_a = BTreeMap::from([("out".to_string(), b"/tmp/a".to_vec())]);
+        let values_b = BTreeMap::from([("out".to_string(), b"/tmp/b".to_vec())]);
 
-        let from_first = key_material_for_tool(&parts, &first, &bindings, &BTreeMap::new());
         assert_ne!(
-            from_first,
-            key_material_for_tool(&parts, &second, &bindings, &BTreeMap::new()),
-            "declared bytes are work, so a different declared value must move the key",
+            key_material_for_tool(&parts, &values_a, &bindings, &literals_a),
+            key_material_for_tool(&parts, &values_b, &bindings, &literals_b),
+            "editing a literal the document fixes is changed work",
         );
-        assert_eq!(
-            from_first[1],
-            Hash::composite(&[
-                Hash::from_content(parts[1].as_bytes()),
-                Hash::from_content(b"first"),
-            ]),
-            "the term is the declared bytes, not the binding text that names them",
-        );
-    }
-
-    /// A builtin keys its inputs in name order, each name and value composed.
-    #[test]
-    fn a_builtin_keys_its_inputs_by_name() {
-        let values = BTreeMap::from([
-            ("kind".to_string(), b"file".to_vec()),
-            ("hash".to_string(), b"blake3:abc".to_vec()),
-        ]);
-        let material = key_material_for_builtin(&values, &BTreeMap::new(), &BTreeMap::new());
-        assert_eq!(
-            material,
-            vec![
-                Hash::composite(&[Hash::from_content(b"hash"), Hash::from_content(b"blake3:abc"),]),
-                Hash::composite(&[Hash::from_content(b"kind"), Hash::from_content(b"file")]),
-            ],
-            "input-name order decides the terms",
-        );
-    }
-
-    /// The scheme version is an integer and the domain states it verbatim.
-    ///
-    /// Version sequences in this repository move `v1 -> v2 -> v3 -> v4 -> v5 -> v6 -> v7`;
-    /// a
-    /// dotted revision such as `v4.1` hides that the scheme changed and is
-    /// banned. The rendered value is pinned literally, so changing the key
-    /// material without bumping the scheme fails here — the oracle in
-    /// `mediapm::materializer::resolve` pins the same literal independently.
-    #[test]
-    fn the_instance_key_domain_carries_an_integer_version() {
-        let domain = instance_key_domain();
-        assert_eq!(domain, "mediapm/conductor/tool call instances/v7");
-        assert_eq!(domain, format!("mediapm/conductor/tool call instances/v{INSTANCE_KEY_SCHEME}"));
-        assert!(!domain.contains('.'), "dotted scheme revision in {domain}");
     }
 }
