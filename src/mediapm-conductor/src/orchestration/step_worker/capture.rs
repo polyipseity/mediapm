@@ -310,8 +310,21 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
                 let full_path = sandbox_dir.join(relative_path);
                 match tokio::fs::read(&full_path).await {
                     Ok(data) => CaptureResolution::Store(data),
-                    Err(_) if spec.allow_empty => CaptureResolution::AllowedEmpty,
-                    Err(_) => CaptureResolution::Missing,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        if spec.allow_empty {
+                            CaptureResolution::AllowedEmpty
+                        } else {
+                            CaptureResolution::Missing
+                        }
+                    }
+                    Err(error) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "failed to read capture '{}' (token '{}') at '{}': {error}",
+                            spec.name,
+                            spec.capture.to_token(),
+                            full_path.display(),
+                        )));
+                    }
                 }
             }
             crate::config::CaptureKind::FileRegex(pattern) => {
@@ -888,9 +901,9 @@ mod tests {
         assert!(message.contains("allow_empty is false"), "unexpected error: {message}");
     }
 
-    /// A strict file capture that cannot be read fails the step.
+    /// A strict file capture for a missing file fails the step.
     #[tokio::test]
-    async fn strict_file_capture_with_unreadable_path_returns_error() {
+    async fn strict_file_capture_with_missing_file_returns_error() {
         let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
         let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
         let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
@@ -962,6 +975,107 @@ mod tests {
             .expect("tolerant folder capture should succeed");
         let record = outputs.records.get("folder_out").expect("recorded output");
         assert!(record.hash_nk.is_none(), "matched nothing => hash_nk must be null");
+    }
+
+    /// An allowed-empty file capture for a missing file records a null hash and
+    /// stores nothing in CAS.
+    #[tokio::test]
+    async fn allowed_empty_missing_file_records_null_and_stores_nothing() {
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let cas_root = tmp.path().join("store");
+        let cas = mediapm_cas::FileSystemCas::open(&cas_root).await.expect("open filesystem CAS");
+        let execution =
+            ExecutionResult { stdout: b"out".to_vec(), stderr: b"err".to_vec(), exit_code: 1 };
+        let output_specs = BTreeMap::from([(
+            "maybe".to_string(),
+            OutputCaptureSpec {
+                name: "maybe".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file:absent.txt")
+                    .expect("valid capture"),
+                save: SaveMode::Full,
+                allow_empty: true,
+            },
+        )]);
+
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path())
+            .await
+            .expect("allowed-empty missing file capture should succeed");
+        let record = outputs.records.get("maybe").expect("recorded output");
+        assert!(record.hash_nk.is_none(), "missing file with allow_empty => hash_nk must be null");
+        let would_store: &[u8] = b"";
+        let blob_path = cas
+            .object_path_for_hash(mediapm_cas::Hash::from_content(would_store))
+            .expect("filesystem store exposes object paths");
+        assert!(
+            !blob_path.exists(),
+            "no bytes may be stored for an allowed-empty capture that matched nothing"
+        );
+    }
+
+    /// An allowed-empty file capture fails when the path exists but cannot be
+    /// read as a file.
+    #[tokio::test]
+    async fn allowed_empty_unreadable_file_fails() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        tokio::fs::create_dir(tmp.path().join("not_a_file")).await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "maybe".to_string(),
+            OutputCaptureSpec {
+                name: "maybe".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file:not_a_file")
+                    .expect("valid capture"),
+                save: SaveMode::True,
+                allow_empty: true,
+            },
+        )]);
+
+        let error = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("maybe"), "unexpected error: {message}");
+        assert!(message.contains("file:not_a_file"), "unexpected error: {message}");
+        assert!(
+            message.contains(&tmp.path().join("not_a_file").display().to_string()),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("matched nothing"),
+            "unreadable must not be reported as absence: {message}"
+        );
+    }
+
+    /// A strict file capture fails when the path exists but cannot be read as a
+    /// file, naming the path.
+    #[tokio::test]
+    async fn strict_unreadable_file_fails_naming_the_path() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        tokio::fs::create_dir(tmp.path().join("not_a_file")).await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "out".to_string(),
+            OutputCaptureSpec {
+                name: "out".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file:not_a_file")
+                    .expect("valid capture"),
+                save: SaveMode::True,
+                allow_empty: false,
+            },
+        )]);
+
+        let error = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("out"), "unexpected error: {message}");
+        assert!(message.contains("file:not_a_file"), "unexpected error: {message}");
+        assert!(
+            message.contains(&tmp.path().join("not_a_file").display().to_string()),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("matched nothing"),
+            "unreadable must not be reported as absence: {message}"
+        );
     }
 
     /// An allowed-empty `file_regex` capture that matches nothing records a null مارس
