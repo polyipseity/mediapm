@@ -45,7 +45,7 @@ pub(crate) fn referenced_hashes(document: &NickelDocument) -> BTreeSet<Hash> {
                 collect_input_hash(value, &mut hashes);
             }
             for capture in step.outputs.values() {
-                hashes.extend(external_data_reference_hashes(&capture.capture));
+                hashes.extend(external_data_reference_hashes(&capture.capture.to_token()));
             }
         }
     }
@@ -162,10 +162,10 @@ mod tests {
                 "primary".to_string(),
                 mediapm_conductor::OutputCaptureSpec {
                     name: "primary".to_string(),
-                    capture: capture.to_string(),
+                    capture: mediapm_conductor::config::CaptureKind::parse_token(capture)
+                        .expect("valid test capture token"),
                     save: mediapm_conductor::SaveMode::True,
                     allow_empty: false,
-                    include_topmost_folder: true,
                 },
             )]),
             max_retries: 0,
@@ -201,7 +201,7 @@ mod tests {
                 ("input".to_string(), format!("${{external_data.{input_hash}}}")),
                 ("nested".to_string(), format!("prefix ${{external_data.{input_hash}}} suffix")),
             ]),
-            &format!("${{external_data.{capture_hash}}}"),
+            &format!("file:${{external_data.{capture_hash}}}"),
         );
 
         assert_eq!(

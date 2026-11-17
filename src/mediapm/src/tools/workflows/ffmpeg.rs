@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
     InputBinding, OutputCaptureSpec, SaveMode, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowSpec,
     WorkflowStepSpec,
@@ -155,10 +156,13 @@ pub(crate) fn synthesize_ffmpeg_step(
             output_name.clone(),
             OutputCaptureSpec {
                 name: output_name.clone(),
-                capture: format!("file_regex:{}", ffmpeg_output_file_regex(output_index)),
+                capture: CaptureKind::parse_token(&format!(
+                    "file_regex:{}",
+                    ffmpeg_output_file_regex(output_index)
+                ))
+                .expect("valid ffmpeg output capture token"),
                 save,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
 
@@ -609,10 +613,13 @@ fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptu
         OUTPUT_CONTENT.to_string(),
         OutputCaptureSpec {
             name: OUTPUT_CONTENT.to_string(),
-            capture: format!("file_regex:{}", ffmpeg_output_file_regex(0)),
+            capture: CaptureKind::parse_token(&format!(
+                "file_regex:{}",
+                ffmpeg_output_file_regex(0)
+            ))
+            .expect("valid ffmpeg content capture token"),
             save: SaveMode::True,
             allow_empty: false,
-            include_topmost_folder: true,
         },
     );
     for index in 0..max_output_slots {
@@ -622,20 +629,20 @@ fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptu
             capture_name.clone(),
             OutputCaptureSpec {
                 name: capture_name,
-                capture: format!("file_regex:{path_regex}"),
+                capture: CaptureKind::parse_token(&format!("file_regex:{path_regex}"))
+                    .expect("valid ffmpeg primary capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
         outputs.insert(
             format!("{OUTPUT_CONTENT}_{index}"),
             OutputCaptureSpec {
                 name: format!("{OUTPUT_CONTENT}_{index}"),
-                capture: format!("file_regex:{path_regex}"),
+                capture: CaptureKind::parse_token(&format!("file_regex:{path_regex}"))
+                    .expect("valid ffmpeg primary capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
     }
@@ -643,40 +650,38 @@ fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptu
         OUTPUT_SANDBOX_ARTIFACTS.to_string(),
         OutputCaptureSpec {
             name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
-            capture: "folder:inputs".to_string(),
+            capture: CaptureKind::parse_token("folder:inputs")
+                .expect("valid ffmpeg sandbox artifacts capture token"),
             save: SaveMode::True,
             allow_empty: false,
-            include_topmost_folder: true,
         },
     );
     outputs.insert(
         "stdout".to_string(),
         OutputCaptureSpec {
             name: "stdout".to_string(),
-            capture: "stdout".to_string(),
+            capture: CaptureKind::parse_token("stdout").expect("valid ffmpeg stdout capture token"),
             save: SaveMode::True,
             allow_empty: false,
-            include_topmost_folder: true,
         },
     );
     outputs.insert(
         "stderr".to_string(),
         OutputCaptureSpec {
             name: "stderr".to_string(),
-            capture: "stderr".to_string(),
+            capture: CaptureKind::parse_token("stderr").expect("valid ffmpeg stderr capture token"),
             save: SaveMode::True,
             allow_empty: false,
-            include_topmost_folder: true,
         },
     );
     outputs.insert(
         "process_code".to_string(),
         OutputCaptureSpec {
             name: "process_code".to_string(),
-            capture: "process_code".to_string(),
+            capture: CaptureKind::parse_token("process_code")
+                .expect("valid ffmpeg process_code capture token"),
             save: SaveMode::True,
             allow_empty: false,
-            include_topmost_folder: true,
         },
     );
     outputs
@@ -815,9 +820,9 @@ mod tests {
         assert!(outputs.contains_key("primary_2"), "missing primary_2 output");
         let primary = &outputs["primary"];
         assert!(
-            primary.capture.starts_with("file_regex:"),
+            primary.capture.to_token().starts_with("file_regex:"),
             "primary capture should use file_regex, got: {}",
-            primary.capture
+            primary.capture.to_token()
         );
     }
 

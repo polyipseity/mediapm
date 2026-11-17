@@ -30,8 +30,12 @@ use crate::tools::workflows::{FfmpegSlotLimits, resolve_media_variant_output_bin
 
 use super::zip_reader::extract_zip_member_bytes;
 
-/// Per-workflow step output hash table (`step_id -> output_name -> CAS hash`).
-pub(super) type StepOutputHashes = BTreeMap<String, BTreeMap<String, Hash>>;
+/// Per-workflow step output hash table (`step_id -> output_name -> captured CAS hash`).
+///
+/// `None` means the capture produced no bytes (an empty, `allow_empty` capture);
+/// the materializer resolves such an output as empty bytes rather than reading
+/// from the store.
+pub(super) type StepOutputHashes = BTreeMap<String, BTreeMap<String, Option<Hash>>>;
 
 /// Shared lookup context threaded through materialization workers.
 #[derive(Clone)]

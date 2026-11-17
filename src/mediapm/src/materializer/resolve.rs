@@ -73,16 +73,27 @@ pub(super) async fn resolve_variant_hash(
             lookup.ffmpeg_slot_limits.max_input_slots,
             lookup.ffmpeg_slot_limits.max_output_slots,
         )?;
-        let readable = cas_hash_is_readable(&lookup.cas, workflow_hash).await;
-        if binding.is_none_or(|binding| binding.zip_member.is_none()) && readable {
-            return Ok(Some(workflow_hash));
-        }
-        // Only an unreadable workflow hash is a lost object. A readable one
-        // whose binding names a ZIP member falls through on purpose: the member
-        // is extracted by the caller, which asked for the pack's hash and not
-        // for these bytes.
-        if !readable {
-            lost = Some(workflow_hash);
+        match workflow_hash {
+            None => {
+                // A null captured hash resolves to empty bytes (prior allow_empty behavior).
+                // Only when no zip member extraction is required.
+                if binding.is_none_or(|binding| binding.zip_member.is_none()) {
+                    return Ok(None);
+                }
+            }
+            Some(workflow_hash) => {
+                let readable = cas_hash_is_readable(&lookup.cas, workflow_hash).await;
+                if binding.is_none_or(|binding| binding.zip_member.is_none()) && readable {
+                    return Ok(Some(workflow_hash));
+                }
+                // Only an unreadable workflow hash is a lost object. A readable one
+                // whose binding names a ZIP member falls through on purpose: the member
+                // is extracted by the caller, which asked for the pack's hash and not
+                // for these bytes.
+                if !readable {
+                    lost = Some(workflow_hash);
+                }
+            }
         }
     }
 
@@ -156,6 +167,7 @@ pub(crate) async fn backfill_source_variant_hashes_from_workflow_outputs(
                     .get(&binding.step_id)
                     .and_then(|outputs| outputs.get(&binding.output_name))
                     .copied()
+                    .flatten()
                     && cas.get(hash).await.is_ok()
                 {
                     source.variant_hashes.insert(variant_name.clone(), hash.to_string());
@@ -218,11 +230,9 @@ pub(super) async fn resolve_variant_source_bytes(
     };
 
     if let Some((workflow_hash, fallback_notice)) = workflow_resolution {
-        match lookup.cas.get(workflow_hash).await {
-            // Bytes that are not the archive the caller asked for fall through
-            // to the source's own hashes: the caller asked for specific
-            // content, and this hash names content of another shape.
-            Ok(bytes) if !full_zip_archive || is_zip_content(bytes.as_ref()) => {
+        match workflow_hash {
+            None => {
+                // A null captured hash resolves to empty bytes (prior allow_empty behavior).
                 let binding = resolve_media_variant_output_binding_with_limits(
                     source,
                     variant,
@@ -230,35 +240,58 @@ pub(super) async fn resolve_variant_source_bytes(
                     lookup.ffmpeg_slot_limits.max_output_slots,
                 )
                 .map_err(Fatal)?;
-                // A caller asking for the whole archive never extracts: it
-                // asked for these exact bytes and got them.
-                let zip_member = binding
-                    .as_ref()
-                    .filter(|_| !full_zip_archive)
-                    .and_then(|binding| binding.zip_member.as_deref());
-                let (materialized_bytes, source_hash) = match zip_member {
-                    Some(zip_member) => {
-                        let member_bytes =
-                            extract_zip_member_bytes(bytes.as_ref(), zip_member).map_err(
-                                |error| {
-                                    Fatal(MediaPmError::Workflow(format!(
-                                        "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
-                                    )))
-                                },
-                            )?;
-                        (member_bytes, None)
-                    }
-                    None => (bytes.as_ref().to_vec(), Some(workflow_hash)),
-                };
-
-                return Ok(VariantSourceBytes {
-                    bytes: materialized_bytes,
-                    notice: fallback_notice,
-                    source_hash,
-                });
+                if binding.as_ref().is_none_or(|binding| binding.zip_member.is_none()) {
+                    return Ok(VariantSourceBytes {
+                        bytes: Vec::new(),
+                        notice: fallback_notice,
+                        source_hash: None,
+                    });
+                }
             }
-            Ok(_) => {}
-            Err(_) => return Err(Fatal(missing_object_error(media_id, variant, workflow_hash))),
+            Some(workflow_hash) => match lookup.cas.get(workflow_hash).await {
+                // Bytes that are not the archive the caller asked for fall through
+                // to the source's own hashes: the caller asked for specific
+                // content, and this hash names content of another shape.
+                Ok(bytes) if !full_zip_archive || is_zip_content(bytes.as_ref()) => {
+                    let binding = resolve_media_variant_output_binding_with_limits(
+                        source,
+                        variant,
+                        lookup.ffmpeg_slot_limits.max_input_slots,
+                        lookup.ffmpeg_slot_limits.max_output_slots,
+                    )
+                    .map_err(Fatal)?;
+                    // A caller asking for the whole archive never extracts: it
+                    // asked for these exact bytes and got them.
+                    let zip_member = binding
+                        .as_ref()
+                        .filter(|_| !full_zip_archive)
+                        .and_then(|binding| binding.zip_member.as_deref());
+                    let (materialized_bytes, source_hash) = match zip_member {
+                        Some(zip_member) => {
+                            let member_bytes =
+                                extract_zip_member_bytes(bytes.as_ref(), zip_member).map_err(
+                                    |error| {
+                                        Fatal(MediaPmError::Workflow(format!(
+                                            "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
+                                        )))
+                                    },
+                                )?;
+                            (member_bytes, None)
+                        }
+                        None => (bytes.as_ref().to_vec(), Some(workflow_hash)),
+                    };
+
+                    return Ok(VariantSourceBytes {
+                        bytes: materialized_bytes,
+                        notice: fallback_notice,
+                        source_hash,
+                    });
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    return Err(Fatal(missing_object_error(media_id, variant, workflow_hash)));
+                }
+            },
         }
     }
 
@@ -335,7 +368,7 @@ async fn resolve_variant_hash_from_workflow_state(
     media_id: &str,
     source: &MediaSourceSpec,
     variant: &str,
-) -> Result<Option<(Hash, Option<String>)>, MediaPmError> {
+) -> Result<Option<(Option<Hash>, Option<String>)>, MediaPmError> {
     let Some(binding) = resolve_media_variant_output_binding_with_limits(
         source,
         variant,
@@ -613,7 +646,7 @@ impl ExpectedInputHashes {
 /// The strict pass's answer for one step.
 struct StrictStepResolution {
     /// The outputs the step's key matched, or nothing when no instance matched.
-    outputs: Option<BTreeMap<String, Hash>>,
+    outputs: Option<BTreeMap<String, Option<Hash>>>,
     /// The inputs that stopped this pass from deriving the step's key.
     unresolved_inputs: UnresolvedInputs,
 }
@@ -709,7 +742,7 @@ async fn resolve_single_step_output_hashes_strict(
 
 fn step_declared_outputs_resolved(
     step: &mediapm_conductor::WorkflowStepSpec,
-    outputs: &BTreeMap<String, Hash>,
+    outputs: &BTreeMap<String, Option<Hash>>,
 ) -> bool {
     step.outputs.keys().all(|output_name| outputs.contains_key(output_name))
 }
@@ -724,7 +757,7 @@ fn step_declared_outputs_resolved(
 /// either: the record is the only provenance a state has for what served a step.
 fn instance_names_step(instance: &ToolCallInstance, workflow_name: &str, step_id: &str) -> bool {
     instance
-        .step_ids
+        .step_ids_nk
         .iter()
         .any(|recorded| recorded.step_id == step_id && recorded.workflow_id == workflow_name)
 }
@@ -759,7 +792,7 @@ fn resolve_single_step_output_hashes_relaxed(
     workflow_name: &str,
     step: &mediapm_conductor::WorkflowStepSpec,
     unresolved_inputs: &UnresolvedInputs,
-) -> Result<Option<BTreeMap<String, Hash>>, MediaPmError> {
+) -> Result<Option<BTreeMap<String, Option<Hash>>>, MediaPmError> {
     let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
         .map(|(key, _)| key.clone())
         .ok_or_else(|| {
@@ -791,8 +824,8 @@ fn resolve_single_step_output_hashes_relaxed(
             let (_, first) = several[0];
             let agreed = several.iter().all(|(_, instance)| {
                 required_output_names.iter().all(|name| {
-                    instance.outputs.get(name).map(|output| output.hash)
-                        == first.outputs.get(name).map(|output| output.hash)
+                    instance.outputs.get(name).map(|output| output.hash_nk)
+                        == first.outputs.get(name).map(|output| output.hash_nk)
                 })
             });
             if agreed {
@@ -805,7 +838,7 @@ fn resolve_single_step_output_hashes_relaxed(
                     format!(
                         "{instance_key} ({} output(s), executed_at {} unix seconds)",
                         instance.outputs.len(),
-                        instance.executed_at.as_unix_secs(),
+                        instance.executed_at_nk.as_unix_secs(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -835,8 +868,8 @@ fn resolve_single_step_output_hashes_relaxed(
 /// above require the bound names to be present before selecting an instance. An
 /// inferred hash is worse than an absent one here: it materializes bytes the
 /// step never asked for under a name that claims they are something else.
-fn output_hashes_from_instance(instance: &ToolCallInstance) -> BTreeMap<String, Hash> {
-    instance.outputs.iter().map(|(name, output)| (name.clone(), output.hash)).collect()
+fn output_hashes_from_instance(instance: &ToolCallInstance) -> BTreeMap<String, Option<Hash>> {
+    instance.outputs.iter().map(|(name, output)| (name.clone(), output.hash_nk)).collect()
 }
 
 /// Unions step-declared inputs with the active tool spec contract, matching
@@ -999,16 +1032,36 @@ async fn build_instance_key_resolved_value_bytes(
         resolved.values.insert(key.clone(), member_bytes);
     }
 
+    let concrete_outputs = concrete_step_outputs(prior_step_outputs);
     let engine = mediapm_conductor::resolve_instance_key_input_values::<FileSystemCas>(
         &engine_bindings,
         step_inputs,
-        prior_step_outputs,
+        &concrete_outputs,
         execution_env_vars,
     )
     .await;
     resolved.values.extend(engine.values);
     resolved.unresolved_bindings.extend(engine.unresolved);
     Ok(resolved)
+}
+
+/// Step outputs with concrete hashes only, for APIs that do not represent an
+/// allowed-empty (`hash_nk: None`) capture.
+fn concrete_step_outputs(
+    step_outputs: &StepOutputHashes,
+) -> BTreeMap<String, BTreeMap<String, Hash>> {
+    step_outputs
+        .iter()
+        .map(|(step_id, outputs)| {
+            (
+                step_id.clone(),
+                outputs
+                    .iter()
+                    .filter_map(|(name, hash_nk)| hash_nk.map(|hash| (name.clone(), hash)))
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// The argv one declared tool runs, empty for a builtin.
@@ -1148,7 +1201,7 @@ async fn resolve_input_binding_hash(
     step_outputs: &StepOutputHashes,
 ) -> Result<InputBindingHashResolution, MediaPmError> {
     if let Some(reference) = parse_step_output_reference(value) {
-        let Some(hash) = step_outputs
+        let Some(hash_nk) = step_outputs
             .get(reference.step_id)
             .and_then(|outputs| outputs.get(reference.output_name))
             .copied()
@@ -1157,6 +1210,16 @@ async fn resolve_input_binding_hash(
         };
 
         if let Some(zip_member) = reference.zip_member {
+            let Some(hash) = hash_nk else {
+                return Ok(InputBindingHashResolution::MissingMaterializedObject {
+                    detail: format!(
+                        "step output '{}.{}' is an empty capture and has no stored bytes for ZIP member '{}'",
+                        reference.step_id,
+                        reference.output_name,
+                        zip_member.escape_debug()
+                    ),
+                });
+            };
             let zip_bytes = match cas.get(hash).await {
                 Ok(bytes) => bytes,
                 Err(source) => {
@@ -1181,7 +1244,9 @@ async fn resolve_input_binding_hash(
             )));
         }
 
-        return Ok(InputBindingHashResolution::Resolved(hash));
+        return Ok(InputBindingHashResolution::Resolved(
+            hash_nk.unwrap_or_else(|| Hash::from_content(&[])),
+        ));
     }
 
     if let Some(external_hash) = parse_external_data_reference(value)? {
@@ -1272,7 +1337,7 @@ mod tests {
     /// there. This is fixture tooling: the materializer's own pairing, and an
     /// invalidation request, compare the workflow as well as the step id.
     fn records_step(instance: &ToolCallInstance, step_id: &str) -> bool {
-        instance.step_ids.iter().any(|recorded| recorded.step_id == step_id)
+        instance.step_ids_nk.iter().any(|recorded| recorded.step_id == step_id)
     }
 
     fn load_generated_doc() -> NickelDocument {
@@ -1355,7 +1420,7 @@ mod tests {
             .tool_call_instances
             .get_mut(&key)
             .expect("recorded import instance")
-            .step_ids
+            .step_ids_nk
             .insert(mediapm_conductor::StepRef {
                 workflow_id: "mediapm.media.demo.local.dQw4w9WgXcQ".to_string(),
                 step_id: DUPLICATED_IMPORT_STEP_ID.to_string(),
@@ -1376,7 +1441,9 @@ mod tests {
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         for instance in state.tool_call_instances.values() {
             for output in instance.outputs.values() {
-                if cas.get(output.hash).await.is_err() {
+                if let Some(hash) = output.hash_nk
+                    && cas.get(hash).await.is_err()
+                {
                     let _ = cas.put(bytes::Bytes::from_static(b"fixture-bytes")).await;
                 }
             }
@@ -1420,7 +1487,9 @@ mod tests {
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         for instance in state.tool_call_instances.values() {
             for output in instance.outputs.values() {
-                if cas.get(output.hash).await.is_err() {
+                if let Some(hash) = output.hash_nk
+                    && cas.get(hash).await.is_err()
+                {
                     let _ = cas.put(bytes::Bytes::from_static(b"fixture-bytes")).await;
                 }
             }
@@ -1541,7 +1610,7 @@ mod tests {
             let values = resolve_instance_key_input_values::<FileSystemCas>(
                 &merged,
                 &step.inputs,
-                &step_outputs,
+                &concrete_step_outputs(&step_outputs),
                 &execution_env,
             )
             .await;
@@ -1565,31 +1634,37 @@ mod tests {
                 let hash = cas.put(bytes::Bytes::from(bytes)).await.expect("store step output");
                 outputs.insert(
                     output_name.clone(),
-                    mediapm_conductor::CapturedOutput { hash, capture: None },
+                    mediapm_conductor::CapturedOutput {
+                        capture: "stdout".to_string(),
+                        hash_nk: Some(hash),
+                        saved_nk: true,
+                    },
                 );
             }
             let output_hashes = outputs
                 .iter()
-                .map(|(name, output)| (name.clone(), output.hash))
+                .map(|(name, output)| (name.clone(), output.hash_nk))
                 .collect::<BTreeMap<_, _>>();
             step_outputs.insert(step.id.clone(), output_hashes);
 
-            let executed_at =
+            let executed_at_nk =
                 mediapm_utils::Timestamp::from_unix_secs(1_700_000_000 + index as u64);
             state.tool_call_instances.insert(
                 instance_key,
                 mediapm_conductor::ToolCallInstance {
+                    key_version: 1,
+                    attempted_key_version_nk: 1,
                     tool_call_id: tool_call_id.clone(),
-                    impure: false,
-                    invalidated_at: None,
-                    executed_at,
-                    last_referenced_at: executed_at,
-                    step_ids: BTreeSet::from([mediapm_conductor::StepRef {
+                    impure_nk: false,
+                    invalidated_at_nk: None,
+                    executed_at_nk,
+                    last_referenced_at_nk: executed_at_nk,
+                    step_ids_nk: BTreeSet::from([mediapm_conductor::StepRef {
                         workflow_id: workflow.name.clone(),
                         step_id: step.id.clone(),
                     }]),
                     command_args: key_material,
-                    env_vars: BTreeMap::new(),
+                    env_vars_ck: BTreeMap::new(),
                     materialized_inputs: BTreeMap::new(),
                     outputs,
                 },
@@ -1621,13 +1696,13 @@ mod tests {
             .tool_call_instances
             .values()
             .flat_map(|instance| {
-                instance.step_ids.iter().map(move |served| {
+                instance.step_ids_nk.iter().map(move |served| {
                     (
                         served.step_id.clone(),
                         instance
                             .outputs
                             .iter()
-                            .map(|(n, o)| (n.clone(), o.hash))
+                            .map(|(n, o)| (n.clone(), o.hash_nk))
                             .collect::<BTreeMap<_, _>>(),
                     )
                 })
@@ -1670,7 +1745,9 @@ mod tests {
         let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
         for instance in state.tool_call_instances.values() {
             for output in instance.outputs.values() {
-                if cas.get(output.hash).await.is_err() {
+                if let Some(hash) = output.hash_nk
+                    && cas.get(hash).await.is_err()
+                {
                     let _ = cas.put(bytes::Bytes::from_static(b"fixture-bytes")).await;
                 }
             }
@@ -1683,7 +1760,7 @@ mod tests {
 
         let mut marked = state.clone();
         for instance in marked.tool_call_instances.values_mut() {
-            instance.invalidated_at = Some(mediapm_utils::Timestamp::now());
+            instance.invalidated_at_nk = Some(mediapm_utils::Timestamp::now());
         }
         let after = resolve_workflow_step_output_hashes(&cas, &generated, &marked, workflow)
             .await
@@ -1726,7 +1803,10 @@ mod tests {
         let mut step_outputs = BTreeMap::new();
         step_outputs.insert(
             import_step.id.clone(),
-            BTreeMap::from([(String::from("video_untagged"), import_stdout.hash)]),
+            BTreeMap::from([(
+                String::from("video_untagged"),
+                Some(import_stdout.hash_nk.expect("import stdout hash")),
+            )]),
         );
 
         let merged_ffmpeg_inputs = merge_step_inputs_with_tool_defaults(
@@ -1795,7 +1875,10 @@ mod tests {
             "primary".to_string(),
             mediapm_conductor::OutputCaptureSpec {
                 name: "primary".to_string(),
-                capture: "file_regex:^output-0(?:[.][^/\\\\]+)?$".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::parse_token(
+                    "file_regex:^output-0(?:[.][^/\\\\]+)?$",
+                )
+                .expect("valid capture token"),
                 ..mediapm_conductor::OutputCaptureSpec::default()
             },
         )]);
@@ -1803,28 +1886,32 @@ mod tests {
             "content".to_string(),
             mediapm_conductor::OutputCaptureSpec {
                 name: "content".to_string(),
-                capture: "folder:outputs".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::parse_token("folder:outputs")
+                    .expect("valid capture token"),
                 ..mediapm_conductor::OutputCaptureSpec::default()
             },
         )]);
         let tool_call_id = "ffmpeg@blake3:fixture";
         let instance = ToolCallInstance {
+            key_version: 8,
+            attempted_key_version_nk: 8,
             tool_call_id: tool_call_id.to_string(),
-            impure: false,
-            invalidated_at: None,
-            executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
-            last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(0),
-            step_ids: BTreeSet::new(),
             command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
+            env_vars_ck: BTreeMap::new(),
             materialized_inputs: BTreeMap::new(),
             outputs: BTreeMap::from([(
                 "primary".to_string(),
                 mediapm_conductor::CapturedOutput {
-                    hash: Hash::from_content(b"primary-bytes"),
-                    capture: Some(step_outputs["primary"].clone()),
+                    capture: step_outputs["primary"].capture.to_token(),
+                    hash_nk: Some(Hash::from_content(b"primary-bytes")),
+                    saved_nk: true,
                 },
             )]),
+            impure_nk: false,
+            invalidated_at_nk: None,
+            executed_at_nk: mediapm_utils::Timestamp::from_unix_nanos(0),
+            last_referenced_at_nk: mediapm_utils::Timestamp::from_unix_nanos(0),
+            step_ids_nk: BTreeSet::new(),
         };
         assert!(
             instance_matches_expected_output_names(&instance, &step_outputs),
@@ -1850,37 +1937,38 @@ mod tests {
         let tool_call_id = "echo@v1";
         let stdout_hash = Hash::from_content(b"stdout-bytes");
         let instance = ToolCallInstance {
+            key_version: 8,
+            attempted_key_version_nk: 8,
             tool_call_id: tool_call_id.to_string(),
-            impure: false,
-            invalidated_at: None,
-            executed_at: mediapm_utils::Timestamp::from_unix_nanos(0),
-            last_referenced_at: mediapm_utils::Timestamp::from_unix_nanos(0),
-            step_ids: BTreeSet::new(),
             command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
+            env_vars_ck: BTreeMap::new(),
             materialized_inputs: BTreeMap::new(),
             outputs: BTreeMap::from([(
                 "stdout".to_string(),
                 mediapm_conductor::CapturedOutput {
-                    hash: stdout_hash,
-                    capture: Some(mediapm_conductor::OutputCaptureSpec {
-                        name: "stdout".to_string(),
-                        capture: "stdout".to_string(),
-                        ..mediapm_conductor::OutputCaptureSpec::default()
-                    }),
+                    capture: "stdout".to_string(),
+                    hash_nk: Some(stdout_hash),
+                    saved_nk: true,
                 },
             )]),
+            impure_nk: false,
+            invalidated_at_nk: None,
+            executed_at_nk: mediapm_utils::Timestamp::from_unix_nanos(0),
+            last_referenced_at_nk: mediapm_utils::Timestamp::from_unix_nanos(0),
+            step_ids_nk: BTreeSet::new(),
         };
         let declared_outputs = BTreeMap::from([(
             "transcript".to_string(),
             mediapm_conductor::OutputCaptureSpec {
                 name: "transcript".to_string(),
-                capture: "stderr".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::parse_token("stderr")
+                    .expect("valid capture token"),
                 ..mediapm_conductor::OutputCaptureSpec::default()
             },
         )]);
         assert_eq!(
-            declared_outputs["transcript"].capture, "stderr",
+            declared_outputs["transcript"].capture.to_token(),
+            "stderr",
             "the fixture only means something if the unrecorded name is a stream capture, \
              which is the shape the alias served",
         );
@@ -1889,7 +1977,7 @@ mod tests {
 
         assert_eq!(
             output_hashes,
-            BTreeMap::from([("stdout".to_string(), stdout_hash)]),
+            BTreeMap::from([("stdout".to_string(), Some(stdout_hash))]),
             "a name the instance did not record must not be given another name's bytes",
         );
     }
@@ -2742,7 +2830,7 @@ mod tests {
         state: &ConductorState,
         workflow: &mediapm_conductor::WorkflowSpec,
     ) -> Result<BTreeMap<Hash, DemoInstanceKeyRewrite>, String> {
-        let mut step_outputs: BTreeMap<String, BTreeMap<String, Hash>> = BTreeMap::new();
+        let mut step_outputs: BTreeMap<String, BTreeMap<String, Option<Hash>>> = BTreeMap::new();
         let mut rewrites: BTreeMap<Hash, DemoInstanceKeyRewrite> = BTreeMap::new();
         for step in &workflow.steps {
             let Some(active_tool_key) =
@@ -2963,7 +3051,7 @@ mod tests {
             .tool_call_instances
             .get_mut(&import_key)
             .expect("recorded import instance")
-            .step_ids
+            .step_ids_nk
             .clear();
 
         let error = plan_demo_instance_key_rewrites(&cas, &generated, &state, &workflow)
@@ -3132,7 +3220,7 @@ mod tests {
                 instance.tool_call_id,
             );
             assert!(
-                !instance.step_ids.is_empty(),
+                !instance.step_ids_nk.is_empty(),
                 "instance {} records no step, so no step can pair with it",
                 stored_key.to_hex(),
             );
@@ -3221,9 +3309,11 @@ mod tests {
             let instance = rewritten.tool_call_instances.remove(stored_key).unwrap_or_else(|| {
                 panic!("instance key {} is not in the fixture", stored_key.to_hex())
             });
-            for seeds in rewritten.aux.live_instances.values_mut() {
-                if seeds.remove(stored_key) {
-                    seeds.insert(rewrite.current_key);
+            for steps in rewritten.step_instances.values_mut() {
+                for key in steps.values_mut() {
+                    if *key == *stored_key {
+                        *key = rewrite.current_key;
+                    }
                 }
             }
             assert!(
@@ -3342,10 +3432,12 @@ mod tests {
                     "yt_dlp_infojson_file".to_string(),
                     OutputCaptureSpec {
                         name: "yt_dlp_infojson_file".to_string(),
-                        capture: "file:info.json".to_string(),
+                        capture: mediapm_conductor::config::CaptureKind::parse_token(
+                            "file:info.json",
+                        )
+                        .expect("valid capture token"),
                         save: SaveMode::True,
                         allow_empty: false,
-                        include_topmost_folder: true,
                     },
                 )]),
                 max_retries: 1,
@@ -3368,19 +3460,35 @@ mod tests {
         use mediapm_utils::Timestamp;
 
         ToolCallInstance {
+            key_version: 8,
+            attempted_key_version_nk: 8,
             tool_call_id: "yt-dlp".to_string(),
-            impure: true,
-            invalidated_at: None,
-            executed_at: Timestamp::from_unix_nanos(executed_nanos),
-            last_referenced_at: Timestamp::from_unix_nanos(executed_nanos),
-            step_ids: recorded.into_iter().collect(),
             command_args: Vec::new(),
-            env_vars: BTreeMap::new(),
+            env_vars_ck: BTreeMap::new(),
             materialized_inputs: BTreeMap::new(),
             outputs: BTreeMap::from([
-                ("primary".to_string(), CapturedOutput { hash, capture: None }),
-                ("yt_dlp_infojson_file".to_string(), CapturedOutput { hash, capture: None }),
+                (
+                    "primary".to_string(),
+                    CapturedOutput {
+                        capture: "stdout".to_string(),
+                        hash_nk: Some(hash),
+                        saved_nk: true,
+                    },
+                ),
+                (
+                    "yt_dlp_infojson_file".to_string(),
+                    CapturedOutput {
+                        capture: "stdout".to_string(),
+                        hash_nk: Some(hash),
+                        saved_nk: true,
+                    },
+                ),
             ]),
+            impure_nk: true,
+            invalidated_at_nk: None,
+            executed_at_nk: Timestamp::from_unix_nanos(executed_nanos),
+            last_referenced_at_nk: Timestamp::from_unix_nanos(executed_nanos),
+            step_ids_nk: recorded.into_iter().collect(),
         }
     }
 
@@ -3514,12 +3622,146 @@ mod tests {
         assert_eq!(
             step_outputs
                 .get(INFOJSON_STEP_ID)
-                .and_then(|outputs| outputs.get("yt_dlp_infojson_file"))
-                .copied(),
-            Some(hash),
+                .and_then(|outputs| outputs.get("yt_dlp_infojson_file")),
+            Some(&Some(hash)),
+            "agreement should resolve the shared output hash"
         );
     }
 
+    /// An allowed-empty capture with no hash materializes as empty bytes.
+    #[tokio::test]
+    async fn allow_empty_workflow_output_materializes_as_empty_bytes() {
+        use mediapm_conductor::{
+            CapturedOutput, ConfigPayloadStaging, OutputCaptureSpec, SaveMode, ToolCallInstance,
+            ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+        };
+        use mediapm_utils::Timestamp;
+
+        use crate::config::source_types::{MediaStep, MediaStepTool};
+        use crate::config::{
+            OutputVariantValue, TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
+        };
+
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let media_id = "local.empty";
+        let workflow_name = managed_workflow_name(media_id);
+        let step_id = "step-0-0-yt-dlp-infojson-to-infojson".to_string();
+
+        let workflow = WorkflowSpec {
+            name: workflow_name.clone(),
+            display_name: None,
+            description: None,
+            impure: true,
+            steps: vec![WorkflowStepSpec {
+                id: step_id.clone(),
+                tool: "yt-dlp".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    OutputCaptureSpec {
+                        name: "yt_dlp_infojson_file".to_string(),
+                        capture: mediapm_conductor::config::CaptureKind::parse_token(
+                            "file:info.json",
+                        )
+                        .expect("valid capture token"),
+                        save: SaveMode::True,
+                        allow_empty: true,
+                    },
+                )]),
+                max_retries: 1,
+                depends_on: Vec::new(),
+            }],
+        };
+
+        let mut generated_doc = NickelDocument::default();
+        generated_doc.tools.insert(
+            "yt-dlp".to_string(),
+            ToolSpec {
+                name: "yt-dlp".to_string(),
+                kind: ToolKindSpec::Builtin { builtin_id: "echo".to_string() },
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                default_inputs: BTreeMap::new(),
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::new(),
+                    impure: true,
+                    payload_staging: ConfigPayloadStaging::Inherit,
+                    ..ToolRuntime::default()
+                },
+                ..ToolSpec::default()
+            },
+        );
+        generated_doc.workflows.push(workflow.clone());
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            Hash::from_content(b"empty-infojson-instance"),
+            ToolCallInstance {
+                key_version: 8,
+                attempted_key_version_nk: 8,
+                tool_call_id: "yt-dlp".to_string(),
+                command_args: Vec::new(),
+                env_vars_ck: BTreeMap::new(),
+                materialized_inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_infojson_file".to_string(),
+                    CapturedOutput {
+                        capture: "file:info.json".to_string(),
+                        hash_nk: None,
+                        saved_nk: false,
+                    },
+                )]),
+                impure_nk: true,
+                invalidated_at_nk: None,
+                executed_at_nk: Timestamp::from_unix_nanos(1),
+                last_referenced_at_nk: Timestamp::from_unix_nanos(1),
+                step_ids_nk: BTreeSet::from([mediapm_conductor::StepRef {
+                    workflow_id: workflow_name.clone(),
+                    step_id,
+                }]),
+            },
+        );
+
+        let mut document = MediaPmDocument::default();
+        document.media.insert(
+            media_id.to_string(),
+            MediaSourceSpec {
+                steps: vec![MediaStep {
+                    tool: MediaStepTool::YtDlp,
+                    input_variants: Vec::new(),
+                    output_variants: BTreeMap::from([(
+                        "infojson".to_string(),
+                        OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                            kind: YtDlpOutputKind::Infojson,
+                            ..Default::default()
+                        }),
+                    )]),
+                    options: BTreeMap::from([(
+                        "uri".to_string(),
+                        TransformInputValue::String("https://example.invalid/video".to_string()),
+                    )]),
+                }],
+                ..MediaSourceSpec::default()
+            },
+        );
+
+        let lookup = MaterializationLookupContext::new(
+            cas,
+            Some(state),
+            generated_doc,
+            resolve_ffmpeg_slot_limits(&document),
+            None,
+        );
+        let source = document.media.get(media_id).expect("source");
+        let resolved = resolve_variant_source_bytes(&lookup, media_id, source, "infojson", false)
+            .await
+            .expect("an allowed-empty workflow output should materialize");
+
+        assert!(resolved.bytes.is_empty(), "allow_empty output should materialize as empty bytes");
+        assert_eq!(resolved.source_hash, None, "empty capture has no stored CAS hash");
+    }
     /// A record of the same tool that never served this step is not a candidate.
     ///
     /// Candidacy follows the record's own provenance. Two yt-dlp records with
@@ -3556,7 +3798,7 @@ mod tests {
                 .get(INFOJSON_STEP_ID)
                 .and_then(|outputs| outputs.get("yt_dlp_infojson_file"))
                 .copied(),
-            Some(named_hash),
+            Some(Some(named_hash)),
             "the record that names the step answers, not the newer record of the same tool",
         );
     }
@@ -3859,7 +4101,10 @@ mod tests {
             "${step_output.pack.pack:zip(payload.txt)}".to_string(),
         )]);
         let with_pack = |hash: Hash| {
-            BTreeMap::from([("pack".to_string(), BTreeMap::from([("pack".to_string(), hash)]))])
+            BTreeMap::from([(
+                "pack".to_string(),
+                BTreeMap::from([("pack".to_string(), Some(hash))]),
+            )])
         };
 
         let unreadable = resolve_expected_input_hashes(
@@ -3956,8 +4201,10 @@ mod tests {
             "source".to_string(),
             "${step_output.pack.pack:zip(payload.txt)}".to_string(),
         )]);
-        let pack =
-            BTreeMap::from([("pack".to_string(), BTreeMap::from([("pack".to_string(), archive)]))]);
+        let pack = BTreeMap::from([(
+            "pack".to_string(),
+            BTreeMap::from([("pack".to_string(), Some(archive))]),
+        )]);
 
         let unresolved =
             resolve_expected_input_hashes(&cas, &relaxed_generated_doc(), &step_inputs, &pack)
@@ -4002,7 +4249,7 @@ mod tests {
         )]);
         let pack = BTreeMap::from([(
             "pack".to_string(),
-            BTreeMap::from([("pack".to_string(), not_an_archive)]),
+            BTreeMap::from([("pack".to_string(), Some(not_an_archive))]),
         )]);
 
         let unresolved =
@@ -4116,7 +4363,7 @@ mod tests {
 
         let mut instance =
             infojson_instance(hash, 1, Some(infojson_step_ref("mediapm.media.first")));
-        instance.step_ids.insert(infojson_step_ref("mediapm.media.second"));
+        instance.step_ids_nk.insert(infojson_step_ref("mediapm.media.second"));
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(Hash::from_content(b"two-workflow-instance"), instance);
@@ -4143,7 +4390,7 @@ mod tests {
                     .get(INFOJSON_STEP_ID)
                     .and_then(|outputs| outputs.get("yt_dlp_infojson_file"))
                     .copied(),
-                Some(hash),
+                Some(Some(hash)),
                 "the record answers for {served}, which it served",
             );
         }
@@ -4223,23 +4470,33 @@ mod tests {
             let mut outputs = BTreeMap::new();
             outputs.insert(
                 "yt_dlp_infojson_file".to_string(),
-                CapturedOutput { hash: infojson, capture: None },
+                CapturedOutput {
+                    capture: "stdout".to_string(),
+                    hash_nk: Some(infojson),
+                    saved_nk: true,
+                },
             );
             outputs.insert(
                 "yt_dlp_description_file".to_string(),
-                CapturedOutput { hash: description, capture: None },
+                CapturedOutput {
+                    capture: "stdout".to_string(),
+                    hash_nk: Some(description),
+                    saved_nk: true,
+                },
             );
             ToolCallInstance {
+                key_version: 8,
+                attempted_key_version_nk: 8,
                 tool_call_id: "yt-dlp".to_string(),
-                impure: true,
-                invalidated_at: None,
-                executed_at: Timestamp::from_unix_nanos(executed),
-                last_referenced_at: Timestamp::from_unix_nanos(executed),
-                step_ids: [infojson_step_ref("mediapm.media.test")].into_iter().collect(),
                 command_args: Vec::new(),
-                env_vars: BTreeMap::new(),
+                env_vars_ck: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
                 outputs,
+                impure_nk: true,
+                invalidated_at_nk: None,
+                executed_at_nk: Timestamp::from_unix_nanos(executed),
+                last_referenced_at_nk: Timestamp::from_unix_nanos(executed),
+                step_ids_nk: [infojson_step_ref("mediapm.media.test")].into_iter().collect(),
             }
         };
 
@@ -4258,10 +4515,10 @@ mod tests {
         let mut workflow = infojson_workflow();
         let capture = |name: &str| OutputCaptureSpec {
             name: name.to_string(),
-            capture: format!("file:{name}"),
+            capture: mediapm_conductor::config::CaptureKind::parse_token(&format!("file:{name}"))
+                .expect("valid capture token"),
             save: SaveMode::True,
             allow_empty: false,
-            include_topmost_folder: true,
         };
         let step = workflow.steps.first_mut().expect("the fixture declares one step");
         step.outputs
@@ -4546,10 +4803,12 @@ mod tests {
                     "yt_dlp_infojson_file".to_string(),
                     OutputCaptureSpec {
                         name: "yt_dlp_infojson_file".to_string(),
-                        capture: "file:info.json".to_string(),
+                        capture: mediapm_conductor::config::CaptureKind::parse_token(
+                            "file:info.json",
+                        )
+                        .expect("valid capture token"),
                         save: SaveMode::True,
                         allow_empty: false,
-                        include_topmost_folder: true,
                     },
                 )]),
                 max_retries: 0,
@@ -4562,22 +4821,28 @@ mod tests {
         state.tool_call_instances.insert(
             instance_key,
             ToolCallInstance {
+                key_version: 8,
+                attempted_key_version_nk: 8,
                 tool_call_id: "yt-dlp".to_string(),
-                impure: true,
-                invalidated_at: None,
-                executed_at: Timestamp::from_unix_nanos(1),
-                last_referenced_at: Timestamp::from_unix_nanos(1),
-                step_ids: BTreeSet::from([mediapm_conductor::StepRef {
-                    workflow_id: managed_workflow_name("youtube.dQw4w9WgXcQ").clone(),
-                    step_id: "step-0-0-yt-dlp-infojson-to-infojson".to_string(),
-                }]),
                 command_args: Vec::new(),
-                env_vars: BTreeMap::new(),
+                env_vars_ck: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([(
                     "yt_dlp_infojson_file".to_string(),
-                    CapturedOutput { hash: infojson_hash, capture: None },
+                    CapturedOutput {
+                        capture: "stdout".to_string(),
+                        hash_nk: Some(infojson_hash),
+                        saved_nk: true,
+                    },
                 )]),
+                impure_nk: true,
+                invalidated_at_nk: None,
+                executed_at_nk: Timestamp::from_unix_nanos(1),
+                last_referenced_at_nk: Timestamp::from_unix_nanos(1),
+                step_ids_nk: BTreeSet::from([mediapm_conductor::StepRef {
+                    workflow_id: managed_workflow_name("youtube.dQw4w9WgXcQ").clone(),
+                    step_id: "step-0-0-yt-dlp-infojson-to-infojson".to_string(),
+                }]),
             },
         );
 
@@ -4697,32 +4962,46 @@ mod tests {
         state.tool_call_instances.insert(
             primary_key,
             ToolCallInstance {
+                key_version: 8,
+                attempted_key_version_nk: 8,
                 tool_call_id: "yt-dlp".to_string(),
-                impure: true,
-                invalidated_at: None,
-                executed_at: Timestamp::from_unix_nanos(2),
-                last_referenced_at: Timestamp::from_unix_nanos(2),
-                step_ids: BTreeSet::from([mediapm_conductor::StepRef {
-                    workflow_id: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
-                    step_id: "step-0-2-yt-dlp-infojson-to-infojson".to_string(),
-                }]),
                 command_args: Vec::new(),
-                env_vars: BTreeMap::new(),
+                env_vars_ck: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([
                     (
                         "primary".to_string(),
-                        CapturedOutput { hash: primary_video_hash, capture: None },
+                        CapturedOutput {
+                            capture: "stdout".to_string(),
+                            hash_nk: Some(primary_video_hash),
+                            saved_nk: true,
+                        },
                     ),
                     (
                         "yt_dlp_infojson_file".to_string(),
-                        CapturedOutput { hash: infojson_hash, capture: None },
+                        CapturedOutput {
+                            capture: "stdout".to_string(),
+                            hash_nk: Some(infojson_hash),
+                            saved_nk: true,
+                        },
                     ),
                     (
                         "yt_dlp_description_file".to_string(),
-                        CapturedOutput { hash: infojson_hash, capture: None },
+                        CapturedOutput {
+                            capture: "stdout".to_string(),
+                            hash_nk: Some(infojson_hash),
+                            saved_nk: true,
+                        },
                     ),
                 ]),
+                impure_nk: true,
+                invalidated_at_nk: None,
+                executed_at_nk: Timestamp::from_unix_nanos(2),
+                last_referenced_at_nk: Timestamp::from_unix_nanos(2),
+                step_ids_nk: BTreeSet::from([mediapm_conductor::StepRef {
+                    workflow_id: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
+                    step_id: "step-0-2-yt-dlp-infojson-to-infojson".to_string(),
+                }]),
             },
         );
 
@@ -4744,10 +5023,12 @@ mod tests {
                     "yt_dlp_infojson_file".to_string(),
                     OutputCaptureSpec {
                         name: "yt_dlp_infojson_file".to_string(),
-                        capture: "file:info.json".to_string(),
+                        capture: mediapm_conductor::config::CaptureKind::parse_token(
+                            "file:info.json",
+                        )
+                        .expect("valid capture token"),
                         save: SaveMode::True,
                         allow_empty: false,
-                        include_topmost_folder: true,
                     },
                 )]),
                 max_retries: 1,
@@ -4765,7 +5046,7 @@ mod tests {
             .expect("infojson step outputs");
         assert_eq!(
             outputs.get("yt_dlp_infojson_file"),
-            Some(&infojson_hash),
+            Some(&Some(infojson_hash)),
             "relaxed resolution should reuse primary download instance infojson output"
         );
     }
@@ -4815,22 +5096,28 @@ mod tests {
         state.tool_call_instances.insert(
             instance_key,
             ToolCallInstance {
+                key_version: 8,
+                attempted_key_version_nk: 8,
                 tool_call_id: versioned_tool_id.clone(),
-                impure: true,
-                invalidated_at: None,
-                executed_at: Timestamp::from_unix_nanos(1),
-                last_referenced_at: Timestamp::from_unix_nanos(1),
-                step_ids: BTreeSet::from([mediapm_conductor::StepRef {
-                    workflow_id: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
-                    step_id: "step-0-2-yt-dlp-infojson-to-infojson".to_string(),
-                }]),
                 command_args: Vec::new(),
-                env_vars: BTreeMap::new(),
+                env_vars_ck: BTreeMap::new(),
                 materialized_inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([(
                     "yt_dlp_infojson_file".to_string(),
-                    CapturedOutput { hash: infojson_hash, capture: None },
+                    CapturedOutput {
+                        capture: "stdout".to_string(),
+                        hash_nk: Some(infojson_hash),
+                        saved_nk: true,
+                    },
                 )]),
+                impure_nk: true,
+                invalidated_at_nk: None,
+                executed_at_nk: Timestamp::from_unix_nanos(1),
+                last_referenced_at_nk: Timestamp::from_unix_nanos(1),
+                step_ids_nk: BTreeSet::from([mediapm_conductor::StepRef {
+                    workflow_id: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
+                    step_id: "step-0-2-yt-dlp-infojson-to-infojson".to_string(),
+                }]),
             },
         );
 
@@ -4847,10 +5134,12 @@ mod tests {
                     "yt_dlp_infojson_file".to_string(),
                     OutputCaptureSpec {
                         name: "yt_dlp_infojson_file".to_string(),
-                        capture: "file:info.json".to_string(),
+                        capture: mediapm_conductor::config::CaptureKind::parse_token(
+                            "file:info.json",
+                        )
+                        .expect("valid capture token"),
                         save: SaveMode::True,
                         allow_empty: false,
-                        include_topmost_folder: true,
                     },
                 )]),
                 max_retries: 1,
@@ -4868,7 +5157,7 @@ mod tests {
             .expect("infojson step outputs");
         assert_eq!(
             outputs.get("yt_dlp_infojson_file"),
-            Some(&infojson_hash),
+            Some(&Some(infojson_hash)),
             "versioned yt-dlp tool_call_id should still resolve infojson output"
         );
     }
@@ -4983,7 +5272,7 @@ mod tests {
             if instance.tool_call_id.starts_with("ffmpeg@")
                 && let Some(primary) = instance.outputs.get_mut("primary")
             {
-                primary.hash = pack_hash;
+                primary.hash_nk = Some(pack_hash);
                 recorded_pack += 1;
             }
         }

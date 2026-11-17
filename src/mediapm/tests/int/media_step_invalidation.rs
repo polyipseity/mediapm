@@ -62,12 +62,12 @@ fn assert_step_instances_marked(
     let served: Vec<_> = state
         .tool_call_instances
         .iter()
-        .filter(|(_, instance)| instance.step_ids.iter().any(|step| step.step_id == step_id))
+        .filter(|(_, instance)| instance.step_ids_nk.iter().any(|step| step.step_id == step_id))
         .collect();
     assert!(!served.is_empty(), "{context}: no recorded instance served '{step_id}'");
     for (key, instance) in served {
         assert_eq!(
-            instance.invalidated_at.is_some(),
+            instance.invalidated_at_nk.is_some(),
             marked,
             "{context}: instance {} of '{step_id}' must be {}",
             key.to_hex(),
@@ -349,16 +349,16 @@ async fn marking_a_shared_step_leaves_another_media_that_reuses_it_alone()
         state
             .tool_call_instances
             .values()
-            .filter(|instance| instance.invalidated_at.is_some())
+            .filter(|instance| instance.invalidated_at_nk.is_some())
             .count(),
         1,
         "exactly one recorded instance is marked",
     );
     for instance in state.tool_call_instances.values() {
         let names_the_media =
-            instance.step_ids.iter().any(|step| step.workflow_id == summary.workflow_id);
+            instance.step_ids_nk.iter().any(|step| step.workflow_id == summary.workflow_id);
         assert_eq!(
-            instance.invalidated_at.is_some(),
+            instance.invalidated_at_nk.is_some(),
             names_the_media,
             "the marker must follow the workflow the request named",
         );
@@ -418,7 +418,7 @@ async fn unknown_media_and_absent_step_indexes_are_errors() -> Result<(), MediaP
     let state = conductor_state_on_disk(&service.paths().clone());
     for (key, instance) in &state.tool_call_instances {
         assert!(
-            instance.invalidated_at.is_none(),
+            instance.invalidated_at_nk.is_none(),
             "a rejected invalidation must not mark instance {}",
             key.to_hex(),
         );
@@ -503,7 +503,7 @@ async fn invalidating_a_fan_out_step_marks_every_id_it_wrote() -> Result<(), Med
     let untouched: Vec<String> = marked
         .tool_call_instances
         .values()
-        .flat_map(|instance| instance.step_ids.iter())
+        .flat_map(|instance| instance.step_ids_nk.iter())
         .map(|step| step.step_id.clone())
         .filter(|step_id| step_id.contains("tertiary") || step_id.contains("secondary"))
         .collect();

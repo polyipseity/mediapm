@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
     InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
 };
@@ -70,50 +71,48 @@ fn build_sd_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OUTPUT_CONTENT.to_string(),
             OutputCaptureSpec {
                 name: OUTPUT_CONTENT.to_string(),
-                capture: format!("file:{SANDBOX_SD_INPUT_FILE}"),
+                capture: CaptureKind::parse_token(&format!("file:{SANDBOX_SD_INPUT_FILE}"))
+                    .expect("valid sd file capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             OUTPUT_SANDBOX_ARTIFACTS.to_string(),
             OutputCaptureSpec {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
-                capture: "folder:inputs".to_string(),
+                capture: CaptureKind::parse_token("folder:inputs")
+                    .expect("valid sd folder capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stdout".to_string(),
             OutputCaptureSpec {
                 name: "stdout".to_string(),
-                capture: "stdout".to_string(),
+                capture: CaptureKind::parse_token("stdout").expect("valid sd stdout capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stderr".to_string(),
             OutputCaptureSpec {
                 name: "stderr".to_string(),
-                capture: "stderr".to_string(),
+                capture: CaptureKind::parse_token("stderr").expect("valid sd stderr capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "process_code".to_string(),
             OutputCaptureSpec {
                 name: "process_code".to_string(),
-                capture: "process_code".to_string(),
+                capture: CaptureKind::parse_token("process_code")
+                    .expect("valid sd process_code capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
     ])

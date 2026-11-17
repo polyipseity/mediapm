@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
     InputBinding, NickelDocument, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec,
     ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
@@ -303,10 +304,13 @@ pub(crate) fn synthesize_rsgain_step_chain(
                 apply_output_capture.clone(),
                 OutputCaptureSpec {
                     name: apply_output_capture.clone(),
-                    capture: format!("file_regex:{}", ffmpeg_output_file_regex(0)),
+                    capture: CaptureKind::parse_token(&format!(
+                        "file_regex:{}",
+                        ffmpeg_output_file_regex(0)
+                    ))
+                    .expect("valid rsgain apply capture token"),
                     save: apply_save_mode,
                     allow_empty: false,
-                    include_topmost_folder: true,
                 },
             )]),
             max_retries: 0,
@@ -391,10 +395,13 @@ fn normalize_output_extension(extension: Option<&str>) -> Option<String> {
 fn ffmpeg_slot_output_capture(index: usize) -> OutputCaptureSpec {
     OutputCaptureSpec {
         name: ffmpeg_output_capture_name(index),
-        capture: format!("file_regex:{}", ffmpeg_output_file_regex(index)),
+        capture: CaptureKind::parse_token(&format!(
+            "file_regex:{}",
+            ffmpeg_output_file_regex(index)
+        ))
+        .expect("valid rsgain ffmpeg slot capture token"),
         save: SaveMode::True,
         allow_empty: false,
-        include_topmost_folder: true,
     }
 }
 
@@ -402,10 +409,10 @@ fn ffmpeg_slot_output_capture(index: usize) -> OutputCaptureSpec {
 fn rsgain_workflow_output_capture(output_name: &str) -> OutputCaptureSpec {
     OutputCaptureSpec {
         name: output_name.to_string(),
-        capture: format!("file_regex:{}", rsgain_output_file_regex()),
+        capture: CaptureKind::parse_token(&format!("file_regex:{}", rsgain_output_file_regex()))
+            .expect("valid rsgain workflow output capture token"),
         save: SaveMode::True,
         allow_empty: false,
-        include_topmost_folder: true,
     }
 }
 
@@ -413,10 +420,10 @@ fn rsgain_workflow_output_capture(output_name: &str) -> OutputCaptureSpec {
 fn sd_output_capture() -> OutputCaptureSpec {
     OutputCaptureSpec {
         name: OUTPUT_CONTENT.to_string(),
-        capture: "file:inputs/input.ffmeta".to_string(),
+        capture: CaptureKind::parse_token("file:inputs/input.ffmeta")
+            .expect("valid rsgain sd output capture token"),
         save: SaveMode::True,
         allow_empty: false,
-        include_topmost_folder: true,
     }
 }
 
@@ -599,50 +606,53 @@ fn build_rsgain_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OUTPUT_CONTENT.to_string(),
             OutputCaptureSpec {
                 name: OUTPUT_CONTENT.to_string(),
-                capture: format!("file_regex:{}", rsgain_output_file_regex()),
+                capture: CaptureKind::parse_token(&format!(
+                    "file_regex:{}",
+                    rsgain_output_file_regex()
+                ))
+                .expect("valid rsgain workflow output capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             OUTPUT_SANDBOX_ARTIFACTS.to_string(),
             OutputCaptureSpec {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
-                capture: "folder:inputs".to_string(),
+                capture: CaptureKind::parse_token("folder:inputs")
+                    .expect("valid rsgain folder capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stdout".to_string(),
             OutputCaptureSpec {
                 name: "stdout".to_string(),
-                capture: "stdout".to_string(),
+                capture: CaptureKind::parse_token("stdout")
+                    .expect("valid rsgain stdout capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stderr".to_string(),
             OutputCaptureSpec {
                 name: "stderr".to_string(),
-                capture: "stderr".to_string(),
+                capture: CaptureKind::parse_token("stderr")
+                    .expect("valid rsgain stderr capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "process_code".to_string(),
             OutputCaptureSpec {
                 name: "process_code".to_string(),
-                capture: "process_code".to_string(),
+                capture: CaptureKind::parse_token("process_code")
+                    .expect("valid rsgain process_code capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
     ])
@@ -692,7 +702,11 @@ mod tests {
         let outputs = build_rsgain_outputs();
         assert!(outputs.contains_key(OUTPUT_CONTENT));
         let content = &outputs[OUTPUT_CONTENT];
-        assert!(content.capture.starts_with("file_regex:"), "got: {}", content.capture);
+        assert!(
+            content.capture.to_token().starts_with("file_regex:"),
+            "got: {}",
+            content.capture.to_token()
+        );
     }
 
     #[test]

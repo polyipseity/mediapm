@@ -88,7 +88,8 @@ mod tests {
         let yt_dlp_outputs =
             build_tool_spec("yt-dlp", content_map.clone(), &yt_os, limits).0.outputs;
         assert_eq!(
-            yt_dlp_outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:downloads",
+            yt_dlp_outputs[OUTPUT_SANDBOX_ARTIFACTS].capture.to_token(),
+            "folder:downloads",
             "yt-dlp sandbox folder"
         );
 
@@ -97,7 +98,8 @@ mod tests {
         let media_tagger = crate::builtins::host_builtin_tool_spec("media-tagger")
             .expect("the host builtin's definition must resolve");
         assert_eq!(
-            media_tagger.outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:coverart",
+            media_tagger.outputs[OUTPUT_SANDBOX_ARTIFACTS].capture.to_token(),
+            "folder:coverart",
             "media-tagger sandbox folder"
         );
 
@@ -106,7 +108,8 @@ mod tests {
             let outputs =
                 build_tool_spec(tool_name, content_map.clone(), &os_exec_paths, limits).0.outputs;
             assert_eq!(
-                outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:inputs",
+                outputs[OUTPUT_SANDBOX_ARTIFACTS].capture.to_token(),
+                "folder:inputs",
                 "{tool_name} sandbox folder"
             );
         }

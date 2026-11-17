@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
     NickelDocument, OutputCaptureSpec, SaveMode, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
     WorkflowStepSpec,
@@ -151,10 +152,10 @@ pub(crate) fn synthesize_media_tagger_step(
                 OUTPUT_CONTENT.to_string(),
                 OutputCaptureSpec {
                     name: OUTPUT_CONTENT.to_string(),
-                    capture: format!("file:{MEDIA_TAGGER_OUTPUT_FILE}"),
+                    capture: CaptureKind::parse_token(&format!("file:{MEDIA_TAGGER_OUTPUT_FILE}"))
+                        .expect("valid media-tagger output capture token"),
                     save: SaveMode::Full,
                     allow_empty: false,
-                    include_topmost_folder: true,
                 },
             )]),
             max_retries: 0,
@@ -282,7 +283,10 @@ fn build_media_tagger_apply_output(
 ) -> OutputCaptureSpec {
     OutputCaptureSpec {
         name: apply_output_name.to_string(),
-        capture: format!("file_regex:{MEDIA_TAGGER_APPLY_OUTPUT_FILE_REGEX}"),
+        capture: CaptureKind::parse_token(&format!(
+            "file_regex:{MEDIA_TAGGER_APPLY_OUTPUT_FILE_REGEX}"
+        ))
+        .expect("valid media-tagger apply capture token"),
         save: variant_to_output_capture_spec(
             apply_output_name,
             variant,
@@ -293,7 +297,6 @@ fn build_media_tagger_apply_output(
         )
         .save,
         allow_empty: false,
-        include_topmost_folder: true,
     }
 }
 
@@ -365,50 +368,50 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OUTPUT_CONTENT.to_string(),
             OutputCaptureSpec {
                 name: OUTPUT_CONTENT.to_string(),
-                capture: format!("file:{MEDIA_TAGGER_OUTPUT_FILE}"),
+                capture: CaptureKind::parse_token(&format!("file:{MEDIA_TAGGER_OUTPUT_FILE}"))
+                    .expect("valid media-tagger default output capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             OUTPUT_SANDBOX_ARTIFACTS.to_string(),
             OutputCaptureSpec {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
-                capture: "folder:coverart".to_string(),
+                capture: CaptureKind::parse_token("folder:coverart")
+                    .expect("valid media-tagger coverart capture token"),
                 save: SaveMode::True,
                 allow_empty: true,
-                include_topmost_folder: true,
             },
         ),
         (
             "stdout".to_string(),
             OutputCaptureSpec {
                 name: "stdout".to_string(),
-                capture: "stdout".to_string(),
+                capture: CaptureKind::parse_token("stdout")
+                    .expect("valid media-tagger stdout capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stderr".to_string(),
             OutputCaptureSpec {
                 name: "stderr".to_string(),
-                capture: "stderr".to_string(),
+                capture: CaptureKind::parse_token("stderr")
+                    .expect("valid media-tagger stderr capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "process_code".to_string(),
             OutputCaptureSpec {
                 name: "process_code".to_string(),
-                capture: "process_code".to_string(),
+                capture: CaptureKind::parse_token("process_code")
+                    .expect("valid media-tagger process_code capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
     ])

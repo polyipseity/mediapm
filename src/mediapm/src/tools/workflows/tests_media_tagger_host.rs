@@ -252,7 +252,11 @@ async fn captured_content(conductor: &Conductor<mediapm_cas::InMemoryCas>) -> By
         .find(|instance| instance.outputs.contains_key(OUTPUT_CONTENT))
         .expect("the tagging step must record its captured content");
     let captured = instance.outputs.get(OUTPUT_CONTENT).expect("content");
-    conductor.cas().get(captured.hash).await.expect("the captured content must be in the store")
+    conductor
+        .cas()
+        .get(captured.hash_nk.expect("captured content must have a hash"))
+        .await
+        .expect("the captured content must be in the store")
 }
 
 /// Runs the synthesized tagging step and returns the document it captured.

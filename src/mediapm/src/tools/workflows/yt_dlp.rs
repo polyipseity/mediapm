@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
     InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
     WorkflowSpec, WorkflowStepSpec,
@@ -187,7 +188,7 @@ pub(crate) fn yt_dlp_variant_capture_and_save(
     step_index: usize,
     context: &AutoSaveContext,
     step_impure: bool,
-) -> (String, mediapm_conductor::SaveMode) {
+) -> (CaptureKind, mediapm_conductor::SaveMode) {
     use crate::config::YtDlpOutputKind;
 
     let capture = match config.kind {
@@ -203,6 +204,8 @@ pub(crate) fn yt_dlp_variant_capture_and_save(
         YtDlpOutputKind::Links => format!("folder_regex:{YT_DLP_LINK_ARTIFACTS_REGEX}"),
     };
     let save = resolve_variant_save(config.save, variant, step_index, context, step_impure);
+    let capture = CaptureKind::parse_token(&capture)
+        .unwrap_or_else(|error| panic!("valid yt-dlp variant capture token '{capture}': {error}"));
     (capture, save)
 }
 
@@ -465,60 +468,64 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OUTPUT_CONTENT.to_string(),
             OutputCaptureSpec {
                 name: OUTPUT_CONTENT.to_string(),
-                capture: format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
+                capture: CaptureKind::parse_token(&format!(
+                    "file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"
+                ))
+                .expect("valid yt-dlp content capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "primary".to_string(),
             OutputCaptureSpec {
                 name: "primary".to_string(),
-                capture: format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
+                capture: CaptureKind::parse_token(&format!(
+                    "file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"
+                ))
+                .expect("valid yt-dlp content capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             OUTPUT_SANDBOX_ARTIFACTS.to_string(),
             OutputCaptureSpec {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
-                capture: format!("folder:{SANDBOX_DOWNLOADS_DIR}"),
+                capture: CaptureKind::parse_token(&format!("folder:{SANDBOX_DOWNLOADS_DIR}"))
+                    .expect("valid yt-dlp downloads folder capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stdout".to_string(),
             OutputCaptureSpec {
                 name: "stdout".to_string(),
-                capture: "stdout".to_string(),
+                capture: CaptureKind::parse_token("stdout")
+                    .expect("valid yt-dlp stdout capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "stderr".to_string(),
             OutputCaptureSpec {
                 name: "stderr".to_string(),
-                capture: "stderr".to_string(),
+                capture: CaptureKind::parse_token("stderr")
+                    .expect("valid yt-dlp stderr capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
         (
             "process_code".to_string(),
             OutputCaptureSpec {
                 name: "process_code".to_string(),
-                capture: "process_code".to_string(),
+                capture: CaptureKind::parse_token("process_code")
+                    .expect("valid yt-dlp process_code capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         ),
     ]);
@@ -533,10 +540,10 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             output_name.to_string(),
             OutputCaptureSpec {
                 name: output_name.to_string(),
-                capture: format!("folder_regex:{path_regex}"),
+                capture: CaptureKind::parse_token(&format!("folder_regex:{path_regex}"))
+                    .expect("valid yt-dlp folder_regex capture token"),
                 save: SaveMode::True,
                 allow_empty: true,
-                include_topmost_folder: true,
             },
         );
     }
@@ -553,10 +560,10 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             output_name.to_string(),
             OutputCaptureSpec {
                 name: output_name.to_string(),
-                capture: format!("file_regex:{path_regex}"),
+                capture: CaptureKind::parse_token(&format!("file_regex:{path_regex}"))
+                    .expect("valid yt-dlp capture token"),
                 save: SaveMode::True,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         );
     }

@@ -182,10 +182,10 @@ fn metadata_producer_step(id: &str, metadata_hash: Hash) -> WorkflowStepSpec {
             "content".to_string(),
             OutputCaptureSpec {
                 name: "content".to_string(),
-                capture: "file:ffmeta.txt".to_string(),
+                capture: mediapm_conductor::config::CaptureKind::parse_token("file:ffmeta.txt")
+                    .expect("valid test capture token"),
                 save: SaveMode::Full,
                 allow_empty: false,
-                include_topmost_folder: true,
             },
         )]),
         max_retries: 0,
@@ -363,5 +363,9 @@ where
         .find(|instance| instance.outputs.contains_key(APPLY_OUTPUT_NAME))
         .expect("the apply step must record its captured output");
     let captured = instance.outputs.get(APPLY_OUTPUT_NAME).expect("primary output");
-    conductor.cas().get(captured.hash).await.expect("the captured output must be in the store")
+    conductor
+        .cas()
+        .get(captured.hash_nk.expect("captured output must have a hash"))
+        .await
+        .expect("the captured output must be in the store")
 }

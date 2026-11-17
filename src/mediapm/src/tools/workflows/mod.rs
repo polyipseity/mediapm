@@ -24,6 +24,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use mediapm_cas::Hash;
+use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
     ExternalDataEntry, NickelDocument, OutputCaptureSpec, OutputSaveMode, SaveMode, WorkflowSpec,
     WorkflowStepSpec,
@@ -220,13 +221,7 @@ pub(crate) fn variant_to_output_capture_spec(
             yt_dlp::yt_dlp_variant_capture_and_save(y, variant, step_index, context, step_impure)
         }
     };
-    OutputCaptureSpec {
-        name: name.to_string(),
-        capture,
-        save,
-        allow_empty: false,
-        include_topmost_folder: true,
-    }
+    OutputCaptureSpec { name: name.to_string(), capture, save, allow_empty: false }
 }
 
 /// Builds the capture selector and save mode of one generic output variant.
@@ -236,12 +231,14 @@ fn generic_variant_capture_and_save(
     step_index: usize,
     context: &AutoSaveContext,
     step_impure: bool,
-) -> (String, SaveMode) {
+) -> (CaptureKind, SaveMode) {
     let capture = match config.capture_kind {
         Some(OutputCaptureKind::Folder) => format!("file:{}/*", config.kind),
         _ => format!("file:{}", config.kind),
     };
     let save = resolve_variant_save(config.save, variant, step_index, context, step_impure);
+    let capture = CaptureKind::parse_token(&capture)
+        .unwrap_or_else(|error| panic!("valid generic variant capture token '{capture}': {error}"));
     (capture, save)
 }
 
@@ -476,10 +473,9 @@ fn import_step_output_capture(
         output_variant.to_string(),
         OutputCaptureSpec {
             name: output_variant.to_string(),
-            capture: "stdout".to_string(),
+            capture: CaptureKind::parse_token("stdout").expect("valid import stdout capture token"),
             save,
             allow_empty: false,
-            include_topmost_folder: true,
         },
     )]))
 }
@@ -1221,7 +1217,7 @@ mod tests {
 
         let metadata_output = metadata.outputs.get("content").expect("metadata content output");
         assert_eq!(metadata_output.save, SaveMode::Full);
-        assert_eq!(metadata_output.capture, "file:metadata/output.ffmeta");
+        assert_eq!(metadata_output.capture.to_token(), "file:metadata/output.ffmeta");
         assert_eq!(metadata.inputs.get("ffmpeg_bin").map(String::as_str), Some("ffmpeg"));
         assert_eq!(metadata.inputs.get("strict_identification").map(String::as_str), Some("false"));
         assert!(!metadata.inputs.contains_key("ffmpeg_version"));
@@ -1263,8 +1259,8 @@ mod tests {
         assert_eq!(step.depends_on.len(), 0, "the import step has no dependency");
         assert_eq!(step.outputs.get("source").map(|output| output.save), Some(SaveMode::True));
         assert_eq!(
-            step.outputs.get("source").map(|output| output.capture.as_str()),
-            Some("stdout")
+            step.outputs.get("source").map(|output| output.capture.to_token()),
+            Some("stdout".to_string())
         );
     }
 
@@ -1566,7 +1562,10 @@ mod tests {
 
         assert_eq!(step.id, "step-0-0-yt-dlp-description-to-description");
         let output = step.outputs.get("yt_dlp_description_file").expect("description output");
-        assert_eq!(output.capture, "file_regex:^downloads/.+(?:__mediapm__)?[.]description$");
+        assert_eq!(
+            output.capture.to_token(),
+            "file_regex:^downloads/.+(?:__mediapm__)?[.]description$"
+        );
         assert!(!step.outputs.contains_key("primary"));
     }
 
@@ -2281,5 +2280,94 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Builder-produced output capture specs parse to the expected capture kind.
+    ///
+    /// Folder layout is encoded in the capture token/kind (`folder` vs
+    /// `folder_flat`, `folder_regex` vs `folder_flat_regex`); builders must
+    /// produce the matching `CaptureKind` variant.
+    #[test]
+    fn builder_output_captures_parse_to_expected_kinds() {
+        use mediapm_conductor::config::CaptureKind;
+
+        use crate::config::{
+            GenericOutputVariantConfig, OutputSaveConfig, OutputVariantValue, YtDlpOutputKind,
+            YtDlpOutputVariantConfig,
+        };
+
+        let context = AutoSaveContext::new(BTreeSet::new(), Some(0));
+
+        let file = variant_to_output_capture_spec(
+            "primary",
+            "primary",
+            &OutputVariantValue::Generic(GenericOutputVariantConfig {
+                kind: "outputs/a.mkv".to_string(),
+                save: OutputSaveConfig::Auto,
+                ..Default::default()
+            }),
+            0,
+            &context,
+            false,
+        );
+        assert!(
+            matches!(file.capture, CaptureKind::File(_)),
+            "generic file capture should parse as file"
+        );
+        assert_eq!(file.capture.to_token(), "file:outputs/a.mkv");
+
+        let yt_primary = yt_dlp::yt_dlp_variant_capture_and_save(
+            &YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Primary,
+                save: OutputSaveConfig::Auto,
+                ..Default::default()
+            },
+            "primary",
+            0,
+            &context,
+            true,
+        );
+        assert!(
+            matches!(yt_primary.0, CaptureKind::FileRegex(_)),
+            "yt-dlp primary should parse as file_regex"
+        );
+
+        let yt_subs = yt_dlp::yt_dlp_variant_capture_and_save(
+            &YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Subtitles,
+                save: OutputSaveConfig::Auto,
+                ..Default::default()
+            },
+            "subs",
+            0,
+            &context,
+            true,
+        );
+        assert!(
+            matches!(yt_subs.0, CaptureKind::FolderRegex(_)),
+            "yt-dlp subtitles folder capture should parse as folder_regex (layout kept in token)"
+        );
+
+        // Layout is encoded in the token/kind for folder-style captures.
+        assert!(matches!(
+            CaptureKind::parse_token("folder:downloads/subs").expect("parse folder"),
+            CaptureKind::Folder(_)
+        ));
+        assert!(matches!(
+            CaptureKind::parse_token("folder_flat:downloads/subs").expect("parse folder_flat"),
+            CaptureKind::FolderFlat(_)
+        ));
+        assert!(matches!(
+            CaptureKind::parse_token("folder_regex:^thumbs/").expect("parse folder_regex"),
+            CaptureKind::FolderRegex(_)
+        ));
+        assert!(
+            matches!(
+                CaptureKind::parse_token("folder_flat_regex:^thumbs/")
+                    .expect("parse folder_flat_regex"),
+                CaptureKind::FolderFlatRegex(_)
+            ),
+            "folder_flat_regex must parse to the flat folder-regex kind"
+        );
     }
 }
