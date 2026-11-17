@@ -957,10 +957,10 @@ where
                         // filed under exactly one key; the step pointer is moved
                         // below together with every successful settlement.
                         let stored_lookup_key = rekeyed_from.unwrap_or(instance_key);
-                        if let Some(old_key) = rekeyed_from {
-                            if old_key != instance_key {
-                                state.tool_call_instances.remove(&old_key);
-                            }
+                        if let Some(old_key) = rekeyed_from
+                            && old_key != instance_key
+                        {
+                            state.tool_call_instances.remove(&old_key);
                         }
                         // Insert executed instance into state so subsequent
                         // steps (and future runs) can find cache hits, with the

@@ -50,7 +50,7 @@ pub(super) enum LookupResult {
     Hit {
         /// Instance record to settle (may be migrated; settlement adds
         /// `last_referenced_at_nk` and the settling step id).
-        instance: ToolCallInstance,
+        instance: Box<ToolCallInstance>,
         /// Key the instance is filed under (new key when re-keyed).
         instance_key: Hash,
         /// Previous key to remove when the instance was re-keyed.
@@ -166,19 +166,17 @@ pub(super) fn lookup_instance(
     let mut side_effects: BTreeMap<Hash, ToolCallInstance> = BTreeMap::new();
 
     // Fast path: K_latest.
-    if let Some(k_latest) = current.key(tool_call_id, INSTANCE_KEY_VERSION) {
-        if let Some(instance) = state.tool_call_instances.get(&k_latest) {
-            if instance.key_version == INSTANCE_KEY_VERSION
-                && instance.invalidated_at_nk.is_none()
-                && satisfies_requirements(instance, required)
-            {
-                return LookupResult::Hit {
-                    instance: instance.clone(),
-                    instance_key: k_latest,
-                    rekeyed_from: None,
-                };
-            }
-        }
+    if let Some(k_latest) = current.key(tool_call_id, INSTANCE_KEY_VERSION)
+        && let Some(instance) = state.tool_call_instances.get(&k_latest)
+        && instance.key_version == INSTANCE_KEY_VERSION
+        && instance.invalidated_at_nk.is_none()
+        && satisfies_requirements(instance, required)
+    {
+        return LookupResult::Hit {
+            instance: Box::new(instance.clone()),
+            instance_key: k_latest,
+            rekeyed_from: None,
+        };
     }
 
     // Map path.
@@ -228,7 +226,7 @@ pub(super) fn lookup_instance(
     let mut hit_key = mapped_key;
     let rekeyed_from = migrate_instance(&mut hit_instance, &mut hit_key, current);
 
-    LookupResult::Hit { instance: hit_instance, instance_key: hit_key, rekeyed_from }
+    LookupResult::Hit { instance: Box::new(hit_instance), instance_key: hit_key, rekeyed_from }
 }
 
 #[cfg(test)]
@@ -355,7 +353,7 @@ mod tests {
                 assert_eq!(instance.key_version, INSTANCE_KEY_VERSION);
                 assert_eq!(instance.attempted_key_version_nk, INSTANCE_KEY_VERSION);
                 assert_eq!(instance_key, current.key(tool_call_id, INSTANCE_KEY_VERSION).unwrap());
-                (instance, instance_key)
+                (*instance, instance_key)
             }
             LookupResult::Miss { .. } => panic!("expected map-path hit with migration"),
         };

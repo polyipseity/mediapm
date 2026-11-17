@@ -122,13 +122,35 @@ fn staged_input_records(staged_inputs: StagedInputs) -> BTreeMap<String, Hash> {
     staged_inputs.into_iter().collect()
 }
 
-/// Executes one step: resolves inputs, runs the tool, captures outputs.
-pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
-    cas: &C,
-    request: StepExecutionRequest,
-) -> Result<StepExecutionBundle, ConductorError> {
-    let resolved_inputs = resolve_step_inputs::<C>(&request).await?;
+/// Derived material for a resolved step, shared by cache lookup and execution.
+struct PreparedStep<'a> {
+    /// The versioned tool-call identifier from the unified document key.
+    tool_call_id: String,
+    /// The resolved tool specification.
+    tool_spec: &'a UnifiedToolSpec,
+    /// Command key material in argv order.
+    key_material: Vec<Hash>,
+    /// Names this execution can produce, each with its producing spec.
+    producible_outputs: BTreeMap<String, OutputCaptureSpec>,
+    /// Merged tool and step output declarations.
+    merged_outputs: BTreeMap<String, OutputCaptureSpec>,
+    /// Current execution material used for cache lookup.
+    current: CurrentMaterial,
+    /// Latest-version instance key for this step execution.
+    k_latest: Hash,
+    /// Timestamp recorded for impure provenance and fresh executions.
+    executed_at: Timestamp,
+    /// Environment variables for the dispatched tool execution.
+    env_vars: BTreeMap<String, crate::state::EnvVarEntry>,
+    /// Probe requirements filtered to outputs this step can actually produce.
+    required_output_specs: BTreeMap<String, OutputCaptureSpec>,
+}
 
+/// Computes the key material and lookup context for a resolved step.
+fn prepare_step_execution<'a>(
+    request: &'a StepExecutionRequest,
+    resolved_inputs: &[ResolvedInput],
+) -> Result<PreparedStep<'a>, ConductorError> {
     // Resolve the tool call id from the unified tools map key (the versioned
     // id such as `"echo@v1"`), not the bare `spec.name` used by step
     // references. The instance key must be stable across runs of the same
@@ -179,8 +201,7 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
     };
     let k_latest = current.key(&tool_call_id, INSTANCE_KEY_VERSION).ok_or_else(|| {
         ConductorError::Internal(format!(
-            "failed to derive v{INSTANCE_KEY_VERSION} instance key for tool '{}'",
-            tool_call_id
+            "failed to derive v{INSTANCE_KEY_VERSION} instance key for tool '{tool_call_id}'"
         ))
     })?;
 
@@ -193,96 +214,137 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
         .filter_map(|name| producible_outputs.get(name).map(|spec| (name.clone(), spec.clone())))
         .collect();
 
-    if !request.force_rerun {
-        let decision = lookup_instance(
-            &request.workflow_id,
-            &request.step.id,
-            &tool_call_id,
-            &current,
-            &request.state_snapshot,
-            &required_output_specs,
-        );
-        match decision {
-            LookupResult::Hit { instance, instance_key, rekeyed_from } => {
-                // A hit requires the recorded blobs to still be present.
-                if required_output_blobs_exist(cas, &instance, &required_output_specs).await {
-                    // Record the settling step (idempotent union at settlement).
-                    let mut instance = instance;
-                    instance.step_ids_nk.insert(StepRef {
-                        workflow_id: request.workflow_id.clone(),
-                        step_id: request.step.id.clone(),
-                    });
-                    return Ok(StepExecutionBundle {
-                        instance,
-                        instance_key,
-                        rekeyed_from,
-                        lookup_side_effects: BTreeMap::new(),
-                        maintenance_rekey: None,
-                        cache_hit: true,
-                        producible_outputs: BTreeMap::new(),
-                    });
-                }
+    Ok(PreparedStep {
+        tool_call_id,
+        tool_spec,
+        key_material,
+        producible_outputs,
+        merged_outputs,
+        current,
+        k_latest,
+        executed_at,
+        env_vars,
+        required_output_specs,
+    })
+}
 
-                // Missing blobs turn the hit into a miss, but lookup/migration
-                // maintenance is independent of reuse and must not be discarded.
-                // Persist the migrated/attempted state so subsequent runs do not
-                // repeat migration work unnecessarily, then execute fresh.
-                let maintenance_rekey = rekeyed_from.map(|old_key| (old_key, instance_key));
-                let lookup_side_effects = BTreeMap::from([(instance_key, instance)]);
-                return execute_miss(
+/// Outcome of consulting the instance cache for a prepared step.
+enum CacheDecision {
+    /// A reusable cached instance is ready to settle.
+    Reuse(Box<StepExecutionBundle>),
+    /// The step must execute, carrying lookup-maintenance side effects.
+    Execute {
+        /// Side-effect mutations to instances other than the settled one.
+        lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
+        /// A maintenance re-key to preserve when a hit fell back to execution.
+        maintenance_rekey: Option<(Hash, Hash)>,
+    },
+}
+
+/// Attempts to satisfy a step from the instance cache.
+async fn try_cache_hit<C: CasApi + ConstraintApi + Send + Sync>(
+    cas: &C,
+    request: &StepExecutionRequest,
+    prepared: &PreparedStep<'_>,
+) -> Result<CacheDecision, ConductorError> {
+    let decision = lookup_instance(
+        &request.workflow_id,
+        &request.step.id,
+        &prepared.tool_call_id,
+        &prepared.current,
+        &request.state_snapshot,
+        &prepared.required_output_specs,
+    );
+    match decision {
+        LookupResult::Hit { instance, instance_key, rekeyed_from } => {
+            // A hit requires the recorded blobs to still be present.
+            if required_output_blobs_exist(cas, &instance, &prepared.required_output_specs).await {
+                // Record the settling step (idempotent union at settlement).
+                let mut instance = *instance;
+                instance.step_ids_nk.insert(StepRef {
+                    workflow_id: request.workflow_id.clone(),
+                    step_id: request.step.id.clone(),
+                });
+                return Ok(CacheDecision::Reuse(Box::new(StepExecutionBundle {
+                    instance,
+                    instance_key,
+                    rekeyed_from,
+                    lookup_side_effects: BTreeMap::new(),
+                    maintenance_rekey: None,
+                    cache_hit: true,
+                    producible_outputs: BTreeMap::new(),
+                })));
+            }
+
+            // Missing blobs turn the hit into a miss, but lookup/migration
+            // maintenance is independent of reuse and must not be discarded.
+            // Persist the migrated/attempted state so subsequent runs do not
+            // repeat migration work unnecessarily, then execute fresh.
+            Ok(CacheDecision::Execute {
+                maintenance_rekey: rekeyed_from.map(|old_key| (old_key, instance_key)),
+                lookup_side_effects: BTreeMap::from([(instance_key, *instance)]),
+            })
+        }
+        LookupResult::Miss { side_effects } => Ok(CacheDecision::Execute {
+            lookup_side_effects: side_effects,
+            maintenance_rekey: None,
+        }),
+    }
+}
+
+/// Executes a prepared step on a cache miss or forced rerun.
+async fn execute_prepared_step<C: CasApi + ConstraintApi + Send + Sync>(
+    cas: &C,
+    request: &StepExecutionRequest,
+    prepared: &PreparedStep<'_>,
+    resolved_inputs: &[ResolvedInput],
+    lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
+    maintenance_rekey: Option<(Hash, Hash)>,
+) -> Result<StepExecutionBundle, ConductorError> {
+    execute_miss(
+        cas,
+        request,
+        &prepared.tool_call_id,
+        prepared.tool_spec,
+        resolved_inputs,
+        &prepared.key_material,
+        &prepared.producible_outputs,
+        &prepared.merged_outputs,
+        prepared.k_latest,
+        prepared.executed_at,
+        prepared.env_vars.clone(),
+        lookup_side_effects,
+        maintenance_rekey,
+    )
+    .await
+}
+
+/// Executes one step: resolves inputs, runs the tool, captures outputs.
+pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
+    cas: &C,
+    request: StepExecutionRequest,
+) -> Result<StepExecutionBundle, ConductorError> {
+    let resolved_inputs = resolve_step_inputs::<C>(&request).await?;
+    let prepared = prepare_step_execution(&request, &resolved_inputs)?;
+
+    if !request.force_rerun {
+        match try_cache_hit(cas, &request, &prepared).await? {
+            CacheDecision::Reuse(bundle) => return Ok(*bundle),
+            CacheDecision::Execute { lookup_side_effects, maintenance_rekey } => {
+                return execute_prepared_step(
                     cas,
                     &request,
-                    &tool_call_id,
-                    &tool_spec,
+                    &prepared,
                     &resolved_inputs,
-                    &key_material,
-                    &producible_outputs,
-                    &merged_outputs,
-                    k_latest,
-                    executed_at,
-                    env_vars,
                     lookup_side_effects,
                     maintenance_rekey,
-                )
-                .await;
-            }
-            LookupResult::Miss { side_effects } => {
-                return execute_miss(
-                    cas,
-                    &request,
-                    &tool_call_id,
-                    &tool_spec,
-                    &resolved_inputs,
-                    &key_material,
-                    &producible_outputs,
-                    &merged_outputs,
-                    k_latest,
-                    executed_at,
-                    env_vars,
-                    side_effects,
-                    None,
                 )
                 .await;
             }
         }
     }
 
-    execute_miss(
-        cas,
-        &request,
-        &tool_call_id,
-        &tool_spec,
-        &resolved_inputs,
-        &key_material,
-        &producible_outputs,
-        &merged_outputs,
-        k_latest,
-        executed_at,
-        env_vars,
-        BTreeMap::new(),
-        None,
-    )
-    .await
+    execute_prepared_step(cas, &request, &prepared, &resolved_inputs, BTreeMap::new(), None).await
 }
 
 /// Executes a step on cache miss (or forced rerun/blob-miss fallback).

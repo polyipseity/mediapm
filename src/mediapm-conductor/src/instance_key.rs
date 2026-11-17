@@ -131,6 +131,11 @@ pub fn derive_instance_key_for_version(
 /// Derives a v7 instance key from `command_args`.
 ///
 /// v7 is reproducible from `command_args` alone.
+///
+/// # Panics
+///
+/// Panics if the v7 derivation cannot be computed. This is unreachable because
+/// v7 derivation requires no extra material.
 #[must_use]
 pub fn derive_instance_key_v7(tool_call_id: &str, command_args: &[Hash]) -> Hash {
     derive_instance_key_for_version(V7_INSTANCE_KEY_VERSION, tool_call_id, command_args, None)
@@ -139,6 +144,11 @@ pub fn derive_instance_key_v7(tool_call_id: &str, command_args: &[Hash]) -> Hash
 
 /// Derives a v8 instance key from `command_args` and the output/staged-input
 /// specification material.
+///
+/// # Panics
+///
+/// Panics if the v8 derivation cannot be computed. This is unreachable because
+/// complete v8 output and staged-input material is provided.
 #[must_use]
 pub fn derive_instance_key_v8(
     tool_call_id: &str,
@@ -535,17 +545,17 @@ pub fn predicted_materialized_inputs(
             continue;
         }
         for selector in selector_sources(part) {
-            if let Some(name) = selector.source.strip_prefix("inputs.") {
-                if let Some(value) = input_values.get(name) {
-                    if value.is_empty() {
-                        continue;
-                    }
-                    let staged_hash = std::str::from_utf8(value)
-                        .ok()
-                        .and_then(|text| text.parse::<Hash>().ok())
-                        .unwrap_or_else(|| Hash::from_content(value));
-                    predicted.insert(selector.destination, staged_hash);
+            if let Some(name) = selector.source.strip_prefix("inputs.")
+                && let Some(value) = input_values.get(name)
+            {
+                if value.is_empty() {
+                    continue;
                 }
+                let staged_hash = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(|text| text.parse::<Hash>().ok())
+                    .unwrap_or_else(|| Hash::from_content(value));
+                predicted.insert(selector.destination, staged_hash);
             }
         }
     }

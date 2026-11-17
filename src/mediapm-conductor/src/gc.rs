@@ -373,10 +373,10 @@ where
     let reachable = counts.abstention.is_none().then(|| reachability_closure(state));
     for (instance_key, instance) in &state.tool_call_instances {
         for record in instance.outputs.values() {
-            if let Some(hash) = record.hash_nk {
-                if keeps_output(record, instance_key, reachable.as_ref()) {
-                    root_set.insert(hash);
-                }
+            if let Some(hash) = record.hash_nk
+                && keeps_output(record, instance_key, reachable.as_ref())
+            {
+                root_set.insert(hash);
             }
         }
     }

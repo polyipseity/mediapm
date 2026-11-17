@@ -898,8 +898,7 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
 fn output_capture_spec_from_latest(
     o: OutputCaptureSpecLatest,
 ) -> Result<OutputCaptureSpec, ConductorError> {
-    let capture =
-        CaptureKind::parse_token(&o.capture).map_err(|err| ConductorError::Workflow(err))?;
+    let capture = CaptureKind::parse_token(&o.capture).map_err(ConductorError::Workflow)?;
     Ok(OutputCaptureSpec {
         name: o.name,
         capture,

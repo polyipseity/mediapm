@@ -252,17 +252,21 @@ impl CaptureKind {
         }
     }
 
-    /// Returns whether a folder-style capture includes the topmost folder name
-    /// in archived member paths.
+    /// Returns whether archived member paths include the topmost folder name.
     ///
-    /// This is a compatibility helper for code paths that still reason about the
-    /// legacy boolean layout flag; the flag is encoded in the capture kind.
+    /// For folder captures this distinguishes `folder`/`folder_regex` from
+    /// `folder_flat`/`folder_flat_regex`. Non-folder captures report `true`, so
+    /// callers that need the folder distinction must check the capture family
+    /// first. This is a compatibility helper for code paths that still reason
+    /// about the legacy boolean layout flag; the flag is encoded in the capture
+    /// kind.
     #[must_use]
     pub const fn includes_topmost_folder(&self) -> bool {
         match self {
-            Self::Folder(_) | Self::FolderRegex(_) => true,
             Self::FolderFlat(_) | Self::FolderFlatRegex(_) => false,
-            Self::Stdout
+            Self::Folder(_)
+            | Self::FolderRegex(_)
+            | Self::Stdout
             | Self::Stderr
             | Self::ProcessCode
             | Self::File(_)
