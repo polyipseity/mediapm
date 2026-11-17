@@ -82,11 +82,27 @@ fn sandbox_relative_path(path: &Path, sandbox_dir: &Path) -> Option<String> {
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
 }
 
+/// Resolution of one capture attempt before CAS storage.
+///
+/// `AllowedEmpty` represents an allowed capture that matched nothing: the caller
+/// must record `hash_nk: None` and store nothing (no `cas.put`, no keep-full
+/// mark). `Skip` preserves legacy non-error behavior for captures that are not
+/// allowed and produced no match in paths where the implementation historically
+/// omitted a record rather than failing.
+enum CaptureResolution {
+    /// Captured bytes to persist to CAS.
+    Store(Vec<u8>),
+    /// Nothing matched and the spec allowed it.
+    AllowedEmpty,
+    /// Nothing matched and the spec did not allow it; omit the record.
+    Skip,
+}
+
 async fn capture_file_regex_output(
     regex: &regex::Regex,
     sandbox_dir: &Path,
     allow_empty: bool,
-) -> Result<Option<Vec<u8>>, ConductorError> {
+) -> Result<CaptureResolution, ConductorError> {
     let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
     let matched_paths = file_paths
         .iter()
@@ -96,8 +112,8 @@ async fn capture_file_regex_output(
         })
         .collect::<Vec<_>>();
     match matched_paths.len() {
-        0 if allow_empty => Ok(Some(Vec::new())),
-        0 => Ok(None),
+        0 if allow_empty => Ok(CaptureResolution::AllowedEmpty),
+        0 => Ok(CaptureResolution::Skip),
         1 => {
             let data = tokio::fs::read(matched_paths[0]).await.map_err(|e| {
                 ConductorError::Workflow(format!(
@@ -105,7 +121,7 @@ async fn capture_file_regex_output(
                     matched_paths[0].display()
                 ))
             })?;
-            Ok(Some(data))
+            Ok(CaptureResolution::Store(data))
         }
         _ => Err(ConductorError::Workflow(format!(
             "file_regex capture matched multiple sandbox files: {:?}",
@@ -118,6 +134,7 @@ async fn capture_file_regex_output(
 }
 
 /// Archives sandbox files referenced by forward-slash relative paths into one ZIP blob.
+#[cfg(test)]
 async fn archive_sandbox_relative_files_as_zip(
     sandbox_dir: &Path,
     relative_paths: &[String],
@@ -167,7 +184,7 @@ async fn capture_folder_regex_output(
     sandbox_dir: &Path,
     allow_empty: bool,
     include_topmost_folder: bool,
-) -> Result<Vec<u8>, ConductorError> {
+) -> Result<CaptureResolution, ConductorError> {
     let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
     let mut entries: Vec<(String, String)> = file_paths
         .iter()
@@ -186,13 +203,59 @@ async fn capture_folder_regex_output(
     entries.dedup_by(|a, b| a.0 == b.0);
     let file_list: Vec<String> = entries.iter().map(|(_, source)| source.clone()).collect();
     let archive_names: Vec<String> = entries.into_iter().map(|(name, _)| name).collect();
-    if file_list.is_empty() && !allow_empty {
+    if file_list.is_empty() {
+        if allow_empty {
+            return Ok(CaptureResolution::AllowedEmpty);
+        }
         return Err(ConductorError::Workflow(format!(
             "folder_regex capture matched zero sandbox files for pattern '{}'",
             regex.as_str()
         )));
     }
-    archive_sandbox_relative_files_as_zip_with_names(sandbox_dir, &archive_names, &file_list).await
+    archive_sandbox_relative_files_as_zip_with_names(sandbox_dir, &archive_names, &file_list)
+        .await
+        .map(CaptureResolution::Store)
+}
+
+async fn capture_folder_output(
+    sandbox_dir: &Path,
+    relative_path: &str,
+    allow_empty: bool,
+    include_topmost_folder: bool,
+) -> Result<CaptureResolution, ConductorError> {
+    let full_path = sandbox_dir.join(relative_path);
+    let file_paths = walk_and_collect_file_paths(&full_path).await?;
+    let mut entries: Vec<(String, String)> = if include_topmost_folder {
+        file_paths
+            .iter()
+            .filter_map(|p| sandbox_relative_path(p, sandbox_dir))
+            .map(|rel| (rel.clone(), rel))
+            .collect()
+    } else {
+        let prefix = sandbox_dir.join(relative_path);
+        file_paths
+            .iter()
+            .filter_map(|p| {
+                let source = sandbox_relative_path(p, sandbox_dir)?;
+                let archive_name =
+                    p.strip_prefix(&prefix).ok().map(|r| r.to_string_lossy().replace('\\', "/"))?;
+                Some((archive_name, source))
+            })
+            .collect()
+    };
+    entries.sort();
+    let (archive_names, source_paths): (Vec<String>, Vec<String>) = entries.into_iter().unzip();
+    if source_paths.is_empty() {
+        if allow_empty {
+            return Ok(CaptureResolution::AllowedEmpty);
+        }
+        return Err(ConductorError::Workflow(format!(
+            "folder capture matched zero sandbox files under '{relative_path}'"
+        )));
+    }
+    archive_sandbox_relative_files_as_zip_with_names(sandbox_dir, &archive_names, &source_paths)
+        .await
+        .map(CaptureResolution::Store)
 }
 
 /// Captures declared outputs from the execution result and persists to CAS.
@@ -237,26 +300,30 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
         .collect();
 
     for spec in combined_specs.values() {
-        let data = match &spec.capture {
-            crate::config::CaptureKind::Stdout => execution.stdout.clone(),
-            crate::config::CaptureKind::Stderr => execution.stderr.clone(),
-            crate::config::CaptureKind::ProcessCode => execution.exit_code.to_string().into_bytes(),
+        let saved_nk = !matches!(spec.save, SaveMode::False);
+        let resolution = match &spec.capture {
+            crate::config::CaptureKind::Stdout => {
+                CaptureResolution::Store(execution.stdout.clone())
+            }
+            crate::config::CaptureKind::Stderr => {
+                CaptureResolution::Store(execution.stderr.clone())
+            }
+            crate::config::CaptureKind::ProcessCode => {
+                CaptureResolution::Store(execution.exit_code.to_string().into_bytes())
+            }
             crate::config::CaptureKind::File(relative_path) => {
                 let full_path = sandbox_dir.join(relative_path);
                 match tokio::fs::read(&full_path).await {
-                    Ok(data) => data,
-                    Err(_) if spec.allow_empty => Vec::new(),
-                    Err(_) => continue,
+                    Ok(data) => CaptureResolution::Store(data),
+                    Err(_) if spec.allow_empty => CaptureResolution::AllowedEmpty,
+                    Err(_) => CaptureResolution::Skip,
                 }
             }
             crate::config::CaptureKind::FileRegex(pattern) => {
                 let regex = regex::Regex::new(pattern).map_err(|e| {
                     ConductorError::Workflow(format!("invalid file_regex pattern '{pattern}': {e}"))
                 })?;
-                match capture_file_regex_output(&regex, sandbox_dir, spec.allow_empty).await? {
-                    Some(data) => data,
-                    None => continue,
-                }
+                capture_file_regex_output(&regex, sandbox_dir, spec.allow_empty).await?
             }
             crate::config::CaptureKind::FolderRegex(pattern)
             | crate::config::CaptureKind::FolderFlatRegex(pattern) => {
@@ -275,45 +342,42 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
             }
             crate::config::CaptureKind::Folder(relative_path)
             | crate::config::CaptureKind::FolderFlat(relative_path) => {
-                let full_path = sandbox_dir.join(relative_path);
-                let file_paths = walk_and_collect_file_paths(&full_path).await?;
-                let file_list: Vec<String> = if spec.capture.includes_topmost_folder() {
-                    file_paths
-                        .iter()
-                        .filter_map(|p| p.strip_prefix(sandbox_dir).ok())
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect()
-                } else {
-                    let prefix = sandbox_dir.join(relative_path);
-                    file_paths
-                        .iter()
-                        .filter_map(|p| p.strip_prefix(&prefix).ok())
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect()
-                };
-                if file_list.is_empty() && !spec.allow_empty {
-                    return Err(ConductorError::Workflow(format!(
-                        "folder capture matched zero sandbox files under '{relative_path}'"
-                    )));
-                }
-                archive_sandbox_relative_files_as_zip(sandbox_dir, &file_list).await?
+                capture_folder_output(
+                    sandbox_dir,
+                    relative_path,
+                    spec.allow_empty,
+                    spec.capture.includes_topmost_folder(),
+                )
+                .await?
             }
         };
 
-        let data_is_empty = data.is_empty();
-        let hash = cas.put(bytes::Bytes::from(data)).await.map_err(ConductorError::Cas)?;
+        match resolution {
+            CaptureResolution::Store(data) => {
+                let hash = cas.put(bytes::Bytes::from(data)).await.map_err(ConductorError::Cas)?;
 
-        // After the put, so the mark can only describe an object that exists.
-        if spec.save == SaveMode::Full {
-            cas.mark_keep_full(hash).await.map_err(ConductorError::Cas)?;
+                // After the put, so the mark can only describe an object that exists.
+                if spec.save == SaveMode::Full {
+                    cas.mark_keep_full(hash).await.map_err(ConductorError::Cas)?;
+                }
+
+                records.insert(
+                    spec.name.clone(),
+                    CapturedOutput {
+                        capture: spec.capture.to_token(),
+                        hash_nk: Some(hash),
+                        saved_nk,
+                    },
+                );
+            }
+            CaptureResolution::AllowedEmpty => {
+                records.insert(
+                    spec.name.clone(),
+                    CapturedOutput { capture: spec.capture.to_token(), hash_nk: None, saved_nk },
+                );
+            }
+            CaptureResolution::Skip => {}
         }
-
-        let saved_nk = !matches!(spec.save, SaveMode::False);
-        let hash_nk = if data_is_empty && spec.allow_empty { None } else { Some(hash) };
-        records.insert(
-            spec.name.clone(),
-            CapturedOutput { capture: spec.capture.to_token(), hash_nk, saved_nk },
-        );
     }
 
     Ok(CapturedOutputs { records })
@@ -685,6 +749,207 @@ mod tests {
             cas.get(record.hash_nk.expect("hash")).await.unwrap().as_ref(),
             b"from-file",
             "the declared capture, not the process stream, decides the bytes",
+        );
+    }
+
+    /// A `folder:` capture includes the matched folder's topmost path in archive
+    /// entries, while `folder_flat:` strips it. Both layouts must be honored.
+    #[tokio::test]
+    async fn folder_capture_honors_included_and_flat_layouts() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let subdir = tmp.path().join("subdir");
+        tokio::fs::create_dir(&subdir).await.unwrap();
+        tokio::fs::write(subdir.join("a.txt"), b"content_a").await.unwrap();
+
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([
+            (
+                "with_top".to_string(),
+                OutputCaptureSpec {
+                    name: "with_top".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("folder:subdir")
+                        .expect("valid capture"),
+                    save: SaveMode::True,
+                    allow_empty: false,
+                },
+            ),
+            (
+                "flat".to_string(),
+                OutputCaptureSpec {
+                    name: "flat".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("folder_flat:subdir")
+                        .expect("valid capture"),
+                    save: SaveMode::True,
+                    allow_empty: false,
+                },
+            ),
+        ]);
+
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path())
+            .await
+            .expect("folder captures should succeed");
+
+        let with_top =
+            cas.get(outputs.records["with_top"].hash_nk.expect("hash")).await.expect("stored");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(with_top.as_ref())).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert_eq!(archive.by_index(0).unwrap().name(), "subdir/a.txt");
+
+        let flat = cas.get(outputs.records["flat"].hash_nk.expect("hash")).await.expect("stored");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(flat.as_ref())).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert_eq!(archive.by_index(0).unwrap().name(), "a.txt");
+    }
+
+    /// A `folder_regex:` capture keeps matched sandbox-relative paths as archive
+    /// entries, while `folder_flat_regex:` strips the topmost path component.
+    /// Both layouts must be honored.
+    #[tokio::test]
+    async fn folder_regex_capture_honors_included_and_flat_layouts() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let downloads = tmp.path().join("downloads");
+        tokio::fs::create_dir(&downloads).await.unwrap();
+        tokio::fs::write(downloads.join("video.en.vtt"), b"WEBVTT").await.unwrap();
+
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([
+            (
+                "with_top".to_string(),
+                OutputCaptureSpec {
+                    name: "with_top".to_string(),
+                    capture: crate::config::CaptureKind::parse_token(
+                        "folder_regex:^downloads/.+[.]vtt$",
+                    )
+                    .expect("valid capture"),
+                    save: SaveMode::True,
+                    allow_empty: false,
+                },
+            ),
+            (
+                "flat".to_string(),
+                OutputCaptureSpec {
+                    name: "flat".to_string(),
+                    capture: crate::config::CaptureKind::parse_token(
+                        "folder_flat_regex:^downloads/.+[.]vtt$",
+                    )
+                    .expect("valid capture"),
+                    save: SaveMode::True,
+                    allow_empty: false,
+                },
+            ),
+        ]);
+
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path())
+            .await
+            .expect("folder regex captures should succeed");
+
+        let with_top =
+            cas.get(outputs.records["with_top"].hash_nk.expect("hash")).await.expect("stored");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(with_top.as_ref())).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert_eq!(archive.by_index(0).unwrap().name(), "downloads/video.en.vtt");
+
+        let flat = cas.get(outputs.records["flat"].hash_nk.expect("hash")).await.expect("stored");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(flat.as_ref())).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert_eq!(archive.by_index(0).unwrap().name(), "video.en.vtt");
+    }
+
+    /// An allowed-empty file_regex capture that matches nothing records a null
+    /// hash and stores nothing in CAS.
+    #[tokio::test]
+    async fn allowed_empty_file_regex_records_null_and_stores_nothing() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        // Non-empty streams so their legitimate stored bytes do not collide with
+        // the empty-bytes blob a buggy implementation would have stored for this
+        // allowed-empty-no-match capture.
+        let execution =
+            ExecutionResult { stdout: b"out".to_vec(), stderr: b"err".to_vec(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "log".to_string(),
+            OutputCaptureSpec {
+                name: "log".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file_regex:^nope\\.txt$")
+                    .expect("valid capture"),
+                save: SaveMode::Full,
+                allow_empty: true,
+            },
+        )]);
+
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path())
+            .await
+            .expect("allowed-empty file_regex capture should succeed");
+        let record = outputs.records.get("log").expect("recorded output");
+        assert_eq!(record.capture, "file_regex:^nope\\.txt$");
+        assert!(record.hash_nk.is_none(), "matched nothing => hash_nk must be null");
+        assert!(record.saved_nk, "SaveMode::Full is a saved retention fact");
+    }
+
+    /// An allowed-empty folder capture that matches nothing records a null hash
+    /// and stores nothing in CAS.
+    #[tokio::test]
+    async fn allowed_empty_folder_records_null_and_stores_nothing() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        tokio::fs::create_dir(tmp.path().join("empty")).await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "out".to_string(),
+            OutputCaptureSpec {
+                name: "out".to_string(),
+                capture: crate::config::CaptureKind::parse_token("folder:empty")
+                    .expect("valid capture"),
+                save: SaveMode::Full,
+                allow_empty: true,
+            },
+        )]);
+
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path())
+            .await
+            .expect("allowed-empty folder capture should succeed");
+        let record = outputs.records.get("out").expect("recorded output");
+        assert!(record.hash_nk.is_none(), "matched nothing => hash_nk must be null");
+        let would_store =
+            archive_sandbox_relative_files_as_zip(tmp.path(), &[]).await.expect("empty archive");
+        assert!(
+            cas.stat(mediapm_cas::Hash::from_content(&would_store)).await.is_err(),
+            "no bytes may be stored for an allowed-empty capture that matched nothing"
+        );
+    }
+
+    /// An allowed-empty folder_regex capture that matches nothing records a null
+    /// hash and stores nothing in CAS.
+    #[tokio::test]
+    async fn allowed_empty_folder_regex_records_null_and_stores_nothing() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "subs".to_string(),
+            OutputCaptureSpec {
+                name: "subs".to_string(),
+                capture: crate::config::CaptureKind::parse_token(
+                    "folder_regex:^downloads/.+[.]vtt$",
+                )
+                .expect("valid capture"),
+                save: SaveMode::Full,
+                allow_empty: true,
+            },
+        )]);
+
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path())
+            .await
+            .expect("allowed-empty folder_regex capture should succeed");
+        let record = outputs.records.get("subs").expect("recorded output");
+        assert!(record.hash_nk.is_none(), "matched nothing => hash_nk must be null");
+        let would_store =
+            archive_sandbox_relative_files_as_zip(tmp.path(), &[]).await.expect("empty archive");
+        assert!(
+            cas.stat(mediapm_cas::Hash::from_content(&would_store)).await.is_err(),
+            "no bytes may be stored for an allowed-empty capture that matched nothing"
         );
     }
 }
