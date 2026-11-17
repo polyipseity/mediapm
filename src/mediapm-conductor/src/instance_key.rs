@@ -509,6 +509,10 @@ struct SelectorSource {
 /// Selectors whose source is not an `inputs.*` reference cannot be predicted
 /// from input values alone and are omitted (callers must fall back to recorded
 /// material where needed).
+///
+/// Prediction skips selectors that will not be staged: an empty input value is
+/// treated as absent, and selectors inside a part whose simple conditional guard
+/// evaluates false are omitted (e.g. an equality check on `input_extension`).
 #[must_use]
 pub fn predicted_materialized_inputs(
     command_parts: &[String],
@@ -527,9 +531,15 @@ pub fn predicted_materialized_inputs(
         } else {
             raw_part.as_str()
         };
+        if !part_condition_satisfied(part, input_values) {
+            continue;
+        }
         for selector in selector_sources(part) {
             if let Some(name) = selector.source.strip_prefix("inputs.") {
                 if let Some(value) = input_values.get(name) {
+                    if value.is_empty() {
+                        continue;
+                    }
                     let staged_hash = std::str::from_utf8(value)
                         .ok()
                         .and_then(|text| text.parse::<Hash>().ok())
@@ -540,6 +550,80 @@ pub fn predicted_materialized_inputs(
         }
     }
     predicted
+}
+
+/// Returns whether a command part's simple template conditional is satisfied.
+///
+/// For a part that is entirely a single ternary expression
+/// `${cond ? true_branch | false_branch}` (or with `:`), evaluates simple input
+/// conditions: `*inputs.NAME` / `inputs.NAME` truthiness and equality checks
+/// against quoted literals. Parts without a recognized conditional are treated
+/// as satisfied so their selectors remain predictable.
+fn part_condition_satisfied(part: &str, input_values: &BTreeMap<String, Vec<u8>>) -> bool {
+    let trimmed = part.trim();
+    let Some(inner) = trimmed.strip_prefix("${").and_then(|s| s.strip_suffix('}')) else {
+        return true;
+    };
+    // Find the ternary `?` that separates condition from branches (top-level).
+    let Some(q_pos) = find_top_level_ternary_q(inner) else {
+        return true;
+    };
+    let cond = inner[..q_pos].trim();
+    eval_simple_condition(cond, input_values).unwrap_or(true)
+}
+
+/// Finds the index of the top-level `?` introducing a ternary in `inner`.
+fn find_top_level_ternary_q(inner: &str) -> Option<usize> {
+    let bytes = inner.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'$' if i + 1 < bytes.len() && bytes[i + 1] == b'{' => {
+                depth += 1;
+                i += 2;
+                continue;
+            }
+            b'}' if depth > 0 => {
+                depth -= 1;
+            }
+            b'?' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Evaluates a simple template condition against input values.
+///
+/// Supports `*inputs.NAME`, `inputs.NAME`, and equality/inequality comparisons
+/// against quoted string literals. Returns `None` for conditions it cannot
+/// evaluate conservatively.
+fn eval_simple_condition(cond: &str, input_values: &BTreeMap<String, Vec<u8>>) -> Option<bool> {
+    let cond = cond.trim();
+    // Equality: *inputs.NAME == "value" or inputs.NAME == "value"
+    for op in ["==", "!="] {
+        if let Some(pos) = cond.find(op) {
+            let lhs = cond[..pos].trim();
+            let rhs = cond[pos + op.len()..].trim();
+            let rhs = rhs
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .or_else(|| rhs.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))?;
+            let name = lhs.strip_prefix("*inputs.").or_else(|| lhs.strip_prefix("inputs."))?;
+            let actual = input_value_str(input_values, name);
+            return Some(if op == "==" { actual == rhs } else { actual != rhs });
+        }
+    }
+    // Truthiness: *inputs.NAME or inputs.NAME
+    let name = cond.strip_prefix("*inputs.").or_else(|| cond.strip_prefix("inputs."))?;
+    let actual = input_value_str(input_values, name);
+    Some(!actual.is_empty())
+}
+
+fn input_value_str<'a>(input_values: &'a BTreeMap<String, Vec<u8>>, name: &str) -> &'a str {
+    input_values.get(name).and_then(|v| std::str::from_utf8(v).ok()).unwrap_or("")
 }
 
 impl SelectorSource {
