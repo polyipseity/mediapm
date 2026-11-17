@@ -556,7 +556,7 @@ fn rsgain_input_file_path(extension: &str) -> String {
 
 #[must_use]
 fn rsgain_output_file_regex() -> String {
-    format!("^input[.](?:{})$", SUPPORTED_RSGAIN_INPUT_EXTENSIONS.join("|"))
+    format!("^inputs/input[.](?:{})$", SUPPORTED_RSGAIN_INPUT_EXTENSIONS.join("|"))
 }
 
 #[must_use]
@@ -752,5 +752,35 @@ mod tests {
         let os_exec_paths = BTreeMap::from([("linux".into(), "rsgain".into())]);
         let (_spec, runtime) = build_rsgain_spec(content_map, &os_exec_paths);
         assert!(!runtime.impure);
+    }
+
+    #[test]
+    fn rsgain_output_file_regex_matches_staged_input_paths_and_rejects_bare_name() {
+        let regex = regex::Regex::new(&rsgain_output_file_regex())
+            .expect("rsgain output file regex must compile");
+        for &ext in SUPPORTED_RSGAIN_INPUT_EXTENSIONS {
+            let staged = rsgain_input_file_path(ext);
+            assert!(
+                regex.is_match(&staged),
+                "regex must match staged path '{staged}' for extension '{ext}'"
+            );
+        }
+        assert!(
+            !regex.is_match("input.flac"),
+            "bare input.flac must not match; the capture must anchor to the staged path"
+        );
+    }
+
+    #[test]
+    fn rsgain_workflow_output_capture_matches_staged_default_path() {
+        let capture = rsgain_workflow_output_capture(OUTPUT_CONTENT);
+        let token = capture.capture.to_token();
+        let pattern =
+            token.strip_prefix("file_regex:").expect("output capture token must be a file_regex");
+        let regex = regex::Regex::new(pattern).expect("capture token pattern must compile");
+        assert!(
+            regex.is_match(&rsgain_input_file_path("flac")),
+            "workflow output capture must match the staged default path"
+        );
     }
 }
