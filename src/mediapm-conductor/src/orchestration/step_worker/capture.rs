@@ -86,16 +86,16 @@ fn sandbox_relative_path(path: &Path, sandbox_dir: &Path) -> Option<String> {
 ///
 /// `AllowedEmpty` represents an allowed capture that matched nothing: the caller
 /// must record `hash_nk: None` and store nothing (no `cas.put`, no keep-full
-/// mark). `Skip` preserves legacy non-error behavior for captures that are not
-/// allowed and produced no match in paths where the implementation historically
-/// omitted a record rather than failing.
+/// mark). `Missing` means nothing matched and the spec is strict; the dispatch
+/// arm turns it into a step failure naming the output, the capture token, the
+/// sandbox path, and the fact that `allow_empty` is false.
 enum CaptureResolution {
     /// Captured bytes to persist to CAS.
     Store(Vec<u8>),
     /// Nothing matched and the spec allowed it.
     AllowedEmpty,
-    /// Nothing matched and the spec did not allow it; omit the record.
-    Skip,
+    /// Nothing matched and the spec did not allow it.
+    Missing,
 }
 
 async fn capture_file_regex_output(
@@ -113,7 +113,7 @@ async fn capture_file_regex_output(
         .collect::<Vec<_>>();
     match matched_paths.len() {
         0 if allow_empty => Ok(CaptureResolution::AllowedEmpty),
-        0 => Ok(CaptureResolution::Skip),
+        0 => Ok(CaptureResolution::Missing),
         1 => {
             let data = tokio::fs::read(matched_paths[0]).await.map_err(|e| {
                 ConductorError::Workflow(format!(
@@ -207,10 +207,7 @@ async fn capture_folder_regex_output(
         if allow_empty {
             return Ok(CaptureResolution::AllowedEmpty);
         }
-        return Err(ConductorError::Workflow(format!(
-            "folder_regex capture matched zero sandbox files for pattern '{}'",
-            regex.as_str()
-        )));
+        return Ok(CaptureResolution::Missing);
     }
     archive_sandbox_relative_files_as_zip_with_names(sandbox_dir, &archive_names, &file_list)
         .await
@@ -249,9 +246,7 @@ async fn capture_folder_output(
         if allow_empty {
             return Ok(CaptureResolution::AllowedEmpty);
         }
-        return Err(ConductorError::Workflow(format!(
-            "folder capture matched zero sandbox files under '{relative_path}'"
-        )));
+        return Ok(CaptureResolution::Missing);
     }
     archive_sandbox_relative_files_as_zip_with_names(sandbox_dir, &archive_names, &source_paths)
         .await
@@ -316,7 +311,7 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
                 match tokio::fs::read(&full_path).await {
                     Ok(data) => CaptureResolution::Store(data),
                     Err(_) if spec.allow_empty => CaptureResolution::AllowedEmpty,
-                    Err(_) => CaptureResolution::Skip,
+                    Err(_) => CaptureResolution::Missing,
                 }
             }
             crate::config::CaptureKind::FileRegex(pattern) => {
@@ -376,7 +371,14 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
                     CapturedOutput { capture: spec.capture.to_token(), hash_nk: None, saved_nk },
                 );
             }
-            CaptureResolution::Skip => {}
+            CaptureResolution::Missing => {
+                return Err(ConductorError::Workflow(format!(
+                    "required capture '{}' (token '{}') matched nothing in sandbox '{}' and allow_empty is false",
+                    spec.name,
+                    spec.capture.to_token(),
+                    sandbox_dir.display(),
+                )));
+            }
         }
     }
 
@@ -587,10 +589,14 @@ mod tests {
             },
         );
         let error = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("yt_dlp_subtitle_artifacts"), "unexpected error: {message}");
         assert!(
-            error.to_string().contains("folder_regex capture matched zero sandbox files"),
-            "unexpected error: {error}"
+            message.contains("folder_regex:^downloads/(.+?)(?:__mediapm__)?[.]vtt$"),
+            "unexpected error: {message}"
         );
+        assert!(message.contains(&tmp.path().display().to_string()), "unexpected error: {message}");
+        assert!(message.contains("allow_empty is false"), "unexpected error: {message}");
     }
 
     #[tokio::test]
@@ -855,6 +861,107 @@ mod tests {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(flat.as_ref())).unwrap();
         assert_eq!(archive.len(), 1);
         assert_eq!(archive.by_index(0).unwrap().name(), "video.en.vtt");
+    }
+
+    /// A strict file_regex capture that matches nothing fails the step.
+    #[tokio::test]
+    async fn strict_file_regex_with_no_match_returns_error() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "missing_log".to_string(),
+            OutputCaptureSpec {
+                name: "missing_log".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file_regex:^nope\\.txt$")
+                    .expect("valid capture"),
+                save: SaveMode::True,
+                allow_empty: false,
+            },
+        )]);
+
+        let error = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("missing_log"), "unexpected error: {message}");
+        assert!(message.contains("file_regex:^nope\\.txt$"), "unexpected error: {message}");
+        assert!(message.contains(&tmp.path().display().to_string()), "unexpected error: {message}");
+        assert!(message.contains("allow_empty is false"), "unexpected error: {message}");
+    }
+
+    /// A strict file capture that cannot be read fails the step.
+    #[tokio::test]
+    async fn strict_file_capture_with_unreadable_path_returns_error() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "missing_file".to_string(),
+            OutputCaptureSpec {
+                name: "missing_file".to_string(),
+                capture: crate::config::CaptureKind::parse_token("file:absent.txt")
+                    .expect("valid capture"),
+                save: SaveMode::True,
+                allow_empty: false,
+            },
+        )]);
+
+        let error = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("missing_file"), "unexpected error: {message}");
+        assert!(message.contains("file:absent.txt"), "unexpected error: {message}");
+        assert!(message.contains(&tmp.path().display().to_string()), "unexpected error: {message}");
+        assert!(message.contains("allow_empty is false"), "unexpected error: {message}");
+    }
+
+    /// A strict folder capture that matches nothing fails the step.
+    #[tokio::test]
+    async fn strict_folder_capture_with_no_match_returns_error() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        tokio::fs::create_dir(tmp.path().join("empty")).await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "folder_out".to_string(),
+            OutputCaptureSpec {
+                name: "folder_out".to_string(),
+                capture: crate::config::CaptureKind::parse_token("folder:empty")
+                    .expect("valid capture"),
+                save: SaveMode::True,
+                allow_empty: false,
+            },
+        )]);
+
+        let error = capture_outputs(&cas, &output_specs, &execution, tmp.path()).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("folder_out"), "unexpected error: {message}");
+        assert!(message.contains("folder:empty"), "unexpected error: {message}");
+        assert!(message.contains(&tmp.path().display().to_string()), "unexpected error: {message}");
+        assert!(message.contains("allow_empty is false"), "unexpected error: {message}");
+    }
+
+    /// A tolerant folder capture that matches nothing records null.
+    #[tokio::test]
+    async fn tolerant_folder_capture_with_no_match_records_null() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        tokio::fs::create_dir(tmp.path().join("empty")).await.unwrap();
+        let execution = ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 };
+        let output_specs = BTreeMap::from([(
+            "folder_out".to_string(),
+            OutputCaptureSpec {
+                name: "folder_out".to_string(),
+                capture: crate::config::CaptureKind::parse_token("folder:empty")
+                    .expect("valid capture"),
+                save: SaveMode::True,
+                allow_empty: true,
+            },
+        )]);
+
+        let outputs = capture_outputs(&cas, &output_specs, &execution, tmp.path())
+            .await
+            .expect("tolerant folder capture should succeed");
+        let record = outputs.records.get("folder_out").expect("recorded output");
+        assert!(record.hash_nk.is_none(), "matched nothing => hash_nk must be null");
     }
 
     /// An allowed-empty file_regex capture that matches nothing records a null

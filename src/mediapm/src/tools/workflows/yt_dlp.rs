@@ -495,7 +495,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 capture: CaptureKind::parse_token(&format!("folder:{SANDBOX_DOWNLOADS_DIR}"))
                     .expect("valid yt-dlp downloads folder capture token"),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
             },
         ),
         (
@@ -563,7 +563,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 capture: CaptureKind::parse_token(&format!("file_regex:{path_regex}"))
                     .expect("valid yt-dlp capture token"),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
             },
         );
     }

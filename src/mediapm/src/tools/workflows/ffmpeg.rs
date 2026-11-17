@@ -653,7 +653,7 @@ fn build_ffmpeg_outputs(max_output_slots: usize) -> BTreeMap<String, OutputCaptu
             capture: CaptureKind::parse_token("folder:inputs")
                 .expect("valid ffmpeg sandbox artifacts capture token"),
             save: SaveMode::True,
-            allow_empty: false,
+            allow_empty: true,
         },
     );
     outputs.insert(

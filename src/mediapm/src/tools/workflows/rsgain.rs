@@ -622,7 +622,7 @@ fn build_rsgain_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 capture: CaptureKind::parse_token("folder:inputs")
                     .expect("valid rsgain folder capture token"),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
             },
         ),
         (

@@ -270,6 +270,18 @@ impl CaptureKind {
         }
     }
 
+    /// Returns whether the capture reads a folder family.
+    ///
+    /// Folder-family captures may legitimately match nothing depending on what a
+    /// tool produced; file captures either read one file or read none.
+    #[must_use]
+    pub const fn is_folder_family(&self) -> bool {
+        matches!(
+            self,
+            Self::Folder(_) | Self::FolderFlat(_) | Self::FolderRegex(_) | Self::FolderFlatRegex(_)
+        )
+    }
+
     /// Returns the path/pattern remainder for kinds that carry one.
     #[must_use]
     pub fn remainder(&self) -> Option<&str> {

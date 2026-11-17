@@ -221,7 +221,12 @@ pub(crate) fn variant_to_output_capture_spec(
             yt_dlp::yt_dlp_variant_capture_and_save(y, variant, step_index, context, step_impure)
         }
     };
-    OutputCaptureSpec { name: name.to_string(), capture, save, allow_empty: false }
+    OutputCaptureSpec {
+        name: name.to_string(),
+        allow_empty: capture.is_folder_family(),
+        capture,
+        save,
+    }
 }
 
 /// Builds the capture selector and save mode of one generic output variant.

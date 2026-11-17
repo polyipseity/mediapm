@@ -430,24 +430,22 @@ fn producible_output_specs(
 ///
 /// A step may restate a tool-declared name for any reason, so silence here would
 /// leave a declaration that has no effect looking as though it had one: the tool
-/// keeps `capture` and `allow_empty`, and only `save` survives. Comparing values
-/// rather than presence is deliberate — a step that repeats the tool's own
-/// selector is declaring what already holds and deserves no warning, while one
-/// that names a different selector is stating an intent that is being discarded.
+/// keeps `capture`, while the step's `save` and `allow_empty` win for that name.
+/// Comparing values rather than presence is deliberate: a step that repeats the
+/// tool's own selector is declaring what already holds and deserves no warning,
+/// while one that names a different selector is stating an intent that is being
+/// discarded.
 ///
 /// The order is fixed so the diagnostic reads the same way every run.
 ///
 /// `name` is not in the list. The merge rewrites it to the map key, but that is
-/// normalization rather than a discarded intent: a key identifies its entry and
-/// a spec's own `name` restates it, so a step whose `name` disagrees with its
-/// key has a malformed spec, not an unfulfilled declaration.
+/// normalization rather than a discarded intent: a key identifies its entry and a
+/// spec's own `name` restates it, so a step whose `name` disagrees with its key
+/// has a malformed spec, not an unfulfilled declaration.
 fn discarded_step_fields(tool: &OutputCaptureSpec, step: &OutputCaptureSpec) -> Vec<&'static str> {
     let mut discarded = Vec::new();
     if step.capture != tool.capture {
         discarded.push("capture");
-    }
-    if step.allow_empty != tool.allow_empty {
-        discarded.push("allow_empty");
     }
     discarded
 }
@@ -455,23 +453,23 @@ fn discarded_step_fields(tool: &OutputCaptureSpec, step: &OutputCaptureSpec) -> 
 /// Merges tool-level output specs (defaults) with step-level output specs.
 ///
 /// The tool owns the meaning of every artifact name it declares: its `capture`
-/// and `allow_empty` are kept, and a step declaring the same name contributes
-/// only its `save`. A step's full declaration is authoritative only for a name
+/// is kept, and a step declaring the same name contributes its `save` and
+/// `allow_empty`. A step's full declaration is authoritative only for a name
 /// the tool does not declare, and a name only the tool declares is kept
 /// unchanged.
 ///
 /// The reason is that one instance is shared by every step running the same
 /// work, and a name-addressed record is reusable only when the capture beside it
 /// is the one the reusing step would have produced. The artifact layout is a
-/// property of the tool — the sandbox path a capture reads, and whether a
-/// family may legitimately be empty, follow from how the tool writes it — so a
-/// step that could re-select a tool-declared name would let two steps disagree
-/// about bytes one execution produced, and each would re-execute to replace the
-/// other's record forever.
+/// property of the tool — the sandbox path a capture reads follows from how the
+/// tool writes it — so a step that could re-select a tool-declared name would
+/// let two steps disagree about bytes one execution produced, and each would
+/// re-execute to replace the other's record forever.
 ///
-/// Persistence is the one thing a step owns: whether its own materialization
-/// keeps a family is local to that step and changes no bytes. That is also why
-/// the probe compares capture identity rather than the whole spec
+/// Tolerance and persistence are step-local decisions: whether this step's use
+/// of the name permits an empty match, and whether its materialization keeps the
+/// family, do not change which bytes the capture reads. That is also why the
+/// probe compares capture identity rather than the whole spec
 /// ([`super::cache::probe_cache`]): `save` is recorded beside the entry for
 /// provenance, but a reused entry is byte-for-byte the same artifact whether the
 /// reusing step persists it or not, so letting it decide a miss would put two
@@ -498,13 +496,14 @@ fn merge_output_specs(
                 if !discarded.is_empty() {
                     tracing::warn!(
                         "output '{name}' is declared by the tool, so the step's {} {} ignored; \
-                         the tool's capture and allow_empty apply, and only `save` is taken \
+                         the tool's capture applies, and the step's allow_empty and save are taken \
                          from the step",
                         discarded.join(", "),
                         if discarded.len() == 1 { "is" } else { "are" },
                     );
                 }
                 tool_spec.save = step_spec.save;
+                tool_spec.allow_empty = step_spec.allow_empty;
             }
             None => {
                 merged.insert(name.clone(), step_spec.clone());
@@ -595,9 +594,10 @@ mod tests {
 
     /// Each field the tool overrides is named, in a fixed order.
     ///
-    /// A step's selector and `allow_empty` are dropped for a tool-declared name,
-    /// and a declaration that silently lost one of them would look as though it
-    /// still applied. Folder layout is part of the capture token.
+    /// A step's selector is dropped for a tool-declared name, and a declaration
+    /// that silently lost it would look as though it still applied. The step's
+    /// `allow_empty` is taken from the step, so it is not discarded. Folder
+    /// layout is part of the capture token.
     #[test]
     fn every_overridden_step_field_is_named_in_order() {
         let tool = stream_spec("content", "stdout");
@@ -609,7 +609,7 @@ mod tests {
             allow_empty: true,
         };
 
-        assert_eq!(discarded_step_fields(&tool, &step), vec!["capture", "allow_empty"],);
+        assert_eq!(discarded_step_fields(&tool, &step), vec!["capture"]);
     }
 
     /// A `save`-only step declaration discards nothing.
@@ -1064,7 +1064,7 @@ mod tests {
                     name: "links".to_string(),
                     capture: crate::config::CaptureKind::parse_token("file:downloads/links.list")
                         .expect("valid capture"),
-                    allow_empty: false,
+                    allow_empty: true,
                     ..OutputCaptureSpec::default()
                 },
             )]),
@@ -1087,7 +1087,7 @@ mod tests {
                     name: "thumbnails".to_string(),
                     capture: crate::config::CaptureKind::parse_token("file:downloads/thumbs.list")
                         .expect("valid capture"),
-                    allow_empty: false,
+                    allow_empty: true,
                     ..OutputCaptureSpec::default()
                 },
             )]),
@@ -1146,14 +1146,14 @@ mod tests {
         );
     }
 
-    /// A step declaring a name the tool also declares keeps the tool's selector
-    /// and tolerance, and contributes only its persistence decision.
+    /// A step declaring a name the tool also declares keeps the tool's capture
+    /// and takes the step's tolerance and persistence decisions.
     ///
-    /// The tool owns what a name means because the sandbox layout and the
-    /// tolerance for an empty family are properties of how the tool writes the
-    /// artifact, while whether a step persists it is local to that step.
+    /// The tool owns the sandbox layout a capture reads, while whether this step
+    /// permits an empty match and whether it persists the family are local to the
+    /// step.
     #[test]
-    fn a_tool_declared_name_keeps_the_tool_specification() {
+    fn a_tool_declared_name_keeps_the_tool_capture_and_takes_step_tolerance() {
         let tool_spec = OutputCaptureSpec {
             name: "links".to_string(),
             capture: crate::config::CaptureKind::parse_token("folder_regex:^downloads/links/.+$")
@@ -1171,13 +1171,17 @@ mod tests {
 
         let merged = merge_output_specs(
             &BTreeMap::from([("links".to_string(), tool_spec.clone())]),
-            &BTreeMap::from([("links".to_string(), step_spec)]),
+            &BTreeMap::from([("links".to_string(), step_spec.clone())]),
         );
 
         assert_eq!(
             merged["links"],
-            OutputCaptureSpec { save: SaveMode::False, ..tool_spec },
-            "the tool's selector and tolerance survive the step's declaration; only save is the step's",
+            OutputCaptureSpec {
+                save: step_spec.save,
+                allow_empty: step_spec.allow_empty,
+                ..tool_spec
+            },
+            "the tool's capture survives the step's declaration; the step's allow_empty and save win",
         );
     }
 
