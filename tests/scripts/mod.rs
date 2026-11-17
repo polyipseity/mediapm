@@ -1214,3 +1214,238 @@ fn script_files_exist_and_are_executable() {
         }
     }
 }
+
+/// Coverage-matrix reference gate.
+///
+/// The matrix cites code symbols as backticked `a::b::c` paths. This gate
+/// collects symbol names from the repository and fails when a cited path's last
+/// segment cannot be resolved, so a renamed or deleted symbol is caught before it
+/// becomes a dead citation.
+mod coverage_matrix {
+    use std::collections::{BTreeSet, HashSet};
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Returns the repository root (the directory containing `Cargo.toml` and
+    /// `.agents/`), derived from this crate's manifest directory.
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("tests crate lives under the repository root")
+            .to_path_buf()
+    }
+
+    /// Collects the last-segment names of `fn`, `mod`, `struct`, `enum`,
+    /// `trait`, and `type` items declared under `src/`, `scripts/`, and `tests/`.
+    ///
+    /// The gate resolves only the terminal segment of a backticked path, so a
+    /// plain name set is sufficient and avoids coupling the check to module-path
+    /// spelling that legitimately differs across crates and test layouts.
+    fn collect_symbol_names(root: &Path) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for dir in ["src", "scripts", "tests"] {
+            collect_symbol_names_from_dir(&root.join(dir), &mut names);
+        }
+        names
+    }
+
+    /// Recursively scans `dir` for Rust source files and records symbol names
+    /// declared in them.
+    fn collect_symbol_names_from_dir(dir: &Path, names: &mut HashSet<String>) {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_symbol_names_from_dir(&path, names);
+            } else if path.extension() == Some(OsStr::new("rs")) {
+                if let Ok(text) = fs::read_to_string(&path) {
+                    collect_symbol_names_from_rust(&text, names);
+                }
+            }
+        }
+    }
+
+    /// Records every `fn`, `mod`, `struct`, `enum`, `trait`, and `type` name
+    /// declared in `source`. This is a lexical scan, which is enough for a
+    /// recurrence gate: it finds declarations without needing a full parse and
+    /// tolerates files that are not standalone Rust modules.
+    fn collect_symbol_names_from_rust(source: &str, names: &mut HashSet<String>) {
+        let kinds = ["fn", "mod", "struct", "enum", "trait", "type"];
+        let bytes = source.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            // skip non-ident starts
+            if !is_ident_start(bytes[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            i += 1;
+            while i < bytes.len() && is_ident_continue(bytes[i]) {
+                i += 1;
+            }
+            let word = &source[start..i];
+            if kinds.contains(&word) {
+                // find next identifier (the declared name)
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && is_ident_start(bytes[j]) {
+                    let name_start = j;
+                    j += 1;
+                    while j < bytes.len() && is_ident_continue(bytes[j]) {
+                        j += 1;
+                    }
+                    names.insert(source[name_start..j].to_string());
+                    i = j;
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn is_ident_start(b: u8) -> bool {
+        b.is_ascii_alphabetic() || b == b'_'
+    }
+
+    fn is_ident_continue(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+
+    /// Extracts every backticked reference shaped like `a::b::c` (three or more
+    /// `::`-separated segments) from `markdown`.
+    ///
+    /// A "segment" is an identifier token; the path must contain at least two
+    /// `::` separators. References inside a backtick span are recognized whether
+    /// they are the whole span or appear among other text.
+    fn extract_backticked_path_refs(markdown: &str) -> Vec<String> {
+        let mut refs = Vec::new();
+        let mut rest = markdown;
+        while let Some(start) = rest.find('`') {
+            rest = &rest[start + 1..];
+            let Some(end) = rest.find('`') else {
+                break;
+            };
+            let span = &rest[..end];
+            extract_path_refs_from_span(span, &mut refs);
+            rest = &rest[end + 1..];
+        }
+        refs
+    }
+
+    /// Collects `a::b::c`-shaped path references found within a single backtick
+    /// span.
+    fn extract_path_refs_from_span(span: &str, out: &mut Vec<String>) {
+        let bytes = span.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if !is_ident_start(bytes[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            i += 1;
+            while i < bytes.len() && is_ident_continue(bytes[i]) {
+                i += 1;
+            }
+            // extend through `::segment` chains
+            loop {
+                if i + 1 < bytes.len() && bytes[i] == b':' && bytes[i + 1] == b':' {
+                    let after = i + 2;
+                    if after < bytes.len() && is_ident_start(bytes[after]) {
+                        i = after + 1;
+                        while i < bytes.len() && is_ident_continue(bytes[i]) {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                }
+                break;
+            }
+            let candidate = &span[start..i];
+            if candidate.matches("::").count() >= 2 {
+                out.push(candidate.to_string());
+            }
+        }
+    }
+
+    /// Intentional prose identifiers that are shaped like `a::b::c` but do not
+    /// name a symbol declared in this repository. Each entry is the full
+    /// backticked path as it appears in the matrix; keep this list short and
+    /// explain every addition.
+    fn allowlist() -> HashSet<&'static str> {
+        // `rustdoc::broken_intra_doc_links` is a rustdoc lint name cited as a
+        // lint category in prose, not a symbol defined in this tree.
+        HashSet::from(["rustdoc::broken_intra_doc_links"])
+    }
+
+    /// Returns the unresolved backticked path references in `markdown`, given a
+    /// set of known symbol names. A reference resolves when its last `::`
+    /// segment is present in `symbols`, or when the full path is allowlisted.
+    fn unresolved_refs(markdown: &str, symbols: &HashSet<String>) -> BTreeSet<String> {
+        let allowed = allowlist();
+        let mut unresolved = BTreeSet::new();
+        for reference in extract_backticked_path_refs(markdown) {
+            if allowed.contains(reference.as_str()) {
+                continue;
+            }
+            let last = reference.rsplit("::").next().unwrap_or(&reference);
+            if !symbols.contains(last) {
+                unresolved.insert(reference);
+            }
+        }
+        unresolved
+    }
+
+    /// Formats a failure message listing every unresolved reference.
+    fn format_unresolved(unresolved: &BTreeSet<String>) -> String {
+        let mut msg = String::from(
+            "coverage-matrix backticked references could not be resolved to a symbol name \
+             (fn/mod/struct/enum/trait/type) in src/, scripts/, or tests/:\n",
+        );
+        for reference in unresolved {
+            msg.push_str("  - ");
+            msg.push_str(reference);
+            msg.push('\n');
+        }
+        msg.push_str(
+            "Rename the citation to a live symbol, rewrite the claim, drop the row, or add the \
+             path to the documented allowlist if it is intentional prose.",
+        );
+        msg
+    }
+
+    /// Proves the gate fails on a broken reference: a synthetic matrix citing a
+    /// symbol that does not exist must produce an unresolved-reference failure.
+    #[test]
+    fn gate_fails_on_a_broken_reference() {
+        let symbols = collect_symbol_names(&repo_root());
+        let broken = "| claim | `no_such_crate::no_such_mod::no_such_symbol` | [covered] |";
+        let unresolved = unresolved_refs(broken, &symbols);
+        assert!(
+            unresolved.contains("no_such_crate::no_such_mod::no_such_symbol"),
+            "a nonexistent symbol must be reported as unresolved, got: {unresolved:?}"
+        );
+        let message = format_unresolved(&unresolved);
+        assert!(
+            message.contains("no_such_crate::no_such_mod::no_such_symbol"),
+            "failure message must list the unresolved reference: {message}"
+        );
+    }
+
+    /// The audited coverage matrix must contain no unresolved symbol references.
+    #[test]
+    fn coverage_matrix_references_resolve() {
+        let root = repo_root();
+        let matrix_path = root.join(".agents/coverage-matrix.md");
+        let markdown = fs::read_to_string(&matrix_path).expect("read .agents/coverage-matrix.md");
+        let symbols = collect_symbol_names(&root);
+        let unresolved = unresolved_refs(&markdown, &symbols);
+        assert!(unresolved.is_empty(), "{}", format_unresolved(&unresolved));
+    }
+}
