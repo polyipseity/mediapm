@@ -238,7 +238,7 @@ fn generic_variant_capture_and_save(
     step_impure: bool,
 ) -> (CaptureKind, SaveMode) {
     let capture = match config.capture_kind {
-        Some(OutputCaptureKind::Folder) => format!("file:{}/*", config.kind),
+        Some(OutputCaptureKind::Folder) => format!("folder:{}", config.kind),
         _ => format!("file:{}", config.kind),
     };
     let save = resolve_variant_save(config.save, variant, step_index, context, step_impure);
@@ -924,6 +924,26 @@ mod tests {
         assert_eq!(step_index_of("step-0-ffmpeg"), Some(0));
         assert_eq!(step_index_of("step-3-ffmpeg"), Some(3));
         assert_eq!(step_index_of("step-12-1-import-primary-to-media"), Some(12));
+    }
+
+    /// A generic folder variant captures the folder named by its kind.
+    ///
+    /// Folder captures use the `folder:` token with the kind as the path, so
+    /// the conductor can match the directory as a folder capture rather than as
+    /// an unmatchable file glob.
+    #[test]
+    fn generic_folder_variant_emits_folder_capture_token() {
+        let config = crate::config::GenericOutputVariantConfig {
+            kind: "subtitles".to_string(),
+            capture_kind: Some(OutputCaptureKind::Folder),
+            ..crate::config::GenericOutputVariantConfig::default()
+        };
+        let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let (capture, _save) =
+            generic_variant_capture_and_save(&config, "subs", 0, &context, false);
+        let token = capture.to_token();
+        assert!(token.starts_with("folder:"), "expected a folder capture token, got {token}",);
+        assert_eq!(token, "folder:subtitles");
     }
 
     /// One index resolves to every id a fan-out wrote for it.

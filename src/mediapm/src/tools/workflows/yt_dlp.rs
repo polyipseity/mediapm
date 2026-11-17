@@ -198,7 +198,8 @@ pub(crate) fn yt_dlp_variant_capture_and_save(
         YtDlpOutputKind::Chapters => format!("folder_regex:{YT_DLP_CHAPTER_ARTIFACTS_REGEX}"),
         YtDlpOutputKind::Description => format!("file_regex:{YT_DLP_DESCRIPTION_OUTPUT_REGEX}"),
         YtDlpOutputKind::Infojson => format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}"),
-        YtDlpOutputKind::Comment => "file:comment.*".to_string(),
+        // yt-dlp stores comments in the info JSON rather than in a separate comment.* file.
+        YtDlpOutputKind::Comment => format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}"),
         YtDlpOutputKind::Archive => format!("file_regex:{YT_DLP_ARCHIVE_OUTPUT_REGEX}"),
         YtDlpOutputKind::Annotation => format!("file_regex:{YT_DLP_ANNOTATION_OUTPUT_REGEX}"),
         YtDlpOutputKind::Links => format!("folder_regex:{YT_DLP_LINK_ARTIFACTS_REGEX}"),
@@ -716,6 +717,27 @@ mod tests {
         assert_eq!(
             defaults.get("embed_thumbnail"),
             Some(&InputBinding::String("false".to_string()))
+        );
+    }
+
+    /// A comment variant captures the info JSON.
+    ///
+    /// yt-dlp stores comments in the info JSON rather than in a separate
+    /// `comment.*` file, so the comment variant must reuse the info JSON
+    /// capture token.
+    #[test]
+    fn comment_variant_captures_info_json() {
+        let config = crate::config::YtDlpOutputVariantConfig {
+            kind: YtDlpOutputKind::Comment,
+            ..crate::config::YtDlpOutputVariantConfig::default()
+        };
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let (capture, _save) =
+            yt_dlp_variant_capture_and_save(&config, "comment", 0, &context, false);
+        assert_eq!(
+            capture.to_token(),
+            format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}"),
+            "comment output must be captured from the info JSON",
         );
     }
 
