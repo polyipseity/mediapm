@@ -193,6 +193,80 @@ pub(super) enum VariantResolveFailure {
     Fatal(MediaPmError),
 }
 
+/// Tries to resolve bytes from a workflow-state hash, falling through when the
+/// hash names no usable bytes for this request.
+async fn bytes_from_workflow_resolution(
+    lookup: &MaterializationLookupContext,
+    media_id: &str,
+    source: &MediaSourceSpec,
+    variant: &str,
+    full_zip_archive: bool,
+    workflow_hash: Option<Hash>,
+    fallback_notice: Option<String>,
+) -> Result<Option<VariantSourceBytes>, VariantResolveFailure> {
+    use VariantResolveFailure::Fatal;
+
+    match workflow_hash {
+        None => {
+            // A null captured hash resolves to empty bytes (prior allow_empty behavior).
+            let binding = resolve_media_variant_output_binding_with_limits(
+                source,
+                variant,
+                lookup.ffmpeg_slot_limits.max_input_slots,
+                lookup.ffmpeg_slot_limits.max_output_slots,
+            )
+            .map_err(Fatal)?;
+            if binding.as_ref().is_none_or(|binding| binding.zip_member.is_none()) {
+                return Ok(Some(VariantSourceBytes {
+                    bytes: Vec::new(),
+                    notice: fallback_notice,
+                    source_hash: None,
+                }));
+            }
+            Ok(None)
+        }
+        Some(workflow_hash) => match lookup.cas.get(workflow_hash).await {
+            // Bytes that are not the archive the caller asked for fall through
+            // to the source's own hashes: the caller asked for specific
+            // content, and this hash names content of another shape.
+            Ok(bytes) if !full_zip_archive || is_zip_content(bytes.as_ref()) => {
+                let binding = resolve_media_variant_output_binding_with_limits(
+                    source,
+                    variant,
+                    lookup.ffmpeg_slot_limits.max_input_slots,
+                    lookup.ffmpeg_slot_limits.max_output_slots,
+                )
+                .map_err(Fatal)?;
+                // A caller asking for the whole archive never extracts: it asked
+                // for these exact bytes and got them.
+                let zip_member = binding
+                    .as_ref()
+                    .filter(|_| !full_zip_archive)
+                    .and_then(|binding| binding.zip_member.as_deref());
+                let (materialized_bytes, source_hash) = match zip_member {
+                    Some(zip_member) => {
+                        let member_bytes =
+                            extract_zip_member_bytes(bytes.as_ref(), zip_member).map_err(|error| {
+                                Fatal(MediaPmError::Workflow(format!(
+                                    "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
+                                )))
+                            })?;
+                        (member_bytes, None)
+                    }
+                    None => (bytes.as_ref().to_vec(), Some(workflow_hash)),
+                };
+                Ok(Some(VariantSourceBytes {
+                    bytes: materialized_bytes,
+                    notice: fallback_notice,
+                    source_hash,
+                }))
+            }
+            Ok(_) => Ok(None),
+            Err(_) => Err(Fatal(missing_object_error(media_id, variant, workflow_hash))),
+        },
+    }
+}
+
 /// Resolves variant bytes with optional fallback notice and source hash.
 ///
 /// Three outcomes are deliberately not failures. A conductor-state lookup that
@@ -229,70 +303,19 @@ pub(super) async fn resolve_variant_source_bytes(
         None => None,
     };
 
-    if let Some((workflow_hash, fallback_notice)) = workflow_resolution {
-        match workflow_hash {
-            None => {
-                // A null captured hash resolves to empty bytes (prior allow_empty behavior).
-                let binding = resolve_media_variant_output_binding_with_limits(
-                    source,
-                    variant,
-                    lookup.ffmpeg_slot_limits.max_input_slots,
-                    lookup.ffmpeg_slot_limits.max_output_slots,
-                )
-                .map_err(Fatal)?;
-                if binding.as_ref().is_none_or(|binding| binding.zip_member.is_none()) {
-                    return Ok(VariantSourceBytes {
-                        bytes: Vec::new(),
-                        notice: fallback_notice,
-                        source_hash: None,
-                    });
-                }
-            }
-            Some(workflow_hash) => match lookup.cas.get(workflow_hash).await {
-                // Bytes that are not the archive the caller asked for fall through
-                // to the source's own hashes: the caller asked for specific
-                // content, and this hash names content of another shape.
-                Ok(bytes) if !full_zip_archive || is_zip_content(bytes.as_ref()) => {
-                    let binding = resolve_media_variant_output_binding_with_limits(
-                        source,
-                        variant,
-                        lookup.ffmpeg_slot_limits.max_input_slots,
-                        lookup.ffmpeg_slot_limits.max_output_slots,
-                    )
-                    .map_err(Fatal)?;
-                    // A caller asking for the whole archive never extracts: it
-                    // asked for these exact bytes and got them.
-                    let zip_member = binding
-                        .as_ref()
-                        .filter(|_| !full_zip_archive)
-                        .and_then(|binding| binding.zip_member.as_deref());
-                    let (materialized_bytes, source_hash) = match zip_member {
-                        Some(zip_member) => {
-                            let member_bytes =
-                                extract_zip_member_bytes(bytes.as_ref(), zip_member).map_err(
-                                    |error| {
-                                        Fatal(MediaPmError::Workflow(format!(
-                                            "extracting ZIP member '{zip_member}' for media '{media_id}' variant '{variant}' failed: {error}"
-                                        )))
-                                    },
-                                )?;
-                            (member_bytes, None)
-                        }
-                        None => (bytes.as_ref().to_vec(), Some(workflow_hash)),
-                    };
-
-                    return Ok(VariantSourceBytes {
-                        bytes: materialized_bytes,
-                        notice: fallback_notice,
-                        source_hash,
-                    });
-                }
-                Ok(_) => {}
-                Err(_) => {
-                    return Err(Fatal(missing_object_error(media_id, variant, workflow_hash)));
-                }
-            },
-        }
+    if let Some((workflow_hash, fallback_notice)) = workflow_resolution
+        && let Some(resolved) = bytes_from_workflow_resolution(
+            lookup,
+            media_id,
+            source,
+            variant,
+            full_zip_archive,
+            workflow_hash,
+            fallback_notice,
+        )
+        .await?
+    {
+        return Ok(resolved);
     }
 
     if source.variant_hashes.is_empty() {
@@ -3628,34 +3651,19 @@ mod tests {
         );
     }
 
-    /// An allowed-empty capture with no hash materializes as empty bytes.
-    #[tokio::test]
-    async fn allow_empty_workflow_output_materializes_as_empty_bytes() {
-        use mediapm_conductor::{
-            CapturedOutput, ConfigPayloadStaging, OutputCaptureSpec, SaveMode, ToolCallInstance,
-            ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
-        };
-        use mediapm_utils::Timestamp;
+    fn allow_empty_infojson_workflow_spec(
+        workflow_name: &str,
+        step_id: &str,
+    ) -> mediapm_conductor::WorkflowSpec {
+        use mediapm_conductor::{OutputCaptureSpec, SaveMode, WorkflowSpec, WorkflowStepSpec};
 
-        use crate::config::source_types::{MediaStep, MediaStepTool};
-        use crate::config::{
-            OutputVariantValue, TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
-        };
-
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
-        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
-
-        let media_id = "local.empty";
-        let workflow_name = managed_workflow_name(media_id);
-        let step_id = "step-0-0-yt-dlp-infojson-to-infojson".to_string();
-
-        let workflow = WorkflowSpec {
-            name: workflow_name.clone(),
+        WorkflowSpec {
+            name: workflow_name.to_string(),
             display_name: None,
             description: None,
             impure: true,
             steps: vec![WorkflowStepSpec {
-                id: step_id.clone(),
+                id: step_id.to_string(),
                 tool: "yt-dlp".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([(
@@ -3673,7 +3681,13 @@ mod tests {
                 max_retries: 1,
                 depends_on: Vec::new(),
             }],
-        };
+        }
+    }
+
+    fn allow_empty_infojson_generated_doc(
+        workflow: mediapm_conductor::WorkflowSpec,
+    ) -> NickelDocument {
+        use mediapm_conductor::{ConfigPayloadStaging, ToolKindSpec, ToolRuntime, ToolSpec};
 
         let mut generated_doc = NickelDocument::default();
         generated_doc.tools.insert(
@@ -3693,7 +3707,13 @@ mod tests {
                 ..ToolSpec::default()
             },
         );
-        generated_doc.workflows.push(workflow.clone());
+        generated_doc.workflows.push(workflow);
+        generated_doc
+    }
+
+    fn allow_empty_infojson_state(workflow_name: &str, step_id: &str) -> ConductorState {
+        use mediapm_conductor::{CapturedOutput, ToolCallInstance};
+        use mediapm_utils::Timestamp;
 
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
@@ -3718,11 +3738,19 @@ mod tests {
                 executed_at_nk: Timestamp::from_unix_nanos(1),
                 last_referenced_at_nk: Timestamp::from_unix_nanos(1),
                 step_ids_nk: BTreeSet::from([mediapm_conductor::StepRef {
-                    workflow_id: workflow_name.clone(),
-                    step_id,
+                    workflow_id: workflow_name.to_string(),
+                    step_id: step_id.to_string(),
                 }]),
             },
         );
+        state
+    }
+
+    fn allow_empty_infojson_document(media_id: &str) -> MediaPmDocument {
+        use crate::config::source_types::{MediaStep, MediaStepTool};
+        use crate::config::{
+            OutputVariantValue, TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
+        };
 
         let mut document = MediaPmDocument::default();
         document.media.insert(
@@ -3746,6 +3774,23 @@ mod tests {
                 ..MediaSourceSpec::default()
             },
         );
+        document
+    }
+
+    /// An allowed-empty capture with no hash materializes as empty bytes.
+    #[tokio::test]
+    async fn allow_empty_workflow_output_materializes_as_empty_bytes() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+
+        let media_id = "local.empty";
+        let workflow_name = managed_workflow_name(media_id);
+        let step_id = "step-0-0-yt-dlp-infojson-to-infojson";
+
+        let workflow = allow_empty_infojson_workflow_spec(&workflow_name, step_id);
+        let generated_doc = allow_empty_infojson_generated_doc(workflow);
+        let state = allow_empty_infojson_state(&workflow_name, step_id);
+        let document = allow_empty_infojson_document(media_id);
 
         let lookup = MaterializationLookupContext::new(
             cas,
@@ -4927,15 +4972,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn relaxed_resolution_finds_infojson_on_primary_yt_dlp_download_instance() {
-        use mediapm_conductor::{
-            CapturedOutput, OutputCaptureSpec, SaveMode, ToolCallInstance, ToolKindSpec, ToolSpec,
-            WorkflowSpec, WorkflowStepSpec,
-        };
-        use mediapm_utils::Timestamp;
+    fn primary_download_generated_doc() -> NickelDocument {
+        use mediapm_conductor::{ToolKindSpec, ToolSpec};
 
-        let generated = NickelDocument {
+        NickelDocument {
             tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 ToolSpec {
@@ -4946,21 +4986,19 @@ mod tests {
                 },
             )]),
             ..NickelDocument::default()
-        };
+        }
+    }
 
-        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
-        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
-        let primary_video_hash =
-            cas.put(bytes::Bytes::from_static(b"primary-video-bytes")).await.expect("put primary");
-        let infojson_hash = cas
-            .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
-            .await
-            .expect("put infojson");
+    fn primary_download_infojson_state(
+        primary_video_hash: Hash,
+        infojson_hash: Hash,
+    ) -> ConductorState {
+        use mediapm_conductor::{CapturedOutput, ToolCallInstance};
+        use mediapm_utils::Timestamp;
 
-        let primary_key = Hash::from_content(b"primary-download-instance");
         let mut state = ConductorState::new_empty();
         state.tool_call_instances.insert(
-            primary_key,
+            Hash::from_content(b"primary-download-instance"),
             ToolCallInstance {
                 key_version: 8,
                 attempted_key_version_nk: 8,
@@ -5004,8 +5042,13 @@ mod tests {
                 }]),
             },
         );
+        state
+    }
 
-        let workflow = WorkflowSpec {
+    fn primary_download_infojson_workflow() -> mediapm_conductor::WorkflowSpec {
+        use mediapm_conductor::{OutputCaptureSpec, SaveMode, WorkflowSpec, WorkflowStepSpec};
+
+        WorkflowSpec {
             name: "mediapm.media.youtube.dQw4w9WgXcQ".to_string(),
             display_name: None,
             description: None,
@@ -5034,7 +5077,23 @@ mod tests {
                 max_retries: 1,
                 depends_on: Vec::new(),
             }],
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn relaxed_resolution_finds_infojson_on_primary_yt_dlp_download_instance() {
+        let generated = primary_download_generated_doc();
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let primary_video_hash =
+            cas.put(bytes::Bytes::from_static(b"primary-video-bytes")).await.expect("put primary");
+        let infojson_hash = cas
+            .put(bytes::Bytes::from_static(br#"{"title":"Never Gonna Give You Up"}"#))
+            .await
+            .expect("put infojson");
+
+        let state = primary_download_infojson_state(primary_video_hash, infojson_hash);
+        let workflow = primary_download_infojson_workflow();
 
         let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
             .await

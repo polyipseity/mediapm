@@ -197,9 +197,10 @@ pub(crate) fn yt_dlp_variant_capture_and_save(
         YtDlpOutputKind::Thumbnails => format!("folder_regex:{YT_DLP_THUMBNAIL_ARTIFACTS_REGEX}"),
         YtDlpOutputKind::Chapters => format!("folder_regex:{YT_DLP_CHAPTER_ARTIFACTS_REGEX}"),
         YtDlpOutputKind::Description => format!("file_regex:{YT_DLP_DESCRIPTION_OUTPUT_REGEX}"),
-        YtDlpOutputKind::Infojson => format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}"),
         // yt-dlp stores comments in the info JSON rather than in a separate comment.* file.
-        YtDlpOutputKind::Comment => format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}"),
+        YtDlpOutputKind::Infojson | YtDlpOutputKind::Comment => {
+            format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}")
+        }
         YtDlpOutputKind::Archive => format!("file_regex:{YT_DLP_ARCHIVE_OUTPUT_REGEX}"),
         YtDlpOutputKind::Annotation => format!("file_regex:{YT_DLP_ANNOTATION_OUTPUT_REGEX}"),
         YtDlpOutputKind::Links => format!("folder_regex:{YT_DLP_LINK_ARTIFACTS_REGEX}"),
@@ -455,16 +456,9 @@ fn build_yt_dlp_inputs() -> BTreeMap<String, ToolInputSpec> {
     inputs
 }
 
-/// Builds yt-dlp output capture spec map.
-///
-/// These are live defaults: every yt-dlp step captures the whole set, under its
-/// own declarations for the names it binds. Which sidecar families an
-/// invocation writes depends on the URL and the options, so the folder-typed
-/// families tolerate an empty match — a step that downloads only links writes
-/// no subtitles, and that is a normal outcome rather than a failed step.
-#[must_use]
-fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
-    let mut outputs = BTreeMap::from([
+/// Builds the base yt-dlp output capture specs (content, streams, and sandbox).
+fn base_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
+    BTreeMap::from([
         (
             OUTPUT_CONTENT.to_string(),
             OutputCaptureSpec {
@@ -529,7 +523,19 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 allow_empty: false,
             },
         ),
-    ]);
+    ])
+}
+
+/// Builds yt-dlp output capture spec map.
+///
+/// These are live defaults: every yt-dlp step captures the whole set, under its
+/// own declarations for the names it binds. Which sidecar families an
+/// invocation writes depends on the URL and the options, so the folder-typed
+/// families tolerate an empty match — a step that downloads only links writes
+/// no subtitles, and that is a normal outcome rather than a failed step.
+#[must_use]
+fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
+    let mut outputs = base_yt_dlp_outputs();
 
     for (output_name, path_regex) in [
         (OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS, YT_DLP_SUBTITLE_ARTIFACTS_REGEX),

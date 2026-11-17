@@ -942,7 +942,7 @@ mod tests {
         let (capture, _save) =
             generic_variant_capture_and_save(&config, "subs", 0, &context, false);
         let token = capture.to_token();
-        assert!(token.starts_with("folder:"), "expected a folder capture token, got {token}",);
+        assert!(token.starts_with("folder:"), "expected a folder capture token, got {token}");
         assert_eq!(token, "folder:subtitles");
     }
 
