@@ -102,6 +102,12 @@ pub(super) async fn materialize_content_map<C: CasApi + Send + Sync>(
                 })??;
             } else {
                 // File-level entry: write bytes verbatim.
+                crate::config::validate_sandbox_relative_path(
+                    relative_path,
+                    &format!("content map key '{relative_path}'"),
+                )
+                .map_err(ConductorError::Workflow)?;
+
                 if let Some(parent) = target_path.parent() {
                     tokio::fs::create_dir_all(parent).await.map_err(|source| {
                         ConductorError::io("create content parent directory", parent, source)
@@ -590,5 +596,23 @@ mod tests {
         // No files inside.
         let mut entries = std::fs::read_dir(&dir).unwrap();
         assert!(entries.next().is_none());
+    }
+
+    #[tokio::test]
+    async fn materialize_content_map_refuses_escaping_file_level_key() {
+        let cas = InMemoryCas::default();
+        let content = b"payload";
+        let hash = cas.put(bytes::Bytes::from(content.to_vec())).await.expect("store content");
+
+        let mut cmap = BTreeMap::new();
+        cmap.insert("../escape".to_string(), hash.to_hex());
+
+        let sandbox_dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let err = materialize_content_map(&cas, &cmap, sandbox_dir.path())
+            .await
+            .expect_err("escaping content map key must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("content map key '../escape'"), "key named in: {msg}");
+        assert!(msg.contains("must not contain a '..' component"), "rule named in: {msg}");
     }
 }

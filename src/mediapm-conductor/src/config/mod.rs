@@ -223,11 +223,21 @@ impl CaptureKind {
                         "capture token '{token}' has an empty remainder after '{prefix}:'"
                     ));
                 }
+                let subject = format!("capture token '{token}'");
                 match prefix {
-                    "file" => Ok(Self::File(remainder.to_string())),
+                    "file" => {
+                        validate_sandbox_relative_path(remainder, &subject)?;
+                        Ok(Self::File(remainder.to_string()))
+                    }
                     "file_regex" => Ok(Self::FileRegex(remainder.to_string())),
-                    "folder" => Ok(Self::Folder(remainder.to_string())),
-                    "folder_flat" => Ok(Self::FolderFlat(remainder.to_string())),
+                    "folder" => {
+                        validate_sandbox_relative_path(remainder, &subject)?;
+                        Ok(Self::Folder(remainder.to_string()))
+                    }
+                    "folder_flat" => {
+                        validate_sandbox_relative_path(remainder, &subject)?;
+                        Ok(Self::FolderFlat(remainder.to_string()))
+                    }
                     "folder_regex" => Ok(Self::FolderRegex(remainder.to_string())),
                     "folder_flat_regex" => Ok(Self::FolderFlatRegex(remainder.to_string())),
                     _ => Err(format!("unknown capture token '{token}'")),
@@ -299,6 +309,51 @@ impl CaptureKind {
             | Self::FolderFlatRegex(value) => Some(value),
         }
     }
+}
+
+/// Validates that a sandbox-relative path stays inside the sandbox.
+///
+/// Refuses an empty path, an absolute path, a drive or UNC prefix, any `..`
+/// component, and a backslash separator. A leading `./` and a trailing `/`
+/// are ordinary spellings and stay accepted.
+///
+/// `subject` names the token or selector being validated and is included in
+/// the error so callers can report which input broke which rule.
+///
+/// # Errors
+///
+/// Returns an error naming `subject` and the broken rule when `path` is not a
+/// sandbox-relative path.
+pub(crate) fn validate_sandbox_relative_path(path: &str, subject: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err(format!("{subject} must not be an empty path"));
+    }
+    if path.contains('\\') {
+        return Err(format!("{subject} must not contain a backslash separator"));
+    }
+    if path.starts_with("//")
+        || path
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':' && path.as_bytes()[0].is_ascii_alphabetic())
+    {
+        return Err(format!("{subject} must not contain a drive or UNC prefix"));
+    }
+    if std::path::Path::new(path).is_absolute() {
+        return Err(format!("{subject} must not be an absolute path"));
+    }
+    for component in std::path::Path::new(path).components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err(format!("{subject} must not contain a '..' component"));
+            }
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                return Err(format!("{subject} must not be an absolute path"));
+            }
+            std::path::Component::CurDir | std::path::Component::Normal(_) => {}
+        }
+    }
+    Ok(())
 }
 
 impl std::fmt::Display for CaptureKind {
@@ -1057,18 +1112,32 @@ mod tests {
         type Strategy = proptest::strategy::BoxedStrategy<Self>;
 
         fn arbitrary_with((): ()) -> Self::Strategy {
-            use proptest::strategy::Strategy;
-            let nonempty = "[a-zA-Z0-9_./:-]{1,24}";
+            use proptest::prelude::*;
+            let regex_remainder = "[a-zA-Z0-9_./:-]{1,24}";
+            let path_segment = "[a-zA-Z0-9_-]{1,8}";
+            let safe_path = (
+                proptest::bool::ANY,
+                proptest::collection::vec(path_segment, 1..4),
+                proptest::bool::ANY,
+            )
+                .prop_map(|(leading_dot, segments, trailing_slash)| {
+                    let mut path = if leading_dot { "./".to_string() } else { String::new() };
+                    path.push_str(&segments.join("/"));
+                    if trailing_slash {
+                        path.push('/');
+                    }
+                    path
+                });
             prop_oneof![
                 Just(CaptureKind::Stdout),
                 Just(CaptureKind::Stderr),
                 Just(CaptureKind::ProcessCode),
-                nonempty.prop_map(CaptureKind::File),
-                nonempty.prop_map(CaptureKind::FileRegex),
-                nonempty.prop_map(CaptureKind::Folder),
-                nonempty.prop_map(CaptureKind::FolderFlat),
-                nonempty.prop_map(CaptureKind::FolderRegex),
-                nonempty.prop_map(CaptureKind::FolderFlatRegex),
+                safe_path.clone().prop_map(CaptureKind::File),
+                regex_remainder.prop_map(CaptureKind::FileRegex),
+                safe_path.clone().prop_map(CaptureKind::Folder),
+                safe_path.prop_map(CaptureKind::FolderFlat),
+                regex_remainder.prop_map(CaptureKind::FolderRegex),
+                regex_remainder.prop_map(CaptureKind::FolderFlatRegex),
             ]
             .boxed()
         }
@@ -1260,5 +1329,41 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("unknown capture token"), "{msg}");
         assert!(msg.contains("wat:thing"), "{msg}");
+    }
+
+    #[test]
+    fn capture_kind_refuses_escaping_paths_for_file_folder_and_folder_flat() {
+        let cases = [
+            ("/abs/path", "must not be an absolute path"),
+            ("..", "must not contain a '..' component"),
+            ("a/../b", "must not contain a '..' component"),
+            ("C:/drive", "must not contain a drive or UNC prefix"),
+            ("C:drive", "must not contain a drive or UNC prefix"),
+            ("back\\slash", "must not contain a backslash separator"),
+        ];
+        for (path, expected_rule) in cases {
+            for prefix in ["file", "folder", "folder_flat"] {
+                let token = format!("{prefix}:{path}");
+                let err = CaptureKind::parse_token(&token)
+                    .expect_err(&format!("token '{token}' must be refused"));
+                assert!(
+                    err.contains(&format!("capture token '{token}'")),
+                    "error must name token '{token}': {err}"
+                );
+                assert!(err.contains(expected_rule), "expected rule '{expected_rule}' in: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn capture_kind_accepts_nested_relative_paths_for_file_folder_and_folder_flat() {
+        for prefix in ["file", "folder", "folder_flat"] {
+            for path in ["nested/path/file.txt", "./nested/path", "nested/path/"] {
+                let token = format!("{prefix}:{path}");
+                let parsed = CaptureKind::parse_token(&token)
+                    .unwrap_or_else(|err| panic!("token '{token}' must be accepted: {err}"));
+                assert_eq!(parsed.remainder(), Some(path), "remainder for {token}");
+            }
+        }
     }
 }

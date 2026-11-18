@@ -1308,6 +1308,9 @@ async fn apply_file_selector<C: mediapm_cas::CasApi + Send + Sync>(
     path: &str,
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
+    crate::config::validate_sandbox_relative_path(path, &format!("':file' selector path '{path}'"))
+        .map_err(|msg| ConductorError::Workflow(format!("template: {msg}")))?;
+
     let sandbox = ctx.sandbox_dir.ok_or_else(|| {
         ConductorError::Workflow(
             "template: ':file' selector requires a sandbox directory".to_string(),
@@ -1338,6 +1341,12 @@ async fn apply_folder_selector<C: mediapm_cas::CasApi + Send + Sync>(
     path: &str,
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
+    crate::config::validate_sandbox_relative_path(
+        path,
+        &format!("':folder' selector path '{path}'"),
+    )
+    .map_err(|msg| ConductorError::Workflow(format!("template: {msg}")))?;
+
     let sandbox = ctx.sandbox_dir.ok_or_else(|| {
         ConductorError::Workflow(
             "template: ':folder' selector requires a sandbox directory".to_string(),
@@ -2557,6 +2566,118 @@ mod tests {
             external_data_hashes("${external_data.unclosed").len(),
             0,
             "an unclosed reference reads no external data"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_selector_refuses_escaping_paths_with_same_verdict_as_parser() {
+        let cases = [
+            ("/abs/path", "must not be an absolute path"),
+            ("..", "must not contain a '..' component"),
+            ("a/../b", "must not contain a '..' component"),
+            ("C:/drive", "must not contain a drive or UNC prefix"),
+            ("C:drive", "must not contain a drive or UNC prefix"),
+            ("back\\slash", "must not contain a backslash separator"),
+        ];
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::from([("x".to_string(), "payload".to_string())]);
+        let ctx = full_ctx_with_inputs(
+            None,
+            &step_outputs,
+            &env_vars,
+            &tokens,
+            Some(tmp.path()),
+            &inputs,
+            "linux",
+        );
+        for (path, expected_rule) in cases {
+            let template = format!("${{inputs.x:file({path})}}");
+            let err = resolve_template(&template, &ctx)
+                .await
+                .expect_err(&format!("template '{template}' must be refused"));
+            let msg = err.to_string();
+            assert!(msg.contains("':file' selector path"), "selector named in: {msg}");
+            assert!(msg.contains(expected_rule), "expected '{expected_rule}' in: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn folder_selector_refuses_escaping_paths_with_same_verdict_as_parser() {
+        let cases = [
+            ("/abs/path", "must not be an absolute path"),
+            ("..", "must not contain a '..' component"),
+            ("a/../b", "must not contain a '..' component"),
+            ("C:/drive", "must not contain a drive or UNC prefix"),
+            ("C:drive", "must not contain a drive or UNC prefix"),
+            ("back\\slash", "must not contain a backslash separator"),
+        ];
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::from([("x".to_string(), "not-a-zip".to_string())]);
+        let ctx = full_ctx_with_inputs(
+            None,
+            &step_outputs,
+            &env_vars,
+            &tokens,
+            Some(tmp.path()),
+            &inputs,
+            "linux",
+        );
+        for (path, expected_rule) in cases {
+            let template = format!("${{inputs.x:folder({path})}}");
+            let err = resolve_template(&template, &ctx)
+                .await
+                .expect_err(&format!("template '{template}' must be refused"));
+            let msg = err.to_string();
+            assert!(msg.contains("':folder' selector path"), "selector named in: {msg}");
+            assert!(msg.contains(expected_rule), "expected '{expected_rule}' in: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn file_and_folder_selectors_accept_nested_relative_paths() {
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let inputs = BTreeMap::from([("x".to_string(), "payload".to_string())]);
+        let ctx = full_ctx_with_inputs(
+            None,
+            &step_outputs,
+            &env_vars,
+            &tokens,
+            Some(tmp.path()),
+            &inputs,
+            "linux",
+        );
+
+        let file_result = resolve_template("${inputs.x:file(nested/dir/out.txt)}", &ctx)
+            .await
+            .expect("nested relative file path must be accepted");
+        assert_eq!(file_result, tmp.path().join("nested/dir/out.txt").to_string_lossy());
+        assert_eq!(
+            tokio::fs::read(tmp.path().join("nested/dir/out.txt"))
+                .await
+                .expect("read materialized file"),
+            b"payload"
+        );
+
+        let folder_err = resolve_template("${inputs.x:folder(nested/archive)}", &ctx)
+            .await
+            .expect_err("non-ZIP bytes must fail extraction after path validation");
+        let folder_msg = folder_err.to_string();
+        assert!(
+            !folder_msg.contains("must not"),
+            "nested relative folder path must pass sandbox validation: {folder_msg}"
+        );
+        assert!(
+            folder_msg.contains("ZIP") || folder_msg.contains("archive"),
+            "expected archive extraction failure, got: {folder_msg}"
         );
     }
 }
