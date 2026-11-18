@@ -537,22 +537,19 @@ fn base_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
     let mut outputs = base_yt_dlp_outputs();
 
+    // Subtitle, thumbnail, link, and chapter captures are variant-dependent:
+    // the effective family and (for subtitles) the language-scoped regex come
+    // from the resolved variant config. Each producing step declares its own
+    // capture, so the tool must not force a default capture that would override
+    // a step's resolved token at merge time. `allow_empty` defaults to the
+    // folder-family tolerance when a step omits an explicit declaration.
     for (output_name, path_regex) in [
         (OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS, YT_DLP_SUBTITLE_ARTIFACTS_REGEX),
         (OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS, YT_DLP_THUMBNAIL_ARTIFACTS_REGEX),
         (OUTPUT_YT_DLP_LINK_ARTIFACTS, YT_DLP_LINK_ARTIFACTS_REGEX),
         (OUTPUT_YT_DLP_CHAPTER_ARTIFACTS, YT_DLP_CHAPTER_ARTIFACTS_REGEX),
     ] {
-        outputs.insert(
-            output_name.to_string(),
-            OutputCaptureSpec {
-                name: output_name.to_string(),
-                capture: CaptureKind::parse_token(&format!("folder_regex:{path_regex}"))
-                    .expect("valid yt-dlp folder_regex capture token"),
-                save: SaveMode::True,
-                allow_empty: true,
-            },
-        );
+        let _ = (output_name, path_regex);
     }
 
     for (output_name, path_regex) in [
@@ -643,34 +640,17 @@ mod tests {
         assert!(inputs.contains_key(INPUT_LEADING_ARGS), "missing leading_args input");
     }
 
+    /// Variant-dependent families are declared by producing steps, not by the
+    /// tool defaults.
+    ///
+    /// Their capture token and family come from the resolved variant config
+    /// (including language scoping and `capture_kind`), so a tool-level default
+    /// would override a step's resolved capture at merge time and collapse
+    /// distinct variants onto one instance key.
     #[test]
-    fn build_yt_dlp_outputs_include_sidecar_captures() {
+    fn variant_dependent_family_captures_are_not_tool_level_defaults() {
         let outputs = build_yt_dlp_outputs();
         assert!(outputs.contains_key(OUTPUT_CONTENT), "missing content output");
-        assert!(
-            outputs.contains_key(OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS),
-            "missing subtitle artifacts"
-        );
-        assert!(
-            outputs.contains_key(OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS),
-            "missing thumbnail artifacts"
-        );
-        assert!(outputs.contains_key(OUTPUT_YT_DLP_LINK_ARTIFACTS), "missing link artifacts");
-        assert!(outputs.contains_key(OUTPUT_YT_DLP_CHAPTER_ARTIFACTS), "missing chapter artifacts");
-        assert!(outputs.contains_key(OUTPUT_YT_DLP_DESCRIPTION_FILE), "missing description output");
-        assert!(outputs.contains_key(OUTPUT_YT_DLP_INFOJSON_FILE), "missing infojson output");
-        assert!(outputs.contains_key(OUTPUT_YT_DLP_ARCHIVE_FILE), "missing archive output");
-    }
-
-    /// Each sidecar family default tolerates an empty match.
-    ///
-    /// These defaults are live: every yt-dlp step captures the whole set, and a
-    /// step that downloads only one family (links, say) writes nothing for the
-    /// others. A folder capture treats zero files as a failure, so without
-    /// tolerance one such step fails every other family's capture.
-    #[test]
-    fn sidecar_family_defaults_tolerate_an_empty_match() {
-        let outputs = build_yt_dlp_outputs();
         for name in [
             OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
             OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS,
@@ -678,10 +658,13 @@ mod tests {
             OUTPUT_YT_DLP_CHAPTER_ARTIFACTS,
         ] {
             assert!(
-                outputs[name].allow_empty,
-                "sidecar family default '{name}' must tolerate an invocation that writes none",
+                !outputs.contains_key(name),
+                "variant-dependent capture '{name}' must be declared by the producing step",
             );
         }
+        assert!(outputs.contains_key(OUTPUT_YT_DLP_DESCRIPTION_FILE), "missing description output");
+        assert!(outputs.contains_key(OUTPUT_YT_DLP_INFOJSON_FILE), "missing infojson output");
+        assert!(outputs.contains_key(OUTPUT_YT_DLP_ARCHIVE_FILE), "missing archive output");
     }
 
     #[test]
