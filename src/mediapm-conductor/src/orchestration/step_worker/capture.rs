@@ -1083,8 +1083,7 @@ mod tests {
         );
     }
 
-    /// An allowed-empty `file_regex` capture that matches nothing records a null مارس
-    /// hash and stores nothing in CAS.
+    /// An allowed-empty `file_regex` capture that matches nothing records a null hash and stores nothing in CAS.
     #[tokio::test]
     async fn allowed_empty_file_regex_records_null_and_stores_nothing() {
         let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");

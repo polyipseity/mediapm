@@ -548,4 +548,35 @@ mod tests {
         let err = decode_state_json(json).expect_err("aux must be rejected");
         assert!(err.to_string().contains("unknown") || err.to_string().contains("aux"), "{err}");
     }
+
+    /// A state document with no version marker is refused rather than decoded.
+    #[test]
+    fn a_missing_version_marker_is_refused() {
+        let err = peek_version_marker(br#"{"step_instances":{}}"#)
+            .expect_err("a missing marker must be refused");
+        assert!(
+            err.to_string().contains("missing or non-numeric 'version' field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A non-numeric version marker is refused rather than coerced.
+    #[test]
+    fn a_non_numeric_version_marker_is_refused() {
+        let err = peek_version_marker(br#"{"version":"6"}"#)
+            .expect_err("a non-numeric marker must be refused");
+        assert!(
+            err.to_string().contains("missing or non-numeric 'version' field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A version marker beyond the `u32` range is refused.
+    #[test]
+    fn a_version_marker_beyond_u32_is_refused() {
+        let marker = u64::from(u32::MAX) + 1;
+        let json = format!(r#"{{"version":{marker}}}"#);
+        let err = peek_version_marker(json.as_bytes()).expect_err("a marker beyond u32 must fail");
+        assert!(err.to_string().contains("exceeds u32 range"), "unexpected error: {err}");
+    }
 }

@@ -473,4 +473,42 @@ mod tests {
             "a refused document is never rewritten"
         );
     }
+
+    /// A state document whose version marker is not a numeric integer is
+    /// refused rather than coerced.
+    #[test]
+    fn a_state_document_with_a_non_numeric_version_marker_is_an_error() {
+        let non_numeric = json!({ "version": "5", "managed_files": {} });
+        let (_root, path) = state_file_with(non_numeric.to_string().as_bytes());
+
+        let error =
+            load_mediapm_state_document(&path).expect_err("a non-numeric marker must not load");
+        assert!(
+            error.to_string().contains("missing or invalid 'version' field"),
+            "the diagnostic must name the invalid marker: {error}"
+        );
+        let on_disk = std::fs::read(&path).expect("the file must still be there");
+        assert_eq!(
+            on_disk,
+            non_numeric.to_string().as_bytes(),
+            "a refused document is never rewritten"
+        );
+    }
+
+    /// A state document whose version marker exceeds the `u32` range is refused.
+    #[test]
+    fn a_state_document_with_a_version_marker_beyond_u32_is_an_error() {
+        let marker = u64::from(u32::MAX) + 1;
+        let beyond = json!({ "version": marker, "managed_files": {} });
+        let (_root, path) = state_file_with(beyond.to_string().as_bytes());
+
+        let error =
+            load_mediapm_state_document(&path).expect_err("a marker beyond u32 must not load");
+        assert!(
+            error.to_string().contains("exceeds u32 range"),
+            "the diagnostic must name the range refusal: {error}"
+        );
+        let on_disk = std::fs::read(&path).expect("the file must still be there");
+        assert_eq!(on_disk, beyond.to_string().as_bytes(), "a refused document is never rewritten");
+    }
 }

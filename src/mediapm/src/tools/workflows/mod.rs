@@ -213,6 +213,9 @@ pub(crate) fn resolve_selected_dependency_tool_id(
 /// follows that effective family: a folder capture tolerates nothing being
 /// captured, a file capture does not.
 ///
+/// When a step and its tool both declare a name, the step's `allow_empty` wins
+/// for that name at merge time.
+///
 /// # Errors
 ///
 /// Returns [`MediaPmError::ConfigValidation`] with code `MPM-E011` when a
@@ -1180,6 +1183,94 @@ mod tests {
         )
         .expect("generic folder override capture");
         assert_eq!(spec.capture.to_token(), "folder:output_content");
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// An explicit folder override on a folder-shaped subtitles kind keeps the
+    /// folder capture.
+    #[test]
+    fn generic_explicit_folder_override_on_subtitles_kind() {
+        let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = variant_to_output_capture_spec(
+            "subs",
+            "subs",
+            &OutputVariantValue::Generic(crate::config::GenericOutputVariantConfig {
+                kind: "subtitles".to_string(),
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::GenericOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        )
+        .expect("generic folder override subtitles capture");
+        assert_eq!(spec.capture.to_token(), "folder:subtitles");
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// An explicit folder override on a folder-shaped thumbnails kind keeps the
+    /// folder capture.
+    #[test]
+    fn generic_explicit_folder_override_on_thumbnails_kind() {
+        let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = variant_to_output_capture_spec(
+            "thumbs",
+            "thumbs",
+            &OutputVariantValue::Generic(crate::config::GenericOutputVariantConfig {
+                kind: "thumbnails".to_string(),
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::GenericOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        )
+        .expect("generic folder override thumbnails capture");
+        assert_eq!(spec.capture.to_token(), "folder:thumbnails");
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// An explicit folder override on a folder-shaped chapters kind keeps the
+    /// folder capture.
+    #[test]
+    fn generic_explicit_folder_override_on_chapters_kind() {
+        let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = variant_to_output_capture_spec(
+            "chapters",
+            "chapters",
+            &OutputVariantValue::Generic(crate::config::GenericOutputVariantConfig {
+                kind: "chapters".to_string(),
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::GenericOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        )
+        .expect("generic folder override chapters capture");
+        assert_eq!(spec.capture.to_token(), "folder:chapters");
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// An explicit folder override on a folder-shaped links kind keeps the
+    /// folder capture.
+    #[test]
+    fn generic_explicit_folder_override_on_links_kind() {
+        let context = AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = variant_to_output_capture_spec(
+            "links",
+            "links",
+            &OutputVariantValue::Generic(crate::config::GenericOutputVariantConfig {
+                kind: "links".to_string(),
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::GenericOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        )
+        .expect("generic folder override links capture");
+        assert_eq!(spec.capture.to_token(), "folder:links");
         assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
     }
 

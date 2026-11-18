@@ -53,12 +53,17 @@ use crate::error::MediaPmError;
 
 /// Extracts the numeric `version` field from a state JSON value.
 ///
-/// Returns `MediaPmError::Workflow` when the field is missing or not
-/// representable as `u64`.
+/// Returns `MediaPmError::Workflow` when the field is missing, not a numeric
+/// integer marker, or exceeds the `u32` range every state schema version fits
+/// in.
 fn extract_state_version_field(value: &Value) -> Result<u64, MediaPmError> {
-    value.get("version").and_then(serde_json::Value::as_u64).ok_or_else(|| {
+    let marker = value.get("version").and_then(serde_json::Value::as_u64).ok_or_else(|| {
         MediaPmError::Workflow("missing or invalid 'version' field in state JSON".to_string())
-    })
+    })?;
+    u32::try_from(marker).map_err(|_| {
+        MediaPmError::Workflow(format!("version marker {marker} exceeds u32 range"))
+    })?;
+    Ok(marker)
 }
 
 /// Decodes one state JSON [`Value`] into the runtime model, dispatching on the
@@ -216,6 +221,31 @@ mod tests {
     /// error rather than defaulting to a version.
     #[test]
     fn dispatch_rejects_missing_version_marker() {
-        assert!(from_json_value(json!({ "managed_files": {} })).is_err());
+        let err = from_json_value(json!({ "managed_files": {} }))
+            .expect_err("a missing marker must be refused");
+        assert!(
+            err.to_string().contains("missing or invalid 'version' field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A non-numeric version marker is refused rather than coerced.
+    #[test]
+    fn dispatch_rejects_non_numeric_version_marker() {
+        let err = from_json_value(json!({ "version": "5" }))
+            .expect_err("a non-numeric marker must be refused");
+        assert!(
+            err.to_string().contains("missing or invalid 'version' field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A version marker beyond the `u32` range is refused.
+    #[test]
+    fn dispatch_rejects_version_marker_beyond_u32() {
+        let marker = u64::from(u32::MAX) + 1;
+        let err = from_json_value(json!({ "version": marker }))
+            .expect_err("a marker beyond u32 must be refused");
+        assert!(err.to_string().contains("exceeds u32 range"), "unexpected error: {err}");
     }
 }

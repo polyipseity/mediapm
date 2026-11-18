@@ -841,18 +841,11 @@ mod tests {
     /// Changing `max_output_slots` changes the capture names a step records.
     ///
     /// One slot limit feeds [`build_ffmpeg_outputs`], so the same transcode
-    /// under two configurations records different name sets — and it is the
-    /// same work, which the recorded instance absorbs because it is addressed by
-    /// name.
-    ///
-    /// The key is deliberately not asserted here, which is why the name says
-    /// only what this test proves. It cannot fail: the derivation takes a tool
-    /// id and two hash lists, so no capture set is a parameter of it, and two
-    /// identical calls would restate the signature. The failable evidence that
-    /// declarations do not move the key lives where the two sides can actually
-    /// differ — `declared_captures_are_not_key_material` in the step worker
-    /// executes the same work under different declarations and compares the
-    /// resulting keys.
+    /// under two configurations records different name sets. In v8 the instance
+    /// key moves with the output specification — the output names and their
+    /// capture tokens — rather than with captured hashes, so the recorded key
+    /// differs with the slot count. `v8_moves_with_output_spec_and_not_with_captured_hash`
+    /// in `src/mediapm-conductor/src/instance_key.rs` pins that distinction.
     #[test]
     fn output_slots_change_capture_names() {
         let two_slots = build_ffmpeg_outputs(2);

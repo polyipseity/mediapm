@@ -891,6 +891,103 @@ mod tests {
         assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
     }
 
+    /// An explicit folder override on a folder-shaped subtitles kind keeps the
+    /// folder capture.
+    #[test]
+    fn yt_dlp_explicit_folder_override_on_subtitles_kind() {
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = crate::tools::workflows::variant_to_output_capture_spec(
+            OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
+            "subtitles",
+            &crate::config::OutputVariantValue::YtDlp(crate::config::YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Subtitles,
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::YtDlpOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        )
+        .expect("folder-override subtitles capture");
+        assert_eq!(
+            spec.capture.to_token(),
+            format!("folder_regex:{YT_DLP_SUBTITLE_ARTIFACTS_REGEX}")
+        );
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// An explicit folder override on a folder-shaped thumbnails kind keeps the
+    /// folder capture.
+    #[test]
+    fn yt_dlp_explicit_folder_override_on_thumbnails_kind() {
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = crate::tools::workflows::variant_to_output_capture_spec(
+            OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS,
+            "thumbnails",
+            &crate::config::OutputVariantValue::YtDlp(crate::config::YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Thumbnails,
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::YtDlpOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        )
+        .expect("folder-override thumbnails capture");
+        assert_eq!(
+            spec.capture.to_token(),
+            format!("folder_regex:{YT_DLP_THUMBNAIL_ARTIFACTS_REGEX}")
+        );
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// An explicit folder override on a folder-shaped chapters kind keeps the
+    /// folder capture.
+    #[test]
+    fn yt_dlp_explicit_folder_override_on_chapters_kind() {
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = crate::tools::workflows::variant_to_output_capture_spec(
+            OUTPUT_YT_DLP_CHAPTER_ARTIFACTS,
+            "chapters",
+            &crate::config::OutputVariantValue::YtDlp(crate::config::YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Chapters,
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::YtDlpOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        )
+        .expect("folder-override chapters capture");
+        assert_eq!(
+            spec.capture.to_token(),
+            format!("folder_regex:{YT_DLP_CHAPTER_ARTIFACTS_REGEX}")
+        );
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
+    /// An explicit folder override on a folder-shaped links kind keeps the
+    /// folder capture.
+    #[test]
+    fn yt_dlp_explicit_folder_override_on_links_kind() {
+        let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
+        let spec = crate::tools::workflows::variant_to_output_capture_spec(
+            OUTPUT_YT_DLP_LINK_ARTIFACTS,
+            "links",
+            &crate::config::OutputVariantValue::YtDlp(crate::config::YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Links,
+                capture_kind: Some(OutputCaptureKind::Folder),
+                ..crate::config::YtDlpOutputVariantConfig::default()
+            }),
+            0,
+            &context,
+            false,
+        )
+        .expect("folder-override links capture");
+        assert_eq!(spec.capture.to_token(), format!("folder_regex:{YT_DLP_LINK_ARTIFACTS_REGEX}"));
+        assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
+    }
+
     #[test]
     fn build_yt_dlp_spec_sets_impure_and_concurrency() {
         let content_map = BTreeMap::new();

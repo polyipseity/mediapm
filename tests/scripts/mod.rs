@@ -1221,6 +1221,11 @@ fn script_files_exist_and_are_executable() {
 /// collects symbol names from the repository and fails when a cited path's last
 /// segment cannot be resolved, so a renamed or deleted symbol is caught before it
 /// becomes a dead citation.
+///
+/// Last-segment resolution and lexical symbol collection are by design: the gate
+/// is a recurrence check that catches renamed or deleted symbols without
+/// coupling the citation format to crate-qualified module paths or requiring a
+/// full Rust parse.
 mod coverage_matrix {
     use std::collections::{BTreeSet, HashSet};
     use std::ffi::OsStr;
