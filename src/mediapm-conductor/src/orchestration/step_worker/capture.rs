@@ -183,7 +183,7 @@ async fn capture_folder_regex_output(
     regex: &regex::Regex,
     sandbox_dir: &Path,
     allow_empty: bool,
-    include_topmost_folder: bool,
+    include_topmost: bool,
 ) -> Result<CaptureResolution, ConductorError> {
     let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
     let mut entries: Vec<(String, String)> = file_paths
@@ -191,7 +191,7 @@ async fn capture_folder_regex_output(
         .filter_map(|path| sandbox_relative_path(path, sandbox_dir))
         .filter(|relative| regex.is_match(relative))
         .filter_map(|relative| {
-            let archive_name = if include_topmost_folder {
+            let archive_name = if include_topmost {
                 relative.clone()
             } else {
                 relative.split_once('/').map(|(_, rest)| rest.to_string()).unwrap_or_default()
@@ -218,11 +218,11 @@ async fn capture_folder_output(
     sandbox_dir: &Path,
     relative_path: &str,
     allow_empty: bool,
-    include_topmost_folder: bool,
+    include_topmost: bool,
 ) -> Result<CaptureResolution, ConductorError> {
     let full_path = sandbox_dir.join(relative_path);
     let file_paths = walk_and_collect_file_paths(&full_path).await?;
-    let mut entries: Vec<(String, String)> = if include_topmost_folder {
+    let mut entries: Vec<(String, String)> = if include_topmost {
         file_paths
             .iter()
             .filter_map(|p| sandbox_relative_path(p, sandbox_dir))
@@ -299,28 +299,23 @@ async fn resolve_capture_spec(
             })?;
             capture_file_regex_output(&regex, sandbox_dir, spec.allow_empty).await
         }
-        crate::config::CaptureKind::FolderRegex(pattern)
-        | crate::config::CaptureKind::FolderFlatRegex(pattern) => {
+        crate::config::CaptureKind::FolderRegex(pattern) => {
             let regex = regex::Regex::new(pattern).map_err(|e| {
                 ConductorError::Workflow(format!("invalid folder_regex pattern '{pattern}': {e}"))
             })?;
-            capture_folder_regex_output(
-                &regex,
-                sandbox_dir,
-                spec.allow_empty,
-                spec.capture.includes_topmost_folder(),
-            )
-            .await
+            capture_folder_regex_output(&regex, sandbox_dir, spec.allow_empty, true).await
         }
-        crate::config::CaptureKind::Folder(relative_path)
-        | crate::config::CaptureKind::FolderFlat(relative_path) => {
-            capture_folder_output(
-                sandbox_dir,
-                relative_path,
-                spec.allow_empty,
-                spec.capture.includes_topmost_folder(),
-            )
-            .await
+        crate::config::CaptureKind::FolderFlatRegex(pattern) => {
+            let regex = regex::Regex::new(pattern).map_err(|e| {
+                ConductorError::Workflow(format!("invalid folder_regex pattern '{pattern}': {e}"))
+            })?;
+            capture_folder_regex_output(&regex, sandbox_dir, spec.allow_empty, false).await
+        }
+        crate::config::CaptureKind::Folder(relative_path) => {
+            capture_folder_output(sandbox_dir, relative_path, spec.allow_empty, true).await
+        }
+        crate::config::CaptureKind::FolderFlat(relative_path) => {
+            capture_folder_output(sandbox_dir, relative_path, spec.allow_empty, false).await
         }
     }
 }
