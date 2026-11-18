@@ -843,7 +843,7 @@ mod tests {
 
         let step_spec = workflow.steps.first().expect("generated step");
         let primary = step_spec.outputs.get("primary").expect("primary output");
-        assert!(!primary.allow_empty, "a step that needs a video must keep primary strict",);
+        assert!(!primary.allow_empty, "a step that needs a video must keep primary strict");
     }
 
     /// An explicit file override forces a file capture for a folder-shaped kind.

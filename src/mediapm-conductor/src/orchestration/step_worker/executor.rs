@@ -1596,7 +1596,7 @@ mod tests {
 
         let sidecar =
             bundle.instance.outputs.get("sidecar").expect("the sidecar output must be recorded");
-        assert!(sidecar.hash_nk.is_some(), "the sidecar capture must record its hash",);
+        assert!(sidecar.hash_nk.is_some(), "the sidecar capture must record its hash");
         let content = bundle
             .instance
             .outputs
