@@ -467,6 +467,11 @@ fn build_yt_dlp_inputs() -> BTreeMap<String, ToolInputSpec> {
 }
 
 /// Builds the base yt-dlp output capture specs (content, streams, and sandbox).
+///
+/// The video defaults (`content` and `primary`) tolerate an empty match at the
+/// tool level: a step that skips the download inherits these names and produces
+/// no video. A step that needs a video restates `primary` and keeps its own
+/// strictness via the merge rules.
 fn base_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
     BTreeMap::from([
         (
@@ -478,7 +483,7 @@ fn base_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 ))
                 .expect("valid yt-dlp content capture token"),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
             },
         ),
         (
@@ -490,7 +495,7 @@ fn base_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 ))
                 .expect("valid yt-dlp content capture token"),
                 save: SaveMode::True,
-                allow_empty: false,
+                allow_empty: true,
             },
         ),
         (
@@ -541,8 +546,10 @@ fn base_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 /// These are live defaults: every yt-dlp step captures the whole set, under its
 /// own declarations for the names it binds. Which sidecar families an
 /// invocation writes depends on the URL and the options, so the folder-typed
-/// families tolerate an empty match — a step that downloads only links writes
-/// no subtitles, and that is a normal outcome rather than a failed step.
+/// families tolerate an empty match, and the video defaults (`content` and
+/// `primary`) do the same because a step that skips the download inherits these
+/// names and produces no video. A step that needs a video restates `primary`
+/// and keeps its own strictness via the merge rules.
 #[must_use]
 fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
     let mut outputs = base_yt_dlp_outputs();
@@ -796,6 +803,77 @@ mod tests {
         );
         assert_eq!(spec.capture.to_token(), format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"));
         assert!(!spec.allow_empty, "a file capture does not tolerate an empty match");
+    }
+
+    /// The tool-level video defaults tolerate an empty match.
+    ///
+    /// A step that skips the download inherits `content` and `primary` and
+    /// produces no video, so these defaults must not fail the capture; a step
+    /// that needs a video restates `primary` and keeps its own strictness.
+    #[test]
+    fn yt_dlp_video_defaults_tolerate_an_empty_match() {
+        let outputs = build_yt_dlp_outputs();
+        assert!(
+            outputs[OUTPUT_CONTENT].allow_empty,
+            "content default must tolerate a step that skips download",
+        );
+        assert!(
+            outputs["primary"].allow_empty,
+            "primary default must tolerate a step that skips download",
+        );
+    }
+
+    /// A generated primary video step keeps its `primary` capture strict.
+    ///
+    /// The tolerant tool-level default is overridden by the step's own
+    /// declaration for a name it binds, so a step that needs a video still
+    /// fails when the video is missing.
+    #[test]
+    fn the_primary_video_step_declares_a_strict_capture() {
+        use crate::config::output_types::ResolvedStepVariantFlow;
+        use crate::config::{
+            MediaStep, MediaStepTool, OutputVariantValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
+        };
+        use crate::tools::workflows::AutoSaveContext;
+        use mediapm_conductor::WorkflowSpec;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let mut workflow = WorkflowSpec::default();
+        let step = MediaStep {
+            tool: MediaStepTool::YtDlp,
+            input_variants: Vec::new(),
+            output_variants: BTreeMap::from([(
+                "downloaded".to_string(),
+                OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                    kind: YtDlpOutputKind::Primary,
+                    ..YtDlpOutputVariantConfig::default()
+                }),
+            )]),
+            options: BTreeMap::new(),
+        };
+        let mappings = vec![ResolvedStepVariantFlow {
+            input: "downloaded".to_string(),
+            output: "downloaded".to_string(),
+        }];
+        let mut variant_producers = BTreeMap::new();
+        let context = AutoSaveContext::new(BTreeSet::new(), Some(0));
+
+        synthesize_yt_dlp_step(
+            &mut workflow,
+            "media-a",
+            0,
+            &step,
+            &mappings,
+            "yt-dlp",
+            &BTreeMap::new(),
+            &mut variant_producers,
+            &context,
+        )
+        .expect("primary step synthesis");
+
+        let step_spec = workflow.steps.first().expect("generated step");
+        let primary = step_spec.outputs.get("primary").expect("primary output");
+        assert!(!primary.allow_empty, "a step that needs a video must keep primary strict",);
     }
 
     /// An explicit file override forces a file capture for a folder-shaped kind.
