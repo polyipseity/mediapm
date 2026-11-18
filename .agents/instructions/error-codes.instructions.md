@@ -22,6 +22,7 @@ Crate-prefixed error codes across the workspace. Format: `<CRATE-PREFIX>-<TYPE><
 | MPM-E008 | Conductor document error | Conductor document loading or validation failed | Check the conductor-generated NCL document |
 | MPM-E009 | Managed namespace conflict | User conductor document declares a tool key or workflow name in the mediapm-managed namespace | Remove or rename the conflicting entry; mediapm owns the managed namespace |
 | MPM-E010 | Unsaved materialized variant | A variant the hierarchy materializes is declared with `save = false` | Keep it (`save = "full"`, `true` or `"auto"`), or drop the hierarchy entry that selects it |
+| MPM-E011 | Invalid variant capture | A variant declaration cannot be captured as one coherent shape | Use `capture_kind: folder` for multi-file captures, or drop the conflicting field |
 
 ## CAS — mediapm-cas
 

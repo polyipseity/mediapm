@@ -181,7 +181,7 @@ pub(crate) fn synthesize_media_tagger_step(
                     step_index,
                     context,
                     step.tool.is_impure(),
-                ),
+                )?,
             )]),
             max_retries: 0,
         });
@@ -273,6 +273,11 @@ fn build_media_tagger_apply_inputs(
 /// container-override extension; the save mode derives from the step's
 /// output-variant configuration, resolved against the declared variant name the
 /// hierarchy selector matches rather than against the capture key.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] with code `MPM-E011` when the
+/// output variant declares a shape that cannot be one capture.
 fn build_media_tagger_apply_output(
     apply_output_name: &str,
     variant: &str,
@@ -280,24 +285,25 @@ fn build_media_tagger_apply_output(
     step_index: usize,
     context: &AutoSaveContext,
     step_impure: bool,
-) -> OutputCaptureSpec {
-    OutputCaptureSpec {
+) -> Result<OutputCaptureSpec, MediaPmError> {
+    let save = variant_to_output_capture_spec(
+        apply_output_name,
+        variant,
+        output_variant_value,
+        step_index,
+        context,
+        step_impure,
+    )?
+    .save;
+    Ok(OutputCaptureSpec {
         name: apply_output_name.to_string(),
         capture: CaptureKind::parse_token(&format!(
             "file_regex:{MEDIA_TAGGER_APPLY_OUTPUT_FILE_REGEX}"
         ))
         .expect("valid media-tagger apply capture token"),
-        save: variant_to_output_capture_spec(
-            apply_output_name,
-            variant,
-            output_variant_value,
-            step_index,
-            context,
-            step_impure,
-        )
-        .save,
+        save,
         allow_empty: false,
-    }
+    })
 }
 
 /// Resolves the selected ffmpeg tool id for one `media-tagger` step.

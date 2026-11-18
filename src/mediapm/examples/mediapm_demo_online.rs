@@ -1315,10 +1315,11 @@ fn configure_document_for_online_demo(
                     OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
                         kind: YtDlpOutputKind::Subtitles,
                         capture_kind: Some(OutputCaptureKind::File),
-                        // Keep yt-dlp language download selection authoritative in
-                        // step options (`options.sub_langs`); this variant-level
-                        // `langs` value only scopes capture/materialization so the
-                        // media root can project one selected subtitle.
+                        // yt-dlp language download selection stays in step options
+                        // (`options.sub_langs`). `langs` narrows this variant's subtitle
+                        // capture to English, and `capture_kind: file` captures that
+                        // selected subtitle as one file bound directly, with no synthesized
+                        // ZIP member.
                         langs: "en".to_string(),
                         // Materialized under `sidecars/` and at the media root.
                         save: OutputSaveConfig::Full,

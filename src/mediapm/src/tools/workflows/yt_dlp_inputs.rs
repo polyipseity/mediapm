@@ -14,9 +14,7 @@ use crate::conductor_bridge::constants::{
     OUTPUT_YT_DLP_LINK_ARTIFACTS, OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
     OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS,
 };
-use crate::config::{
-    MediaStepTool, OutputCaptureKind, OutputVariantValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
-};
+use crate::config::{MediaStepTool, OutputVariantValue, YtDlpOutputKind, YtDlpOutputVariantConfig};
 use crate::error::MediaPmError;
 
 use super::{FfmpegSlotLimits, OUTPUT_PRIMARY};
@@ -86,10 +84,13 @@ pub(crate) fn resolve_step_output_binding(
                 },
             }
         }
-        OutputVariantValue::YtDlp(config) => StepOutputBinding {
-            output_name: yt_dlp_output_name_for_kind(config.kind),
-            zip_member: yt_dlp_zip_member_for_variant(config),
-        },
+        OutputVariantValue::YtDlp(config) => {
+            let resolved = super::resolve_variant_capture(output_variant, config)?;
+            StepOutputBinding {
+                output_name: yt_dlp_output_name_for_kind(config.kind),
+                zip_member: resolved.zip_member,
+            }
+        }
     })
 }
 
@@ -139,23 +140,6 @@ fn yt_dlp_managed_js_runtimes_selector() -> String {
         ("windows".to_string(), "deps/deno/windows/deno.exe".to_string()),
     ]));
     format!("deno:{inner}")
-}
-
-/// Resolves optional ZIP-member selector for yt-dlp variant materialization.
-#[must_use]
-fn yt_dlp_zip_member_for_variant(config: &YtDlpOutputVariantConfig) -> Option<String> {
-    if !config.zip_member.is_empty() {
-        return Some(config.zip_member.clone());
-    }
-
-    if config.capture_kind == Some(OutputCaptureKind::File)
-        && matches!(config.kind, YtDlpOutputKind::Subtitles)
-        && !config.langs.is_empty()
-    {
-        return Some(format!(".{}.vtt", config.langs));
-    }
-
-    None
 }
 
 /// Logical output capture name for a yt-dlp output variant kind.

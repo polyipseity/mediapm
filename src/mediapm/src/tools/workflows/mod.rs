@@ -206,11 +206,17 @@ pub(crate) fn resolve_selected_dependency_tool_id(
 /// names (yt-dlp's `yt_dlp_subtitle_artifacts`, ffmpeg's `primary`), so the save
 /// policy is resolved against `variant`.
 ///
-/// The capture family follows the variant's `capture_kind` override when set
-/// and otherwise the kind's default, so `allow_empty` follows that effective
-/// family: a folder capture tolerates nothing being captured, a file capture
-/// does not. That coupling is intentional per the strictness model.
-#[must_use]
+/// The capture family and the materialization member are resolved together for
+/// yt-dlp variants so the step's capture token and the materializer's member
+/// cannot disagree. The capture family follows the variant's `capture_kind`
+/// override when set and otherwise the kind's default, so `allow_empty`
+/// follows that effective family: a folder capture tolerates nothing being
+/// captured, a file capture does not.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] with code `MPM-E011` when a
+/// yt-dlp variant declares a shape that cannot be one capture.
 pub(crate) fn variant_to_output_capture_spec(
     name: &str,
     variant: &str,
@@ -218,21 +224,176 @@ pub(crate) fn variant_to_output_capture_spec(
     step_index: usize,
     context: &AutoSaveContext,
     step_impure: bool,
-) -> OutputCaptureSpec {
+) -> Result<OutputCaptureSpec, MediaPmError> {
     let (capture, save) = match config {
         OutputVariantValue::Generic(g) => {
             generic_variant_capture_and_save(g, variant, step_index, context, step_impure)
         }
         OutputVariantValue::YtDlp(y) => {
-            yt_dlp::yt_dlp_variant_capture_and_save(y, variant, step_index, context, step_impure)
+            yt_dlp::yt_dlp_variant_capture_and_save(y, variant, step_index, context, step_impure)?
         }
     };
-    OutputCaptureSpec {
+    Ok(OutputCaptureSpec {
         name: name.to_string(),
         allow_empty: capture.is_folder_family(),
         capture,
         save,
+    })
+}
+
+/// Subtitle file extensions yt-dlp may produce, in the order used by capture
+/// regexes.
+const YT_DLP_SUBTITLE_EXTENSIONS: &str = "ass|dfxp|json3|lrc|srt|srv1|srv2|srv3|ssa|ttml|vtt";
+
+/// Result of resolving one yt-dlp variant's capture shape.
+///
+/// The capture token and the materialization member come from one decision so a
+/// step's capture and the materializer's member cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedYtDlpVariantCapture {
+    /// Parsed capture selector for the step output.
+    pub capture: CaptureKind,
+    /// ZIP member to extract from a folder capture, or `None` for the whole
+    /// capture. This is the explicit `zip_member` only; it is never synthesized.
+    pub zip_member: Option<String>,
+}
+
+/// Returns the base yt-dlp capture regex for one output kind.
+///
+/// Subtitle variants that select languages use a scoped regex built by
+/// [`resolve_variant_capture`] instead of this base form.
+#[must_use]
+fn yt_dlp_base_capture_regex(kind: crate::config::YtDlpOutputKind) -> &'static str {
+    match kind {
+        crate::config::YtDlpOutputKind::Primary => {
+            crate::tools::workflows::yt_dlp::YT_DLP_OUTPUT_CONTENT_REGEX
+        }
+        crate::config::YtDlpOutputKind::Subtitles => {
+            crate::tools::workflows::yt_dlp::YT_DLP_SUBTITLE_ARTIFACTS_REGEX
+        }
+        crate::config::YtDlpOutputKind::Thumbnails => {
+            crate::tools::workflows::yt_dlp::YT_DLP_THUMBNAIL_ARTIFACTS_REGEX
+        }
+        crate::config::YtDlpOutputKind::Chapters => {
+            crate::tools::workflows::yt_dlp::YT_DLP_CHAPTER_ARTIFACTS_REGEX
+        }
+        crate::config::YtDlpOutputKind::Description => {
+            crate::tools::workflows::yt_dlp::YT_DLP_DESCRIPTION_OUTPUT_REGEX
+        }
+        crate::config::YtDlpOutputKind::Infojson | crate::config::YtDlpOutputKind::Comment => {
+            crate::tools::workflows::yt_dlp::YT_DLP_INFOJSON_OUTPUT_REGEX
+        }
+        crate::config::YtDlpOutputKind::Archive => {
+            crate::tools::workflows::yt_dlp::YT_DLP_ARCHIVE_OUTPUT_REGEX
+        }
+        crate::config::YtDlpOutputKind::Annotation => {
+            crate::tools::workflows::yt_dlp::YT_DLP_ANNOTATION_OUTPUT_REGEX
+        }
+        crate::config::YtDlpOutputKind::Links => {
+            crate::tools::workflows::yt_dlp::YT_DLP_LINK_ARTIFACTS_REGEX
+        }
     }
+}
+
+/// Builds the MPM-E011 error for a yt-dlp variant whose capture shape is
+/// contradictory.
+fn invalid_variant_capture_error(
+    variant: &str,
+    detail: impl Into<String>,
+    suggestion: impl Into<String>,
+) -> MediaPmError {
+    MediaPmError::ConfigValidation {
+        code: "MPM-E011",
+        context: format!("variant '{variant}'"),
+        detail: detail.into(),
+        suggestion: suggestion.into(),
+    }
+}
+
+/// Parses subtitle language tags from a `langs` string.
+///
+/// Tags are comma-separated and trimmed. An empty string yields no tags.
+fn parse_subtitle_lang_tags(langs: &str) -> Vec<String> {
+    langs.split(',').map(str::trim).filter(|tag| !tag.is_empty()).map(ToString::to_string).collect()
+}
+
+/// Resolves one yt-dlp variant's capture token and ZIP member.
+///
+/// The effective family is `capture_kind` when set and the kind's default
+/// otherwise. For a subtitles kind with a non-empty `langs`, the capture regex
+/// is scoped to the selected languages for both families. The member is the
+/// explicit `zip_member` or `None`; it is never synthesized.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] with code `MPM-E011` when the
+/// variant declares a file-family capture with a language list or `all`, a
+/// non-empty `zip_member` on a file-family capture, or `langs` on a
+/// non-subtitles variant.
+pub(crate) fn resolve_variant_capture(
+    variant: &str,
+    config: &crate::config::YtDlpOutputVariantConfig,
+) -> Result<ResolvedYtDlpVariantCapture, MediaPmError> {
+    use crate::config::output_types::default_yt_dlp_capture_kind_for_kind;
+    use crate::config::{OutputCaptureKind, YtDlpOutputKind};
+
+    let effective_kind =
+        config.capture_kind.unwrap_or_else(|| default_yt_dlp_capture_kind_for_kind(config.kind));
+    let langs = config.langs.trim();
+    let explicit_member =
+        if config.zip_member.trim().is_empty() { None } else { Some(config.zip_member.clone()) };
+
+    if !langs.is_empty() && !matches!(config.kind, YtDlpOutputKind::Subtitles) {
+        return Err(invalid_variant_capture_error(
+            variant,
+            "field 'langs' is set but this variant is not a subtitles variant",
+            "remove 'langs' or change the variant kind to 'subtitles'",
+        ));
+    }
+
+    if matches!(effective_kind, OutputCaptureKind::File) {
+        if explicit_member.is_some() {
+            return Err(invalid_variant_capture_error(
+                variant,
+                "field 'zip_member' is set but a file-family capture produces one file, not a folder to extract from",
+                "drop 'zip_member', or use 'capture_kind: folder'",
+            ));
+        }
+        if matches!(config.kind, YtDlpOutputKind::Subtitles) && !langs.is_empty() {
+            let tags = parse_subtitle_lang_tags(langs);
+            if langs == "all" || tags.len() != 1 {
+                return Err(invalid_variant_capture_error(
+                    variant,
+                    format!(
+                        "field 'langs' selects '{langs}' but a file-family capture can hold exactly one language"
+                    ),
+                    "select a single language, or use 'capture_kind: folder'",
+                ));
+            }
+        }
+    }
+
+    let regex = if matches!(config.kind, YtDlpOutputKind::Subtitles) && !langs.is_empty() {
+        let tags = parse_subtitle_lang_tags(langs);
+        let lang_pattern = tags.iter().map(|tag| regex::escape(tag)).collect::<Vec<_>>().join("|");
+        format!(
+            "^downloads/(.+?)(?:__mediapm__)?[.](?:{lang_pattern})[.]({YT_DLP_SUBTITLE_EXTENSIONS})$"
+        )
+    } else {
+        yt_dlp_base_capture_regex(config.kind).to_string()
+    };
+
+    let token = match effective_kind {
+        OutputCaptureKind::File => format!("file_regex:{regex}"),
+        OutputCaptureKind::Folder => format!("folder_regex:{regex}"),
+    };
+    let capture = CaptureKind::parse_token(&token).map_err(|error| {
+        MediaPmError::Workflow(format!(
+            "yt-dlp variant '{variant}' produced an invalid capture token '{token}': {error}"
+        ))
+    })?;
+
+    Ok(ResolvedYtDlpVariantCapture { capture, zip_member: explicit_member })
 }
 
 /// Builds the capture selector and save mode of one generic output variant.
@@ -954,7 +1115,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("generic subtitles capture");
         assert_eq!(spec.capture.to_token(), "folder:subtitles");
         assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
     }
@@ -973,7 +1135,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("generic primary capture");
         assert_eq!(spec.capture.to_token(), "file:output_content");
         assert!(!spec.allow_empty, "a file capture does not tolerate an empty match");
     }
@@ -993,7 +1156,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("generic file override capture");
         assert_eq!(spec.capture.to_token(), "file:subtitles");
         assert!(!spec.allow_empty, "a file capture does not tolerate an empty match");
     }
@@ -1013,7 +1177,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("generic folder override capture");
         assert_eq!(spec.capture.to_token(), "folder:output_content");
         assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
     }
@@ -1841,7 +2006,7 @@ mod tests {
     }
 
     #[test]
-    fn yt_dlp_subtitles_en_file_capture_sets_zip_member_suffix() {
+    fn yt_dlp_subtitles_en_file_capture_uses_no_synthesized_zip_member() {
         use crate::tools::workflows::variant_binding::resolve_media_variant_output_binding;
 
         let document = media_document(
@@ -1869,7 +2034,10 @@ mod tests {
         let binding = resolve_media_variant_output_binding(source, "subtitles_en")
             .expect("resolve binding")
             .expect("binding");
-        assert_eq!(binding.zip_member.as_deref(), Some(".en.vtt"));
+        assert!(
+            binding.zip_member.is_none(),
+            "a file capture binds the captured file directly, so no member is synthesized: {binding:?}"
+        );
     }
 
     #[test]
@@ -2406,7 +2574,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("generic file");
         assert!(
             matches!(file.capture, CaptureKind::File(_)),
             "generic file capture should parse as file"
@@ -2423,7 +2592,8 @@ mod tests {
             0,
             &context,
             true,
-        );
+        )
+        .expect("yt primary");
         assert!(
             matches!(yt_primary.0, CaptureKind::FileRegex(_)),
             "yt-dlp primary should parse as file_regex"
@@ -2439,7 +2609,8 @@ mod tests {
             0,
             &context,
             true,
-        );
+        )
+        .expect("yt subs");
         assert!(
             matches!(yt_subs.0, CaptureKind::FolderRegex(_)),
             "yt-dlp subtitles folder capture should parse as folder_regex (layout kept in token)"
@@ -2466,5 +2637,77 @@ mod tests {
             ),
             "folder_flat_regex must parse to the flat folder-regex kind"
         );
+    }
+
+    #[test]
+    fn demo_subtitles_en_shape_yields_scoped_token_without_member() {
+        use crate::config::{OutputCaptureKind, YtDlpOutputKind, YtDlpOutputVariantConfig};
+
+        let config = YtDlpOutputVariantConfig {
+            kind: YtDlpOutputKind::Subtitles,
+            capture_kind: Some(OutputCaptureKind::File),
+            langs: "en".to_string(),
+            ..YtDlpOutputVariantConfig::default()
+        };
+        let resolved = resolve_variant_capture("subtitles_en", &config).expect("resolve");
+
+        assert!(resolved.zip_member.is_none(), "file capture yields no member: {resolved:?}");
+        let token = resolved.capture.to_token();
+        assert!(token.contains("[.](?:en)[.]"), "token should scope to English: {token}");
+    }
+
+    #[test]
+    fn folder_subtitle_capture_narrows_languages_and_keeps_declared_member() {
+        use crate::config::{OutputCaptureKind, YtDlpOutputKind, YtDlpOutputVariantConfig};
+
+        let config = YtDlpOutputVariantConfig {
+            kind: YtDlpOutputKind::Subtitles,
+            capture_kind: Some(OutputCaptureKind::Folder),
+            langs: "en,de".to_string(),
+            zip_member: "track.en.vtt".to_string(),
+            ..YtDlpOutputVariantConfig::default()
+        };
+        let resolved = resolve_variant_capture("subtitles_multi", &config).expect("resolve");
+
+        assert_eq!(resolved.zip_member.as_deref(), Some("track.en.vtt"));
+        let token = resolved.capture.to_token();
+        assert!(
+            token.contains("(?:en|de)") && token.starts_with("folder_regex:"),
+            "folder capture should narrow to selected languages: {token}"
+        );
+    }
+
+    #[test]
+    fn file_subtitle_capture_refuses_language_list_all_and_member() {
+        use crate::config::{OutputCaptureKind, YtDlpOutputKind, YtDlpOutputVariantConfig};
+
+        for (langs, zip_member, label) in
+            [("en,de", "", "list"), ("all", "", "all"), ("en", "track.en.vtt", "member")]
+        {
+            let config = YtDlpOutputVariantConfig {
+                kind: YtDlpOutputKind::Subtitles,
+                capture_kind: Some(OutputCaptureKind::File),
+                langs: langs.to_string(),
+                zip_member: zip_member.to_string(),
+                ..YtDlpOutputVariantConfig::default()
+            };
+            let error = resolve_variant_capture("subtitles_en", &config)
+                .expect_err(&format!("{label} should be refused"));
+            assert_eq!(error.code(), "MPM-E011", "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn non_subtitle_variant_refuses_langs() {
+        use crate::config::{OutputCaptureKind, YtDlpOutputKind, YtDlpOutputVariantConfig};
+
+        let config = YtDlpOutputVariantConfig {
+            kind: YtDlpOutputKind::Description,
+            capture_kind: Some(OutputCaptureKind::File),
+            langs: "en".to_string(),
+            ..YtDlpOutputVariantConfig::default()
+        };
+        let error = resolve_variant_capture("description", &config).expect_err("langs refused");
+        assert_eq!(error.code(), "MPM-E011", "{error}");
     }
 }

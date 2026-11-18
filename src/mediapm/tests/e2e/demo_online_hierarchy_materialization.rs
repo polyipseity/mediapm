@@ -9,7 +9,9 @@ use crate::common::{make_zip, seed_cas, service_at, sync_library_with_test_termi
 use bytes::Bytes;
 use mediapm::{
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaMetadataValue,
-    MediaPmDocument, MediaSourceSpec, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
+    MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, OutputSaveConfig,
+    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, TransformInputValue,
+    YtDlpOutputKind, YtDlpOutputVariantConfig,
     demo_hierarchy_spec::{
         DEMO_LIBRARY_ROOT, DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID,
         ONLINE_DEMO_PLAYLIST, ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_tree_under,
@@ -524,7 +526,6 @@ async fn demo_online_hierarchy_materialization_matches_golden_tree()
                 variant_hashes: BTreeMap::from([
                     ("video_untagged".to_string(), video_hash.to_string()),
                     ("video".to_string(), video_hash.to_string()),
-                    ("subtitles_en".to_string(), subtitle_file_hash.to_string()),
                     ("description".to_string(), description_hash.to_string()),
                     ("infojson".to_string(), infojson_hash.to_string()),
                     ("archive".to_string(), archive_hash.to_string()),
@@ -532,7 +533,25 @@ async fn demo_online_hierarchy_materialization_matches_golden_tree()
                     ("thumbnails".to_string(), thumbnail_hash.to_string()),
                     ("links".to_string(), links_hash.to_string()),
                 ]),
-                steps: Vec::new(),
+                steps: vec![MediaStep {
+                    tool: MediaStepTool::Import,
+                    input_variants: Vec::new(),
+                    output_variants: BTreeMap::from([(
+                        "subtitles_en".to_string(),
+                        OutputVariantValue::YtDlp(YtDlpOutputVariantConfig {
+                            kind: YtDlpOutputKind::Subtitles,
+                            save: OutputSaveConfig::Full,
+                            ..Default::default()
+                        }),
+                    )]),
+                    options: BTreeMap::from([
+                        ("kind".to_string(), TransformInputValue::String("cas_hash".to_string())),
+                        (
+                            "hash".to_string(),
+                            TransformInputValue::String(subtitle_file_hash.to_string()),
+                        ),
+                    ]),
+                }],
             },
         )]),
         hierarchy: build_online_hierarchy(),

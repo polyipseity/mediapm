@@ -31,7 +31,6 @@ use super::{
     AutoSaveContext, FfmpegSlotLimits, VariantProducer, media_step_id, resolve_variant_save,
     step_option_input_bindings, variant_to_output_capture_spec,
 };
-use crate::config::output_types::{OutputCaptureKind, default_yt_dlp_capture_kind_for_kind};
 
 /// Synthesizes yt-dlp workflow steps from one media step definition.
 ///
@@ -124,7 +123,7 @@ pub(crate) fn synthesize_yt_dlp_step(
                 step_index,
                 context,
                 step.tool.is_impure(),
-            ),
+            )?,
         );
 
         let mut producers_for_step = vec![(
@@ -149,7 +148,7 @@ pub(crate) fn synthesize_yt_dlp_step(
                     step_index,
                     context,
                     step.tool.is_impure(),
-                ),
+                )?,
             );
             producers_for_step.push((
                 "archive".to_string(),
@@ -183,72 +182,56 @@ pub(crate) fn synthesize_yt_dlp_step(
 
 /// Builds workflow-step capture selectors for one yt-dlp output variant.
 ///
-/// The regex is selected by [`crate::config::YtDlpOutputKind`] and never
-/// rewritten; the capture family follows `config.capture_kind` when set and
-/// otherwise [`default_yt_dlp_capture_kind_for_kind`], producing a
-/// `file_regex:` or `folder_regex:` token from that same regex.
-#[must_use]
+/// The capture token and the materialization member come from one resolver so
+/// they cannot disagree: language selections scope the subtitle capture regex
+/// for both families, and a member exists only when declared.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::ConfigValidation`] with code `MPM-E011` when the
+/// variant declares a shape that cannot be one capture.
 pub(crate) fn yt_dlp_variant_capture_and_save(
     config: &crate::config::YtDlpOutputVariantConfig,
     variant: &str,
     step_index: usize,
     context: &AutoSaveContext,
     step_impure: bool,
-) -> (CaptureKind, mediapm_conductor::SaveMode) {
-    use crate::config::YtDlpOutputKind;
-
-    let regex = match config.kind {
-        YtDlpOutputKind::Primary => YT_DLP_OUTPUT_CONTENT_REGEX,
-        YtDlpOutputKind::Subtitles => YT_DLP_SUBTITLE_ARTIFACTS_REGEX,
-        YtDlpOutputKind::Thumbnails => YT_DLP_THUMBNAIL_ARTIFACTS_REGEX,
-        YtDlpOutputKind::Chapters => YT_DLP_CHAPTER_ARTIFACTS_REGEX,
-        YtDlpOutputKind::Description => YT_DLP_DESCRIPTION_OUTPUT_REGEX,
-        // yt-dlp stores comments in the info JSON rather than in a separate comment.* file.
-        YtDlpOutputKind::Infojson | YtDlpOutputKind::Comment => YT_DLP_INFOJSON_OUTPUT_REGEX,
-        YtDlpOutputKind::Archive => YT_DLP_ARCHIVE_OUTPUT_REGEX,
-        YtDlpOutputKind::Annotation => YT_DLP_ANNOTATION_OUTPUT_REGEX,
-        YtDlpOutputKind::Links => YT_DLP_LINK_ARTIFACTS_REGEX,
-    };
-    let effective_kind =
-        config.capture_kind.unwrap_or_else(|| default_yt_dlp_capture_kind_for_kind(config.kind));
-    let capture = match effective_kind {
-        OutputCaptureKind::File => format!("file_regex:{regex}"),
-        OutputCaptureKind::Folder => format!("folder_regex:{regex}"),
-    };
+) -> Result<(CaptureKind, mediapm_conductor::SaveMode), MediaPmError> {
+    let resolved = super::resolve_variant_capture(variant, config)?;
     let save = resolve_variant_save(config.save, variant, step_index, context, step_impure);
-    let capture = CaptureKind::parse_token(&capture)
-        .unwrap_or_else(|error| panic!("valid yt-dlp variant capture token '{capture}': {error}"));
-    (capture, save)
+    Ok((resolved.capture, save))
 }
 
 /// Sandbox directory where yt-dlp materializes downloaded output artifacts.
 const SANDBOX_DOWNLOADS_DIR: &str = "downloads";
 
 /// Regex for yt-dlp output content paths (media files).
-const YT_DLP_OUTPUT_CONTENT_REGEX: &str = "^downloads/.+(?:__mediapm__)?[.](?:3gp|aac|aiff?|alac|asf|avi|flac|m4a|m4v|mka|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|opus|wav|weba|webm|wma)$";
+pub(crate) const YT_DLP_OUTPUT_CONTENT_REGEX: &str = "^downloads/.+(?:__mediapm__)?[.](?:3gp|aac|aiff?|alac|asf|avi|flac|m4a|m4v|mka|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|opus|wav|weba|webm|wma)$";
 /// Regex for yt-dlp description output file paths.
-const YT_DLP_DESCRIPTION_OUTPUT_REGEX: &str = "^downloads/.+(?:__mediapm__)?[.]description$";
+pub(crate) const YT_DLP_DESCRIPTION_OUTPUT_REGEX: &str =
+    "^downloads/.+(?:__mediapm__)?[.]description$";
 /// Regex for yt-dlp info-json output file paths.
-const YT_DLP_INFOJSON_OUTPUT_REGEX: &str = "^downloads/.+(?:__mediapm__)?[.]info[.]json$";
+pub(crate) const YT_DLP_INFOJSON_OUTPUT_REGEX: &str =
+    "^downloads/.+(?:__mediapm__)?[.]info[.]json$";
 /// Regex for yt-dlp download archive file path.
-const YT_DLP_ARCHIVE_OUTPUT_REGEX: &str = "^downloads/archive[.]txt$";
+pub(crate) const YT_DLP_ARCHIVE_OUTPUT_REGEX: &str = "^downloads/archive[.]txt$";
 /// Regex for yt-dlp subtitle-family sidecar files.
-const YT_DLP_SUBTITLE_ARTIFACTS_REGEX: &str = "^downloads/(.+?)(?:__mediapm__)?((?:[.][^/.]+)?[.](?:ass|dfxp|json3|lrc|srt|srv1|srv2|srv3|ssa|ttml|vtt))$";
+pub(crate) const YT_DLP_SUBTITLE_ARTIFACTS_REGEX: &str = "^downloads/(.+?)(?:__mediapm__)?((?:[.][^/.]+)?[.](?:ass|dfxp|json3|lrc|srt|srv1|srv2|srv3|ssa|ttml|vtt))$";
 /// Regex for yt-dlp thumbnail sidecar files.
-const YT_DLP_THUMBNAIL_ARTIFACTS_REGEX: &str = "^downloads/(?:(.+?)__mediapm__((?:[.][0-9]+)?[.](?:avif|bmp|gif|jpe?g|png|webp))|(.+?)([.](?:avif|bmp|gif|jpe?g|png|webp)))$";
+pub(crate) const YT_DLP_THUMBNAIL_ARTIFACTS_REGEX: &str = "^downloads/(?:(.+?)__mediapm__((?:[.][0-9]+)?[.](?:avif|bmp|gif|jpe?g|png|webp))|(.+?)([.](?:avif|bmp|gif|jpe?g|png|webp)))$";
 /// Regex for yt-dlp annotation sidecar file output.
-const YT_DLP_ANNOTATION_OUTPUT_REGEX: &str =
+pub(crate) const YT_DLP_ANNOTATION_OUTPUT_REGEX: &str =
     "^downloads/.+(?:__mediapm__)?[.](?:annotation[.]xml|annotation)$";
 /// Regex for yt-dlp internet-shortcut sidecar files.
-const YT_DLP_LINK_ARTIFACTS_REGEX: &str =
+pub(crate) const YT_DLP_LINK_ARTIFACTS_REGEX: &str =
     "^downloads/(.+?)(?:__mediapm__)?([.](?:desktop|url|webloc))$";
 /// Regex for yt-dlp split-chapter media files.
-const YT_DLP_CHAPTER_ARTIFACTS_REGEX: &str = "^downloads/(?:(.+?)__mediapm__((?: - .+)?[.](?:3gp|aac|aiff?|alac|asf|avi|flac|m4a|m4v|mka|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|opus|wav|weba|webm|wma))|(.+?)((?: - .+)?[.](?:3gp|aac|aiff?|alac|asf|avi|flac|m4a|m4v|mka|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|opus|wav|weba|webm|wma)))$";
+pub(crate) const YT_DLP_CHAPTER_ARTIFACTS_REGEX: &str = "^downloads/(?:(.+?)__mediapm__((?: - .+)?[.](?:3gp|aac|aiff?|alac|asf|avi|flac|m4a|m4v|mka|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|opus|wav|weba|webm|wma))|(.+?)((?: - .+)?[.](?:3gp|aac|aiff?|alac|asf|avi|flac|m4a|m4v|mka|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|opus|wav|weba|webm|wma)))$";
 /// Regex for yt-dlp playlist-description file output.
-const YT_DLP_PLAYLIST_DESCRIPTION_OUTPUT_REGEX: &str =
+pub(crate) const YT_DLP_PLAYLIST_DESCRIPTION_OUTPUT_REGEX: &str =
     "^downloads/.+\\x5B[^/]+\\x5D[0-9]+(?:__mediapm__)?[.]description$";
 /// Regex for yt-dlp playlist-infojson file output.
-const YT_DLP_PLAYLIST_INFOJSON_OUTPUT_REGEX: &str =
+pub(crate) const YT_DLP_PLAYLIST_INFOJSON_OUTPUT_REGEX: &str =
     "^downloads/.+\\x5B[^/]+\\x5D[0-9]+(?:__mediapm__)?[.]info[.]json$";
 
 /// Static default values for yt-dlp inputs.
@@ -634,6 +617,7 @@ pub(crate) fn build_yt_dlp_spec(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::OutputCaptureKind;
 
     #[test]
     fn build_yt_dlp_command_includes_template_tokens() {
@@ -756,7 +740,8 @@ mod tests {
         };
         let context = super::AutoSaveContext::new(std::collections::BTreeSet::new(), None);
         let (capture, _save) =
-            yt_dlp_variant_capture_and_save(&config, "comment", 0, &context, false);
+            yt_dlp_variant_capture_and_save(&config, "comment", 0, &context, false)
+                .expect("comment variant capture");
         assert_eq!(
             capture.to_token(),
             format!("file_regex:{YT_DLP_INFOJSON_OUTPUT_REGEX}"),
@@ -778,7 +763,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("subtitles capture");
         assert_eq!(
             spec.capture.to_token(),
             format!("folder_regex:{YT_DLP_SUBTITLE_ARTIFACTS_REGEX}")
@@ -800,7 +786,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("primary capture");
         assert_eq!(spec.capture.to_token(), format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"));
         assert!(!spec.allow_empty, "a file capture does not tolerate an empty match");
     }
@@ -891,7 +878,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("file-override subtitles capture");
         assert_eq!(
             spec.capture.to_token(),
             format!("file_regex:{YT_DLP_SUBTITLE_ARTIFACTS_REGEX}")
@@ -914,7 +902,8 @@ mod tests {
             0,
             &context,
             false,
-        );
+        )
+        .expect("folder-override primary capture");
         assert_eq!(spec.capture.to_token(), format!("folder_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"));
         assert!(spec.allow_empty, "a folder capture tolerates nothing being captured");
     }
