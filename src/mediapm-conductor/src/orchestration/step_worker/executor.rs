@@ -1486,4 +1486,168 @@ mod tests {
             "inherited entries are still hashed, never stored literally",
         );
     }
+
+    /// Runs one executable step that writes `sidecar.txt` and no video file.
+    ///
+    /// The tool declares a tolerant `content` video `file_regex` and a strict
+    /// sidecar `file` capture. `step_outputs` controls which names the step
+    /// declares, so a caller can inherit the tool's tolerant `content` or restate
+    /// it with different tolerance.
+    async fn execute_sidecar_writer_step(
+        cas: &mediapm_cas::InMemoryCas,
+        step_outputs: BTreeMap<String, OutputCaptureSpec>,
+    ) -> Result<StepExecutionBundle, crate::error::ConductorError> {
+        let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let tool_id = "writer@v1";
+        let tool_defaults = BTreeMap::from([
+            (
+                "content".to_string(),
+                OutputCaptureSpec {
+                    name: "content".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("file_regex:^.*\\.mkv$")
+                        .expect("valid capture"),
+                    save: SaveMode::True,
+                    allow_empty: true,
+                },
+            ),
+            (
+                "sidecar".to_string(),
+                OutputCaptureSpec {
+                    name: "sidecar".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("file:sidecar.txt")
+                        .expect("valid capture"),
+                    save: SaveMode::True,
+                    allow_empty: false,
+                },
+            ),
+        ]);
+        let tool = UnifiedToolSpec {
+            name: "writer".to_string(),
+            version: None,
+            is_impure: false,
+            max_concurrent_calls: 0,
+            max_retries: 0,
+            inputs: BTreeMap::new(),
+            default_inputs: BTreeMap::new(),
+            command_parts: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf '%s' sidecar > sidecar.txt".to_string(),
+            ],
+            success_codes: vec![0],
+            execution_env_vars: BTreeMap::new(),
+            literal_env_vars: BTreeMap::new(),
+            outputs: tool_defaults,
+            tool_content_map: BTreeMap::new(),
+            payload_root: String::new(),
+            payload_staging: crate::config::PayloadStaging::Copy,
+            builtin_id: None,
+        };
+        let request = StepExecutionRequest {
+            unified: Arc::new(UnifiedNickelDocument {
+                tools: BTreeMap::from([(tool_id.to_string(), tool)]),
+                workflows: BTreeMap::new(),
+                tool_content_hashes: BTreeSet::new(),
+                external_data_policies: BTreeMap::new(),
+                runtime: crate::config::ConductorRuntimeConfig::default(),
+            }),
+            workflow_id: "test-workflow".to_string(),
+            step: WorkflowStepSpec {
+                id: "step-0-writer".to_string(),
+                tool: "writer".to_string(),
+                inputs: BTreeMap::new(),
+                outputs: step_outputs,
+                max_retries: 0,
+                depends_on: Vec::new(),
+            },
+            impure_timestamp: None,
+            state_snapshot: Arc::new(ConductorState::new_empty()),
+            outermost_config_dir: tmp.path().to_path_buf(),
+            conductor_tmp_dir: tmp.path().join("runtime"),
+            host_builtins: Arc::new(crate::tools::HostBuiltins::default()),
+            step_outputs: Arc::new(BTreeMap::new()),
+            required_output_names: BTreeSet::from(["sidecar".to_string()]),
+            force_rerun: false,
+        };
+        execute_step(cas, request).await
+    }
+
+    /// A step that declares only a sidecar inherits the tool's tolerant
+    /// `content` video `file_regex`, so a run that produces no video records an
+    /// allowed-empty `content` rather than failing the step.
+    #[tokio::test]
+    async fn a_sidecar_step_does_not_fail_on_an_inherited_video_capture() {
+        let cas = mediapm_cas::new_in_memory_cas();
+        let bundle = execute_sidecar_writer_step(
+            &cas,
+            BTreeMap::from([(
+                "sidecar".to_string(),
+                OutputCaptureSpec {
+                    name: "sidecar".to_string(),
+                    capture: crate::config::CaptureKind::parse_token("file:sidecar.txt")
+                        .expect("valid capture"),
+                    save: SaveMode::True,
+                    allow_empty: false,
+                },
+            )]),
+        )
+        .await
+        .expect("inheriting a tolerant content capture must not fail a sidecar-only step");
+
+        let sidecar =
+            bundle.instance.outputs.get("sidecar").expect("the sidecar output must be recorded");
+        assert!(sidecar.hash_nk.is_some(), "the sidecar capture must record its hash",);
+        let content = bundle
+            .instance
+            .outputs
+            .get("content")
+            .expect("the inherited content output must be recorded");
+        assert_eq!(
+            content.hash_nk, None,
+            "an inherited tolerant video capture with no match must record hash_nk: null",
+        );
+    }
+
+    /// A step that restates a tool-declared `content` capture may tighten its
+    /// tolerance, so a required video match still fails when nothing matches.
+    #[tokio::test]
+    async fn a_sidecar_step_redeclaring_content_without_tolerance_still_fails_when_nothing_matches()
+    {
+        let cas = mediapm_cas::new_in_memory_cas();
+        let result = execute_sidecar_writer_step(
+            &cas,
+            BTreeMap::from([
+                (
+                    "sidecar".to_string(),
+                    OutputCaptureSpec {
+                        name: "sidecar".to_string(),
+                        capture: crate::config::CaptureKind::parse_token("file:sidecar.txt")
+                            .expect("valid capture"),
+                        save: SaveMode::True,
+                        allow_empty: false,
+                    },
+                ),
+                (
+                    "content".to_string(),
+                    OutputCaptureSpec {
+                        name: "content".to_string(),
+                        capture: crate::config::CaptureKind::parse_token("file_regex:^.*\\.mkv$")
+                            .expect("valid capture"),
+                        save: SaveMode::True,
+                        allow_empty: false,
+                    },
+                ),
+            ]),
+        )
+        .await;
+
+        let error = result.expect_err(
+            "restating content with allow_empty: false must fail when no video matches",
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("allow_empty is false") || message.contains("matched nothing"),
+            "unexpected error when a restated strict content capture matches nothing: {message}",
+        );
+    }
 }
