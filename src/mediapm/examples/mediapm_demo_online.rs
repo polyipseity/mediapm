@@ -3259,11 +3259,20 @@ fn resolve_interpolated_demo_root(hierarchy_root: &Path) -> ExampleResult<PathBu
     }
 
     let expected_root = parent.join(expected_demo_media_root_name());
-    if expected_root.join("sidecars").join("info.json").is_file() {
+    let expected_info = expected_root.join("sidecars").join("info.json");
+    if expected_info.is_file() {
         return Ok(expected_root);
     }
+    if expected_root.is_dir() {
+        return Err(format!(
+            "canonical demo media root '{}' exists but is missing sidecar file '{}'",
+            expected_root.display(),
+            expected_info.display()
+        )
+        .into());
+    }
 
-    let mut candidates = fs::read_dir(&parent)?
+    let media_id_dirs = fs::read_dir(&parent)?
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
@@ -3272,23 +3281,63 @@ fn resolve_interpolated_demo_root(hierarchy_root: &Path) -> ExampleResult<PathBu
                 .and_then(|value| value.to_str())
                 .is_some_and(|name| name.contains(&format!("[{DEMO_MEDIA_ID}]")))
         })
-        .filter(|path| path.join("sidecars").join("info.json").is_file())
         .collect::<Vec<_>>();
 
-    if candidates.len() != 1 {
-        let observed_dirs = fs::read_dir(&parent)?
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .collect::<Vec<_>>();
+    let mut candidates = media_id_dirs
+        .iter()
+        .filter(|path| path.join("sidecars").join("info.json").is_file())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if candidates.len() == 1 {
+        return Ok(candidates.remove(0));
+    }
+
+    if candidates.is_empty() {
+        let mut details = Vec::new();
+        for path in &media_id_dirs {
+            let sidecars_dir = path.join("sidecars");
+            let info = sidecars_dir.join("info.json");
+            let mut missing = Vec::new();
+            if !sidecars_dir.is_dir() {
+                missing.push("sidecars/".to_string());
+            }
+            if !info.is_file() {
+                missing.push("sidecars/info.json".to_string());
+            }
+            if missing.is_empty() {
+                missing.push("sidecars/info.json".to_string());
+            }
+            details.push(format!(
+                "  - '{}': missing sidecar files: {}",
+                path.display(),
+                missing.join(", ")
+            ));
+        }
+        let detail_block = if details.is_empty() {
+            "  (no directories carried the media id)".to_string()
+        } else {
+            details.join("\n")
+        };
         return Err(format!(
-            "expected exactly one demo media root under '{}', observed {} (dirs: {observed_dirs:?})",
-            parent.display(),
-            candidates.len()
+            "no demo media root with sidecar file 'sidecars/info.json' found under '{}'; \
+             directories carrying media id '[{DEMO_MEDIA_ID}]' and their missing sidecar files:\n\
+             {detail_block}",
+            parent.display()
         )
         .into());
     }
 
-    Ok(candidates.remove(0))
+    let observed_dirs = fs::read_dir(&parent)?
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    Err(format!(
+        "expected exactly one demo media root under '{}', observed {} (dirs: {observed_dirs:?})",
+        parent.display(),
+        candidates.len()
+    )
+    .into())
 }
 
 /// Asserts the artifact is a Matroska container, which both the tagged and the untagged media are.
@@ -5836,5 +5885,32 @@ mod tests {
         )
         .expect_err("a file outside the link family must be rejected");
         assert!(error.to_string().contains("not a yt-dlp link"), "{error}");
+    }
+
+    /// A canonical media root that exists without its info sidecar must be diagnosed directly.
+    ///
+    /// The missing file and the directory that owns it are the two facts a caller needs to fix the
+    /// layout, so the error names both instead of collapsing the case into a generic zero-candidate
+    /// result.
+    #[test]
+    fn resolve_interpolated_demo_root_reports_canonical_dir_missing_info_json() {
+        let temp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let hierarchy_root = temp.path();
+        let parent = hierarchy_root.join(super::DEMO_LIBRARY_ROOT);
+        let canonical = parent.join(super::expected_demo_media_root_name());
+        let sidecars = canonical.join("sidecars");
+        std::fs::create_dir_all(&sidecars).expect("create canonical sidecars dir");
+
+        let error = super::resolve_interpolated_demo_root(hierarchy_root)
+            .expect_err("canonical directory without sidecars/info.json must be reported");
+        let message = error.to_string();
+        assert!(
+            message.contains(&canonical.display().to_string()),
+            "error must name the canonical directory: {message}"
+        );
+        assert!(
+            message.contains("sidecars/info.json"),
+            "error must name the missing sidecar file: {message}"
+        );
     }
 }
