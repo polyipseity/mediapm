@@ -43,6 +43,10 @@ Per-tool `build_<tool>_spec()` wraps presets to produce final `(ToolSpec, ToolRu
 
 A `file_regex:` capture matches the sandbox-relative path, so a staged input is anchored at `inputs/`.
 
+## Variant capture shape
+
+The current slice leaves variant capture with one resolver-owned shape. `capture_kind` overrides the variant kind's default capture family; when absent, the family comes from the kind's default. A file capture holds exactly one file and therefore one language. A language selection on subtitle-family variants scopes the capture token for both file and folder captures. A ZIP member binding exists only where the document declares one; nothing synthesizes a member for a file capture. Unrepresentable combinations (such as a file capture paired with multiple languages, `all`, or a declared ZIP member, or `langs` on a non-subtitle variant) are refused as `MPM-E011` invalid variant capture.
+
 ## Per-preset dependency type registry
 
 Each preset module with dependencies provides a `dependency_types()` function returning `BTreeMap<&'static str, DependencyTypes>`, mapping companion tool IDs to role flags (`SAME_STEP`, `CROSS_STEP`, or a `combine()` of both). No default role — every edge is classified explicitly. `known_dependency_type()` in `src/mediapm/src/tools/dependency.rs` resolves a dependency's role flags without user config.

@@ -155,7 +155,7 @@ For conductor executable `content_map` changes, cover both file and directory-ZI
 
 ### yt-dlp output-variant coverage
 
-For yt-dlp output-variant behavior changes, cover the object semantics of `kind` (default capture behavior and default capture family), optional `capture_kind` override (`"file"` or `"folder"`), honored over the kind's default capture family, optional `langs` capture filtering (subtitle-family artifacts only), and the ownership boundary where downloader language selection remains the responsibility of step `options.sub_langs` — output-variant `langs` is a capture-filter hint, not a downloader setting.
+For yt-dlp output-variant behavior changes, cover the object semantics of `kind` (default capture behavior and default capture family), optional `capture_kind` override (`"file"` or `"folder"`), honored over the kind's default capture family, optional `langs` on subtitle-family variants (scoping the capture token, and therefore the selected language for both file and folder captures), and the fact that `langs` is both a downloader setting and a capture filter. `yt_dlp_inputs.rs` writes `sub_langs` from it, so a step that narrows `langs` also narrows what yt-dlp downloads.
 
 ### Regex capture coverage
 
