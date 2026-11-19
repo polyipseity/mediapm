@@ -5,12 +5,13 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use musicbrainz_rs::client::MusicBrainzClient;
+use mediapm_conductor::http::client::shared_http_client;
 use musicbrainz_rs::entity::recording::Recording;
 use musicbrainz_rs::entity::release::Release;
-use musicbrainz_rs::prelude::*;
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use reqwest::Client;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use url::Url;
 
 use super::cover_art::MediaTaggerHttpCache;
 use super::util::{
@@ -31,38 +32,20 @@ pub(super) struct MusicBrainzPayload {
 /// the conductor's shared HTTP client reads (see `src/mediapm-conductor/src/http/client.rs`).
 const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_HTTP_TIMEOUT_SECONDS";
 
-/// How many times a single MusicBrainz request may be retried before the
-/// fetch fails for good.
-///
-/// `musicbrainz_rs`'s own default is ten retries with a `2n²`-second backoff
-/// — minutes of sleeping inside one tagging step. Two retries keep a blip
-/// recoverable and a 503 storm terminal.
-const MUSICBRAINZ_MAX_RETRIES: u32 = 2;
-
-/// How many times one recording+release pair is attempted.
-///
-/// A dropped upstream connection arrives as a `502` *response*, which
-/// `api_bindium`'s retry loop never sees: it retries a `503` status and
-/// transport errors, and hands every other status to the caller. So the retry
-/// that makes such a drop survivable has to sit here. The fetch deadline still
-/// cuts the whole sequence.
-pub const MUSICBRAINZ_FETCH_ATTEMPTS: u32 = 3;
-
-/// The base delay between two attempts of the pair fetch.
-///
-/// Grows linearly with the attempt number, so three attempts wait 250 ms and
-/// then 500 ms: enough to let a dropped connection recover, far short of the
-/// per-request timeout a stalled server would otherwise cost.
-const MUSICBRAINZ_FETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+/// How many attempts one recording or release fetch makes before failing.
+pub const MUSICBRAINZ_FETCH_ATTEMPTS: u32 = 6;
 
 /// The minimum interval between two `MusicBrainz` requests.
 ///
 /// The web service rate limits by interval rather than by burst, and its
 /// limiter answers `503` when callers ignore that. The spacing is enforced on
-/// this side because the dependency's own limiter sits behind a feature
-/// `musicbrainz_rs` does not expose. Spacing requests is cheaper than retrying
-/// them.
+/// this side because each paced slot corresponds to one API request issued by
+/// this transport. Spacing requests is cheaper than retrying them.
 const MUSICBRAINZ_MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Base delay for exponential retry backoff when no server `Retry-After` is
+/// provided.
+const MUSICBRAINZ_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 
 /// The next free request slot and the wait until it.
 ///
@@ -91,11 +74,6 @@ fn next_pacing_slot(
 /// racing: each takes the next slot and sleeps until it. The wait runs inside the
 /// fetch deadline, because one second of interval is small against the whole
 /// pair's budget; the retry loop's own backoff is bounded the same way.
-///
-/// One call to this reserves one slot for one API call, not one HTTP request:
-/// the dependency's own retry can issue a second request for the same call — it
-/// does so for a `503`, sleeping its own backoff or the server's `Retry-After`
-/// first — while a `502` is handed straight back and so is spaced by the caller.
 async fn pace_musicbrainz_request() {
     static LAST_SLOT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
     let wait = {
@@ -133,56 +111,65 @@ fn musicbrainz_timeout() -> Duration {
     parse_musicbrainz_timeout(std::env::var(REQUEST_TIMEOUT_ENV).ok().as_deref())
 }
 
-/// The user agent every request in this path carries.
-///
-/// MusicBrainz asks callers to identify themselves so it can reach a
-/// misbehaving client; `musicbrainz_rs`'s default names the library rather
-/// than the application making the call.
-fn musicbrainz_user_agent() -> String {
-    format!("mediapm/{} (+https://github.com/mediapm/mediapm)", env!("CARGO_PKG_VERSION"))
-}
-
 /// The outer wall-clock budget for one recording+release fetch pair.
 ///
-/// The per-request timeout bounds a single HTTP call, but `api_bindium`'s
-/// 503 handling sleeps until the server's `Retry-After` instant with no
-/// cap — a server-controlled wait no request-level timeout reaches.
-/// Wrapping the whole fetch in this deadline cuts that sleep without
-/// patching the dependency.
-///
-/// It bounds everything the pair costs: its requests, their pacing waits, the
-/// backoff between attempts, and the server's own `Retry-After` stalls, across
-/// `MUSICBRAINZ_FETCH_ATTEMPTS` attempts. 90 seconds sits above the worst
-/// legitimate run of those so a slow-but-working fetch still completes.
+/// The per-request timeout bounds a single HTTP call, but server-controlled
+/// `Retry-After` waits and retry backoff can span multiple calls. Wrapping the
+/// whole fetch in this deadline bounds pacing, per-entity retry/backoff
+/// (including clamped `Retry-After`), and requests for the whole
+/// recording+release pair.
 pub(super) const MUSICBRAINZ_FETCH_DEADLINE: Duration = Duration::from_secs(90);
 
-/// Build an agent that identifies this application and aborts a stalled
-/// request at `timeout`.
+/// Retry policy for one MusicBrainz entity fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MusicBrainzRetryPolicy {
+    /// Maximum number of attempts for one entity fetch.
+    pub(super) attempts: u32,
+    /// Upper bound for any retry delay, including a server `Retry-After`.
+    pub(super) max_delay: Duration,
+}
+
+impl MusicBrainzRetryPolicy {
+    /// Production policy: 6 attempts, 16s max delay.
+    pub(super) fn production() -> Self {
+        Self { attempts: MUSICBRAINZ_FETCH_ATTEMPTS, max_delay: Duration::from_secs(16) }
+    }
+}
+
+/// Retry delay for one failed attempt (1-indexed attempt number that just failed).
 ///
-/// The timeout is end-to-end — DNS through reading the response body — so a
-/// connection that accepts bytes and then goes quiet cannot hold a tagging
-/// step past its budget.
-fn bounded_agent(timeout: Duration) -> musicbrainz_rs::api_bindium::ureq::Agent {
-    let config = musicbrainz_rs::api_bindium::ureq::config::Config::builder()
-        .user_agent(musicbrainz_user_agent())
-        .timeout_global(Some(timeout))
-        .build();
-    musicbrainz_rs::api_bindium::ureq::Agent::new_with_config(config)
+/// `retry_after_secs` is the server's `Retry-After` value in whole seconds when
+/// present and parseable. When `retry_after_secs` is `Some`, delay is
+/// `min(retry_after, max_delay)`. Otherwise exponential backoff
+/// `250ms * 2^(attempt-1)` capped at `max_delay`, with up to 20% subtracted as
+/// jitter derived from `jitter_seed` (deterministic for a given seed).
+pub(super) fn retry_delay(
+    attempt: u32,
+    policy: MusicBrainzRetryPolicy,
+    retry_after_secs: Option<u64>,
+    jitter_seed: u64,
+) -> Duration {
+    if let Some(secs) = retry_after_secs {
+        return Duration::from_secs(secs).min(policy.max_delay);
+    }
+    let base =
+        MUSICBRAINZ_RETRY_BASE_DELAY.saturating_mul(2u32.saturating_pow(attempt.saturating_sub(1)));
+    let capped = base.min(policy.max_delay);
+    let jitter_pct = (jitter_seed % 21) as u32;
+    capped.saturating_sub(capped * jitter_pct / 100)
 }
 
 /// The host\[:port\] one configured endpoint URL resolves to.
 ///
-/// `musicbrainz_rs` appends `/ws/2` itself and always speaks plain HTTP, so
-/// only the host (and port, when the endpoint names one) is taken from the
-/// configured URL. Both the client builder and the cache-key builder call
-/// this, so the row a fetch writes is the row the next fetch with the same
-/// shape reads — they cannot parse the endpoint differently.
+/// The scheme is ignored by the cache-key builder, and both the URL builder and
+/// the cache-key builder call this, so the row a fetch writes is the row the
+/// next fetch with the same shape reads.
 ///
 /// An endpoint that does not parse, or that names no host, fails here — a
 /// tagging step pointed at a broken endpoint must surface that broken
 /// configuration instead of quietly fetching from somewhere else.
 fn musicbrainz_host_for_endpoint(endpoint: &str) -> anyhow::Result<String> {
-    let url = url::Url::parse(endpoint)
+    let url = Url::parse(endpoint)
         .with_context(|| format!("parsing MusicBrainz endpoint '{endpoint}'"))?;
     let host =
         url.host_str().with_context(|| format!("MusicBrainz endpoint '{endpoint}' has no host"))?;
@@ -190,26 +177,6 @@ fn musicbrainz_host_for_endpoint(endpoint: &str) -> anyhow::Result<String> {
         Some(port) => format!("{host}:{port}"),
         None => host.to_owned(),
     })
-}
-
-/// The bounded MusicBrainz client for one configured endpoint URL.
-///
-/// The default `https://musicbrainz.org/ws/2` therefore yields the same
-/// `musicbrainz.org` traffic as the crate's stock domain. The per-request
-/// timeout, retry cap, and user agent are set exactly as the module's other
-/// client construction: this is the fetch path's single client builder.
-fn musicbrainz_client_for_endpoint(endpoint: &str) -> anyhow::Result<MusicBrainzClient> {
-    let domain = musicbrainz_host_for_endpoint(endpoint)?;
-
-    Ok(MusicBrainzClient::builder()
-        .musicbrainz_domain(domain)
-        .api_client(
-            musicbrainz_rs::api_bindium::ApiClient::builder()
-                .agent(bounded_agent(musicbrainz_timeout()))
-                .max_retries(MUSICBRAINZ_MAX_RETRIES)
-                .build(),
-        )
-        .build())
 }
 
 /// Every input that changes what one MusicBrainz fetch asks for, bundled so
@@ -226,18 +193,17 @@ pub(super) struct MusicBrainzFetchShape {
     pub(super) write_all_tags: bool,
     /// Whether recording/release-group level relations were requested.
     pub(super) release_ars: bool,
-    /// MusicBrainz endpoint URL whose host\[:port\] selects the fetch domain.
+    /// MusicBrainz endpoint URL.
     pub(super) endpoint: String,
 }
 
 impl MusicBrainzFetchShape {
     /// The cache key for one recording/release pair under this fetch shape.
     ///
-    /// The scheme is deliberately absent: `musicbrainz_rs` speaks plain HTTP
-    /// whatever the configured scheme says, so `http://x` and `https://x`
-    /// produce identical traffic and share one row. The deadline and API
-    /// credentials are absent too — one is latency policy, the other must
-    /// never land in the on-disk index.
+    /// The scheme is deliberately absent: `http://x` and `https://x`
+    /// produce equivalent cached rows. The deadline and API credentials are
+    /// absent too — one is latency policy, the other must never land in the
+    /// on-disk index.
     pub(super) fn cache_key(
         &self,
         recording_mbid: &str,
@@ -254,39 +220,168 @@ impl MusicBrainzFetchShape {
     }
 }
 
-/// Fetches one recording and its release, with no retry of its own.
+/// Returns the normalized base URL for one configured endpoint.
 ///
-/// The caller owns the retry loop and the deadline, so this stays a single
-/// attempt whose error says which entity failed. Each request waits for its own
-/// pacing slot, so the interval spaces requests rather than pairs: a pair is two
-/// requests, and pacing the pair would let both leave inside one slot and double
-/// the rate the server publishes.
-async fn fetch_pair_once(
-    client: &MusicBrainzClient,
+/// A trailing slash is ensured so joining `recording/{id}` or `release/{id}`
+/// produces `{endpoint}/recording/{id}` regardless of whether the configured
+/// endpoint ended with a slash.
+fn normalized_endpoint_base(endpoint: &str) -> anyhow::Result<Url> {
+    let mut base = Url::parse(endpoint)
+        .with_context(|| format!("parsing MusicBrainz endpoint '{endpoint}'"))?;
+    if base.host_str().is_none() {
+        anyhow::bail!("MusicBrainz endpoint '{endpoint}' has no host");
+    }
+    if !base.path().ends_with('/') {
+        base.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("MusicBrainz endpoint '{endpoint}' cannot be a base URL"))?
+            .push("");
+    }
+    Ok(base)
+}
+
+/// Builds the entity fetch URL with `fmt=json` and the requested `inc` tokens.
+fn entity_url(base: &Url, entity: &str, mbid: &str, includes: &[&str]) -> anyhow::Result<Url> {
+    let mut url = base
+        .join(&format!("{entity}/{mbid}"))
+        .with_context(|| format!("building MusicBrainz {entity} URL for '{mbid}'"))?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("fmt", "json");
+        pairs.append_pair("inc", &includes.join(" "));
+    }
+    Ok(url)
+}
+
+/// Recording `inc` tokens for the requested fetch shape.
+fn recording_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
+    let mut includes = vec!["artists", "releases", "isrcs", "genres", "tags"];
+    if shape.write_all_tags {
+        includes.extend(["annotation", "work-level-rels"]);
+    }
+    includes
+}
+
+/// Release `inc` tokens for the requested fetch shape.
+fn release_includes(shape: &MusicBrainzFetchShape) -> Vec<&'static str> {
+    let mut includes = vec![
+        "artists",
+        "recordings",
+        "release-groups",
+        "media",
+        "labels",
+        "isrcs",
+        "genres",
+        "tags",
+    ];
+    if shape.write_all_tags {
+        includes.push("annotation");
+    }
+    if shape.write_all_tags || shape.release_ars {
+        includes.push("recording-level-rels");
+        includes.push("release-group-level-rels");
+    }
+    includes
+}
+
+/// Returns `Some(seconds)` when the response carries a whole-second `Retry-After`.
+fn retry_after_secs(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+/// Whether an HTTP status warrants a retry.
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 425 | 429) || status.is_server_error()
+}
+
+/// Fetches and deserializes one MusicBrainz entity with per-attempt pacing and
+/// the configured retry policy.
+async fn fetch_entity<T: DeserializeOwned>(
+    client: &Client,
+    url: &Url,
+    entity_label: &str,
+    policy: MusicBrainzRetryPolicy,
+    request_timeout: Duration,
+) -> anyhow::Result<T> {
+    let mut last_error: Option<anyhow::Error> = None;
+    for attempt in 1..=policy.attempts {
+        pace_musicbrainz_request().await;
+        let send_result = client.get(url.clone()).timeout(request_timeout).send().await;
+        match send_result {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    let bytes = response.bytes().await.with_context(|| {
+                        format!("reading MusicBrainz {entity_label} response body from '{url}'")
+                    })?;
+                    return serde_json::from_slice::<T>(&bytes).with_context(|| {
+                        format!("deserializing MusicBrainz {entity_label} response from '{url}'")
+                    });
+                }
+                if is_retryable_status(status) {
+                    let retry_after = retry_after_secs(&response);
+                    let error = anyhow::anyhow!(
+                        "MusicBrainz {entity_label} request to '{url}' returned retryable status {status}"
+                    );
+                    if attempt >= policy.attempts {
+                        return Err(error);
+                    }
+                    last_error = Some(error);
+                    let delay = retry_delay(attempt, policy, retry_after, attempt as u64);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return Err(anyhow::anyhow!(
+                    "MusicBrainz {entity_label} request to '{url}' returned status {status}"
+                ));
+            }
+            Err(error) => {
+                let wrapped = anyhow::Error::new(error)
+                    .context(format!("requesting MusicBrainz {entity_label} from '{url}'"));
+                if attempt >= policy.attempts {
+                    return Err(wrapped);
+                }
+                last_error = Some(wrapped);
+                let delay = retry_delay(attempt, policy, None, attempt as u64);
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        anyhow::anyhow!("MusicBrainz {entity_label} request to '{url}' failed without attempts")
+    }))
+}
+
+/// Fetches one recording and, when resolvable, its release.
+///
+/// Each entity fetch is paced and retried independently according to `policy`.
+async fn fetch_pair_with_policy(
+    client: &Client,
     shape: &MusicBrainzFetchShape,
     recording_mbid: &str,
     release_mbid: Option<&str>,
+    policy: MusicBrainzRetryPolicy,
 ) -> anyhow::Result<MusicBrainzPayload> {
-    let mut recording_fetch_base = Recording::fetch();
-    let mut recording_fetch = recording_fetch_base
-        .id(recording_mbid)
-        .with_artists()
-        .with_releases()
-        .with_isrcs()
-        .with_genres()
-        .with_tags();
+    let base = normalized_endpoint_base(&shape.endpoint)?;
+    let request_timeout = musicbrainz_timeout();
 
-    if shape.write_all_tags {
-        recording_fetch = recording_fetch.with_annotations().with_work_level_relations();
-    }
+    let recording_url = entity_url(&base, "recording", recording_mbid, &recording_includes(shape))?;
+    let recording: Recording = fetch_entity(
+        client,
+        &recording_url,
+        &format!("recording '{recording_mbid}'"),
+        policy,
+        request_timeout,
+    )
+    .await
+    .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
 
-    pace_musicbrainz_request().await;
-    let recording = recording_fetch
-        .execute_with_client_async(client)
-        .await
-        .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
-
-    let release_id = release_mbid.map(ToOwned::to_owned).or_else(|| {
+    let explicit_release =
+        release_mbid.map(str::trim).filter(|value| !value.is_empty()).map(ToOwned::to_owned);
+    let release_id = explicit_release.or_else(|| {
         recording
             .releases
             .as_ref()
@@ -295,33 +390,17 @@ async fn fetch_pair_once(
     });
 
     let release = if let Some(release_id) = release_id {
-        let mut release_fetch_base = Release::fetch();
-        let mut release_fetch = release_fetch_base
-            .id(&release_id)
-            .with_artists()
-            .with_recordings()
-            .with_release_groups()
-            .with_media()
-            .with_labels()
-            .with_isrcs()
-            .with_genres()
-            .with_tags();
-
-        if shape.write_all_tags {
-            release_fetch = release_fetch.with_annotations();
-        }
-        if shape.write_all_tags || shape.release_ars {
-            release_fetch =
-                release_fetch.with_recording_level_relations().with_release_group_level_relations();
-        }
-
-        Some({
-            pace_musicbrainz_request().await;
-            release_fetch
-                .execute_with_client_async(client)
-                .await
-                .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?
-        })
+        let release_url = entity_url(&base, "release", &release_id, &release_includes(shape))?;
+        let release: Release = fetch_entity(
+            client,
+            &release_url,
+            &format!("release '{release_id}'"),
+            policy,
+            request_timeout,
+        )
+        .await
+        .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?;
+        Some(release)
     } else {
         None
     };
@@ -329,17 +408,13 @@ async fn fetch_pair_once(
     Ok(MusicBrainzPayload { recording, release })
 }
 
-/// Fetches recording/release payloads through `musicbrainz_rs`, on a client
-/// built from `shape.endpoint` rather than the crate's unbounded global.
+/// Fetches recording/release payloads through the shared HTTP client.
 ///
-/// The whole recording+release fetch is bounded by `deadline`, which caps the
-/// server-controlled `Retry-After` sleep the per-request timeout cannot reach,
-/// and a pair that fails is attempted again up to `MUSICBRAINZ_FETCH_ATTEMPTS`
-/// times, because the most common failure on this path — a dropped connection —
-/// reaches the caller as a response that the dependency's own retry loop never
-/// examines. A fetch failure propagates once the attempts are spent: the caller
-/// decides what a failure means for the tagging step, and no stale cache row is
-/// served in its place.
+/// The whole recording+release fetch is bounded by `deadline`, which caps
+/// pacing, per-entity retry/backoff (including clamped `Retry-After`), and
+/// requests for the pair. A fetch failure propagates once the attempts are
+/// spent: the caller decides what a failure means for the tagging step, and no
+/// stale cache row is served in its place.
 pub(super) async fn fetch_musicbrainz_payloads(
     shape: &MusicBrainzFetchShape,
     recording_mbid: &str,
@@ -347,30 +422,48 @@ pub(super) async fn fetch_musicbrainz_payloads(
     deadline: Duration,
     cache: &MediaTaggerHttpCache,
 ) -> anyhow::Result<MusicBrainzPayload> {
-    let client = musicbrainz_client_for_endpoint(&shape.endpoint)?;
-    fetch_musicbrainz_payloads_on(&client, shape, recording_mbid, release_mbid, deadline, cache)
+    let client = shared_http_client()
+        .map_err(|error| anyhow::anyhow!("{error}"))
+        .context("acquiring shared HTTP client for MusicBrainz fetch")?;
+    fetch_musicbrainz_payloads_on(client, shape, recording_mbid, release_mbid, deadline, cache)
         .await
 }
 
-/// The fetch itself, against an explicit client: tests point it at a local
-/// wiremock server or a broken endpoint without touching production
-/// construction. The shape carries both the fetch inputs and the cache key,
-/// so a payload is only ever read from or written to the row of the exact
-/// shape that produced it. The endpoint string also rides the deadline
-/// error so a stalled fetch names where it stalled.
-///
-/// Every request waits for its own pacing slot and the whole pair runs inside
-/// the deadline, so the deadline is the total budget for one pair including the
-/// pacing waits and the retry backoff between attempts. The pacing bounds this
-/// path's requests; a `503` the dependency retries is spaced by its own backoff
-/// or by the server's `Retry-After` rather than by this loop.
-async fn fetch_musicbrainz_payloads_on(
-    client: &MusicBrainzClient,
+/// The fetch itself, against an explicit client and the production retry policy.
+pub(super) async fn fetch_musicbrainz_payloads_on(
+    client: &Client,
     shape: &MusicBrainzFetchShape,
     recording_mbid: &str,
     release_mbid: Option<&str>,
     deadline: Duration,
     cache: &MediaTaggerHttpCache,
+) -> anyhow::Result<MusicBrainzPayload> {
+    fetch_musicbrainz_payloads_on_with_policy(
+        client,
+        shape,
+        recording_mbid,
+        release_mbid,
+        deadline,
+        cache,
+        MusicBrainzRetryPolicy::production(),
+    )
+    .await
+}
+
+/// The fetch itself, against an explicit client and retry policy.
+///
+/// Tests point it at a local server and a tiny policy without touching
+/// production construction. The shape carries both the fetch inputs and the
+/// cache key, so a payload is only ever read from or written to the row of the
+/// exact shape that produced it.
+pub(super) async fn fetch_musicbrainz_payloads_on_with_policy(
+    client: &Client,
+    shape: &MusicBrainzFetchShape,
+    recording_mbid: &str,
+    release_mbid: Option<&str>,
+    deadline: Duration,
+    cache: &MediaTaggerHttpCache,
+    policy: MusicBrainzRetryPolicy,
 ) -> anyhow::Result<MusicBrainzPayload> {
     let cache_key = shape.cache_key(recording_mbid, release_mbid)?;
     let cached_payload = cache.read_musicbrainz_payload(&cache_key).await;
@@ -381,20 +474,7 @@ async fn fetch_musicbrainz_payloads_on(
     }
 
     let fetched_payload = tokio::time::timeout(deadline, async {
-        let mut attempt = 0;
-        loop {
-            match fetch_pair_once(client, shape, recording_mbid, release_mbid).await {
-                Ok(payload) => break Ok(payload),
-                Err(error) => {
-                    attempt += 1;
-                    if attempt >= MUSICBRAINZ_FETCH_ATTEMPTS {
-                        break Err(error);
-                    }
-                    tracing::warn!(attempt, "retrying a failed MusicBrainz fetch: {error:#}");
-                    tokio::time::sleep(MUSICBRAINZ_FETCH_RETRY_BASE_DELAY * attempt).await;
-                }
-            }
-        }
+        fetch_pair_with_policy(client, shape, recording_mbid, release_mbid, policy).await
     })
     .await
     .with_context(|| {
@@ -403,8 +483,7 @@ async fn fetch_musicbrainz_payloads_on(
              '{recording_mbid}' within {deadline:?}",
             shape.endpoint
         )
-    })?;
-    let fetched_payload = fetched_payload?;
+    })??;
 
     let _ = cache.write_musicbrainz_payload(&cache_key, &fetched_payload).await;
     Ok(fetched_payload)
@@ -574,446 +653,4 @@ pub(super) fn insert_tag_if_absent(tags: &mut BTreeMap<String, String>, key: &st
         return;
     }
     tags.entry(sanitize_metadata_key(key)).or_insert_with(|| truncate_metadata_value(value));
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::{Duration, Instant};
-
-    use super::*;
-
-    /// The request timeout parses from the documented env var with the
-    /// conductor's 30-second floor and this path's tighter default of 30,
-    /// so a stalled MusicBrainz response gives the tagging step's budget
-    /// back instead of holding it for half an hour.
-    #[test]
-    fn request_timeout_floors_at_thirty_seconds() {
-        assert_eq!(parse_musicbrainz_timeout(None), Duration::from_secs(30));
-        assert_eq!(parse_musicbrainz_timeout(Some("10")), Duration::from_secs(30));
-        assert_eq!(parse_musicbrainz_timeout(Some("not-a-number")), Duration::from_secs(30));
-        assert_eq!(parse_musicbrainz_timeout(Some("120")), Duration::from_mins(2));
-    }
-
-    /// The pacer spaces requests by the interval and never waits for a slot
-    /// that has already passed.
-    ///
-    /// The rule is pure, so it is pinned without a clock: the first request
-    /// waits for nothing, the next waits out the previous request's slot, and a
-    /// caller arriving after its slot has passed waits for nothing rather than
-    /// being pushed further into the future.
-    ///
-    /// The slot that caller reserves is asserted too, not only its wait: a slot
-    /// left in the past would let the next caller skip its interval, which is
-    /// the compression the clamp exists to prevent.
-    #[test]
-    fn the_pacer_spaces_requests_by_the_interval() {
-        let interval = Duration::from_secs(1);
-        let start = Instant::now();
-        let (first_slot, first_wait) = next_pacing_slot(None, start, interval);
-        assert_eq!(first_wait, Duration::ZERO);
-        let (second_slot, second_wait) = next_pacing_slot(Some(first_slot), start, interval);
-        assert_eq!(second_wait, interval);
-        let (third_slot, third_wait) =
-            next_pacing_slot(Some(second_slot), start + interval * 3, interval);
-        assert_eq!(third_wait, Duration::ZERO);
-        assert_eq!(
-            third_slot,
-            start + interval * 3,
-            "a caller past its slot takes the current instant, not the slot it missed",
-        );
-    }
-
-    /// The client the fetch path uses caps its retries and carries a request
-    /// timeout: the two settings whose absence let a 503 storm hold a tagging
-    /// step for minutes.
-    #[test]
-    fn musicbrainz_client_is_bounded() {
-        let client = musicbrainz_client_for_endpoint("https://musicbrainz.org/ws/2")
-            .expect("default endpoint");
-        assert_eq!(
-            client.api_client.max_retries, MUSICBRAINZ_MAX_RETRIES,
-            "a MusicBrainz request may not be retried more than the seam allows"
-        );
-        let global = client.api_client.agent.config().timeouts().global;
-        assert!(
-            global.is_some_and(|t| t >= Duration::from_secs(30)),
-            "every MusicBrainz request must carry an end-to-end timeout of at least the floor, got {global:?}"
-        );
-    }
-
-    /// The agent the seam builds aborts a slow response at its own timeout,
-    /// proved end to end against a local server that would otherwise hang
-    /// the request. The production client builds its agent through this same
-    /// constructor with the env-derived timeout.
-    #[tokio::test]
-    async fn the_bounded_agent_aborts_a_slow_response_at_its_timeout() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
-            .mount(&server)
-            .await;
-        let agent = bounded_agent(Duration::from_millis(250));
-        let started = Instant::now();
-        let result = agent.get(&format!("http://{}/probe", server.address())).call();
-        let elapsed = started.elapsed();
-        assert!(
-            result.is_err(),
-            "a 250 ms-bounded agent must not wait out a 5 s response: {result:?}"
-        );
-        assert!(
-            elapsed < Duration::from_secs(3),
-            "the abort must land at the agent's timeout, not the response's: {elapsed:?}"
-        );
-    }
-
-    /// A 503 storm stops at the retry cap instead of grinding.
-    ///
-    /// This is the behavior the task exists for: with the crate's default cap
-    /// of 10 the same storm costs ten attempts and up to ~570 seconds of
-    /// `2n²` backoff inside one tagging step. `api_bindium`'s `send_async`
-    /// loops `while self.tries < client.max_retries`, so the attempts a storm
-    /// costs equal the cap — here `MUSICBRAINZ_MAX_RETRIES` requests, then
-    /// `MaxRetriesExceeded`.
-    #[tokio::test]
-    async fn a_503_storm_stops_at_the_retry_cap() {
-        use std::sync::Arc;
-
-        use musicbrainz_rs::api_bindium::HTTPVerb;
-        use musicbrainz_rs::api_bindium::api_request::ApiRequest;
-        use musicbrainz_rs::api_bindium::parsers::text::TextParser;
-
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(wiremock::ResponseTemplate::new(503))
-            .mount(&server)
-            .await;
-
-        let client = musicbrainz_client_for_endpoint("https://musicbrainz.org/ws/2")
-            .expect("default endpoint");
-        let mut request: ApiRequest<TextParser> = ApiRequest::builder()
-            .uri(
-                format!("http://{}/ws/2/recording/test", server.address())
-                    .parse::<musicbrainz_rs::api_bindium::ureq::http::Uri>()
-                    .expect("locally built wiremock URI parses"),
-            )
-            .verb(HTTPVerb::Get)
-            .parser(Arc::new(TextParser))
-            .build();
-        let result = request.send_async(&client.api_client).await;
-        assert!(result.is_err(), "a capped 503 storm must fail, not hang");
-
-        let received = server.received_requests().await.expect("request recorder is enabled");
-        assert_eq!(
-            received.len(),
-            MUSICBRAINZ_MAX_RETRIES as usize,
-            "the storm may cost exactly the configured cap of attempts, not the crate's 10"
-        );
-    }
-
-    /// A failed fetch surfaces its error even when a stale cache row exists.
-    ///
-    /// This is the anti-silent-skip contract: the stale row used to be served
-    /// in place of the failure, so a tagging step could quietly write outdated
-    /// metadata while MusicBrainz was down. The endpoint points at a closed
-    /// local port, so the failure is instant and hermetic.
-    #[tokio::test]
-    async fn a_failed_fetch_with_only_stale_cache_is_an_error() {
-        use musicbrainz_rs::api_bindium::ApiClient;
-        use musicbrainz_rs::entity::recording::Recording;
-
-        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
-        let cache = super::super::cover_art::MediaTaggerHttpCache::new(
-            Some(root.path().to_path_buf()),
-            super::super::cover_art::CacheExpiryPolicy::from_seconds(1),
-        );
-        let recording: Recording = serde_json::from_str(
-            r#"{"id":"8f3471b5-7e6a-48da-86a9-c1c07a0f47ae","title":"cached"}"#,
-        )
-        .expect("minimal recording payload");
-        let payload = super::MusicBrainzPayload { recording, release: None };
-        let shape = super::MusicBrainzFetchShape {
-            write_all_tags: false,
-            release_ars: false,
-            endpoint: "http://127.0.0.1:1/ws/2".to_string(),
-        };
-        cache
-            .write_musicbrainz_payload(
-                &shape.cache_key("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae", None).expect("shape key"),
-                &payload,
-            )
-            .await
-            .expect("cache write");
-
-        // Let the row age past its one-second budget — measured in whole
-        // unix seconds, so this needs more than two seconds of wall clock —
-        // before the fetch is attempted.
-        tokio::time::sleep(Duration::from_millis(2500)).await;
-
-        // A closed local port: the connection fails instantly, and the
-        // client's cap of 1 admits a single try per attempt, so the pair fetch
-        // fails after its own attempts rather than on a server-controlled wait.
-        let broken = MusicBrainzClient::builder()
-            .musicbrainz_domain("127.0.0.1:1".to_string())
-            .api_client(
-                ApiClient::builder()
-                    .agent(bounded_agent(Duration::from_secs(30)))
-                    .max_retries(1)
-                    .build(),
-            )
-            .build();
-
-        let fetched = fetch_musicbrainz_payloads_on(
-            &broken,
-            &shape,
-            "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
-            None,
-            Duration::from_secs(30),
-            &cache,
-        )
-        .await;
-        let error = fetched.expect_err("a stale row must not stand in for a fetch failure");
-        assert!(
-            error.to_string().contains("fetching MusicBrainz recording"),
-            "the error must be the fetch failure itself, got: {error:#}"
-        );
-    }
-
-    /// The outer deadline cuts the server-controlled `Retry-After` sleep.
-    ///
-    /// `api_bindium` sleeps until the server's `Retry-After` instant with no
-    /// cap, so a 503 that asks for a one-hour retry would otherwise hold the
-    /// tagging step for an hour past the per-request timeout. The sleep is an
-    /// await point, so the fetch's own deadline preempts it.
-    #[tokio::test]
-    async fn a_retry_after_sleep_is_cut_by_the_fetch_deadline() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(wiremock::ResponseTemplate::new(503).insert_header("Retry-After", "3600"))
-            .mount(&server)
-            .await;
-
-        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
-        let cache = super::super::cover_art::MediaTaggerHttpCache::new(
-            Some(root.path().to_path_buf()),
-            super::super::cover_art::CacheExpiryPolicy::from_seconds(60),
-        );
-
-        let endpoint = format!("http://{}/ws/2", server.address());
-        let client = musicbrainz_client_for_endpoint(&endpoint).expect("local wiremock endpoint");
-        let shape = super::MusicBrainzFetchShape {
-            write_all_tags: false,
-            release_ars: false,
-            endpoint: endpoint.clone(),
-        };
-        let started = Instant::now();
-        let fetched = fetch_musicbrainz_payloads_on(
-            &client,
-            &shape,
-            "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
-            None,
-            Duration::from_secs(2),
-            &cache,
-        )
-        .await;
-        let elapsed = started.elapsed();
-
-        assert!(fetched.is_err(), "a Retry-After storm must fail, not sleep for an hour");
-        assert!(
-            elapsed < Duration::from_secs(10),
-            "the fetch deadline must cut the server-controlled sleep, took {elapsed:?}"
-        );
-        let error = fetched.expect_err("the deadline error is inspected below");
-        assert!(
-            format!("{error:#}").contains(&endpoint),
-            "the deadline error must name the endpoint that stalled, got: {error:#}"
-        );
-    }
-
-    /// The endpoint override extracts the domain the crate builds URLs from,
-    /// with an explicit port carried through when the endpoint names one.
-    #[test]
-    fn musicbrainz_client_for_endpoint_extracts_the_domain() {
-        let production = musicbrainz_client_for_endpoint("https://musicbrainz.org/ws/2")
-            .expect("production endpoint parses");
-        assert_eq!(
-            production.musicbrainz_domain, "musicbrainz.org",
-            "the default endpoint must keep today's production traffic"
-        );
-
-        let local = musicbrainz_client_for_endpoint("http://127.0.0.1:18080/ws/2")
-            .expect("local endpoint parses");
-        assert_eq!(
-            local.musicbrainz_domain, "127.0.0.1:18080",
-            "an explicit port must survive into the domain"
-        );
-    }
-
-    /// An endpoint that does not parse fails with the offending value in the
-    /// error instead of silently fetching from the default domain.
-    #[test]
-    fn musicbrainz_client_for_endpoint_rejects_an_unparseable_endpoint() {
-        let error = musicbrainz_client_for_endpoint("not a url")
-            .expect_err("an unparseable endpoint must not fall back to a default");
-        assert!(
-            format!("{error:#}").contains("not a url"),
-            "the error must name the endpoint, got: {error:#}"
-        );
-    }
-
-    /// A payload cached under one fetch shape is invisible to every other shape.
-    ///
-    /// `write_all_tags`, `release_ars`, and the endpoint all change what the
-    /// fetch asks MusicBrainz for, so each combination owns its own row.
-    /// The scheme is deliberately not part of the key: `musicbrainz_rs`
-    /// speaks plain HTTP whatever the endpoint says, so `http://x` and
-    /// `https://x` dial the same server and share one row.
-    #[tokio::test]
-    async fn payloads_cached_under_one_fetch_shape_are_invisible_to_other_shapes() {
-        use musicbrainz_rs::api_bindium::ApiClient;
-        use musicbrainz_rs::entity::recording::Recording;
-
-        const RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae";
-
-        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
-        let cache = super::super::cover_art::MediaTaggerHttpCache::new(
-            Some(root.path().to_path_buf()),
-            super::super::cover_art::CacheExpiryPolicy::from_seconds(60),
-        );
-
-        let base = MusicBrainzFetchShape {
-            write_all_tags: true,
-            release_ars: false,
-            endpoint: "http://127.0.0.1:18080/ws/2".to_string(),
-        };
-        let recording: Recording = serde_json::from_str(
-            r#"{"id":"8f3471b5-7e6a-48da-86a9-c1c07a0f47ae","title":"cached"}"#,
-        )
-        .expect("minimal recording payload");
-        let payload = MusicBrainzPayload { recording, release: None };
-        cache
-            .write_musicbrainz_payload(
-                &base.cache_key(RECORDING_MBID, None).expect("base key"),
-                &payload,
-            )
-            .await
-            .expect("seed shaped row");
-
-        // A client that fails on connection, so a cache miss surfaces as the
-        // fetch error rather than a real request.
-        let broken = MusicBrainzClient::builder()
-            .musicbrainz_domain("127.0.0.1:1".to_string())
-            .api_client(
-                ApiClient::builder()
-                    .agent(bounded_agent(Duration::from_secs(30)))
-                    .max_retries(1)
-                    .build(),
-            )
-            .build();
-
-        for (label, shape) in [
-            ("all_tags=false", MusicBrainzFetchShape { write_all_tags: false, ..base.clone() }),
-            ("ars=true", MusicBrainzFetchShape { release_ars: true, ..base.clone() }),
-            (
-                "other host",
-                MusicBrainzFetchShape {
-                    endpoint: "http://127.0.0.1:18081/ws/2".to_string(),
-                    ..base.clone()
-                },
-            ),
-        ] {
-            let fetched = fetch_musicbrainz_payloads_on(
-                &broken,
-                &shape,
-                RECORDING_MBID,
-                None,
-                Duration::from_secs(30),
-                &cache,
-            )
-            .await;
-            assert!(
-                fetched.is_err(),
-                "{label}: a differently-shaped fetch must not read the base shape's row"
-            );
-        }
-
-        let scheme_variant = MusicBrainzFetchShape {
-            endpoint: "https://127.0.0.1:18080/ws/2".to_string(),
-            ..base.clone()
-        };
-        let fetched = fetch_musicbrainz_payloads_on(
-            &broken,
-            &scheme_variant,
-            RECORDING_MBID,
-            None,
-            Duration::from_secs(30),
-            &cache,
-        )
-        .await
-        .expect("scheme-only endpoint variants must share one row");
-        assert_eq!(fetched.recording.title, "cached");
-    }
-
-    /// A row cached under the pre-shape key is invisible to a shaped fetch.
-    ///
-    /// Upgrade builds ship with rows written by the old key format; the
-    /// shaped fetch must miss them and refetch rather than silently serve a
-    /// payload whose fetch shape is unknown. The client fails on connection,
-    /// so a miss surfaces as the fetch error.
-    #[tokio::test]
-    async fn regression_a_pre_shape_cache_key_is_not_read_by_a_shaped_fetch() {
-        use musicbrainz_rs::api_bindium::ApiClient;
-        use musicbrainz_rs::entity::recording::Recording;
-
-        const RECORDING_MBID: &str = "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae";
-
-        let root = mediapm_utils::temp::cache_dir().expect("cache directory");
-        let cache = super::super::cover_art::MediaTaggerHttpCache::new(
-            Some(root.path().to_path_buf()),
-            super::super::cover_art::CacheExpiryPolicy::from_seconds(60),
-        );
-
-        let recording: Recording = serde_json::from_str(
-            r#"{"id":"8f3471b5-7e6a-48da-86a9-c1c07a0f47ae","title":"legacy"}"#,
-        )
-        .expect("minimal recording payload");
-        let payload = MusicBrainzPayload { recording, release: None };
-        cache
-            .write_json_payload(
-                "musicbrainz-payloads",
-                &format!("recording={RECORDING_MBID}|release="),
-                &payload,
-            )
-            .await
-            .expect("seed pre-shape row");
-
-        let broken = MusicBrainzClient::builder()
-            .musicbrainz_domain("127.0.0.1:1".to_string())
-            .api_client(
-                ApiClient::builder()
-                    .agent(bounded_agent(Duration::from_secs(30)))
-                    .max_retries(1)
-                    .build(),
-            )
-            .build();
-        let shape = MusicBrainzFetchShape {
-            write_all_tags: false,
-            release_ars: false,
-            endpoint: "http://127.0.0.1:1/ws/2".to_string(),
-        };
-
-        let fetched = fetch_musicbrainz_payloads_on(
-            &broken,
-            &shape,
-            RECORDING_MBID,
-            None,
-            Duration::from_secs(30),
-            &cache,
-        )
-        .await;
-        let error = fetched.expect_err("the pre-shape key must not satisfy a shaped fetch");
-        assert!(
-            error.to_string().contains("fetching MusicBrainz recording"),
-            "the error must be the fetch failure itself, got: {error:#}"
-        );
-    }
 }

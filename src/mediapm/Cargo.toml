@@ -64,10 +64,7 @@ mediapm-utils = { workspace = true, features = ["nickel", "progress", "report"] 
 mediapm-conductor = { path = "../mediapm-conductor", default-features = false, features = [
   "tool-presets",
 ] }
-musicbrainz_rs = { workspace = true, features = [
-  "async",
-  "rustls",
-], optional = true }
+musicbrainz_rs = { workspace = true, optional = true }
 nickel-lang-core.workspace = true
 parking_lot.workspace = true
 regex.workspace = true

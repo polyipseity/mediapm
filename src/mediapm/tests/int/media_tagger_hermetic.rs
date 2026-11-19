@@ -7,6 +7,8 @@
 //! options — the same seam production uses — which is the reason these tests
 //! can pin the traffic to loopback.
 
+#![cfg(feature = "media-tagger")]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};

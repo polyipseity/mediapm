@@ -207,14 +207,18 @@ mod tests {
     /// that drift is a suite failure instead of a render surprise.
     #[test]
     fn shared_names_carry_identical_entries_across_tables() {
-        let mut tables: Vec<&[EnvVarEntry]> = vec![
-            mediapm_conductor::env_registry::env_registry(),
-            env_registry(),
-            mediapm_test_support::env_registry::env_registry(),
-            mediapm_conductor_cli::env_registry::env_registry(),
-        ];
-        #[cfg(feature = "cli")]
-        tables.push(mediapm_cli::env_registry::env_registry());
+        let tables = {
+            #[cfg_attr(not(feature = "cli"), allow(unused_mut))]
+            let mut tables: Vec<&[EnvVarEntry]> = vec![
+                mediapm_conductor::env_registry::env_registry(),
+                env_registry(),
+                mediapm_test_support::env_registry::env_registry(),
+                mediapm_conductor_cli::env_registry::env_registry(),
+            ];
+            #[cfg(feature = "cli")]
+            tables.push(mediapm_cli::env_registry::env_registry());
+            tables
+        };
         for (index, table) in tables.iter().enumerate() {
             for other in &tables[index + 1..] {
                 for entry in *table {
