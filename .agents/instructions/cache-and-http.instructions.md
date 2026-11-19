@@ -40,7 +40,7 @@ Configured once via `OnceLock`:
 | `mediapm-conductor` (async, unconditional) | 30s | 30 min | `mediapm/<version> (+<repository>)`, where `<repository>` comes from Cargo metadata (`CARGO_PKG_REPOSITORY`) |
 | `mediapm-conductor-builtins/import` (blocking, `fetch`) | 60s | 60s | `mediapm/<version> (+<repository>)`, where `<repository>` comes from Cargo metadata (`CARGO_PKG_REPOSITORY`) |
 
-Both override request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` (minimum 30s). The MusicBrainz client in the `media-tagger` builtin is a third reader of the same variable on its own path: minimum 30s, default 30s, and a mediapm-owned retry policy.
+Both override request timeout via `MEDIAPM_HTTP_TIMEOUT_SECONDS` (minimum 30s). The media-tagger MusicBrainz transport uses `mediapm_conductor::http::client::shared_http_client()` (shared UA/timeout/connect policy) and also reads `MEDIAPM_HTTP_TIMEOUT_SECONDS` for its per-request MusicBrainz timeout floor/default of 30s, with a mediapm-owned per-entity retry policy (6 attempts, 16s max retry delay, clamped `Retry-After`, exponential backoff with <=20% subtractive deterministic jitter) under a 90s pair deadline.
 
 ## Hard boundary rules
 

@@ -1,4 +1,19 @@
 //! MusicBrainz payload fetching and FFmetadata mapping helpers.
+//!
+//! Recording and release payloads are fetched over
+//! `mediapm_conductor::http::client::shared_http_client()` (shared User-Agent,
+//! timeout, and connect policy) by building ws/2 URLs with `url::Url` and
+//! deserializing responses into `musicbrainz_rs` entity serde types. Each
+//! entity fetch is paced (one request slot per paced attempt), retried by a
+//! mediapm-owned policy (production: 6 attempts, 16s max delay, clamped
+//! `Retry-After` seconds or exponential backoff `250ms * 2^(attempt-1)` capped
+//! with up to 20% subtractive deterministic jitter), and bounded by a 30s
+//! per-request timeout floor (`MEDIAPM_HTTP_TIMEOUT_SECONDS`) and a 90s outer
+//! recording+release deadline. Retryable outcomes are 408/425/429/5xx and
+//! transport errors; other 4xx, URI, and JSON parse failures fail fast. The
+//! endpoint scheme is honored end to end while the payload cache key remains
+//! host:port-based. Fresh cache hits short-circuit fetches; fetch failures are
+//! not masked by stale cache rows.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
