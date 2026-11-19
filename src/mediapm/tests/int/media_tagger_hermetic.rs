@@ -214,16 +214,19 @@ async fn a_recording_mbid_fetches_metadata_through_the_configured_endpoint() {
 /// A `MusicBrainz` server error fails the step loudly and names the endpoint,
 /// instead of shipping a silently empty result.
 ///
-/// The ws/2 paths answer a `503` storm, so the bounded client retries its cap
-/// and then surfaces the failure. With `strict_identification` enabled the step
-/// returns an error rather than quietly writing fallback metadata, and that
-/// error names the configured endpoint. The server uses a short `Retry-After`
-/// so the retry cycle stays fast; the production-shaped guard that cuts a
-/// server-supplied hour-long `Retry-After` at the outer fetch deadline is
-/// pinned at the unit level, where that deadline is injectable.
+/// The ws/2 paths answer a `503` storm, so the mediapm-owned per-entity retry
+/// exhausts [`MUSICBRAINZ_FETCH_ATTEMPTS`] on the first entity fetch (the
+/// recording) and then surfaces the failure. With `strict_identification`
+/// enabled the step returns an error rather than quietly writing fallback
+/// metadata, and that error names the configured endpoint. Because the
+/// recording never succeeds, the release entity is never fetched. The server
+/// uses a short `Retry-After` so the retry cycle stays fast; the
+/// production-shaped guard that cuts a server-supplied hour-long `Retry-After`
+/// at the outer fetch deadline is pinned at the unit level, where that deadline
+/// is injectable.
 ///
 /// The bound below is loose because this test pays for the pacing it shares with
-/// its siblings in this binary: three attempts of a retried `503`, each waiting
+/// its siblings in this binary: six attempts of a retried `503`, each waiting
 /// out a `Retry-After` and a one-second request slot. It still fails a step that
 /// honors a server-controlled stall instead of surfacing the failure.
 #[tokio::test]
@@ -255,9 +258,10 @@ async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
         "the error must name the failing MusicBrainz endpoint, got: {rendered}"
     );
     let received = musicbrainz.received_requests().await.expect("request recorder is enabled");
-    assert!(
-        !received.is_empty(),
-        "the 503 storm must have actually reached the local server; otherwise the error names the endpoint without the endpoint having answered"
+    assert_eq!(
+        received.len(),
+        MUSICBRAINZ_FETCH_ATTEMPTS as usize,
+        "the recording entity must be retried to exhaustion before the step fails, so the release is never fetched",
     );
     assert!(
         elapsed < Duration::from_mins(1),
@@ -268,15 +272,16 @@ async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
 /// A dropped connection is retried instead of failing the step.
 ///
 /// The proxy and the upstream both drop connections under load, and the failure
-/// arrives as a `502` *response* — which `api_bindium`'s retry loop never
-/// examines, because it retries only a `503` status and transport errors. One
-/// `502` followed by a good response must therefore succeed.
+/// arrives as a `502` *response*. The mediapm-owned per-entity retry treats
+/// retryable HTTP statuses, including `502`, as transient, so one `502`
+/// followed by a good response must therefore succeed.
 ///
 /// The expiring `502` mock carries priority 1, above the default 5, because
 /// wiremock scans its mocks in mounting order and breaks a priority tie by
 /// insertion: the recording mock mounted first would otherwise answer every
 /// request and the `502` would never be served. Once the mock has matched its
-/// one request it stops matching, so the retry reaches the recording mock.
+/// one request it stops matching, so the retry of the same recording entity
+/// reaches the recording mock and the release is then fetched once.
 #[tokio::test]
 async fn a_musicbrainz_502_is_retried() {
     let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
@@ -300,24 +305,26 @@ async fn a_musicbrainz_502_is_retried() {
     assert_eq!(
         received.len(),
         3,
-        "the 502 attempt plus the recording and its release: two would mean the 502 mock never matched",
+        "the 502 attempt plus the recording retry and its release fetch: two would mean the 502 mock never matched",
     );
 }
 
 /// A persistent `502` still fails, and is attempted the declared number of
 /// times.
 ///
-/// Retrying is bounded: the step surfaces the failure instead of looping, and
-/// the attempt count is what bounds it. One request per attempt is the other
-/// half of the contract — the dependency's own loop does not retry a `502`, so
-/// a count above the declared attempts would mean a retry nobody asked for.
+/// Retrying is bounded per entity: the mediapm-owned retry makes
+/// [`MUSICBRAINZ_FETCH_ATTEMPTS`] attempts for the failing recording entity and
+/// then surfaces the failure instead of looping, so the release is never
+/// fetched. One request per attempt is the other half of the contract. The
+/// server sends a short `Retry-After` so the bounded storm stays fast and
+/// deterministic.
 #[tokio::test]
 async fn a_persistent_musicbrainz_502_is_surfaced() {
     let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
     let musicbrainz = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path_regex("^/ws/2/"))
-        .respond_with(wiremock::ResponseTemplate::new(502))
+        .respond_with(wiremock::ResponseTemplate::new(502).insert_header("Retry-After", "1"))
         .mount(&musicbrainz)
         .await;
 
@@ -406,6 +413,53 @@ async fn cover_art_is_discovered_and_downloaded_through_the_configured_archive_e
         .collect::<Vec<_>>();
     assert!(paths.contains(&format!("/release/{RELEASE_MBID}")));
     assert!(paths.contains(&"/img/front.jpg".to_string()));
+}
+
+/// A non-retryable MusicBrainz 4xx fails fast without exhausting attempts.
+///
+/// The recording endpoint answers `404`, which the mediapm-owned retry policy
+/// treats as non-retryable. The step must fail on that first attempt rather than
+/// spending the full [`MUSICBRAINZ_FETCH_ATTEMPTS`] budget, so the release entity
+/// is never fetched and the failure surfaces quickly.
+#[tokio::test]
+async fn a_musicbrainz_4xx_fails_fast_without_exhausting_attempts() {
+    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let musicbrainz = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex("^/ws/2/"))
+        .respond_with(wiremock::ResponseTemplate::new(404))
+        .mount(&musicbrainz)
+        .await;
+
+    let endpoint = format!("{}/ws/2", musicbrainz.uri());
+    let options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
+
+    let started = Instant::now();
+    let error = run_internal_media_tagger(options)
+        .await
+        .expect_err("a non-retryable 4xx must fail the step in strict mode");
+    let elapsed = started.elapsed();
+
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("MusicBrainz"),
+        "the error should describe the MusicBrainz fetch failure, got: {rendered}"
+    );
+    let musicbrainz_address = musicbrainz.address().to_string();
+    assert!(
+        rendered.contains(musicbrainz_address.as_str()),
+        "the error must name the failing MusicBrainz endpoint, got: {rendered}"
+    );
+    let received = musicbrainz.received_requests().await.expect("request recorder is enabled");
+    assert_eq!(
+        received.len(),
+        1,
+        "a non-retryable 4xx must fail on the first attempt without exhausting retries or fetching the release",
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "a fast 4xx must not spend retry or pacing budget: {elapsed:?}"
+    );
 }
 
 /// A cover-art archive error is a loud hard failure, not a silent skip.
