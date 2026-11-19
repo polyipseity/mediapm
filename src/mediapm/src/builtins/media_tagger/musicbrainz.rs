@@ -654,3 +654,403 @@ pub(super) fn insert_tag_if_absent(tags: &mut BTreeMap<String, String>, key: &st
     }
     tags.entry(sanitize_metadata_key(key)).or_insert_with(|| truncate_metadata_value(value));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::media_tagger::cover_art::{CacheExpiryPolicy, MediaTaggerHttpCache};
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn temp_cache() -> (tempfile::TempDir, MediaTaggerHttpCache) {
+        let dir = tempfile::tempdir().expect("temp cache dir");
+        let cache = MediaTaggerHttpCache::new(
+            Some(dir.path().to_path_buf()),
+            CacheExpiryPolicy::from_seconds(60),
+        );
+        (dir, cache)
+    }
+
+    fn recording_mbid() -> &'static str {
+        "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae"
+    }
+
+    fn test_shape(endpoint: &str) -> MusicBrainzFetchShape {
+        MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: endpoint.to_string(),
+        }
+    }
+
+    #[test]
+    fn fetch_attempts_constant_is_six() {
+        assert_eq!(MUSICBRAINZ_FETCH_ATTEMPTS, 6);
+        assert_eq!(MusicBrainzRetryPolicy::production().attempts, 6);
+    }
+
+    #[test]
+    fn retry_delay_honors_retry_after_clamped_to_policy_max() {
+        let production = MusicBrainzRetryPolicy::production();
+        assert_eq!(retry_delay(1, production, Some(30), 0), Duration::from_secs(16));
+        assert_eq!(retry_delay(1, production, Some(16), 0), Duration::from_secs(16));
+        assert_eq!(retry_delay(1, production, Some(1), 0), Duration::from_secs(1));
+        assert_eq!(retry_delay(1, production, Some(0), 0), Duration::from_secs(0));
+
+        let tiny = MusicBrainzRetryPolicy { attempts: 6, max_delay: Duration::from_secs(1) };
+        assert_eq!(retry_delay(1, tiny, Some(30), 0), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn retry_delay_is_exponential_capped_and_deterministically_jittered() {
+        let policy = MusicBrainzRetryPolicy::production();
+        assert_eq!(retry_delay(1, policy, None, 0), Duration::from_millis(250));
+        assert_eq!(retry_delay(2, policy, None, 0), Duration::from_millis(500));
+        assert_eq!(retry_delay(3, policy, None, 0), Duration::from_millis(1000));
+        assert_eq!(retry_delay(4, policy, None, 0), Duration::from_millis(2000));
+        assert_eq!(retry_delay(5, policy, None, 0), Duration::from_millis(4000));
+        assert_eq!(retry_delay(6, policy, None, 0), Duration::from_millis(8000));
+        assert_eq!(retry_delay(20, policy, None, 0), Duration::from_secs(16));
+
+        for attempt in [1u32, 2, 3, 6, 20] {
+            let base = if attempt >= 20 {
+                Duration::from_secs(16)
+            } else {
+                MUSICBRAINZ_RETRY_BASE_DELAY
+                    .saturating_mul(2u32.saturating_pow(attempt.saturating_sub(1)))
+                    .min(policy.max_delay)
+            };
+            for seed in 0u64..64 {
+                let delay = retry_delay(attempt, policy, None, seed);
+                let min_delay = base.saturating_sub(base * 20 / 100);
+                assert!(
+                    delay <= base,
+                    "attempt={attempt} seed={seed} delay={delay:?} > base={base:?}"
+                );
+                assert!(
+                    delay >= min_delay,
+                    "attempt={attempt} seed={seed} delay={delay:?} < min={min_delay:?}"
+                );
+                assert_eq!(delay, retry_delay(attempt, policy, None, seed));
+            }
+            assert_eq!(retry_delay(attempt, policy, None, 21), base);
+            assert_eq!(retry_delay(attempt, policy, None, 20), base.saturating_sub(base / 5));
+        }
+    }
+
+    #[tokio::test]
+    async fn storm_503_fails_after_six_paced_attempts_with_bounded_retry_waits() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/recording/{}", recording_mbid())))
+            .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", "1"))
+            .expect(6)
+            .mount(&server)
+            .await;
+
+        let (_dir, cache) = temp_cache();
+        let client = reqwest::Client::builder().build().expect("client");
+        let shape = test_shape(&server.uri());
+        let policy = MusicBrainzRetryPolicy { attempts: 6, max_delay: Duration::from_secs(1) };
+
+        let started = Instant::now();
+        let result = fetch_musicbrainz_payloads_on_with_policy(
+            &client,
+            &shape,
+            recording_mbid(),
+            None,
+            Duration::from_secs(90),
+            &cache,
+            policy,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err(), "storm must fail after exhausting attempts: {result:?}");
+        let requests = server.received_requests().await.expect("recorded requests");
+        assert_eq!(requests.len(), 6, "expected 6 paced attempts, got {}", requests.len());
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "total retry wait must stay bounded by policy, elapsed={elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_401_and_404_fail_immediately_without_retry() {
+        for status in [401u16, 404] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/recording/{}", recording_mbid())))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let (_dir, cache) = temp_cache();
+            let client = reqwest::Client::builder().build().expect("client");
+            let shape = test_shape(&server.uri());
+            let started = Instant::now();
+            let result = fetch_musicbrainz_payloads_on_with_policy(
+                &client,
+                &shape,
+                recording_mbid(),
+                None,
+                Duration::from_secs(30),
+                &cache,
+                MusicBrainzRetryPolicy::production(),
+            )
+            .await;
+            let elapsed = started.elapsed();
+
+            assert!(result.is_err(), "status {status} must fail: {result:?}");
+            let requests = server.received_requests().await.expect("recorded requests");
+            assert_eq!(requests.len(), 1, "status {status} must not retry");
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "status {status} must fail immediately without retry sleeps, elapsed={elapsed:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retryable_429_and_5xx_retry_until_attempts_exhausted() {
+        for status in [429u16, 503] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/recording/{}", recording_mbid())))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(3)
+                .mount(&server)
+                .await;
+
+            let (_dir, cache) = temp_cache();
+            let client = reqwest::Client::builder().build().expect("client");
+            let shape = test_shape(&server.uri());
+            let policy =
+                MusicBrainzRetryPolicy { attempts: 3, max_delay: Duration::from_millis(1) };
+            let result = fetch_musicbrainz_payloads_on_with_policy(
+                &client,
+                &shape,
+                recording_mbid(),
+                None,
+                Duration::from_secs(30),
+                &cache,
+                policy,
+            )
+            .await;
+
+            assert!(
+                result.is_err(),
+                "retryable status {status} must fail after retries: {result:?}"
+            );
+            let requests = server.received_requests().await.expect("recorded requests");
+            assert_eq!(requests.len(), 3, "status {status} must retry");
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_failures_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepts_server = std::sync::Arc::clone(&accepts);
+        let server = tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((mut socket, _)) => {
+                        accepts_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let mut buf = [0u8; 1024];
+                        let _ =
+                            tokio::time::timeout(Duration::from_millis(200), socket.read(&mut buf))
+                                .await;
+                        drop(socket);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let endpoint = format!("http://127.0.0.1:{}", addr.port());
+        let url = entity_url(
+            &normalized_endpoint_base(&endpoint).expect("base"),
+            "recording",
+            recording_mbid(),
+            &["artists"],
+        )
+        .expect("entity url");
+        let client = reqwest::Client::builder().build().expect("client");
+        let policy = MusicBrainzRetryPolicy { attempts: 2, max_delay: Duration::from_millis(1) };
+
+        let result = fetch_entity::<serde_json::Value>(
+            &client,
+            &url,
+            "recording 'transport-test'",
+            policy,
+            Duration::from_secs(2),
+        )
+        .await;
+
+        server.abort();
+        let _ = server.await;
+
+        assert!(result.is_err(), "transport failure must fail after retries: {result:?}");
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(
+            message.contains("requesting MusicBrainz recording 'transport-test'"),
+            "error should describe the failed request, got: {message}"
+        );
+        assert_eq!(
+            accepts.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "transport failure must be retried (2 attempts observed)"
+        );
+    }
+
+    #[test]
+    fn request_url_honors_scheme_and_carries_expected_shape() {
+        let mbid = recording_mbid();
+        let shape = MusicBrainzFetchShape {
+            write_all_tags: true,
+            release_ars: false,
+            endpoint: "https://musicbrainz.example.test".to_string(),
+        };
+        let base = normalized_endpoint_base(&shape.endpoint).expect("base");
+        let url = entity_url(&base, "recording", mbid, &recording_includes(&shape)).expect("url");
+
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("musicbrainz.example.test"));
+        assert_eq!(url.path(), &format!("/recording/{mbid}"));
+        let pairs: Vec<(String, String)> =
+            url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        assert!(pairs.contains(&("fmt".to_string(), "json".to_string())));
+        let inc = pairs
+            .iter()
+            .find(|(k, _)| k == "inc")
+            .map(|(_, v)| v.as_str())
+            .expect("inc query param");
+        assert_eq!(inc, "artists releases isrcs genres tags annotation work-level-rels");
+
+        let http_shape = MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: "http://musicbrainz.example.test".to_string(),
+        };
+        let http_base = normalized_endpoint_base(&http_shape.endpoint).expect("http base");
+        let http_url = entity_url(&http_base, "recording", mbid, &recording_includes(&http_shape))
+            .expect("http url");
+        assert_eq!(http_url.scheme(), "http");
+    }
+
+    #[test]
+    fn cache_key_remains_host_port_and_ignores_scheme() {
+        let https_shape = MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: "https://musicbrainz.example.test:8443/base".to_string(),
+        };
+        let http_shape = MusicBrainzFetchShape {
+            write_all_tags: false,
+            release_ars: false,
+            endpoint: "http://musicbrainz.example.test:8443/base".to_string(),
+        };
+        let https_key = https_shape.cache_key(recording_mbid(), None).expect("https key");
+        let http_key = http_shape.cache_key(recording_mbid(), None).expect("http key");
+        assert_eq!(https_key, http_key, "scheme must not affect cache key");
+        assert!(
+            https_key.contains("endpoint=musicbrainz.example.test:8443"),
+            "cache key must keep host:port: {https_key}"
+        );
+        assert!(
+            !https_key.contains("https://") && !https_key.contains("http://"),
+            "cache key must not embed scheme: {https_key}"
+        );
+
+        assert_eq!(
+            musicbrainz_host_for_endpoint("https://mb.test:1234/path").expect("host"),
+            "mb.test:1234"
+        );
+        assert_eq!(musicbrainz_host_for_endpoint("http://mb.test/path").expect("host"), "mb.test");
+    }
+
+    #[test]
+    fn pacing_proof_reflects_one_second_interval_across_fetches() {
+        let interval = MUSICBRAINZ_MIN_REQUEST_INTERVAL;
+        assert_eq!(interval, Duration::from_secs(1));
+        let t0 = Instant::now();
+
+        let (slot1, wait1) = next_pacing_slot(None, t0, interval);
+        assert_eq!(slot1, t0);
+        assert_eq!(wait1, Duration::ZERO);
+
+        let (slot2, wait2) = next_pacing_slot(Some(slot1), t0, interval);
+        assert_eq!(slot2, t0 + interval);
+        assert_eq!(wait2, interval);
+
+        let (slot3, wait3) = next_pacing_slot(Some(slot2), t0 + interval, interval);
+        assert_eq!(slot3, t0 + interval + interval);
+        assert_eq!(wait3, interval);
+
+        let late_arrival = t0 + Duration::from_secs(5);
+        let (slot4, wait4) = next_pacing_slot(Some(slot3), late_arrival, interval);
+        assert_eq!(slot4, late_arrival);
+        assert_eq!(wait4, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn per_request_timeout_is_applied() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind stalling server");
+        let addr = listener.local_addr().expect("addr");
+        let accept_task = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let _ = socket.shutdown().await;
+                let _ = buf;
+            }
+        });
+
+        let endpoint = format!("http://127.0.0.1:{}", addr.port());
+        let url = entity_url(
+            &normalized_endpoint_base(&endpoint).expect("base"),
+            "recording",
+            recording_mbid(),
+            &["artists"],
+        )
+        .expect("entity url");
+        let client = reqwest::Client::builder().build().expect("client");
+        let policy = MusicBrainzRetryPolicy { attempts: 1, max_delay: Duration::from_millis(1) };
+
+        let started = Instant::now();
+        let result = fetch_entity::<serde_json::Value>(
+            &client,
+            &url,
+            "recording 'timeout-test'",
+            policy,
+            Duration::from_millis(100),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        accept_task.abort();
+        assert!(result.is_err(), "stalling server must hit request timeout: {result:?}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "request timeout must be applied (short), elapsed={elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn parse_musicbrainz_timeout_clamps_and_defaults() {
+        assert_eq!(parse_musicbrainz_timeout(None), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("")), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("  ")), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("not-a-number")), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("5")), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("30")), Duration::from_secs(30));
+        assert_eq!(parse_musicbrainz_timeout(Some("60")), Duration::from_secs(60));
+    }
+}
