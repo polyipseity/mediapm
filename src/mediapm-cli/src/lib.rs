@@ -55,10 +55,12 @@ mod defaults {
     pub const DEFAULT_CAA_IMAGE_SIZE: &str = "full";
     /// Whether only approved cover-art entries are used.
     pub const DEFAULT_CAA_APPROVED_ONLY: bool = false;
-    /// Whether existing embedded images are preserved.
-    pub const DEFAULT_PRESERVE_IMAGES: bool = false;
-    /// Whether existing textual tags are cleared first.
-    pub const DEFAULT_CLEAR_EXISTING_TAGS: bool = false;
+    /// Whether existing embedded images and attachments are preserved.
+    pub const DEFAULT_PRESERVE_EXISTING_IMAGES: bool = true;
+    /// Whether existing global tags the tagger does not overwrite are preserved.
+    pub const DEFAULT_PRESERVE_EXISTING_TAGS: bool = true;
+    /// Whether existing per-stream tags carried by the source media are preserved.
+    pub const DEFAULT_PRESERVE_EXISTING_STREAM_TAGS: bool = true;
     /// Whether tag writing is enabled.
     pub const DEFAULT_ENABLE_TAG_SAVING: bool = true;
     /// Whether release relationships are processed.
@@ -71,9 +73,10 @@ mod defaults {
 use defaults::{
     DEFAULT_ACOUSTID_ENDPOINT, DEFAULT_CA_PROVIDERS, DEFAULT_CAA_APPROVED_ONLY,
     DEFAULT_CAA_ENDPOINT, DEFAULT_CAA_IMAGE_SIZE, DEFAULT_CAA_IMAGE_TYPES,
-    DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_CLEAR_EXISTING_TAGS, DEFAULT_COVER_ART_SLOT_COUNT,
-    DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE, DEFAULT_ENABLE_TAG_SAVING, DEFAULT_MUSICBRAINZ_ENDPOINT,
-    DEFAULT_PRESERVE_IMAGES, DEFAULT_RELEASE_ARS, DEFAULT_SAVE_IMAGES_TO_TAGS,
+    DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_COVER_ART_SLOT_COUNT, DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+    DEFAULT_ENABLE_TAG_SAVING, DEFAULT_MUSICBRAINZ_ENDPOINT, DEFAULT_PRESERVE_EXISTING_IMAGES,
+    DEFAULT_PRESERVE_EXISTING_STREAM_TAGS, DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS,
+    DEFAULT_SAVE_IMAGES_TO_TAGS,
 };
 
 /// `mediapm` orchestration CLI.
@@ -467,12 +470,15 @@ pub struct InternalMediaTaggerArgs {
     /// Restrict CAA entries to approved-only.
     #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_CAA_APPROVED_ONLY)]
     pub caa_approved_only: bool,
-    /// Preserve existing embedded images.
-    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_PRESERVE_IMAGES)]
-    pub preserve_images: bool,
-    /// Clear existing textual tags.
-    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_CLEAR_EXISTING_TAGS)]
-    pub clear_existing_tags: bool,
+    /// Preserve existing embedded images and attachments.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_PRESERVE_EXISTING_IMAGES)]
+    pub preserve_existing_images: bool,
+    /// Preserve existing global tags the tagger does not overwrite.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_PRESERVE_EXISTING_TAGS)]
+    pub preserve_existing_tags: bool,
+    /// Preserve existing per-stream tags carried by the source media.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_PRESERVE_EXISTING_STREAM_TAGS)]
+    pub preserve_existing_stream_tags: bool,
     /// Enable tag writing.
     #[arg(long, action = clap::ArgAction::Set, default_value_t = DEFAULT_ENABLE_TAG_SAVING)]
     pub enable_tag_saving: bool,

@@ -89,7 +89,7 @@ mod tests {
             .expect("`builtin media-tagger` must be a declared subcommand");
         let help = media_tagger.clone().render_long_help().to_string();
 
-        let cases: [(&str, String); 15] = [
+        let cases: [(&str, String); 16] = [
             ("acoustid-endpoint", tagger::DEFAULT_ACOUSTID_ENDPOINT.to_string()),
             ("musicbrainz-endpoint", tagger::DEFAULT_MUSICBRAINZ_ENDPOINT.to_string()),
             ("caa-endpoint", tagger::DEFAULT_CAA_ENDPOINT.to_string()),
@@ -100,8 +100,12 @@ mod tests {
             ("caa-image-types", tagger::DEFAULT_CAA_IMAGE_TYPES.to_string()),
             ("caa-image-size", tagger::DEFAULT_CAA_IMAGE_SIZE.to_string()),
             ("caa-approved-only", tagger::DEFAULT_CAA_APPROVED_ONLY.to_string()),
-            ("preserve-images", tagger::DEFAULT_PRESERVE_IMAGES.to_string()),
-            ("clear-existing-tags", tagger::DEFAULT_CLEAR_EXISTING_TAGS.to_string()),
+            ("preserve-existing-images", tagger::DEFAULT_PRESERVE_EXISTING_IMAGES.to_string()),
+            ("preserve-existing-tags", tagger::DEFAULT_PRESERVE_EXISTING_TAGS.to_string()),
+            (
+                "preserve-existing-stream-tags",
+                tagger::DEFAULT_PRESERVE_EXISTING_STREAM_TAGS.to_string(),
+            ),
             ("enable-tag-saving", tagger::DEFAULT_ENABLE_TAG_SAVING.to_string()),
             ("release-ars", tagger::DEFAULT_RELEASE_ARS.to_string()),
             ("cover-art-slot-count", tagger::DEFAULT_COVER_ART_SLOT_COUNT.to_string()),

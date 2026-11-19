@@ -672,8 +672,9 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
             caa_image_types: args.caa_image_types,
             caa_image_size: args.caa_image_size,
             caa_approved_only: args.caa_approved_only,
-            preserve_images: args.preserve_images,
-            clear_existing_tags: args.clear_existing_tags,
+            preserve_existing_images: args.preserve_existing_images,
+            preserve_existing_tags: args.preserve_existing_tags,
+            preserve_existing_stream_tags: args.preserve_existing_stream_tags,
             enable_tag_saving: args.enable_tag_saving,
             release_ars: args.release_ars,
             cover_art_slot_count: args.cover_art_slot_count,
@@ -1156,8 +1157,18 @@ mod tests {
             "absent --embed-only-one-front-image must default to false"
         );
         assert!(!args.caa_approved_only, "absent --caa-approved-only must default to false");
-        assert!(!args.preserve_images, "absent --preserve-images must default to false");
-        assert!(!args.clear_existing_tags, "absent --clear-existing-tags must default to false");
+        assert!(
+            args.preserve_existing_images,
+            "absent --preserve-existing-images must default to true"
+        );
+        assert!(
+            args.preserve_existing_tags,
+            "absent --preserve-existing-tags must default to true"
+        );
+        assert!(
+            args.preserve_existing_stream_tags,
+            "absent --preserve-existing-stream-tags must default to true"
+        );
     }
 
     /// Protects the accepted CLI break: a boolean option is a value argument,

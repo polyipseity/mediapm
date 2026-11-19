@@ -762,6 +762,47 @@ fn synthesize_import_step(
     Ok(())
 }
 
+/// Refuses a media step option that the tool does not declare.
+///
+/// Generic plan-build validation runs before any command is built: every option
+/// key must be a tool-declared input or one of the synthesizer keys carried by
+/// [`STEP_OPTION_INPUT_SKIP_LIST`] (`uri`, `kind`, `hash`, `recording_mbid`,
+/// `release_mbid`). The error names the media, step index, option key, and tool
+/// so the caller can correct the step without guessing.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when a step binds an option key that is
+/// neither a synthesizer key nor declared by the step's active tool spec.
+fn validate_step_option_inputs(
+    media_id: &str,
+    step_index: usize,
+    step: &MediaStep,
+    generated_doc: &NickelDocument,
+) -> Result<(), MediaPmError> {
+    if step.options.is_empty() {
+        return Ok(());
+    }
+    let Some((_tool_key, spec)) = find_active_tool_spec(generated_doc, step.tool.as_str()) else {
+        // Missing/inactive tools are reported by the existing synthesis and
+        // resolution paths with their established messages.
+        return Ok(());
+    };
+    for option_key in step.options.keys() {
+        if STEP_OPTION_INPUT_SKIP_LIST.contains(&option_key.as_str()) {
+            continue;
+        }
+        if spec.inputs.contains_key(option_key) || spec.default_inputs.contains_key(option_key) {
+            continue;
+        }
+        return Err(MediaPmError::Workflow(format!(
+            "media '{media_id}' step #{step_index} option '{option_key}' is not a declared input of tool '{}'",
+            step.tool.as_str()
+        )));
+    }
+    Ok(())
+}
+
 /// Creates ordered workflow steps from unified media-step declarations.
 ///
 /// Import steps are synthesized inline; the four managed tools delegate to
@@ -790,6 +831,7 @@ fn synthesize_media_steps(
     for (step_index, step) in source.steps.iter().enumerate() {
         let mappings = resolve_step_variant_flow(step)
             .map_err(|reason| MediaPmError::Workflow(format!("step #{step_index} {reason}")))?;
+        validate_step_option_inputs(media_id, step_index, step, generated_doc)?;
         let producer_snapshot = variant_producers.clone();
 
         match step.tool {
@@ -2789,16 +2831,36 @@ mod tests {
     }
 
     #[test]
-    fn non_subtitle_variant_refuses_langs() {
-        use crate::config::{OutputCaptureKind, YtDlpOutputKind, YtDlpOutputVariantConfig};
+    fn a_media_tagger_step_with_an_unknown_option_fails_naming_media_step_key_and_tool() {
+        use crate::config::MediaStepTool;
+        use crate::tools::workflows::media_tagger::build_media_tagger_spec;
 
-        let config = YtDlpOutputVariantConfig {
-            kind: YtDlpOutputKind::Description,
-            capture_kind: Some(OutputCaptureKind::File),
-            langs: "en".to_string(),
-            ..YtDlpOutputVariantConfig::default()
+        let (spec, _runtime) = build_media_tagger_spec();
+        let generated_doc = NickelDocument {
+            tools: BTreeMap::from([(spec.name.clone(), spec)]),
+            ..NickelDocument::default()
         };
-        let error = resolve_variant_capture("description", &config).expect_err("langs refused");
-        assert_eq!(error.code(), "MPM-E011", "{error}");
+        let document = media_document(
+            "song-a",
+            media_source(
+                "",
+                vec![("default", ZERO_HASH)],
+                vec![media_step(
+                    MediaStepTool::MediaTagger,
+                    vec!["default"],
+                    vec![("tagged", generic_output_variant("output_content"))],
+                    vec![("bogus_option", "surprise")],
+                )],
+            ),
+        );
+
+        let error = build_plan(&document, &generated_doc)
+            .expect_err("unknown media-tagger option must be rejected at plan build");
+
+        let message = error.to_string();
+        assert!(message.contains("song-a"), "error must name media: {message}");
+        assert!(message.contains("step #0"), "error must name step index: {message}");
+        assert!(message.contains("bogus_option"), "error must name option key: {message}");
+        assert!(message.contains("media-tagger"), "error must name the tool: {message}");
     }
 }

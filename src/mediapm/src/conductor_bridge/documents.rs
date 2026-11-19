@@ -178,13 +178,27 @@ pub(crate) fn save_conductor_generated_document(
 pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
     for builtin in tools::production_builtins() {
         if !document.tools.contains_key(builtin.builtin_id) {
+            let mut inputs = std::collections::BTreeMap::new();
+            // The import builtin reads payload selection under `kind`; `hash`
+            // is a synthesizer key accepted by plan-build validation. Declaring
+            // `kind` keeps valid import steps admissible under generic option
+            // validation.
+            if builtin.builtin_id == "import@v1" || builtin.name == "import" {
+                inputs.insert(
+                    "kind".to_string(),
+                    mediapm_conductor::ToolInputSpec {
+                        kind: mediapm_conductor::ToolInputKind::String,
+                        required: false,
+                    },
+                );
+            }
             document.tools.insert(
                 builtin.builtin_id.to_string(),
                 ToolSpec {
                     version: None,
                     name: builtin.name.to_string(),
                     kind: ToolKindSpec::Builtin { builtin_id: builtin.builtin_id.to_string() },
-                    inputs: std::collections::BTreeMap::new(),
+                    inputs,
                     default_inputs: std::collections::BTreeMap::new(),
                     outputs: std::collections::BTreeMap::new(),
                     runtime: ToolRuntime::default(),

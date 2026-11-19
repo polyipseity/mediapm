@@ -16,10 +16,11 @@ use std::time::{Duration, Instant};
 use mediapm::builtins::media_tagger::{
     DEFAULT_ACOUSTID_ENDPOINT, DEFAULT_CA_PROVIDERS, DEFAULT_CAA_APPROVED_ONLY,
     DEFAULT_CAA_ENDPOINT, DEFAULT_CAA_IMAGE_SIZE, DEFAULT_CAA_IMAGE_TYPES,
-    DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_CLEAR_EXISTING_TAGS, DEFAULT_COVER_ART_SLOT_COUNT,
-    DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE, DEFAULT_ENABLE_TAG_SAVING, DEFAULT_PRESERVE_IMAGES,
-    DEFAULT_RELEASE_ARS, DEFAULT_SAVE_IMAGES_TO_TAGS, InternalMediaTaggerOptions,
-    MUSICBRAINZ_FETCH_ATTEMPTS, run_internal_media_tagger,
+    DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_COVER_ART_SLOT_COUNT, DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+    DEFAULT_ENABLE_TAG_SAVING, DEFAULT_PRESERVE_EXISTING_IMAGES,
+    DEFAULT_PRESERVE_EXISTING_STREAM_TAGS, DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS,
+    DEFAULT_SAVE_IMAGES_TO_TAGS, InternalMediaTaggerOptions, MUSICBRAINZ_FETCH_ATTEMPTS,
+    run_internal_media_tagger,
 };
 
 /// A valid recording MBID the mock server serves and the run requests.
@@ -61,8 +62,9 @@ fn hermetic_options(
         caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
         caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
         caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-        preserve_images: DEFAULT_PRESERVE_IMAGES,
-        clear_existing_tags: DEFAULT_CLEAR_EXISTING_TAGS,
+        preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+        preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+        preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
         enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
         release_ars: DEFAULT_RELEASE_ARS,
         recording_mbid: Some(RECORDING_MBID.to_string()),

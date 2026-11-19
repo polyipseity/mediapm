@@ -1122,6 +1122,112 @@ managed tool content root for sd
       builtin_id = "media-tagger",
       kind = "builtin",
       name = "media-tagger",
+      inputs = {
+        acoustid_api_key = {
+          kind = "string",
+          required = false,
+        },
+        acoustid_endpoint = {
+          kind = "string",
+          required = false,
+        },
+        ca_providers = {
+          kind = "string",
+          required = false,
+        },
+        caa_approved_only = {
+          kind = "string",
+          required = false,
+        },
+        caa_endpoint = {
+          kind = "string",
+          required = false,
+        },
+        caa_image_size = {
+          kind = "string",
+          required = false,
+        },
+        caa_image_types = {
+          kind = "string",
+          required = false,
+        },
+        cache_dir = {
+          kind = "string",
+          required = false,
+        },
+        cache_expiry_seconds = {
+          kind = "string",
+          required = false,
+        },
+        cover_art_slot_count = {
+          kind = "string",
+          required = false,
+        },
+        embed_only_one_front_image = {
+          kind = "string",
+          required = false,
+        },
+        enable_tag_saving = {
+          kind = "string",
+          required = false,
+        },
+        ffmpeg_bin = {
+          kind = "string",
+          required = false,
+        },
+        ffmpeg_version = {
+          kind = "string",
+          required = false,
+        },
+        musicbrainz_endpoint = {
+          kind = "string",
+          required = false,
+        },
+        output_container = {
+          kind = "string",
+          required = false,
+        },
+        preserve_existing_images = {
+          kind = "string",
+          required = false,
+        },
+        preserve_existing_stream_tags = {
+          kind = "string",
+          required = false,
+        },
+        preserve_existing_tags = {
+          kind = "string",
+          required = false,
+        },
+        recording_mbid = {
+          kind = "string",
+          required = false,
+        },
+        release_ars = {
+          kind = "string",
+          required = false,
+        },
+        release_mbid = {
+          kind = "string",
+          required = false,
+        },
+        save_images_to_tags = {
+          kind = "string",
+          required = false,
+        },
+        strict_identification = {
+          kind = "string",
+          required = false,
+        },
+        write_all_images = {
+          kind = "string",
+          required = false,
+        },
+        write_all_tags = {
+          kind = "string",
+          required = false,
+        },
+      },
       outputs = {
         content = {
           capture = "file:metadata/output.ffmeta",

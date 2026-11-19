@@ -17,9 +17,11 @@
 //! this module is compiled under `media-tagger`, so the copies cannot be
 //! imported from here.
 //!
-//! An option the retired command mapping consumed — `option_args`,
-//! `leading_args`, `trailing_args` and `enable_acoustid` — is refused by name
-//! rather than ignored: see [`RETIRED_COMMAND_OPTIONS`].
+//! Options retired by the host-runner contract are refused by name rather
+//! than ignored. The command-mapping options `option_args`, `leading_args`,
+//! `trailing_args`, and `enable_acoustid` are removed, and the renamed tagger
+//! options `clear_existing_tags` and `preserve_images` must be migrated to
+//! their v4 replacements: see [`reject_retired_command_options`].
 //!
 //! A value the step does not bind is absent from the arguments, which is how a
 //! run that says nothing about an option gets the builtin's default. An empty
@@ -42,10 +44,10 @@ use crate::tools::workflows::media_tagger::{MEDIA_TAGGER_BUILTIN_ID, MEDIA_TAGGE
 use super::{
     DEFAULT_ACOUSTID_ENDPOINT, DEFAULT_CA_PROVIDERS, DEFAULT_CAA_APPROVED_ONLY,
     DEFAULT_CAA_ENDPOINT, DEFAULT_CAA_IMAGE_SIZE, DEFAULT_CAA_IMAGE_TYPES,
-    DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_CLEAR_EXISTING_TAGS, DEFAULT_COVER_ART_SLOT_COUNT,
-    DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE, DEFAULT_ENABLE_TAG_SAVING, DEFAULT_MUSICBRAINZ_ENDPOINT,
-    DEFAULT_PRESERVE_IMAGES, DEFAULT_RELEASE_ARS, DEFAULT_SAVE_IMAGES_TO_TAGS,
-    InternalMediaTaggerOptions, run_internal_media_tagger,
+    DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_COVER_ART_SLOT_COUNT, DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+    DEFAULT_ENABLE_TAG_SAVING, DEFAULT_MUSICBRAINZ_ENDPOINT, DEFAULT_PRESERVE_EXISTING_IMAGES,
+    DEFAULT_PRESERVE_EXISTING_STREAM_TAGS, DEFAULT_PRESERVE_EXISTING_TAGS, DEFAULT_RELEASE_ARS,
+    DEFAULT_SAVE_IMAGES_TO_TAGS, InternalMediaTaggerOptions, run_internal_media_tagger,
 };
 
 /// The sandbox file the step's `content` input is staged at.
@@ -73,12 +75,16 @@ const DEFAULT_WRITE_ALL_IMAGES: bool = true;
 /// `trailing_args` were rendered into its argv, and `enable_acoustid` became
 /// `--enable-acoustid`, a flag `mediapm-cli` does not declare (it declares only
 /// `--acoustid-api-key` and `--acoustid-endpoint`). The step renders no command
-/// any more, so a binding of one of these names reaches nothing — while the
-/// value still decides the step's instance key. A step that binds one is refused
-/// instead, so a library that still sets it hears that it must stop rather than
-/// getting the quiet difference.
+/// any more, so a binding of one of these names reaches nothing while the
+/// value still decides the step's instance key.
 const RETIRED_COMMAND_OPTIONS: [&str; 4] =
     ["option_args", "leading_args", "trailing_args", "enable_acoustid"];
+
+/// Tagger options renamed for v4 that must fail loudly on older documents.
+const RENAMED_TAGGER_OPTIONS: [(&str, &str); 2] = [
+    ("clear_existing_tags", "preserve_existing_tags"),
+    ("preserve_images", "preserve_existing_images"),
+];
 
 /// The `media-tagger` builtin runner mediapm registers on every run.
 ///
@@ -207,8 +213,21 @@ fn options_from_args(
         caa_image_types: text(args, "caa_image_types", DEFAULT_CAA_IMAGE_TYPES),
         caa_image_size: text(args, "caa_image_size", DEFAULT_CAA_IMAGE_SIZE),
         caa_approved_only: flag(args, "caa_approved_only", DEFAULT_CAA_APPROVED_ONLY)?,
-        preserve_images: flag(args, "preserve_images", DEFAULT_PRESERVE_IMAGES)?,
-        clear_existing_tags: flag(args, "clear_existing_tags", DEFAULT_CLEAR_EXISTING_TAGS)?,
+        preserve_existing_images: flag(
+            args,
+            "preserve_existing_images",
+            DEFAULT_PRESERVE_EXISTING_IMAGES,
+        )?,
+        preserve_existing_tags: flag(
+            args,
+            "preserve_existing_tags",
+            DEFAULT_PRESERVE_EXISTING_TAGS,
+        )?,
+        preserve_existing_stream_tags: flag(
+            args,
+            "preserve_existing_stream_tags",
+            DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+        )?,
         enable_tag_saving: flag(args, "enable_tag_saving", DEFAULT_ENABLE_TAG_SAVING)?,
         release_ars: flag(args, "release_ars", DEFAULT_RELEASE_ARS)?,
         recording_mbid: optional_text(args, "recording_mbid"),
@@ -216,19 +235,27 @@ fn options_from_args(
     })
 }
 
-/// Refuses a step that binds an option the retired command mapping consumed.
+/// Refuses a step that binds a retired or renamed tagger option.
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError::Workflow`] naming the option and the value when the
-/// step binds one of [`RETIRED_COMMAND_OPTIONS`]: no field of the pipeline
-/// options answers for it, so the value would be dropped while still deciding
-/// the step's instance key.
+/// Returns [`ConductorError::Workflow`] naming the option and the value when
+/// the step binds one of [`RETIRED_COMMAND_OPTIONS`] or a renamed tagger option.
+/// Renamed options include their replacement and instruct the caller to migrate
+/// the document to v4; removed command-mapping options explain that no field of
+/// the host runner reads them.
 fn reject_retired_command_options(args: &BTreeMap<String, String>) -> Result<(), ConductorError> {
     for key in RETIRED_COMMAND_OPTIONS {
         if let Some(value) = args.get(key) {
             return Err(ConductorError::Workflow(format!(
                 "media-tagger option '{key}' is '{value}', but the tagging step renders no command, so no field of it reads the option; remove it"
+            )));
+        }
+    }
+    for (key, replacement) in RENAMED_TAGGER_OPTIONS {
+        if let Some(value) = args.get(key) {
+            return Err(ConductorError::Workflow(format!(
+                "media-tagger option '{key}' is '{value}', but this option was renamed to '{replacement}'; migrate the document to v4 and use '{replacement}' instead"
             )));
         }
     }
@@ -337,9 +364,12 @@ mod tests {
     #[test]
     fn the_step_bindings_become_the_options_the_pipeline_reads() {
         let sandbox = std::path::Path::new("/sandbox");
-        let options =
-            options_from_args(&step_args(), Some("/sandbox/inputs/input.media".into()), sandbox)
-                .expect("a step that binds valid values must map");
+        let mut args = step_args();
+        args.insert("preserve_existing_tags".to_string(), "false".to_string());
+        args.insert("preserve_existing_stream_tags".to_string(), "false".to_string());
+        args.insert("preserve_existing_images".to_string(), "false".to_string());
+        let options = options_from_args(&args, Some("/sandbox/inputs/input.media".into()), sandbox)
+            .expect("a step that binds valid values must map");
 
         assert_eq!(
             options.output_path,
@@ -356,6 +386,9 @@ mod tests {
         assert!(!options.strict_identification, "a bound 'false' must reach the pipeline");
         assert!(!options.write_all_tags);
         assert!(options.write_all_images);
+        assert!(!options.preserve_existing_tags);
+        assert!(!options.preserve_existing_stream_tags);
+        assert!(!options.preserve_existing_images);
         assert_eq!(options.musicbrainz_endpoint, "http://127.0.0.1:1/ws/2");
         assert_eq!(options.recording_mbid.as_deref(), Some("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae"),);
     }
@@ -372,6 +405,9 @@ mod tests {
         assert!(options.strict_identification);
         assert!(options.write_all_tags);
         assert!(options.write_all_images);
+        assert!(options.preserve_existing_tags);
+        assert!(options.preserve_existing_stream_tags);
+        assert!(options.preserve_existing_images);
         assert_eq!(options.musicbrainz_endpoint, super::DEFAULT_MUSICBRAINZ_ENDPOINT);
         assert_eq!(options.caa_endpoint, super::DEFAULT_CAA_ENDPOINT);
         assert_eq!(options.acoustid_endpoint, super::DEFAULT_ACOUSTID_ENDPOINT);
@@ -418,6 +454,34 @@ mod tests {
             assert!(
                 error.to_string().contains(key) && error.to_string().contains("--quiet -v"),
                 "the failure must name the option '{key}' and its value, got: {error}",
+            );
+        }
+    }
+
+    /// Renamed tagger options fail loudly with replacement and migration guidance.
+    #[test]
+    fn a_renamed_tagger_option_fails_with_replacement_and_migration_hint() {
+        for (key, replacement) in [
+            ("clear_existing_tags", "preserve_existing_tags"),
+            ("preserve_images", "preserve_existing_images"),
+        ] {
+            let args = BTreeMap::from([(key.to_string(), "false".to_string())]);
+            let error = options_from_args(&args, None, std::path::Path::new("/sandbox"))
+                .expect_err("a renamed option must be rejected for every document version");
+
+            let message = error.to_string();
+            assert!(message.contains(key), "message must name retired option '{key}': {message}");
+            assert!(
+                message.contains("'false'"),
+                "message must name provided value for '{key}': {message}"
+            );
+            assert!(
+                message.contains(replacement),
+                "message must name replacement '{replacement}' for '{key}': {message}"
+            );
+            assert!(
+                message.contains("migrate the document to v4"),
+                "message must direct migration to v4 for '{key}': {message}"
             );
         }
     }

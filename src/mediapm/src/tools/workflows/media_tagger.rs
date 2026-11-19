@@ -431,16 +431,57 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 /// captures every run records — the `FFmetadata` document and the cover-art
 /// folder — and each step says which of them it saves.
 ///
-/// The inputs a tagging step binds are its own: no default lives here, so the
-/// step's bindings are the whole answer for which option a run uses.
+/// The declared inputs enumerate every option a `media-tagger` step may bind.
+/// The step's bindings remain the source of values: no default lives here, but
+/// plan-build validation uses this set to reject unknown step options.
 #[must_use]
 pub(crate) fn build_media_tagger_spec() -> (ToolSpec, ToolRuntime) {
     let runtime = ToolRuntime { impure: true, ..ToolRuntime::default() };
+    let accepted_inputs = [
+        "acoustid_api_key",
+        "acoustid_endpoint",
+        "cache_dir",
+        "cache_expiry_seconds",
+        "caa_approved_only",
+        "caa_endpoint",
+        "caa_image_size",
+        "caa_image_types",
+        "ca_providers",
+        "cover_art_slot_count",
+        "embed_only_one_front_image",
+        "enable_tag_saving",
+        "ffmpeg_bin",
+        "ffmpeg_version",
+        "musicbrainz_endpoint",
+        "output_container",
+        "preserve_existing_images",
+        "preserve_existing_stream_tags",
+        "preserve_existing_tags",
+        "recording_mbid",
+        "release_ars",
+        "release_mbid",
+        "save_images_to_tags",
+        "strict_identification",
+        "write_all_images",
+        "write_all_tags",
+    ];
+    let inputs = accepted_inputs
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                mediapm_conductor::ToolInputSpec {
+                    kind: mediapm_conductor::ToolInputKind::String,
+                    required: false,
+                },
+            )
+        })
+        .collect();
     let spec = ToolSpec {
         version: None,
         kind: ToolKindSpec::Builtin { builtin_id: MEDIA_TAGGER_BUILTIN_ID.to_string() },
         name: MEDIA_TAGGER_BUILTIN_ID.to_string(),
-        inputs: BTreeMap::new(),
+        inputs,
         default_inputs: BTreeMap::new(),
         outputs: build_media_tagger_outputs(),
         runtime: runtime.clone(),
@@ -497,9 +538,22 @@ mod tests {
         assert!(runtime.content_map.is_empty(), "a host builtin holds no payload");
         assert!(runtime.impure, "tagging reaches the network, so the step is impure");
         assert!(
-            spec.inputs.is_empty() && spec.default_inputs.is_empty(),
-            "the step binds every option it uses; a definition default would be a second home for it",
+            spec.default_inputs.is_empty(),
+            "the step binds every option value it uses; a definition default would be a second home for it",
         );
+        for key in [
+            "preserve_existing_tags",
+            "preserve_existing_stream_tags",
+            "preserve_existing_images",
+            "ffmpeg_bin",
+            "ffmpeg_version",
+            "output_container",
+        ] {
+            assert!(
+                spec.inputs.contains_key(key),
+                "plan-build validation requires the tool to declare accepted option input '{key}'",
+            );
+        }
         assert!(
             spec.outputs.contains_key(OUTPUT_CONTENT)
                 && spec.outputs.contains_key(OUTPUT_SANDBOX_ARTIFACTS),

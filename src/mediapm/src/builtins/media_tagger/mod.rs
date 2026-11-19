@@ -86,8 +86,9 @@ mod tests {
             caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
             caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
             caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-            preserve_images: DEFAULT_PRESERVE_IMAGES,
-            clear_existing_tags: DEFAULT_CLEAR_EXISTING_TAGS,
+            preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+            preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+            preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
             enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
             release_ars: DEFAULT_RELEASE_ARS,
             cover_art_slot_count: 8,
@@ -154,8 +155,9 @@ mod tests {
             caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
             caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
             caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-            preserve_images: DEFAULT_PRESERVE_IMAGES,
-            clear_existing_tags: DEFAULT_CLEAR_EXISTING_TAGS,
+            preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+            preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+            preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
             enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
             release_ars: DEFAULT_RELEASE_ARS,
             cover_art_slot_count: 8,
@@ -202,8 +204,9 @@ mod tests {
             caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
             caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
             caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-            preserve_images: DEFAULT_PRESERVE_IMAGES,
-            clear_existing_tags: DEFAULT_CLEAR_EXISTING_TAGS,
+            preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+            preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+            preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
             enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
             release_ars: DEFAULT_RELEASE_ARS,
             cover_art_slot_count: 8,
@@ -243,8 +246,9 @@ mod tests {
             caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
             caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
             caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-            preserve_images: DEFAULT_PRESERVE_IMAGES,
-            clear_existing_tags: DEFAULT_CLEAR_EXISTING_TAGS,
+            preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+            preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+            preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
             enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
             release_ars: DEFAULT_RELEASE_ARS,
             cover_art_slot_count: 8,
@@ -641,12 +645,21 @@ pub const DEFAULT_CAA_IMAGE_SIZE: &str = "full";
 ///
 /// Picard default: `caa_approved_only = false`.
 pub const DEFAULT_CAA_APPROVED_ONLY: bool = false;
-/// Managed default policy for preserving embedded images when clear-tags mode
-/// is requested.
-pub const DEFAULT_PRESERVE_IMAGES: bool = false;
-/// Managed default policy for clearing existing textual tags before applying
-/// new metadata.
-pub const DEFAULT_CLEAR_EXISTING_TAGS: bool = false;
+/// Managed default for preserving images and attachments already present in the
+/// source media.
+///
+/// This flag is independent from global tag and stream-tag preservation.
+pub const DEFAULT_PRESERVE_EXISTING_IMAGES: bool = true;
+/// Managed default for preserving global tags the tagger does not overwrite.
+///
+/// When `false`, existing global tags are cleared before tagger values are
+/// applied.
+pub const DEFAULT_PRESERVE_EXISTING_TAGS: bool = true;
+/// Managed default for preserving per-stream tags carried by the source media.
+///
+/// Apply-step handling of stream-tag removal is refined in later behavior
+/// work; this flag is accepted and propagated as part of the runtime contract.
+pub const DEFAULT_PRESERVE_EXISTING_STREAM_TAGS: bool = true;
 /// Managed default policy for writing tags to output media.
 pub const DEFAULT_ENABLE_TAG_SAVING: bool = true;
 /// Managed default release-relationship lookup toggle.
@@ -747,12 +760,15 @@ pub struct InternalMediaTaggerOptions {
     /// Whether only CAA entries approved by the CAA moderation flow should be
     /// considered.
     pub caa_approved_only: bool,
-    /// Whether existing embedded images should be preserved when
-    /// `clear_existing_tags` is enabled.
-    pub preserve_images: bool,
-    /// Whether existing textual tags should be cleared before applying newly
-    /// resolved metadata.
-    pub clear_existing_tags: bool,
+    /// Whether existing embedded images and attachments in the source media are
+    /// preserved.
+    pub preserve_existing_images: bool,
+    /// Whether existing global tags the tagger does not overwrite are
+    /// preserved.
+    pub preserve_existing_tags: bool,
+    /// Whether existing per-stream tags carried by the source media are
+    /// preserved.
+    pub preserve_existing_stream_tags: bool,
     /// Whether metadata/tag writing is enabled for this invocation.
     pub enable_tag_saving: bool,
     /// Whether release relationships should be considered by provider logic
@@ -871,10 +887,10 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         )
     })?;
     if !options.enable_tag_saving {
-        let fallback_map = if options.clear_existing_tags {
-            BTreeMap::new()
-        } else {
+        let fallback_map = if options.preserve_existing_tags {
             fallback_ffmetadata_map(resolved_input.as_deref()).await
+        } else {
+            BTreeMap::new()
         };
 
         persist_cover_art_slot_artifacts(
@@ -931,7 +947,11 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
     }
 
     if disable_autodetect && detected_recording_mbid.is_none() {
-        let fallback_map = fallback_ffmetadata_map(resolved_input.as_deref()).await;
+        let fallback_map = if options.preserve_existing_tags {
+            fallback_ffmetadata_map(resolved_input.as_deref()).await
+        } else {
+            BTreeMap::new()
+        };
         write_ffmetadata_document(&options.output_path, &fallback_map)?;
         return Ok(());
     }
@@ -943,7 +963,11 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
             );
         }
 
-        let fallback_map = fallback_ffmetadata_map(resolved_input.as_deref()).await;
+        let fallback_map = if options.preserve_existing_tags {
+            fallback_ffmetadata_map(resolved_input.as_deref()).await
+        } else {
+            BTreeMap::new()
+        };
         write_ffmetadata_document(&options.output_path, &fallback_map)?;
         return Ok(());
     };
@@ -973,7 +997,11 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
             if options.strict_identification {
                 return Err(error);
             }
-            let fallback_map = fallback_ffmetadata_map(resolved_input.as_deref()).await;
+            let fallback_map = if options.preserve_existing_tags {
+                fallback_ffmetadata_map(resolved_input.as_deref()).await
+            } else {
+                BTreeMap::new()
+            };
             write_ffmetadata_document(&options.output_path, &fallback_map)?;
             return Ok(());
         }
@@ -1005,7 +1033,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         insert_musicbrainz_image_tags(&mut ffmetadata_map, &selected_cover_art);
     }
 
-    if !options.clear_existing_tags
+    if options.preserve_existing_tags
         && let Some(input_path) = resolved_input.as_deref()
     {
         let existing_metadata = extract_existing_ffmetadata_map(input_path).await?;
@@ -1022,7 +1050,11 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         if options.strict_identification {
             bail!("resolved metadata payload did not produce any FFmetadata entries");
         }
-        let fallback_map = fallback_ffmetadata_map(resolved_input.as_deref()).await;
+        let fallback_map = if options.preserve_existing_tags {
+            fallback_ffmetadata_map(resolved_input.as_deref()).await
+        } else {
+            BTreeMap::new()
+        };
         write_ffmetadata_document(&options.output_path, &fallback_map)?;
         return Ok(());
     }
