@@ -243,7 +243,9 @@ fn shared_http_client() -> Result<&'static Client, String> {
                 .user_agent(concat!(
                     "mediapm/",
                     env!("CARGO_PKG_VERSION"),
-                    " (+https://github.com/mediapm/mediapm)"
+                    " (+",
+                    env!("CARGO_PKG_REPOSITORY"),
+                    ")"
                 ))
                 .build()
                 .map_err(|e| format!("building import HTTP client failed: {e}"))
@@ -509,5 +511,20 @@ mod tests {
     fn descriptor_json_contains_tool_id() {
         let json = describe_json();
         assert!(json.contains("builtins.import@v1"));
+    }
+
+    /// The import builtin's default fetch User-Agent embeds the repository URL from Cargo metadata.
+    #[test]
+    fn default_fetch_user_agent_embeds_repository_url() {
+        let user_agent = concat!(
+            "mediapm/",
+            env!("CARGO_PKG_VERSION"),
+            " (+",
+            env!("CARGO_PKG_REPOSITORY"),
+            ")"
+        );
+        assert!(user_agent.contains(env!("CARGO_PKG_REPOSITORY")));
+        assert!(user_agent.contains("https://github.com/polyipseity/mediapm"));
+        assert!(user_agent.starts_with(&format!("mediapm/{} (+", env!("CARGO_PKG_VERSION"))));
     }
 }

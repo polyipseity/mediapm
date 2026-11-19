@@ -23,9 +23,9 @@ use std::time::Duration;
 
 use reqwest::Client;
 
-/// User-Agent header used for outbound HTTP requests.
-pub const MEDIAPM_USER_AGENT: &str =
-    concat!("mediapm/", env!("CARGO_PKG_VERSION"), " (+https://github.com/mediapm/mediapm)");
+/// User-Agent string for all outbound HTTP requests from the conductor.
+const MEDIAPM_USER_AGENT: &str =
+    concat!("mediapm/", env!("CARGO_PKG_VERSION"), " (+", env!("CARGO_PKG_REPOSITORY"), ")");
 
 /// Default TCP connect timeout used for outbound HTTP requests.
 const DEFAULT_CONNECT_TIMEOUT_SECONDS: u64 = 30;
@@ -114,4 +114,24 @@ fn build_shared_http_client(follow_redirects: bool) -> Result<Client, HttpClient
             "building shared HTTP client for conductor failed: {source}"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// The shared conductor User-Agent embeds the repository URL from Cargo metadata.
+    #[test]
+    fn shared_user_agent_embeds_repository_url() {
+        assert_eq!(
+            super::MEDIAPM_USER_AGENT,
+            concat!(
+                "mediapm/",
+                env!("CARGO_PKG_VERSION"),
+                " (+",
+                env!("CARGO_PKG_REPOSITORY"),
+                ")"
+            )
+        );
+        assert!(super::MEDIAPM_USER_AGENT.contains(env!("CARGO_PKG_REPOSITORY")));
+        assert!(super::MEDIAPM_USER_AGENT.contains("https://github.com/polyipseity/mediapm"));
+    }
 }

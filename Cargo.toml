@@ -28,6 +28,7 @@ edition = "2024"
 rust-version = "1.94.0"
 license-file = "LICENSE.txt"
 publish = false
+repository = "https://github.com/polyipseity/mediapm"
 # build = "scripts/build.rs"
 
 [workspace.lints.clippy]

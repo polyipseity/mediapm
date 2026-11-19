@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "Orchestration contracts and state model for mediapm"
 
 [features]
