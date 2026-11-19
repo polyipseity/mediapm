@@ -455,6 +455,13 @@ pub(crate) fn ffmpeg_output_file_regex(index: usize) -> String {
 }
 
 /// Builds ffmpeg cover-art map/disposition templates for managed media-tagger apply workflows.
+///
+/// When `inputs.cover_art_archive` is provided (a folder-captured zip of the
+/// tagger's `coverart/` sandbox artifacts), each slot is driven at command time
+/// by the archive's per-slot flag member (`coverart/coverart-slot-N.flag`), so
+/// the command can decide whether a slot is populated without pre-resolved
+/// per-slot inputs. Otherwise the legacy per-slot `cover_art_slot_enabled_N`
+/// inputs drive the tokens.
 #[must_use]
 fn ffmpeg_cover_art_tokens(max_input_slots: usize, max_output_slots: usize) -> Vec<String> {
     let _ = max_output_slots;
@@ -462,17 +469,37 @@ fn ffmpeg_cover_art_tokens(max_input_slots: usize, max_output_slots: usize) -> V
     for slot_index in 1..max_input_slots {
         let enabled_input = ffmpeg_cover_slot_enabled_input_name(slot_index);
         let ffmpeg_input_index = slot_index + 1;
-        let output_video_index = slot_index - 1;
-        tokens.push(super::spec::unpack_if_equals(&enabled_input, "true", "-map"));
+        // Cover-art streams are mapped after the main content's video stream(s);
+        // with `-map 0` mapping main video as v:0, the first cover-art stream is v:1.
+        let output_video_index = slot_index;
+        let flag_ref =
+            format!("inputs.cover_art_archive:zip(coverart/coverart-slot-{slot_index}.flag)");
+
+        // Archive-mode tokens: emit only when archive is set and slot flag is populated.
+        tokens.push(format!("${{*inputs.cover_art_archive ? ${{{flag_ref} ? -map | ''}} | ''}}"));
         tokens.push(format!(
-            "${{*inputs.{enabled_input} == \"true\" ? \"{ffmpeg_input_index}:v:0?\" | ''}}"
+            "${{*inputs.cover_art_archive ? ${{{flag_ref} ? \"{ffmpeg_input_index}:v:0?\" | ''}} | ''}}"
         ));
-        tokens.push(super::spec::unpack_if_equals(
-            &enabled_input,
-            "true",
-            &format!("-disposition:v:{output_video_index}"),
+        tokens.push(format!(
+            "${{*inputs.cover_art_archive ? ${{{flag_ref} ? -disposition:v:{output_video_index} | ''}} | ''}}"
         ));
-        tokens.push(super::spec::unpack_if_equals(&enabled_input, "true", "attached_pic"));
+        tokens.push(format!(
+            "${{*inputs.cover_art_archive ? ${{{flag_ref} ? attached_pic | ''}} | ''}}"
+        ));
+
+        // Legacy per-slot tokens: emit only when archive is not provided.
+        tokens.push(format!(
+            "${{*inputs.cover_art_archive ? '' | inputs.{enabled_input} == \"true\" ? -map | ''}}"
+        ));
+        tokens.push(format!(
+            "${{*inputs.cover_art_archive ? '' | inputs.{enabled_input} == \"true\" ? \"{ffmpeg_input_index}:v:0?\" | ''}}"
+        ));
+        tokens.push(format!(
+            "${{*inputs.cover_art_archive ? '' | inputs.{enabled_input} == \"true\" ? -disposition:v:{output_video_index} | ''}}"
+        ));
+        tokens.push(format!(
+            "${{*inputs.cover_art_archive ? '' | inputs.{enabled_input} == \"true\" ? attached_pic | ''}}"
+        ));
     }
     tokens
 }
@@ -520,9 +547,19 @@ fn build_ffmpeg_command(
     for index in 1..max_input_slots {
         let input_name = ffmpeg_input_content_name(index);
         let input_path = ffmpeg_input_file_path(index);
-        command.push(format!("${{*inputs.{input_name} ? -i | ''}}"));
+        let flag_ref = format!("inputs.cover_art_archive:zip(coverart/coverart-slot-{index}.flag)");
+        let bin_ref = format!("inputs.cover_art_archive:zip(coverart/coverart-slot-{index}.bin)");
+        // Archive-mode: include -i and materialize the slot image when populated.
+        command.push(format!("${{*inputs.cover_art_archive ? ${{{flag_ref} ? -i | ''}} | ''}}"));
         command.push(format!(
-            "${{*inputs.{input_name} ? inputs.{input_name}:file({input_path}) | ''}}"
+            "${{*inputs.cover_art_archive ? ${{{flag_ref} ? {bin_ref}:file({input_path}) | ''}} | ''}}"
+        ));
+        // Legacy per-slot mode: include -i and materialize input_content_N when
+        // cover_art_archive is not provided and the slot content is set.
+        command
+            .push(format!("${{*inputs.cover_art_archive ? '' | inputs.{input_name} ? -i | ''}}"));
+        command.push(format!(
+            "${{*inputs.cover_art_archive ? '' | inputs.{input_name} ? inputs.{input_name}:file({input_path}) | ''}}"
         ));
     }
 
@@ -597,6 +634,10 @@ fn build_ffmpeg_inputs(
     }
     inputs.insert(
         INPUT_FFMETADATA_CONTENT.to_string(),
+        ToolInputSpec { kind: ToolInputKind::String, required: false },
+    );
+    inputs.insert(
+        "cover_art_archive".to_string(),
         ToolInputSpec { kind: ToolInputKind::String, required: false },
     );
 
@@ -731,6 +772,7 @@ fn build_ffmpeg_default_input_defaults(
         defaults.insert(ffmpeg_output_path_input_name(index), InputBinding::String(String::new()));
     }
     defaults.insert(INPUT_FFMETADATA_CONTENT.to_string(), InputBinding::String(String::new()));
+    defaults.insert("cover_art_archive".to_string(), InputBinding::String(String::new()));
 
     defaults
 }

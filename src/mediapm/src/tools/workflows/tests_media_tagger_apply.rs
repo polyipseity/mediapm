@@ -232,16 +232,20 @@ async fn the_synthesized_apply_step_consumes_the_metadata_document() {
     .expect("the plan must synthesize");
     let steps = &plan.workflows[&managed_workflow_name(MEDIA_ID)].steps;
     let metadata_step_id = steps.first().expect("a metadata step").id.clone();
-    let apply_step = steps.get(1).expect("an apply step");
+    let mut apply_step = steps.get(1).expect("an apply step").clone();
     assert_eq!(apply_step.tool, "ffmpeg", "the apply step runs the ffmpeg dependency");
     assert_eq!(
         apply_step.inputs.get(&ffmpeg_input_content_name(0)).map(String::as_str),
         Some(format!("${{external_data.{source_hash}}}").as_str()),
         "the source input is the media's own variant, so the step needs no rewrite",
     );
+    // This test drives a hand-written ffmpeg stub that does not use the preset's
+    // archive-driven cover-art tokens. Drop the archive binding so the stub
+    // command can run without a sandbox_artifacts producer.
+    apply_step.inputs.remove("cover_art_archive");
 
     let stub = stub_tool_path();
-    let doc = apply_document(apply_step, &metadata_step_id, source_hash, metadata_hash, &stub);
+    let doc = apply_document(&apply_step, &metadata_step_id, source_hash, metadata_hash, &stub);
     std::fs::write(workspace.path().join("conductor.ncl"), encode_document(doc).expect("encode"))
         .expect("write the conductor document");
 

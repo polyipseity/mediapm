@@ -1401,9 +1401,15 @@ fn extract_zip_member(data: &[u8], member: &str) -> Result<Vec<u8>, ConductorErr
             ))
         })?;
 
-        let mut file = archive.by_name(member).map_err(|e| {
-            ConductorError::Workflow(format!("template: ZIP member '{member}' not found: {e}"))
-        })?;
+        let mut file = match archive.by_name(member) {
+            Ok(file) => file,
+            Err(zip::result::ZipError::FileNotFound) => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(ConductorError::Workflow(format!(
+                    "template: ZIP member '{member}' not found: {e}"
+                )));
+            }
+        };
 
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).map_err(|e| {

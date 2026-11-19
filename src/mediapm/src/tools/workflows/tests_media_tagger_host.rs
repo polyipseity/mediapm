@@ -14,8 +14,7 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use mediapm_cas::CasApi;
 use mediapm_conductor::{
-    Conductor, ExternalDataEntry, NickelDocument, OutputSaveMode, RuntimeStoragePaths, ToolSpec,
-    WorkflowSpec,
+    Conductor, ExternalDataEntry, NickelDocument, OutputSaveMode, RuntimeStoragePaths, WorkflowSpec,
 };
 use serde_json::json;
 
@@ -157,20 +156,6 @@ fn tagging_document(musicbrainz_endpoint: &str, source_hash: mediapm_cas::Hash) 
     }
 }
 
-/// A generated-document tool entry the planner resolves a tool by name through.
-///
-/// The planner reads neither tool's command, so the entries exist only to be
-/// found: the run document below supplies the definition the step executes
-/// against.
-fn resolvable_tool(name: &str) -> ToolSpec {
-    ToolSpec {
-        version: None,
-        name: name.to_string(),
-        kind: mediapm_conductor::ToolKindSpec::default(),
-        ..ToolSpec::default()
-    }
-}
-
 /// The conductor document the run executes.
 ///
 /// The media-tagger step is the synthesized one, with two documented changes.
@@ -189,10 +174,17 @@ fn run_document(
     source_hash: mediapm_cas::Hash,
     cache_dir: &std::path::Path,
 ) -> NickelDocument {
+    let (tagger_spec_for_plan, _) = build_media_tagger_spec();
+    let ffmpeg_spec_for_plan = crate::tools::workflows::ffmpeg::build_ffmpeg_spec(
+        BTreeMap::new(),
+        &BTreeMap::new(),
+        crate::conductor_bridge::tool_runtime::FfmpegSlotLimits::default(),
+    )
+    .0;
     let generated = NickelDocument {
         tools: BTreeMap::from([
-            ("media-tagger".to_string(), resolvable_tool("media-tagger")),
-            ("ffmpeg@stub".to_string(), resolvable_tool("ffmpeg")),
+            ("media-tagger".to_string(), tagger_spec_for_plan),
+            ("ffmpeg@stub".to_string(), ffmpeg_spec_for_plan),
         ]),
         ..NickelDocument::default()
     };

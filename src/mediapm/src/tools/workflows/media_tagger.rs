@@ -257,6 +257,11 @@ fn media_tagger_step_option_bool(step: &MediaStep, key: &str) -> bool {
 /// stream metadata (`-map_metadata:s -1`) or remove attached-picture video
 /// streams while keeping ordinary video (`-map 0 -map -v -map V`). An optional
 /// `container` override comes from `output_container`.
+///
+/// When cover-art persistence and tag embedding are enabled (both default
+/// `true`), the tagger's cover-art artifact archive is bound as
+/// `cover_art_archive` so the ffmpeg command can embed populated cover-art
+/// slots at runtime.
 fn build_media_tagger_apply_inputs(
     step: &MediaStep,
     input_binding: &str,
@@ -308,6 +313,22 @@ fn build_media_tagger_apply_inputs(
     {
         inputs.insert("container".to_string(), output_container.to_string());
     }
+
+    // Cover-art embedding: bind the metadata step's artifact archive so the
+    // ffmpeg command can embed populated cover-art slots at runtime. Embedding
+    // follows the same options that control cover-art persistence and tag
+    // embedding (`write_all_images` and `save_images_to_tags`, both default true).
+    let write_all_images = step_option_scalar(step, "write_all_images")
+        .is_none_or(|v| v.trim().eq_ignore_ascii_case("true"));
+    let save_images_to_tags = step_option_scalar(step, "save_images_to_tags")
+        .is_none_or(|v| v.trim().eq_ignore_ascii_case("true"));
+    if write_all_images && save_images_to_tags {
+        inputs.insert(
+            "cover_art_archive".to_string(),
+            format!("${{step_output.{metadata_step_id}.{OUTPUT_SANDBOX_ARTIFACTS}}}"),
+        );
+    }
+
     inputs
 }
 

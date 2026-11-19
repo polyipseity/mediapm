@@ -1441,19 +1441,41 @@ mod tests {
     }
 
     fn tools_document(names: &[&str]) -> NickelDocument {
+        use mediapm_conductor::{ToolKindSpec, ToolSpec};
+        let slot_limits = FfmpegSlotLimits::default();
+        let empty_map = std::collections::BTreeMap::new();
         NickelDocument {
             tools: names
                 .iter()
-                .map(|name| {
-                    (
-                        name.to_string(),
-                        ToolSpec {
-                            version: None,
-                            name: name.to_string(),
-                            kind: ToolKindSpec::default(),
-                            ..ToolSpec::default()
-                        },
-                    )
+                .map(|&name| {
+                    let (spec, _runtime) = match name {
+                        "ffmpeg" => {
+                            ffmpeg::build_ffmpeg_spec(empty_map.clone(), &empty_map, slot_limits)
+                        }
+                        "yt-dlp" => yt_dlp::build_yt_dlp_spec(empty_map.clone(), &empty_map),
+                        "rsgain" => rsgain::build_rsgain_spec(empty_map.clone(), &empty_map),
+                        "sd" => sd::build_sd_spec(empty_map.clone(), &empty_map),
+                        "media-tagger" => media_tagger::build_media_tagger_spec(),
+                        "import" => (
+                            ToolSpec {
+                                version: None,
+                                name: "import".to_string(),
+                                kind: ToolKindSpec::Builtin { builtin_id: "import".to_string() },
+                                ..ToolSpec::default()
+                            },
+                            mediapm_conductor::ToolRuntime::default(),
+                        ),
+                        other => (
+                            ToolSpec {
+                                version: None,
+                                name: other.to_string(),
+                                kind: ToolKindSpec::default(),
+                                ..ToolSpec::default()
+                            },
+                            mediapm_conductor::ToolRuntime::default(),
+                        ),
+                    };
+                    (name.to_string(), spec)
                 })
                 .collect(),
             ..NickelDocument::default()
