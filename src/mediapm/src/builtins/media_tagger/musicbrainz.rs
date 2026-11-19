@@ -682,8 +682,8 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn temp_cache() -> (tempfile::TempDir, MediaTaggerHttpCache) {
-        let dir = tempfile::tempdir().expect("temp cache dir");
+    fn temp_cache() -> (mediapm_utils::temp::ManagedTempDir, MediaTaggerHttpCache) {
+        let dir = mediapm_utils::temp::cache_dir().expect("temp cache dir");
         let cache = MediaTaggerHttpCache::new(
             Some(dir.path().to_path_buf()),
             CacheExpiryPolicy::from_seconds(60),
