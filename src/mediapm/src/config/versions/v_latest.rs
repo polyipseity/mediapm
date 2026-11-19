@@ -10,12 +10,12 @@
 //! ## DO NOT REMOVE: versions policy guard
 //!
 //! - This file is the only Rust carrier of the active schema's wire shape. The
-//!   versioned *contracts* and every migration are in `v1.ncl`–`v3.ncl`; this
+//!   versioned *contracts* and every migration are in `v1.ncl`–`v4.ncl`; this
 //!   file must never grow a second migration implementation.
 //! - `MediaRuntimeStorage::from_boundary` is the one place the boundary family
 //!   is resolved into the option-free resolved model; it lives in
 //!   `config/mod.rs` and delegates here.
-//! - Do not add fields here that `v3.ncl` does not also declare. A field the
+//! - Do not add fields here that the active `v4.ncl` does not also declare. A field the
 //!   Nickel contract rejects and the Rust boundary accepts is a document that
 //!   validates in one pipeline and fails in the other.
 
@@ -32,7 +32,7 @@ use super::super::{
 
 // The runtime records below and their parent are closed, like every persisted
 // boundary shape. `load_mediapm_document` evaluates the Nickel source and
-// deserializes the result without applying `v3.ncl`, so this boundary is the
+// deserializes the result without applying the active Nickel contract, so this boundary is the
 // only place a misspelt key can be rejected: a `materialization` record read
 // through a tolerant struct would drop the typo and leave the document running
 // the default the user meant to override.

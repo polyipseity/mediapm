@@ -52,8 +52,9 @@ use url::Url;
 
 pub use conductor_bridge::sync::{content_map_hash, find_active_tool_spec};
 pub use config::versions::{
-    apply_v1_contract, apply_v2_contract, apply_v3_contract, evaluate_mod_ncl_expression,
-    validate_v1_document, validate_v2_document, validate_v3_document,
+    apply_v1_contract, apply_v2_contract, apply_v3_contract, apply_v4_contract,
+    evaluate_mod_ncl_expression, validate_v1_document, validate_v2_document, validate_v3_document,
+    validate_v4_document,
 };
 pub use config::{
     ConfigPayloadStaging, GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind,
@@ -283,7 +284,7 @@ pub fn load_runtime_dotenv(env_file: &Path, env_generated_file: &Path) {
 /// the directories a reader opens.
 ///
 /// `schema_export_dir` receives this crate's registry and version contracts
-/// (`mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`) and `conductor_schema_dir` receives
+/// (`mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl`) and `conductor_schema_dir` receives
 /// the conductor's (`mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl`). The bytes
 /// written are the ones the runtime evaluates, embedded at compile time, so an exported
 /// contract cannot describe a rule the process does not enforce and a schema

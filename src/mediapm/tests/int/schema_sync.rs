@@ -130,7 +130,7 @@ fn parity_mediapm_document_serialization_invariants() {
     // the document never made ---
     assert_eq!(
         obj["version"],
-        serde_json::json!(3),
+        serde_json::json!(4),
         "a default document is written at the active schema version"
     );
     assert!(
@@ -250,10 +250,10 @@ fn parity_v2_nickel_schema_structure() {
 
 /// Pins the V3 contract's shape against the Rust document model it decodes to.
 ///
-/// V3 is the version the runtime writes, so this test guards the active
-/// surface: a field added to `ToolRequirement` or to the runtime materialization
-/// record without a matching contract would validate in the export and fail in
-/// the decoder, and a contract field with no Rust carrier would do the reverse.
+/// V3 is a historical version the runtime still reads and migrates, so this
+/// test guards its surface: a field added to `ToolRequirement` or to the
+/// runtime materialization record without a matching contract would fail
+/// validation, and a contract field with no Rust carrier would do the reverse.
 #[test]
 fn parity_v3_nickel_schema_structure() {
     let schema = include_str!("../../src/config/versions/v3.ncl");
@@ -309,10 +309,67 @@ fn parity_v3_nickel_schema_structure() {
     assert!(!schema.contains("conductor |"), "v3.ncl must NOT have any conductor field");
 
     // --- STRICT VERSION SEPARATION: the file is self-contained under *V3 ---
-    for other_version in ["V1 =", "V2 ="] {
+    for other_version in ["V1 =", "V2 =", "V4 ="] {
         assert!(
             !schema.contains(other_version),
             "v3.ncl must NOT define a `*{other_version}` contract name (strict version separation)"
+        );
+    }
+}
+
+/// Pins the V4 contract's shape against the Rust document model it decodes to.
+///
+/// V4 is the version the runtime writes, so this test guards the active
+/// surface: a field added to `ToolRequirement` or to the runtime materialization
+/// record without a matching contract would validate in the export and fail in
+/// the decoder, and a contract field with no Rust carrier would do the reverse.
+#[test]
+fn parity_v4_nickel_schema_structure() {
+    let schema = include_str!("../../src/config/versions/v4.ncl");
+
+    assert!(
+        schema.contains("let ToolRequirementV4 = {"),
+        "v4.ncl must define ToolRequirementV4 contract for the top-level tools field"
+    );
+    assert!(
+        nickel_record_body(schema, "ToolRequirementV4").is_some_and(
+            |body| body.contains("payload_staging | ConfigPayloadStagingV4 | optional,")
+        ),
+        "ToolRequirementV4 must carry the per-tool staging choice as an optional field"
+    );
+    assert!(
+        nickel_record_body(schema, "ToolRequirementV4").is_some_and(
+            |body| body.contains("version_spec\n    | ConfigVersionSpecV4\n    | optional,")
+        ),
+        "ToolRequirementV4 must have version_spec field typed ConfigVersionSpecV4"
+    );
+    assert!(
+        nickel_record_body(schema, "RuntimeMaterializationConfigV4")
+            .is_some_and(|body| body.contains("payload_staging | PayloadStagingV4 | optional,")),
+        "RuntimeMaterializationConfigV4 must carry the library-wide staging default"
+    );
+    assert!(
+        schema.contains("let PayloadStagingV4 = EnumV4 [\"in_place\", \"hard_link\", \"copy\"]"),
+        "PayloadStagingV4 must be exactly the three concrete strategies"
+    );
+    assert!(
+        schema.contains("let ConfigPayloadStagingV4 = std.contract.any_of ["),
+        "ConfigPayloadStagingV4 must be the tool-level choice that accepts \"inherit\""
+    );
+    assert!(
+        schema.contains("tools | { _ : ToolRequirementV4 } | default = {}"),
+        "v4.ncl must declare top-level tools using ToolRequirementV4"
+    );
+    assert!(
+        !schema.contains("state |"),
+        "v4.ncl must NOT have a state field (state is managed via state.json)"
+    );
+    assert!(!schema.contains("conductor |"), "v4.ncl must NOT have any conductor field");
+
+    for other_version in ["V1 =", "V2 =", "V3 ="] {
+        assert!(
+            !schema.contains(other_version),
+            "v4.ncl must NOT define a `*{other_version}` contract name (strict version separation)"
         );
     }
 }
@@ -331,6 +388,7 @@ fn parity_rust_side_owns_no_migration_dispatcher() {
     let v1_ncl = include_str!("../../src/config/versions/v1.ncl");
     let v2_ncl = include_str!("../../src/config/versions/v2.ncl");
     let v3_ncl = include_str!("../../src/config/versions/v3.ncl");
+    let v4_ncl = include_str!("../../src/config/versions/v4.ncl");
     let registry_ncl = include_str!("../../src/config/versions/mod.ncl");
 
     // The Nickel registry must remain the dispatcher: it owns the supported
@@ -347,7 +405,19 @@ fn parity_rust_side_owns_no_migration_dispatcher() {
         v2_ncl.contains("migrate_v3_to_v2"),
         "v2.ncl must own the migration down from v3, because those are the fields v2 has no room for"
     );
-    for edge in ["migrate_v1_to_v2", "migrate_v3_to_v2", "migrate_v2_to_v3", "migrate_v2_to_v1"] {
+    assert!(v4_ncl.contains("migrate_v3_to_v4"), "v4.ncl must own the migration INTO v4");
+    assert!(
+        v3_ncl.contains("migrate_v4_to_v3"),
+        "v3.ncl must own the migration down from v4, because those are the option keys v3 has no room for"
+    );
+    for edge in [
+        "migrate_v1_to_v2",
+        "migrate_v3_to_v2",
+        "migrate_v2_to_v3",
+        "migrate_v2_to_v1",
+        "migrate_v3_to_v4",
+        "migrate_v4_to_v3",
+    ] {
         assert!(
             registry_ncl.contains(edge),
             "mod.ncl must reach {edge}: the registry dispatches every edge and implements none"

@@ -2,7 +2,7 @@
 //!
 //! [`MediaPmDocument`] is the single type every `mediapm.ncl` on disk decodes
 //! into, for every schema version: the Nickel ladder in
-//! `v1.ncl`–`v3.ncl` migrates a document *up* to the active version first, and
+//! `v1.ncl`–`v4.ncl` migrates a document *up* to the active version first, and
 //! only then does this type see it. It therefore carries a version marker and a
 //! `runtime` field holding the active `*Latest` boundary value, which is why it
 //! lives here rather than in `config/mod.rs`: naming that boundary type is

@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 use mediapm::{
     ConfigPayloadStaging, MediaPmDocument, MediaRuntimeStorage, MediaStep, OutputSaveConfig,
     OutputVariantValue, PayloadStaging, ToolRegistryEntry, VerifyStrategy, apply_v1_contract,
-    apply_v2_contract, apply_v3_contract, evaluate_mod_ncl_expression, validate_v1_document,
-    validate_v2_document, validate_v3_document,
+    apply_v2_contract, apply_v3_contract, apply_v4_contract, evaluate_mod_ncl_expression,
+    validate_v1_document, validate_v2_document, validate_v3_document, validate_v4_document,
 };
 
 /// Realistic v1 document exercising every closed contract surface.
@@ -67,6 +67,14 @@ fn expect_rejected_v3(contract: &str, source: &str) {
     assert!(
         result.is_err(),
         "expected v3 contract '{contract}' to reject source, but it validated successfully: {result:?}"
+    );
+}
+
+fn expect_rejected_v4(contract: &str, source: &str) {
+    let result = apply_v4_contract(contract, source);
+    assert!(
+        result.is_err(),
+        "expected v4 contract '{contract}' to reject source, but it validated successfully: {result:?}"
     );
 }
 
@@ -269,8 +277,8 @@ fn parity_mod_ncl_exports_registry_surface() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(mod_source.contains("current_version = "), "mod.ncl must export current_version");
     assert!(
-        mod_source.contains("supported_versions = [1, 2, 3]"),
-        "mod.ncl must export supported_versions = [1, 2, 3]"
+        mod_source.contains("supported_versions = [1, 2, 3, 4]"),
+        "mod.ncl must export supported_versions = [1, 2, 3, 4]"
     );
     assert!(mod_source.contains("migrate_to = migrate_to_fn"), "mod.ncl must export migrate_to");
     assert!(
@@ -278,11 +286,11 @@ fn parity_mod_ncl_exports_registry_surface() {
         "mod.ncl must export SupportedVersion"
     );
     assert!(
-        mod_source.contains("validate_document = v3_migration.validate_document_v3"),
+        mod_source.contains("validate_document = v4_migration.validate_document_v4"),
         "mod.ncl must re-export validate_document (unversioned alias into the active version)"
     );
     assert!(
-        mod_source.contains("envelope_contract = v3_migration.envelope_contract_v3"),
+        mod_source.contains("envelope_contract = v4_migration.envelope_contract_v4"),
         "mod.ncl must re-export envelope_contract (unversioned alias into the active version)"
     );
     assert!(
@@ -421,7 +429,11 @@ fn parity_v3_ncl_exports_validator_and_envelope() {
     );
     assert!(
         schema.contains("migrate_v2_to_v3 = migrate_v2_to_v3_fn"),
-        "v3.ncl must export the migration INTO v3"
+        "v3.ncl must export the migration INTO v3 from v2"
+    );
+    assert!(
+        schema.contains("migrate_v4_to_v3 = migrate_v4_to_v3_fn"),
+        "v3.ncl must export the migration INTO v3 from v4"
     );
 }
 
@@ -438,6 +450,9 @@ fn strict_v3_no_v1_or_v2_names() {
         "MediaPmDocumentV2",
         "MediaRuntimeStorageV2",
         "RuntimeMaterializationConfigV2",
+        "MediaPmDocumentV4",
+        "MediaRuntimeStorageV4",
+        "ToolRequirementV4",
     ] {
         assert!(
             !schema.contains(older_name),
@@ -976,6 +991,7 @@ fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
         ("v1.ncl", include_str!("../../src/config/versions/v1.ncl")),
         ("v2.ncl", include_str!("../../src/config/versions/v2.ncl")),
         ("v3.ncl", include_str!("../../src/config/versions/v3.ncl")),
+        ("v4.ncl", include_str!("../../src/config/versions/v4.ncl")),
     ];
     for (name, source) in mediapm_expected {
         let written = std::fs::read_to_string(export_dir.join(name))
@@ -1340,5 +1356,359 @@ fn strict_output_save_accepts_auto_and_rejects_anything_else() {
     assert_eq!(
         serde_json::to_value(&full).expect("a full variant must serialize")["save"],
         json!("full")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// V4: active document version and media-tagger option key migration
+// ---------------------------------------------------------------------------
+
+/// The v4 module exports the version-locked validator, envelope contract, and
+/// the edge INTO v4.
+#[test]
+fn parity_v4_ncl_exports_validator_and_envelope() {
+    let schema = include_str!("../../src/config/versions/v4.ncl");
+    assert!(
+        schema.contains("validate_document_v4 = fun document => document | _media_pm_document_v4"),
+        "v4.ncl must export validate_document_v4"
+    );
+    assert!(
+        schema.contains("envelope_contract_v4 = _media_pm_document_v4"),
+        "v4.ncl must export envelope_contract_v4"
+    );
+    assert!(
+        schema.contains("migrate_v3_to_v4 = migrate_v3_to_v4_fn"),
+        "v4.ncl must export the migration INTO v4"
+    );
+}
+
+/// STRICT VERSION SEPARATION: the v4 module defines no `*V1`/`*V2`/`*V3`
+/// contract names.
+#[test]
+fn strict_v4_no_v1_v2_or_v3_names() {
+    let schema = include_str!("../../src/config/versions/v4.ncl");
+    for older_name in [
+        "MediaPmDocumentV1",
+        "MediaRuntimeStorageV1",
+        "ToolRequirementV1",
+        "MediaPmDocumentV2",
+        "MediaRuntimeStorageV2",
+        "RuntimeMaterializationConfigV2",
+        "MediaPmDocumentV3",
+        "MediaRuntimeStorageV3",
+        "ToolRequirementV3",
+    ] {
+        assert!(
+            !schema.contains(older_name),
+            "v4.ncl must not define or reference {older_name} (strict version separation)"
+        );
+    }
+}
+
+/// The closed v4 envelope rejects unknown top-level fields.
+#[test]
+fn strict_v4_rejects_unknown_top_level_field() {
+    expect_rejected_v4("validate_document_v4", r"{ version = 4, bogus = 1 }");
+}
+
+/// A v3 document using retired media-tagger option keys migrates to v4 with
+/// the positive preservation keys and an inverted `clear_existing_tags` value.
+#[test]
+fn parity_v3_to_v4_migration_rewrites_tagger_option_keys() {
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 4 {
+      version = 3,
+      media = {
+        m1 = {
+          steps = [
+            {
+              tool = "media-tagger",
+              options = {
+                clear_existing_tags = "true",
+                preserve_images = "false",
+                unrelated = "keep",
+              },
+            },
+          ],
+        },
+      },
+    })"#,
+    )
+    .expect("v3 -> v4 migration must evaluate");
+    let obj = value.as_object().expect("migrated document must be an object");
+    assert_eq!(obj["version"].as_f64(), Some(4.0));
+    let options = &obj["media"]["m1"]["steps"][0]["options"];
+    assert_eq!(options["preserve_existing_tags"], "false");
+    assert_eq!(options["preserve_existing_images"], "false");
+    assert_eq!(options["unrelated"], "keep");
+    assert!(
+        options.get("clear_existing_tags").is_none(),
+        "retired clear_existing_tags key must be removed"
+    );
+    assert!(
+        options.get("preserve_images").is_none(),
+        "retired preserve_images key must be removed"
+    );
+
+    let v4_source = r#"{
+  version = 4,
+  media = {
+    m1 = {
+      steps = [
+        {
+          tool = "media-tagger",
+          options = {
+            preserve_existing_tags = "false",
+            preserve_existing_images = "false",
+            unrelated = "keep",
+          },
+        },
+      ],
+    },
+  },
+}"#;
+    let validated = validate_v4_document(v4_source).expect("migrated shape must validate as v4");
+    assert_eq!(validated["version"].as_f64(), Some(4.0));
+}
+
+/// The v3 -> v4 option migration inverts trimmed, case-insensitive boolean
+/// strings and leaves unrecognized values unchanged.
+#[test]
+fn parity_v3_to_v4_migration_inverts_boolean_strings_case_insensitively() {
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 4 {
+      version = 3,
+      media = {
+        m1 = {
+          steps = [
+            {
+              tool = "media-tagger",
+              options = {
+                clear_existing_tags = " False ",
+                preserve_images = " TRUE ",
+              },
+            },
+          ],
+        },
+      },
+    })"#,
+    )
+    .expect("v3 -> v4 migration must evaluate");
+    let options = &value["media"]["m1"]["steps"][0]["options"];
+    assert_eq!(options["preserve_existing_tags"], "true");
+    assert_eq!(options["preserve_existing_images"], " TRUE ");
+
+    let unchanged = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 4 {
+      version = 3,
+      media = {
+        m1 = {
+          steps = [
+            {
+              tool = "media-tagger",
+              options = {
+                clear_existing_tags = "maybe",
+              },
+            },
+          ],
+        },
+      },
+    })"#,
+    )
+    .expect("v3 -> v4 migration must evaluate");
+    assert_eq!(unchanged["media"]["m1"]["steps"][0]["options"]["preserve_existing_tags"], "maybe");
+}
+
+/// A v4 document round-trips unchanged through identity migration and
+/// validates against the v4 contract.
+#[test]
+fn parity_v4_identity_migration_and_validation_round_trip() {
+    let source = r#"{
+      version = 4,
+      media = {
+        m1 = {
+          steps = [
+            {
+              tool = "media-tagger",
+              options = {
+                preserve_existing_tags = "true",
+                preserve_existing_images = "false",
+                unrelated = "keep",
+              },
+            },
+          ],
+        },
+      },
+    }"#;
+    let validated = validate_v4_document(source).expect("v4 document must validate");
+    assert_eq!(validated["version"].as_f64(), Some(4.0));
+
+    let migrated = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 4 {
+      version = 4,
+      media = {
+        m1 = {
+          steps = [
+            {
+              tool = "media-tagger",
+              options = {
+                preserve_existing_tags = "true",
+                preserve_existing_images = "false",
+                unrelated = "keep",
+              },
+            },
+          ],
+        },
+      },
+    })"#,
+    )
+    .expect("v4 identity migration must evaluate");
+    assert_eq!(migrated["version"].as_f64(), Some(4.0));
+    let options = &migrated["media"]["m1"]["steps"][0]["options"];
+    assert_eq!(options["preserve_existing_tags"], "true");
+    assert_eq!(options["preserve_existing_images"], "false");
+    assert_eq!(options["unrelated"], "keep");
+}
+
+/// The reverse v4 -> v3 migration restores retired option key spellings and
+/// inverts the preservation value back to `clear_existing_tags`.
+#[test]
+fn parity_v4_to_v3_migration_restores_tagger_option_keys() {
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 3 {
+      version = 4,
+      media = {
+        m1 = {
+          steps = [
+            {
+              tool = "media-tagger",
+              options = {
+                preserve_existing_tags = "false",
+                preserve_existing_images = "true",
+                unrelated = "keep",
+              },
+            },
+          ],
+        },
+      },
+    })"#,
+    )
+    .expect("v4 -> v3 migration must evaluate");
+    assert_eq!(value["version"].as_f64(), Some(3.0));
+    let options = &value["media"]["m1"]["steps"][0]["options"];
+    assert_eq!(options["clear_existing_tags"], "true");
+    assert_eq!(options["preserve_images"], "true");
+    assert_eq!(options["unrelated"], "keep");
+    assert!(options.get("preserve_existing_tags").is_none());
+    assert!(options.get("preserve_existing_images").is_none());
+
+    let v3_source = r#"{
+  version = 3,
+  media = {
+    m1 = {
+      steps = [
+        {
+          tool = "media-tagger",
+          options = {
+            clear_existing_tags = "true",
+            preserve_images = "true",
+            unrelated = "keep",
+          },
+        },
+      ],
+    },
+  },
+}"#;
+    validate_v3_document(v3_source).expect("migrated shape must validate as v3");
+}
+
+/// A v3 document with no media, steps, or options migrates cleanly to v4.
+#[test]
+fn parity_v3_to_v4_migration_handles_absent_media_and_options() {
+    let value = evaluate_mod_ncl_expression("(shared.migrate_to 4 { version = 3 })")
+        .expect("minimal v3 -> v4 migration must evaluate");
+    assert_eq!(value["version"].as_f64(), Some(4.0));
+
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 4 {
+      version = 3,
+      media = {
+        m1 = { steps = [ { tool = "ffmpeg" } ] },
+      },
+    })"#,
+    )
+    .expect("v3 -> v4 migration without options must evaluate");
+    assert_eq!(value["version"].as_f64(), Some(4.0));
+    assert!(value["media"]["m1"]["steps"][0].get("options").is_none());
+}
+
+/// Migration composes from v1 and v2 to v4 and back.
+#[test]
+fn parity_v1_and_v2_migrate_to_v4_and_back() {
+    let from_v1 = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 4 {
+      version = 1,
+      media = { m1 = { title = "Hello", steps = [ { tool = "ffmpeg" } ] } },
+      tools = {},
+      runtime = {},
+      state = { version = 3, managed_files = {} },
+    })"#,
+    )
+    .expect("v1 -> v4 migration must evaluate");
+    assert_eq!(from_v1["version"].as_f64(), Some(4.0));
+    assert!(from_v1.get("state").is_none());
+
+    let back_to_v1 = evaluate_mod_ncl_expression(
+        "(shared.migrate_to 1 { version = 4, tools = {}, runtime = {} })",
+    )
+    .expect("v4 -> v1 migration must evaluate");
+    assert_eq!(back_to_v1["version"].as_f64(), Some(1.0));
+
+    let from_v2 = evaluate_mod_ncl_expression(
+        "(shared.migrate_to 4 { version = 2, tools = {}, runtime = {} })",
+    )
+    .expect("v2 -> v4 migration must evaluate");
+    assert_eq!(from_v2["version"].as_f64(), Some(4.0));
+
+    let back_to_v2 = evaluate_mod_ncl_expression(
+        "(shared.migrate_to 2 { version = 4, tools = {}, runtime = {} })",
+    )
+    .expect("v4 -> v2 migration must evaluate");
+    assert_eq!(back_to_v2["version"].as_f64(), Some(2.0));
+}
+
+/// An unknown option key survives migration to v4, so later plan-build/runtime
+/// validation still sees and rejects it.
+#[test]
+fn parity_v3_to_v4_migration_preserves_unknown_option_keys() {
+    let value = evaluate_mod_ncl_expression(
+        r#"(shared.migrate_to 4 {
+      version = 3,
+      media = {
+        m1 = {
+          steps = [
+            {
+              tool = "media-tagger",
+              options = {
+                clear_existing_tags = "true",
+                bogus_option = "surprise",
+              },
+            },
+          ],
+        },
+      },
+    })"#,
+    )
+    .expect("v3 -> v4 migration must evaluate");
+    let options = &value["media"]["m1"]["steps"][0]["options"];
+    assert_eq!(options["preserve_existing_tags"], "false");
+    assert_eq!(options["bogus_option"], "surprise");
+
+    let doc: MediaPmDocument = serde_json::from_value(value)
+        .expect("migrated document with unknown option key must still decode");
+    assert_eq!(
+        doc.media["m1"].steps[0].options.get("bogus_option"),
+        Some(&mediapm::TransformInputValue::String("surprise".to_string())),
+        "unknown option keys must survive migration for plan-build/runtime rejection"
     );
 }

@@ -380,6 +380,80 @@ let migrate_v2_to_v3_fn = fun data =>
   (drop_field "version" data) & { version = 3 }
 in
 
+# ||| Inverts a boolean string value for the v4 -> v3 tag-preservation rename.
+# |||
+# ||| Handles trimmed, case-insensitive `"true"` and `"false"` strings. Any
+# ||| other value is returned unchanged so the migration does not invent a
+# ||| meaning for an unrecognized string.
+let invert_bool_string_v3 = fun value =>
+  if std.is_string value then
+    let normalized = std.string.lowercase (std.string.trim value) in
+    if normalized == "true" then
+      "false"
+    else if normalized == "false" then
+      "true"
+    else
+      value
+  else
+    value
+in
+
+# ||| Restores the retired media-tagger option keys in one step options record.
+let migrate_media_tagger_options_v4_to_v3 = fun options =>
+  let with_clear_existing_tags =
+    if std.record.has_field "preserve_existing_tags" options then
+      (drop_field "preserve_existing_tags" options)
+      & {
+        clear_existing_tags = invert_bool_string_v3 options.preserve_existing_tags,
+      }
+    else
+      options
+  in
+  if std.record.has_field "preserve_existing_images" with_clear_existing_tags then
+    (drop_field "preserve_existing_images" with_clear_existing_tags)
+    & {
+      preserve_images = with_clear_existing_tags.preserve_existing_images,
+    }
+  else
+    with_clear_existing_tags
+in
+
+# ||| Rewrites one media step's option keys when it carries an options record.
+let migrate_step_options_v4_to_v3 = fun step =>
+  if std.record.has_field "options" step then
+    (drop_field "options" step)
+    & { options = migrate_media_tagger_options_v4_to_v3 step.options }
+  else
+    step
+in
+
+# ||| Restores retired option keys in every step of one media source spec.
+let migrate_media_source_v4_to_v3 = fun _id spec =>
+  if std.record.has_field "steps" spec then
+    (drop_field "steps" spec)
+    & { steps = std.array.map migrate_step_options_v4_to_v3 spec.steps }
+  else
+    spec
+in
+
+# ||| Migration edge INTO V3 from V4 (placement policy: each version file owns
+# ||| the migration into that version; `mod.ncl` only dispatches).
+# |||
+# ||| V3 predates the positive preservation option names, so the hop restores
+# ||| the retired media-tagger option keys in every
+# ||| `media[*].steps[*].options` record and states the V3 version marker.
+let migrate_v4_to_v3_fn = fun data =>
+  let without_version = drop_field "version" data in
+  let with_media =
+    if std.record.has_field "media" without_version then
+      (drop_field "media" without_version)
+      & { media = std.record.map migrate_media_source_v4_to_v3 without_version.media }
+    else
+      without_version
+  in
+  with_media & { version = 3 }
+in
+
 {
   # ||| Validates one V3 mediapm document, filling in defaults.
   validate_document_v3 = fun document => document | _media_pm_document_v3,
@@ -388,6 +462,9 @@ in
   # ||| Migrates one V2 document to V3 (states the new version marker; V3 adds
   # ||| only optional fields, so nothing else moves).
   migrate_v2_to_v3 = migrate_v2_to_v3_fn,
+  # ||| Migrates one V4 document down to V3 (restores retired media-tagger
+  # ||| option keys and states the V3 version marker).
+  migrate_v4_to_v3 = migrate_v4_to_v3_fn,
   PayloadStagingV3 = _payload_staging_v3,
   ConfigPayloadStagingV3 = _config_payload_staging_v3,
   MediaPmDocumentV3 = _media_pm_document_v3,
