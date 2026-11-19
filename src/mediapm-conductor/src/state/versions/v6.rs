@@ -112,7 +112,7 @@ pub(crate) struct ToolCallInstanceV6 {
     pub key_version: u32,
     /// Highest key version attempted for migration checks.
     pub attempted_key_version_nk: u32,
-    /// Tool call identifier: unified tools-catalog map key.
+    /// Logical tool-call identifier used for instance key derivation.
     pub tool_call_id: String,
     /// Effective command argv / key material hashes in order.
     pub command_args: Vec<Hash>,

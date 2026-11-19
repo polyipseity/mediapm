@@ -91,7 +91,9 @@ pub struct ToolCallInstance {
     pub key_version: u32,
     /// Highest key version attempted for migration checks.
     pub attempted_key_version_nk: u32,
-    /// Tool call identifier: the unified tools-catalog map key.
+    /// Logical tool-call identifier used for instance key derivation and
+    /// reuse. This is the step's tool name, not the provisioned catalog map
+    /// key, so a tool payload update does not change step identity.
     pub tool_call_id: String,
     /// Effective command argv / key material hashes in order.
     pub command_args: Vec<Hash>,

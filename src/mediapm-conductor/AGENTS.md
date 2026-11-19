@@ -501,12 +501,14 @@ instance_key = blake3(domain || tool_call_id || command_args... || v8 extra term
 
 Where:
 
-- `tool_call_id` = the key of the conductor document's `tools` map entry the step references (the versioned id such as `echo@v1`), not the bare `spec.name`. In mediapm the managed-tool key is `{name}@{content_map_hash}`, so a changed payload is a different tool identity.
+- `tool_call_id` = the step's logical tool name (the name the step references, such as `echo` or `ffmpeg`). A managed tool's provisioned payload may change without changing the step's identity: finished work stays reusable when the key material, output specification, and staged inputs are unchanged. The provisioned catalog key remains the dispatch identity for resolving which tool definition runs.
 - `command_args` = key-material terms in command order. A plain part contributes its text plus the values it reads (resolved bytes when the binding names a step output, external data or another input; the binding's own text when it names only `${context.…}` or an inherited `${env.…}`), with deterministic document-fixed env literals participating per the provenance/key rules. A `:file(dest)`/`:folder(dest)` selector contributes `composite(dest, source hash)`. A builtin contributes one `composite(name, value)` per declared input in name order. The tool's non-empty `env_vars` map contributes one `composite(name, value)` term per entry in name order as part of the key material.
 - v8 extra terms = the output specification and staged inputs: one term per output name in name order as `composite(hash(name), hash(capture token))`, then one term per staged input in destination order as `composite(destination, staged hash)` from `materialized_inputs`. Captured output hashes are not key material (they are results); the capture token is part of the keyed output specification.
 - `step_instances` (workflow -> step -> instance key) is the sole seed/lookup mapping for recorded step instances.
 
 Time never participates: an impure step's recorded execution time is provenance, not key material, so unchanged inputs can hit the step cache. Re-execution follows changed key material or explicit/persisted invalidation. On work-skipping paths (cache hits, migration, missing-blob recovery, invalidation-related maintenance), lookup/runtime logic maintains `key_version`/`attempted_key_version_nk`, applies invalidation semantics as needed, and re-keys/migrates records only under the implemented rules so reused state stays consistent. Pins: `impure_keys_ignore_time`, `an_immediate_second_sync_executes_nothing_and_rematerializes_nothing`, `force_rerun_reexecutes_the_cached_workflow`, `v8_moves_with_output_spec_and_not_with_captured_hash`, `two_steps_declaring_different_tool_artifacts_reuse_one_instance`.
+
+Step identity is independent of tool payload content: a tool upgrade changes no step's instance key when the key material, output specification, and staged inputs are unchanged (`mediapm/tests/int/workflow_incrementality.rs`, `a_tool_payload_update_does_not_re_execute_steps`; `instance_key.rs`, `a_tool_payload_update_does_not_move_the_key_material`).
 
 ### Cache-Hit Validity
 
