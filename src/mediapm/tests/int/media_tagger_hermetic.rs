@@ -505,3 +505,179 @@ async fn a_cover_art_archive_error_fails_the_step_and_names_the_endpoint() {
         "the error must name the failing archive endpoint, got: {rendered}"
     );
 }
+
+/// Creates a minimal media file carrying the given global metadata tags.
+///
+/// The file is an audio-only Matroska container copied from the demo fixture so
+/// ffmpeg can extract the tags back out without a network dependency.
+fn create_tagged_media(path: &Path, tags: &[(&str, &str)]) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/demo.mkv");
+    let mut command = std::process::Command::new("ffmpeg");
+    command
+        .arg("-v")
+        .arg("error")
+        .arg("-y")
+        .arg("-i")
+        .arg(&fixture)
+        .arg("-vn")
+        .arg("-c:a")
+        .arg("copy");
+    for (key, value) in tags {
+        command.arg("-metadata").arg(format!("{key}={value}"));
+    }
+    command.arg(path);
+    let status = command.status().expect("ffmpeg available for tagged fixture");
+    assert!(status.success(), "ffmpeg failed to create tagged media fixture");
+}
+
+/// With tag saving disabled, preserved existing global tags survive as the
+/// fallback output.
+#[tokio::test]
+async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
+    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let input = workspace.path().join("input.mka");
+    create_tagged_media(&input, &[("album", "Existing Album"), ("artist", "Existing Artist")]);
+    let output = workspace.path().join("out.ffmetadata");
+    let options = InternalMediaTaggerOptions {
+        input_path: Some(input),
+        output_path: output.clone(),
+        acoustid_api_key: None,
+        acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+        musicbrainz_endpoint: format!("{}/ws/2", "http://127.0.0.1:9"),
+        caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
+        cache_dir: Some(workspace.path().join("cache")),
+        cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+        strict_identification: false,
+        write_all_tags: false,
+        write_all_images: false,
+        save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+        embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+        cover_art_slot_count: DEFAULT_COVER_ART_SLOT_COUNT,
+        ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+        caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+        caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+        caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+        preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+        preserve_existing_tags: true,
+        preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+        enable_tag_saving: false,
+        release_ars: DEFAULT_RELEASE_ARS,
+        recording_mbid: Some("none".to_string()),
+        release_mbid: None,
+    };
+
+    run_internal_media_tagger(options).await.expect("disabled tag saving with fallback");
+
+    let tags = parse_ffmetadata(&std::fs::read_to_string(&output).expect("ffmetadata written"));
+    assert_eq!(tags.get("ALBUM").map(String::as_str), Some("Existing Album"));
+    assert_eq!(tags.get("ARTIST").map(String::as_str), Some("Existing Artist"));
+}
+
+/// With tag saving disabled and preservation off, existing global tags are
+/// dropped from the fallback output.
+#[tokio::test]
+async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
+    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let input = workspace.path().join("input.mka");
+    create_tagged_media(&input, &[("album", "Existing Album")]);
+    let output = workspace.path().join("out.ffmetadata");
+    let options = InternalMediaTaggerOptions {
+        input_path: Some(input),
+        output_path: output.clone(),
+        acoustid_api_key: None,
+        acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+        musicbrainz_endpoint: format!("{}/ws/2", "http://127.0.0.1:9"),
+        caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
+        cache_dir: Some(workspace.path().join("cache")),
+        cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+        strict_identification: false,
+        write_all_tags: false,
+        write_all_images: false,
+        save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+        embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+        cover_art_slot_count: DEFAULT_COVER_ART_SLOT_COUNT,
+        ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+        caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+        caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+        caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+        preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+        preserve_existing_tags: false,
+        preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+        enable_tag_saving: false,
+        release_ars: DEFAULT_RELEASE_ARS,
+        recording_mbid: Some("none".to_string()),
+        release_mbid: None,
+    };
+
+    run_internal_media_tagger(options).await.expect("disabled tag saving without fallback");
+
+    let tags = parse_ffmetadata(&std::fs::read_to_string(&output).expect("ffmetadata written"));
+    assert!(
+        !tags.contains_key("album") && !tags.contains_key("ALBUM"),
+        "existing global tags must be dropped when preservation is off: {tags:?}"
+    );
+}
+
+/// When tagging succeeds, preserved existing global tags survive and the
+/// tagger's values win on collision.
+#[tokio::test]
+async fn a_successful_tag_run_merges_existing_global_tags_with_tagger_values_winning() {
+    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let input = workspace.path().join("input.mka");
+    create_tagged_media(&input, &[("artist", "Existing Artist"), ("comment", "Keep Me")]);
+    let musicbrainz = wiremock::MockServer::start().await;
+    mount_musicbrainz(&musicbrainz).await;
+
+    let endpoint = format!("{}/ws/2", musicbrainz.uri());
+    let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
+    options.input_path = Some(input);
+    options.preserve_existing_tags = true;
+    let output_path = options.output_path.clone();
+
+    run_internal_media_tagger(options).await.expect("tagged merge run");
+
+    let tags =
+        parse_ffmetadata(&std::fs::read_to_string(&output_path).expect("ffmetadata written"));
+    assert_eq!(
+        tags.get("ARTIST").map(String::as_str),
+        Some("Test Artist"),
+        "tagger values win on collision with existing global tags"
+    );
+    assert_eq!(
+        tags.get("COMMENT").map(String::as_str),
+        Some("Keep Me"),
+        "non-colliding existing global tags survive merge"
+    );
+    assert_eq!(tags.get("title").map(String::as_str), Some("Test Recording"));
+}
+
+/// When tagging succeeds with preservation off, existing global tags are not
+/// carried into the output even when they do not collide.
+#[tokio::test]
+async fn a_successful_tag_run_drops_existing_global_tags_when_not_preserved() {
+    let workspace = mediapm_utils::temp::artifact_dir().expect("workspace");
+    let input = workspace.path().join("input.mka");
+    create_tagged_media(&input, &[("artist", "Existing Artist"), ("comment", "Drop Me")]);
+    let musicbrainz = wiremock::MockServer::start().await;
+    mount_musicbrainz(&musicbrainz).await;
+
+    let endpoint = format!("{}/ws/2", musicbrainz.uri());
+    let mut options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
+    options.input_path = Some(input);
+    options.preserve_existing_tags = false;
+    let output_path = options.output_path.clone();
+
+    run_internal_media_tagger(options).await.expect("tagged run without preservation");
+
+    let tags =
+        parse_ffmetadata(&std::fs::read_to_string(&output_path).expect("ffmetadata written"));
+    assert_eq!(
+        tags.get("ARTIST").map(String::as_str),
+        Some("Test Artist"),
+        "tagger values still define the output"
+    );
+    assert!(
+        !tags.contains_key("COMMENT") && !tags.contains_key("comment"),
+        "existing global tags must be dropped when preservation is off: {tags:?}"
+    );
+}

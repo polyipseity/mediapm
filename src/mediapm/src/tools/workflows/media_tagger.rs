@@ -235,13 +235,28 @@ fn build_media_tagger_metadata_inputs(
     inputs
 }
 
+/// Returns one media-tagger step option as a boolean, defaulting to `true`.
+///
+/// Missing, empty, or unrecognized values preserve the current media, so the
+/// absent form never behaves like an explicit `false`.
+fn media_tagger_step_option_bool(step: &MediaStep, key: &str) -> bool {
+    match step_option_scalar(step, key).map(str::trim).map(str::to_ascii_lowercase) {
+        Some(value) if value == "false" => false,
+        Some(value) if value == "true" => true,
+        _ => true,
+    }
+}
+
 /// Builds the apply step's input bindings for one variant flow.
 ///
 /// The apply step runs the selected ffmpeg tool: slot-0 content input,
 /// `INPUT_FFMETADATA_CONTENT` bound to the metadata step's `OUTPUT_CONTENT`,
-/// slot-0 output path, empty leading/trailing args, fixed `map_metadata`,
-/// `codec_copy`, and `vn` values, plus an optional `container` override from
-/// the `output_container` option.
+/// slot-0 output path, fixed `map_metadata` and `codec_copy` values, and
+/// preservation controls derived from the step options. By default every
+/// source stream and its stream tags are kept; explicit `false` options strip
+/// stream metadata (`-map_metadata:s -1`) or remove attached-picture video
+/// streams while keeping ordinary video (`-map 0 -map -v -map V`). An optional
+/// `container` override comes from `output_container`.
 fn build_media_tagger_apply_inputs(
     step: &MediaStep,
     input_binding: &str,
@@ -254,10 +269,39 @@ fn build_media_tagger_apply_inputs(
     );
     inputs.insert(ffmpeg_output_path_input_name(0), ffmpeg_output_file_path(0));
     inputs.insert(INPUT_LEADING_ARGS.to_string(), "[]".to_string());
-    inputs.insert(INPUT_TRAILING_ARGS.to_string(), "[]".to_string());
     inputs.insert("map_metadata".to_string(), "1".to_string());
     inputs.insert("codec_copy".to_string(), "true".to_string());
+    // No explicit `-vn`: the stream mapping below decides which video streams,
+    // if any, reach the output.
     inputs.insert("vn".to_string(), "false".to_string());
+
+    let preserve_stream_tags = media_tagger_step_option_bool(step, "preserve_existing_stream_tags");
+    let preserve_images = media_tagger_step_option_bool(step, "preserve_existing_images");
+
+    // Select every source stream explicitly so attached pictures survive the
+    // default preserve case. Dropping existing images removes attached-picture
+    // video streams and attachment streams but keeps ordinary video and audio.
+    let mut trailing_args = if preserve_images {
+        vec!["-map".to_string(), "0".to_string()]
+    } else {
+        vec![
+            "-map".to_string(),
+            "0".to_string(),
+            "-map".to_string(),
+            "-v".to_string(),
+            "-map".to_string(),
+            "V".to_string(),
+            "-map".to_string(),
+            "-0:t?".to_string(),
+        ]
+    };
+    if !preserve_stream_tags {
+        trailing_args.push("-map_metadata:s".to_string());
+        trailing_args.push("-1".to_string());
+    }
+    let trailing_args = serde_json::to_string(&trailing_args).expect("serializable trailing args");
+    inputs.insert(INPUT_TRAILING_ARGS.to_string(), trailing_args);
+
     if let Some(output_container) = step_option_scalar(step, "output_container")
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -671,13 +715,12 @@ mod tests {
 
     /// The apply step's fixed merge bindings and the file it writes.
     ///
-    /// The user-level guarantee: an apply step merges the metadata document
-    /// into a copy of the source instead of re-encoding it. `map_metadata=1`
-    /// names the metadata document as the merge source, `codec_copy=true`
-    /// keeps the streams untouched, and `vn=false` keeps the video stream —
-    /// the three values that decide whether a tagged file still holds its
-    /// media. The output path is the slot-0 file the step's own capture
-    /// matches, so a tool that wrote anywhere else would produce no output.
+    /// The user-level guarantee: an apply step merges the metadata document into a
+    /// copy of the source instead of re-encoding it. `map_metadata=1` names the
+    /// metadata document as the global merge source, `codec_copy=true` keeps the
+    /// streams untouched, and the default trailing args map every source stream so
+    /// existing content and attached pictures survive. The output path is the
+    /// slot-0 file the step's own capture matches.
     #[test]
     fn build_media_tagger_apply_inputs_fixes_the_merge_bindings() {
         let step = media_tagger_step(None);
@@ -689,7 +732,11 @@ mod tests {
         assert_eq!(inputs.get("codec_copy").map(String::as_str), Some("true"));
         assert_eq!(inputs.get("vn").map(String::as_str), Some("false"));
         assert_eq!(inputs.get(INPUT_LEADING_ARGS).map(String::as_str), Some("[]"));
-        assert_eq!(inputs.get(INPUT_TRAILING_ARGS).map(String::as_str), Some("[]"));
+        assert_eq!(
+            inputs.get(INPUT_TRAILING_ARGS).map(String::as_str),
+            Some("[\"-map\",\"0\"]"),
+            "default preservation keeps every source stream, including attached pictures",
+        );
         assert_eq!(
             inputs.get(INPUT_FFMETADATA_CONTENT).map(String::as_str),
             Some(format!("${{step_output.{metadata_step_id}.content}}").as_str()),
@@ -708,6 +755,196 @@ mod tests {
         assert!(
             !inputs.contains_key("container"),
             "a step that names no output_container must not constrain the muxer",
+        );
+    }
+
+    /// Stream-tag and image preservation flags control apply-step stripping.
+    #[test]
+    fn build_media_tagger_apply_inputs_respects_preservation_flags() {
+        let mut options = BTreeMap::new();
+        options.insert(
+            "preserve_existing_stream_tags".to_string(),
+            TransformInputValue::String("false".to_string()),
+        );
+        options.insert(
+            "preserve_existing_images".to_string(),
+            TransformInputValue::String("false".to_string()),
+        );
+        let step = MediaStep {
+            tool: MediaStepTool::MediaTagger,
+            input_variants: vec![],
+            output_variants: BTreeMap::new(),
+            options,
+        };
+        let inputs = build_media_tagger_apply_inputs(&step, "input", "meta");
+
+        assert_eq!(
+            inputs.get(INPUT_TRAILING_ARGS).map(String::as_str),
+            Some(
+                "[\"-map\",\"0\",\"-map\",\"-v\",\"-map\",\"V\",\"-map\",\"-0:t?\",\"-map_metadata:s\",\"-1\"]"
+            ),
+            "explicit false strips attached-picture video streams and source stream tags",
+        );
+    }
+
+    /// Applies ffmpeg with the tagger apply-step mapping/metadata args and
+    /// returns parsed stream disposition/tag summaries for assertions.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test helper keeps the ffmpeg/ffprobe setup and parsing explicit"
+    )]
+    fn probe_apply_result(
+        trailing_args: &[&str],
+        with_attached_pic: bool,
+    ) -> (Vec<(String, String, String)>, String) {
+        use std::process::Command;
+
+        let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/demo.mkv");
+        let src = tmp.path().join(if with_attached_pic { "src.mp4" } else { "src.mkv" });
+        if with_attached_pic {
+            let status = Command::new("ffmpeg")
+                .args([
+                    "-v",
+                    "error",
+                    "-y",
+                    "-i",
+                    fixture.to_str().expect("fixture path"),
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=green:s=16x16:d=1",
+                    "-map",
+                    "0",
+                    "-map",
+                    "1:v:0",
+                    "-c",
+                    "copy",
+                    "-c:v:1",
+                    "mjpeg",
+                    "-metadata:s:v:0",
+                    "language=eng",
+                    "-metadata:s:a:0",
+                    "language=jpn",
+                    "-disposition:v:1",
+                    "attached_pic",
+                    src.to_str().expect("src path"),
+                ])
+                .status()
+                .expect("ffmpeg");
+            assert!(status.success(), "ffmpeg failed to create attached-pic source");
+        } else {
+            let status = Command::new("ffmpeg")
+                .args([
+                    "-v",
+                    "error",
+                    "-y",
+                    "-i",
+                    fixture.to_str().expect("fixture path"),
+                    "-c",
+                    "copy",
+                    "-metadata:s:v:0",
+                    "language=eng",
+                    "-metadata:s:a:0",
+                    "language=jpn",
+                    src.to_str().expect("src path"),
+                ])
+                .status()
+                .expect("ffmpeg");
+            assert!(status.success(), "ffmpeg failed to create tagged-stream source");
+        }
+        let meta = tmp.path().join("meta.ffmeta");
+        std::fs::write(&meta, ";FFMETADATA1\nartist=NewArtist\n").expect("write ffmetadata");
+        let out = tmp.path().join(if with_attached_pic { "out.mp4" } else { "out.mkv" });
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args([
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            src.to_str().expect("src path"),
+            "-i",
+            meta.to_str().expect("meta path"),
+            "-map_metadata",
+            "1",
+            "-map_chapters",
+            "0",
+            "-c",
+            "copy",
+        ]);
+        cmd.args(trailing_args);
+        cmd.arg(out.to_str().expect("out path"));
+        let status = cmd.status().expect("ffmpeg apply");
+        assert!(status.success(), "ffmpeg apply failed");
+        let probe = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type:stream_tags=language:stream_disposition=attached_pic",
+                "-of",
+                "compact=p=0",
+                out.to_str().expect("out path"),
+            ])
+            .output()
+            .expect("ffprobe");
+        assert!(probe.status.success(), "ffprobe failed");
+        let text = String::from_utf8_lossy(&probe.stdout).to_string();
+        let streams = text
+            .lines()
+            .filter(|line| line.contains("codec_type="))
+            .map(|line| {
+                let mut codec = String::new();
+                let mut attached = String::new();
+                let mut language = String::new();
+                for part in line.split('|') {
+                    if let Some(value) = part.strip_prefix("codec_type=") {
+                        codec = value.to_string();
+                    } else if let Some(value) = part.strip_prefix("disposition:attached_pic=") {
+                        attached = value.to_string();
+                    } else if let Some(value) = part.strip_prefix("tag:language=") {
+                        language = value.to_string();
+                    }
+                }
+                (codec, attached, language)
+            })
+            .collect();
+        (streams, text)
+    }
+
+    /// The default apply mapping preserves source stream tags and attached pictures.
+    #[test]
+    fn the_default_apply_mapping_preserves_stream_tags_and_attached_pictures() {
+        let (streams, _) = probe_apply_result(&["-map", "0"], true);
+        assert!(
+            streams.iter().any(|(codec, attached, _)| codec == "video" && attached == "1"),
+            "default preservation must keep attached-picture streams: {streams:?}"
+        );
+        assert!(
+            streams.iter().any(|(codec, _, lang)| codec == "audio" && lang == "jpn"),
+            "default preservation must keep stream tags: {streams:?}"
+        );
+    }
+
+    /// Explicit false flags strip source stream tags and attached pictures.
+    #[test]
+    fn the_apply_mapping_strips_stream_tags_and_attached_pictures_when_disabled() {
+        let (streams, _) = probe_apply_result(
+            &["-map", "0", "-map", "-v", "-map", "V", "-map", "-0:t?", "-map_metadata:s", "-1"],
+            true,
+        );
+        assert!(
+            !streams.iter().any(|(_, attached, _)| attached == "1"),
+            "preserve_existing_images=false must remove attached-picture streams: {streams:?}"
+        );
+        assert!(
+            streams.iter().any(|(codec, attached, _)| codec == "video" && attached == "0"),
+            "ordinary video streams must survive attached-picture removal: {streams:?}"
+        );
+        assert!(
+            streams.iter().all(|(_, _, lang)| lang != "eng" && lang != "jpn"),
+            "preserve_existing_stream_tags=false must strip source stream tags: {streams:?}"
         );
     }
 
