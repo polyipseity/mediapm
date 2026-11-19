@@ -248,7 +248,9 @@ fn normalized_endpoint_base(endpoint: &str) -> anyhow::Result<Url> {
     }
     if !base.path().ends_with('/') {
         base.path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("MusicBrainz endpoint '{endpoint}' cannot be a base URL"))?
+            .map_err(|()| {
+                anyhow::anyhow!("MusicBrainz endpoint '{endpoint}' cannot be a base URL")
+            })?
             .push("");
     }
     Ok(base)
@@ -345,7 +347,7 @@ async fn fetch_entity<T: DeserializeOwned>(
                         return Err(error);
                     }
                     last_error = Some(error);
-                    let delay = retry_delay(attempt, policy, retry_after, attempt as u64);
+                    let delay = retry_delay(attempt, policy, retry_after, u64::from(attempt));
                     tokio::time::sleep(delay).await;
                     continue;
                 }
@@ -360,7 +362,7 @@ async fn fetch_entity<T: DeserializeOwned>(
                     return Err(wrapped);
                 }
                 last_error = Some(wrapped);
-                let delay = retry_delay(attempt, policy, None, attempt as u64);
+                let delay = retry_delay(attempt, policy, None, u64::from(attempt));
                 tokio::time::sleep(delay).await;
             }
         }
@@ -873,18 +875,12 @@ mod tests {
         let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let accepts_server = std::sync::Arc::clone(&accepts);
         let server = tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((mut socket, _)) => {
-                        accepts_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        let mut buf = [0u8; 1024];
-                        let _ =
-                            tokio::time::timeout(Duration::from_millis(200), socket.read(&mut buf))
-                                .await;
-                        drop(socket);
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((mut socket, _)) = listener.accept().await {
+                accepts_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ =
+                    tokio::time::timeout(Duration::from_millis(200), socket.read(&mut buf)).await;
+                drop(socket);
             }
         });
 
@@ -961,26 +957,26 @@ mod tests {
 
     #[test]
     fn cache_key_remains_host_port_and_ignores_scheme() {
-        let https_shape = MusicBrainzFetchShape {
+        let secure_shape = MusicBrainzFetchShape {
             write_all_tags: false,
             release_ars: false,
             endpoint: "https://musicbrainz.example.test:8443/base".to_string(),
         };
-        let http_shape = MusicBrainzFetchShape {
+        let plain_shape = MusicBrainzFetchShape {
             write_all_tags: false,
             release_ars: false,
             endpoint: "http://musicbrainz.example.test:8443/base".to_string(),
         };
-        let https_key = https_shape.cache_key(recording_mbid(), None).expect("https key");
-        let http_key = http_shape.cache_key(recording_mbid(), None).expect("http key");
-        assert_eq!(https_key, http_key, "scheme must not affect cache key");
+        let secure_key = secure_shape.cache_key(recording_mbid(), None).expect("https key");
+        let plain_key = plain_shape.cache_key(recording_mbid(), None).expect("http key");
+        assert_eq!(secure_key, plain_key, "scheme must not affect cache key");
         assert!(
-            https_key.contains("endpoint=musicbrainz.example.test:8443"),
-            "cache key must keep host:port: {https_key}"
+            secure_key.contains("endpoint=musicbrainz.example.test:8443"),
+            "cache key must keep host:port: {secure_key}"
         );
         assert!(
-            !https_key.contains("https://") && !https_key.contains("http://"),
-            "cache key must not embed scheme: {https_key}"
+            !secure_key.contains("https://") && !secure_key.contains("http://"),
+            "cache key must not embed scheme: {secure_key}"
         );
 
         assert_eq!(

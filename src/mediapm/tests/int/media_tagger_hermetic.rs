@@ -415,7 +415,7 @@ async fn cover_art_is_discovered_and_downloaded_through_the_configured_archive_e
     assert!(paths.contains(&"/img/front.jpg".to_string()));
 }
 
-/// A non-retryable MusicBrainz 4xx fails fast without exhausting attempts.
+/// A non-retryable `MusicBrainz` 4xx fails fast without exhausting attempts.
 ///
 /// The recording endpoint answers `404`, which the mediapm-owned retry policy
 /// treats as non-retryable. The step must fail on that first attempt rather than
