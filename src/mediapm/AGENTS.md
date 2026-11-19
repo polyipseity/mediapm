@@ -151,6 +151,14 @@ Instance keys are content-derived, so elapsed time never re-executes a step. Two
 
 Neither deletes an instance: the re-execution re-records the same content-derived key. `last_impure_sync_at` is not a lever — nothing writes it, and clearing it re-executes nothing. The marker selects on the workflow *and* the step id, so marking one media's step leaves another media's same-named step alone; what it cannot separate is a shared instance, because keys carry no media identity, so two media running the same work hold one instance and re-executing it once serves both. `media invalidate` writes no mediapm state, so it never edits the document's declared `variant_hashes`.
 
+## Output retention and rerun policy
+
+- The conductor keeps every captured output by default; mediapm defaults output variants to `save = "auto"` because a library keeps what it materializes and drops what it merely consumed.
+- `auto` stores a variant the hierarchy materializes in full and never delta-compresses it; keeps a variant the media's last step or any impure step produced; and keeps everything else only while something still needs it.
+- Impure steps are the case this protects: their outputs stay kept by default so a downstream change reuses them instead of re-running the network, and only an explicit `save = false` on that variant lets them go.
+- A tool upgrade changes no step's identity. Finished work stays finished; `mediapm media invalidate` is the documented way to make an upgraded tool take effect, and `--undo` reverses the marker.
+- Invalidation is per step, per media, and never touches another media's record.
+
 ## Managed Tool Provisioning
 
 5 managed tools carry a preset and a workflow module: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `sd`. `media-tagger` is a sixth managed tool with no preset and no payload at all: it is a **host builtin** mediapm registers on every run (see "Host builtin: media-tagger" below). A seventh, `import`, reaches `resolve_tool_fetch` (`tools/provider/import.rs`, a builtin source-ingest tool with no payload and no preset, so it is absent from `is_known_tool_id` and from `apply_preset`). See `.agents/instructions/provider-dispatch.instructions.md` (per-OS source descriptors, URL resolution, `resolve_latest_github_tag`), `.agents/instructions/preset-dispatch.instructions.md` (preset spec builders, defaults), and `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` (provisioning pipeline, paths, `FetchedToolPayload` shape) for details.
