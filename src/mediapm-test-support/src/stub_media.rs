@@ -563,11 +563,8 @@ async fn mount_yt_dlp(mock: &MockUpstream, stub: &[u8]) -> String {
 /// Mounts deno's upstream traffic: one ZIP per OS slot.
 ///
 /// The macOS and Linux asset names follow the host architecture, exactly as the
-/// provider's own slot table does. The provider wraps the executable it finds in
-/// a permission shim and renames the stub to `deno.real` (`deno.real.exe` on
-/// Windows), writing a shim at the original path that re-execs the rewritten
-/// binary, so a provisioned deno runs under one of those two names; the stub's
-/// dispatch covers both.
+/// provider's own slot table does. The host slot's bytes are the stub itself,
+/// so a provisioned deno runs under the executable name the archive carries.
 async fn mount_deno(mock: &MockUpstream, stub: &[u8]) -> String {
     let arch = provider_host_arch();
     let assets = [
