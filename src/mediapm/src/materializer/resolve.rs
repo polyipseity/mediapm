@@ -742,7 +742,7 @@ async fn resolve_single_step_output_hashes_strict(
     // preference could not change the answer, because the fallback picked the
     // same instance when nothing was materializable.
     let matched = state.tool_call_instances.iter().find(|(instance_key, instance)| {
-        instance.tool_call_id == conductor_tool_key
+        (instance.tool_call_id == step.tool || instance.tool_call_id == conductor_tool_key)
             && instance_matches_expected_inputs(
                 instance_key,
                 instance,
@@ -828,7 +828,7 @@ fn resolve_single_step_output_hashes_relaxed(
     let required_output_names: BTreeSet<String> = step.outputs.keys().cloned().collect();
     let mut candidates = Vec::new();
     for (instance_key, instance) in &state.tool_call_instances {
-        if instance.tool_call_id != conductor_tool_key {
+        if instance.tool_call_id != step.tool && instance.tool_call_id != conductor_tool_key {
             continue;
         }
         if !instance_names_step(instance, workflow_name, &step.id) {
@@ -1868,7 +1868,8 @@ mod tests {
             .tool_call_instances
             .iter()
             .find(|(instance_key, instance)| {
-                instance.tool_call_id == *conductor_tool_key
+                (instance.tool_call_id == ffmpeg_step.tool
+                    || instance.tool_call_id == *conductor_tool_key)
                     && instance_matches_expected_inputs(
                         instance_key,
                         instance,
@@ -2502,7 +2503,7 @@ mod tests {
             let mut candidates = Vec::new();
             let mut diagnostics = Vec::new();
             for (stored_key, instance) in &state.tool_call_instances {
-                if instance.tool_call_id != tool_call_id {
+                if instance.tool_call_id != step.tool && instance.tool_call_id != tool_call_id {
                     continue;
                 }
                 let derived = oracle_instance_key(instance, &key_material);
