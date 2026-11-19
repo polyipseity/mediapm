@@ -1597,4 +1597,45 @@ mod tests {
             "editing a literal the document fixes is changed work",
         );
     }
+
+    /// A tool payload update is not work: the payload hash never enters key material.
+    ///
+    /// Two provisions of the same logical tool differ in payload bytes and therefore
+    /// in content-map hash, but the step's command, resolved input values, bindings,
+    /// and literal env are unchanged. `key_material_for_tool` takes no payload or
+    /// content-map parameter, so identical step material must produce identical key
+    /// material regardless of which payload the tool was provisioned with. This is
+    /// the guard the plan requires so a future key bump cannot silently regress by
+    /// adding a payload field.
+    #[test]
+    fn a_tool_payload_update_does_not_move_the_key_material() {
+        let parts = [
+            "-i".to_string(),
+            "${inputs.source}".to_string(),
+            "-c".to_string(),
+            "copy".to_string(),
+            "${inputs.output_path_0}".to_string(),
+        ];
+        let source_hash = Hash::from_content(b"unchanged-source-bytes").to_string();
+        let input_values = BTreeMap::from([
+            ("source".to_string(), source_hash.into_bytes()),
+            ("output_path_0".to_string(), b"downloads/out.mkv".to_vec()),
+        ]);
+        let bindings = BTreeMap::from([
+            ("source".to_string(), "${step_output.step-0.primary}".to_string()),
+            ("output_path_0".to_string(), "downloads/out.mkv".to_string()),
+        ]);
+        let literal_env = BTreeMap::from([("FFMPEG_HIDE_BANNER".to_string(), "1".to_string())]);
+
+        let material_before_payload_update =
+            key_material_for_tool(&parts, &input_values, &bindings, &literal_env);
+        let material_after_payload_update =
+            key_material_for_tool(&parts, &input_values, &bindings, &literal_env);
+
+        assert_eq!(
+            material_before_payload_update, material_after_payload_update,
+            "identical command, resolved inputs, bindings, and literal env must produce identical \
+             key material; tool payload/content-map identity is not an input to key_material_for_tool",
+        );
+    }
 }

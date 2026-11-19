@@ -124,7 +124,10 @@ fn staged_input_records(staged_inputs: StagedInputs) -> BTreeMap<String, Hash> {
 
 /// Derived material for a resolved step, shared by cache lookup and execution.
 struct PreparedStep<'a> {
-    /// The versioned tool-call identifier from the unified document key.
+    /// The logical tool-call identifier used for instance key derivation.
+    ///
+    /// This is the step's tool name, not the versioned catalog map key, so a
+    /// tool payload update does not change instance identity.
     tool_call_id: String,
     /// The resolved tool specification.
     tool_spec: &'a UnifiedToolSpec,
@@ -151,19 +154,21 @@ fn prepare_step_execution<'a>(
     request: &'a StepExecutionRequest,
     resolved_inputs: &[ResolvedInput],
 ) -> Result<PreparedStep<'a>, ConductorError> {
-    // Resolve the tool call id from the unified tools map key (the versioned
-    // id such as `"echo@v1"`), not the bare `spec.name` used by step
-    // references. The instance key must be stable across runs of the same
-    // declared tool even if the step references it by name.
-    let (tool_call_id, tool_spec) =
-        find_tool_entry_by_name(&request.unified.tools, &request.step.tool)
-            .map(|(key, spec)| (key.clone(), spec))
-            .ok_or_else(|| {
-                ConductorError::Workflow(format!(
-                    "step '{}' references unknown tool '{}'",
-                    request.step.id, request.step.tool,
-                ))
-            })?;
+    // Resolve the tool spec by name, but key instance identity on the step's
+    // logical tool name rather than the versioned catalog map key. The catalog
+    // key for a managed tool includes its content hash, so using it would make
+    // a payload update look like a different tool and invalidate finished work.
+    // The step's tool reference is the stable identity: upgrading the tool
+    // binary changes no step's instance key.
+    let tool_spec = find_tool_entry_by_name(&request.unified.tools, &request.step.tool)
+        .map(|(_, spec)| spec)
+        .ok_or_else(|| {
+            ConductorError::Workflow(format!(
+                "step '{}' references unknown tool '{}'",
+                request.step.id, request.step.tool,
+            ))
+        })?;
+    let tool_call_id = request.step.tool.clone();
 
     // Key material (argv/inputs) and current material for v8 lookup/derivation.
     let mut raw_bindings = request.step.inputs.clone();

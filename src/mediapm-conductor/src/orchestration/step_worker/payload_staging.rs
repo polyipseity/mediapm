@@ -217,19 +217,20 @@ fn script_tool(
 
 /// Runs one `script` step against `fixture` and answers its bundle.
 ///
-/// `variant` becomes part of the tool key, which is the tool-call id the
-/// instance key derives from. Two runs of the same work in one fixture share an
-/// instance key, and with it a sandbox, so a test that compares topologies names
-/// the runs apart.
+/// `variant` distinguishes each run's logical tool identity so that runs
+/// comparing different staging topologies produce independent instance keys and
+/// sandboxes.
 async fn run_step(
     fixture: &Fixture,
-    tool: UnifiedToolSpec,
+    mut tool: UnifiedToolSpec,
     step_id: &str,
     variant: &str,
 ) -> Result<(StepExecutionBundle, PathBuf), ConductorError> {
+    let tool_name = format!("script-{variant}");
+    tool.name = tool_name.clone();
     let request = StepExecutionRequest {
         unified: Arc::new(UnifiedNickelDocument {
-            tools: BTreeMap::from([(format!("script@{variant}"), tool)]),
+            tools: BTreeMap::from([(format!("{tool_name}@{variant}"), tool)]),
             workflows: BTreeMap::new(),
             tool_content_hashes: BTreeSet::new(),
             external_data_policies: BTreeMap::new(),
@@ -237,7 +238,7 @@ async fn run_step(
         }),
         step: WorkflowStepSpec {
             id: step_id.to_string(),
-            tool: "script".to_string(),
+            tool: tool_name,
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
             max_retries: 0,

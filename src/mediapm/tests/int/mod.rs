@@ -70,3 +70,5 @@ mod sync_idempotency_double_run;
 mod sync_observer;
 /// One-terminal-per-sync progress ownership across all three sync phases.
 mod sync_progress;
+/// Workflow-step incrementality and impure-output survival guarantees (T8 C2).
+mod workflow_incrementality;

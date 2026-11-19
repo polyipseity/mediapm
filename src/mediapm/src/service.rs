@@ -273,7 +273,15 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         tool_id: &str,
         state: &MediaPmState,
     ) -> Result<bool, MediaPmError> {
-        if let Some(existing) = state.managed_tools.iter().rfind(|e| e.tool_id == tool_id) {
+        // Pick the latest-deployed entry for this tool, not merely the last in
+        // array order, because the recorded order is not a deployment-order
+        // guarantee.
+        if let Some(existing) = state
+            .managed_tools
+            .iter()
+            .filter(|e| e.tool_id == tool_id)
+            .max_by_key(|e| e.deployed_at)
+        {
             let effective = self.resolve_effective_runtime_storage()?;
             let desired = effective.tools.get(tool_id);
             // If no desired requirement is declared, the tool is considered
