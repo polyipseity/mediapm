@@ -35,6 +35,11 @@
 //! media the offline tests materialize: a caller that reads codecs or the
 //! container through `ffprobe` gets that file's answer without a download.
 //!
+//! `--mode print-env --name <VAR>` writes the value of the environment variable
+//! `VAR` to stdout, or to the file named by `--output` when given. It writes
+//! nothing when the variable is unset. Tests use it to prove which names reached
+//! the child without depending on a shell.
+//!
 //! `--mode sleep --seconds <n>` sleeps for `n` whole seconds.
 //!
 //! # Running as a named tool
@@ -79,8 +84,8 @@
 //!
 //! `0` on success, `2` when the command line is unusable (unknown mode, a
 //! missing flag value, an output that names the input, a manifest that names no
-//! usable entry, an emit with no manifest to read), and `3` when a file
-//! operation fails, including the invocation record. A stub that defaulted
+//! usable entry, an emit with no manifest to read, or a `print-env` with no name),
+//! and `3` when a file operation fails, including the invocation record. A stub that defaulted
 //! instead of failing would let a broken command line pass as a successful step,
 //! so every unusable shape is loud.
 
@@ -228,9 +233,10 @@ fn run_mode(mode: &str, args: &[String]) -> Result<(), StubError> {
         "copy" => copy(args),
         "emit" => emit(args),
         "probe" => probe(),
+        "print-env" => print_env(args),
         "sleep" => sleep_for(args),
         unknown => Err(StubError::usage(format!(
-            "unknown mode '{unknown}': expected `copy`, `emit`, `probe` or `sleep`"
+            "unknown mode '{unknown}': expected `copy`, `emit`, `probe`, `print-env` or `sleep`"
         ))),
     }
 }
@@ -529,6 +535,32 @@ fn probe() -> Result<(), StubError> {
     std::io::stdout().lock().write_all(PROBE_DOCUMENT.as_bytes()).map_err(|error| {
         StubError::io(format!("cannot write the probe document to stdout: {error}"))
     })
+}
+
+/// Writes the value of one environment variable.
+///
+/// The value is written to the file named by `--output` when given, or to stdout
+/// otherwise. The output is the variable's exact value, or nothing when the
+/// variable is not set. The mode exists so a test can observe what reached the
+/// child without invoking a shell.
+///
+/// # Errors
+///
+/// Returns a usage failure when `--name` is absent, and an I/O failure when the
+/// output cannot be written.
+fn print_env(args: &[String]) -> Result<(), StubError> {
+    let name = value_after(args, "--name")
+        .ok_or_else(|| StubError::usage("--name is required in print-env mode"))?;
+    let value = std::env::var_os(&name).unwrap_or_default();
+    if let Some(output) = value_after(args, "--output") {
+        std::fs::write(&output, value.as_encoded_bytes()).map_err(|error| {
+            StubError::io(format!("cannot write the environment value to '{output}': {error}"))
+        })
+    } else {
+        std::io::stdout().lock().write_all(value.as_encoded_bytes()).map_err(|error| {
+            StubError::io(format!("cannot write the environment value to stdout: {error}"))
+        })
+    }
 }
 
 /// Sleeps for the whole number of seconds `--seconds` names.

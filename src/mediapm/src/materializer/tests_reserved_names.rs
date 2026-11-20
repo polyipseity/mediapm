@@ -73,6 +73,7 @@ async fn a_media_folder_variant_name_the_sanitizer_would_rewrite_is_refused() {
         None,
         None,
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 
@@ -149,6 +150,7 @@ async fn a_rename_rule_output_is_refused_even_when_sanitize_names_is_enabled() {
         None,
         None,
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 

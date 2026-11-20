@@ -47,6 +47,7 @@ async fn entry_row_total_and_advances(build: impl FnOnce(String) -> MediaPmDocum
         Some(Arc::new(recording.clone())),
         Some(Arc::new(ProgressBarHandle::disabled())),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 

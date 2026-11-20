@@ -44,6 +44,7 @@ async fn sync_hierarchy_with_empty_hierarchy_no_progress_ops() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 
@@ -128,6 +129,7 @@ async fn sync_hierarchy_with_single_media_produces_progress_ops() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 
@@ -204,6 +206,7 @@ async fn sync_hierarchy_marks_a_missing_entry_warning() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("sync_hierarchy should succeed");
@@ -309,6 +312,7 @@ async fn sync_hierarchy_marks_a_failed_folder_entry() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 

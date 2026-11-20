@@ -51,6 +51,7 @@ async fn run_sync_result(
         None,
         None,
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
 }

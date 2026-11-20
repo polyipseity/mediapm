@@ -2522,9 +2522,14 @@ fn ffprobe_payload_has_mkv_video_and_audio(payload: &serde_json::Value) -> bool 
     has_mkv_container && has_video_stream && has_audio_stream
 }
 
-fn assert_mkv_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
+fn assert_mkv_video_audio_with_ffprobe(
+    path: &Path,
+    env_pairs: &[(String, String)],
+) -> ExampleResult<()> {
     let ffprobe_command = demo_ffprobe_command();
-    let output = Command::new(ffprobe_command)
+    let mut cmd = Command::new(ffprobe_command);
+    mediapm_utils::child_env::apply_std(&mut cmd, env_pairs);
+    let output = cmd
         .arg("-v")
         .arg("error")
         .arg("-show_entries")
@@ -2575,7 +2580,8 @@ fn assert_mkv_video_audio_with_ffprobe(path: &Path) -> ExampleResult<()> {
 /// itself rather than the file.
 fn assert_media_facts(route: ToolRoute, path: &Path, context: &str) -> ExampleResult<()> {
     if route.is_online() {
-        return assert_mkv_video_audio_with_ffprobe(path);
+        let env_pairs = mediapm::child_env::default_host_inherited_env_pairs();
+        return assert_mkv_video_audio_with_ffprobe(path, &env_pairs);
     }
     assert_fixture_media_facts(path, context)
 }
@@ -2622,9 +2628,12 @@ fn assert_fixture_media_facts(path: &Path, context: &str) -> ExampleResult<()> {
 
 fn probe_replaygain_tags_with_ffprobe(
     tagged_video_path: &Path,
+    env_pairs: &[(String, String)],
 ) -> ExampleResult<serde_json::Value> {
     let ffprobe_command = demo_ffprobe_command();
-    let output = Command::new(ffprobe_command)
+    let mut cmd = Command::new(ffprobe_command);
+    mediapm_utils::child_env::apply_std(&mut cmd, env_pairs);
+    let output = cmd
         .arg("-v")
         .arg("error")
         .arg("-show_entries")
@@ -2657,10 +2666,11 @@ fn probe_replaygain_tags_with_ffprobe(
 }
 
 async fn assert_tagged_media_replaygain_tags(tagged_video_path: &Path) -> ExampleResult<()> {
+    let env_pairs = mediapm::child_env::default_host_inherited_env_pairs();
     let mut last_error = String::new();
 
     for attempt in 1..=DEMO_REPLAYGAIN_FFPROBE_MAX_ATTEMPTS {
-        match probe_replaygain_tags_with_ffprobe(tagged_video_path) {
+        match probe_replaygain_tags_with_ffprobe(tagged_video_path, &env_pairs) {
             Ok(payload) if ffprobe_payload_has_required_replaygain_tags(&payload) => {
                 let unexpected_album_family =
                     ffprobe_payload_unexpected_single_track_replaygain_tags(&payload);
@@ -2929,9 +2939,15 @@ fn assert_playlist_content_format(path: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
-fn ffprobe_json_payload(path: &Path, show_entries: &str) -> ExampleResult<serde_json::Value> {
+fn ffprobe_json_payload(
+    path: &Path,
+    show_entries: &str,
+    env_pairs: &[(String, String)],
+) -> ExampleResult<serde_json::Value> {
     let ffprobe_command = demo_ffprobe_command();
-    let output = Command::new(ffprobe_command)
+    let mut cmd = Command::new(ffprobe_command);
+    mediapm_utils::child_env::apply_std(&mut cmd, env_pairs);
+    let output = cmd
         .arg("-v")
         .arg("error")
         .arg("-show_entries")
@@ -3149,9 +3165,11 @@ fn assert_format_tags_structural(payload: &serde_json::Value) -> ExampleResult<(
 }
 
 fn assert_tagged_media_metadata(path: &Path) -> ExampleResult<()> {
+    let env_pairs = mediapm::child_env::default_host_inherited_env_pairs();
     let payload = ffprobe_json_payload(
         path,
         "format=format_name,duration,nb_streams:stream=codec_type,codec_name,width,height,pix_fmt,field_order,r_frame_rate,display_aspect_ratio,sample_aspect_ratio,color_space,color_transfer,color_primaries,sample_rate,channel_layout,channels",
+        &env_pairs,
     )?;
     let format_name = payload
         .get("format")
@@ -3183,7 +3201,7 @@ fn assert_tagged_media_metadata(path: &Path) -> ExampleResult<()> {
     }
     assert_video_stream_properties(&payload)?;
     assert_audio_stream_properties(&payload)?;
-    let full_payload = ffprobe_json_payload(path, "format_tags:stream_tags")?;
+    let full_payload = ffprobe_json_payload(path, "format_tags:stream_tags", &env_pairs)?;
     assert_format_tags_structural(&full_payload)?;
     Ok(())
 }
@@ -3193,9 +3211,11 @@ fn assert_tagged_media_metadata(path: &Path) -> ExampleResult<()> {
 /// `provider_title` is the live yt-dlp title read from `sidecars/info.json`, passed through to
 /// [`assert_untagged_format_tags`] so the tag check follows upstream's text.
 fn assert_untagged_media_metadata(path: &Path, provider_title: &str) -> ExampleResult<()> {
+    let env_pairs = mediapm::child_env::default_host_inherited_env_pairs();
     let payload = ffprobe_json_payload(
         path,
         "format=format_name,duration,nb_streams:stream=codec_type,codec_name,width,height,pix_fmt,field_order,r_frame_rate,display_aspect_ratio,sample_aspect_ratio,color_space,color_transfer,color_primaries,sample_rate,channel_layout,channels",
+        &env_pairs,
     )?;
     let format_name = payload
         .get("format")
@@ -3227,7 +3247,7 @@ fn assert_untagged_media_metadata(path: &Path, provider_title: &str) -> ExampleR
     }
     assert_video_stream_properties(&payload)?;
     assert_audio_stream_properties(&payload)?;
-    let full_payload = ffprobe_json_payload(path, "format_tags:stream_tags")?;
+    let full_payload = ffprobe_json_payload(path, "format_tags:stream_tags", &env_pairs)?;
     assert_untagged_format_tags(&full_payload, provider_title)?;
     Ok(())
 }

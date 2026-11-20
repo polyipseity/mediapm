@@ -20,7 +20,7 @@ use crate::config::versions;
 use crate::error::ConductorError;
 use crate::orchestration::node::ConductorActorClient;
 use crate::orchestration::protocol::{UnifiedNickelDocument, find_tool_by_name};
-use crate::orchestration::step_worker::process::apply_execution_env;
+use crate::orchestration::step_worker::process::set_child_environment;
 use crate::state::{ConductorState, StepRef};
 
 /// Concrete facade over the conductor orchestration runtime.
@@ -572,10 +572,10 @@ where
     ///
     /// Loads the merged unified config, looks up the tool by name, and
     /// executes the configured process command with the supplied arguments.
-    /// The tool's `execution_env_vars` are applied to the child through the
-    /// same empty-means-host resolver the step worker spawns with, so a
-    /// literal or an inherited name reaches this child exactly as it reaches
-    /// a step's child.
+    /// The child environment is whitelisted to the tool's resolved
+    /// `execution_env_vars` through the same spawn helper the step worker uses,
+    /// so a literal or an inherited name reaches this child exactly as it
+    /// reaches a step's child and nothing ambient leaks through.
     ///
     /// # Errors
     ///
@@ -601,7 +601,7 @@ where
 
         let mut command = tokio::process::Command::new(cmd);
         command.args(cmd_args).args(args);
-        apply_execution_env(&mut command, &tool_spec.execution_env_vars);
+        set_child_environment(&mut command, &tool_spec.execution_env_vars);
         let status = command
             .status()
             .await
@@ -614,7 +614,10 @@ where
     ///
     /// Locates the `mediapm-cas` binary (same directory as the conductor
     /// binary, then PATH) and invokes it as a subprocess with all supplied
-    /// arguments forwarded verbatim.
+    /// arguments forwarded verbatim. The child environment is whitelisted to
+    /// the host platform's configured inherited names, because the CAS CLI has
+    /// no tool spec and still needs names such as `HOME` and `XDG_*` for its
+    /// store defaults.
     ///
     /// # Errors
     ///
@@ -625,8 +628,30 @@ where
             ConductorError::Workflow("could not locate 'mediapm-cas' binary".to_string())
         })?;
 
-        let status = tokio::process::Command::new(&cas_binary)
-            .args(args)
+        let unified = load_unified_config(self.storage_paths())?;
+        let platform_key = crate::config::host_platform_inherited_env_var_key();
+        let inherited_names = unified
+            .runtime
+            .environment
+            .platform_inherited_env_vars
+            .env_names_for(platform_key)
+            .cloned()
+            .unwrap_or_else(|| {
+                crate::config::default_platform_inherited_env_var_names(platform_key)
+                    .iter()
+                    .map(|&name| name.to_string())
+                    .collect()
+            });
+        let name_refs: Vec<&str> = inherited_names.iter().map(String::as_str).collect();
+        let pairs = mediapm_utils::child_env::host_env_pairs(&name_refs);
+
+        let mut command = tokio::process::Command::new(&cas_binary);
+        command.args(args);
+        command.env_clear();
+        for (name, value) in &pairs {
+            command.env(name, value);
+        }
+        let status = command
             .status()
             .await
             .map_err(|e| ConductorError::Workflow(format!("failed to run CAS CLI: {e}")))?;

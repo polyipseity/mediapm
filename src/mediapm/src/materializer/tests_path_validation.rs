@@ -68,6 +68,7 @@ async fn regression_sync_hierarchy_rejects_parent_traversal_component() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 
@@ -135,6 +136,7 @@ async fn regression_sync_hierarchy_sanitizes_interpolated_path_component() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 

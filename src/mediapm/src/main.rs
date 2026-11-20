@@ -653,6 +653,7 @@ fn default_yt_dlp_steps(
     reason = "u32 option values cast to i64; wrap is impossible for the bounded input domain"
 )]
 async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Result<()> {
+    let env_pairs = mediapm::child_env::default_host_inherited_env_pairs();
     mediapm::builtins::media_tagger::run_internal_media_tagger(
         mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
             input_path: Some(std::path::PathBuf::from(args.input)),
@@ -681,6 +682,7 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
             recording_mbid: args.recording_mbid,
             release_mbid: args.release_mbid,
         },
+        &env_pairs,
     )
     .await
 }

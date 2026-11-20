@@ -473,6 +473,7 @@ mod tests {
             None,
             None,
             None,
+            crate::child_env::default_host_inherited_env_pairs(),
         )
         .await
         .expect("a run over one resolvable entry either writes it or says why it did not")

@@ -88,10 +88,22 @@ const RENAMED_TAGGER_OPTIONS: [(&str, &str); 2] = [
 
 /// The `media-tagger` builtin runner mediapm registers on every run.
 ///
-/// Stateless: everything a run needs arrives with the step, so one runner serves
-/// every workflow of every run.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct MediaTaggerBuiltin;
+/// The runner holds the whitelisted host environment pairs every runtime child
+/// of the tagging pipeline must receive, resolved from the effective mediapm
+/// runtime storage for the run that registered it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MediaTaggerBuiltin {
+    /// Host environment-variable pairs the pipeline's child processes inherit.
+    env_pairs: Vec<(String, String)>,
+}
+
+impl MediaTaggerBuiltin {
+    /// Creates a runner that applies `env_pairs` to every child it spawns.
+    #[must_use]
+    pub(crate) fn new(env_pairs: Vec<(String, String)>) -> Self {
+        Self { env_pairs }
+    }
+}
 
 #[async_trait]
 impl HostBuiltin for MediaTaggerBuiltin {
@@ -115,7 +127,7 @@ impl HostBuiltin for MediaTaggerBuiltin {
         let input_path = stage_content(request.args, request.cas, request.sandbox_dir).await?;
         let options = options_from_args(request.args, input_path, request.sandbox_dir)?;
 
-        run_internal_media_tagger(options)
+        run_internal_media_tagger(options, &self.env_pairs)
             .await
             .map_err(|error| ConductorError::Workflow(format!("media-tagger failed: {error:#}")))?;
 

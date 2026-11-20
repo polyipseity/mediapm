@@ -59,6 +59,10 @@ mod tests {
     use crate::builtins::media_tagger::util::resolve_ffmpeg_executable_from_configured_path;
     use crate::builtins::media_tagger::*;
 
+    fn test_env_pairs() -> Vec<(String, String)> {
+        crate::child_env::host_inherited_env_pairs(&std::collections::BTreeMap::new())
+    }
+
     /// Protects strict autodetection policy: when `recording_mbid` is absent,
     /// missing/blank `AcoustID` credentials must fail immediately.
     #[tokio::test]
@@ -68,33 +72,36 @@ mod tests {
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
 
-        let result = run_internal_media_tagger(InternalMediaTaggerOptions {
-            input_path: Some(input_path),
-            output_path: output_path.clone(),
-            acoustid_api_key: Some("   ".to_string()),
-            acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
-            musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
-            caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
-            cache_dir: None,
-            cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-            strict_identification: false,
-            write_all_tags: true,
-            write_all_images: true,
-            save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
-            embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
-            ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
-            caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
-            caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
-            caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-            preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
-            preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
-            preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
-            enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
-            release_ars: DEFAULT_RELEASE_ARS,
-            cover_art_slot_count: 8,
-            recording_mbid: None,
-            release_mbid: None,
-        })
+        let result = run_internal_media_tagger(
+            InternalMediaTaggerOptions {
+                input_path: Some(input_path),
+                output_path: output_path.clone(),
+                acoustid_api_key: Some("   ".to_string()),
+                acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+                musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+                caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
+                cache_dir: None,
+                cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+                strict_identification: false,
+                write_all_tags: true,
+                write_all_images: true,
+                save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+                embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+                ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+                caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+                caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+                caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+                preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+                preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+                preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+                enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
+                release_ars: DEFAULT_RELEASE_ARS,
+                cover_art_slot_count: 8,
+                recording_mbid: None,
+                release_mbid: None,
+            },
+            &test_env_pairs(),
+        )
         .await;
 
         let error = result.expect_err("missing key on autodetect path must fail");
@@ -137,33 +144,36 @@ mod tests {
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
 
-        let result = run_internal_media_tagger(InternalMediaTaggerOptions {
-            input_path: Some(input_path),
-            output_path: output_path.clone(),
-            acoustid_api_key: Some("demo-key".to_string()),
-            acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
-            musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
-            caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
-            cache_dir: None,
-            cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-            strict_identification: false,
-            write_all_tags: true,
-            write_all_images: true,
-            save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
-            embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
-            ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
-            caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
-            caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
-            caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-            preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
-            preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
-            preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
-            enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
-            release_ars: DEFAULT_RELEASE_ARS,
-            cover_art_slot_count: 8,
-            recording_mbid: None,
-            release_mbid: None,
-        })
+        let result = run_internal_media_tagger(
+            InternalMediaTaggerOptions {
+                input_path: Some(input_path),
+                output_path: output_path.clone(),
+                acoustid_api_key: Some("demo-key".to_string()),
+                acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+                musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+                caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
+                cache_dir: None,
+                cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+                strict_identification: false,
+                write_all_tags: true,
+                write_all_images: true,
+                save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+                embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+                ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+                caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+                caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+                caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+                preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+                preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+                preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+                enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
+                release_ars: DEFAULT_RELEASE_ARS,
+                cover_art_slot_count: 8,
+                recording_mbid: None,
+                release_mbid: None,
+            },
+            &test_env_pairs(),
+        )
         .await;
 
         let error = result.expect_err("provided key should execute lookup path");
@@ -186,33 +196,36 @@ mod tests {
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
 
-        let result = run_internal_media_tagger(InternalMediaTaggerOptions {
-            input_path: Some(input_path),
-            output_path: output_path.clone(),
-            acoustid_api_key: None,
-            acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
-            musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
-            caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
-            cache_dir: None,
-            cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-            strict_identification: true,
-            write_all_tags: true,
-            write_all_images: true,
-            save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
-            embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
-            ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
-            caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
-            caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
-            caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-            preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
-            preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
-            preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
-            enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
-            release_ars: DEFAULT_RELEASE_ARS,
-            cover_art_slot_count: 8,
-            recording_mbid: Some("none".to_string()),
-            release_mbid: None,
-        })
+        let result = run_internal_media_tagger(
+            InternalMediaTaggerOptions {
+                input_path: Some(input_path),
+                output_path: output_path.clone(),
+                acoustid_api_key: None,
+                acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+                musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+                caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
+                cache_dir: None,
+                cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+                strict_identification: true,
+                write_all_tags: true,
+                write_all_images: true,
+                save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+                embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+                ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+                caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+                caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+                caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+                preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+                preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+                preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+                enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
+                release_ars: DEFAULT_RELEASE_ARS,
+                cover_art_slot_count: 8,
+                recording_mbid: Some("none".to_string()),
+                release_mbid: None,
+            },
+            &test_env_pairs(),
+        )
         .await;
 
         result.expect("none sentinel should bypass autodetect and succeed with fallback metadata");
@@ -228,33 +241,36 @@ mod tests {
         let output_path = workspace.path().join("output.ffmetadata");
         std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
 
-        let result = run_internal_media_tagger(InternalMediaTaggerOptions {
-            input_path: Some(input_path),
-            output_path: output_path.clone(),
-            acoustid_api_key: Some("demo-key".to_string()),
-            acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
-            musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
-            caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
-            cache_dir: None,
-            cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
-            strict_identification: false,
-            write_all_tags: true,
-            write_all_images: true,
-            save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
-            embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
-            ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
-            caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
-            caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
-            caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
-            preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
-            preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
-            preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
-            enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
-            release_ars: DEFAULT_RELEASE_ARS,
-            cover_art_slot_count: 8,
-            recording_mbid: Some("auto".to_string()),
-            release_mbid: Some("auto".to_string()),
-        })
+        let result = run_internal_media_tagger(
+            InternalMediaTaggerOptions {
+                input_path: Some(input_path),
+                output_path: output_path.clone(),
+                acoustid_api_key: Some("demo-key".to_string()),
+                acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+                musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+                caa_endpoint: DEFAULT_CAA_ENDPOINT.to_string(),
+                cache_dir: None,
+                cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+                strict_identification: false,
+                write_all_tags: true,
+                write_all_images: true,
+                save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+                embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+                ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+                caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+                caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+                caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+                preserve_existing_images: DEFAULT_PRESERVE_EXISTING_IMAGES,
+                preserve_existing_tags: DEFAULT_PRESERVE_EXISTING_TAGS,
+                preserve_existing_stream_tags: DEFAULT_PRESERVE_EXISTING_STREAM_TAGS,
+                enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
+                release_ars: DEFAULT_RELEASE_ARS,
+                cover_art_slot_count: 8,
+                recording_mbid: Some("auto".to_string()),
+                release_mbid: Some("auto".to_string()),
+            },
+            &test_env_pairs(),
+        )
         .await;
 
         let error = result.expect_err("auto sentinel should keep lookup/decode path active");
@@ -841,7 +857,10 @@ impl MbidOverride {
 /// Returns an error when metadata identification/fetching fails in strict mode,
 /// when fallback metadata output cannot be written, or when upstream tool/API
 /// calls fail in a way that prevents deterministic output generation.
-pub async fn run_internal_media_tagger(options: InternalMediaTaggerOptions) -> anyhow::Result<()> {
+pub async fn run_internal_media_tagger(
+    options: InternalMediaTaggerOptions,
+    env_pairs: &[(String, String)],
+) -> anyhow::Result<()> {
     if let Some(input_path) = options.input_path.as_ref()
         && !input_path.exists()
     {
@@ -850,10 +869,10 @@ pub async fn run_internal_media_tagger(options: InternalMediaTaggerOptions) -> a
 
     let output_path = options.output_path.clone();
     let fallback_input = options.input_path.clone();
-    match run_internal_media_tagger_impl(options).await {
+    match run_internal_media_tagger_impl(options, env_pairs).await {
         Ok(()) => Ok(()),
         Err(error) => {
-            let fallback_map = fallback_ffmetadata_map(fallback_input.as_deref()).await;
+            let fallback_map = fallback_ffmetadata_map(fallback_input.as_deref(), env_pairs).await;
             if let Err(write_error) = write_ffmetadata_document(&output_path, &fallback_map) {
                 return Err(error.context(format!(
                     "failed to persist fallback ffmetadata output '{}' after tagging error: {write_error}",
@@ -871,7 +890,10 @@ pub async fn run_internal_media_tagger(options: InternalMediaTaggerOptions) -> a
     clippy::too_many_lines,
     reason = "this item intentionally keeps end-to-end tagging flow explicit for maintainability"
 )]
-async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> anyhow::Result<()> {
+async fn run_internal_media_tagger_impl(
+    options: InternalMediaTaggerOptions,
+    env_pairs: &[(String, String)],
+) -> anyhow::Result<()> {
     let resolved_input = options
         .input_path
         .as_ref()
@@ -888,7 +910,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
     })?;
     if !options.enable_tag_saving {
         let fallback_map = if options.preserve_existing_tags {
-            fallback_ffmetadata_map(resolved_input.as_deref()).await
+            fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
         } else {
             BTreeMap::new()
         };
@@ -924,7 +946,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         let acoustid_api_key = require_acoustid_api_key_for_lookup(resolve_acoustid_api_key(
             options.acoustid_api_key.as_deref(),
         ))?;
-        let fingerprint_payload = decode_and_fingerprint_audio(resolved_input)
+        let fingerprint_payload = decode_and_fingerprint_audio(resolved_input, env_pairs)
             .await
             .context("decoding media for fingerprinting")?;
         let match_result = lookup_acoustid_match(
@@ -948,7 +970,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
 
     if disable_autodetect && detected_recording_mbid.is_none() {
         let fallback_map = if options.preserve_existing_tags {
-            fallback_ffmetadata_map(resolved_input.as_deref()).await
+            fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
         } else {
             BTreeMap::new()
         };
@@ -964,7 +986,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         }
 
         let fallback_map = if options.preserve_existing_tags {
-            fallback_ffmetadata_map(resolved_input.as_deref()).await
+            fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
         } else {
             BTreeMap::new()
         };
@@ -998,7 +1020,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
                 return Err(error);
             }
             let fallback_map = if options.preserve_existing_tags {
-                fallback_ffmetadata_map(resolved_input.as_deref()).await
+                fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
             } else {
                 BTreeMap::new()
             };
@@ -1036,7 +1058,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
     if options.preserve_existing_tags
         && let Some(input_path) = resolved_input.as_deref()
     {
-        let existing_metadata = extract_existing_ffmetadata_map(input_path).await?;
+        let existing_metadata = extract_existing_ffmetadata_map(input_path, env_pairs).await?;
         if !existing_metadata.is_empty() {
             let mut merged = existing_metadata;
             for (key, value) in ffmetadata_map {
@@ -1051,7 +1073,7 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
             bail!("resolved metadata payload did not produce any FFmetadata entries");
         }
         let fallback_map = if options.preserve_existing_tags {
-            fallback_ffmetadata_map(resolved_input.as_deref()).await
+            fallback_ffmetadata_map(resolved_input.as_deref(), env_pairs).await
         } else {
             BTreeMap::new()
         };
@@ -1075,22 +1097,38 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
 /// Builds fallback FFmetadata content from existing input media metadata.
 ///
 /// When input media is available, fallback output should preserve existing tags
-/// to avoid destructive metadata clears in downstream ffmpeg apply stages.
-async fn fallback_ffmetadata_map(input_path: Option<&Path>) -> BTreeMap<String, String> {
+/// to avoid destructive metadata clears in downstream ffmpeg apply stages. The
+/// probe child runs with the same cleared, whitelisted environment as every
+/// other runtime spawn.
+async fn fallback_ffmetadata_map(
+    input_path: Option<&Path>,
+    env_pairs: &[(String, String)],
+) -> BTreeMap<String, String> {
     let Some(input_path) = input_path else {
         return BTreeMap::new();
     };
 
-    extract_existing_ffmetadata_map(input_path).await.unwrap_or_default()
+    extract_existing_ffmetadata_map(input_path, env_pairs).await.unwrap_or_default()
 }
 
 /// Extracts current global metadata from one media file through ffmpeg
 /// FFmetadata export and decodes it into a key/value map.
+///
+/// The child runs with a cleared environment: only the inherited host
+/// environment pairs the caller resolved reach it.
 async fn extract_existing_ffmetadata_map(
     input_path: &Path,
+    env_pairs: &[(String, String)],
 ) -> anyhow::Result<BTreeMap<String, String>> {
     let ffmpeg_executable = resolve_ffmpeg_executable();
-    let output = Command::new(&ffmpeg_executable)
+    let mut cmd = Command::new(&ffmpeg_executable);
+    // Apply the child_env whitelist: clear the ambient environment, then set
+    // only the resolved host pairs.
+    cmd.env_clear();
+    for (key, value) in env_pairs {
+        cmd.env(key, value);
+    }
+    let output = cmd
         .arg("-v")
         .arg("error")
         // Probe just enough for container metadata so we avoid wasting time

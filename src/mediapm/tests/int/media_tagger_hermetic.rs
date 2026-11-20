@@ -188,7 +188,9 @@ async fn a_recording_mbid_fetches_metadata_through_the_configured_endpoint() {
     let options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
     let output_path = options.output_path.clone();
 
-    run_internal_media_tagger(options).await.expect("metadata fetch through the mock endpoint");
+    run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+        .await
+        .expect("metadata fetch through the mock endpoint");
 
     let text = std::fs::read_to_string(&output_path).expect("ffmetadata output written");
     let tags = parse_ffmetadata(&text);
@@ -245,7 +247,9 @@ async fn a_musicbrainz_server_error_fails_the_step_and_names_the_endpoint() {
     let options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
 
     let started = Instant::now();
-    let result = run_internal_media_tagger(options).await;
+    let result =
+        run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+            .await;
     let elapsed = started.elapsed();
 
     let error = result.expect_err("a MusicBrainz error must fail the step in strict mode");
@@ -300,7 +304,9 @@ async fn a_musicbrainz_502_is_retried() {
     let endpoint = format!("{}/ws/2", musicbrainz.uri());
     let options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
 
-    let result = run_internal_media_tagger(options).await;
+    let result =
+        run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+            .await;
 
     assert!(result.is_ok(), "one dropped connection must not fail the step: {result:?}");
     let received = musicbrainz.received_requests().await.expect("request recorder is enabled");
@@ -334,7 +340,9 @@ async fn a_persistent_musicbrainz_502_is_surfaced() {
     let options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
 
     let error =
-        run_internal_media_tagger(options).await.expect_err("a persistent 502 must fail the step");
+        run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+            .await
+            .expect_err("a persistent 502 must fail the step");
 
     let rendered = format!("{error:#}");
     assert!(rendered.contains("MusicBrainz"), "the error should name the fetch: {rendered}");
@@ -391,7 +399,9 @@ async fn cover_art_is_discovered_and_downloaded_through_the_configured_archive_e
     options.caa_image_size = "full".to_string();
     let output_path = options.output_path.clone();
 
-    run_internal_media_tagger(options).await.expect("cover-art run through the mock archive");
+    run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+        .await
+        .expect("cover-art run through the mock archive");
 
     let text = std::fs::read_to_string(&output_path).expect("ffmetadata output written");
     let tags = parse_ffmetadata(&text);
@@ -437,9 +447,10 @@ async fn a_musicbrainz_4xx_fails_fast_without_exhausting_attempts() {
     let options = hermetic_options(workspace.path(), &endpoint, DEFAULT_CAA_ENDPOINT);
 
     let started = Instant::now();
-    let error = run_internal_media_tagger(options)
-        .await
-        .expect_err("a non-retryable 4xx must fail the step in strict mode");
+    let error =
+        run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+            .await
+            .expect_err("a non-retryable 4xx must fail the step in strict mode");
     let elapsed = started.elapsed();
 
     let rendered = format!("{error:#}");
@@ -491,7 +502,9 @@ async fn a_cover_art_archive_error_fails_the_step_and_names_the_endpoint() {
     options.embed_only_one_front_image = false;
     options.ca_providers = "caa_release".to_string();
 
-    let result = run_internal_media_tagger(options).await;
+    let result =
+        run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+            .await;
 
     let error = result.expect_err("a cover-art archive error must fail the step");
     let rendered = format!("{error:#}");
@@ -566,7 +579,9 @@ async fn disabling_tag_saving_preserves_existing_global_tags_when_requested() {
         release_mbid: None,
     };
 
-    run_internal_media_tagger(options).await.expect("disabled tag saving with fallback");
+    run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+        .await
+        .expect("disabled tag saving with fallback");
 
     let tags = parse_ffmetadata(&std::fs::read_to_string(&output).expect("ffmetadata written"));
     assert_eq!(tags.get("ALBUM").map(String::as_str), Some("Existing Album"));
@@ -609,7 +624,9 @@ async fn disabling_tag_saving_drops_existing_global_tags_when_not_preserved() {
         release_mbid: None,
     };
 
-    run_internal_media_tagger(options).await.expect("disabled tag saving without fallback");
+    run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+        .await
+        .expect("disabled tag saving without fallback");
 
     let tags = parse_ffmetadata(&std::fs::read_to_string(&output).expect("ffmetadata written"));
     assert!(
@@ -634,7 +651,9 @@ async fn a_successful_tag_run_merges_existing_global_tags_with_tagger_values_win
     options.preserve_existing_tags = true;
     let output_path = options.output_path.clone();
 
-    run_internal_media_tagger(options).await.expect("tagged merge run");
+    run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+        .await
+        .expect("tagged merge run");
 
     let tags =
         parse_ffmetadata(&std::fs::read_to_string(&output_path).expect("ffmetadata written"));
@@ -667,7 +686,9 @@ async fn a_successful_tag_run_drops_existing_global_tags_when_not_preserved() {
     options.preserve_existing_tags = false;
     let output_path = options.output_path.clone();
 
-    run_internal_media_tagger(options).await.expect("tagged run without preservation");
+    run_internal_media_tagger(options, &mediapm::child_env::default_host_inherited_env_pairs())
+        .await
+        .expect("tagged run without preservation");
 
     let tags =
         parse_ffmetadata(&std::fs::read_to_string(&output_path).expect("ffmetadata written"));

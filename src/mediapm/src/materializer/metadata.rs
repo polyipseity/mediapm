@@ -58,6 +58,9 @@ pub(super) struct MaterializationLookupContext {
     /// service's own handle (one instance per workspace, since two instances
     /// over one file would each rewrite it from their own map).
     pub(super) metadata_cache: Option<Arc<MetadataCache>>,
+    /// Whitelisted environment variable pairs passed to every child process
+    /// this context spawns (for example the `ffprobe` metadata probe).
+    pub(super) inherited_env_pairs: Vec<(String, String)>,
 }
 
 impl MaterializationLookupContext {
@@ -69,6 +72,7 @@ impl MaterializationLookupContext {
         generated_doc: NickelDocument,
         ffmpeg_slot_limits: FfmpegSlotLimits,
         metadata_cache: Option<Arc<MetadataCache>>,
+        inherited_env_pairs: Vec<(String, String)>,
     ) -> Self {
         Self {
             cas,
@@ -77,6 +81,7 @@ impl MaterializationLookupContext {
             ffmpeg_slot_limits,
             step_output_hashes_cache: Arc::new(Mutex::new(BTreeMap::new())),
             metadata_cache,
+            inherited_env_pairs,
         }
     }
 }
@@ -336,6 +341,7 @@ async fn extract_metadata_key_from_variant_hash(
         metadata_key,
         &metadata_bytes,
         lookup_context.metadata_cache.as_deref(),
+        &lookup_context.inherited_env_pairs,
     )? {
         return Ok(Some(value));
     }
@@ -347,6 +353,7 @@ async fn extract_metadata_key_from_variant_hash(
             metadata_key,
             &member_bytes,
             lookup_context.metadata_cache.as_deref(),
+            &lookup_context.inherited_env_pairs,
         )?
     {
         return Ok(Some(value));
@@ -359,6 +366,7 @@ async fn extract_metadata_key_from_variant_hash(
             metadata_key,
             &member_bytes,
             lookup_context.metadata_cache.as_deref(),
+            &lookup_context.inherited_env_pairs,
         )?
     {
         return Ok(Some(value));
@@ -384,6 +392,7 @@ fn extract_metadata_key_from_probe_bytes(
     metadata_key: &str,
     probe_bytes: &[u8],
     metadata_cache: Option<&MetadataCache>,
+    env_pairs: &[(String, String)],
 ) -> Result<Option<String>, MediaPmError> {
     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(probe_bytes)
         && let Some(value) = extract_metadata_key_from_json(&json, metadata_key)
@@ -397,6 +406,7 @@ fn extract_metadata_key_from_probe_bytes(
         probe_bytes,
         metadata_key,
         metadata_cache,
+        env_pairs,
     )
 }
 
@@ -441,6 +451,9 @@ fn output_variant_extension(source: &MediaSourceSpec, variant: &str) -> String {
 /// `metadata_cache` by [`probe_media_bytes_cached`] when the same content was
 /// probed before.
 ///
+/// The probe runs with a whitelisted environment: `env_pairs` are the only
+/// variables the child receives.
+///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Workflow`] when the temp file cannot be written or
@@ -451,11 +464,12 @@ fn extract_metadata_key_from_media_bytes_via_ffprobe(
     bytes: &[u8],
     metadata_key: &str,
     metadata_cache: Option<&MetadataCache>,
+    env_pairs: &[(String, String)],
 ) -> Result<Option<String>, MediaPmError> {
     let extension = output_variant_extension(source, variant);
     let json =
         probe_media_bytes_cached(variant, &extension, bytes, metadata_cache, |probe_path| {
-            try_fetch_local_source_metadata_with_ffprobe(probe_path, "ffprobe")
+            try_fetch_local_source_metadata_with_ffprobe(probe_path, "ffprobe", env_pairs)
         })?;
     Ok(extract_metadata_key_from_json(&json, metadata_key))
 }
@@ -768,6 +782,7 @@ mod tests {
             None,
             None,
             Some(Arc::new(MetadataCache::open(&cache_dir))),
+            crate::child_env::default_host_inherited_env_pairs(),
         )
         .await
         .expect("the cached probe answer must resolve the template without spawning ffprobe");

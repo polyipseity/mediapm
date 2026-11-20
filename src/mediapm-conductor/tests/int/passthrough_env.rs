@@ -17,7 +17,9 @@
 use std::collections::BTreeMap;
 
 use super::tool_env_vars::named_stub_copy;
-use crate::{EnvVarGuard, RpcEnvGuard, TestConductor, doc_with_workflows, rpc_env_lock};
+use crate::{
+    EnvVarGuard, RpcEnvGuard, TestConductor, doc_with_workflows, rpc_env_lock, workflow_with_steps,
+};
 use mediapm_conductor::{ToolKindSpec, ToolRuntime, ToolSpec};
 use mediapm_test_support::MANIFEST_ENV;
 
@@ -165,6 +167,249 @@ async fn a_passthrough_empty_env_var_value_reads_the_host_value() {
          as \"the host's value\"; a non-zero exit with no destination means the child received \
          the empty literal instead of the host's value",
         destination.display(),
+    );
+    tc.shutdown().await;
+}
+
+/// A passthrough child receives no undeclared host variable.
+///
+/// The name is set in the test process but appears in neither the platform's
+/// inherited whitelist nor the tool's declared environment. The stub observes
+/// the child environment without a shell and writes the variable's value to a
+/// file; an empty file is the proof the whitelist kept the ambient variable
+/// out.
+#[tokio::test]
+async fn an_undeclared_host_var_does_not_reach_a_passthrough_child() {
+    let _env_lock = rpc_env_lock().await;
+    let _rpc_timeout = RpcEnvGuard::remove();
+    let tc = TestConductor::new();
+    let executable = named_stub_copy(tc.path(), "print-env-tool");
+    let output = tc.path().join("undeclared-passthrough.txt");
+    let _host_var = EnvVarGuard::set("MEDIAPM_T3_UNDECLARED_PASSTHROUGH", "ambient-leak");
+
+    let tool = ToolSpec {
+        version: None,
+        kind: ToolKindSpec::Executable {
+            command: vec![
+                executable.to_string_lossy().into_owned(),
+                "--mode".into(),
+                "print-env".into(),
+                "--name".into(),
+                "MEDIAPM_T3_UNDECLARED_PASSTHROUGH".into(),
+                "--output".into(),
+                output.to_string_lossy().into_owned(),
+            ],
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
+        name: "env-probe".into(),
+        inputs: BTreeMap::new(),
+        default_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime::default(),
+    };
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("env-probe".to_string(), tool)]),
+        Vec::new(),
+    ));
+
+    let exit_code = tc
+        .conductor()
+        .run_tool_passthrough("env-probe", &[])
+        .await
+        .expect("a passthrough reports an exit code");
+    let observed = std::fs::read_to_string(&output).unwrap_or_default();
+    assert_eq!(
+        (exit_code, observed.as_str()),
+        (0, ""),
+        "the host set MEDIAPM_T3_UNDECLARED_PASSTHROUGH, but the name is undeclared and not \
+         inherited, so the whitelisted child must not receive it"
+    );
+    tc.shutdown().await;
+}
+
+/// A step child receives no undeclared host variable.
+///
+/// The step path applies the whitelist through the same resolved environment as
+/// a passthrough: a name the host sets but the document never declares must not
+/// reach the process the step runs.
+#[tokio::test]
+async fn an_undeclared_host_var_does_not_reach_a_step_child() {
+    let _env_lock = rpc_env_lock().await;
+    let _rpc_timeout = RpcEnvGuard::remove();
+    let tc = TestConductor::new();
+    let executable = named_stub_copy(tc.path(), "print-env-tool");
+    let output = tc.path().join("undeclared-step.txt");
+    let _host_var = EnvVarGuard::set("MEDIAPM_T3_UNDECLARED_STEP", "ambient-leak");
+
+    let tool = ToolSpec {
+        version: None,
+        kind: ToolKindSpec::Executable {
+            command: vec![
+                executable.to_string_lossy().into_owned(),
+                "--mode".into(),
+                "print-env".into(),
+                "--name".into(),
+                "MEDIAPM_T3_UNDECLARED_STEP".into(),
+                "--output".into(),
+                output.to_string_lossy().into_owned(),
+            ],
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
+        name: "env-probe".into(),
+        inputs: BTreeMap::new(),
+        default_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime::default(),
+    };
+    let step = mediapm_conductor::WorkflowStepSpec {
+        id: "s1".into(),
+        tool: "env-probe".into(),
+        inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        max_retries: 0,
+        depends_on: Vec::new(),
+    };
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("env-probe".to_string(), tool)]),
+        vec![workflow_with_steps("default", vec![step])],
+    ));
+
+    let summary = tc
+        .conductor()
+        .run_workflow("default", mediapm_conductor::api::RunWorkflowOptions::default())
+        .await
+        .expect("a run reports a summary");
+    let observed = std::fs::read_to_string(&output).unwrap_or_default();
+    assert_eq!(
+        (summary.failed_steps, observed.as_str()),
+        (0, ""),
+        "the host set MEDIAPM_T3_UNDECLARED_STEP, but the name is undeclared and not inherited, \
+         so the whitelisted step child must not receive it"
+    );
+    tc.shutdown().await;
+}
+
+/// A declared inherited name reaches the child with the host's value.
+///
+/// The platform's inherited whitelist names the variable for the host platform,
+/// so a child receives the host's current value for that name even when the tool
+/// does not restate it. The child observes the value through the stub rather
+/// than through a shell.
+#[tokio::test]
+async fn a_declared_inherited_name_reaches_the_child_with_the_host_value() {
+    let _env_lock = rpc_env_lock().await;
+    let _rpc_timeout = RpcEnvGuard::remove();
+    let tc = TestConductor::new();
+    let executable = named_stub_copy(tc.path(), "print-env-tool");
+    let output = tc.path().join("inherited.txt");
+    let _host_var = EnvVarGuard::set("MEDIAPM_T3_DECLARED_INHERITED", "host-value");
+
+    let platform = mediapm_conductor::config::host_platform_inherited_env_var_key();
+    let mut platform_vars = mediapm_conductor::config::PlatformInheritedEnvVars::default();
+    let declared = vec!["MEDIAPM_T3_DECLARED_INHERITED".to_string()];
+    match platform {
+        "windows" => platform_vars.windows = declared,
+        "linux" => platform_vars.linux = declared,
+        "macos" => platform_vars.macos = declared,
+        _ => unreachable!("known host platform"),
+    }
+
+    let tool = ToolSpec {
+        version: None,
+        kind: ToolKindSpec::Executable {
+            command: vec![
+                executable.to_string_lossy().into_owned(),
+                "--mode".into(),
+                "print-env".into(),
+                "--name".into(),
+                "MEDIAPM_T3_DECLARED_INHERITED".into(),
+                "--output".into(),
+                output.to_string_lossy().into_owned(),
+            ],
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
+        name: "env-probe".into(),
+        inputs: BTreeMap::new(),
+        default_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime::default(),
+    };
+    let mut doc = doc_with_workflows(BTreeMap::from([("env-probe".to_string(), tool)]), Vec::new());
+    doc.runtime.environment.platform_inherited_env_vars = platform_vars;
+    tc.write_config(doc);
+
+    let exit_code = tc
+        .conductor()
+        .run_tool_passthrough("env-probe", &[])
+        .await
+        .expect("a passthrough reports an exit code");
+    let observed = std::fs::read_to_string(&output).unwrap_or_default();
+    assert_eq!(
+        (exit_code, observed.as_str()),
+        (0, "host-value"),
+        "the platform's inherited whitelist declares MEDIAPM_T3_DECLARED_INHERITED, so the child \
+         must receive the host's value for it"
+    );
+    tc.shutdown().await;
+}
+
+/// A literal `env_vars` value reaches the child even when the host differs.
+///
+/// The tool states the name with a fixed value, and the host holds a different
+/// value for the same name. The literal is authoritative: the child must see the
+/// document's value, not the host's.
+#[tokio::test]
+async fn a_literal_env_var_reaches_the_child_despite_a_different_host_value() {
+    let _env_lock = rpc_env_lock().await;
+    let _rpc_timeout = RpcEnvGuard::remove();
+    let tc = TestConductor::new();
+    let executable = named_stub_copy(tc.path(), "print-env-tool");
+    let output = tc.path().join("literal.txt");
+    let _host_var = EnvVarGuard::set("MEDIAPM_T3_LITERAL_OVERRIDE", "host-value");
+
+    let tool = ToolSpec {
+        version: None,
+        kind: ToolKindSpec::Executable {
+            command: vec![
+                executable.to_string_lossy().into_owned(),
+                "--mode".into(),
+                "print-env".into(),
+                "--name".into(),
+                "MEDIAPM_T3_LITERAL_OVERRIDE".into(),
+                "--output".into(),
+                output.to_string_lossy().into_owned(),
+            ],
+            env_vars: BTreeMap::from([(
+                "MEDIAPM_T3_LITERAL_OVERRIDE".to_string(),
+                "literal-value".to_string(),
+            )]),
+            success_codes: vec![0],
+        },
+        name: "env-probe".into(),
+        inputs: BTreeMap::new(),
+        default_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime::default(),
+    };
+    tc.write_config(doc_with_workflows(
+        BTreeMap::from([("env-probe".to_string(), tool)]),
+        Vec::new(),
+    ));
+
+    let exit_code = tc
+        .conductor()
+        .run_tool_passthrough("env-probe", &[])
+        .await
+        .expect("a passthrough reports an exit code");
+    let observed = std::fs::read_to_string(&output).unwrap_or_default();
+    assert_eq!(
+        (exit_code, observed.as_str()),
+        (0, "literal-value"),
+        "the tool's literal env_vars value is authoritative, so the child must receive it even \
+         when the host holds a different value for the same name"
     );
     tc.shutdown().await;
 }

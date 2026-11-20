@@ -7,6 +7,7 @@
 //! - [`timestamp`] — `Timestamp` (Unix-epoch nanoseconds)
 //! - [`generated`] — `GENERATED_FILE_BANNER`, `prepend_banner`
 //! - [`fs`] — atomic publication of a document's bytes
+//! - [`child_env`] — whitelist resolution and application for child processes
 //! - [`temp`] — prefixed temp directories for tests, examples, and runtime
 //! - `report` — result-line formatting
 //!   (`StatusIcon`, `print_result`, `format_duration`)
@@ -18,6 +19,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod builtin;
+pub mod child_env;
 pub mod env_registry;
 pub mod fs;
 pub mod generated;

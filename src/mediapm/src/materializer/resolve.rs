@@ -3799,6 +3799,7 @@ mod tests {
             generated_doc,
             resolve_ffmpeg_slot_limits(&document),
             None,
+            crate::child_env::default_host_inherited_env_pairs(),
         );
         let source = document.media.get(media_id).expect("source");
         let resolved = resolve_variant_source_bytes(&lookup, media_id, source, "infojson", false)
@@ -4653,6 +4654,7 @@ mod tests {
             generated_doc,
             resolve_ffmpeg_slot_limits(&document),
             None,
+            crate::child_env::default_host_inherited_env_pairs(),
         );
         let source = document.media.get(media_id).expect("source");
         let Err(failure) =
@@ -4761,6 +4763,7 @@ mod tests {
             generated_doc,
             resolve_ffmpeg_slot_limits(&document),
             None,
+            crate::child_env::default_host_inherited_env_pairs(),
         );
         let source = document.media.get(media_id).expect("source");
         let Err(failure) =
@@ -5407,6 +5410,7 @@ mod tests {
             generated,
             slot_limits,
             None,
+            crate::child_env::default_host_inherited_env_pairs(),
         );
         let result =
             resolve_variant_source_bytes(&lookup, PINNED_MEDIA_ID, &source, PINNED_VARIANT, false)

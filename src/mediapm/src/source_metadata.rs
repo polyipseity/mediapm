@@ -17,6 +17,7 @@ use crate::error::MediaPmError;
 use crate::metadata_cache::MetadataCache;
 use crate::paths::MediaPmPaths;
 use crate::util::first_non_empty_json_string;
+use mediapm_utils::child_env;
 
 /// Metadata extracted from a local file.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -35,6 +36,10 @@ pub(crate) struct LocalSourceMetadata {
 /// Uses `-v error` (not `-v quiet`) so that a failing probe surfaces the
 /// ffprobe diagnostic on stderr instead of an empty message.
 ///
+/// The child runs with a whitelisted environment: `env_pairs` are the only
+/// variables it receives, so the probe is deterministic and cannot inherit
+/// ambient process state.
+///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Workflow`] if `ffprobe` is unavailable or returns
@@ -42,14 +47,14 @@ pub(crate) struct LocalSourceMetadata {
 pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
     path: &Path,
     ffprobe_command: &str,
+    env_pairs: &[(String, String)],
 ) -> Result<Value, MediaPmError> {
-    let output = Command::new(ffprobe_command)
-        .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
-        .arg(path)
-        .output()
-        .map_err(|e| {
-            MediaPmError::Workflow(format!("failed to execute ffprobe for metadata fetch: {e}"))
-        })?;
+    let mut cmd = Command::new(ffprobe_command);
+    cmd.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"]).arg(path);
+    child_env::apply_std(&mut cmd, env_pairs);
+    let output = cmd.output().map_err(|e| {
+        MediaPmError::Workflow(format!("failed to execute ffprobe for metadata fetch: {e}"))
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -105,6 +110,9 @@ fn parse_local_format_tags(value: &Value) -> Value {
 /// failing probe surfaces its diagnostic on stderr instead of an empty
 /// message.
 ///
+/// The probe runs with a whitelisted environment: `env_pairs` are the only
+/// variables the child receives.
+///
 /// # Errors
 ///
 /// Returns [`MediaPmError::Workflow`] if `ffprobe` fails.
@@ -112,9 +120,10 @@ pub(crate) fn fetch_local_source_metadata(
     path: &Path,
     ffprobe_command: &str,
     cache: Option<&MetadataCache>,
+    env_pairs: &[(String, String)],
 ) -> Result<LocalSourceMetadata, MediaPmError> {
     fetch_local_source_metadata_with_probe(path, cache, |path| {
-        try_fetch_local_source_metadata_with_ffprobe(path, ffprobe_command)
+        try_fetch_local_source_metadata_with_ffprobe(path, ffprobe_command, env_pairs)
     })
 }
 
@@ -189,14 +198,20 @@ mod tests {
     /// stderr (via `-v error`), rather than an empty error message.
     #[test]
     fn try_fetch_local_source_metadata_with_ffprobe_surfaces_diagnostic() {
+        let platform = mediapm_conductor::config::host_platform_inherited_env_var_key();
+        let names = mediapm_conductor::config::default_platform_inherited_env_var_names(platform);
+        let pairs = mediapm_utils::child_env::host_env_pairs(names);
         // Skip when ffprobe is not installed (e.g., minimal CI images).
-        if Command::new("ffprobe").arg("-version").output().is_err() {
+        let mut probe = Command::new("ffprobe");
+        probe.arg("-version");
+        mediapm_utils::child_env::apply_std(&mut probe, &pairs);
+        if probe.output().is_err() {
             return;
         }
         let tmp = mediapm_utils::temp::artifact_dir().expect("tempdir");
         let garbage = tmp.path().join("garbage.bin");
         std::fs::write(&garbage, b"definitely-not-media-bytes").expect("write garbage");
-        let err = try_fetch_local_source_metadata_with_ffprobe(&garbage, "ffprobe")
+        let err = try_fetch_local_source_metadata_with_ffprobe(&garbage, "ffprobe", &pairs)
             .expect_err("garbage bytes must fail ffprobe");
         let MediaPmError::Workflow(message) = err else {
             panic!("expected Workflow error, got {err:?}");

@@ -329,10 +329,11 @@ let migrate_v1_to_v2_fn = fun data =>
                 # ||| keeps the value a string). Folding it back as a literal
                 # ||| would run the child with the variable set to its own name
                 # ||| — a value no document stated. Leaving the name out is
-                # ||| safe because the child inherits the host environment
-                # ||| anyway: `apply_execution_env` only overlays names the
-                # ||| document states (`orchestration/step_worker/process.rs`),
-                # ||| so the host value flows. Accepted cost: a document that
+                # ||| safe because the resolved child environment carries only the
+                # ||| names the document declares for inheritance or states as
+                # ||| literals (`orchestration/step_worker/process.rs`); a name
+                # ||| encoded as an identity pair is not a literal. Accepted cost:
+                # ||| a document that
                 # ||| genuinely writes `FOO = "FOO"` as a literal gets the host
                 # ||| value instead. The skip sits here, where an executable
                 # ||| consumes the config-side map, and not in

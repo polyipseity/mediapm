@@ -69,18 +69,27 @@ const IMPORT_BUILTIN_ID: &str = "import";
 
 /// Builds the registry of builtin runners mediapm supplies to a conductor run.
 ///
+/// `env_pairs` are the whitelisted host environment-variable pairs the
+/// registered runners apply to every child process they spawn, resolved from the
+/// effective mediapm runtime storage.
+///
 /// # Errors
 ///
 /// Returns [`ConductorError::Workflow`] when the registry refuses an entry: a
 /// duplicate id, or an id a builtin this conductor build ships already owns. The
 /// list is a compile-time fact, so either is a wiring bug in this crate rather
 /// than something a run can be asked to tolerate.
-pub(crate) fn host_builtins() -> Result<HostBuiltins, ConductorError> {
+pub(crate) fn host_builtins(
+    env_pairs: Vec<(String, String)>,
+) -> Result<HostBuiltins, ConductorError> {
     #[cfg(feature = "media-tagger")]
     let entries: Vec<Arc<dyn HostBuiltin>> =
-        vec![Arc::new(MediaTaggerBuiltin) as Arc<dyn HostBuiltin>];
+        vec![Arc::new(MediaTaggerBuiltin::new(env_pairs)) as Arc<dyn HostBuiltin>];
     #[cfg(not(feature = "media-tagger"))]
-    let entries: Vec<Arc<dyn HostBuiltin>> = Vec::new();
+    let entries: Vec<Arc<dyn HostBuiltin>> = {
+        let _ = env_pairs;
+        Vec::new()
+    };
 
     HostBuiltins::new(entries)
 }

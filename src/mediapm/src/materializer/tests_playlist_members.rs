@@ -241,6 +241,7 @@ async fn a_playlist_whose_path_is_a_directory_is_counted_as_missing() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("a playlist that cannot be written leaves a report to read; it is not a failed run");

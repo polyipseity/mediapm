@@ -1321,8 +1321,9 @@ mod tests {
     /// literal the document asked for: folding it as one would spawn the child
     /// with the variable set to its own name — a value no document stated —
     /// instead of leaving the name to the child's normal inheritance, where
-    /// the host value flows (`apply_execution_env` only overlays names the
-    /// document does state). The plain value beside it pins that the skip is
+    /// the resolved environment carries the host value for names left to
+    /// inheritance, and `set_child_environment` applies that whitelist at
+    /// spawn. The plain value beside it pins that the skip is
     /// keyed on the pair repeating its key, not on the surface being
     /// `tool_configs`.
     #[test]

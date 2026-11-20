@@ -43,6 +43,7 @@ async fn run_zip_member_sync_with_pack(
         None,
         None,
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
 }

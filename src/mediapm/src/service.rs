@@ -598,8 +598,15 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         }
 
         // Fetch metadata via ffprobe (cache hit skips the probe).
-        let metadata =
-            fetch_local_source_metadata(path, ffprobe_command, Some(self.metadata_cache.as_ref()))?;
+        let effective = self.resolve_effective_runtime_storage()?;
+        let env_pairs =
+            crate::child_env::host_inherited_env_pairs(&effective.environment.inherited_env_vars);
+        let metadata = fetch_local_source_metadata(
+            path,
+            ffprobe_command,
+            Some(self.metadata_cache.as_ref()),
+            &env_pairs,
+        )?;
         let title = Some(metadata.title.as_str());
         let description = Some(metadata.description.as_str());
 
@@ -1568,6 +1575,9 @@ impl MediaPmService<FileSystemCas> {
             Some(Arc::new(materialize_group));
         let materialize_overall: Option<Arc<dyn ProgressBarApi>> =
             Some(Arc::new(materialize_overall_handle));
+        let materialize_env_pairs = crate::child_env::host_inherited_env_pairs(
+            &self.resolve_effective_runtime_storage()?.environment.inherited_env_vars,
+        );
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,
             &document,
@@ -1579,6 +1589,7 @@ impl MediaPmService<FileSystemCas> {
             materialize_pg.clone(),
             materialize_overall.clone(),
             Some(Arc::clone(&self.metadata_cache)),
+            materialize_env_pairs,
         )
         .await?;
         if let Some(ref group) = materialize_pg {

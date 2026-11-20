@@ -16,6 +16,7 @@ pub mod builtins;
 // module docs for why the two conversions cannot live with the definition.
 // Crate-visible only: the items are `From` impls, which apply wherever both
 // types are nameable, so no caller has to name this module to reach them.
+pub mod child_env;
 #[cfg(feature = "cli")]
 pub(crate) mod cli;
 pub(crate) mod conductor_bridge;
@@ -586,7 +587,9 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
 /// a workflow step naming one runs in-process. The registry is the single place
 /// that assembly happens: a run started any other way would reach the run-start
 /// check without an implementation for a builtin its own workflow names.
-/// `runtime_storage` supplies the retry policy the workspace configured.
+/// `runtime_storage` supplies the retry policy and the resolved
+/// platform-inherited environment variable map the run's host-side runtime
+/// children use.
 ///
 /// # Errors
 ///
@@ -598,11 +601,13 @@ pub(crate) fn conductor_run_workflow_options(
     progress_group: Option<Arc<dyn mediapm_utils::progress::ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn mediapm_utils::progress::ProgressBarApi>>,
 ) -> Result<mediapm_conductor::RunWorkflowOptions, MediaPmError> {
+    let env_pairs =
+        crate::child_env::host_inherited_env_pairs(&runtime_storage.environment.inherited_env_vars);
     Ok(mediapm_conductor::RunWorkflowOptions {
         retry_impure: runtime_storage.retry_impure,
         progress_group,
         overall_bar,
-        host_builtins: crate::builtins::host_builtins().map_err(|error| {
+        host_builtins: crate::builtins::host_builtins(env_pairs).map_err(|error| {
             MediaPmError::Workflow(format!("builtin runner registry rejected its entries: {error}"))
         })?,
         ..mediapm_conductor::RunWorkflowOptions::default()

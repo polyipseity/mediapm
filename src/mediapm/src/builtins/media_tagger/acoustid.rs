@@ -66,12 +66,24 @@ pub(super) fn require_acoustid_api_key_for_lookup(
     Ok(api_key)
 }
 
-/// Runs `ffmpeg` decode + Chromaprint fingerprint generation for one media file.
+/// Runs `ffmpeg` decode and Chromaprint fingerprint generation for one media file.
+///
+/// The child runs with a cleared environment: only the inherited host
+/// environment pairs the caller resolved reach it, so ambient variables do not
+/// leak into the probe.
 pub(super) async fn decode_and_fingerprint_audio(
     input_path: &Path,
+    env_pairs: &[(String, String)],
 ) -> anyhow::Result<FingerprintPayload> {
     let ffmpeg_executable = resolve_ffmpeg_executable();
-    let output = Command::new(&ffmpeg_executable)
+    let mut cmd = Command::new(&ffmpeg_executable);
+    // Apply the child_env whitelist: clear the ambient environment, then set
+    // only the resolved host pairs.
+    cmd.env_clear();
+    for (key, value) in env_pairs {
+        cmd.env(key, value);
+    }
+    let output = cmd
         .arg("-v")
         .arg("error")
         .arg("-probesize")

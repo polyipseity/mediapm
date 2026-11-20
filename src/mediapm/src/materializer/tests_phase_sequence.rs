@@ -52,6 +52,7 @@ async fn a_folder_row_and_a_playlist_row_advance_and_terminate() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("sync_hierarchy should succeed");
@@ -127,6 +128,7 @@ async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("sync_hierarchy should succeed");
@@ -268,6 +270,7 @@ async fn a_written_media_entry_row_advances_and_finishes() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("a media entry holding a resolvable variant hash should write");
@@ -319,6 +322,7 @@ async fn a_failed_playlist_row_carries_the_failure_marker() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall)),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 

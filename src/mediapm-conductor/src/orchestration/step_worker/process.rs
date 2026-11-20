@@ -54,26 +54,30 @@ pub(super) struct ExecutionResult {
     pub(crate) exit_code: i32,
 }
 
-/// Applies a tool's execution environment to a command before it is spawned.
+/// Sets a tool's child environment to exactly the resolved whitelist.
 ///
-/// This is the one empty-means-host rule for every spawn site: a non-empty
-/// value is set directly on the child, while an empty value means "inherit
-/// the host process value", which is read here and set when the host defines
-/// the name. The step worker's [`run_executable_process`] and
-/// `Conductor::run_tool_passthrough` both route through this function so the
-/// two paths cannot diverge on what an empty value means.
+/// The child starts from an empty environment: every ambient variable is
+/// cleared before the resolved entries are applied. A name present in
+/// `execution_env_vars` with a non-empty value is set on the child; an entry
+/// whose value is empty means the name was declared but the host did not define
+/// it, so it is left unset. Names absent from the map never reach the child.
 ///
-/// The command's existing environment is otherwise untouched: names absent
-/// from `execution_env_vars` are left to the child's normal inheritance.
-pub(crate) fn apply_execution_env(
+/// `execution_env_vars` is the fully resolved map for the tool: platform and
+/// tool inherited names read from the host, with the tool's own literal values
+/// folded last so a literal stays authoritative. Clearing before applying keeps
+/// that order intact at the spawn boundary.
+///
+/// The step worker's [`run_executable_process`] and the conductor passthrough
+/// spawn sites route through this function so the whitelist contract cannot
+/// diverge between them.
+pub(crate) fn set_child_environment(
     cmd: &mut Command,
     execution_env_vars: &BTreeMap<String, String>,
 ) {
+    cmd.env_clear();
     for (key, value) in execution_env_vars {
         if !value.is_empty() {
             cmd.env(key, value);
-        } else if let Ok(host_val) = std::env::var(key) {
-            cmd.env(key, host_val);
         }
     }
 }
@@ -113,9 +117,9 @@ pub(super) async fn run_executable_process(
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
 
-    // The empty-means-host rule lives in `apply_execution_env`, shared with
-    // the passthrough spawn site.
-    apply_execution_env(&mut cmd, execution_env_vars);
+    // The whitelist is applied here, shared with the passthrough spawn
+    // sites, so every step child starts from a cleared environment.
+    set_child_environment(&mut cmd, execution_env_vars);
 
     let child = cmd
         .spawn()

@@ -51,6 +51,7 @@ async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_missing_one()
             Some(Arc::new(recording.clone())),
             Some(Arc::new(overall.clone())),
             None,
+            crate::child_env::default_host_inherited_env_pairs(),
         )
         .await;
 
@@ -87,6 +88,7 @@ async fn the_overall_row_finishes_error_on_a_failed_entry_and_on_a_missing_one()
             Some(Arc::new(recording.clone())),
             Some(Arc::new(overall.clone())),
             None,
+            crate::child_env::default_host_inherited_env_pairs(),
         )
         .await;
 
@@ -164,6 +166,7 @@ async fn the_overall_row_finishes_error_when_a_folder_variant_path_is_a_director
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("one blocked variant leaves a report to read; it is not a failed run");
@@ -226,6 +229,7 @@ async fn the_run_fails_when_a_folder_variant_names_bytes_the_store_lost() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await;
 
@@ -286,6 +290,7 @@ async fn the_overall_row_finishes_error_when_a_zip_folder_variant_holds_no_membe
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("one empty archive leaves a report to read; it is not a failed run");
@@ -361,6 +366,7 @@ async fn the_overall_row_finishes_error_when_a_folder_resolves_to_no_variants() 
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("an entry with no variants leaves a report to read; it is not a failed run");
@@ -433,6 +439,7 @@ async fn the_overall_row_finishes_error_when_a_folder_mixes_a_blocked_and_a_good
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("one blocked variant among two leaves a report to read; it is not a failed run");
@@ -501,6 +508,7 @@ async fn the_overall_row_finishes_success_when_every_entry_is_written() {
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
         None,
+        crate::child_env::default_host_inherited_env_pairs(),
     )
     .await
     .expect("an entry holding a resolvable variant hash should write");

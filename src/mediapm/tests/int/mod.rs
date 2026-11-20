@@ -33,6 +33,8 @@ mod capture_union;
 /// A CAS subcommand reaches the CAS CLI through the `mediapm cas` passthrough.
 #[cfg(feature = "cli")]
 mod cas_passthrough;
+/// Runtime child-process spawns must use the whitelisted child environment.
+mod child_env_scan;
 /// The binary and the extracted CLI definition describe the same commands.
 #[cfg(feature = "cli")]
 mod cli_surface;

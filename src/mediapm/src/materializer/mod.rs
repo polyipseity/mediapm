@@ -247,6 +247,7 @@ pub async fn sync_hierarchy(
     progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn ProgressBarApi>>,
     metadata_cache: Option<Arc<MetadataCache>>,
+    inherited_env_pairs: Vec<(String, String)>,
 ) -> Result<MaterializeReport, MediaPmError> {
     let hierarchy_root = &paths.hierarchy_root_dir;
 
@@ -263,6 +264,7 @@ pub async fn sync_hierarchy(
         generated_doc.clone(),
         ffmpeg_slot_limits,
         metadata_cache,
+        inherited_env_pairs,
     );
     metadata::resolve_flattened_entry_paths(&mut flattened, document, &lookup_context).await?;
     let validated = sanitize_and_validate_hierarchy_paths(flattened)?;

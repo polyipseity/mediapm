@@ -559,6 +559,15 @@ pub(super) async fn open_hierarchy_cas(paths: &MediaPmPaths) -> FileSystemCas {
     FileSystemCas::open(&cas_root).await.unwrap()
 }
 
+/// Returns the host platform's default inherited environment pairs for
+/// materializer tests that spawn no real probe but must satisfy the
+/// whitelisted-child contract.
+pub(super) fn test_inherited_env_pairs() -> Vec<(String, String)> {
+    let platform = mediapm_conductor::config::host_platform_inherited_env_var_key();
+    let names = mediapm_conductor::config::default_platform_inherited_env_var_names(platform);
+    mediapm_utils::child_env::host_env_pairs(names)
+}
+
 /// Runs `sync_hierarchy` over `document` with no progress output, or with the
 /// tracker's own bars when one is supplied.
 pub(super) async fn run_sync(
@@ -580,6 +589,7 @@ pub(super) async fn run_sync(
         progress_group,
         overall_bar,
         None,
+        test_inherited_env_pairs(),
     )
     .await
     .expect("a run over one resolvable entry either writes it or skips it")

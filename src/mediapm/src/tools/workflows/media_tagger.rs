@@ -820,12 +820,15 @@ mod tests {
     ) -> (Vec<(String, String, String)>, String) {
         use std::process::Command;
 
+        let env_pairs = crate::child_env::default_host_inherited_env_pairs();
         let tmp = mediapm_utils::temp::artifact_dir().expect("temp dir");
         let fixture =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/demo.mkv");
         let src = tmp.path().join(if with_attached_pic { "src.mp4" } else { "src.mkv" });
         if with_attached_pic {
-            let status = Command::new("ffmpeg")
+            let mut cmd = Command::new("ffmpeg");
+            mediapm_utils::child_env::apply_std(&mut cmd, &env_pairs);
+            let status = cmd
                 .args([
                     "-v",
                     "error",
@@ -856,7 +859,9 @@ mod tests {
                 .expect("ffmpeg");
             assert!(status.success(), "ffmpeg failed to create attached-pic source");
         } else {
-            let status = Command::new("ffmpeg")
+            let mut cmd = Command::new("ffmpeg");
+            mediapm_utils::child_env::apply_std(&mut cmd, &env_pairs);
+            let status = cmd
                 .args([
                     "-v",
                     "error",
@@ -879,6 +884,7 @@ mod tests {
         std::fs::write(&meta, ";FFMETADATA1\nartist=NewArtist\n").expect("write ffmetadata");
         let out = tmp.path().join(if with_attached_pic { "out.mp4" } else { "out.mkv" });
         let mut cmd = Command::new("ffmpeg");
+        mediapm_utils::child_env::apply_std(&mut cmd, &env_pairs);
         cmd.args([
             "-v",
             "error",
@@ -898,7 +904,9 @@ mod tests {
         cmd.arg(out.to_str().expect("out path"));
         let status = cmd.status().expect("ffmpeg apply");
         assert!(status.success(), "ffmpeg apply failed");
-        let probe = Command::new("ffprobe")
+        let mut probe = Command::new("ffprobe");
+        mediapm_utils::child_env::apply_std(&mut probe, &env_pairs);
+        let probe = probe
             .args([
                 "-v",
                 "error",
