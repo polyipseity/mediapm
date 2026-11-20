@@ -185,14 +185,17 @@ fn replace_three_step_source(
     Ok(())
 }
 
-/// Changing one step's options re-executes that step and its dependents while
-/// earlier steps remain cached.
+/// Changing a step's options re-executes only that step when its output bytes
+/// are unchanged.
 ///
-/// The user-level guarantee: incrementality is decided per step by step
-/// identity, so an edit to step 2 invalidates step 2 and step 3 but leaves the
-/// impure import (step 1) reusable.
+/// The user-level guarantee: incrementality is content-addressed. A step's
+/// identity includes its options and resolved inputs, but a re-executed step
+/// that produces identical output bytes does not invalidate dependents whose
+/// resolved inputs therefore remain unchanged. Editing step 2 re-executes step
+/// 2 while the impure import (step 1) and downstream step 3 stay cached here
+/// because the stub copies bytes verbatim and step 2's output hash is unchanged.
 #[tokio::test]
-async fn a_step_option_change_re_executes_the_changed_step_and_dependents_only()
+async fn a_step_option_change_re_executes_only_the_changed_step_when_bytes_are_unchanged()
 -> Result<(), MediaPmError> {
     let (mock, _seams) = stub_upstreams().await;
     let _ = mock; // keep mock alive
