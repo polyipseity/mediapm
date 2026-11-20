@@ -1440,7 +1440,7 @@ async fn final_failure_tally_counts_the_terminal_outcome() {
             ProgressOp::SetSuffixComponents {
                 components: SuffixComponents { custom: "1 failed".into(), ..Default::default() },
             },
-            ProgressOp::FinishWarning,
+            ProgressOp::FinishError,
         ],
     );
     tc.shutdown().await;
