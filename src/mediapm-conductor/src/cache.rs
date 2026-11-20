@@ -2413,12 +2413,9 @@ mod tests {
         let (locked_tx, locked_rx) = tokio::sync::oneshot::channel::<Result<(), &'static str>>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let mutex_holder = tokio::task::spawn_blocking(move || {
-            let guard = match index_mutex.lock() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    let _ = locked_tx.send(Err("index mutex poisoned"));
-                    return;
-                }
+            let Ok(guard) = index_mutex.lock() else {
+                let _ = locked_tx.send(Err("index mutex poisoned"));
+                return;
             };
             let _ = locked_tx.send(Ok(()));
             let _ = release_rx.recv_timeout(Duration::from_secs(10));
@@ -2440,9 +2437,10 @@ mod tests {
             if cache.in_flight_pending("test") == Some(1) {
                 break;
             }
-            if tokio::time::Instant::now() >= deadline {
-                panic!("reservation never observed while the domain index mutex was held");
-            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reservation never observed while the domain index mutex was held"
+            );
             tokio::task::yield_now().await;
         }
 
