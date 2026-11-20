@@ -1943,23 +1943,31 @@ mod tests {
     /// # How the overlap is forced
     ///
     /// A rewriting thread performs the other domain's Phase 2 write back to
-    /// back while a scanning thread runs the real Phase 3 scan for the whole
-    /// rewrite window. The reference under assertion lives *only* in the file
-    /// the writer rewrites, so the scan can miss it only while that file is
-    /// missing, never because of anything else. This is the same "drive the
-    /// racing operation explicitly instead of waiting for it" shape as
-    /// `hardlink_survives_later_wal_consumer_drain_of_the_same_blob` in
-    /// `mediapm`'s `materializer/file_ops.rs`: no sleeps, and the scan is
-    /// required to have sampled while the writer was still running, so the
-    /// race cannot pass vacuously.
+    /// back while a scanning thread runs the real Phase 3 scan. The reference
+    /// under assertion lives only in the file the writer rewrites, so the scan
+    /// can miss it only while that file is missing. Three constants bound the
+    /// run. `MAX_REWRITES` is a hard cap for a host where overlap is never
+    /// observed. `MIN_ROUNDS` is a floor of rewrite pairs so the test still
+    /// exercises many rewrite and replace cycles before it may stop.
+    /// `MIN_OVERLAPPING_SCANS` is the number of proven overlapping samples the
+    /// scanner must collect. `MIN_SCANS` keeps the scanner taking observations
+    /// after the writer finishes when overlap was never observed. The scanner
+    /// tells the writer to stop after it has collected enough overlapping
+    /// samples, and the writer keeps rewriting until it has reached the floor.
+    /// A run that never observes overlap hits the cap and fails its own
+    /// assertion.
     #[test]
     fn index_rewrite_never_hides_a_live_reference_from_the_prune_scan() {
-        /// Safety valve for the rewriting thread. It stops as soon as the
-        /// scanning thread is done, so a scan that fails early cannot leave
-        /// the rewriting thread running.
+        /// Hard cap for a host where overlap is never observed.
         const MAX_REWRITES: u64 = 4096;
-        /// Scans still taken after the writer finished, so a writer that
-        /// outran the scanner cannot leave the race unobserved.
+        /// Floor of rewrite pairs so the test still exercises many rewrite and
+        /// replace cycles before it may stop.
+        const MIN_ROUNDS: u64 = 64;
+        /// Number of proven overlapping samples the scanner must collect.
+        const MIN_OVERLAPPING_SCANS: usize = 32;
+        /// Scans still taken after the writer finished when overlap was never
+        /// observed, so the scanner does not stop before it has taken enough
+        /// observations.
         const MIN_SCANS: usize = 8;
 
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
@@ -1968,7 +1976,7 @@ mod tests {
 
         // The expired content row is already gone from the content index by
         // the time Phase 3 scans, so the payload's only surviving reference
-        // is the metadata row — exactly the production shape.
+        // is the metadata row, exactly the production shape.
         let live_hash = Hash::from_bytes([42u8; 32]).to_string();
         let content_index = super::CacheIndex {
             version: super::INDEX_VERSION,
@@ -1997,12 +2005,14 @@ mod tests {
             let writer_path = metadata_path.clone();
             let stop_flag = &stop;
             let writer = scope.spawn(move || {
-                let mut round: u64 = 1;
-                while round <= MAX_REWRITES && !stop_flag.load(Ordering::Relaxed) {
+                let mut round: u64 = 0;
+                while round < MAX_REWRITES
+                    && !(stop_flag.load(Ordering::Relaxed) && round >= MIN_ROUNDS)
+                {
                     let mut index = metadata_index.clone();
                     // Vary the bytes so every round really replaces the
                     // destination instead of rewriting identical content.
-                    index.last_prune_unix_seconds = round;
+                    index.last_prune_unix_seconds = round + 1;
                     super::write_index_file(&writer_path, &index)
                         .expect("rewrite the metadata index");
                     round += 1;
@@ -2012,26 +2022,36 @@ mod tests {
             let mut missed = 0usize;
             let mut scans = 0usize;
             let mut scans_during_rewrites = 0usize;
-            while !writer.is_finished() || scans < MIN_SCANS {
+            loop {
                 let references = super::collect_referenced_hashes_from_indexes(root.path());
                 scans += 1;
-                if !writer.is_finished() {
+                let writer_finished = writer.is_finished();
+                if !writer_finished {
                     scans_during_rewrites += 1;
+                    if scans_during_rewrites >= MIN_OVERLAPPING_SCANS {
+                        stop.store(true, Ordering::Relaxed);
+                    }
                 }
                 if !references.contains(&live_hash) {
                     missed += 1;
                 }
+
+                if stop.load(Ordering::Relaxed) && writer_finished {
+                    break;
+                }
+                if writer_finished && scans >= MIN_SCANS {
+                    break;
+                }
             }
-            stop.store(true, Ordering::Relaxed);
             writer.join().expect("index rewriting thread");
             (missed, scans, scans_during_rewrites)
         });
 
         assert!(
-            scans_during_rewrites > 0,
-            "the prune scan never sampled while an index rewrite was in flight, so the race \
-             window was not exercised ({scans} scans, {scans_during_rewrites} of them during a \
-             rewrite)"
+            scans_during_rewrites >= MIN_OVERLAPPING_SCANS,
+            "the prune scan never collected enough samples while an index rewrite was in flight, \
+             so the race window was not exercised ({scans} scans, {scans_during_rewrites} of them \
+             during a rewrite)"
         );
         assert_eq!(
             missed, 0,
