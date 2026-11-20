@@ -598,7 +598,7 @@ pub(crate) fn build_yt_dlp_spec(
     os_exec_paths: &BTreeMap<String, String>,
 ) -> (ToolSpec, ToolRuntime) {
     let command_path = build_os_conditional_selector(os_exec_paths);
-    assemble_tool_spec(
+    let (mut spec, mut runtime) = assemble_tool_spec(
         "yt-dlp",
         content_map,
         build_yt_dlp_command(&command_path),
@@ -608,7 +608,15 @@ pub(crate) fn build_yt_dlp_spec(
         true, // impure — yt-dlp requires network
         1,    // max_concurrent_calls
         1,    // max_retries
-    )
+    );
+    // The hermetic stub chain publishes these names in the host environment.
+    // Declaring them lets whitelisted yt-dlp steps receive the emit-mode stub's
+    // manifest and the invocation log when a run mounts the chain.
+    for name in ["MEDIAPM_STUB_MANIFEST", "MEDIAPM_STUB_INVOCATIONS"] {
+        runtime.inherited_env_vars.push(name.to_owned());
+        spec.runtime.inherited_env_vars.push(name.to_owned());
+    }
+    (spec, runtime)
 }
 
 #[cfg(test)]

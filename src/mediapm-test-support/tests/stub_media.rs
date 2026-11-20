@@ -12,8 +12,8 @@ use mediapm_test_support::mock_musicbrainz::{
     ARTIST_NAME, MockMusicBrainz, RECORDING_MBID, RECORDING_TITLE, RELEASE_MBID,
 };
 use mediapm_test_support::stub_media::{
-    CHAIN_TOOLS, INVOCATION_RECORD_ENV, MANIFEST_ENV, mount_managed_tool_upstreams,
-    mount_offline_tool_chain,
+    CHAIN_TOOLS, INVOCATION_RECORD_ENV, MANIFEST_ENV, OfflineToolChain,
+    mount_managed_tool_upstreams, mount_offline_tool_chain,
 };
 use mediapm_test_support::{MockUpstream, media_fixture_path, stub_tool_path};
 
@@ -437,6 +437,11 @@ fn the_chain_publishes_the_environment_the_stub_reads() {
     let chain = mount_offline_tool_chain(dir.path(), &fixture());
     let pairs = chain.env_pairs();
 
+    assert_eq!(
+        OfflineToolChain::inherited_env_names(),
+        &[MANIFEST_ENV, INVOCATION_RECORD_ENV],
+        "the chain must declare both names for whitelisted stub tools",
+    );
     assert_eq!(
         pairs.iter().map(|(name, _)| *name).collect::<Vec<&str>>(),
         vec![MANIFEST_ENV, INVOCATION_RECORD_ENV],

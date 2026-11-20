@@ -1747,6 +1747,23 @@ fn configure_document_for_online_demo(
     // written mediapm.ncl documents every runtime knob by default.
     // `runtime_boundary` spells the whole surface out; the deviations below are
     // the only knobs this demo moves away from it.
+    // The stub chain publishes its manifest and invocation-log paths in the
+    // host environment for offline runs. Declare those names on the host
+    // platform so whitelisted runtime children (workflow steps and mediapm-side
+    // probes that use the platform env map) can receive them when the host sets
+    // them; an unset host value is omitted by the resolver.
+    let host_platform = mediapm_conductor::config::host_platform_inherited_env_var_key();
+    let mut host_inherited =
+        mediapm_conductor::config::default_platform_inherited_env_var_names(host_platform)
+            .iter()
+            .map(|&name| name.to_string())
+            .collect::<Vec<_>>();
+    for name in mediapm_test_support::stub_media::OfflineToolChain::inherited_env_names() {
+        if !host_inherited.iter().any(|existing| existing == name) {
+            host_inherited.push((*name).to_string());
+        }
+    }
+
     document.runtime = runtime_boundary(RuntimeBoundaryDeviations {
         // Materialized hierarchy root directory.
         // Default: workspace root containing `mediapm.ncl`.
@@ -1757,8 +1774,10 @@ fn configure_document_for_online_demo(
         // Optional default runtime GC TTL in seconds.
         // Default: 604800 (7 days).
         instance_ttl_seconds: Some(3600),
-        // Absent platforms inherit the document's platform defaults.
-        inherited_env_vars: None,
+        // Extend the host platform's defaults with the stub chain env names so
+        // offline runs can pass them through the whitelist; online runs leave
+        // them unset on the host, so the resolver omits them.
+        inherited_env_vars: Some(BTreeMap::from([(host_platform.to_string(), host_inherited)])),
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
         profiler_enabled: Some(true),

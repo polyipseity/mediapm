@@ -138,7 +138,7 @@ pub(crate) fn build_sd_spec(
     os_exec_paths: &BTreeMap<String, String>,
 ) -> (ToolSpec, ToolRuntime) {
     let command_path = build_os_conditional_selector(os_exec_paths);
-    assemble_tool_spec(
+    let (mut spec, mut runtime) = assemble_tool_spec(
         "sd",
         content_map,
         build_sd_command(&command_path),
@@ -148,7 +148,15 @@ pub(crate) fn build_sd_spec(
         false, // impure
         0,     // max_concurrent_calls
         0,     // max_retries
-    )
+    );
+    // The hermetic stub chain publishes these names in the host environment.
+    // Declaring them lets whitelisted sd steps receive the invocation log when
+    // a run mounts the chain.
+    for name in ["MEDIAPM_STUB_MANIFEST", "MEDIAPM_STUB_INVOCATIONS"] {
+        runtime.inherited_env_vars.push(name.to_owned());
+        spec.runtime.inherited_env_vars.push(name.to_owned());
+    }
+    (spec, runtime)
 }
 
 #[cfg(test)]

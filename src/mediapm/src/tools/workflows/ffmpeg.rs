@@ -785,7 +785,7 @@ pub(crate) fn build_ffmpeg_spec(
     slot_limits: FfmpegSlotLimits,
 ) -> (ToolSpec, ToolRuntime) {
     let command_path = build_os_conditional_selector(os_exec_paths);
-    super::spec::assemble_tool_spec(
+    let (mut spec, mut runtime) = super::spec::assemble_tool_spec(
         "ffmpeg",
         content_map,
         build_ffmpeg_command(
@@ -802,7 +802,15 @@ pub(crate) fn build_ffmpeg_spec(
         false, // impure
         0,     // max_concurrent_calls
         0,     // max_retries
-    )
+    );
+    // The hermetic stub chain publishes these names in the host environment.
+    // Declaring them lets whitelisted ffmpeg steps receive the invocation log
+    // when a run mounts the chain.
+    for name in ["MEDIAPM_STUB_MANIFEST", "MEDIAPM_STUB_INVOCATIONS"] {
+        runtime.inherited_env_vars.push(name.to_owned());
+        spec.runtime.inherited_env_vars.push(name.to_owned());
+    }
+    (spec, runtime)
 }
 
 #[cfg(test)]
@@ -927,6 +935,10 @@ mod tests {
         );
         assert_eq!(runtime.max_concurrent_calls, 0);
         assert_eq!(runtime.max_retries, 0);
-        assert_eq!(runtime.inherited_env_vars.len(), 0, "the ffmpeg spec inherits no env var");
+        assert_eq!(
+            runtime.inherited_env_vars,
+            vec!["MEDIAPM_STUB_MANIFEST".to_owned(), "MEDIAPM_STUB_INVOCATIONS".to_owned()],
+            "the ffmpeg spec inherits the stub chain env names so a mounted chain can record invocations"
+        );
     }
 }

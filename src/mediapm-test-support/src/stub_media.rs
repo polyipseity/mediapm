@@ -164,16 +164,33 @@ impl OfflineToolChain {
         &self.invocations
     }
 
-    /// The environment pairs a run has to install for the chain to work.
+    /// The host-environment names the chain's stub binaries read.
     ///
-    /// The stub reads both names from the environment the conductor passes to a
-    /// spawned tool, which is the caller's environment: a tool's `env_vars` are
-    /// serialized into the document but never reach the process
-    /// (`to_unified` in `src/mediapm-conductor/src/config/documents.rs` drops
-    /// them), so declaring them on a tool spec would not deliver them. Install
-    /// the pairs under the environment lock a caller already holds — in a
-    /// `mediapm` test that is `example_isolation::env_lock()` — so a parallel
-    /// test cannot see them.
+    /// Under the child-environment whitelist, a conductor-spawned step receives
+    /// only the names its tool declares as inherited. A run that mounts this
+    /// chain must declare these names on each stub tool's
+    /// `runtime.inherited_env_vars` so the resolver reads the host values and
+    /// the whitelisted child receives them. The emit-mode `yt-dlp` stub needs
+    /// both: the manifest to know what to emit and the invocation log to record
+    /// that it ran. The other chain copies record invocations when
+    /// [`INVOCATION_RECORD_ENV`] is set, so a step that must leave evidence in
+    /// the log needs that name declared; declaring [`MANIFEST_ENV`] on a
+    /// non-emit stub is harmless.
+    #[must_use]
+    pub const fn inherited_env_names() -> &'static [&'static str] {
+        &[MANIFEST_ENV, INVOCATION_RECORD_ENV]
+    }
+
+    /// The environment pairs a run has to publish in the host environment for
+    /// the chain to work.
+    ///
+    /// `host_env_pairs` resolves inherited names from the process environment,
+    /// so a whitelisted child receives these values only when the caller has
+    /// installed them in the host environment and declared the corresponding
+    /// names on the tool (see [`Self::inherited_env_names`]). Install the pairs
+    /// under the environment lock a caller already holds — in a `mediapm` test
+    /// that is `example_isolation::env_lock()` — so a parallel test cannot see
+    /// or replace them.
     #[must_use]
     pub fn env_pairs(&self) -> Vec<(&'static str, String)> {
         vec![
