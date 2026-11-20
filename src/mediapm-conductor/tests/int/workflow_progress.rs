@@ -1187,18 +1187,18 @@ async fn overall_bar_suffix_no_failed_on_success() {
     tc.shutdown().await;
 }
 
-/// The pinned overall row finishes as a warning when the run ends in
+/// The pinned overall row finishes as an error when the run ends in
 /// failure, and finishes as a success when it ends clean.
 ///
 /// The row installs no label at all — its prefix is the static seed — so the
 /// verdict is what the row records, not what a label carries: the terminal
-/// finish op is the marker, and `[W]` and `[F]` must not collapse into one
-/// another or into nothing. The `failed` count still lands in the suffix.
+/// finish op is the marker, and a failed run's `[F]` must not collapse into
+/// a clean success. The `failed` count still lands in the suffix.
 #[tokio::test]
-async fn overall_row_marks_a_warned_run_and_leaves_a_clean_run_unmarked() {
+async fn overall_row_marks_a_failed_run_and_leaves_a_clean_run_unmarked() {
     fix_worker_pool_size();
-    let warned = TestConductor::new();
-    warned.write_config(doc_with_workflows(
+    let failed = TestConductor::new();
+    failed.write_config(doc_with_workflows(
         BTreeMap::from([("broken".into(), broken_tool("broken"))]),
         vec![WorkflowSpec {
             name: "default".into(),
@@ -1208,13 +1208,13 @@ async fn overall_row_marks_a_warned_run_and_leaves_a_clean_run_unmarked() {
             steps: vec![step("s1", "broken", "")],
         }],
     ));
-    let (tracker, summary) = run_with_progress(&warned, "default").await;
+    let (tracker, summary) = run_with_progress(&failed, "default").await;
     assert_eq!(summary.failed_steps, 1);
     let ops = ops_on_overall(&tracker.recorded());
     assert_eq!(
         ops.last(),
-        Some(&ProgressOp::FinishWarning),
-        "a run that lost a step ends the overall row with a warning: {ops:?}"
+        Some(&ProgressOp::FinishError),
+        "a run that lost a step ends the overall row with an error: {ops:?}"
     );
 
     let clean = TestConductor::new();
@@ -1230,21 +1230,22 @@ async fn overall_row_marks_a_warned_run_and_leaves_a_clean_run_unmarked() {
         Some(&ProgressOp::FinishSuccess),
         "a clean run ends the overall row with a success: {ops:?}"
     );
-    warned.shutdown().await;
+    failed.shutdown().await;
     clean.shutdown().await;
 }
 
-/// A run with a failed step finishes the pinned overall row as a warning.
+/// A run with a failed step finishes the pinned overall row as an error.
 ///
 /// The overall row carries the run's verdict, so a run that lost a step cannot
 /// end the same way a clean run does. Two things say that on the row: the
-/// terminal finish is `FinishWarning` rather than `FinishSuccess`. The row's
-/// prefix is the static seed, so `[W]` renders from the bar's built-in status
-/// marker rather than from a label op. The suffix reports the tally, so
-/// it is asserted too: a row that warned without saying how many steps failed
-/// would leave the reader guessing which end of the run to look at.
+/// terminal finish is `FinishError` rather than `FinishSuccess`, and the row's
+/// built-in status marker renders `[F]` for that failed end state. The row's
+/// prefix is the static seed, so the marker comes from the bar's built-in status
+/// rather than from a label op. The suffix reports the tally, so it is asserted
+/// too: a row that turned red without saying how many steps failed would leave
+/// the reader guessing which end of the run to look at.
 #[tokio::test]
-async fn overall_bar_finishes_warning_when_a_step_failed() {
+async fn overall_bar_finishes_error_when_a_step_failed() {
     fix_worker_pool_size();
     let tc = TestConductor::new();
     tc.write_config(doc_with_workflows(
@@ -1264,7 +1265,7 @@ async fn overall_bar_finishes_warning_when_a_step_failed() {
     let recorded = tracker.recorded();
     let ops = ops_on_overall(&recorded);
     assert!(
-        ops.contains(&ProgressOp::FinishWarning),
+        ops.contains(&ProgressOp::FinishError),
         "a run that lost a step must not finish the overall row as a success: {ops:?}"
     );
     assert!(
@@ -1273,7 +1274,7 @@ async fn overall_bar_finishes_warning_when_a_step_failed() {
     );
     assert_eq!(
         ops.last(),
-        Some(&ProgressOp::FinishWarning),
+        Some(&ProgressOp::FinishError),
         "the terminal finish is the last thing the overall row records: {ops:?}"
     );
     assert_eq!(
@@ -1288,7 +1289,7 @@ async fn overall_bar_finishes_warning_when_a_step_failed() {
     assert_eq!(
         suffix,
         Some("1 failed".to_string()),
-        "the warning is reported with the tally that caused it; a count of zero is \
+        "the failed end state is reported with the tally that caused it; a count of zero is \
          not rendered, so the two phases this run did not enter leave no word behind"
     );
     tc.shutdown().await;

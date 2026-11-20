@@ -1211,7 +1211,7 @@ where
                     ],
                 ));
                 if failed_steps > 0 {
-                    bar.finish_warning();
+                    bar.finish_error();
                 } else {
                     bar.finish_success();
                 }
