@@ -50,15 +50,20 @@ pub fn run(args: &MatrixArgs) -> Result<i32> {
 
     let cargo_bin = cargo::cargo_binary();
     let mut failures = Vec::new();
-    for probe in &derived {
+    let total = derived.len();
+    for (index, probe) in derived.iter().enumerate() {
         let check_argv = probe_argv(args, probe);
+        let started = std::time::Instant::now();
         let status = std::process::Command::new(&cargo_bin)
             .current_dir(dir)
             .args(&check_argv)
             .status()
             .with_context(|| format!("run cargo check for {}", probe.package))?;
+        let elapsed = started.elapsed();
         let code = cargo::status_code(status, &probe.package)?;
-        if code != 0 {
+        let passed = code == 0;
+        println!("{}", probe_result_line(index + 1, total, probe, passed, elapsed));
+        if !passed {
             failures.push(format!("{} {} (exit {code})", probe.package, probe.flags.join(" ")));
         }
     }
@@ -72,6 +77,27 @@ pub fn run(args: &MatrixArgs) -> Result<i32> {
     }
     eprintln!("error: {} of {} feature combinations failed", failures.len(), derived.len());
     Ok(1)
+}
+
+/// Formats one per-probe progress/result line.
+///
+/// Emitted after the probe completes so the elapsed wall-clock duration is
+/// known. The caller owns the index (1-based, in execution order) and the
+/// total probe count.
+fn probe_result_line(
+    index: usize,
+    total: usize,
+    probe: &Probe,
+    passed: bool,
+    elapsed: std::time::Duration,
+) -> String {
+    let outcome = if passed { "pass" } else { "fail" };
+    format!(
+        "feature matrix: {index}/{total} {} {} {outcome} {:.2}s",
+        probe.package,
+        probe.flags.join(" "),
+        elapsed.as_secs_f64(),
+    )
 }
 
 /// The argv for one `cargo check` probe.
@@ -277,6 +303,25 @@ mod tests {
                 OsString::from("mediapm-utils"),
                 OsString::from("--no-default-features"),
             ]
+        );
+    }
+
+    /// Pins the stable per-probe progress/result line: 1-based index over
+    /// the total, package, space-joined flags, pass/fail outcome, and
+    /// wall-clock duration formatted to centiseconds.
+    #[test]
+    fn probe_result_line_formats_index_package_flags_outcome_and_elapsed() {
+        let probe = Probe {
+            package: "mediapm-utils".into(),
+            flags: vec!["--features".into(), "progress".into()],
+        };
+        assert_eq!(
+            super::probe_result_line(3, 58, &probe, true, std::time::Duration::from_millis(1520)),
+            "feature matrix: 3/58 mediapm-utils --features progress pass 1.52s"
+        );
+        assert_eq!(
+            super::probe_result_line(1, 58, &probe, false, std::time::Duration::from_secs(0)),
+            "feature matrix: 1/58 mediapm-utils --features progress fail 0.00s"
         );
     }
 }
