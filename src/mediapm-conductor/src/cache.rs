@@ -2378,15 +2378,17 @@ mod tests {
     }
 
     /// A production prune dispatch must reserve its in-flight slot before the
-    /// index-write closure can block on domain state.
+    /// blocking index-write closure can run to completion.
     ///
-    /// The real [`Cache::prune_expired_immediate`] path drives
+    /// The domain index mutex is taken first and held while the prune is
+    /// dispatched. The real [`Cache::prune_expired_immediate`] path drives
     /// [`super::prune_expired_inner_core`], which reserves in
     /// [`super::InFlightIndexWrites`] before handing Phase 2 to the blocking
-    /// pool. A blocking observer grabs the domain index mutex once the
-    /// reservation is visible so the spawned Phase 2 closure blocks on that
-    /// mutex after taking the lease, making pending stay at 1 without any
-    /// test-side `reserve()`.
+    /// pool, so the spawned closure blocks on that mutex after taking the
+    /// lease. Holding the mutex up front makes the check deterministic: a
+    /// reservation taken before the closure is visible as pending while the
+    /// mutex is held, whereas an implementation that reserved inside the
+    /// closure would never show pending == 1 while the mutex is held.
     #[tokio::test(flavor = "current_thread")]
     async fn prune_dispatch_reserves_in_flight_slot_before_blocking_work() {
         let root = mediapm_utils::temp::cache_dir().expect("cache dir");
@@ -2410,42 +2412,39 @@ mod tests {
         let index_mutex = cache.domain_index_mutex("test").expect("domain index mutex");
         let (locked_tx, locked_rx) = tokio::sync::oneshot::channel::<Result<(), &'static str>>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let observer_cache = cache.clone();
-        let observer_prune_cache = cache.clone();
-        let prune_cache = cache.clone();
-        let mut prune_task =
-            tokio::spawn(async move { prune_cache.prune_expired_immediate("test").await });
-
-        let observer = tokio::task::spawn_blocking(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            loop {
-                if observer_cache.in_flight_pending("test") == Some(1) {
-                    if let Ok(guard) = index_mutex.lock() {
-                        let _ = locked_tx.send(Ok(()));
-                        let _ = release_rx.recv_timeout(Duration::from_secs(10));
-                        drop(guard);
-                        return;
-                    }
+        let mutex_holder = tokio::task::spawn_blocking(move || {
+            let guard = match index_mutex.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
                     let _ = locked_tx.send(Err("index mutex poisoned"));
                     return;
                 }
-                if observer_prune_cache.in_flight_pending("test") == Some(0)
-                    && std::time::Instant::now() >= deadline
-                {
-                    let _ = locked_tx.send(Err(
-                        "timed out waiting for production prune dispatch to reserve in-flight slot",
-                    ));
-                    return;
-                }
-                std::thread::yield_now();
-            }
+            };
+            let _ = locked_tx.send(Ok(()));
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            drop(guard);
         });
 
         tokio::time::timeout(Duration::from_secs(10), locked_rx)
             .await
-            .expect("observer did not report reservation state")
-            .expect("observer channel closed")
-            .expect("observer failed to pin production reservation");
+            .expect("mutex holder did not report lock state")
+            .expect("mutex holder channel closed")
+            .expect("mutex holder failed to lock the domain index mutex");
+
+        let prune_cache = cache.clone();
+        let mut prune_task =
+            tokio::spawn(async move { prune_cache.prune_expired_immediate("test").await });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if cache.in_flight_pending("test") == Some(1) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("reservation never observed while the domain index mutex was held");
+            }
+            tokio::task::yield_now().await;
+        }
 
         assert_eq!(
             cache.in_flight_pending("test"),
@@ -2471,10 +2470,10 @@ mod tests {
             "in-flight reservation must be released after prune completion"
         );
 
-        tokio::time::timeout(Duration::from_secs(10), observer)
+        tokio::time::timeout(Duration::from_secs(10), mutex_holder)
             .await
-            .expect("observer task must complete")
-            .expect("observer task must not panic");
+            .expect("mutex holder task must complete")
+            .expect("mutex holder task must not panic");
     }
 
     /// Verifies that when two keys in the same index share the same hash
