@@ -11,13 +11,16 @@ description = "Media orchestration facade over conductor and CAS"
 [features]
 default = ["cli", "media-tagger"]
 cli = [
+  "dep:anyhow",
   "dep:clap",
   "dep:clap_complete",
   "dep:mediapm-cli",
+  "dep:tracing-subscriber",
   "mediapm-cas/cli",
   "mediapm-conductor/cli",
 ]
 media-tagger = [
+  "dep:anyhow",
   "dep:async-trait",
   "dep:chromaprint-next",
   "dep:musicbrainz_rs",
@@ -39,7 +42,7 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-anyhow.workspace = true
+anyhow = { workspace = true, optional = true }
 # Implements the conductor's `HostBuiltin` seam, which is an `async_trait`
 # trait; gated with the builtin runner that implements it.
 async-trait = { workspace = true, optional = true }
@@ -77,7 +80,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 url.workspace = true
 unicode-normalization.workspace = true
 same-file.workspace = true
@@ -100,4 +103,6 @@ mediapm-test-support = { path = "../mediapm-test-support" }
 proptest.workspace = true
 same-file.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# demos in examples/ use tracing_subscriber without requiring the cli feature
+tracing-subscriber.workspace = true
 wiremock = "0.6"

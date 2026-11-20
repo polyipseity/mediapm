@@ -1455,6 +1455,7 @@ mod tests {
                         "yt-dlp" => yt_dlp::build_yt_dlp_spec(empty_map.clone(), &empty_map),
                         "rsgain" => rsgain::build_rsgain_spec(empty_map.clone(), &empty_map),
                         "sd" => sd::build_sd_spec(empty_map.clone(), &empty_map),
+                        #[cfg(feature = "media-tagger")]
                         "media-tagger" => media_tagger::build_media_tagger_spec(),
                         "import" => (
                             ToolSpec {
@@ -1601,6 +1602,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "media-tagger")]
     #[test]
     fn media_tagger_step_expands_to_metadata_and_apply_steps() {
         let document = media_document(
@@ -2217,6 +2219,7 @@ mod tests {
         assert!(!step.inputs.contains_key("skip_download"));
     }
 
+    #[cfg(feature = "media-tagger")]
     #[test]
     fn import_and_media_tagger_generated_doc_roundtrips() {
         let document = media_document(
@@ -2335,6 +2338,7 @@ mod tests {
         mediapm_conductor::decode_document(&bytes).expect("decode roundtrip");
     }
 
+    #[cfg(feature = "media-tagger")]
     #[test]
     fn local_demo_tool_chain_generated_doc_roundtrips() {
         let document = media_document(
@@ -2852,6 +2856,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "media-tagger")]
     #[test]
     fn a_media_tagger_step_with_an_unknown_option_fails_naming_media_step_key_and_tool() {
         use crate::config::MediaStepTool;
