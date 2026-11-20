@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ConductorRuntimeConfig, InputBinding, PayloadStaging, ToolKindSpec, ToolSpec, WorkflowSpec,
-    default_runtime_inherited_env_vars,
 };
 use crate::error::ConductorError;
 use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
@@ -127,13 +126,13 @@ impl NickelDocument {
     /// document and spec — so a binding resolves to identical bytes on both
     /// sides of the cache comparison or both sides refuse it together.
     ///
-    /// The fold order is the rule: hardcoded platform defaults, then the
-    /// document's platform-inherited names, then the tool's inherited names —
-    /// each read from the host at this moment — and the tool's declared
-    /// literals last, so the document's statement outranks an inherited name
-    /// of the same key. An empty literal means "inherit the host's value" and
-    /// is resolved here rather than at spawn; a name the host does not define
-    /// stays empty, which the spawn site reads as "leave it unset".
+    /// The fold order is the rule: the document's platform-inherited names,
+    /// then the tool's inherited names — each read from the host at this
+    /// moment — and the tool's declared literals last, so the document's
+    /// statement outranks an inherited name of the same key. An empty literal
+    /// means "inherit the host's value" and is resolved here rather than at
+    /// spawn; a name the host does not define stays empty, which the spawn
+    /// site reads as "leave it unset".
     ///
     /// Side effect: reads the process environment for every inherited name.
     #[must_use]
@@ -142,10 +141,7 @@ impl NickelDocument {
             ToolKindSpec::Executable { env_vars, .. } => env_vars.clone(),
             ToolKindSpec::Builtin { .. } => BTreeMap::new(),
         };
-        // 1. Hardcoded platform defaults
-        let mut env_vars = default_runtime_inherited_env_vars();
 
-        // 2. Inherit additional env var names from host, selected by current platform
         let current_platform = if cfg!(target_os = "windows") {
             "windows"
         } else if cfg!(target_os = "linux") {
@@ -155,6 +151,10 @@ impl NickelDocument {
         } else {
             "unknown"
         };
+
+        let mut env_vars = BTreeMap::new();
+
+        // 1. Inherit env var names from the host, selected by current platform.
         if let Some(platform_names) =
             self.runtime.environment.platform_inherited_env_vars.env_names_for(current_platform)
         {
@@ -165,25 +165,22 @@ impl NickelDocument {
             }
         }
 
-        // 3. Tool-level inherited env var names
+        // 2. Tool-level inherited env var names.
         for name in &spec.runtime.inherited_env_vars {
             if let Ok(val) = std::env::var(name) {
                 env_vars.insert(name.clone(), val);
             }
         }
 
-        // 4. The tool's own literal values. Folded last, so the
-        //    document's statement about a name outranks both an
-        //    inherited name of the same key and a platform
-        //    default: a literal is what the document says the
-        //    value is, while an inherited name is a copy of
-        //    whatever the host happens to hold.
+        // 3. The tool's own literal values. Folded last, so the document's
+        //    statement about a name outranks an inherited name of the same
+        //    key: a literal is what the document says the value is, while an
+        //    inherited name is a copy of whatever the host happens to hold.
         //
-        //    An empty literal means "inherit the host's value"
-        //    and is resolved here, not at spawn, so the map holds
-        //    the value this run gives the child. A name the host
-        //    does not define stays empty, and the spawn site
-        //    reads that as "leave it unset".
+        //    An empty literal means "inherit the host's value" and is
+        //    resolved here, not at spawn, so the map holds the value this run
+        //    gives the child. A name the host does not define stays empty, and
+        //    the spawn site reads that as "leave it unset".
         for (name, value) in literal_env_vars {
             let resolved =
                 if value.is_empty() { std::env::var(&name).unwrap_or_default() } else { value };
@@ -1620,5 +1617,103 @@ mod tests {
             Some("autobuild-2025-07-15+1759500000_N-127260-g7bc3576910")
         );
         assert_eq!(unified.tools["echo"].version, None);
+    }
+
+    /// Returns the current host platform key, matching `execution_env_vars_for`.
+    fn current_platform() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "unknown"
+        }
+    }
+
+    /// Builds a minimal executable tool spec with no inherited names or
+    /// literals.
+    fn empty_executable_tool() -> ToolSpec {
+        ToolSpec {
+            name: "t".to_string(),
+            kind: ToolKindSpec::Executable {
+                command: vec!["true".to_string()],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            ..ToolSpec::default()
+        }
+    }
+
+    /// An absent `platform_inherited_env_vars` field resolves to the platform
+    /// defaults, so the resolver reads host values for the default name list.
+    #[test]
+    fn execution_env_vars_for_absent_platform_inherited_env_yields_default_list() {
+        let doc = NickelDocument::default();
+        let env = doc.execution_env_vars_for(&empty_executable_tool());
+        // PATH is in every platform's default list and is set in test
+        // environments, so the default list must be in effect.
+        assert!(
+            env.contains_key("PATH"),
+            "absent platform_inherited_env_vars must resolve to the default list"
+        );
+    }
+
+    /// A stated platform list wins over the defaults, and an explicitly empty
+    /// array yields an empty environment for that platform.
+    #[test]
+    fn execution_env_vars_for_stated_list_wins_and_explicit_empty_is_empty() {
+        let platform = current_platform();
+
+        // Stated list wins: only PATH is inherited from the platform layer.
+        let mut doc = NickelDocument::default();
+        let platform_vars = doc
+            .runtime
+            .environment
+            .platform_inherited_env_vars
+            .env_names_for(platform)
+            .expect("current platform");
+        // Pick a name from the defaults that is not PATH and is unlikely to be
+        // contributed by other layers, to prove the stated list replaced the
+        // default list rather than being merged into it.
+        let other_default = platform_vars
+            .iter()
+            .find(|name| name.as_str() != "PATH")
+            .expect("platform defaults contain more than PATH")
+            .clone();
+        match platform {
+            "windows" => {
+                doc.runtime.environment.platform_inherited_env_vars.windows =
+                    vec!["PATH".to_string()]
+            }
+            "linux" => {
+                doc.runtime.environment.platform_inherited_env_vars.linux = vec!["PATH".to_string()]
+            }
+            "macos" => {
+                doc.runtime.environment.platform_inherited_env_vars.macos = vec!["PATH".to_string()]
+            }
+            _ => unreachable!("known platform"),
+        }
+        let env = doc.execution_env_vars_for(&empty_executable_tool());
+        assert!(env.contains_key("PATH"), "the stated list must still inherit its names");
+        assert!(
+            !env.contains_key(&other_default),
+            "a name absent from the stated list must not be inherited from the platform defaults"
+        );
+
+        // Explicitly empty array yields an empty environment for that platform.
+        let mut doc = NickelDocument::default();
+        match platform {
+            "windows" => doc.runtime.environment.platform_inherited_env_vars.windows.clear(),
+            "linux" => doc.runtime.environment.platform_inherited_env_vars.linux.clear(),
+            "macos" => doc.runtime.environment.platform_inherited_env_vars.macos.clear(),
+            _ => unreachable!("known platform"),
+        }
+        let env = doc.execution_env_vars_for(&empty_executable_tool());
+        assert!(
+            env.is_empty(),
+            "an explicitly empty platform list must yield an empty environment when no other layer contributes"
+        );
     }
 }

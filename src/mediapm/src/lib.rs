@@ -535,12 +535,17 @@ fn pick_lifecycle(override_value: u64, config_value: u64, default_value: u64) ->
 
 /// Merges optional platform-keyed inherited env-var maps with deterministic
 /// order and case-insensitive de-duplication.
+///
+/// A platform key present in either source is kept even when its name list is
+/// empty, because an explicitly empty list means "inherit nothing on this
+/// platform" rather than "not stated".
 #[must_use]
 pub fn merge_platform_inherited_env_var_maps(
     config_value: Option<&BTreeMap<String, Vec<String>>>,
     override_value: Option<&BTreeMap<String, Vec<String>>>,
 ) -> Option<BTreeMap<String, Vec<String>>> {
     let mut merged = BTreeMap::<String, Vec<String>>::new();
+    let mut explicitly_present = std::collections::BTreeSet::<String>::new();
 
     for candidate in [config_value, override_value].into_iter().flatten() {
         for (raw_platform, names) in candidate {
@@ -549,12 +554,13 @@ pub fn merge_platform_inherited_env_var_maps(
                 continue;
             }
 
+            explicitly_present.insert(platform.clone());
             let entry = merged.entry(platform).or_default();
             append_unique_env_var_names(entry, names);
         }
     }
 
-    merged.retain(|_, names| !names.is_empty());
+    merged.retain(|platform, names| !names.is_empty() || explicitly_present.contains(platform));
 
     if merged.is_empty() { None } else { Some(merged) }
 }

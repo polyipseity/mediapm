@@ -274,11 +274,11 @@ impl MergeState {
             }
             _ => {}
         }
-        if !rt.environment.platform_inherited_env_vars.is_empty() {
+        if let Some(platform_env) = &rt.environment.platform_inherited_env_vars {
             match self.runtime_platform_source.as_ref() {
                 Some(first_path)
-                    if self.merged.runtime.environment.platform_inherited_env_vars
-                        != rt.environment.platform_inherited_env_vars =>
+                    if self.merged.runtime.environment.platform_inherited_env_vars.as_ref()
+                        != Some(platform_env) =>
                 {
                     self.conflicts.push(MergeConflict::ConflictingRuntime {
                         field: "platform_inherited_env_vars",
@@ -290,7 +290,7 @@ impl MergeState {
                 None => {
                     self.runtime_platform_source = Some(source.path.clone());
                     self.merged.runtime.environment.platform_inherited_env_vars =
-                        rt.environment.platform_inherited_env_vars.clone();
+                        Some(platform_env.clone());
                 }
             }
         }
@@ -435,10 +435,10 @@ mod tests {
         let mut env_platform = env_retry.clone();
         env_platform.runtime = ConductorRuntimeConfigLatest {
             environment: RuntimePlatformEnvConfigLatest {
-                platform_inherited_env_vars: PlatformInheritedEnvVars {
+                platform_inherited_env_vars: Some(PlatformInheritedEnvVars {
                     macos: vec!["PATH".to_string()],
                     ..Default::default()
-                },
+                }),
             },
             retry_impure: None,
             payload_staging: None,
@@ -794,11 +794,11 @@ mod tests {
     fn merge_documents_runtime_platform_explicit_beats_implicit() {
         let env1 = envelope();
         let mut env2 = envelope();
-        env2.runtime.environment.platform_inherited_env_vars = PlatformInheritedEnvVars {
+        env2.runtime.environment.platform_inherited_env_vars = Some(PlatformInheritedEnvVars {
             windows: Vec::new(),
             linux: vec!["PATH".into()],
             macos: Vec::new(),
-        };
+        });
         let result =
             merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)]).unwrap();
         assert_eq!(
@@ -827,17 +827,17 @@ mod tests {
     #[test]
     fn merge_documents_runtime_conflicting_platform_rejected() {
         let mut env1 = envelope();
-        env1.runtime.environment.platform_inherited_env_vars = PlatformInheritedEnvVars {
+        env1.runtime.environment.platform_inherited_env_vars = Some(PlatformInheritedEnvVars {
             windows: Vec::new(),
             linux: vec!["PATH".into()],
             macos: Vec::new(),
-        };
+        });
         let mut env2 = envelope();
-        env2.runtime.environment.platform_inherited_env_vars = PlatformInheritedEnvVars {
+        env2.runtime.environment.platform_inherited_env_vars = Some(PlatformInheritedEnvVars {
             windows: Vec::new(),
             linux: Vec::new(),
             macos: vec!["HOME".into()],
-        };
+        });
         let err = merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)])
             .unwrap_err();
         let msg = format!("{err}");

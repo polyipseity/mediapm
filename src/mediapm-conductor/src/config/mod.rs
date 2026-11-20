@@ -573,35 +573,65 @@ pub struct ToolRuntime {
 /// Keys are closed to the three supported platforms (`windows`, `linux`,
 /// `macos`), mirroring the v2 Nickel `PlatformInheritedEnvVarsV2` contract.
 /// Unknown platform keys are rejected at the serde boundary and env var
-/// names must be non-empty.  Absent platform keys default to empty lists.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// names must be non-empty. An absent platform field resolves to that
+/// platform's default list; an explicitly stated empty array means the tool
+/// inherits no names from that platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformInheritedEnvVars {
     /// Variable names inherited on Windows.
     #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
+        default = "default_windows_platform_inherited_env_var_names",
         deserialize_with = "deserialize_non_empty_env_names"
     )]
     pub windows: Vec<String>,
     /// Variable names inherited on Linux.
     #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
+        default = "default_linux_platform_inherited_env_var_names",
         deserialize_with = "deserialize_non_empty_env_names"
     )]
     pub linux: Vec<String>,
     /// Variable names inherited on macOS.
     #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
+        default = "default_macos_platform_inherited_env_var_names",
         deserialize_with = "deserialize_non_empty_env_names"
     )]
     pub macos: Vec<String>,
 }
 
+impl Default for PlatformInheritedEnvVars {
+    fn default() -> Self {
+        Self {
+            windows: default_windows_platform_inherited_env_var_names(),
+            linux: default_linux_platform_inherited_env_var_names(),
+            macos: default_macos_platform_inherited_env_var_names(),
+        }
+    }
+}
+
+/// Returns the default inherited environment-variable names for Windows.
+#[must_use]
+pub fn default_windows_platform_inherited_env_var_names() -> Vec<String> {
+    WINDOWS_PLATFORM_INHERITED_ENV_VAR_NAMES.iter().map(|&name| name.to_string()).collect()
+}
+
+/// Returns the default inherited environment-variable names for Linux.
+#[must_use]
+pub fn default_linux_platform_inherited_env_var_names() -> Vec<String> {
+    LINUX_PLATFORM_INHERITED_ENV_VAR_NAMES.iter().map(|&name| name.to_string()).collect()
+}
+
+/// Returns the default inherited environment-variable names for macOS.
+#[must_use]
+pub fn default_macos_platform_inherited_env_var_names() -> Vec<String> {
+    MACOS_PLATFORM_INHERITED_ENV_VAR_NAMES.iter().map(|&name| name.to_string()).collect()
+}
+
 impl PlatformInheritedEnvVars {
     /// Returns `true` when no platform has configured env var names.
+    ///
+    /// This is the explicitly-empty state and is no longer the default: an
+    /// absent field resolves to the platform defaults instead.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.windows.is_empty() && self.linux.is_empty() && self.macos.is_empty()
@@ -685,7 +715,9 @@ pub struct RuntimePlatformEnvConfig {
     /// Keys are closed to `windows`/`linux`/`macos`; each value lists
     /// environment variable *names* to inherit from the host process.  These
     /// are resolved at `to_unified()` time against the current platform.
-    #[serde(default, skip_serializing_if = "PlatformInheritedEnvVars::is_empty")]
+    /// Absent from the wire means "use platform defaults"; the resolved
+    /// config always carries the effective lists.
+    #[serde(default)]
     pub platform_inherited_env_vars: PlatformInheritedEnvVars,
 }
 
@@ -918,30 +950,215 @@ pub struct WorkflowStepSpec {
     pub depends_on: Vec<String>,
 }
 
-/// Returns platform-default inherited environment-variable names.
+/// Default inherited environment-variable names for Linux.
+const LINUX_PLATFORM_INHERITED_ENV_VAR_NAMES: &[&str] = &[
+    // Spawn and identity.
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    // Locale and terminal.
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TZ",
+    "TERM",
+    // Network.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NIX_SSL_CERT_FILE",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    // Stores and trust.
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
+    "DENO_DIR",
+    "DENO_CERT",
+    "DENO_TLS_CA_STORE",
+    "NODE_EXTRA_CA_CERTS",
+    // Fonts and ffmpeg logging.
+    "FONTCONFIG_FILE",
+    "FONTCONFIG_PATH",
+    "AV_LOG_FORCE_NOCOLOR",
+    "AV_LOG_FORCE_COLOR",
+    // GPU and display, reachable through the preset's `hwaccel`.
+    "LIBVA_DRIVER_NAME",
+    "LIBVA_DRIVERS_PATH",
+    "VK_ICD_FILENAMES",
+    "VK_DRIVER_FILES",
+    "CUDA_VISIBLE_DEVICES",
+    "NVIDIA_VISIBLE_DEVICES",
+    "NVIDIA_DRIVER_CAPABILITIES",
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+];
+
+/// Default inherited environment-variable names for macOS.
 ///
-/// These names are merged into executable runtime environments before tool
-/// environment overrides so callers can keep baseline process invariants
-/// without repeating them per tool.
+/// The same as Linux without the GPU and display group. The same tools run
+/// there through VideoToolbox, which takes no driver-selection variable, and
+/// CUDA is not a macOS concern.
+const MACOS_PLATFORM_INHERITED_ENV_VAR_NAMES: &[&str] = &[
+    // Spawn and identity.
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    // Locale and terminal.
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TZ",
+    "TERM",
+    // Network.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NIX_SSL_CERT_FILE",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    // Stores and trust.
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
+    "DENO_DIR",
+    "DENO_CERT",
+    "DENO_TLS_CA_STORE",
+    "NODE_EXTRA_CA_CERTS",
+    // Fonts and ffmpeg logging.
+    "FONTCONFIG_FILE",
+    "FONTCONFIG_PATH",
+    "AV_LOG_FORCE_NOCOLOR",
+    "AV_LOG_FORCE_COLOR",
+];
+
+/// Default inherited environment-variable names for Windows.
+const WINDOWS_PLATFORM_INHERITED_ENV_VAR_NAMES: &[&str] = &[
+    // Spawn and shell.
+    "PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+    "SYSTEMDRIVE",
+    "COMSPEC",
+    "PATHEXT",
+    // Identity and home.
+    "USERPROFILE",
+    "USERNAME",
+    "USERDOMAIN",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "HOME",
+    // Folders.
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "COMMONPROGRAMFILES",
+    "ALLUSERSPROFILE",
+    "PUBLIC",
+    // Temp and locale.
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    // Network, one spelling each because Windows folds case.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    // Stores and trust.
+    "DENO_DIR",
+    "DENO_CERT",
+    "DENO_TLS_CA_STORE",
+    "NODE_EXTRA_CA_CERTS",
+    // Fonts and ffmpeg logging.
+    "FONTCONFIG_FILE",
+    "FONTCONFIG_PATH",
+    "AV_LOG_FORCE_NOCOLOR",
+    "AV_LOG_FORCE_COLOR",
+    // OS facts and GPU.
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+    "CUDA_VISIBLE_DEVICES",
+];
+
+/// Returns the default inherited environment-variable names for `platform`.
+///
+/// The key is the platform name (`windows`, `linux`, or `macos`), not the
+/// host. An unknown platform yields an empty list. This is the one source of
+/// truth for the document's `platform_inherited_env_vars` defaults.
+#[must_use]
+pub fn default_platform_inherited_env_var_names(platform: &str) -> &'static [&'static str] {
+    match platform {
+        "windows" => WINDOWS_PLATFORM_INHERITED_ENV_VAR_NAMES,
+        "linux" => LINUX_PLATFORM_INHERITED_ENV_VAR_NAMES,
+        "macos" => MACOS_PLATFORM_INHERITED_ENV_VAR_NAMES,
+        _ => &[],
+    }
+}
+
+/// Returns the host platform key used by platform-inherited environment names.
+#[must_use]
+pub fn host_platform_inherited_env_var_key() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
+/// Returns platform-default inherited environment-variable names for this host.
+///
+/// The names come from [`default_platform_inherited_env_var_names`]; values are
+/// left empty and resolved from the host environment when a tool runs.
 #[must_use]
 pub fn default_runtime_inherited_env_vars() -> BTreeMap<String, String> {
-    if cfg!(windows) {
-        BTreeMap::from([
-            ("PATH".to_string(), String::new()),
-            ("SYSTEMROOT".to_string(), String::new()),
-            ("USERNAME".to_string(), String::new()),
-            ("WINDIR".to_string(), String::new()),
-            ("TEMP".to_string(), String::new()),
-            ("TMP".to_string(), String::new()),
-        ])
-    } else {
-        BTreeMap::from([
-            ("HOME".to_string(), String::new()),
-            ("PATH".to_string(), String::new()),
-            ("TMPDIR".to_string(), String::new()),
-            ("USER".to_string(), String::new()),
-        ])
-    }
+    default_platform_inherited_env_var_names(host_platform_inherited_env_var_key())
+        .iter()
+        .map(|&name| (name.to_string(), String::new()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -964,21 +1181,255 @@ mod tests {
         assert!(rt.content_map.is_empty());
     }
 
-    /// Verifies `default_runtime_inherited_env_vars` returns
-    /// platform-appropriate inherited env var names.
+    /// Verifies `default_runtime_inherited_env_vars` returns the host
+    /// platform's default inherited env var names.
     #[test]
     fn default_inherited_env_vars_are_platform_appropriate() {
         let vars = default_runtime_inherited_env_vars();
-        assert!(!vars.is_empty(), "should have entries on all platforms");
         assert!(vars.contains_key("PATH"), "PATH must be present on all platforms");
+        assert!(
+            vars.values().all(String::is_empty),
+            "names are resolved from the host at execution time, so defaults carry empty values"
+        );
         if cfg!(windows) {
-            assert!(vars.contains_key("WINDIR"));
-            assert!(vars.contains_key("USERNAME"));
-        } else {
+            assert_eq!(vars.len(), 46);
+            assert!(vars.contains_key("SYSTEMROOT"));
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(vars.len(), 40);
             assert!(vars.contains_key("HOME"));
-            assert!(vars.contains_key("USER"));
-            assert!(vars.contains_key("TMPDIR"));
+            assert!(!vars.contains_key("DISPLAY"), "macOS defaults omit the GPU and display group");
+        } else {
+            assert_eq!(vars.len(), 51);
+            assert!(vars.contains_key("HOME"));
+            assert!(
+                vars.contains_key("DISPLAY"),
+                "Linux defaults include the GPU and display group"
+            );
         }
+    }
+
+    /// Pins the three platform default lists exactly: their lengths, their
+    /// contents, and the fact that macOS differs from Linux only by the GPU
+    /// and display group.
+    #[test]
+    fn default_platform_inherited_env_var_names_are_pinned() {
+        let linux = default_platform_inherited_env_var_names("linux");
+        let macos = default_platform_inherited_env_var_names("macos");
+        let windows = default_platform_inherited_env_var_names("windows");
+
+        assert_eq!(linux.len(), 51, "linux default list length");
+        assert_eq!(macos.len(), 40, "macos default list length");
+        assert_eq!(windows.len(), 46, "windows default list length");
+
+        assert_eq!(
+            linux,
+            &[
+                // Spawn and identity.
+                "PATH",
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "SHELL",
+                "TMPDIR",
+                "TEMP",
+                "TMP",
+                // Locale and terminal.
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "LC_MESSAGES",
+                "TZ",
+                "TERM",
+                // Network.
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "NO_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+                "no_proxy",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "NIX_SSL_CERT_FILE",
+                "CURL_CA_BUNDLE",
+                "REQUESTS_CA_BUNDLE",
+                // Stores and trust.
+                "XDG_CACHE_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_STATE_HOME",
+                "XDG_RUNTIME_DIR",
+                "DENO_DIR",
+                "DENO_CERT",
+                "DENO_TLS_CA_STORE",
+                "NODE_EXTRA_CA_CERTS",
+                // Fonts and ffmpeg logging.
+                "FONTCONFIG_FILE",
+                "FONTCONFIG_PATH",
+                "AV_LOG_FORCE_NOCOLOR",
+                "AV_LOG_FORCE_COLOR",
+                // GPU and display, reachable through the preset's `hwaccel`.
+                "LIBVA_DRIVER_NAME",
+                "LIBVA_DRIVERS_PATH",
+                "VK_ICD_FILENAMES",
+                "VK_DRIVER_FILES",
+                "CUDA_VISIBLE_DEVICES",
+                "NVIDIA_VISIBLE_DEVICES",
+                "NVIDIA_DRIVER_CAPABILITIES",
+                "ROCR_VISIBLE_DEVICES",
+                "HIP_VISIBLE_DEVICES",
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
+            ]
+        );
+
+        assert_eq!(
+            macos,
+            &[
+                // Spawn and identity.
+                "PATH",
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "SHELL",
+                "TMPDIR",
+                "TEMP",
+                "TMP",
+                // Locale and terminal.
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "LC_MESSAGES",
+                "TZ",
+                "TERM",
+                // Network.
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "NO_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+                "no_proxy",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "NIX_SSL_CERT_FILE",
+                "CURL_CA_BUNDLE",
+                "REQUESTS_CA_BUNDLE",
+                // Stores and trust.
+                "XDG_CACHE_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_STATE_HOME",
+                "XDG_RUNTIME_DIR",
+                "DENO_DIR",
+                "DENO_CERT",
+                "DENO_TLS_CA_STORE",
+                "NODE_EXTRA_CA_CERTS",
+                // Fonts and ffmpeg logging.
+                "FONTCONFIG_FILE",
+                "FONTCONFIG_PATH",
+                "AV_LOG_FORCE_NOCOLOR",
+                "AV_LOG_FORCE_COLOR",
+            ]
+        );
+        assert_eq!(
+            &linux[..40],
+            macos,
+            "macOS is the Linux list without the GPU and display group"
+        );
+        assert_eq!(
+            &linux[40..],
+            &[
+                "LIBVA_DRIVER_NAME",
+                "LIBVA_DRIVERS_PATH",
+                "VK_ICD_FILENAMES",
+                "VK_DRIVER_FILES",
+                "CUDA_VISIBLE_DEVICES",
+                "NVIDIA_VISIBLE_DEVICES",
+                "NVIDIA_DRIVER_CAPABILITIES",
+                "ROCR_VISIBLE_DEVICES",
+                "HIP_VISIBLE_DEVICES",
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
+            ],
+            "Linux differs from macOS only by the GPU and display group"
+        );
+
+        assert_eq!(
+            windows,
+            &[
+                // Spawn and shell.
+                "PATH",
+                "SYSTEMROOT",
+                "WINDIR",
+                "SYSTEMDRIVE",
+                "COMSPEC",
+                "PATHEXT",
+                // Identity and home.
+                "USERPROFILE",
+                "USERNAME",
+                "USERDOMAIN",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "HOME",
+                // Folders.
+                "APPDATA",
+                "LOCALAPPDATA",
+                "PROGRAMDATA",
+                "PROGRAMFILES",
+                "PROGRAMFILES(X86)",
+                "COMMONPROGRAMFILES",
+                "ALLUSERSPROFILE",
+                "PUBLIC",
+                // Temp and locale.
+                "TEMP",
+                "TMP",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "TZ",
+                // Network, one spelling each because Windows folds case.
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "NO_PROXY",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "CURL_CA_BUNDLE",
+                "REQUESTS_CA_BUNDLE",
+                // Stores and trust.
+                "DENO_DIR",
+                "DENO_CERT",
+                "DENO_TLS_CA_STORE",
+                "NODE_EXTRA_CA_CERTS",
+                // Fonts and ffmpeg logging.
+                "FONTCONFIG_FILE",
+                "FONTCONFIG_PATH",
+                "AV_LOG_FORCE_NOCOLOR",
+                "AV_LOG_FORCE_COLOR",
+                // OS facts and GPU.
+                "NUMBER_OF_PROCESSORS",
+                "PROCESSOR_ARCHITECTURE",
+                "OS",
+                "CUDA_VISIBLE_DEVICES",
+            ]
+        );
+
+        assert!(
+            default_platform_inherited_env_var_names("unknown").is_empty(),
+            "an unknown platform yields an empty list"
+        );
+
+        // Windows folds case, so a name that duplicates another across case
+        // would be read twice and the fold would silently drop one value.
+        let mut folded: Vec<String> =
+            windows.iter().map(|name| name.to_ascii_lowercase()).collect();
+        let before = folded.len();
+        folded.sort();
+        folded.dedup();
+        assert_eq!(folded.len(), before, "windows list duplicates a name across case");
     }
 
     // ── InputBinding ──────────────────────────────────────────────────────
@@ -1200,26 +1651,45 @@ mod tests {
     // ── ConductorRuntimeConfig (resolved, no-Option) ─────────────────────
 
     /// Documents that the resolved `ConductorRuntimeConfig` carries plain
-    /// values (not `Option`): defaults are `retry_impure = false` and all
-    /// platform env-var lists empty.
+    /// values (not `Option`): defaults are `retry_impure = false` and the
+    /// platform env-var lists are the document defaults.
     #[test]
-    fn conductor_runtime_config_default_has_no_option_fields() {
+    fn conductor_runtime_config_default_has_platform_default_inherited_env_vars() {
         let cfg = ConductorRuntimeConfig::default();
         assert!(!cfg.retry_impure);
-        assert_eq!(
-            cfg.environment.platform_inherited_env_vars.windows.len(),
-            0,
-            "windows inherits no env var by default"
+        assert_eq!(cfg.environment.platform_inherited_env_vars.windows.len(), 46);
+        assert_eq!(cfg.environment.platform_inherited_env_vars.linux.len(), 51);
+        assert_eq!(cfg.environment.platform_inherited_env_vars.macos.len(), 40);
+        assert!(
+            !cfg.environment.platform_inherited_env_vars.is_empty(),
+            "default platform lists are stated, so the struct is not empty"
+        );
+    }
+
+    /// Absent `platform_inherited_env_vars` resolves to the platform defaults,
+    /// a stated list wins, and an explicitly empty array yields an empty
+    /// environment for that platform.
+    #[test]
+    fn platform_inherited_env_vars_absent_uses_defaults_and_explicit_empty_wins() {
+        let absent: RuntimePlatformEnvConfig =
+            serde_json::from_str("{}").expect("absent platform_inherited_env_vars");
+        assert_eq!(absent.platform_inherited_env_vars.windows.len(), 46);
+        assert_eq!(absent.platform_inherited_env_vars.linux.len(), 51);
+        assert_eq!(absent.platform_inherited_env_vars.macos.len(), 40);
+
+        let stated: RuntimePlatformEnvConfig = serde_json::from_str(
+            r#"{"platform_inherited_env_vars":{"linux":["PATH"],"macos":[]}}"#,
+        )
+        .expect("stated platform_inherited_env_vars");
+        assert_eq!(stated.platform_inherited_env_vars.linux, vec!["PATH".to_string()]);
+        assert!(
+            stated.platform_inherited_env_vars.macos.is_empty(),
+            "an explicitly empty array yields an empty environment for that platform"
         );
         assert_eq!(
-            cfg.environment.platform_inherited_env_vars.linux.len(),
-            0,
-            "linux inherits no env var by default"
-        );
-        assert_eq!(
-            cfg.environment.platform_inherited_env_vars.macos.len(),
-            0,
-            "macos inherits no env var by default"
+            stated.platform_inherited_env_vars.windows.len(),
+            46,
+            "an absent platform field inside a stated block resolves to that platform's defaults"
         );
     }
 

@@ -314,8 +314,14 @@ pub(crate) struct ToolRuntimeLatest {
 pub(crate) struct RuntimePlatformEnvConfigLatest {
     /// Platform-keyed inherited env var names (typed; keys closed to
     /// windows/linux/macos, S-D3).
-    #[serde(default, skip_serializing_if = "super::super::PlatformInheritedEnvVars::is_empty")]
-    pub(crate) platform_inherited_env_vars: super::super::PlatformInheritedEnvVars,
+    ///
+    /// `None` means the document did not state `platform_inherited_env_vars`,
+    /// so the resolved runtime falls back to the platform defaults. `Some`
+    /// means the document stated it explicitly and the stated per-platform
+    /// lists win (absent platform fields inside the stated value resolve to
+    /// their platform defaults).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) platform_inherited_env_vars: Option<super::super::PlatformInheritedEnvVars>,
 }
 
 /// Runtime configuration for the conductor itself (not per-tool).
@@ -368,7 +374,7 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
                         // `platform_inherited_env_vars` at the top level maps
                         // into the nested `environment` sub-record.
                         "platform_inherited_env_vars" => {
-                            environment.platform_inherited_env_vars = map.next_value()?;
+                            environment.platform_inherited_env_vars = Some(map.next_value()?);
                         }
                         "retry_impure" => {
                             retry_impure = map.next_value()?;
@@ -870,7 +876,14 @@ impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig
             // `None` (absent in config) resolves to `false` at the boundary.
             retry_impure: rt.retry_impure.unwrap_or(false),
             environment: super::super::RuntimePlatformEnvConfig {
-                platform_inherited_env_vars: rt.environment.platform_inherited_env_vars,
+                // Absent `platform_inherited_env_vars` resolves to the platform
+                // defaults; an explicitly stated value wins as-is (absent
+                // platform fields inside it resolve to their platform defaults
+                // via serde defaults on `PlatformInheritedEnvVars`).
+                platform_inherited_env_vars: rt
+                    .environment
+                    .platform_inherited_env_vars
+                    .unwrap_or_default(),
             },
             // `None` (absent in config) resolves to `in_place` at the boundary.
             payload_staging: rt
@@ -885,7 +898,9 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
         ConductorRuntimeConfigLatest {
             retry_impure: Some(rt.retry_impure),
             environment: RuntimePlatformEnvConfigLatest {
-                platform_inherited_env_vars: rt.environment.platform_inherited_env_vars,
+                // Always emit the stated per-platform lists so the wire
+                // document carries the defaults explicitly when they apply.
+                platform_inherited_env_vars: Some(rt.environment.platform_inherited_env_vars),
             },
             // `in_place` is what an absent field means, so writing it would
             // restate the default the contract already carries.
@@ -1393,11 +1408,12 @@ mod tests {
     }
 
     /// Documents that a boundary `ConductorRuntimeConfigLatest` with
-    /// `retry_impure: None` and `payload_staging: None` resolves to `false`,
-    /// an empty platform env config, and `in_place` through the `From` impl
-    /// (no `Option` leaks into the resolved type).
+    /// `retry_impure: None`, no `payload_staging`, and absent
+    /// `platform_inherited_env_vars` resolves to `false`, `in_place`, and the
+    /// platform-default inherited env names through the `From` impl (no
+    /// `Option` leaks into the resolved type).
     #[test]
-    fn conductor_runtime_config_from_latest_none_retry_impure_false() {
+    fn conductor_runtime_config_from_latest_absent_resolves_defaults() {
         let latest = ConductorRuntimeConfigLatest {
             environment: RuntimePlatformEnvConfigLatest::default(),
             retry_impure: None,
@@ -1412,18 +1428,18 @@ mod tests {
         );
         assert_eq!(
             cfg.environment.platform_inherited_env_vars.windows.len(),
-            0,
-            "a default runtime config inherits no windows env var"
+            46,
+            "absent platform_inherited_env_vars resolves to the Windows defaults"
         );
         assert_eq!(
             cfg.environment.platform_inherited_env_vars.linux.len(),
-            0,
-            "a default runtime config inherits no linux env var"
+            51,
+            "absent platform_inherited_env_vars resolves to the Linux defaults"
         );
         assert_eq!(
             cfg.environment.platform_inherited_env_vars.macos.len(),
-            0,
-            "a default runtime config inherits no macos env var"
+            40,
+            "absent platform_inherited_env_vars resolves to the macOS defaults"
         );
     }
 

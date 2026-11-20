@@ -164,9 +164,7 @@ use mediapm::{
     load_mediapm_state_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
-use mediapm_conductor::{
-    NickelDocument, ToolKindSpec, ToolSpec, decode_document, default_runtime_inherited_env_vars,
-};
+use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec, decode_document};
 use mediapm_test_support::MockUpstream;
 use mediapm_test_support::media_fixture::{
     MEDIA_FIXTURE_AUDIO_CODEC_ID, MEDIA_FIXTURE_DURATION_SECONDS, MEDIA_FIXTURE_HEIGHT,
@@ -1759,14 +1757,8 @@ fn configure_document_for_online_demo(
         // Optional default runtime GC TTL in seconds.
         // Default: 604800 (7 days).
         instance_ttl_seconds: Some(3600),
-        // Explicit host default inherited env-var map.
-        // Runtime still merges this map case-insensitively with host defaults.
-        inherited_env_vars: Some({
-            let host_platform = std::env::consts::OS.to_ascii_lowercase();
-            let mut map = BTreeMap::new();
-            map.insert(host_platform, default_runtime_inherited_env_vars().into_keys().collect());
-            map
-        }),
+        // Absent platforms inherit the document's platform defaults.
+        inherited_env_vars: None,
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
         profiler_enabled: Some(true),

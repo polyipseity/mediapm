@@ -1592,11 +1592,28 @@ pub(crate) async fn reconcile_desired_tools(
     // same fact `mediapm.ncl` declares under `inherited_env_vars`. It is
     // written here rather than per tool because the map is keyed by platform,
     // not by tool id: it describes the document as a whole, and the
-    // orchestration runtime's env fold reads it from there.
+    // orchestration runtime's env fold reads it from there. A platform absent
+    // from the mediapm config takes that platform's default list; an
+    // explicitly stated platform list, even when empty, wins.
     generated_doc.runtime.environment.platform_inherited_env_vars = PlatformInheritedEnvVars {
-        windows: inherited_env_vars.get("windows").cloned().unwrap_or_default(),
-        linux: inherited_env_vars.get("linux").cloned().unwrap_or_default(),
-        macos: inherited_env_vars.get("macos").cloned().unwrap_or_default(),
+        windows: inherited_env_vars.get("windows").cloned().unwrap_or_else(|| {
+            mediapm_conductor::config::default_platform_inherited_env_var_names("windows")
+                .iter()
+                .map(|&name| name.to_string())
+                .collect()
+        }),
+        linux: inherited_env_vars.get("linux").cloned().unwrap_or_else(|| {
+            mediapm_conductor::config::default_platform_inherited_env_var_names("linux")
+                .iter()
+                .map(|&name| name.to_string())
+                .collect()
+        }),
+        macos: inherited_env_vars.get("macos").cloned().unwrap_or_else(|| {
+            mediapm_conductor::config::default_platform_inherited_env_var_names("macos")
+                .iter()
+                .map(|&name| name.to_string())
+                .collect()
+        }),
     };
 
     // 1a. Load the user-owned conductor document, if present, rejecting
