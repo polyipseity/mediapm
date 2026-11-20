@@ -193,6 +193,10 @@ Two caches are enabled by default, both workspace-scoped under `<runtime>/cache/
 
 `ffprobe` is the only source-metadata probe. Online `${media.metadata.*}` values are resolved during materialization from the yt-dlp `info.json` sidecar held in CAS (`materializer/metadata.rs`, `resolve_variant_metadata_key`); `media add` never contacts a remote source, and `add_media_source_with_position` takes its title, description, and media id from the caller.
 
+### Runtime child environment whitelist
+
+Every runtime child in mediapm runs with a whitelisted environment, not ambient inheritance. `mediapm::child_env` resolves host values from the configured platform inherited env map (falling back to conductor platform defaults when a host platform entry is absent) and `mediapm_utils::child_env` applies the cleared whitelist. This covers mediapm-side runtime children such as local-source ffprobe probes, materialization metadata probes, host builtin and tagging subprocesses, demo verification probes, and other `std::process::Command`/`tokio::process::Command` spawns in runtime paths. A child receives only names declared by the document's platform list, a tool's `inherited_env_vars`, or tool literals; `MEDIAPM_*` variables are read by mediapm in process, and inherited platform names are not `MEDIAPM_*` settings, so `src/mediapm/src/env_registry.rs` needs no entries for them.
+
 ### Media-tagger network contract
 
 The media-tagger's MusicBrainz and Cover Art Archive traffic is bounded, injectable, and fails loudly. The module docs in `builtins/media_tagger/{mod,musicbrainz,cover_art}.rs` carry the deep spec; `tests/int/media_tagger_hermetic.rs` drives the whole metadata stage against `wiremock` hosts with both endpoints injected.

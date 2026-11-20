@@ -4,7 +4,9 @@
 //! resolves the host names a child is allowed to receive and applies that
 //! whitelist to a command: every other variable is cleared. The resolution and
 //! the apply step live here so `mediapm` and `mediapm-conductor` answer "what
-//! does a child inherit?" in one place.
+//! does a child inherit?" in one place. `host_env_pairs` reads host values for
+//! declared names, and `apply_std` clears the command environment before setting
+//! only those pairs.
 
 use std::process::Command;
 
