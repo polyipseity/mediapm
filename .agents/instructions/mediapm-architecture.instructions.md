@@ -65,6 +65,8 @@ Per-crate `AGENTS.md` holds detailed invariants and contracts.
 - `"auto"` answers in one order, and the order is the rule: a variant the media's hierarchy materializes resolves to `"full"`; otherwise a variant the media's final step produces, or an impure step produces, resolves to `true`; otherwise `false`. A materialized variant wins over both other reasons, so a variant the library links to is never stored as a delta against another blob. The context is `AutoSaveContext`, filled from `config::hierarchy_types::hierarchy_consumed_variants` so the answer matches what the materializer writes.
 - A materialized variant declared `false` contradicts the hierarchy and is refused at plan build as `MPM-E010`, naming the media, the step, the variant and the hierarchy entry whose selector consumes it.
 - The mode decides retention, never production: every mode writes the capture when the step runs. `"full"` additionally marks the object keep-full in the CAS, so the optimizer never stores it as a delta (it may still serve as a base); the materializer errors when a resolved hash names bytes the store could not read, which is the fatal exit-1 band, while a variant nothing produced stays a counted miss. The collector's side of retention — an unsaved output stays rooted while its producing instance is reachable — is in `src/mediapm-conductor/AGENTS.md` section G.
+- In `auto` resolution, the `Full` branch matches on variant name, so a same-named variant from another step in the same media is also kept whole. This can over-retain but never under-retain.
+- The conductor's `true` save default reaches only documents mediapm did not synthesize.
 
 ## Cache policy
 
