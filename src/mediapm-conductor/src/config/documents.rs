@@ -1686,13 +1686,15 @@ mod tests {
         match platform {
             "windows" => {
                 doc.runtime.environment.platform_inherited_env_vars.windows =
-                    vec!["PATH".to_string()]
+                    vec!["PATH".to_string()];
             }
             "linux" => {
-                doc.runtime.environment.platform_inherited_env_vars.linux = vec!["PATH".to_string()]
+                doc.runtime.environment.platform_inherited_env_vars.linux =
+                    vec!["PATH".to_string()];
             }
             "macos" => {
-                doc.runtime.environment.platform_inherited_env_vars.macos = vec!["PATH".to_string()]
+                doc.runtime.environment.platform_inherited_env_vars.macos =
+                    vec!["PATH".to_string()];
             }
             _ => unreachable!("known platform"),
         }

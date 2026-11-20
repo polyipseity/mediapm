@@ -103,6 +103,7 @@ async fn a_folder_row_and_a_playlist_row_advance_and_terminate() {
 /// and the members land on disk, so the extraction ran rather than a bar
 /// having been opened over an archive that was never read.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());

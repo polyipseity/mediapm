@@ -1014,7 +1014,7 @@ const LINUX_PLATFORM_INHERITED_ENV_VAR_NAMES: &[&str] = &[
 /// Default inherited environment-variable names for macOS.
 ///
 /// The same as Linux without the GPU and display group. The same tools run
-/// there through VideoToolbox, which takes no driver-selection variable, and
+/// there through `VideoToolbox`, which takes no driver-selection variable, and
 /// CUDA is not a macOS concern.
 const MACOS_PLATFORM_INHERITED_ENV_VAR_NAMES: &[&str] = &[
     // Spawn and identity.
@@ -1212,6 +1212,7 @@ mod tests {
     /// contents, and the fact that macOS differs from Linux only by the GPU
     /// and display group.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn default_platform_inherited_env_var_names_are_pinned() {
         let linux = default_platform_inherited_env_var_names("linux");
         let macos = default_platform_inherited_env_var_names("macos");
