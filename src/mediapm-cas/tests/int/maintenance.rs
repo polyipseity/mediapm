@@ -202,6 +202,9 @@ async fn optimize_delta_rewrite() {
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
 
+    // Pin the base full so the unconstrained-target pass cannot compress it
+    // symmetrically against the target.
+    cas.set_constraint(base_hash, BTreeSet::from([Hash::empty()])).await.unwrap();
     // Set constraint and run optimizer.
     cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
     let maint_report = cas.run_maintenance_cycle().await.unwrap();
@@ -366,6 +369,9 @@ async fn optimize_multi_base_picks_first_effective() {
     let b1 = cas.put(base1_content.clone()).await.unwrap();
     let b2 = cas.put(base2_content.clone()).await.unwrap();
 
+    // Pin bases full so they are not symmetrically compressed against the target.
+    cas.set_constraint(b1, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(b2, BTreeSet::from([Hash::empty()])).await.unwrap();
     // Both b1 and b2 are valid bases.
     cas.set_constraint(target, [b1, b2].into()).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
@@ -392,6 +398,7 @@ async fn optimize_idempotent() {
 
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
+    cas.set_constraint(base_hash, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
 
     // First optimization: delta rewrite.
@@ -420,6 +427,9 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
 
+    // Pin the base full so the unconstrained-target pass cannot compress it
+    // symmetrically against the target.
+    cas.set_constraint(base_hash, BTreeSet::from([Hash::empty()])).await.unwrap();
     // Set constraint and run maintenance → optimizer creates delta.
     cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
@@ -474,7 +484,8 @@ async fn delta_cache_repeated_reads_work() {
     // bytes) admits the 4096-byte entries: 52 × 4096 = 212 992 bytes →
     // max_bytes/4 ≈ 5 324 ≥ 4096.
     for seed in 0..50u8 {
-        cas.put(Bytes::from(vec![seed; 4096])).await.unwrap();
+        let filler = cas.put(Bytes::from(vec![seed; 4096])).await.unwrap();
+        cas.set_constraint(filler, BTreeSet::from([Hash::empty()])).await.unwrap();
     }
 
     let (base_content, target_content) = similar_content_pair(b'B', b"DELTA_CACHE");
@@ -482,6 +493,7 @@ async fn delta_cache_repeated_reads_work() {
     let base_hash = cas.put(base_content.clone()).await.unwrap();
     let target_hash = cas.put(target_content.clone()).await.unwrap();
 
+    cas.set_constraint(base_hash, BTreeSet::from([Hash::empty()])).await.unwrap();
     // Create a delta chain.
     cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
@@ -584,4 +596,116 @@ async fn pruning_preserves_an_explicitly_open_constraint() {
         BTreeSet::new(),
         "an explicitly open constraint must remain open"
     );
+}
+
+/// Base and target bytes that share a long prefix so a delta is unambiguously
+/// smaller than the full target.
+fn base_bytes() -> Vec<u8> {
+    similar_content_pair(b'B', b"DIFF").0.to_vec()
+}
+
+/// Target bytes paired with [`base_bytes`].
+fn target_bytes() -> Vec<u8> {
+    similar_content_pair(b'B', b"DIFF").1.to_vec()
+}
+
+/// Base selection and storage mode are independent: the constraint decides which
+/// bases may be measured, and the chosen base decides delta versus full.
+#[tokio::test]
+async fn base_selection_and_storage_mode_are_independent() {
+    struct Case {
+        name: &'static str,
+        constraint: Option<BTreeSet<Hash>>,
+        expect_delta: bool,
+    }
+
+    for case in [
+        Case { name: "no constraint", constraint: None, expect_delta: true },
+        Case { name: "empty base set", constraint: Some(BTreeSet::new()), expect_delta: true },
+        Case {
+            name: "empty object named as the base",
+            constraint: Some(BTreeSet::from([Hash::empty()])),
+            expect_delta: false,
+        },
+    ] {
+        let cas = new_in_memory_cas();
+        let base = cas.put(Bytes::from(base_bytes())).await.unwrap();
+        // Pin the base full so the unconstrained-target pass has a stable
+        // candidate and the base is not symmetrically compressed against it.
+        cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+        let target = cas.put(Bytes::from(target_bytes())).await.unwrap();
+        if let Some(bases) = case.constraint {
+            cas.set_constraint(target, bases).await.unwrap();
+        }
+
+        cas.run_maintenance_cycle().await.unwrap();
+
+        let encoding = cas.stat(target).await.unwrap().encoding;
+        if case.expect_delta {
+            assert!(
+                matches!(encoding, ObjectEncoding::Delta { .. }),
+                "{}: expected a delta, got {encoding:?}",
+                case.name
+            );
+        } else {
+            assert!(
+                matches!(encoding, ObjectEncoding::Full),
+                "{}: expected a full object, got {encoding:?}",
+                case.name
+            );
+        }
+    }
+}
+
+/// A base set naming both the empty object and a live object offers two modes,
+/// and the empty-minded choice wins: naming the empty object means full storage,
+/// even though a real base is also permitted.
+#[tokio::test]
+async fn naming_the_empty_object_among_real_bases_still_stores_full() {
+    let cas = new_in_memory_cas();
+    let base = cas.put(Bytes::from(base_bytes())).await.unwrap();
+    let target = cas.put(Bytes::from(target_bytes())).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([Hash::empty(), base])).await.unwrap();
+
+    cas.run_maintenance_cycle().await.unwrap();
+
+    assert!(
+        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Full),
+        "a base set containing the empty object must not be delta-compressed"
+    );
+}
+
+/// A target that became pinned-full must be promoted back to full encoding.
+#[tokio::test]
+async fn a_pinned_full_target_is_promoted_back_to_full() {
+    let cas = new_in_memory_cas();
+    let base = cas.put(Bytes::from(base_bytes())).await.unwrap();
+    let target_hash = cas.put(Bytes::from(target_bytes())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target_hash, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(matches!(cas.stat(target_hash).await.unwrap().encoding, ObjectEncoding::Delta { .. }));
+
+    cas.set_constraint(target_hash, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(matches!(cas.stat(target_hash).await.unwrap().encoding, ObjectEncoding::Full));
+    assert_eq!(cas.get(target_hash).await.unwrap(), Bytes::from(target_bytes()));
+}
+
+/// A delta-encoded target whose constraint becomes mixed `{empty, real}` must
+/// be promoted back to full because the empty object names full storage.
+#[tokio::test]
+async fn a_mixed_empty_and_real_constraint_promotes_delta_to_full() {
+    let cas = new_in_memory_cas();
+    let base = cas.put(Bytes::from(base_bytes())).await.unwrap();
+    let target_hash = cas.put(Bytes::from(target_bytes())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target_hash, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(matches!(cas.stat(target_hash).await.unwrap().encoding, ObjectEncoding::Delta { .. }));
+
+    cas.set_constraint(target_hash, BTreeSet::from([Hash::empty(), base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(matches!(cas.stat(target_hash).await.unwrap().encoding, ObjectEncoding::Full));
+    assert_eq!(cas.get(target_hash).await.unwrap(), Bytes::from(target_bytes()));
 }

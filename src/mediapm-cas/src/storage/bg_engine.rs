@@ -285,13 +285,42 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         Ok(())
     }
 
-    /// Select the best base for delta compression of `target`.
+    /// Report whether storing `target` as a delta against `base` would create a
+    /// delta chain cycle or an excessively deep chain.
     ///
-    /// Currently picks the first effective base. Future optimizations may
-    /// evaluate multiple candidates (e.g., smallest VCDIFF, lowest chain depth).
-    fn select_best_base<'a>(_target: &Hash, effective: &[&'a Hash]) -> Option<&'a Hash> {
-        // TODO: evaluate all candidates and pick optimal base
-        effective.first().copied()
+    /// A cycle would corrupt reads, and a deep chain would hit the read-path
+    /// resolution limit, so the optimizer skips any candidate that would form
+    /// either.
+    async fn would_form_cycle(&self, target: &Hash, base: Hash) -> Result<bool, CasError> {
+        let mut current = base;
+        let mut depth = 0usize;
+        let mut seen = HashSet::new();
+        loop {
+            if current == *target {
+                return Ok(true);
+            }
+            if !seen.insert(current) {
+                return Ok(true);
+            }
+            let entry = match self.metadata.get(&current).await? {
+                Some(entry) => entry,
+                None => return Ok(false),
+            };
+            match entry.encoding {
+                ObjectEncoding::Delta { base_hash } => {
+                    depth += 1;
+                    // Keep the resulting target chain within the read-path
+                    // depth limit (MAX_DELTA_CHAIN_DEPTH). A base chain with
+                    // `depth` delta edges means the target would become
+                    // `depth + 1` edges deep.
+                    if depth >= super::read_view::MAX_DELTA_CHAIN_DEPTH {
+                        return Ok(true);
+                    }
+                    current = base_hash;
+                }
+                ObjectEncoding::Full => return Ok(false),
+            }
+        }
     }
 
     /// Reconstruct the full (reconstructed) bytes for a hash by walking
@@ -329,12 +358,17 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
 
     /// Run maintenance: optimizer + constraint pruning.
     ///
-    /// 1. **Optimizer**: build constraint map from Metadata, attempt delta
-    ///    rewrites. Computes VCDIFF delta for each constraint and stores the
-    ///    delta-encoded result if it is smaller than the full payload.
+    /// 1. **Optimizer**: for each live object, select candidate bases from its
+    ///    constraint (an absent or empty base set means any live object except
+    ///    the empty object; a non-empty set restricts to its named live
+    ///    members). The empty object named as a base means "store full". For a
+    ///    non-empty real base, compute a VCDIFF delta and keep it only when it
+    ///    is smaller than the full payload, skipping candidates that would form
+    ///    a cycle or an excessively deep delta chain.
     /// 2. **Constraint pruning**: per-base prune so each entry converges
     ///    toward its effective constraint set (intersection of stored bases
-    ///    with live hashes). Only prunes metadata, never objects.
+    ///    with live hashes), pinning a live target whose bases all became dead
+    ///    to full instead of widening it. Only prunes metadata, never objects.
     ///
     /// # Errors
     ///
@@ -365,69 +399,61 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         // Build the live set once — it is reused for both the optimizer and
         // the pruning step that follows.
         let live: HashSet<Hash> = self.metadata.list_hashes().await?.into_iter().collect();
-        let targets = self.metadata.list_targets().await?;
+        let mut targets: Vec<Hash> = live.iter().copied().collect();
+        targets.sort_unstable();
         for target in &targets {
             if self.is_cancelled() {
                 break;
             }
-            let bases = self.metadata.get_constraint(target).await?;
-            // A `full` capture records the empty object as the target's only
-            // permitted base. A delta against empty content is the content
-            // itself, so rewriting such a target would buy nothing and would
-            // violate the capture's promise; the object may still serve as
-            // another object's base.
-            if bases.len() == 1 && bases.contains(&Hash::empty()) {
+
+            // Concern 1: which bases may this target be measured against? An
+            // absent or empty base set leaves the choice open; a non-empty one
+            // restricts it to the named live objects.
+            let stored = self.metadata.get_constraint(target).await?;
+            let mut candidates: Vec<Hash> = if stored.is_empty() {
+                live.iter().copied().filter(|h| *h != *target && *h != Hash::empty()).collect()
+            } else {
+                stored
+                    .iter()
+                    .filter(|b| **b == Hash::empty() || live.contains(*b))
+                    .copied()
+                    .collect()
+            };
+            if candidates.is_empty() {
                 continue;
             }
-            if !bases.is_empty() {
-                // Effective bases: intersection of stored bases with live
-                // hashes. Dead bases cannot be used for delta reconstruction.
-                let effective: Vec<&Hash> = bases.iter().filter(|b| live.contains(b)).collect();
+            // An unconstrained target picks from a HashSet iteration, so sort
+            // for a stable base choice across runs.
+            if stored.is_empty() {
+                candidates.sort_unstable();
+            }
 
-                if let Some(best_base) = Self::select_best_base(target, &effective) {
-                    // Reconstruct full bytes for target and base.
-                    let Some(target_bytes) = self.read_full_bytes(target).await? else {
-                        continue;
-                    };
-                    let Some(base_bytes) = self.read_full_bytes(best_base).await? else {
-                        continue;
-                    };
-
-                    // Skip delta compression for large objects (> 16 MiB).
-                    // VCDIFF operates in-memory, so multi-GB objects would
-                    // defeat the purpose of streaming.
-                    if target_bytes.len() as u64 > defaults::DELTA_THRESHOLD {
-                        continue;
-                    }
-
-                    // Compute VCDIFF delta from base to target.
-                    let patch = DeltaPatch::diff(&base_bytes, &target_bytes)?;
-                    let delta_payload = patch.encode();
-
-                    // Only store delta if it is meaningfully smaller than
-                    // the full payload. Otherwise keep the full encoding.
-                    if (delta_payload.len() as u64) < target_bytes.len() as u64 {
-                        let stored = StoredObject::delta(
-                            *best_base,
-                            target_bytes.len() as u64,
-                            delta_payload.to_vec(),
-                        );
-                        let envelope = Bytes::from(stored.encode());
+            // Concern 2: the chosen base alone decides the mode. The empty
+            // object named as a base means "store this full", so it is answered
+            // without measurement; that is also why an unconstrained target
+            // never reaches this branch, since the empty object is filtered out
+            // of the open set above. A target that is already delta-encoded
+            // must be rematerialized to full when the empty object is chosen.
+            if candidates.iter().any(|candidate| *candidate == Hash::empty()) {
+                let entry = self.metadata.get(target).await?;
+                if let Some(entry) = entry {
+                    if let ObjectEncoding::Delta { base_hash } = entry.encoding {
+                        let Some(target_bytes) = self.read_full_bytes(target).await? else {
+                            continue;
+                        };
                         self.blob
-                            .write(
-                                *target,
-                                ObjectEncoding::Delta { base_hash: *best_base },
-                                envelope,
-                            )
+                            .write(*target, ObjectEncoding::Full, target_bytes.clone())
                             .await?;
-                        // Preserve constraint bases.
+                        self.blob
+                            .delete_encoding(*target, ObjectEncoding::Delta { base_hash })
+                            .await?;
                         let existing_bases = self.metadata.get_constraint(target).await?;
                         self.metadata
                             .put(
                                 *target,
                                 MetadataEntry {
                                     len: target_bytes.len() as u64,
-                                    encoding: ObjectEncoding::Delta { base_hash: *best_base },
+                                    encoding: ObjectEncoding::Full,
                                 },
                             )
                             .await?;
@@ -437,6 +463,65 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                         did_work = true;
                     }
                 }
+                continue;
+            }
+
+            let mut best_base = None;
+            for candidate in &candidates {
+                if !self.would_form_cycle(target, *candidate).await? {
+                    best_base = Some(*candidate);
+                    break;
+                }
+            }
+            let Some(best_base) = best_base else {
+                continue;
+            };
+            // Reconstruct full bytes for target and base.
+            let Some(target_bytes) = self.read_full_bytes(target).await? else {
+                continue;
+            };
+            let Some(base_bytes) = self.read_full_bytes(&best_base).await? else {
+                continue;
+            };
+
+            // Skip delta compression for large objects (> 16 MiB).
+            // VCDIFF operates in-memory, so multi-GB objects would
+            // defeat the purpose of streaming.
+            if target_bytes.len() as u64 > defaults::DELTA_THRESHOLD {
+                continue;
+            }
+
+            // Compute VCDIFF delta from base to target.
+            let patch = DeltaPatch::diff(&base_bytes, &target_bytes)?;
+            let delta_payload = patch.encode();
+
+            // Only store delta if it is meaningfully smaller than
+            // the full payload. Otherwise keep the full encoding.
+            if (delta_payload.len() as u64) < target_bytes.len() as u64 {
+                let stored_delta = StoredObject::delta(
+                    best_base,
+                    target_bytes.len() as u64,
+                    delta_payload.to_vec(),
+                );
+                let envelope = Bytes::from(stored_delta.encode());
+                self.blob
+                    .write(*target, ObjectEncoding::Delta { base_hash: best_base }, envelope)
+                    .await?;
+                // Preserve constraint bases.
+                let existing_bases = self.metadata.get_constraint(target).await?;
+                self.metadata
+                    .put(
+                        *target,
+                        MetadataEntry {
+                            len: target_bytes.len() as u64,
+                            encoding: ObjectEncoding::Delta { base_hash: best_base },
+                        },
+                    )
+                    .await?;
+                if !existing_bases.is_empty() {
+                    self.metadata.set_constraint(*target, existing_bases).await?;
+                }
+                did_work = true;
             }
         }
 

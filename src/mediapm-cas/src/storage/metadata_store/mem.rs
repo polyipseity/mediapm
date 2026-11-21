@@ -128,10 +128,11 @@ impl MetadataStore for InMemoryMetadataStore {
                 return false;
             }
             // Keep the empty sentinel: it is a base the store answers for
-            // without holding it. A set that was non-empty and becomes empty
-            // after pruning is pinned to full (`{Hash::empty()}`) rather than
-            // dropped or widened to "any base", preserving D3. An explicitly
-            // open empty set means "any base" (D1) and must remain open.
+            // without holding it, and a target that named only it must stay
+            // full. A set that was non-empty and lost every live base becomes
+            // `{empty}` instead of being dropped or emptied, because an empty
+            // or absent set means "any base" and widening a constraint is not a
+            // prune's job. `{empty}` is the safe non-widening representation.
             let before = live_bases.len();
             live_bases.retain(|b| *b == Hash::empty() || live.contains(b));
             bases += before - live_bases.len();

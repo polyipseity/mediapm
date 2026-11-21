@@ -9,6 +9,8 @@
 //!
 //! Uses `InMemoryCas` for determinism: no background consumer races.
 
+use std::collections::BTreeSet;
+
 use bytes::Bytes;
 
 use mediapm_cas::Hash;
@@ -19,9 +21,10 @@ use mediapm_cas::new_in_memory_cas;
 /// budget (10 % of store bytes) comfortably admits the 4096-byte test
 /// entries: 52 × 4096 = 212 992 store bytes → ~21 299 budget →
 /// `max_bytes/4` ≈ 5 324 ≥ 4096 (the per-entry admission limit).
-async fn seed_fillers(cas: &impl CasApi) {
+async fn seed_fillers(cas: &(impl CasApi + ConstraintApi)) {
     for seed in 0..50u8 {
-        cas.put(Bytes::from(vec![seed; 4096])).await.unwrap();
+        let h = cas.put(Bytes::from(vec![seed; 4096])).await.unwrap();
+        cas.set_constraint(h, BTreeSet::from([Hash::empty()])).await.unwrap();
     }
 }
 
@@ -43,6 +46,7 @@ async fn build_delta_pair(cas: &(impl CasApi + ConstraintApi + CasMaintenanceApi
     let (base_content, target_content) = similar_content_pair(b'B', b"READ_CACHE");
     let base_hash = cas.put(base_content).await.unwrap();
     let target_hash = cas.put(target_content).await.unwrap();
+    cas.set_constraint(base_hash, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
     (base_hash, target_hash)

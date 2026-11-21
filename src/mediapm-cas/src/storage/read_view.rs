@@ -33,7 +33,7 @@ use super::wal::{PendingState, Wal};
 
 /// Maximum number of delta chain hops before failing with
 /// [`CasError::TooLarge`]. Prevents unbounded recursive resolution.
-const MAX_DELTA_CHAIN_DEPTH: usize = 5;
+pub(crate) const MAX_DELTA_CHAIN_DEPTH: usize = 5;
 
 /// Fast read path backed by materialized storage + mandatory WAL fallback.
 #[async_trait]
