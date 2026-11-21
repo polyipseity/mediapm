@@ -90,7 +90,7 @@ Managed tool payloads are downloaded and CAS-imported for all supported OSes reg
 | Tool config (companion deps + env) | `tool-sync-coordinator-and-identity.instructions.md` |
 | Paths layout                       | `paths-layout.instructions.md`                       |
 | Cache & HTTP                       | `cache-and-http.instructions.md`                     |
-| Error taxonomy                     | `error-taxonomy.instructions.md`                     |
+| Error codes and taxonomy           | `sdd-tdd.instructions.md`                            |
 | Provider dispatch                  | `provider-dispatch.instructions.md`                  |
 | Preset dispatch                    | `preset-dispatch.instructions.md`                    |
 

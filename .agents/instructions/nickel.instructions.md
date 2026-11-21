@@ -35,7 +35,7 @@ applyTo: "**/*.ncl"
 
 ## Schema strictness policy
 
-Normative spec for all Nickel schema work (existing, new, schema-related code). Test obligations are in `sdd-tdd-workflow.instructions.md` ("Regression requirements").
+Normative spec for all Nickel schema work (existing, new, schema-related code). Test obligations are in `sdd-tdd.instructions.md` ("Regression requirements").
 
 **S1: Closed record contracts by default.** No `..` without a `# |||` why-comment on the preceding line. Unknown fields fail validation, never silently dropped.
 **S2: No untyped values.** No `Dyn`, `std.enum.TagOrString`, or bare `String` where a closed set exists. Tag-like fields use `from_predicate`/`any_of` enums mirroring the Rust enum exactly (same variant names, same serde rename).

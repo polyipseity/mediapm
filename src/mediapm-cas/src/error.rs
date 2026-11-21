@@ -10,8 +10,8 @@
 //! | CAS-E006 | Object too large | Object exceeds the operation size limits | `TooLarge` |
 //! | CAS-E007 | Lock contention | Another process holds the CAS directory lock | `LockContention` |
 //!
-//! See `.agents/instructions/error-codes.instructions.md` for the
-//! workspace-wide error code reference.
+//! See `.agents/instructions/sdd-tdd.instructions.md` for the
+//! workspace-wide SDD/TDD and error-handling reference.
 
 use std::path::PathBuf;
 

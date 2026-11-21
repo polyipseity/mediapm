@@ -7,7 +7,7 @@ Media orchestration facade over `mediapm-cas` and `mediapm-conductor`: media lib
 ```text
 lib.rs                     — Re-exports, SyncSummary, ToolsSyncSummary, global cache ops
 main.rs                    — CLI dispatch (clap): sync, tool, media, hierarchy, cas, conductor
-error.rs                   — MediaPmError: 7 variants (see error-taxonomy.instructions.md)
+error.rs                   — MediaPmError: 7 variants (see .agents/instructions/sdd-tdd.instructions.md)
 output/                    — CLI formatting + progress: mod.rs (print_sync_summary), observer.rs (CliSyncObserver), progress.rs (ProgressScreen re-exports)
 util.rs                    — first_non_empty_json_string helper
 global.rs                  — MediaPmGlobalPaths, MEDIAPM_GIT_HASH

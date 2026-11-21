@@ -8,8 +8,8 @@
 //! | CND-E004 | I/O error | Filesystem operation failed | `Io` |
 //! | CND-E005 | Internal error | Unexpected conductor state | `Internal` |
 //!
-//! See `.agents/instructions/error-codes.instructions.md` for the
-//! workspace-wide error code reference.
+//! See `.agents/instructions/sdd-tdd.instructions.md` for the
+//! workspace-wide SDD/TDD and error-handling reference.
 
 use std::path::PathBuf;
 
