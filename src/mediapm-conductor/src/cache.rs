@@ -520,7 +520,7 @@ impl Cache {
     /// - It does not make the root removable. On Windows a directory an open
     ///   handle holds cannot be removed at all, so a caller that deletes the
     ///   root drops its handles first on every platform rather than relying on
-    ///   this call (`temp-directory-spec.instructions.md`).
+    ///   this call (`temp-and-paths.instructions.md`).
     /// - It does quiesce index writes. Once it returns, no index write this
     ///   cache dispatched is still running, apart from a foreground call the
     ///   caller makes itself afterwards.

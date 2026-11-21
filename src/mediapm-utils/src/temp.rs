@@ -21,7 +21,7 @@ pub const MEDIAPM_TEMP_PREFIX: &str = "mediapm-";
 /// A plain [`tempfile::TempDir`] removes its tree with a single `remove_dir_all`
 /// and discards the outcome, so a write that lands just after the tree was
 /// removed leaves an orphan under `$TMPDIR` for the janitor to reclaim later —
-/// see `temp-directory-spec.instructions.md`, "Why a temp root that a late
+/// see `temp-and-paths.instructions.md`, "Why a temp root that a late
 /// writer can reach is removed with retries". Cache roots are written by
 /// background maintenance, whose last write can outlive the owner's drop, so a
 /// cache root is removed through [`remove_dir_all_with_retry`]: it clears

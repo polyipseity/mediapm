@@ -12,7 +12,7 @@
 //! no network, so it cannot include tools that fetch payloads or make network
 //! lookups. Real-binary coverage of the transform and tagging stages lives
 //! behind the online demo's `--online` flag instead; see
-//! `.agents/instructions/example-execution-policy.instructions.md`.
+//! `.agents/instructions/examples-and-demos.instructions.md`.
 //!
 //! The scratch capture is deliberately absent from the tree below: nothing in the
 //! hierarchy selects it, which is what `save = false` states.

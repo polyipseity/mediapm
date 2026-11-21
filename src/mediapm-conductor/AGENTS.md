@@ -126,7 +126,7 @@ and what a step reads cannot drift apart.
 
 ## Cache Architecture (Three-Tier)
 
-The three-tier cache hierarchy (content cache, metadata cache, provision cache) is fully documented in `cache-and-http.instructions.md` (TTL policies, HTTP client configuration, cache tiers) and `paths-layout.instructions.md` (directory tree). Read those files before editing cache code.
+The three-tier cache hierarchy (content cache, metadata cache, provision cache) is fully documented in `cache-and-http.instructions.md` (TTL policies, HTTP client configuration, cache tiers) and `temp-and-paths.instructions.md` (directory tree). Read those files before editing cache code.
 
 Conductor-specific note: the provision cache (`ProvisionCache`) manages extracted tool trees with file locks, not raw bytes with CAS hashes. Never bypass `ProvisionCache` to read from `<tools_dir/>` directly.
 
@@ -368,7 +368,7 @@ See `nickel.instructions.md` (schema strictness S1-S13) and `versioning-and-migr
 
 ## Example Policy
 
-See `example-execution-policy.instructions.md` for how an example's test selects its path, `example-temp-isolation.instructions.md` for temp isolation, and `demo-hierarchy-golden.instructions.md` for the online demo hierarchy.
+See `examples-and-demos.instructions.md` for how an example's test selects its path, `temp-and-paths.instructions.md` for temp isolation, and `examples-and-demos.instructions.md` for the online demo hierarchy.
 
 Examples that run a workflow run it a second time and their embedded tests assert the second-run summary (cache hits for unchanged material, fresh execution only under `force_rerun`): `conductor_demo`, `conductor_cache_and_rematerialization`.
 

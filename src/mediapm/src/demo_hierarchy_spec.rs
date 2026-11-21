@@ -7,7 +7,7 @@
 //! is no tagged or replaygain-normalized leaf because no step produces one. Machine checks use
 //! `tests/fixtures/demo_hierarchy_golden.json` and helpers in this module; a materialization change
 //! updates the fixture and its consuming test in the same commit, per
-//! `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+//! `.agents/instructions/examples-and-demos.instructions.md`.
 //!
 //! ## Online link naming (two formats)
 //!
@@ -18,7 +18,7 @@
 //! `MusicBrainz` recording title: the recording title itself carries no artist, so the artist is a
 //! separate metadata entry.
 //! Helpers encode both exact forms for golden JSON, e2e seeds, and live demo asserts — see
-//! `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+//! `.agents/instructions/examples-and-demos.instructions.md`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

@@ -81,7 +81,7 @@ use support::ScreenConfig;
 /// example, so a rejected argument is reported and the baseline scenario is
 /// drawn at [`DEFAULT_WIDTH`] by [`DEFAULT_HEIGHT`] anyway. That keeps
 /// `super::main()` callable from a test, which
-/// `example-execution-policy.instructions.md` requires.
+/// `examples-and-demos.instructions.md` requires.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let explicit_height = height_was_asked_for(&args);
@@ -354,7 +354,7 @@ mod tests {
         }
     }
 
-    /// `example-execution-policy.instructions.md` requires this test to call
+    /// `examples-and-demos.instructions.md` requires this test to call
     /// `super::main()` literally, so it does. `main()` reads best-effort flags and
     /// falls back to the defaults when the argument list belongs to the test
     /// runner.

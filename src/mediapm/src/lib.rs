@@ -28,7 +28,7 @@ pub mod env_registry;
 mod error;
 /// Example and test temp isolation (`MEDIAPM_EXAMPLE_*` env overrides, fallback roots, cleanup).
 ///
-/// See `.agents/instructions/example-temp-isolation.instructions.md` for the full temp-directory model.
+/// See `.agents/instructions/temp-and-paths.instructions.md` for the full temp-directory model.
 pub mod example_isolation;
 pub(crate) mod global;
 pub(crate) mod hierarchy;

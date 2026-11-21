@@ -1,7 +1,7 @@
 //! Isolation helpers for `mediapm` examples and examples-as-tests.
 //!
 //! Sets `MEDIAPM_EXAMPLE_*` env overrides to [`mediapm_utils::temp`] directories.
-//! See `.agents/instructions/example-temp-isolation.instructions.md`.
+//! See `.agents/instructions/temp-and-paths.instructions.md`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

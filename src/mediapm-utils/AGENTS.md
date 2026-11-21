@@ -12,7 +12,7 @@ Crate: `mediapm-utils`
 | `builtin` | `describe()`, `BuiltinMeta`, `validate_only_known_keys()`, `BuiltinCliArgs`, `parse_string_pairs` | `cli` feature for `BuiltinCliArgs`/`parse_string_pairs` |
 | `nickel` | `render_document_as_nickel`, `is_bare_nickel_identifier`, `render_field_name`, `render_nickel_value` | `nickel` feature |
 
-See `.agents/instructions/temp-directory-spec.instructions.md` for the canonical temp-directory spec.
+See `.agents/instructions/temp-and-paths.instructions.md` for the canonical temp-directory spec.
 
 ## Conventions
 

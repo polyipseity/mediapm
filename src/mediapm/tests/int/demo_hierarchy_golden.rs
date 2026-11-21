@@ -2,7 +2,7 @@
 //!
 //! Human-readable expected trees live in the example module docs (`mediapm_demo`,
 //! `mediapm_demo_online`). Golden JSON encodes exact link basenames for both formats
-//! (yt-dlp sidecar vs mediapm root). See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+//! (yt-dlp sidecar vs mediapm root). See `.agents/instructions/examples-and-demos.instructions.md`.
 
 use std::path::Path;
 

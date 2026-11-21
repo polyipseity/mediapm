@@ -99,7 +99,7 @@
 //! materializes, and offline the name follows the chain probe's pinned `ffprobe` document, which is
 //! why that route asserts the name against the base the run itself resolved).
 //!
-//! See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+//! See `.agents/instructions/examples-and-demos.instructions.md`.
 //!
 //! ## Not on disk
 //!
@@ -2154,7 +2154,7 @@ fn assert_sidecar_directory_family_content(
 ///
 /// The basename of each file is `<upstream title> [<raw video id>].<ext>`, because yt-dlp names
 /// these files from its own output template and mediapm never renames them — see
-/// `demo-hierarchy-golden.instructions.md`. The title half therefore belongs to **upstream**, not
+/// `examples-and-demos.instructions.md`. The title half therefore belongs to **upstream**, not
 /// to the canonical `MusicBrainz` recording title that `expected_demo_media_root_name` asserts for
 /// the media root, and upstream appends to its own title over time. So the title half is matched by
 /// normalized prefix while the family — the raw video id and the extension — stays exact.

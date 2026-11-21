@@ -88,7 +88,7 @@ Managed tool payloads are downloaded and CAS-imported for all supported OSes reg
 | Coordinator & identity             | `tool-sync-coordinator-and-identity.instructions.md` |
 | 3-phase provisioning               | `tool-sync-3-phase-provisioning.instructions.md`     |
 | Tool config (companion deps + env) | `tool-sync-coordinator-and-identity.instructions.md` |
-| Paths layout                       | `paths-layout.instructions.md`                       |
+| Paths layout                       | `temp-and-paths.instructions.md`                       |
 | Cache & HTTP                       | `cache-and-http.instructions.md`                     |
 | Error codes and taxonomy           | `sdd-tdd.instructions.md`                            |
 | Provider dispatch                  | `provider-dispatch.instructions.md`                  |

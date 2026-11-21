@@ -17,7 +17,7 @@ hierarchy.rs               — Hierarchy node mutation
 metadata_cache.rs          — JSON metadata cache, TTL-based expiry
 service.rs                 — MediaPmService<Cas> orchestration
 service_standalone.rs      — Standalone helpers (document loading, path resolution)
-example_isolation.rs       — Example/test temp dirs, MEDIAPM_EXAMPLE_* env, cleanup (see example-temp-isolation.instructions.md)
+example_isolation.rs       — Example/test temp dirs, MEDIAPM_EXAMPLE_* env, cleanup (see temp-and-paths.instructions.md)
 config/                    — Document/config model: types, serde defaults, Nickel I/O, schema versions
   mod.rs                   —   MediaPmDocument, MediaPmState, MediaRuntimeStorage, re-exports
   defaults.rs              —   Constants (version=2, slot limits, cache TTLs, materialization order)
@@ -33,7 +33,7 @@ state/                    — MediaPmState serialization + version dispatch
   ser.rs                   —   to_json_value/from_json_value, legacy .ncl migration
   versions/                —   State wire formats and dispatch (mod.rs + v1.rs + v2.rs + v3.rs + v4.rs)
 sync_report.rs            — SyncObserver trait, per-phase reports, sync options
-demo_hierarchy_spec.rs    — Demo hierarchy golden layout contract (see demo-hierarchy-golden.instructions.md)
+demo_hierarchy_spec.rs    — Demo hierarchy golden layout contract (see examples-and-demos.instructions.md)
 
 conductor_bridge/          — Conductor integration
   mod.rs                   —   ToolSyncReport, reconcile_desired_tools
@@ -323,9 +323,9 @@ See `versioning-and-migration.instructions.md` for the config versioning pattern
 
 Development: `cargo test-pkg mediapm` / `cargo build-pkg mediapm` / selective tests.
 
-**Temp isolation:** Examples-as-tests use `mediapm::example_isolation::IsolatedExampleRoots` and `MEDIAPM_EXAMPLE_*` env overrides; integration tests use `mediapm_utils::temp::artifact_dir()` plus `cache_dir()` for `cache_root_override`. See `.agents/instructions/example-temp-isolation.instructions.md` for role prefixes, cleanup lifecycle, and example env serialization (process-wide lock held by `IsolatedExampleRoots` / `lock_process_env()`).
+**Temp isolation:** Examples-as-tests use `mediapm::example_isolation::IsolatedExampleRoots` and `MEDIAPM_EXAMPLE_*` env overrides; integration tests use `mediapm_utils::temp::artifact_dir()` plus `cache_dir()` for `cache_root_override`. See `.agents/instructions/temp-and-paths.instructions.md` for role prefixes, cleanup lifecycle, and example env serialization (process-wide lock held by `IsolatedExampleRoots` / `lock_process_env()`).
 
-**Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. Every mediapm-rendered name is `${media.metadata.artist} - ${media.metadata.title}`, so the shared helpers, golden JSON, and the live asserts all carry the artist prefix. Content verification covers exact bytes in the e2e test; in the live demo the resilient structural checks split by route — magic bytes, link format and playlist format run on both of its paths, and the ffprobe metadata tier is the online path's alone. See `.agents/instructions/demo-hierarchy-golden.instructions.md`.
+**Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. Every mediapm-rendered name is `${media.metadata.artist} - ${media.metadata.title}`, so the shared helpers, golden JSON, and the live asserts all carry the artist prefix. Content verification covers exact bytes in the e2e test; in the live demo the resilient structural checks split by route — magic bytes, link format and playlist format run on both of its paths, and the ffprobe metadata tier is the online path's alone. See `.agents/instructions/examples-and-demos.instructions.md`.
 
 Post-change: demo examples:
 

@@ -37,7 +37,7 @@ const SELF: &str = "tests/int/cache_root_guard.rs";
 /// `example_cache_root` function, whose unset-env branch is the documented
 /// Level-3 manual-run path; their embedded tests set
 /// `MEDIAPM_EXAMPLE_CACHE_ROOT` before any of this runs (see
-/// `example-temp-isolation.instructions.md`). `tool_sync/basics.rs` reads
+/// `temp-and-paths.instructions.md`). `tool_sync/basics.rs` reads
 /// the real cache's `tools.json` modification time to prove the override
 /// kept the sync away from it — a stat of a path on disk, never the cache
 /// opened as a cache (the S4 isolation regression guard).
