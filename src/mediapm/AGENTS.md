@@ -55,7 +55,7 @@ materializer/              — CAS→filesystem materialization
 
 tools/                     — Managed tool preset/provider + workflow synthesis
   mod.rs                   —   Module router, is_known_tool_id()
-  dependency.rs            —   DependencyTypes role flags, known_dependency_type() (see preset-dispatch.instructions.md)
+  dependency.rs            —   DependencyTypes role flags, known_dependency_type() (see .agents/instructions/tool-provisioning.instructions.md)
   downloader.rs            —   ToolDownloadCache type alias (re-exports from conductor)
   preset/                  —   ToolSpec/ToolRuntime builders: deno, ffmpeg, media_tagger, rsgain, sd, yt_dlp
   provider/                —   Source descriptors (URLs per OS): deno, ffmpeg, import, media_tagger, rsgain, sd, yt_dlp
@@ -161,7 +161,7 @@ Neither deletes an instance: the re-execution re-records the same content-derive
 
 ## Managed Tool Provisioning
 
-5 managed tools carry a preset and a workflow module: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `sd`. `media-tagger` is a sixth managed tool with no preset and no payload at all: it is a **host builtin** mediapm registers on every run (see "Host builtin: media-tagger" below). A seventh, `import`, reaches `resolve_tool_fetch` (`tools/provider/import.rs`, a builtin source-ingest tool with no payload and no preset, so it is absent from `is_known_tool_id` and from `apply_preset`). See `.agents/instructions/provider-dispatch.instructions.md` (per-OS source descriptors, URL resolution, `resolve_latest_github_tag`), `.agents/instructions/preset-dispatch.instructions.md` (preset spec builders, defaults), and `.agents/instructions/tool-sync-3-phase-provisioning.instructions.md` (provisioning pipeline, paths, `FetchedToolPayload` shape) for details.
+5 managed tools carry a preset and a workflow module: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `sd`. `media-tagger` is a sixth managed tool with no preset and no payload at all: it is a **host builtin** mediapm registers on every run (see "Host builtin: media-tagger" below). A seventh, `import`, reaches `resolve_tool_fetch` (`tools/provider/import.rs`, a builtin source-ingest tool with no payload and no preset, so it is absent from `is_known_tool_id` and from `apply_preset`). See `.agents/instructions/tool-provisioning.instructions.md` (provider/preset dispatch, 3-phase provisioning, identity) for details.
 
 **User-level cache**: `<os-cache-dir>/mediapm/cache/` (7-day eviction) — shared download cache distinct from workspace tool cache.
 
@@ -293,7 +293,7 @@ The root belongs in the document rather than in a `MEDIAPM_TOOLS_DIR`-style envi
 
 ## Cache Architecture (Three-Tier)
 
-See `.agents/instructions/cache-and-http.instructions.md` for the three-tier cache specification (content, metadata, provision), TTL policies, and hard boundary rules.
+See `.agents/instructions/tool-provisioning.instructions.md` (cache and HTTP) for the three-tier cache specification (content, metadata, provision), TTL policies, and hard boundary rules.
 
 ## Materialization
 

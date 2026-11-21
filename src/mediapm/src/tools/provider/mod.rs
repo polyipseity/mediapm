@@ -107,7 +107,7 @@ impl<'a> MetadataCacheTracker<'a> {
 /// `Option<String>` — `None` (JSON `null`) when the provider has no value;
 /// empty strings never occur. Any `None` field must carry a documented
 /// why-empty reason in the provider dispatch arm, the provider module doc,
-/// and `provider-dispatch.instructions.md`.
+/// and `.agents/instructions/tool-provisioning.instructions.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedToolMetadata {
     /// Human-readable version string (informational only — no semantic use in
@@ -1356,7 +1356,7 @@ mod tests {
              reached the network"
         );
         // The resolve bar's item total, and the number the progress-output and
-        // tool-sync-3-phase-provisioning instructions both name: the FFmpeg-Builds tag, the
+        // tool-provisioning instructions both name: the FFmpeg-Builds tag, the
         // tag asset list, the martin-riedl build probe, the jellyfin index, and one
         // pointer file per macOS arch. A new lookup must fail here, not silently
         // make those docs wrong.

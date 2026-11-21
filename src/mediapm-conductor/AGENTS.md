@@ -126,7 +126,7 @@ and what a step reads cannot drift apart.
 
 ## Cache Architecture (Three-Tier)
 
-The three-tier cache hierarchy (content cache, metadata cache, provision cache) is fully documented in `cache-and-http.instructions.md` (TTL policies, HTTP client configuration, cache tiers) and `temp-and-paths.instructions.md` (directory tree). Read those files before editing cache code.
+The three-tier cache hierarchy (content cache, metadata cache, provision cache) is documented in `.agents/instructions/tool-provisioning.instructions.md` (cache and HTTP) and `.agents/instructions/temp-and-paths.instructions.md` (directory tree). Read those files before editing cache code.
 
 Conductor-specific note: the provision cache (`ProvisionCache`) manages extracted tool trees with file locks, not raw bytes with CAS hashes. Never bypass `ProvisionCache` to read from `<tools_dir/>` directly.
 

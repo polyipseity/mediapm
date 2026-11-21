@@ -436,7 +436,7 @@ struct SecondRunTally {
 /// Per-tool provenance as recorded in the state lockfile: the canonical version
 /// that drives skip-if-up-to-date logic, plus the upstream identifiers the
 /// provider resolved (`None` where the provider has no value — the why-empty
-/// rules live in `provider-dispatch.instructions.md`).
+/// rules live in `.agents/instructions/tool-provisioning.instructions.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ManagedToolProvenance {
     canonical_version: String,

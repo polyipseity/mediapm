@@ -26,7 +26,7 @@ applyTo: "src/**/*.rs, **/*.ncl"
 - V5 fields: `version`, `managed_files: BTreeMap<String, ManagedFileRecord>`, `managed_tools: Vec<ToolRegistryEntry>`. No per-media workflow progress map.
 - `ToolRegistryEntry`: `tool_id, version, canonical_version, content_map_hash, deployed_at, resolved_tag, resolved_version, resolved_vcs_hash`. `resolved_*` are `Option<String>` (`None` serializes null, missing deserializes `None`, empty string is invalid/rejected). The `resolved_*` schema change was applied in place with no extra version bump.
 - Active tool: same `tool_id`, highest `deployed_at` (Unix epoch ns, `0` means not deployed). Multiple entries per tool id are expected.
-- `canonical_version` is compared by exact string equality. The persisted value is composite (tool plus SameStep dependency segments); see `tool-sync-coordinator-and-identity.instructions.md`.
+- `canonical_version` is compared by exact string equality. The persisted value is composite (tool plus SameStep dependency segments); see `tool-provisioning.instructions.md`.
 - No `MigrateState` trait. Hops are plain functions in `state/versions/vN.rs`; dispatch lives in `state/versions/mod.rs`; public API in `state/ser.rs`.
 - State writes go through `mediapm_utils::fs::write_bytes_atomically`. `state.json` content changes are not errors; metadata-only churn with unchanged `content_map_hash` is expected.
 

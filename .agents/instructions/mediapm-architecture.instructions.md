@@ -83,16 +83,10 @@ Managed tool payloads are downloaded and CAS-imported for all supported OSes reg
 | Concern                            | Instruction file                                     |
 | ---------------------------------- | ---------------------------------------------------- |
 | CLI entry & service orchestration  | `src/mediapm/AGENTS.md`                              |
-| Tool requirements                  | `tool-requirements.instructions.md`                  |
+| Tool provisioning                  | `tool-provisioning.instructions.md`                  |
 | State and versioning               | `state-and-versioning.instructions.md`               |
-| Coordinator & identity             | `tool-sync-coordinator-and-identity.instructions.md` |
-| 3-phase provisioning               | `tool-sync-3-phase-provisioning.instructions.md`     |
-| Tool config (companion deps + env) | `tool-sync-coordinator-and-identity.instructions.md` |
 | Paths layout                       | `temp-and-paths.instructions.md`                       |
-| Cache & HTTP                       | `cache-and-http.instructions.md`                     |
 | Error codes and taxonomy           | `sdd-tdd.instructions.md`                            |
-| Provider dispatch                  | `provider-dispatch.instructions.md`                  |
-| Preset dispatch                    | `preset-dispatch.instructions.md`                    |
 
 ## mediapm-rust-writer agent
 

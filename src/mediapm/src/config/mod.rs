@@ -498,7 +498,7 @@ pub struct ToolRegistryEntry {
     /// `None` (JSON `null`) when the provider does not resolve from tags;
     /// empty strings never occur and are rejected at load. Any `None` field
     /// must carry a documented why-empty reason in the provider dispatch arm,
-    /// the provider module doc, and `provider-dispatch.instructions.md`.
+    /// the provider module doc, and `.agents/instructions/tool-provisioning.instructions.md`.
     #[serde(
         default,
         deserialize_with = "custom_deserializers::deserialize_optional_nonempty_string"
