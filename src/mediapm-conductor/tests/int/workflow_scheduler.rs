@@ -19,6 +19,10 @@
 //! forces the order, never the expectation that another actor woke up in
 //! time.
 //!
+//! A single-worker pool fails this suite through a count, not a hold: the step
+//! that lost the worker to its own hold never reports at all, so `run_clean`
+//! trips `every step executes once` before any hold timeout is reached.
+//!
 //! Request visibility (what a step's `step_outputs` / `state_snapshot`
 //! carry) is observed through template resolution: an echo producer step
 //! declares a `result` output, and a probe step's input carries a

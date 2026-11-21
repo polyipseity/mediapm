@@ -50,7 +50,7 @@ Before: 44865482029 (`6847623b`, 2026-11-21T04:18:50Z, green, attempt 1) restore
 | Job | Before key / restore | After key / restore | Before wall | After wall |
 | --- | --- | --- | --- | --- |
 | Build & Test | `v0-rust-ci-build-Linux-x64-bbe94a93-8274b117` partial, `full match: false` | same key, `full match: true` | 846 s | 797 s |
-| Feature Matrix | `v0-rust-ci-feature-matrix-Linux-x64-bbe94a93-a142a65c` partial, `full match: false` (rustc 1.100.0) | `v0-rust-ci-feature-matrix-Linux-x64-9c09dd5e-8274b117`, `full match: true` (rustc 1.99.1, same-run skew) | 51 s | 102 s |
+| Feature Matrix | `v0-rust-ci-feature-matrix-Linux-x64-bbe94a93-a142a65c` partial, `full match: false` | `v0-rust-ci-feature-matrix-Linux-x64-9c09dd5e-8274b117`, `full match: true` | 51 s | 102 s |
 | Release Build | `v0-rust-ci-release-Linux-x64-bbe94a93-a142a65c` partial, `full match: false` | `v0-rust-ci-release-Linux-x64-bbe94a93-8274b117`, `full match: true` | 152 s | 127 s |
 | Windows: Workspace Tests | `v0-rust-ci-windows-Windows_NT-x64-21b8dcfc-dd242995` partial, `full match: false` | `v0-rust-ci-windows-Windows_NT-x64-21b8dcfc-c597198c`, `full match: true` | 380 s | 303 s |
 
@@ -76,7 +76,6 @@ The 2026-11-14 partial/warm time-to-fail record, the 2026-11-15 clean sequential
 | Feature-matrix parallelism D1/D2 contention, safety, P5 accounting | No-go, proof-gated; sequential D0 retained. | WP5 disposition in git history (`.superpowers/sdd/2026-11-16-task-5-feature-matrix-parallelism-proof-plan/wp5-disposition.md`). |
 | CI per-combination timing rows | Measured for 44865482029; D3.2 table in git history. | Add future run rows here when captured. |
 | Warmed post-cache CI exact-key pair | Closed by 44865482029 (before, partial save) and 44900229817 (after, exact hit, both attempt 1 green). | Warmed pair table above; 44880796368 excluded because attempt 1 red. |
-| Same-run rustc skew across CI jobs (stable channel) | Accepted environment constraint. | Feature Matrix observed rustc 1.99.1 while other jobs observed rustc 1.100.0 on 44900229817; env hash differs, so Feature Matrix cache key differs. Do not pin toolchain; record skew when observed. |
 | Runner hardware / queue internals | Accepted environment constraint. | GitHub Actions did not expose them. |
 | Windows-local runs | Accepted environment constraint. | CI Windows evidence in git history; local Windows not run. |
 | `/tmp` diagnostics ephemeral | Accepted; durable transcriptions kept in git history. | Re-stage raw logs durably if needed. |
