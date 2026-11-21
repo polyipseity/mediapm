@@ -3,12 +3,13 @@
 //! ## Where the version ladder lives
 //!
 //! The migration ladder for `mediapm.ncl` is **Nickel**, not Rust. The
-//! versioned contracts are `v1.ncl`, `v2.ncl`, `v3.ncl` and `v4.ncl`; `mod.ncl` is the
+//! versioned contracts are `v1.ncl` through `v5.ncl`; `mod.ncl` is the
 //! registry that owns `current_version`, `supported_versions`, and the
 //! `migrate_to` dispatch. Each version file owns the migration *into* itself
 //! (`v2.ncl` exports `migrate_v1_to_v2` and `migrate_v3_to_v2`, `v3.ncl`
 //! exports `migrate_v2_to_v3` and `migrate_v4_to_v3`, `v4.ncl` exports
-//! `migrate_v3_to_v4`, `v1.ncl` exports `migrate_v2_to_v1`) and
+//! `migrate_v3_to_v4` and `migrate_v5_to_v4`, `v5.ncl` exports
+//! `migrate_v4_to_v5`, `v1.ncl` exports `migrate_v2_to_v1`) and
 //! `mod.ncl` only dispatches.
 //!
 //! This module exposes the Rust-side surface of that Nickel ladder: it writes
@@ -82,9 +83,12 @@ pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
 /// The `v3.ncl` contract, which owns the migration up from `v2` and down
 /// from `v4`.
 pub(crate) const V3_NCL_SOURCE: &str = include_str!("v3.ncl");
-/// The `v4.ncl` contract, the active version, which owns the migration up
-/// from `v3`.
+/// The `v4.ncl` contract, which owns the migration up from `v3` and down
+/// from `v5`.
 pub(crate) const V4_NCL_SOURCE: &str = include_str!("v4.ncl");
+/// The `v5.ncl` contract, the active version, which owns the migration up
+/// from `v4`.
+pub(crate) const V5_NCL_SOURCE: &str = include_str!("v5.ncl");
 
 /// Every contract source above, under the file name the registry imports it
 /// by.
@@ -98,6 +102,7 @@ pub(crate) const CONTRACT_SOURCES: &[(&str, &str)] = &[
     ("v2.ncl", V2_NCL_SOURCE),
     ("v3.ncl", V3_NCL_SOURCE),
     ("v4.ncl", V4_NCL_SOURCE),
+    ("v5.ncl", V5_NCL_SOURCE),
 ];
 
 /// Resolves a boundary runtime-storage value into the option-free model.
@@ -188,7 +193,7 @@ pub struct RuntimeBoundaryDeviations {
 
     /// Value for `lifecycle.instance_ttl_seconds`.
     ///
-    /// The spelled-out default is the seven-day
+    /// The spelled-out default is the three-day
     /// [`DEFAULT_INSTANCE_TTL_SECONDS`](crate::config::defaults::DEFAULT_INSTANCE_TTL_SECONDS).
     pub instance_ttl_seconds: Option<u64>,
 
@@ -380,6 +385,7 @@ fn apply_version_contract(
     let v2_path = dir.path().join("v2.ncl");
     let v3_path = dir.path().join("v3.ncl");
     let v4_path = dir.path().join("v4.ncl");
+    let v5_path = dir.path().join("v5.ncl");
     let mod_path = dir.path().join("mod.ncl");
     let input_path = dir.path().join("document_input.ncl");
     let wrapper_path = dir.path().join("apply_contract.ncl");
@@ -403,6 +409,11 @@ fn apply_version_contract(
     std::fs::write(&v4_path, V4_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded v4.ncl".to_string(),
         path: v4_path.clone(),
+        source: err,
+    })?;
+    std::fs::write(&v5_path, V5_NCL_SOURCE).map_err(|err| MediaPmError::Io {
+        operation: "write embedded v5.ncl".to_string(),
+        path: v5_path.clone(),
         source: err,
     })?;
     std::fs::write(&mod_path, MOD_NCL_SOURCE).map_err(|err| MediaPmError::Io {
@@ -526,8 +537,29 @@ pub fn validate_v4_document(source: &str) -> Result<Value, MediaPmError> {
     apply_v4_contract("validate_document_v4", source)
 }
 
+/// Applies one V5 schema contract to a document source.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the document source fails contract
+/// validation or cannot be evaluated.
+pub fn apply_v5_contract(contract_name: &str, source: &str) -> Result<Value, MediaPmError> {
+    apply_version_contract("v5", contract_name, source)
+}
+
+/// Validates one V5 mediapm document source against the embedded `v5.ncl`
+/// `MediaPmDocumentV5` contract.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the document source fails contract
+/// validation or cannot be evaluated.
+pub fn validate_v5_document(source: &str) -> Result<Value, MediaPmError> {
+    apply_v5_contract("validate_document_v5", source)
+}
+
 /// Evaluates one expression in the scope of the embedded `mod.ncl` registry
-/// module (importing `mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, and `v4.ncl`).
+/// module (importing `mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl`, and `v5.ncl`).
 ///
 /// # Errors
 ///
@@ -544,6 +576,7 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
     let v2_path = dir.path().join("v2.ncl");
     let v3_path = dir.path().join("v3.ncl");
     let v4_path = dir.path().join("v4.ncl");
+    let v5_path = dir.path().join("v5.ncl");
     let wrapper_path = dir.path().join("evaluate_expr.ncl");
     std::fs::write(&mod_path, MOD_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded mod.ncl".to_string(),
@@ -568,6 +601,11 @@ pub fn evaluate_mod_ncl_expression(expr: &str) -> Result<Value, MediaPmError> {
     std::fs::write(&v4_path, V4_NCL_SOURCE).map_err(|err| MediaPmError::Io {
         operation: "write embedded v4.ncl".to_string(),
         path: v4_path.clone(),
+        source: err,
+    })?;
+    std::fs::write(&v5_path, V5_NCL_SOURCE).map_err(|err| MediaPmError::Io {
+        operation: "write embedded v5.ncl".to_string(),
+        path: v5_path.clone(),
         source: err,
     })?;
     std::fs::write(&wrapper_path, format!("let shared = import \"mod.ncl\" in\n{expr}\n"))

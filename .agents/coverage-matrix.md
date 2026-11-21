@@ -1044,6 +1044,9 @@ Spec: `.pi/plans/phase2-2026-09-26-progress-truncation-design.md`, rules 1-6. On
 | The tool-sync error line names both the failing tool and the underlying cause at the CLI level. | `tool_sync_exits_error_when_a_tool_fails_to_register` | [covered] |
 | Slot fields (`max_input_slots`/`max_output_slots`) are accepted on ffmpeg at the config boundary (hermetic unit; no network-free tool accepts slot fields, so sync-level acceptance cannot be hermetic under fail-fast; reject direction stays sync-level). | `slot_fields_are_accepted_on_ffmpeg` | [covered] |
 | `recheck_seconds` is accepted on any tool through a real (hermetic, network-free) sync. | `sync_accepts_recheck_seconds_on_any_tool` | [covered] |
+| D6: `recheck_seconds` accepts only `"always"`, `"never"`, or a positive integer of seconds; `0`, negatives, fractions, and other strings are rejected with a field-naming error. | `strict_recheck_seconds_accepts_only_three_forms` | [covered] |
+| D6: an unstated `recheck_seconds` defaults to `Always`, so a tool resolves on every sync unless the document opts out. | `parity_recheck_seconds_defaults_to_always` | [covered] |
+| D8: `DEFAULT_INSTANCE_TTL_SECONDS` is 259200 (3 days) and `profiler_enabled` defaults to off, so an unstated document enables neither extended retention nor profiling. | `parity_instance_ttl_defaults_to_three_days`, `parity_profiler_defaults_to_disabled` | [covered] |
 | Known gap (deferred, parked): dep-change → dependent-re-provision interplay is not pinned end-to-end; the gate-published fresh bare restores the "dep changed → requester re-provisions and re-inlines" invariant that the old oldest-entry live-state lookup silently broke. Hermetic multi-tool seeding needed; unit coverage exists at `tests_composite_version.rs` and pool mechanics at the pool tests. | (deferred) | [by-design] |
 
 ## Versioned source chains and download-resilience, 2026-10-12

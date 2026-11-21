@@ -11,7 +11,7 @@ use super::VerifyStrategy;
 use super::hierarchy_types::SanitizeNamesConfig;
 
 /// Current persisted schema marker for `mediapm.ncl`.
-pub const MEDIAPM_DOCUMENT_VERSION: u32 = 4;
+pub const MEDIAPM_DOCUMENT_VERSION: u32 = 5;
 
 /// Serde default function for `version` field.
 #[must_use]
@@ -83,8 +83,12 @@ pub const DEFAULT_VERIFY_ON_READ_STALE_TIMEOUT_SECS: u64 = 604_800;
 /// Renamed from `DEFAULT_RECONSTRUCTED_BYTES_CACHE_TTL_SECS` to match CAS crate naming.
 pub const DEFAULT_RECONSTRUCTED_CACHE_TTL_SECONDS: u64 = 3600;
 
-/// Default instance GC time-to-live in seconds (7 days).
-pub const DEFAULT_INSTANCE_TTL_SECONDS: u64 = 604_800;
+/// Default instance GC time-to-live in seconds (3 days).
+///
+/// A cached step is content-addressed, so this only governs how long an
+/// unreferenced instance survives; three days keeps a working set warm across a
+/// long weekend without pinning a store that has moved on.
+pub const DEFAULT_INSTANCE_TTL_SECONDS: u64 = 259_200;
 
 /// Default interval between background GC passes in seconds (1 day).
 pub const DEFAULT_BACKGROUND_GC_INTERVAL_SECONDS: u64 = 86_400;

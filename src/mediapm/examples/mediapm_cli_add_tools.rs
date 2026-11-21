@@ -111,7 +111,7 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     ToolRequirement {
         version_spec: ConfigVersionSpec::Latest,
         dependencies,
-        recheck_seconds: 0,
+        recheck_seconds: mediapm::config::ToolRecheck::Always,
         max_input_slots: 16,
         max_output_slots: 4,
         payload_staging: ConfigPayloadStaging::Inherit,

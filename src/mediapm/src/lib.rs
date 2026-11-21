@@ -53,9 +53,9 @@ use url::Url;
 
 pub use conductor_bridge::sync::{content_map_hash, find_active_tool_spec};
 pub use config::versions::{
-    apply_v1_contract, apply_v2_contract, apply_v3_contract, apply_v4_contract,
+    apply_v1_contract, apply_v2_contract, apply_v3_contract, apply_v4_contract, apply_v5_contract,
     evaluate_mod_ncl_expression, validate_v1_document, validate_v2_document, validate_v3_document,
-    validate_v4_document,
+    validate_v4_document, validate_v5_document,
 };
 pub use config::{
     ConfigPayloadStaging, GenericOutputVariantConfig, HierarchyEntry, HierarchyEntryKind,

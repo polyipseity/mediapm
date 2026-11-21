@@ -22,7 +22,7 @@ applyTo: "src/**/*.rs, **/*.ncl"
 
 ## mediapm state shape
 
-- `MEDIAPM_STATE_VERSION = 5` is current and independent from `MEDIAPM_DOCUMENT_VERSION`. V1-V4 are read-only migration paths; V5 is always written.
+- `MEDIAPM_STATE_VERSION = 5` is current and independent from `MEDIAPM_DOCUMENT_VERSION = 5`. V1-V4 are read-only migration paths for state; V5 is always written. V1-V4 config documents migrate to V5; `recheck_seconds` accepts `"always"`, `"never"`, or a positive integer of seconds.
 - V5 fields: `version`, `managed_files: BTreeMap<String, ManagedFileRecord>`, `managed_tools: Vec<ToolRegistryEntry>`. No per-media workflow progress map.
 - `ToolRegistryEntry`: `tool_id, version, canonical_version, content_map_hash, deployed_at, resolved_tag, resolved_version, resolved_vcs_hash`. `resolved_*` are `Option<String>` (`None` serializes null, missing deserializes `None`, empty string is invalid/rejected). The `resolved_*` schema change was applied in place with no extra version bump.
 - Active tool: same `tool_id`, highest `deployed_at` (Unix epoch ns, `0` means not deployed). Multiple entries per tool id are expected.

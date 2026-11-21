@@ -4,7 +4,6 @@ use std::path::Path;
 
 use nickel_lang_core::eval::cache::CacheImpl;
 use nickel_lang_core::program::ProgramBuilder;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::error::MediaPmError;
@@ -79,15 +78,13 @@ pub fn normalize_version_field_to_u64(value: &serde_json::Value) -> Option<u64> 
     }
 }
 
-/// Loads and deserializes a JSON document from a Nickel source file.
-fn load_json_document<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T, MediaPmError> {
-    let value = evaluate_nickel_source_to_json(path)?;
-    serde_json::from_value(value).map_err(|err| MediaPmError::ConfigValidation {
-        code: "MPM-E004",
-        context: format!("failed to deserialize {label}"),
-        detail: err.to_string(),
-        suggestion: String::new(),
-    })
+/// Escapes a path for inclusion in a Nickel double-quoted string literal.
+///
+/// Nickel normal strings treat `\` as an escape prefix, `"` as the string
+/// terminator, and `%{` as interpolation start, so all three must be escaped
+/// before embedding an arbitrary filesystem path.
+fn nickel_string_escape(raw: &str) -> String {
+    raw.replace('\\', "\\\\").replace('"', "\\\"").replace("%{", "\\%{")
 }
 
 /// Loads and parses a `mediapm.ncl` file.
@@ -99,12 +96,40 @@ fn load_json_document<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T
 /// is dropped here for the same reason it is dropped when a document is encoded:
 /// it carries no requirement.
 ///
+/// Documents written against an older supported schema version are migrated
+/// through the Nickel `migrate_to` ladder before serde deserialization, so a v4
+/// document that records `recheck_seconds = 0` reaches the v5 wire as `"always"`
+/// instead of being rejected by the strict v5 deserializer.
+///
 /// # Errors
 ///
-/// Returns an error when the document cannot be loaded or parsed.
+/// Returns an error when the document cannot be loaded, migrated, or parsed.
 pub fn load_mediapm_document(path: &Path) -> Result<crate::config::MediaPmDocument, MediaPmError> {
+    let value = evaluate_nickel_source_to_json(path)?;
+    let version = normalize_version_field_to_u64(value.get("version").unwrap_or(&Value::Null));
+    let value = if version
+        .is_some_and(|v| v < u64::from(crate::config::defaults::MEDIAPM_DOCUMENT_VERSION))
+    {
+        let abs_path = std::path::absolute(path).map_err(|err| MediaPmError::Io {
+            operation: "resolve mediapm document path for migration".to_string(),
+            path: path.to_path_buf(),
+            source: err,
+        })?;
+        let escaped = nickel_string_escape(&abs_path.to_string_lossy());
+        let target = crate::config::defaults::MEDIAPM_DOCUMENT_VERSION;
+        crate::config::versions::evaluate_mod_ncl_expression(&format!(
+            "shared.migrate_to {target} (import \"{escaped}\")"
+        ))?
+    } else {
+        value
+    };
     let mut document: crate::config::MediaPmDocument =
-        load_json_document(path, "mediapm document")?;
+        serde_json::from_value(value).map_err(|err| MediaPmError::ConfigValidation {
+            code: "MPM-E004",
+            context: "failed to deserialize mediapm document".to_string(),
+            detail: err.to_string(),
+            suggestion: String::new(),
+        })?;
     document.normalize();
     Ok(document)
 }
@@ -510,5 +535,36 @@ mod tests {
         );
         let on_disk = std::fs::read(&path).expect("the file must still be there");
         assert_eq!(on_disk, beyond.to_string().as_bytes(), "a refused document is never rewritten");
+    }
+
+    /// A v4 document that recorded `recheck_seconds = 0` loads through the normal
+    /// path as `Always`.
+    ///
+    /// V4 allowed `0`; v5 rejects it. The loader migrates older supported
+    /// versions through the Nickel `migrate_to` ladder before serde decode, so
+    /// the v4->v5 edge maps the legacy zero to `"always"` rather than surfacing
+    /// a rejection to a document that was valid when it was written.
+    #[test]
+    fn regression_v4_recheck_seconds_zero_loads_as_always() {
+        let root = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let path = root.path().join("mediapm.ncl");
+        std::fs::write(
+            &path,
+            r#"{
+  version = 4,
+  tools = {
+    "yt-dlp" = { recheck_seconds = 0 },
+  },
+}
+"#,
+        )
+        .expect("write v4 document");
+
+        let document = load_mediapm_document(&path).expect("v4 document should load");
+        assert_eq!(
+            document.tools["yt-dlp"].recheck_seconds,
+            crate::config::ToolRecheck::Always,
+            "legacy recheck_seconds = 0 must migrate to always"
+        );
     }
 }

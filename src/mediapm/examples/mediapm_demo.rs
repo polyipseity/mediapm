@@ -682,7 +682,7 @@ fn configure_document_for_local_tool_chain(
         // the unset state rather than silently receiving the default.
         mediapm_state_config: Some(None),
         // Optional default runtime GC TTL in seconds.
-        // Default: 604800 (7 days).
+        // Default: 259200 (3 days).
         instance_ttl_seconds: Some(3600),
         // Absent platforms inherit the document's platform defaults.
         inherited_env_vars: None,
@@ -708,7 +708,7 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
         ToolRequirement {
             version_spec: ConfigVersionSpec::Latest,
             dependencies: BTreeMap::new(),
-            recheck_seconds: 0,
+            recheck_seconds: mediapm::config::ToolRecheck::Always,
             max_input_slots: 16,
             max_output_slots: 4,
             payload_staging: ConfigPayloadStaging::Inherit,

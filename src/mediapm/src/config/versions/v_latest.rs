@@ -1,4 +1,4 @@
-//! V3 boundary (latest) runtime storage types and resolver.
+//! Latest runtime storage boundary types and resolver.
 //!
 //! This module holds the `*Latest` boundary structs for runtime storage
 //! overrides and the resolver that maps a boundary value into the resolved
@@ -15,7 +15,7 @@
 //! - `MediaRuntimeStorage::from_boundary` is the one place the boundary family
 //!   is resolved into the option-free resolved model; it lives in
 //!   `config/mod.rs` and delegates here.
-//! - Do not add fields here that the active `v4.ncl` does not also declare. A field the
+//! - Do not add fields here that the active `v5.ncl` does not also declare. A field the
 //!   Nickel contract rejects and the Rust boundary accepts is a document that
 //!   validates in one pipeline and fails in the other.
 

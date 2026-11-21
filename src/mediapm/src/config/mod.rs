@@ -285,7 +285,7 @@ pub struct RuntimeCachingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeLifecycleConfig {
-    /// Conductor instance GC time-to-live in seconds (default 604800).
+    /// Conductor instance GC time-to-live in seconds (default 259200, 3 days).
     #[serde(default = "defaults::default_instance_ttl_seconds")]
     pub instance_ttl_seconds: u64,
     /// Seconds between background GC passes (default 86400, one day).
@@ -299,7 +299,7 @@ pub struct RuntimeLifecycleConfig {
 /// behind `MediaRuntimeStorage::default()`, which every constructor path and
 /// the CLI's `MediaRuntimeStorage { ..Default::default() }` build on. A zero
 /// TTL handed to the conductor means immediate eviction on the first sweep, so
-/// the built-in defaults (604800 / 86400) are what an unset lifecycle must
+/// the built-in defaults (259200 / 86400) are what an unset lifecycle must
 /// resolve to.
 impl Default for RuntimeLifecycleConfig {
     fn default() -> Self {
@@ -402,6 +402,44 @@ pub struct RuntimeBasePaths {
     pub mediapm_dir: PathBuf,
 }
 
+/// When a sync may reuse a tool deployment instead of asking upstream.
+///
+/// This answers one question only: whether to resolve. How long fetched bytes
+/// stay in the metadata cache is a separate policy the cache owns, so `Never`
+/// reads `state.json` and never the cache.
+///
+/// The wire form is three shapes, not one, so both serde impls are written by
+/// hand: a derived untagged enum cannot express "a string or a number" without
+/// inventing a wrapper record nobody should ever write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolRecheck {
+    /// Resolve from upstream on every sync.
+    #[default]
+    Always,
+    /// Never ask upstream; reuse the recorded deployment when it fits.
+    Never,
+    /// Reuse the recorded deployment until it is this many seconds old.
+    AfterSeconds(u64),
+}
+
+impl serde::Serialize for ToolRecheck {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        custom_deserializers::serialize_recheck(self, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ToolRecheck {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        custom_deserializers::deserialize_recheck(deserializer)
+    }
+}
+
 /// Managed tool version and dependency requirements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -412,9 +450,16 @@ pub struct ToolRequirement {
     /// Cross-tool dependency version selectors.
     #[serde(default)]
     pub dependencies: BTreeMap<String, ConfigVersionSpec>,
-    /// Recheck interval seconds (0 = use default heuristic).
-    #[serde(default, deserialize_with = "custom_deserializers::deserialize_u64_from_number")]
-    pub recheck_seconds: u64,
+    /// When a sync may reuse this tool's deployment instead of resolving again.
+    ///
+    /// The name is historical: it holds a word or a count of seconds. Renaming it
+    /// was the alternative, and it was not worth a second change in the same hop.
+    #[serde(
+        default,
+        with = "custom_deserializers::tool_recheck_wire",
+        skip_serializing_if = "ToolRecheck::is_default"
+    )]
+    pub recheck_seconds: ToolRecheck,
     /// Max ffmpeg input slot count.
     ///
     /// Restricted to `ffmpeg`; other tools must not set this field. Omitted
@@ -454,19 +499,11 @@ impl Default for ToolRequirement {
         Self {
             version_spec: ConfigVersionSpec::Latest,
             dependencies: BTreeMap::new(),
-            recheck_seconds: 0,
+            recheck_seconds: ToolRecheck::Always,
             max_input_slots: defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS,
             max_output_slots: defaults::DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS,
             payload_staging: defaults::default_config_payload_staging(),
         }
-    }
-}
-
-impl ToolRequirement {
-    /// Returns metadata recheck seconds (0 = use default heuristic).
-    #[must_use]
-    pub const fn metadata_recheck_seconds(&self) -> u64 {
-        self.recheck_seconds
     }
 }
 

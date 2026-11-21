@@ -3,7 +3,7 @@
 # This module provides the versioned registry surface: the supported-version
 # set, the current version, the `migrate_to` edge, and unversioned aliases
 # into the current version's module.  Version-local contracts and migration
-# edges are defined in `v1.ncl`, `v2.ncl`, `v3.ncl` and `v4.ncl` (each
+# edges are defined in `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl` and `v5.ncl` (each
 # version file owns the migration into that version; this module only
 # dispatches).
 #
@@ -16,6 +16,7 @@ let v1_migration = import "v1.ncl" in
 let v2_migration = import "v2.ncl" in
 let v3_migration = import "v3.ncl" in
 let v4_migration = import "v4.ncl" in
+let v5_migration = import "v5.ncl" in
 
 # ||| Version marker contract: any non-negative integer.  Guards fractional
 # floats like 1.5 which the old `%typeof%`-based contract accepted.
@@ -35,12 +36,12 @@ let DocumentEnvelopeContract = {
 in
 
 # ||| Numeric predicate accepting exactly the currently supported document
-# versions (1, 2, 3 and 4).  Built with `std.contract.from_predicate` so it can
+# versions (1, 2, 3, 4 and 5).  Built with `std.contract.from_predicate` so it can
 # be applied with `|` (a plain function used as a contract would receive the
 # contract label instead of the value).
 let SupportedVersion_pred =
   std.contract.from_predicate (
-    fun version => version == 1 || version == 2 || version == 3 || version == 4
+    fun version => version == 1 || version == 2 || version == 3 || version == 4 || version == 5
   )
 in
 
@@ -85,6 +86,22 @@ let migrate_to_fn = fun target_version data =>
     v4_migration.migrate_v3_to_v4 (v3_migration.migrate_v2_to_v3 data)
   else if version == 4 && target == 2 then
     v2_migration.migrate_v3_to_v2 (v3_migration.migrate_v4_to_v3 data)
+  else if version == 4 && target == 5 then
+    v5_migration.migrate_v4_to_v5 data
+  else if version == 5 && target == 4 then
+    v4_migration.migrate_v5_to_v4 data
+  else if version == 1 && target == 5 then
+    v5_migration.migrate_v4_to_v5 (v4_migration.migrate_v3_to_v4 (v3_migration.migrate_v2_to_v3 (v2_migration.migrate_v1_to_v2 data)))
+  else if version == 5 && target == 1 then
+    v1_migration.migrate_v2_to_v1 (v2_migration.migrate_v3_to_v2 (v3_migration.migrate_v4_to_v3 (v4_migration.migrate_v5_to_v4 data)))
+  else if version == 2 && target == 5 then
+    v5_migration.migrate_v4_to_v5 (v4_migration.migrate_v3_to_v4 (v3_migration.migrate_v2_to_v3 data))
+  else if version == 5 && target == 2 then
+    v2_migration.migrate_v3_to_v2 (v3_migration.migrate_v4_to_v3 (v4_migration.migrate_v5_to_v4 data))
+  else if version == 3 && target == 5 then
+    v5_migration.migrate_v4_to_v5 (v4_migration.migrate_v3_to_v4 data)
+  else if version == 5 && target == 3 then
+    v3_migration.migrate_v4_to_v3 (v4_migration.migrate_v5_to_v4 data)
   else
     data | UnreachableMigrationPair
 in
@@ -101,12 +118,12 @@ let _document_envelope_contract = DocumentEnvelopeContract in
   DocumentEnvelopeContract = _document_envelope_contract,
 
   SupportedVersion = SupportedVersion_pred,
-  current_version = (4 | SupportedVersion_pred),
-  supported_versions = [1, 2, 3, 4],
+  current_version = (5 | SupportedVersion_pred),
+  supported_versions = [1, 2, 3, 4, 5],
 
   migrate_to = migrate_to_fn,
 
-  # ||| Unversioned aliases resolve to the active (V4) module.
-  validate_document = v4_migration.validate_document_v4,
-  envelope_contract = v4_migration.envelope_contract_v4,
+  # ||| Unversioned aliases resolve to the active (V5) module.
+  validate_document = v5_migration.validate_document_v5,
+  envelope_contract = v5_migration.envelope_contract_v5,
 }

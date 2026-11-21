@@ -39,7 +39,7 @@ const REALISTIC_V1_DOC: &str = r#"
     mediapm_dir = "/tmp/mp",
     materialization_preference_order = ["hardlink", "symlink"],
     verify_on_read = ["always"],
-    instance_ttl_seconds = 604800,
+    instance_ttl_seconds = 259200,
     profiler_enabled = true,
     inherited_env_vars = { windows = ["PATH"], linux = ["PATH"] },
   },
@@ -78,6 +78,65 @@ fn expect_rejected_v4(contract: &str, source: &str) {
     );
 }
 
+/// Decodes a Nickel mediapm document through the same load path production uses.
+///
+/// The bytes are written to a temp file because `load_mediapm_document`
+/// evaluates a Nickel source file; the helper keeps the temp dir alive until the
+/// decode finishes.
+fn decode_document(source: impl AsRef<[u8]>) -> Result<MediaPmDocument, mediapm::MediaPmError> {
+    let dir = mediapm_utils::temp::artifact_dir().expect("create temp dir for decode helper");
+    let path = dir.path().join("mediapm.ncl");
+    std::fs::write(&path, source.as_ref()).expect("write temp mediapm.ncl");
+    mediapm::load_mediapm_document(&path)
+}
+
+/// Returns whether a Nickel mediapm document decodes without error.
+fn decode_document_is_ok(source: impl AsRef<[u8]>) -> bool {
+    decode_document(source).is_ok()
+}
+
+/// Returns a bounded decode error string for assertion messages.
+///
+/// The bound keeps a failing test readable when a Nickel trace is long; the
+/// `recheck_seconds` / field name we care about appears near the start.
+fn decode_error_bounded(source: impl AsRef<[u8]>) -> String {
+    let err = decode_document(source).expect_err("document must fail to decode");
+    let msg = err.to_string();
+    const MAX: usize = 2000;
+    if msg.len() > MAX { format!("{}...(truncated)", &msg[..MAX]) } else { msg }
+}
+
+/// Builds a minimal v5 document whose single tool states `recheck_seconds`.
+fn with_tool_recheck(value: &str) -> String {
+    format!(
+        r#"{{
+  version = 5,
+  tools = {{
+    "yt-dlp" = {{ recheck_seconds = {value} }},
+  }},
+}}"#
+    )
+}
+
+/// Builds a minimal v5 document whose single tool states no `recheck_seconds`.
+fn without_tool_recheck() -> String {
+    r#"{
+  version = 5,
+  tools = {
+    "yt-dlp" = { version_spec = "latest" },
+  },
+}"#
+    .to_string()
+}
+
+/// Builds a minimal v5 document that states no `profiler_enabled`.
+fn without_profiler_setting() -> String {
+    r#"{
+  version = 5,
+}"#
+    .to_string()
+}
+
 /// Realistic v2 document: same shape as `REALISTIC_V1_DOC` but version 2 and
 /// no `state` field (state is managed via `state.json`, not the v2 config
 /// surface).
@@ -104,7 +163,7 @@ const REALISTIC_V2_DOC: &str = r#"
     paths = { mediapm_dir = "/tmp/mp" },
     materialization = { materialization_preference_order = ["hardlink", "symlink"] },
     verification = { verify_on_read = ["always"] },
-    lifecycle = { instance_ttl_seconds = 604800 },
+    lifecycle = { instance_ttl_seconds = 259200 },
     environment = { profiler_enabled = true, inherited_env_vars = { windows = ["PATH"], linux = ["PATH"] } },
   },
 }
@@ -277,8 +336,8 @@ fn parity_mod_ncl_exports_registry_surface() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(mod_source.contains("current_version = "), "mod.ncl must export current_version");
     assert!(
-        mod_source.contains("supported_versions = [1, 2, 3, 4]"),
-        "mod.ncl must export supported_versions = [1, 2, 3, 4]"
+        mod_source.contains("supported_versions = [1, 2, 3, 4, 5]"),
+        "mod.ncl must export supported_versions = [1, 2, 3, 4, 5]"
     );
     assert!(mod_source.contains("migrate_to = migrate_to_fn"), "mod.ncl must export migrate_to");
     assert!(
@@ -286,11 +345,11 @@ fn parity_mod_ncl_exports_registry_surface() {
         "mod.ncl must export SupportedVersion"
     );
     assert!(
-        mod_source.contains("validate_document = v4_migration.validate_document_v4"),
+        mod_source.contains("validate_document = v5_migration.validate_document_v5"),
         "mod.ncl must re-export validate_document (unversioned alias into the active version)"
     );
     assert!(
-        mod_source.contains("envelope_contract = v4_migration.envelope_contract_v4"),
+        mod_source.contains("envelope_contract = v5_migration.envelope_contract_v5"),
         "mod.ncl must re-export envelope_contract (unversioned alias into the active version)"
     );
     assert!(
@@ -782,7 +841,7 @@ fn parity_v3_to_v2_migration_drops_staging_fields() {
       },
       runtime = {
         materialization = { payload_staging = "hard_link", verify_materialization = false },
-        lifecycle = { instance_ttl_seconds = 604800 },
+        lifecycle = { instance_ttl_seconds = 259200 },
         tools = { deno = { payload_staging = "hard_link", recheck_seconds = 60 } },
       },
     })"#,
@@ -811,7 +870,7 @@ fn parity_v3_to_v2_migration_drops_staging_fields() {
     assert_eq!(obj["runtime"]["tools"]["deno"]["recheck_seconds"].as_f64(), Some(60.0));
     assert_eq!(obj["tools"]["ffmpeg"]["recheck_seconds"].as_f64(), Some(3600.0));
     assert_eq!(obj["runtime"]["materialization"]["verify_materialization"], false);
-    assert_eq!(obj["runtime"]["lifecycle"]["instance_ttl_seconds"].as_f64(), Some(604_800.0));
+    assert_eq!(obj["runtime"]["lifecycle"]["instance_ttl_seconds"].as_f64(), Some(259_200.0));
 
     let doc: MediaPmDocument =
         serde_json::from_value(value).expect("migrated v2 output must decode");
@@ -1710,5 +1769,60 @@ fn parity_v3_to_v4_migration_preserves_unknown_option_keys() {
         doc.media["m1"].steps[0].options.get("bogus_option"),
         Some(&mediapm::TransformInputValue::String("surprise".to_string())),
         "unknown option keys must survive migration for plan-build/runtime rejection"
+    );
+}
+
+/// D6: `recheck_seconds` holds one of three shapes, and `0` is not one of them.
+#[test]
+fn strict_recheck_seconds_accepts_only_three_forms() {
+    for (value, why) in [
+        ("\"always\"", "the word always"),
+        ("\"never\"", "the word never"),
+        ("1", "one second"),
+        ("86400", "a day"),
+    ] {
+        let doc = with_tool_recheck(value);
+        assert!(decode_document_is_ok(&doc), "recheck_seconds = {value} must load ({why})");
+    }
+
+    for value in ["0", "-1", "1.5", "\"sometimes\""] {
+        let doc = with_tool_recheck(value);
+        let msg = decode_error_bounded(&doc);
+        assert!(
+            msg.contains("recheck_seconds"),
+            "recheck_seconds = {value} must be rejected: {msg}"
+        );
+    }
+}
+
+/// D6: the default is `always`, so a document that says nothing re-resolves.
+#[test]
+fn parity_recheck_seconds_defaults_to_always() {
+    let doc = without_tool_recheck();
+    let decoded = decode_document(doc.as_bytes()).expect("a document without recheck loads");
+    assert_eq!(
+        decoded.tools["yt-dlp"].recheck_seconds,
+        mediapm::config::ToolRecheck::Always,
+        "an unstated recheck_seconds must mean re-resolve every sync"
+    );
+}
+
+/// D8: the instance lifetime default is three days, not seven.
+#[test]
+fn parity_instance_ttl_defaults_to_three_days() {
+    assert_eq!(mediapm::config::defaults::DEFAULT_INSTANCE_TTL_SECONDS, 259_200);
+}
+
+/// D8: profiling is off unless a document asks for it, so a run that says
+/// nothing writes no profile. The default is already correct; this pins it,
+/// because every demo sets it to `true` and nothing else would notice a flip.
+#[test]
+fn parity_profiler_defaults_to_disabled() {
+    assert!(!mediapm::config::defaults::DEFAULT_PROFILER_ENABLED);
+    let doc = without_profiler_setting();
+    let decoded = decode_document(doc.as_bytes()).expect("a document without profiler loads");
+    assert!(
+        !decoded.runtime.environment.profiler_enabled.unwrap_or(false),
+        "an unstated profiler_enabled must mean off"
     );
 }

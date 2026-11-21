@@ -1188,7 +1188,7 @@ fn configure_document_for_online_demo(
                     ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
                     ("deno".to_string(), ConfigVersionSpec::Inherit),
                 ]),
-                recheck_seconds: 0,
+                recheck_seconds: mediapm::config::ToolRecheck::Always,
                 max_input_slots: 16,
                 max_output_slots: 4,
                 payload_staging: ConfigPayloadStaging::Inherit,
@@ -1199,7 +1199,7 @@ fn configure_document_for_online_demo(
             ToolRequirement {
                 version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
+                recheck_seconds: mediapm::config::ToolRecheck::Always,
                 max_input_slots: 16,
                 max_output_slots: 4,
                 payload_staging: ConfigPayloadStaging::Inherit,
@@ -1210,7 +1210,7 @@ fn configure_document_for_online_demo(
             ToolRequirement {
                 version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
+                recheck_seconds: mediapm::config::ToolRecheck::Always,
                 max_input_slots: 16,
                 max_output_slots: 4,
                 payload_staging: ConfigPayloadStaging::Inherit,
@@ -1224,7 +1224,7 @@ fn configure_document_for_online_demo(
                     ("ffmpeg".to_string(), ConfigVersionSpec::Inherit),
                     ("sd".to_string(), ConfigVersionSpec::Inherit),
                 ]),
-                recheck_seconds: 0,
+                recheck_seconds: mediapm::config::ToolRecheck::Always,
                 max_input_slots: 16,
                 max_output_slots: 4,
                 payload_staging: ConfigPayloadStaging::Inherit,
@@ -1235,7 +1235,7 @@ fn configure_document_for_online_demo(
             ToolRequirement {
                 version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
+                recheck_seconds: mediapm::config::ToolRecheck::Always,
                 max_input_slots: 16,
                 max_output_slots: 4,
                 payload_staging: ConfigPayloadStaging::Inherit,
@@ -1246,7 +1246,7 @@ fn configure_document_for_online_demo(
             ToolRequirement {
                 version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Inherit)]),
-                recheck_seconds: 0,
+                recheck_seconds: mediapm::config::ToolRecheck::Always,
                 max_input_slots: 16,
                 max_output_slots: 4,
                 payload_staging: ConfigPayloadStaging::Inherit,
@@ -1257,7 +1257,7 @@ fn configure_document_for_online_demo(
             ToolRequirement {
                 version_spec: ConfigVersionSpec::Latest,
                 dependencies: BTreeMap::new(),
-                recheck_seconds: 0,
+                recheck_seconds: mediapm::config::ToolRecheck::Always,
                 max_input_slots: 16,
                 max_output_slots: 4,
                 payload_staging: ConfigPayloadStaging::Inherit,
@@ -1772,7 +1772,7 @@ fn configure_document_for_online_demo(
         // Default: `.mediapm/state.json` (JSON always-write).
         mediapm_state_config: Some(Some(".mediapm/state.json".to_string())),
         // Optional default runtime GC TTL in seconds.
-        // Default: 604800 (7 days).
+        // Default: 259200 (3 days).
         instance_ttl_seconds: Some(3600),
         // Extend the host platform's defaults with the stub chain env names so
         // offline runs can pass them through the whitelist; online runs leave

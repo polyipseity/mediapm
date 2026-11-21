@@ -441,6 +441,39 @@ let migrate_v3_to_v4_fn = fun data =>
   with_media & { version = 4 }
 in
 
+# ||| Migration edge INTO V4 from V5 (placement policy: each version file owns
+# ||| the migration into that version; `mod.ncl` only dispatches).
+# |||
+# ||| V4 predates the three-shape `recheck_seconds` policy, so the hop restores
+# ||| the old integer sentinel: `"always"` and `"never"` become `0`, and a
+# ||| positive integer of seconds is preserved as-is.
+let migrate_v5_to_v4_fn = fun data =>
+  let without_version = drop_field "version" data in
+  let with_tools =
+    if std.record.has_field "tools" without_version then
+      (drop_field "tools" without_version)
+      & {
+        tools = std.record.map (fun _name tool =>
+          if std.record.has_field "recheck_seconds" tool then
+            let recheck = tool.recheck_seconds in
+            (drop_field "recheck_seconds" tool)
+            & {
+              recheck_seconds =
+                if std.is_string recheck then
+                  0
+                else
+                  recheck,
+            }
+          else
+            tool
+        ) without_version.tools
+      }
+    else
+      without_version
+  in
+  with_tools & { version = 4 }
+in
+
 {
   # ||| Validates one V4 mediapm document, filling in defaults.
   validate_document_v4 = fun document => document | _media_pm_document_v4,
@@ -449,6 +482,9 @@ in
   # ||| Migrates one V3 document to V4 (rewrites retired media-tagger option
   # ||| keys and states the new version marker).
   migrate_v3_to_v4 = migrate_v3_to_v4_fn,
+  # ||| Migrates one V5 document down to V4 (restores the integer recheck
+  # ||| sentinel and states the V4 version marker).
+  migrate_v5_to_v4 = migrate_v5_to_v4_fn,
   PayloadStagingV4 = _payload_staging_v4,
   ConfigPayloadStagingV4 = _config_payload_staging_v4,
   MediaPmDocumentV4 = _media_pm_document_v4,

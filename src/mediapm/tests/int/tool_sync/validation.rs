@@ -184,7 +184,10 @@ async fn sync_accepts_recheck_seconds_on_any_tool() {
     let mut runtime = MediaRuntimeStorage::default();
     runtime.tools.insert(
         "media-tagger".to_string(),
-        ToolRequirement { recheck_seconds: 30, ..ToolRequirement::default() },
+        ToolRequirement {
+            recheck_seconds: mediapm::config::ToolRecheck::AfterSeconds(30),
+            ..ToolRequirement::default()
+        },
     );
 
     let (mut service, _root, _cache_root) =
