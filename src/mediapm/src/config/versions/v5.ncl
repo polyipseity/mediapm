@@ -238,6 +238,14 @@ let MediaSourceSpecV5 = {
 }
 in
 
+# ||| How a playlist renders an entry's path: relative to the playlist, or from
+# ||| the library root. A word outside this set fails at load rather than
+# ||| silently meaning relative.
+let PlaylistOutputModeV5 = std.contract.from_predicate (
+  fun v => v == "relative" || v == "absolute"
+)
+in
+
 # ||| Hierarchy node (mirrors `HierarchyNode`).  Recursive via `let rec`.
 let rec HierarchyNodeV5 = {
   path | PathV5 | default = "",
@@ -253,7 +261,13 @@ let rec HierarchyNodeV5 = {
   format | EnumV5 ["m3u8", "pls", "xspf", "wpl", "asx"] | optional,
   ids | Array (std.contract.any_of [
     String,
-    { id | String, path | String | optional },
+    {
+      id | String,
+      # ||| How the entry's path is rendered: relative to the playlist, or from the
+      # ||| library root. A word outside this set fails at load rather than silently
+      # ||| meaning relative.
+      path | PlaylistOutputModeV5 | optional,
+    },
   ]) | default = [],
   sanitize_names | SanitizeNamesConfigV5 | optional,
   children | Array HierarchyNodeV5 | default = [],

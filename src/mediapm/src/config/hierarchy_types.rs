@@ -83,20 +83,23 @@ pub enum PlaylistItemRef {
     Object {
         /// Target hierarchy node id.
         id: String,
-        /// Optional relative path override.
+        /// Optional path output mode override.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
+        path: Option<PlaylistOutputMode>,
     },
 }
 
-/// Playlist entry path output mode.
+/// How a playlist renders an entry's path.
+///
+/// `Absolute` is the library-root-relative path, not an operating-system
+/// absolute path: a playlist is portable only if it never embeds a mount point.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PlaylistEntryPathMode {
-    /// Relative paths in playlist output.
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
+pub enum PlaylistOutputMode {
+    /// Path relative to the playlist's own directory.
     #[default]
     Relative,
-    /// Absolute paths in playlist output.
+    /// Path from the library root.
     Absolute,
 }
 

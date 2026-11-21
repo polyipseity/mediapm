@@ -25,8 +25,9 @@ use tracing::{info, warn};
 
 use self::progress_labels::{MaterializationBarLabel, split_entry_path};
 use crate::config::hierarchy_types::{
-    FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, ValidatedHierarchyEntry,
-    collect_playlist_media_index, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
+    FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, PlaylistOutputMode,
+    ValidatedHierarchyEntry, collect_playlist_media_index, expand_variant_selectors,
+    flatten_hierarchy_nodes_for_runtime,
 };
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{ManagedFileRecord, MaterializationMethod, MediaPmDocument, MediaPmState};
@@ -1567,9 +1568,9 @@ async fn materialize_playlist_entry(
         let (hierarchy_id, path_mode) = match item_ref {
             PlaylistItemRef::Shorthand(id) => (id.as_str(), PlaylistEntryPathMode::Relative),
             PlaylistItemRef::Object { id, path } => {
-                let mode = match path.as_deref() {
-                    Some("absolute") => PlaylistEntryPathMode::Absolute,
-                    _ => PlaylistEntryPathMode::Relative,
+                let mode = match path {
+                    Some(PlaylistOutputMode::Absolute) => PlaylistEntryPathMode::Absolute,
+                    Some(PlaylistOutputMode::Relative) | None => PlaylistEntryPathMode::Relative,
                 };
                 (id.as_str(), mode)
             }

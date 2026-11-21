@@ -42,6 +42,8 @@ Four base URL env vars are read per call and never cached: `MEDIAPM_GITHUB_API_B
 
 Every mediapm-rendered name uses `${media.metadata.artist} - ${media.metadata.title}`; title resolves to the tagged `video` variant first. Only yt-dlp sidecar links keep the upstream title. The materializer strips `downloads/` and `__mediapm__` from folder-variant ZIP members but does not rewrite yt-dlp basenames into root projection shape.
 
+The offline demo playlist deliberately carries all three reference forms (shorthand, explicit absolute, explicit relative) so both path modes are exercised.
+
 ### Assertions
 
 - Hermetic e2e/golden use exact basenames from `demo_hierarchy_spec` helpers. Sidecar: `online_demo_sidecar_link_filename(ext)`. Root: `online_demo_root_link_filename(ext)`.

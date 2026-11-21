@@ -158,8 +158,8 @@ use mediapm::{
     HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
     MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmService,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
-    OutputSaveConfig, OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
-    ToolRegistryEntry, ToolRequirement, TransformInputValue, YtDlpOutputKind,
+    OutputSaveConfig, OutputVariantValue, PlaylistFormat, PlaylistItemRef, PlaylistOutputMode,
+    SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, TransformInputValue, YtDlpOutputKind,
     YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
     load_mediapm_state_document, save_mediapm_document,
 };
@@ -1730,11 +1730,11 @@ fn configure_document_for_online_demo(
                 ids: vec![
                     PlaylistItemRef::Object {
                         id: DEMO_TAGGED_HIERARCHY_ID.to_string(),
-                        path: Some("relative".to_string()),
+                        path: Some(PlaylistOutputMode::Relative),
                     },
                     PlaylistItemRef::Object {
                         id: DEMO_TAGGED_HIERARCHY_ID.to_string(),
-                        path: Some("absolute".to_string()),
+                        path: Some(PlaylistOutputMode::Absolute),
                     },
                 ],
                 sanitize_names: Some(SanitizeNamesConfig::Inherit),

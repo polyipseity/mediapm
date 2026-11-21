@@ -35,7 +35,7 @@ pub mod versions;
 
 pub use hierarchy_types::{
     HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
-    HierarchyNodeKind, HierarchyPath, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef,
+    HierarchyNodeKind, HierarchyPath, PlaylistFormat, PlaylistItemRef, PlaylistOutputMode,
     SanitizeNamesConfig, flatten_hierarchy_value, nest_hierarchy_value, regex_variant_selector,
 };
 pub use nickel_io::{

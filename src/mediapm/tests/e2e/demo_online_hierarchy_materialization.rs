@@ -10,8 +10,8 @@ use bytes::Bytes;
 use mediapm::{
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaMetadataValue,
     MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, OutputSaveConfig,
-    OutputVariantValue, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, TransformInputValue,
-    YtDlpOutputKind, YtDlpOutputVariantConfig,
+    OutputVariantValue, PlaylistFormat, PlaylistItemRef, PlaylistOutputMode, SanitizeNamesConfig,
+    TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
     demo_hierarchy_spec::{
         DEMO_LIBRARY_ROOT, DEMO_METADATA_ARTIST, DEMO_METADATA_TITLE, ONLINE_DEMO_MEDIA_ID,
         ONLINE_DEMO_PLAYLIST, ONLINE_DEMO_YT_DLP_VIDEO_ID, assert_tree_under,
@@ -439,11 +439,11 @@ fn build_online_hierarchy() -> Vec<HierarchyNode> {
                     ids: vec![
                         PlaylistItemRef::Object {
                             id: ONLINE_DEMO_MEDIA_ID.to_string(),
-                            path: Some("relative".to_string()),
+                            path: Some(PlaylistOutputMode::Relative),
                         },
                         PlaylistItemRef::Object {
                             id: ONLINE_DEMO_MEDIA_ID.to_string(),
-                            path: Some("absolute".to_string()),
+                            path: Some(PlaylistOutputMode::Absolute),
                         },
                     ],
                     ..node(

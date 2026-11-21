@@ -35,7 +35,7 @@
 //! │   └── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ]/
 //! │       └── Rick Astley - Never Gonna Give You Up [demo.local.dQw4w9WgXcQ].untagged.mp4   # variant video_untagged
 //! └── playlists/
-//!     └── local-demo.m3u8                                                                   # playlist, 2 entries → imported leaf
+//!     └── local-demo.m3u8                                                                   # playlist, 3 entries (shorthand, absolute, relative) → imported leaf
 //! ```
 //!
 //! ## Hierarchy config (`mediapm.ncl`)
@@ -45,7 +45,7 @@
 //! └── ${artist} - ${title} [${id}]/                       [Folder, id=demo.local.dQw4w9WgXcQ.media_folder]
 //!     └── ${artist} - ${title} [${id}].untagged${video_ext_untagged}   [Media, variant=video_untagged]
 //! playlists/
-//! └── local-demo.m3u8                                     [Playlist, 2 shorthand ids → demo.local.dQw4w9WgXcQ.untagged]
+//! └── local-demo.m3u8                                     [Playlist, 3 entries: shorthand, absolute, relative → demo.local.dQw4w9WgXcQ.untagged]
 //! ```
 //!
 //! Resolved metadata: `video_ext_untagged` → `.mp4`.
@@ -75,9 +75,9 @@ use mediapm::{
     AddInsertPosition, ConfigPayloadStaging, ConfigVersionSpec, HierarchyNode, HierarchyNodeKind,
     HierarchyPath, MaterializationMethod, MediaMetadataValue, MediaPmService, MediaRuntimeStorage,
     MediaSourceSpec, MediaStep, MediaStepTool, OutputSaveConfig, OutputVariantValue,
-    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement, TransformInputValue,
-    YtDlpOutputKind, YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
-    load_mediapm_state_document, save_mediapm_document,
+    PlaylistFormat, PlaylistItemRef, PlaylistOutputMode, SanitizeNamesConfig, ToolRequirement,
+    TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig, example_isolation,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{NickelDocument, decode_document, encode_document};
@@ -659,8 +659,21 @@ fn configure_document_for_local_tool_chain(
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: vec![
+                    // Shorthand: the id alone, rendered as a path relative to the
+                    // playlist.
                     PlaylistItemRef::Shorthand(DEMO_UNTAGGED_HIERARCHY_ID.to_string()),
-                    PlaylistItemRef::Shorthand(DEMO_UNTAGGED_HIERARCHY_ID.to_string()),
+                    // Object form with the explicit absolute mode: the same id,
+                    // rendered from the library root.
+                    PlaylistItemRef::Object {
+                        id: DEMO_UNTAGGED_HIERARCHY_ID.to_string(),
+                        path: Some(PlaylistOutputMode::Absolute),
+                    },
+                    // Object form with the explicit relative mode: the same id
+                    // again, spelled out rather than implied.
+                    PlaylistItemRef::Object {
+                        id: DEMO_UNTAGGED_HIERARCHY_ID.to_string(),
+                        path: Some(PlaylistOutputMode::Relative),
+                    },
                 ],
                 sanitize_names: Some(SanitizeNamesConfig::Inherit),
                 children: Vec::new(),
@@ -1231,6 +1244,25 @@ mod tests {
                 && demo_config.contains("${media.id}")
                 && demo_config.contains("${media.metadata.video_ext_untagged}"),
             "demo hierarchy output should use Jellyfin-style media-id layout with metadata-driven extensions"
+        );
+
+        let playlist =
+            std::fs::read_to_string(run.library_root.join("media/playlists/local-demo.m3u8"))
+                .expect("read the demo playlist");
+        let entries: Vec<&str> =
+            playlist.lines().filter(|line| !line.starts_with('#') && !line.is_empty()).collect();
+        assert_eq!(entries.len(), 3, "the playlist must carry all three forms: {playlist}");
+        assert!(
+            entries[0].starts_with("../"),
+            "the shorthand entry is relative to the playlist directory: {playlist}"
+        );
+        assert!(
+            !entries[1].starts_with("../"),
+            "the absolute-mode entry starts at the library root: {playlist}"
+        );
+        assert!(
+            entries[2].starts_with("../"),
+            "the explicit relative entry matches the shorthand one: {playlist}"
         );
     }
 

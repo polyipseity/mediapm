@@ -106,6 +106,44 @@ fn decode_error_bounded(source: impl AsRef<[u8]>) -> String {
     if msg.len() > MAX { format!("{}...(truncated)", &msg[..MAX]) } else { msg }
 }
 
+/// Decodes a Nickel mediapm document through the production load path.
+///
+/// Unlike [`decode_error_bounded`], this returns the full result so a test can
+/// assert on both acceptance and rejection.
+fn decode_document_bounded(
+    source: impl AsRef<[u8]>,
+) -> Result<MediaPmDocument, mediapm::MediaPmError> {
+    decode_document(source)
+}
+
+/// Builds a minimal v5 document whose hierarchy contains one playlist with the
+/// given playlist item inserted verbatim into its `ids` array.
+fn with_playlist_entry(item: &str) -> String {
+    format!(
+        r#"{{
+  version = 5,
+  media = {{
+    leaf = {{
+      steps = [{{ tool = "import" }}],
+    }},
+  }},
+  hierarchy = [
+    {{
+      path = "playlists",
+      kind = "folder",
+      children = [
+        {{
+          path = "local-demo.m3u8",
+          kind = "playlist",
+          ids = [{item}],
+        }},
+      ],
+    }},
+  ],
+}}"#
+    )
+}
+
 /// Builds a minimal v5 document whose single tool states `recheck_seconds`.
 fn with_tool_recheck(value: &str) -> String {
     format!(
@@ -1825,4 +1863,16 @@ fn parity_profiler_defaults_to_disabled() {
         !decoded.runtime.environment.profiler_enabled.unwrap_or(false),
         "an unstated profiler_enabled must mean off"
     );
+}
+
+/// D9: a playlist path mode is one of two words, so a typo fails instead of
+/// silently meaning relative.
+#[test]
+fn strict_playlist_path_mode_rejects_unknown_words() {
+    for (mode, ok) in [("relative", true), ("absolute", true), ("Absolute", false), ("abs", false)]
+    {
+        let doc = with_playlist_entry(&format!(r#"{{ id = "leaf", path = "{mode}" }}"#));
+        let result = decode_document_bounded(&doc);
+        assert_eq!(result.is_ok(), ok, "path = {mode:?} must be {ok} to load");
+    }
 }

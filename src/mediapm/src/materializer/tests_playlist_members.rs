@@ -278,3 +278,28 @@ async fn a_playlist_whose_path_is_a_directory_is_counted_as_missing() {
         ops = recording.recorded()
     );
 }
+
+/// Both playlist path modes render the same entry through the two shapes a user
+/// can ask for: relative to the playlist's own directory, or from the library
+/// root.
+#[test]
+fn both_playlist_path_modes_render() {
+    use super::playlist::PlaylistEntryPathMode;
+
+    assert_eq!(
+        resolve_playlist_target_relative_path(
+            "playlists/a.m3u8",
+            "music/x.mp4",
+            PlaylistEntryPathMode::Relative
+        ),
+        std::path::PathBuf::from("../music/x.mp4")
+    );
+    assert_eq!(
+        resolve_playlist_target_relative_path(
+            "playlists/a.m3u8",
+            "music/x.mp4",
+            PlaylistEntryPathMode::Absolute
+        ),
+        std::path::PathBuf::from("music/x.mp4")
+    );
+}
