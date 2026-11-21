@@ -9,8 +9,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
-    ConfigPayloadStaging, InputBinding, OutputCaptureSpec, ToolInputSpec, ToolKindSpec,
-    ToolRuntime, ToolSpec,
+    InputBinding, OutputCaptureSpec, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
 };
 
 /// Describes how one option input is rendered as CLI tokens.
@@ -108,10 +107,6 @@ pub(crate) fn command_option_tokens_for_tool(
 /// Callers (per-tool workflow files) provide the individual component
 /// builders; this helper assembles them into the final pair.
 #[must_use]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "spec assembly takes one parameter per ToolSpec/ToolRuntime field; all are distinct required inputs"
-)]
 pub(crate) fn assemble_tool_spec(
     tool_name: &str,
     content_map: BTreeMap<String, String>,
@@ -120,24 +115,15 @@ pub(crate) fn assemble_tool_spec(
     outputs: BTreeMap<String, OutputCaptureSpec>,
     default_inputs: BTreeMap<String, InputBinding>,
     impure: bool,
-    max_concurrent_calls: Option<usize>,
-    max_retries: usize,
 ) -> (ToolSpec, ToolRuntime) {
     let runtime = ToolRuntime {
         content_map,
         impure,
         inherited_env_vars: Vec::new(),
-        max_concurrent_calls,
-        max_retries,
-        // The sync stamps both fields once it has materialized the payload: it
-        // alone knows the directory the provisioner filled and the strategy the
-        // library asked for. A spec built here therefore names no root and no
-        // strategy, which means a tool the sync never materializes inherits the
-        // library default — and a document asking for a strategy that needs a
-        // root the tool does not have fails at load, naming the tool, instead of
-        // silently copying.
-        payload_root: String::new(),
-        payload_staging: ConfigPayloadStaging::Inherit,
+        // Every mandated policy is applied by the caller after assembly, so this
+        // builder stays the one place a tool's defaults are decided and the
+        // document states only what a preset actually overrides.
+        ..ToolRuntime::default()
     };
 
     let spec = ToolSpec {

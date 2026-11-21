@@ -186,7 +186,7 @@ pub(crate) fn synthesize_ffmpeg_step(
         tool: tool_id.to_string(),
         inputs,
         outputs,
-        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
+        runtime: None,
         depends_on,
     });
 
@@ -800,8 +800,6 @@ pub(crate) fn build_ffmpeg_spec(
             slot_limits.max_output_slots,
         ),
         false, // impure
-        None,  // max_concurrent_calls
-        0,     // max_retries
     );
     // The hermetic stub chain publishes these names in the host environment.
     // Declaring them lets whitelisted ffmpeg steps receive the invocation log
@@ -934,7 +932,11 @@ mod tests {
             FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 },
         );
         assert_eq!(runtime.max_concurrent_calls, None);
-        assert_eq!(runtime.max_retries, 0);
+        assert_eq!(
+            runtime.max_retries,
+            mediapm_conductor::config::DEFAULT_TOOL_MAX_RETRIES,
+            "ffmpeg inherits the default retry count"
+        );
         assert_eq!(
             runtime.inherited_env_vars,
             vec!["MEDIAPM_STUB_MANIFEST".to_owned(), "MEDIAPM_STUB_INVOCATIONS".to_owned()],

@@ -740,7 +740,7 @@ fn synthesize_import_step(
             tool: tool_id.clone(),
             inputs,
             outputs,
-            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
+            runtime: None,
             depends_on: Vec::new(),
         });
 

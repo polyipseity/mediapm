@@ -1937,34 +1937,39 @@ fn assert_yt_dlp_retry_policy(
     let observed = find_managed_tool_spec(machine, yt_dlp_tool_id)
         .map_or(-1, |t| t.runtime.max_retries as i32);
 
-    if observed == 1 {
-        return Ok(1);
+    if observed != 0 {
+        return Err(format!(
+            "yt-dlp must not retry by default, but observed tool-level max_retries {observed} for tool '{yt_dlp_tool_id}'"
+        )
+        .into());
     }
 
-    if observed == 0 {
-        let workflow_id = format!("mediapm.media.{DEMO_MEDIA_ID}");
-        let workflow =
-            machine.workflows.iter().find(|workflow| workflow.name == workflow_id).ok_or_else(
-                || format!("machine config is missing managed workflow '{workflow_id}'"),
-            )?;
-        let yt_dlp_steps = workflow
-            .steps
-            .iter()
-            .filter(|step| step.tool.eq_ignore_ascii_case("yt-dlp"))
-            .collect::<Vec<_>>();
-        if !yt_dlp_steps.is_empty()
-            && yt_dlp_steps
-                .iter()
-                .all(|step| step.runtime.as_ref().and_then(|r| r.max_retries) == Some(1))
-        {
-            return Ok(1);
-        }
+    let workflow_id = format!("mediapm.media.{DEMO_MEDIA_ID}");
+    let workflow = machine
+        .workflows
+        .iter()
+        .find(|workflow| workflow.name == workflow_id)
+        .ok_or_else(|| format!("machine config is missing managed workflow '{workflow_id}'"))?;
+    let yt_dlp_steps = workflow
+        .steps
+        .iter()
+        .filter(|step| step.tool.eq_ignore_ascii_case("yt-dlp"))
+        .collect::<Vec<_>>();
+    let download_step_has_override = yt_dlp_steps
+        .iter()
+        .any(|step| step.runtime.as_ref().and_then(|runtime| runtime.max_retries) == Some(1));
+    let other_steps_inherit = yt_dlp_steps.iter().all(|step| {
+        step.runtime.as_ref().and_then(|runtime| runtime.max_retries).is_none()
+            || step.runtime.as_ref().and_then(|runtime| runtime.max_retries) == Some(1)
+    });
+    if yt_dlp_steps.is_empty() || !download_step_has_override || !other_steps_inherit {
+        return Err(format!(
+            "yt-dlp download step must override retries to 1 while other yt-dlp steps inherit the tool default for tool '{yt_dlp_tool_id}'"
+        )
+        .into());
     }
 
-    Err(format!(
-        "yt-dlp default max_retries must be 1 but observed {observed} for tool '{yt_dlp_tool_id}'"
-    )
-    .into())
+    Ok(0)
 }
 
 fn assert_demo_workflow_shape(machine: &NickelDocument) -> ExampleResult<(String, usize)> {

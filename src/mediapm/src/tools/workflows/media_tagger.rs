@@ -158,7 +158,7 @@ pub(crate) fn synthesize_media_tagger_step(
                     allow_empty: false,
                 },
             )]),
-            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
+            runtime: None,
         });
 
         // Apply step: merge the metadata back into a copy of the source.
@@ -183,7 +183,7 @@ pub(crate) fn synthesize_media_tagger_step(
                     step.tool.is_impure(),
                 )?,
             )]),
-            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
+            runtime: None,
         });
 
         pending_variant_updates.push((
@@ -501,7 +501,8 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 /// plan-build validation uses this set to reject unknown step options.
 #[must_use]
 pub(crate) fn build_media_tagger_spec() -> (ToolSpec, ToolRuntime) {
-    let runtime = ToolRuntime { impure: true, ..ToolRuntime::default() };
+    let runtime =
+        ToolRuntime { impure: true, max_concurrent_calls: Some(1), ..ToolRuntime::default() };
     let accepted_inputs = [
         "acoustid_api_key",
         "acoustid_endpoint",
@@ -560,6 +561,21 @@ mod tests {
 
     use crate::config::MediaStepTool;
     use crate::config::source_types::TransformInputValue;
+
+    #[test]
+    fn media_tagger_caps_concurrency_and_inherits_the_retry_default() {
+        let (_, runtime) = build_media_tagger_spec();
+        assert_eq!(
+            runtime.max_concurrent_calls,
+            Some(1),
+            "media-tagger must run one instance at a time, because it writes shared AcoustID state"
+        );
+        assert_eq!(
+            runtime.max_retries,
+            mediapm_conductor::config::DEFAULT_TOOL_MAX_RETRIES,
+            "media-tagger must inherit the document default rather than restating one"
+        );
+    }
 
     #[test]
     fn build_media_tagger_outputs_include_standard_captures() {

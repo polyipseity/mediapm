@@ -153,8 +153,6 @@ pub(crate) fn build_deno_spec(
         build_deno_outputs(),
         build_deno_default_input_defaults(),
         false, // impure
-        None,  // max_concurrent_calls
-        0,     // max_retries
     );
     // The hermetic stub chain publishes these names in the host environment.
     // Declaring them lets whitelisted deno steps receive the invocation log when
@@ -205,6 +203,10 @@ mod tests {
         let (_spec, runtime) = build_deno_spec(content_map, &os_exec_paths);
         assert!(!runtime.impure);
         assert_eq!(runtime.max_concurrent_calls, None);
-        assert_eq!(runtime.max_retries, 0);
+        assert_eq!(
+            runtime.max_retries,
+            mediapm_conductor::config::DEFAULT_TOOL_MAX_RETRIES,
+            "deno inherits the default retry count"
+        );
     }
 }

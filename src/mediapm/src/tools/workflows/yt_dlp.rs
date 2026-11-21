@@ -605,10 +605,13 @@ pub(crate) fn build_yt_dlp_spec(
         build_yt_dlp_inputs(),
         build_yt_dlp_outputs(),
         build_yt_dlp_default_input_defaults(),
-        true,    // impure — yt-dlp requires network
-        Some(1), // max_concurrent_calls
-        1,       // max_retries
+        true, // impure — yt-dlp requires network
     );
+    // yt-dlp is the one tool that overrides both policies: a download must not
+    // run beside another one, and a failed download must not silently repeat a
+    // network call.
+    runtime.max_concurrent_calls = Some(1);
+    runtime.max_retries = 0;
     // The hermetic stub chain publishes these names in the host environment.
     // Declaring them lets whitelisted yt-dlp steps receive the emit-mode stub's
     // manifest and the invocation log when a run mounts the chain.
@@ -997,12 +1000,16 @@ mod tests {
     }
 
     #[test]
-    fn build_yt_dlp_spec_sets_impure_and_concurrency() {
-        let content_map = BTreeMap::new();
-        let os_exec_paths = BTreeMap::from([("linux".into(), "yt-dlp".into())]);
-        let (_spec, runtime) = build_yt_dlp_spec(content_map, &os_exec_paths);
-        assert!(runtime.impure);
-        assert_eq!(runtime.max_concurrent_calls, Some(1));
-        assert_eq!(runtime.max_retries, 1);
+    fn yt_dlp_states_both_policies_explicitly() {
+        let (_, runtime) = build_yt_dlp_spec(BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(
+            runtime.max_concurrent_calls,
+            Some(1),
+            "yt-dlp must cap concurrency at one, because two downloads into one sandbox collide"
+        );
+        assert_eq!(
+            runtime.max_retries, 0,
+            "yt-dlp must not retry by default, because a retried download repeats a network call"
+        );
     }
 }

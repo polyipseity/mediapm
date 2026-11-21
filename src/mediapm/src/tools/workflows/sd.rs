@@ -146,8 +146,6 @@ pub(crate) fn build_sd_spec(
         build_sd_outputs(),
         build_sd_default_input_defaults(),
         false, // impure
-        None,  // max_concurrent_calls
-        0,     // max_retries
     );
     // The hermetic stub chain publishes these names in the host environment.
     // Declaring them lets whitelisted sd steps receive the invocation log when
@@ -235,5 +233,16 @@ mod tests {
         let os_exec_paths = BTreeMap::from([("linux".into(), "sd".into())]);
         let (_spec, runtime) = build_sd_spec(content_map, &os_exec_paths);
         assert!(!runtime.impure);
+    }
+
+    #[test]
+    fn sd_states_no_policy_so_the_defaults_apply() {
+        let (_, runtime) = build_sd_spec(BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(runtime.max_concurrent_calls, None, "sd leaves the cap unlimited");
+        assert_eq!(
+            runtime.max_retries,
+            mediapm_conductor::config::DEFAULT_TOOL_MAX_RETRIES,
+            "sd inherits the default retry count"
+        );
     }
 }

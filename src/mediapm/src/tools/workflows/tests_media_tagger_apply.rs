@@ -188,7 +188,7 @@ fn metadata_producer_step(id: &str, metadata_hash: Hash) -> WorkflowStepSpec {
                 allow_empty: false,
             },
         )]),
-        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
+        runtime: None,
         depends_on: Vec::new(),
     }
 }
