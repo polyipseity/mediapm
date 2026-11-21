@@ -13,17 +13,18 @@ use mediapm_utils::Timestamp;
 
 use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
-use crate::instance_key::{
-    INSTANCE_KEY_VERSION, input_binding_to_string, key_material_for_tool,
-    predicted_materialized_inputs,
-};
+use crate::instance_key::{INSTANCE_KEY_VERSION, input_binding_to_string};
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec, find_tool_entry_by_name,
 };
 use crate::state::{ResolvedInput, StepRef, ToolCallInstance};
+use crate::work_material::{
+    StepWorkMaterial, merge_output_specs, output_tokens, producible_output_specs,
+    warn_discarded_step_fields,
+};
 
 use super::cache::{CurrentMaterial, LookupResult, lookup_instance};
-use super::capture::{capture_outputs, implicit_stream_specs};
+use super::capture::capture_outputs;
 use super::inputs::resolve_step_inputs;
 use super::process::{ExecutionResult, run_builtin, run_executable_process};
 use super::sandbox::{
@@ -179,36 +180,34 @@ fn prepare_step_execution<'a>(
         .iter()
         .map(|input| (input.key.clone(), input.value.as_bytes().to_vec()))
         .collect();
-    let key_material = key_material_for_tool(
+
+    // One declaration of what this step would run, shared with mediapm's
+    // materializer, so the key both derive cannot drift.
+    warn_discarded_step_fields(&tool_spec.outputs, &request.step.outputs);
+    let material = StepWorkMaterial::for_step(
         &tool_spec.command_parts,
-        &input_values,
+        &tool_spec.literal_env_vars,
+        &tool_spec.outputs,
+        &request.step.outputs,
         &raw_bindings,
-        &tool_spec.literal_env_vars,
-    );
-
-    // Tool-level capture defaults merged with the step's own declarations.
-    let merged_outputs = merge_output_specs(&tool_spec.outputs, &request.step.outputs);
-    let producible_outputs = producible_output_specs(&merged_outputs);
-
-    let predicted_materialized_inputs = predicted_materialized_inputs(
-        &tool_spec.command_parts,
         &input_values,
-        &tool_spec.literal_env_vars,
     );
-    let output_tokens: BTreeMap<String, String> = producible_outputs
-        .iter()
-        .map(|(name, spec)| (name.clone(), spec.capture.to_token()))
-        .collect();
-    let current = CurrentMaterial {
-        command_args: key_material.clone(),
-        output_tokens,
-        materialized_inputs: predicted_materialized_inputs,
-    };
-    let k_latest = current.key(&tool_call_id, INSTANCE_KEY_VERSION).ok_or_else(|| {
+    let k_latest = material.key_at(&tool_call_id, INSTANCE_KEY_VERSION).ok_or_else(|| {
         ConductorError::Internal(format!(
             "failed to derive v{INSTANCE_KEY_VERSION} instance key for tool '{tool_call_id}'"
         ))
     })?;
+    let key_material = material.command_args.clone();
+    let current = CurrentMaterial {
+        command_args: material.command_args,
+        output_tokens: material.output_tokens,
+        materialized_inputs: material.materialized_inputs,
+    };
+
+    // Tool-level capture defaults merged with the step's own declarations, for
+    // the capture and probe paths.
+    let merged_outputs = merge_output_specs(&tool_spec.outputs, &request.step.outputs);
+    let producible_outputs = producible_output_specs(&merged_outputs);
 
     let executed_at = request.impure_timestamp.unwrap_or_else(Timestamp::now);
     let env_vars = build_env_vars(&tool_spec.execution_env_vars, &tool_spec.literal_env_vars);
@@ -386,10 +385,7 @@ async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
     let captured = capture_outputs(cas, merged_outputs, &dispatched.result, &sandbox_dir).await?;
 
     // Derive the stored v8 key from actual material (actual staged inputs).
-    let actual_output_tokens: BTreeMap<String, String> = producible_outputs
-        .iter()
-        .map(|(name, spec)| (name.clone(), spec.capture.to_token()))
-        .collect();
+    let actual_output_tokens = output_tokens(producible_outputs);
     let actual_materialized_inputs = dispatched.materialized_inputs.clone();
     let actual_key = crate::instance_key::derive_instance_key_for_version(
         INSTANCE_KEY_VERSION,
@@ -469,124 +465,6 @@ async fn required_output_blobs_exist<C: CasApi>(
     true
 }
 
-/// Returns every output name this step's work can produce, with the spec that
-/// produces it.
-///
-/// The merged declarations are not the whole set: `stdout`, `stderr` and
-/// `process_code` are recorded by every execution (see [`implicit_stream_specs`]),
-/// so a dependent referencing one of them is asking for a name the instance
-/// holds even though neither the tool nor the step declared it. A merged-set-only
-/// filter would therefore skip the CAS check for exactly the names every
-/// execution writes, so the check would be missing where the recorded entry is
-/// guaranteed to exist.
-///
-/// A declared entry wins over the implicit one for its name, matching the
-/// capture phase, which records a declared `stdout` under the declared spec and
-/// skips the implicit spec.
-fn producible_output_specs(
-    merged_outputs: &BTreeMap<String, OutputCaptureSpec>,
-) -> BTreeMap<String, OutputCaptureSpec> {
-    let mut producible = merged_outputs.clone();
-    for (name, spec) in implicit_stream_specs() {
-        producible.entry(name).or_insert(spec);
-    }
-    producible
-}
-
-/// Names the fields of `step` that `tool` overrides for one output.
-///
-/// A step may restate a tool-declared name for any reason, so silence here would
-/// leave a declaration that has no effect looking as though it had one: the tool
-/// keeps `capture`, while the step's `save` and `allow_empty` win for that name.
-/// Comparing values rather than presence is deliberate: a step that repeats the
-/// tool's own selector is declaring what already holds and deserves no warning,
-/// while one that names a different selector is stating an intent that is being
-/// discarded.
-///
-/// The order is fixed so the diagnostic reads the same way every run.
-///
-/// `name` is not in the list. The merge rewrites it to the map key, but that is
-/// normalization rather than a discarded intent: a key identifies its entry and a
-/// spec's own `name` restates it, so a step whose `name` disagrees with its key
-/// has a malformed spec, not an unfulfilled declaration.
-fn discarded_step_fields(tool: &OutputCaptureSpec, step: &OutputCaptureSpec) -> Vec<&'static str> {
-    let mut discarded = Vec::new();
-    if step.capture != tool.capture {
-        discarded.push("capture");
-    }
-    discarded
-}
-
-/// Merges tool-level output specs (defaults) with step-level output specs.
-///
-/// The tool owns the meaning of every artifact name it declares: its `capture`
-/// is kept, and a step declaring the same name contributes its `save` and
-/// `allow_empty`. A step's full declaration is authoritative only for a name
-/// the tool does not declare, and a name only the tool declares is kept
-/// unchanged.
-///
-/// The reason is that one instance is shared by every step running the same
-/// work, and a name-addressed record is reusable only when the capture beside it
-/// is the one the reusing step would have produced. The artifact layout is a
-/// property of the tool — the sandbox path a capture reads follows from how the
-/// tool writes it — so a step that could re-select a tool-declared name would
-/// let two steps disagree about bytes one execution produced, and each would
-/// re-execute to replace the other's record forever.
-///
-/// Tolerance and persistence are step-local decisions: whether this step's use
-/// of the name permits an empty match, and whether its materialization keeps the
-/// family, do not change which bytes the capture reads. That is also why the
-/// probe compares capture identity rather than the whole spec
-/// ([`super::cache::lookup_instance`] and [`super::cache::satisfies_requirements`]
-/// implement the probe and requirement logic, and v8 keys include capture tokens):
-/// `save` is recorded beside the entry for
-/// provenance, but a reused entry is byte-for-byte the same artifact whether the
-/// reusing step persists it or not, so letting it decide a miss would put two
-/// steps with different persistence on a forever-re-executing loop.
-///
-/// Every entry's `name` is set to the map key it is stored under. Capture records
-/// `spec.name`, while the probe, the dependents' references and the materializer
-/// address the key; a declaration whose name disagrees with its key would record
-/// a name nothing can bind, and the step would re-execute on every sync. The key
-/// is the identity, so the key wins.
-///
-/// The result is what the capture phase records and what a probe hit must
-/// satisfy, so one instance holds every name a step with this work can bind.
-/// None of it is key material: the instance key derives from inputs alone.
-fn merge_output_specs(
-    tool_outputs: &BTreeMap<String, OutputCaptureSpec>,
-    step_outputs: &BTreeMap<String, OutputCaptureSpec>,
-) -> BTreeMap<String, OutputCaptureSpec> {
-    let mut merged = tool_outputs.clone();
-    for (name, step_spec) in step_outputs {
-        match merged.get_mut(name) {
-            Some(tool_spec) => {
-                let discarded = discarded_step_fields(tool_spec, step_spec);
-                if !discarded.is_empty() {
-                    tracing::warn!(
-                        "output '{name}' is declared by the tool, so the step's {} {} ignored; \
-                         the tool's capture applies, and the step's allow_empty and save are taken \
-                         from the step",
-                        discarded.join(", "),
-                        if discarded.len() == 1 { "is" } else { "are" },
-                    );
-                }
-                tool_spec.save = step_spec.save;
-                tool_spec.allow_empty = step_spec.allow_empty;
-            }
-            None => {
-                merged.insert(name.clone(), step_spec.clone());
-            }
-        }
-    }
-    for (name, spec) in &mut merged {
-        if spec.name != *name {
-            spec.name.clone_from(name);
-        }
-    }
-    merged
-}
-
 /// Builds the recorded environment set from configured execution env vars:
 /// only non-empty values, each content-hashed (never stored literally).
 ///
@@ -624,15 +502,15 @@ mod tests {
 
     use mediapm_cas::Hash;
 
-    use super::{
-        build_env_vars, discarded_step_fields, execute_step, merge_output_specs,
-        producible_output_specs,
-    };
+    use super::{build_env_vars, execute_step};
     use crate::config::{OutputCaptureSpec, SaveMode, WorkflowStepSpec};
     use crate::orchestration::protocol::{
         StepExecutionBundle, StepExecutionRequest, UnifiedNickelDocument, UnifiedToolSpec,
     };
     use crate::state::{ConductorState, StepRef};
+    use crate::work_material::{
+        discarded_step_fields, merge_output_specs, producible_output_specs,
+    };
 
     /// Builds a capture spec for `name` reading the implicit stream `stream`,
     /// with every optional field at its documented default.

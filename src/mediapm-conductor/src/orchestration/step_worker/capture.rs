@@ -21,7 +21,7 @@ use super::process::ExecutionResult;
 /// referencing `${step_output.<step>.stdout}` would be filtered out of the
 /// probe's CAS presence check even though every instance of that work records
 /// the name.
-pub(super) fn implicit_stream_specs() -> BTreeMap<String, OutputCaptureSpec> {
+pub(crate) fn implicit_stream_specs() -> BTreeMap<String, OutputCaptureSpec> {
     [
         ("stdout", crate::config::CaptureKind::Stdout),
         ("stderr", crate::config::CaptureKind::Stderr),

@@ -16,7 +16,7 @@ use crate::error::ConductorError;
 use crate::orchestration::protocol::{StepExecutionBundle, StepExecutionRequest};
 
 mod cache;
-mod capture;
+pub(crate) mod capture;
 mod executor;
 pub(crate) mod inputs;
 #[cfg(test)]

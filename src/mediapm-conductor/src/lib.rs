@@ -24,6 +24,7 @@ pub mod provision;
 pub mod runtime_env;
 pub mod state;
 pub mod tools;
+pub mod work_material;
 
 // CLI sub-modules (flattened from cli/ directory).
 #[cfg(feature = "cli")]
@@ -68,3 +69,7 @@ pub use state::{
 pub use tools::registered_builtin_ids;
 #[cfg(feature = "tool-presets")]
 pub use tools::spec;
+pub use work_material::{
+    StepWorkMaterial, instance_matches_work, merge_output_specs, output_tokens,
+    producible_output_specs, warn_discarded_step_fields,
+};
