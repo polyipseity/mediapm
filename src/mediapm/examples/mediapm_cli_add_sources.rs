@@ -24,11 +24,6 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AddSourcesManifest {
-    artifact_root: PathBuf,
-    manifest_path: PathBuf,
-    mediapm_ncl: PathBuf,
-    conductor_user_ncl: PathBuf,
-    conductor_generated_ncl: PathBuf,
     local_media_id: String,
     remote_media_id: String,
 }
@@ -92,23 +87,9 @@ async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
         None,
     )?;
 
-    let paths = service.paths();
-    let mediapm_ncl = paths.mediapm_ncl.clone();
-    let conductor_user_ncl = paths.conductor_user_ncl.clone();
-    let conductor_generated_ncl = paths.conductor_generated_ncl.clone();
-    let manifest_path = root.join("manifest.json");
+    let manifest = AddSourcesManifest { local_media_id, remote_media_id };
 
-    let manifest = AddSourcesManifest {
-        artifact_root: root,
-        manifest_path: manifest_path.clone(),
-        mediapm_ncl,
-        conductor_user_ncl,
-        conductor_generated_ncl,
-        local_media_id,
-        remote_media_id,
-    };
-
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
 
     service.conductor().shutdown().await?;
 
@@ -118,11 +99,9 @@ async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     let manifest = run_add_sources_example().await?;
+    let root = artifact_root();
 
-    println!("manifest: {}", manifest.manifest_path.display());
-    println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
-    println!("conductor user: {}", manifest.conductor_user_ncl.display());
-    println!("conductor generated: {}", manifest.conductor_generated_ncl.display());
+    println!("manifest: {}", root.join("manifest.json").display());
     println!("local media id: {}", manifest.local_media_id);
     println!("remote media id: {}", manifest.remote_media_id);
 
@@ -142,10 +121,11 @@ mod tests {
     async fn cli_add_sources_writes_expected_config_documents() {
         let _isolated = IsolatedExampleRoots::artifact_only();
         let manifest = run_add_sources_example().await.expect("run add-sources example");
+        let mediapm_ncl = super::artifact_root().join("mediapm.ncl");
 
-        assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
+        assert!(mediapm_ncl.exists(), "mediapm config should exist");
 
-        let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
+        let document = load_mediapm_document(&mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.media.len(), 2, "example should register exactly two media sources");
 
         let local_source =

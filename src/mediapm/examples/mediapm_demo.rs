@@ -118,50 +118,32 @@ const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
     MaterializationMethod::Copy,
 ];
 
-/// Manifest persisted under `examples/artifacts/demo/manifest.json`.
+/// One offline demo run, summarized.
+///
+/// Paths are deliberately absent except [`Self::library_root`]: the workspace,
+/// the document, the state file, and the profile all sit at fixed offsets from
+/// the artifact root, and a reader who has the manifest has the root. What stays
+/// is what no other file records for this run: the counters, the sizes, and the
+/// policy the run applied.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "demo manifest intentionally records many explicit invariant flags for regression inspection"
-)]
 struct DemoManifest {
     generated_unix_epoch_seconds: u64,
-    artifact_root: String,
-    workspace_root: String,
     media_id: String,
-    auto_added_media_id: String,
-    auto_added_source_title: String,
-    auto_added_source_description: String,
-    source_file_path: String,
     source_hash: String,
-    source_has_video_track_marker: bool,
-    source_has_audio_track_marker: bool,
     configured_tool_count: usize,
     configured_step_count: usize,
-    tool_update_precheck_executed: bool,
-    tool_update_precheck_updated_tools: usize,
-    tool_update_precheck_added_tools: usize,
     materialization_preference_order: Vec<String>,
-    materialized_path: String,
-    materialized_exists: bool,
-    materialized_hardlinked_to_cas: bool,
-    sync_executed: bool,
-    lock_managed_files_count: usize,
-    lock_managed_tools_count: usize,
     executed_steps: usize,
     cached_steps: usize,
     materialized_paths: usize,
     removed_paths: usize,
     warning_count: usize,
-    profile_path: String,
-    mediapm_ncl_path: String,
-    conductor_user_ncl_path: String,
-    conductor_generated_ncl_path: String,
-    mediapm_state_json_path: String,
-    library_root_path: String,
+    store_size_bytes: u64,
     store_size_without_delta_bytes: u64,
     store_size_with_delta_bytes: u64,
     store_size_ratio_with_delta_over_without: f64,
+    /// The one path anchor: where this run's hierarchy landed.
+    library_root: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -484,10 +466,6 @@ fn write_local_av_fixture(path: &Path) -> ExampleResult<Vec<u8>> {
 
     fs::write(path, SAMPLE_AV_MP4_BYTES)?;
     Ok(SAMPLE_AV_MP4_BYTES.to_vec())
-}
-
-fn bytes_contain_ascii(bytes: &[u8], marker: &[u8]) -> bool {
-    bytes.windows(marker.len()).any(|window| window == marker)
 }
 
 /// Stores one payload in the demo's CAS and returns its hash.
@@ -877,8 +855,6 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 
     let source_path = workspace_root.join("input").join("sample-av.mp4");
     let source_bytes = write_local_av_fixture(&source_path)?;
-    let source_has_video_track_marker = bytes_contain_ascii(&source_bytes, b"vide");
-    let source_has_audio_track_marker = bytes_contain_ascii(&source_bytes, b"soun");
 
     let mut ingest_service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
         &workspace_root,
@@ -887,7 +863,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     .await?;
     let paths = ingest_service.paths().clone();
 
-    let (precheck_updated_tools, precheck_added_tools) = if run_sync {
+    let (_precheck_updated_tools, _precheck_added_tools) = if run_sync {
         run_tools_update_precheck(&mut ingest_service, &workspace_root).await?
     } else {
         (0, 0)
@@ -999,55 +975,30 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         ));
 
     let lock = load_mediapm_state_document(&effective_paths.mediapm_state_json)?;
-    let materialized_hardlinked_to_cas = if maybe_summary.is_some() {
+    if maybe_summary.is_some() {
         let hierarchy_root = &effective_paths.hierarchy_root_dir;
         let cas = service.conductor().cas();
         assert_materialized_output_hardlinked_to_cas(cas, hierarchy_root, &lock, &materialized)
             .await?;
-        true
-    } else {
-        false
-    };
+    }
 
     let manifest = DemoManifest {
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
-        artifact_root: display_path(&root),
-        workspace_root: display_path(&workspace_root),
         media_id: DEMO_MEDIA_ID.to_string(),
-        auto_added_media_id,
-        auto_added_source_title,
-        auto_added_source_description,
-        source_file_path: display_path(&source_path),
         source_hash: source_hash_text,
-        source_has_video_track_marker,
-        source_has_audio_track_marker,
         configured_tool_count,
         configured_step_count,
-        tool_update_precheck_executed: run_sync,
-        tool_update_precheck_updated_tools: precheck_updated_tools,
-        tool_update_precheck_added_tools: precheck_added_tools,
-
         materialization_preference_order,
-        materialized_path: display_path(&materialized),
-        materialized_exists: materialized.exists(),
-        materialized_hardlinked_to_cas,
-        sync_executed: maybe_summary.is_some(),
-        lock_managed_files_count: lock.managed_files.len(),
-        lock_managed_tools_count: lock.managed_tools.len(),
         executed_steps: maybe_summary.as_ref().map_or(0, |summary| summary.executed_steps),
         cached_steps: maybe_summary.as_ref().map_or(0, |summary| summary.cached_steps),
         materialized_paths: maybe_summary.as_ref().map_or(0, |summary| summary.materialized_paths),
         removed_paths: maybe_summary.as_ref().map_or(0, |summary| summary.removed_paths),
         warning_count: maybe_summary.as_ref().map_or(0, |summary| summary.warnings.len()),
-        profile_path: display_path(&service.paths().runtime_root.join("profile.json")),
-        mediapm_ncl_path: display_path(&service.paths().mediapm_ncl),
-        conductor_user_ncl_path: display_path(&service.paths().conductor_user_ncl),
-        conductor_generated_ncl_path: display_path(&service.paths().conductor_generated_ncl),
-        mediapm_state_json_path: display_path(&service.paths().mediapm_state_json),
-        library_root_path: display_path(&effective_paths.hierarchy_root_dir),
+        store_size_bytes: store_size_stats.with_delta_bytes,
         store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
         store_size_with_delta_bytes: store_size_stats.with_delta_bytes,
         store_size_ratio_with_delta_over_without: store_size_stats.ratio_with_delta_over_without(),
+        library_root: display_path(&effective_paths.hierarchy_root_dir),
     };
 
     let manifest_path = root.join("manifest.json");
@@ -1094,6 +1045,56 @@ mod tests {
         super::main().expect("example main should run to completion");
     }
 
+    /// D10: a manifest is a summary of one run, so it must not restate what the
+    /// workspace already holds.
+    #[tokio::test]
+    async fn offline_manifest_keeps_summary_and_one_anchor() {
+        let _isolated = IsolatedExampleRoots::with_cache();
+        let run = super::generate_demo_artifacts(true).await.expect("demo artifact generation");
+        let manifest_text = std::fs::read_to_string(&run.manifest_path).expect("read manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&manifest_text).expect("manifest JSON");
+
+        for absent in [
+            "artifact_root",
+            "workspace_root",
+            "source_file_path",
+            "mediapm_ncl_path",
+            "conductor_user_ncl_path",
+            "conductor_generated_ncl_path",
+            "mediapm_state_json_path",
+            "profile_path",
+            "materialized_hardlinked_to_cas",
+        ] {
+            assert!(
+                manifest.get(absent).is_none(),
+                "the manifest must not restate {absent}, which another file already holds"
+            );
+        }
+
+        for present in [
+            "media_id",
+            "configured_tool_count",
+            "configured_step_count",
+            "executed_steps",
+            "cached_steps",
+            "materialized_paths",
+            "removed_paths",
+            "warning_count",
+            "store_size_bytes",
+        ] {
+            assert!(
+                manifest.get(present).is_some(),
+                "the manifest is the only record of {present} for this run"
+            );
+        }
+
+        assert!(
+            manifest["library_root"].is_string(),
+            "the manifest needs one anchor so a reader can find the tree it describes"
+        );
+    }
+
     /// Verifies demo artifact generation writes one complete import workflow manifest in full-sync mode.
     #[tokio::test]
     async fn generate_demo_artifacts_writes_manifest_and_import_metadata() {
@@ -1121,11 +1122,6 @@ mod tests {
             Some(2),
             "demo should configure the kept import step and the unsaved scratch step"
         );
-        assert_eq!(
-            manifest_json.get("tool_update_precheck_executed").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "full-sync demo run should execute tools-update precheck"
-        );
         let without_delta = manifest_json
             .get("store_size_without_delta_bytes")
             .and_then(serde_json::Value::as_u64)
@@ -1144,16 +1140,6 @@ mod tests {
             (ratio - expected_ratio).abs() <= f64::EPSILON,
             "manifest ratio should match with/without store-size math"
         );
-        assert_eq!(
-            manifest_json.get("source_has_video_track_marker").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "source fixture should expose a video marker"
-        );
-        assert_eq!(
-            manifest_json.get("source_has_audio_track_marker").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "source fixture should expose an audio marker"
-        );
         assert!(
             manifest_json
                 .get("source_hash")
@@ -1170,44 +1156,6 @@ mod tests {
                 }),
             Some(vec!["hardlink", "symlink", "reflink", "copy"]),
             "manifest should expose explicit default materialization order"
-        );
-        assert!(
-            manifest_json
-                .get("auto_added_source_title")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty()),
-            "manifest should record non-empty auto-populated title"
-        );
-        assert!(
-            manifest_json
-                .get("auto_added_source_description")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty()),
-            "manifest should record non-empty auto-populated description"
-        );
-        assert_eq!(
-            manifest_json.get("sync_executed").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "full-sync demo run should execute sync_library"
-        );
-        assert_eq!(
-            manifest_json.get("materialized_exists").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "full-sync demo should materialize the imported output"
-        );
-        assert_eq!(
-            manifest_json
-                .get("materialized_hardlinked_to_cas")
-                .and_then(serde_json::Value::as_bool),
-            Some(true),
-            "materialized output should be hardlinked to CAS after ensure"
-        );
-        assert!(
-            manifest_json
-                .get("lock_managed_files_count")
-                .and_then(serde_json::Value::as_u64)
-                .is_some_and(|count| count > 0),
-            "full-sync demo should populate managed_files lockfile entries"
         );
         assert!(
             manifest_json
@@ -1479,15 +1427,14 @@ mod tests {
     /// `generate_demo_artifacts_writes_manifest_and_import_metadata`
     /// intermittent.
     ///
-    /// The manifest field `materialized_hardlinked_to_cas` is produced by
-    /// [`super::assert_materialized_output_hardlinked_to_cas`], which can only
-    /// fail when the store's background WAL consumer applies the `Put` that
-    /// created the blob *after* the materializer hardlinked it: the
-    /// write-tmp-then-rename commit installs a new inode and silently detaches
-    /// the link. Whether that drain lands inside the window between
-    /// `ensure_blob_materialized` and the verification is a scheduling
-    /// accident, so the end-to-end test above observes it only
-    /// intermittently and cannot be relied on to catch a regression.
+    /// [`super::assert_materialized_output_hardlinked_to_cas`] can only fail when
+    /// the store's background WAL consumer applies the `Put` that created the
+    /// blob *after* the materializer hardlinked it: the write-tmp-then-rename
+    /// commit installs a new inode and silently detaches the link. Whether that
+    /// drain lands inside the window between `ensure_blob_materialized` and the
+    /// verification is a scheduling accident, so the end-to-end test above
+    /// observes it only intermittently and cannot be relied on to catch a
+    /// regression.
     ///
     /// This test forces the window instead of waiting for it: the blob is
     /// materialized and hardlinked first, the drain is then invoked

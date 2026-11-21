@@ -46,11 +46,6 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AddToolsManifest {
-    artifact_root: PathBuf,
-    manifest_path: PathBuf,
-    mediapm_ncl: PathBuf,
-    conductor_user_ncl: PathBuf,
-    conductor_generated_ncl: PathBuf,
     logical_tool_names: Vec<String>,
     tool_ids: Vec<String>,
 }
@@ -193,18 +188,12 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
 
     fs::write(&paths.conductor_generated_ncl, encode_document(machine)?)?;
 
-    let manifest_path = root.join("manifest.json");
     let manifest = AddToolsManifest {
-        artifact_root: root,
-        manifest_path: manifest_path.clone(),
-        mediapm_ncl: paths.mediapm_ncl.clone(),
-        conductor_user_ncl: paths.conductor_user_ncl.clone(),
-        conductor_generated_ncl: paths.conductor_generated_ncl.clone(),
         logical_tool_names: TOOL_NAMES.iter().map(|v| (*v).to_string()).collect(),
         tool_ids,
     };
 
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
 
     service.conductor().shutdown().await?;
 
@@ -214,11 +203,9 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     let manifest = run_add_tools_example().await?;
+    let root = artifact_root();
 
-    println!("manifest: {}", manifest.manifest_path.display());
-    println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
-    println!("conductor user: {}", manifest.conductor_user_ncl.display());
-    println!("conductor generated: {}", manifest.conductor_generated_ncl.display());
+    println!("manifest: {}", root.join("manifest.json").display());
     println!("logical tools: {}", manifest.logical_tool_names.join(", "));
     println!("tool ids: {}", manifest.tool_ids.join(", "));
 
@@ -238,19 +225,19 @@ mod tests {
     async fn add_tools_writes_expected_config_documents() {
         let isolated = IsolatedExampleRoots::with_cache();
         let manifest = run_add_tools_example().await.expect("run add-tools example");
+        let root = super::artifact_root();
 
         assert!(
             isolated.cache_root_path().expect("cache root").join("store").exists(),
             "tool sync should have used the isolated user cache root"
         );
 
-        assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
-        assert!(
-            manifest.conductor_generated_ncl.exists(),
-            "conductor generated config should exist"
-        );
+        let mediapm_ncl = root.join("mediapm.ncl");
+        let conductor_generated_ncl = root.join("mediapm.conductor.generated.ncl");
+        assert!(mediapm_ncl.exists(), "mediapm config should exist");
+        assert!(conductor_generated_ncl.exists(), "conductor generated config should exist");
 
-        let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
+        let document = load_mediapm_document(&mediapm_ncl).expect("load mediapm.ncl");
         assert!(document.media.is_empty(), "tools example should leave media empty");
         assert_eq!(
             document.tools.len(),
@@ -258,7 +245,7 @@ mod tests {
             "tools example should register every managed tool requirement"
         );
 
-        let machine_bytes = fs::read(&manifest.conductor_generated_ncl).expect("read machine doc");
+        let machine_bytes = fs::read(&conductor_generated_ncl).expect("read machine doc");
         let machine: NickelDocument = decode_document(&machine_bytes).expect("decode machine doc");
 
         for tool_id in &manifest.tool_ids {

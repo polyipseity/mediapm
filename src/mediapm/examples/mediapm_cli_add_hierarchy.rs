@@ -28,11 +28,6 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AddHierarchyManifest {
-    artifact_root: PathBuf,
-    manifest_path: PathBuf,
-    mediapm_ncl: PathBuf,
-    conductor_user_ncl: PathBuf,
-    conductor_generated_ncl: PathBuf,
     local_media_id: String,
     remote_media_id: String,
     hierarchy_node_count: usize,
@@ -127,14 +122,8 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     service.add_media_hierarchy_preset(MediaHierarchyPreset::YtDlpChannel)?;
 
     let paths = service.paths();
-    let manifest_path = root.join("manifest.json");
     let document = load_mediapm_document(&paths.mediapm_ncl)?;
     let manifest = AddHierarchyManifest {
-        artifact_root: root,
-        manifest_path: manifest_path.clone(),
-        mediapm_ncl: paths.mediapm_ncl.clone(),
-        conductor_user_ncl: paths.conductor_user_ncl.clone(),
-        conductor_generated_ncl: paths.conductor_generated_ncl.clone(),
         local_media_id,
         remote_media_id,
         hierarchy_node_count: document.hierarchy.len(),
@@ -142,7 +131,7 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
         yt_dlp_hierarchy_folder: YT_DLP_HIERARCHY_FOLDER.to_string(),
     };
 
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
 
     service.conductor().shutdown().await?;
 
@@ -152,11 +141,9 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     let manifest = run_add_hierarchy_example().await?;
+    let root = artifact_root();
 
-    println!("manifest: {}", manifest.manifest_path.display());
-    println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
-    println!("conductor user: {}", manifest.conductor_user_ncl.display());
-    println!("conductor generated: {}", manifest.conductor_generated_ncl.display());
+    println!("manifest: {}", root.join("manifest.json").display());
     println!("local media id: {}", manifest.local_media_id);
     println!("remote media id: {}", manifest.remote_media_id);
     println!("hierarchy node count: {}", manifest.hierarchy_node_count);
@@ -177,10 +164,11 @@ mod tests {
     async fn add_hierarchy_writes_expected_hierarchy_nodes() {
         let _isolated = IsolatedExampleRoots::with_cache();
         let manifest = run_add_hierarchy_example().await.expect("run add-hierarchy example");
+        let mediapm_ncl = super::artifact_root().join("mediapm.ncl");
 
-        assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
+        assert!(mediapm_ncl.exists(), "mediapm config should exist");
 
-        let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
+        let document = load_mediapm_document(&mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.hierarchy.len(), 2, "example should add two hierarchy nodes");
 
         let local_root = document

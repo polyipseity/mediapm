@@ -65,6 +65,10 @@ The offline demo playlist deliberately carries all three reference forms (shorth
 - Do not modify hermetic golden fixtures casually; update fixtures and helper-linkage test in the same commit as a materialization change.
 - Each demo declares one captured variant that no hierarchy entry links, with `save = false`; `assert_demo_saves_what_the_hierarchy_materializes` pins counts.
 
+## Manifest rule
+
+A manifest records what no other artifact records for that run (counters, sizes, warnings, resolved versions, applied policy) plus one path anchor, and never a path derivable from its own directory or a map another file already holds.
+
 ## Pointers
 
 - `src/mediapm/src/example_isolation.rs`

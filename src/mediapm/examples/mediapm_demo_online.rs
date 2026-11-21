@@ -476,6 +476,13 @@ struct OfflineEvidence {
     root_title: String,
 }
 
+/// One online demo run, summarized.
+///
+/// Paths are deliberately absent except [`Self::media_folder`]: the workspace,
+/// the generated document, and the tool binaries all sit at fixed offsets or in
+/// the state lockfile, and a reader who has the manifest has the artifact root.
+/// What stays is what no other file records for this run: the counters, the
+/// versions, the applied policy, and the offline evidence.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct DemoManifest {
     /// Which mode produced this manifest. Both routes run the same full sync, so
@@ -483,31 +490,16 @@ struct DemoManifest {
     /// upstream the run reached.
     run_mode: String,
     generated_unix_epoch_seconds: u64,
-    artifact_root: String,
-    workspace_root: String,
     tool_ids: Vec<String>,
-    tool_binaries: BTreeMap<String, String>,
     /// Canonical version and upstream provenance per logical managed tool id,
     /// read from the state lockfile after the sync. See
     /// [`summarize_managed_tool_provenance`].
     managed_tools: BTreeMap<String, ManagedToolProvenance>,
     yt_dlp_max_concurrent_calls: i32,
     yt_dlp_max_retries: i32,
-    mediapm_ncl_path: String,
-    conductor_generated_ncl_path: String,
     workflow_id: String,
     workflow_step_count: usize,
     materialization_preference_order: Vec<String>,
-    materialized_demo_video_path: String,
-    materialized_demo_tagged_video_path: String,
-    materialized_demo_video_hardlinked_to_cas: bool,
-    materialized_demo_tagged_video_hardlinked_to_cas: bool,
-    materialized_demo_sidecar_paths: BTreeMap<String, String>,
-    /// CAS hash recorded for every managed library file, keyed by the
-    /// hierarchy-relative path. Read verbatim from the state lockfile, so a
-    /// reader can verify a materialized file against the store without
-    /// recomputing anything.
-    materialized_file_hashes: BTreeMap<String, String>,
     executed_steps: usize,
     cached_steps: usize,
     materialized_paths: usize,
@@ -519,18 +511,15 @@ struct DemoManifest {
     /// every run the demo performs: the manifest keeps it optional because the
     /// tally is written by the full-sync path alone.
     second_run: Option<SecondRunTally>,
-    profile_path: String,
     /// Total logical size of every CAS blob object (sum of `info.len` for
-    /// each hash found under `blobs/v1/`). A single field rather than a
-    /// delta-vs-without pair because no delta chunks (`.diff`) exist in the
-    /// demo store — the previous three-field split (`without_delta`,
-    /// `with_delta`, `ratio`) was always zero because the walk looked at
-    /// `v1/` instead of `blobs/v1/`, and even after fixing the path both
-    /// delta and without-delta would be identical for this store.
+    /// each hash found under `blobs/v1/`).
     store_size_bytes: u64,
     /// The evidence a stub-chain run leaves; absent on a real-upstream run,
     /// which has no chain to record.
     offline: Option<OfflineEvidence>,
+    /// The one path anchor: this run's media folder, which is what the golden
+    /// contract names anyway.
+    media_folder: String,
 }
 
 /// Runtime storage for demo runs; the user-level tool cache resolves to a
@@ -3583,8 +3572,6 @@ struct ResolvedDemoOutput {
     untagged_video: PathBuf,
     /// The post-tagging media leaf.
     tagged_video: PathBuf,
-    /// One materialized sidecar path per `DEMO_SIDECAR_VARIANT_PATHS` label.
-    sidecars: BTreeMap<String, PathBuf>,
     /// The metadata the materialized names were rendered from.
     metadata: DemoResolvedMetadata,
 }
@@ -3676,7 +3663,7 @@ fn resolve_demo_output_paths(
         assert_tagged_media_metadata(&tagged_video_path)?;
     }
 
-    let sidecar_paths = assert_sidecar_files_present(&interpolated_root, &resolved_metadata)?;
+    let _sidecar_paths = assert_sidecar_files_present(&interpolated_root, &resolved_metadata)?;
 
     assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)?;
     assert_no_mediapm_marker_in_hierarchy_paths(&interpolated_root)?;
@@ -3691,7 +3678,6 @@ fn resolve_demo_output_paths(
     Ok(ResolvedDemoOutput {
         untagged_video: video_path,
         tagged_video: tagged_video_path,
-        sidecars: sidecar_paths,
         metadata: resolved_metadata,
     })
 }
@@ -3953,8 +3939,6 @@ async fn run_online_demo(
         &resolved.tagged_video,
     )
     .await?;
-    let materialized_demo_video_hardlinked_to_cas = true;
-    let materialized_demo_tagged_video_hardlinked_to_cas = true;
     let offline_evidence = match offline {
         Some(run) => Some(run.evidence(&resolved.metadata).await),
         None => None,
@@ -4004,40 +3988,21 @@ async fn run_online_demo(
     let _yt_dlp_binary =
         tool_binaries.get(&yt_dlp_tool_id).ok_or("yt-dlp command selector missing")?;
 
+    let media_folder = resolved
+        .tagged_video
+        .parent()
+        .ok_or("tagged demo video should live inside its media folder")?;
+
     let manifest = DemoManifest {
         run_mode: "full".to_string(),
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
-        artifact_root: display_path(&root),
-        workspace_root: display_path(&workspace_root),
-        // The configured set, not the resolved one: a builtin has no binary to
-        // resolve, and the manifest records the tools the demo asked for.
         tool_ids: logical_tool_ids,
-        tool_binaries: tool_binaries
-            .iter()
-            .map(|(tool_id, command)| (tool_id.clone(), command.clone()))
-            .collect(),
         managed_tools: summarize_managed_tool_provenance(&lock.managed_tools),
         yt_dlp_max_concurrent_calls,
         yt_dlp_max_retries,
-        mediapm_ncl_path: display_path(&sync_service.paths().mediapm_ncl),
-        conductor_generated_ncl_path: display_path(&sync_service.paths().conductor_generated_ncl),
         workflow_id,
         workflow_step_count,
         materialization_preference_order,
-        materialized_demo_video_path: display_path(&resolved.untagged_video),
-        materialized_demo_tagged_video_path: display_path(&resolved.tagged_video),
-        materialized_demo_video_hardlinked_to_cas,
-        materialized_demo_tagged_video_hardlinked_to_cas,
-        materialized_demo_sidecar_paths: resolved
-            .sidecars
-            .iter()
-            .map(|(variant, path)| (variant.clone(), display_path(path)))
-            .collect(),
-        materialized_file_hashes: lock
-            .managed_files
-            .iter()
-            .map(|(path, record)| (path.clone(), record.hash.clone()))
-            .collect(),
         executed_steps: summary.executed_steps,
         cached_steps: summary.cached_steps,
         materialized_paths: summary.materialized_paths,
@@ -4046,9 +4011,9 @@ async fn run_online_demo(
         updated_tools: summary.updated_tools,
         warning_count: summary.warnings.len(),
         second_run: Some(second_run),
-        profile_path: display_path(&sync_service.paths().runtime_root.join("profile.json")),
         store_size_bytes,
         offline: offline_evidence,
+        media_folder: display_path(media_folder),
     };
 
     let manifest_path = root.join("manifest.json");
@@ -4938,12 +4903,23 @@ mod tests {
         // The hierarchy materialized from the chain's media, and the media is
         // the committed fixture: the codec, dimension and duration facts come
         // from an in-process read of the file, never from the stub under test.
-        let tagged_video_path = std::path::PathBuf::from(
-            manifest["materialized_demo_tagged_video_path"]
+        let media_folder = std::path::PathBuf::from(
+            manifest["media_folder"]
                 .as_str()
-                .expect("the manifest records the tagged media path"),
+                .expect("the manifest records the media folder anchor"),
         );
-        assert!(tagged_video_path.is_file(), "the tagged media leaf must be materialized");
+        let tagged_video_path = std::fs::read_dir(&media_folder)
+            .expect("read media folder")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.extension().is_some_and(|ext| ext == "mkv")
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| !name.contains(".untagged."))
+            })
+            .expect("the tagged media leaf must be materialized in the media folder");
         let facts = mediapm_test_support::read_matroska_facts(&tagged_video_path)
             .expect("the materialized media must be a readable Matroska file");
         assert_eq!(
