@@ -11,6 +11,14 @@
 //! cleanly: the holder's wait exhausts its timeout, the step errors, and the
 //! run reports a failed step.
 //!
+//! A `start` line records that the builtin ran, not that the scheduler
+//! dispatched the step at that moment: the suite runs on a current-thread
+//! runtime, so a fast, synchronous builtin can finish before an unrelated
+//! step's actor task is polled. Every cross-branch ordering assertion is
+//! therefore derived from a `hold_until` edge: the awaited line is what
+//! forces the order, never the expectation that another actor woke up in
+//! time.
+//!
 //! Request visibility (what a step's `step_outputs` / `state_snapshot`
 //! carry) is observed through template resolution: an echo producer step
 //! declares a `result` output, and a probe step's input carries a
@@ -388,17 +396,18 @@ async fn ready_queue_releases_a_diamond_join_only_after_both_branches_finish() {
     tc.shutdown().await;
 }
 
-/// An independent branch completes while an unrelated step still occupies a
-/// worker: overlap is the steady state, and the fast branch's progress is
-/// deterministic regardless of the slow branch's state.
+/// An independent branch completes while an unrelated held step still
+/// occupies a worker: overlap is the steady state, and the fast branch's
+/// progress is deterministic regardless of the slow branch's state.
 ///
-/// DAG: `a → b`, plus an unrelated held root `c` (holds until
-/// `finish b`). `a` and `c` dispatch together onto the 2-worker pool; `c`
-/// stays in flight — started, not finished — across b's entire execution,
-/// and b's completion is what releases it. The asserted interleaving is a
-/// schedule fact: c's hold guarantees `finish b` strictly precedes
-/// `finish c`, so "b completed while c was in flight" holds on any machine
-/// speed.
+/// DAG: `a → b`, plus an unrelated held root `c`. Both edges of the
+/// overlap are holds, so neither assertion can be satisfied by an
+/// accidental ordering: `b` holds until `start c` (so `b` cannot finish
+/// before `c` started) and `c` holds until `finish b` (so `c` cannot
+/// finish before `b` finished). The pair therefore proves `c` was in
+/// flight across `b`'s whole execution at any scheduler speed. A
+/// serialized scheduler fails cleanly instead of flaking: the held step
+/// reports the line it never saw and the run fails on that timeout.
 #[tokio::test]
 async fn fast_branch_completes_while_an_unrelated_held_step_is_in_flight() {
     fix_worker_pool_size();
@@ -413,7 +422,7 @@ async fn fast_branch_completes_while_an_unrelated_held_step_is_in_flight() {
             impure: false,
             steps: vec![
                 slow_step("a", &log, "a", None, &[]),
-                slow_step("b", &log, "b", None, &["a"]),
+                slow_step("b", &log, "b", Some("start c"), &["a"]),
                 slow_step("c", &log, "c", Some("finish b"), &[]),
             ],
         }],
@@ -426,8 +435,9 @@ async fn fast_branch_completes_while_an_unrelated_held_step_is_in_flight() {
         pos(&events, "finish a") < pos(&events, "start b"),
         "b starts only after a completed: {events:?}"
     );
-    // c is in flight across b's whole execution: it started before b
-    // completed and — held on finish b — can only finish after it.
+    // c is in flight across b's whole execution: b's own hold cannot
+    // resolve before c started, and c's hold cannot resolve before b
+    // finished.
     assert!(
         pos(&events, "start c") < pos(&events, "finish b"),
         "c must have started before b completed: {events:?}"
