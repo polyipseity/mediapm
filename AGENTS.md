@@ -2,97 +2,30 @@
 
 ## Repository Shape
 
-- Root `AGENTS.md` is the workspace-wide source of truth. Do not add `.github/copilot-instructions.md`.
-- This is a Rust workspace organized around mediapm's crate architecture. Keep guidance aligned to concrete files and current implementation state.
-- Put file-type and workflow rules in `.agents/instructions/*.instructions.md`, reusable workflows in `.agents/prompts/*.prompt.md`, skill assets in `.agents/skills/<skill>/`.
-- Every runtime crate ships an `AGENTS.md` with crate-local guidance. A support crate such as `src/mediapm-test-support/` is covered by the workspace-level file instead.
-- Workspace member crates under `src/`:
-  - `src/mediapm-cas/` (CAS)
-  - `src/mediapm-conductor/` (Conductor)
-  - `src/mediapm-conductor-builtins/` (parent, has its own `AGENTS.md`) and its `*/` builtins (each with an `AGENTS.md`)
-  - `src/mediapm/` (mediapm application)
-  - `src/mediapm-cli/`, `src/mediapm-cas-cli/`, `src/mediapm-conductor-cli/` (clap definitions, shared by each binary and its own build script)
-  - `src/mediapm-utils/` (shared utilities for builtins)
-  - `tests/` (repository script integration tests, package `mediapm-tests`)
-- Integration tests live with workspace crates (e.g. `src/mediapm/tests/`). Use one shared harness shape: top-level `tests/mod.rs` as the entrypoint, grouped submodules under `tests/e2e/`, `tests/int/`, `tests/prop/`.
+- Rust workspace for mediapm. Root `AGENTS.md` is workspace-wide; do not add `.github/copilot-instructions.md`.
+- File/workflow rules live in `.agents/instructions/*.instructions.md`; reusable workflows in `.agents/prompts/*.prompt.md` and mirrored `.opencode/commands/`; skills in `.agents/skills/<skill>/`. Every runtime crate has `src/*/AGENTS.md`; `src/mediapm-test-support/` is covered here.
+- Crates: `mediapm-cas`, `mediapm-conductor`, `mediapm-conductor-builtins/*`, `mediapm`, `mediapm-{,cas-,conductor-}cli`, `mediapm-utils`, `tests/` (`mediapm-tests`). Integration tests use `tests/mod.rs` + `e2e|int|prop/`. Config: `opencode.jsonc`, `.vscode/settings.json`, `.github/workflows/`, `.commitlintrc.mjs`, `.editorconfig`, `.markdownlint*.jsonc`.
 
-## Quick Start
+## Core Contract
 
-- **CAS**: `InMemoryCas`/`FileSystemCas`, `put(bytes)` → hash, `get(hash)` → bytes.
-- **Conductor**: write `conductor.ncl`, create `Conductor`, call `run_workflow("name")`.
-- **Builtins**: CLI (`mediapm-conductor-builtin-echo --arg message "hi" --arg output stdout`) or Rust API (`BTreeMap<String, String>` args + optional payload bytes).
-- **MediaPM**: write `mediapm.ncl`, create `MediaPmService`, call `sync_library()`.
-- **Tests/build**: `cargo test -p <crate>`; `cargo build-pkg <crate>`; full validation via `cargo test-all` (nextest plus the tempdir and janitor gates) and `cargo test-doc-all` (doctests plus the rustdoc link gate), alongside `cargo fmt-check` and `cargo clippy-all`. Both delegates run the `test-runner` crate (`scripts/test-runner`), which is also what CI and the pre-push hook run.
-- Per-crate `src/*/AGENTS.md` and `.agents/instructions/` carry contracts and edge cases.
+- Read code/config before documenting behavior. Keep this file short; put detail in focused instruction files with narrow `applyTo`.
+- Engineering: pure core/imperative shell, incremental, async I/O, ractor actors, strong types, deterministic serde. Baseline: `ractor`, `blake3`, `futures`/`async-trait`, `tracing`, `serde`.
+- Config boundaries: no `Option` in user config; serde defaults in `src/mediapm/src/config/defaults.rs`. NEVER `git reset`; use `git revert` or `git restore`.
+- Pointers: `mediapm-architecture.instructions.md`, `rust-workflow.instructions.md`, `sdd-tdd.instructions.md`, `state-and-versioning.instructions.md`, `tool-provisioning.instructions.md`, `temp-and-paths.instructions.md`, `workflow-runtime.instructions.md`.
 
-## Architecture
+## Key Invariants
 
-- Agent customization is file-driven: `opencode.jsonc` registers `.agents/instructions/**/*.md` and `.agents/skills/`; `.opencode/` mirrors OpenCode config; `.vscode/settings.json` defines terminal auto-approve and editor behavior.
-- Repository automation: `.github/workflows/ci.yml`, `.github/dependabot.yml`, `.commitlintrc.mjs`.
-- Formatting and newline behavior: `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`, `.agents/.markdownlint.jsonc`.
+- `mediapm-conductor`: `conductor.ncl` is user intent; `conductor.generated.ncl` is machine-managed; unresolvable conflicts fail fast.
+- `mediapm-conductor-builtins`: stable builtin contract. CLI uses flag/option string args; API uses `BTreeMap<String, String>` args plus optional payload bytes.
+- `mediapm`: composes CAS + Conductor. No direct dependency on individual builtin crates. See `src/mediapm/AGENTS.md`.
+- Instance-key identity is v8 (`INSTANCE_KEY_VERSION` in `src/mediapm-conductor/src/instance_key.rs`); contract in `src/mediapm-conductor/AGENTS.md`.
 
-## Core Engineering Contract
+## Workflow and Policy
 
-See `mediapm-architecture.instructions.md` for the full cross-crate engineering principles (simplicity first, performance, functional core, incremental by default, actor concurrency, type-system invariants, documentation as API contract).
-
-The `Option` at configuration boundaries rule is canonically stated here: user-facing config types use plain values with serde defaults, not `Option<T>`. All serde defaults live in `src/mediapm/src/config/defaults.rs`. See `state-and-versioning.instructions.md` ("Nickel conventions") for the Nickel-side equivalent.
-
-Git safety: NEVER run `git reset` (especially `--hard` or `--keep`). Use `git revert` to undo published changes, or `git restore` to discard working-tree changes.
-
-Technology baseline: `ractor` (actor/orchestration), `blake3` (hashing), `futures` (+ `async-trait`), `tracing` + `tracing-subscriber`, `serde` + deterministic `serde_json`.
-
-## Rust Architecture Snapshot
-
-See `mediapm-architecture.instructions.md` for the full module-layer index, cross-crate invariants, and per-crate responsibilities. Key invariants from this file that are referenced elsewhere:
-
-- `src/mediapm-conductor/`: `conductor.ncl` is user-owned intent; `conductor.generated.ncl` is machine-managed runtime state; unresolvable conflicts fail fast.
-- `src/mediapm-conductor-builtins/`: Builtin contract stability rule: all builtins share the same input conventions. CLI uses Rust flag/option conventions with string values; API uses `BTreeMap<String, String>` args plus optional payload bytes.
-- `src/mediapm/`: Composes CAS + Conductor. Do not add direct dependencies on individual builtin crates. Cross-crate invariants:
-
-See `src/mediapm/AGENTS.md` for the full runtime path defaults, media schema rules, tool provisioning reference, conductor integration boundary, and example policy.
-
-See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool provisioning reference, conductor integration boundary, and example policy.
-
-## SDD/TDD compliance
-
-- Spec-to-test coverage is tracked in `.agents/coverage-matrix.md`. Update it when spec items or tests change.
-- All new features follow spec-first, test-first implementation per `.agents/instructions/sdd-tdd.instructions.md`.
-- Design docs, specs and implementation plans live in `.pi/plans/`, which the global gitignore excludes. Never create a `docs/` directory in this repository.
-- Close high-priority test gaps before feature work in the same area.
-
-## Build and Test
-
-- Detect install, build, test, lint, format, type-check, and release commands from actual repository files instead of assuming a default stack.
-- For Rust workflows, treat `Cargo.toml`, `.cargo/config.toml`, `rust-toolchain.toml`, `.github/workflows/ci.yml`, and `.agents/instructions/rust-workflow.instructions.md` as source-of-truth inputs.
-- See `.agents/instructions/rust-workflow.instructions.md` for the canonical validation workflow: selective tests during development, demo runs before completion, full-workspace checks via `prek.toml` hooks.
-- When a language, framework, task runner, or test system is present, add or refine focused instruction files for it rather than stuffing detailed rules into `AGENTS.md`.
-
-## Dependency and Feature Discipline
-
-- Keep dependency surfaces minimal and explicit: prefer existing workspace dependencies before introducing new crates; remove now-unused direct dependencies when refactors eliminate them; avoid parallel libraries solving the same concern in one crate.
-- Keep optional behavior feature-gated at compile time: optional dependencies behind explicit Cargo features; avoid hidden feature fan-out through default features; prefer `default-features = false` for internal cross-crate dependencies unless one default behavior is intentionally required.
-- When changing crate features, validate representative feature matrices with targeted `cargo check` invocations so minimal builds stay healthy.
-- Prefer small, atomic commits for dependency/feature-surface changes so feature-boundary regressions are easy to audit and bisect.
-- No JavaScript package-manager manifests or lockfiles (`package.json`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `node_modules/`, etc.) belong here; it is a pure Rust workspace. JS tooling (commitlint) runs only through self-provisioned CI actions and pre-commit hooks. Re-adding such files is a policy violation.
-
-## CLI and API Parity
-
-- For each crate exposing both a CLI binary and a reusable library API, keep behavior parity as an explicit contract: new CLI operations route through corresponding library/API entry points instead of duplicating core logic in `main.rs`; programmatic APIs expose the same validation and failure semantics as CLI paths; CLI-only argument ergonomics are acceptable, but capability gaps between CLI and API are not.
-- When adding/renaming CLI operations, update tests so parsing + API-backed execution coverage protects the parity contract.
-
-## Conventions
-
-- Distinguish what is present today from what is only part of the intended template contract. Do not describe absent files as if they already exist.
-- Treat this file and focused `.agents/instructions/*.instructions.md` files as the active implementation contract. Keep them in sync with code and avoid reviving deleted standalone planning documents.
-- This is a multi-member Rust workspace with crate members under `src/`. Do not regress to bootstrap assumptions (single-crate `src/main.rs` with only minimal `Cargo.toml` + `rust-toolchain.toml`).
-- When docs mention `application`, `configuration`, `domain`, `infrastructure`, `support`, treat them as conceptual layering terms unless matching directories are explicitly introduced.
-- Before writing stack-specific guidance, inspect concrete evidence (manifests, lockfiles, source tree, scripts, CI workflows, editor settings, config files).
-- See `.agents/instructions/rust-workflow.instructions.md` for Rust docstring, lint, and validation rules.
-- When you detect a real stack, add instructions for it in a narrow, well-named instruction file whose `description` and `applyTo` target the relevant files.
-- Prefer linking to canonical config files instead of copying large policy blocks into multiple customization files.
-- Keep customization files narrowly scoped: repo-wide defaults in `AGENTS.md`, detailed file-specific guidance in `.agents/instructions/`.
-- Commit headers use Conventional Commits with mandatory scope (`type(scope): subject`). Do not use crate/tool-prefixed headers like `mediapm: ...`, `conductor: ...`, `cas: ...`; put crate/tool identity in `scope`.
-- Prefer updating `AGENTS.md` and `.agents/instructions/*.instructions.md` directly for durable repository policy.
-- Version sequences for persisted schemas, wire formats, domain separators and key-version values are integers (`v1 -> v2 -> v3`); dotted revisions (`v2.1`) are banned. SemVer package versions and upstream tool tags are out of scope. See `.agents/instructions/state-and-versioning.instructions.md`. Tool-call instance identity follows the same rule at its own site: `INSTANCE_KEY_VERSION` in `src/mediapm-conductor/src/instance_key.rs` is the instance key version (v8), and the derivation covers the tool-call id, the command's key-material parts — a plain part's text and the values it reads, a `:file`/`:folder` selector's destination and source hash, a builtin's declared inputs in name order, and the tool's non-empty `env_vars` map as one term per entry in name order — plus the v8 output specification (output names with capture tokens) and staged `materialized_inputs`, under one provenance split: deterministic literals key and inline (a pure-env binding the document fixes with a non-empty value contributes that resolved value; a binding that also selects on `${context.…}` contributes its own text, so the host a branch selects does not split the key), while inherited environment values, captured output hashes, timestamps and persistence facts are recorded, never keyed. An input's value is its resolved bytes when the binding names a step output, external data or another input, and the binding's own text when it names only the context or an inherited environment variable. The contract is in `src/mediapm-conductor/AGENTS.md`.
-- Do not deliberately rename examples/tests solely to force workspace-wide unique target names. Shared canonical names (e.g. `demo`) are allowed; use package-qualified invocations to disambiguate.
-- Respect the repository newline policy: Markdown and shell scripts use LF; PowerShell and batch scripts use CRLF.
+- SDD/TDD: spec-first, test-first; coverage in `.agents/coverage-matrix.md`. Plans/specs in gitignored `.pi/plans/`; never create `docs/`.
+- Validation: fast inner loop during edits; full/parity gates at checkpoints. Source of truth: `Cargo.toml`, `.cargo/config.toml`, `rust-toolchain.toml`, `.github/workflows/ci.yml`, `prek.toml`, `rust-workflow.instructions.md`.
+- Dependencies/features: minimal explicit deps, remove unused direct deps, optional behavior behind Cargo features, `default-features = false` for internal cross-crate deps unless intentionally required. Validate representative feature matrices.
+- CLI/API parity: CLI operations route through library/API entry points; no capability gaps. Add tests for parsing + API-backed execution.
+- Commits: Conventional Commits with mandatory scope (`type(scope): subject`); crate/tool identity goes in scope, not `mediapm: ...` prefixes.
+- Version sequences for persisted schemas/wire/domain-separator/key-version values are integers (`v1->v2->v3`); dotted revisions banned. SemVer package versions and upstream tool tags are out of scope. See `state-and-versioning.instructions.md`.
+- Newlines: Markdown/shell LF; PowerShell/batch CRLF. No JS package-manager manifests/lockfiles in this Rust workspace.
