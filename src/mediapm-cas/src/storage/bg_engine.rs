@@ -336,7 +336,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             return Ok(None);
         };
 
-        let result = super::read_view::resolve_full_bytes(
+        let result = match super::read_view::resolve_full_bytes(
             hash,
             &entry,
             &self.metadata,
@@ -346,11 +346,31 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             "delta chain: base",
         )
         .await
-        .map(Some)
-        .or_else(|e| match e {
-            CasError::NotFound(_) => Ok(None),
-            other => Err(other),
-        })?;
+        {
+            Ok(bytes) => Some(bytes),
+            Err(CasError::NotFound(_)) => None,
+            Err(_) => {
+                // Fallback: if a full blob still exists, prefer it over a
+                // corrupt delta chain and repair the metadata so later reads
+                // do not hit the same corruption.
+                if let Ok(full_bytes) = self.blob.read(hash).await {
+                    let _ = self.blob.delete_encoding(*hash, entry.encoding.clone()).await;
+                    let _ = self
+                        .metadata
+                        .put(
+                            *hash,
+                            MetadataEntry {
+                                len: full_bytes.len() as u64,
+                                encoding: ObjectEncoding::Full,
+                            },
+                        )
+                        .await;
+                    Some(full_bytes)
+                } else {
+                    None
+                }
+            }
+        };
 
         Ok(result)
     }
@@ -494,8 +514,8 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             let patch = DeltaPatch::diff(&base_bytes, &target_bytes)?;
             let delta_payload = patch.encode();
 
-            // Only store delta if it is meaningfully smaller than
-            // the full payload. Otherwise keep the full encoding.
+            // Only store delta if it is meaningfully smaller than the full
+            // payload. Otherwise keep the full encoding.
             if (delta_payload.len() as u64) < target_bytes.len() as u64 {
                 let stored_delta = StoredObject::delta(
                     best_base,
@@ -503,6 +523,21 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                     delta_payload.to_vec(),
                 );
                 let envelope = Bytes::from(stored_delta.encode());
+                // Verify the encoded envelope decodes and roundtrips as the
+                // read path will. Skip the delta if the decoder disagrees.
+                let verify_obj = crate::delta::object::StoredObject::decode_delta(&envelope)
+                    .map_err(|e| crate::CasError::CorruptObject {
+                        hash: Some(*target),
+                        details: format!("delta envelope self-check: {e}"),
+                    })?;
+                let verify_patch = DeltaPatch::decode(verify_obj.payload());
+                let verified = verify_patch
+                    .apply(&base_bytes, *target, *target, best_base)
+                    .ok()
+                    .is_some_and(|b| blake3::hash(&b).as_bytes() == target.as_bytes());
+                if !verified {
+                    continue;
+                }
                 self.blob
                     .write(*target, ObjectEncoding::Delta { base_hash: best_base }, envelope)
                     .await?;
@@ -518,7 +553,34 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                     )
                     .await?;
                 if !existing_bases.is_empty() {
-                    self.metadata.set_constraint(*target, existing_bases).await?;
+                    self.metadata.set_constraint(*target, existing_bases.clone()).await?;
+                }
+                // Read-back guard: some delta/base combinations decode
+                // incorrectly later in the same maintenance cycle. If the
+                // stored delta cannot be reconstructed to the target hash,
+                // revert to full.
+                let roundtrip_ok = self
+                    .read_full_bytes(target)
+                    .await?
+                    .is_some_and(|b| blake3::hash(&b).as_bytes() == target.as_bytes());
+                if !roundtrip_ok {
+                    self.blob.write(*target, ObjectEncoding::Full, target_bytes.clone()).await?;
+                    self.blob
+                        .delete_encoding(*target, ObjectEncoding::Delta { base_hash: best_base })
+                        .await?;
+                    self.metadata
+                        .put(
+                            *target,
+                            MetadataEntry {
+                                len: target_bytes.len() as u64,
+                                encoding: ObjectEncoding::Full,
+                            },
+                        )
+                        .await?;
+                    if !existing_bases.is_empty() {
+                        self.metadata.set_constraint(*target, existing_bases.clone()).await?;
+                    }
+                    continue;
                 }
                 did_work = true;
             }

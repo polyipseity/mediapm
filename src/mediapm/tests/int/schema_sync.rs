@@ -130,7 +130,7 @@ fn parity_mediapm_document_serialization_invariants() {
     // the document never made ---
     assert_eq!(
         obj["version"],
-        serde_json::json!(4),
+        serde_json::json!(5),
         "a default document is written at the active schema version"
     );
     assert!(
@@ -603,7 +603,7 @@ fn parity_conductor_tool_version_is_optional_and_non_empty_in_nickel() {
 /// would fail the contract on the next read, so the encoder cannot emit either.
 /// `runtime` is serialized unconditionally and sorts after `version`, so the
 /// first `version` key in the emitted source is the tool's and the envelope's own
-/// `version = 5` comes last.
+/// `version = 6` comes last.
 #[test]
 fn parity_undeclared_tool_version_serializes_away() {
     let encoded = encode_to_string(document_with_declared_version("probe_tool", None));
@@ -615,7 +615,7 @@ fn parity_undeclared_tool_version_serializes_away() {
          version, got: {encoded}"
     );
     assert!(
-        encoded.contains("version = 5"),
+        encoded.contains("version = 6"),
         "the one version entry must be the envelope's schema marker, got: {encoded}"
     );
 

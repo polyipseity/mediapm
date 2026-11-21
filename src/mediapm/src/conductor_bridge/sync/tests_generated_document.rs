@@ -365,7 +365,9 @@ fn generated_document_states_only_overridden_policies() {
         .expect("tool specs must encode as a generated conductor document");
     let mut encoded_file = tempfile::NamedTempFile::new().expect("temp file");
     encoded_file.write_all(&encoded).expect("write encoded document");
-    let exported = std::process::Command::new("nickel")
+    let mut cmd = std::process::Command::new("nickel");
+    crate::child_env::apply_std(&mut cmd, &crate::child_env::default_host_inherited_env_pairs());
+    let exported = cmd
         .args(["export", "--format", "json"])
         .arg(encoded_file.path())
         .output()

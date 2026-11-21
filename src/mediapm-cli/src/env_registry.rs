@@ -105,7 +105,6 @@ mod tests {
             "MEDIAPM_ENV_GENERATED_FILE",
             "MEDIAPM_MEDIAPM_SCHEMA_DIR",
             "MEDIAPM_MEDIA_STATE_CONFIG",
-            "MEDIAPM_RETRY_IMPURE",
             "MEDIAPM_NO_PROGRESS",
         ] {
             assert!(
