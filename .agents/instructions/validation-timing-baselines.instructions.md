@@ -148,6 +148,28 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 
 **Cache and comparability note:** Build & Test and Release Build had partial restores (`full match: false`) and saved caches; Feature Matrix and Windows: Workspace Tests were cold (`No cache found`) and saved caches. This is measured evidence, but not a clean comparable warmed green before/after pair because the run failed, doctests and build project were skipped in Build & Test, and cache state was mixed across jobs.
 
+### CI: Build & Test - run `44865482029` (main, success, pushed HEAD 6847623b)
+
+| Field | Value |
+|---|---|
+| Record ID / date | `ci-build-test-44865482029` (created 2026-11-21T04:18:50Z, updated 2026-11-21T04:33:00Z, completed) |
+| Commit SHA(s) | `6847623b99ef40b23da1ac1d1c95a4accded113d` (branch `main`, event `push`, attempt 1) |
+| Environment | GitHub Actions, workflow `CI: Build & Test` (`.github/workflows/ci.yml`). Runner labels: `ubuntu-latest` for Build & Test, Feature Matrix, and Release Build; `windows-latest` for Windows: Workspace Tests. Runner names/groups, CPU/memory, and queue internals not captured. |
+| Cache state (restore/save) | All four jobs restored successfully with restore-key partial hits (`full match: false`); post-cache steps ran but saved-key details were not captured. Build & Test: restored ~457 MB (479364900 B) from restore key `v0-rust-ci-build-Linux-x64-bbe94a93-21029eb4`. Feature Matrix: restore-key hit `v0-rust-ci-feature-matrix-Linux-x64-bbe94a93-a142a65c` (byte count not captured). Release Build: restore-key hit `v0-rust-ci-release-Linux-x64-bbe94a93-a142a65c` (byte count not captured). Windows: Workspace Tests: restore-key hit `v0-rust-ci-windows-Windows_NT-x64-21b8dcfc-dd242995` (byte count not captured). Cache state was partial/warmed-restore, not an exact-key full match. |
+| Result | **success** (run wall ~850s, 14m10s). Green warmed-restore run; not a clean exact-key before/after pair. |
+| Evidence source | `/tmp/t7-evidence.txt`, <https://github.com/polyipseity/mediapm/actions/runs/44865482029> |
+
+| Job | Runner | Job duration (s) | Step durations (s) | Outcome |
+|---|---|---:|---|---|
+| Feature Matrix | `ubuntu-latest` | 71 | checkout 2, setup rust 1, cache 6, check every feature combination 51, post-cache 6 | success |
+| Release Build | `ubuntu-latest` | 177 | cache 8, build completion-generating packages in release 152, post-cache 8 | success |
+| Windows: Workspace Tests | `windows-latest` | 485 | checkout 19, setup rust 13, cache 19, run workspace tests 380, run test-runner gate tests 3, check completion-generating packages 14, check CAS integration test target 5, post-cache 26 | success |
+| Build & Test | `ubuntu-latest` | 846 | cache 10, run cheap checks 338, install ffprobe 19, run tests 370, run doctests and rustdoc 41, build project 46, post-cache 12 | success |
+
+**Counts and confirmations (recorded):** Build & Test `Run tests` reported nextest `[148.026s] 3059 tests run: 3059 passed (5 slow), 0 skipped`. F1 is confirmed fixed: `mediapm-conductor cache::tests::prune_dispatch_reserves_in_flight_slot_before_blocking_work` passed in 10.018s. New resolver/incrementality tests were green: `a_v8_keyed_instance_is_resolved_by_content_key_match` PASS, `the_step_instance_pointer_selects_the_current_record` PASS, `changing_upstream_bytes_re_executes_dependents_and_resolves_the_new_instances` PASS [13.137s] (slow). Feature Matrix reported `58 combinations, all clean` and emitted per-combination timing lines (transcribed in D3.2), confirming F2 fixed: `mediapm --no-default-features pass 8.62s`. Doctests and rustdoc completed (step 41s) and build project completed (step 46s); detailed doctest totals were not captured in the evidence bundle.
+
+**Cache and comparability note:** All four jobs had restore-key partial hits with `full match: false` and restored successfully; post-cache steps ran, but saved-key details were not captured. This is a green warmed-restore run, not a clean exact-key before/after pair.
+
 ### Commit message lint (main, success)
 
 | Record | Run ID | Commit SHA | Message | Date/time (UTC) | Job | Job duration (s) | Step durations (s) |
@@ -158,15 +180,16 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 ## R8 — feature-matrix timing collection (collect first, no optimization yet)
 
 - **Decision (as required):** **Collect timings first — optimization not yet justified by collected data alone; revisit after more CI/per-combo samples if needed.**
-- **Collected evidence:** CI feature-matrix totals 239s check step / 254s job (run 43609375823, 2eee9aaf) and 71s check step / 85s job (run 43379058938, 225a5401). Local healthy clean run: 48.26s total, 58/58 combinations clean. Local partial/unhealthy run (2026-11-14): 121.89s, 42/58 completed, 16 `ring`-related failures in that env (not a healthy baseline).
-- **CI per-combination data not yet available:** per-combination timings and pass/fail breakdowns from collected CI evidence are unavailable because CI logs for runs 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` without per-combination labeled timing rows. Local per-combination timings and pass/fail from the staged 2026-11-15 diagnostics run (`/tmp/mediapm-diag/matrix/results.tsv`, 58/58 pass, sequential real 48.12s) are transcribed in D3.1.
-- **Implication:** no feature-matrix optimization is recommended from currently collected data in this task. Additional CI runs and per-combo timing samples are needed before judging bounded parallelism/sharding/subset strategies.
+- **Collected evidence:** CI feature-matrix totals 239s check step / 254s job (run 43609375823, 2eee9aaf), 71s check step / 85s job (run 43379058938, 225a5401), and 51s check step / 71s job (run 44865482029, 6847623b, 58/58 clean, per-combination timing lines emitted; transcribed in D3.2). Local healthy clean run: 48.26s total, 58/58 combinations clean. Local partial/unhealthy run (2026-11-14): 121.89s, 42/58 completed, 16 `ring`-related failures in that env (not a healthy baseline).
+- **CI per-combination data:** per-combination timing lines are now available for CI run 44865482029 (58/58 pass, transcribed in D3.2). CI logs for runs 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` without per-combination labeled timing rows, and run 44753912879 failed with `error: 1 of 58 feature combinations failed` (no per-combination timing rows). Local per-combination timings and pass/fail from the staged 2026-11-15 diagnostics run (`/tmp/mediapm-diag/matrix/results.tsv`, 58/58 pass, sequential real 48.12s) are transcribed in D3.1.
+- **Implication:** no feature-matrix optimization is recommended from currently collected data in this task. D3.2 adds the first sampled CI per-combination timing lines, but additional CI/per-combo samples are still needed before judging bounded parallelism/sharding/subset strategies.
 - **Task 7 final decision (2026-11-15, SDD implementation pass):** no feature-matrix optimization implemented. Collected totals/samples remain insufficient to justify bounded parallelism, sharding, or subset changes without additional per-combo and post-cache CI evidence; preserve current 58-combo coverage and pass/fail semantics. Revisit only with data-backed justification.
 
 ## R11 — release and per-combo breakdown evidence (available totals only)
 
 - **Available totals/breakdowns recorded:** local clean release build 415.15s real (`Finished release profile ... 6m 55s`, 3 crates: `mediapm-cas`, `mediapm-conductor`, `mediapm`); CI release job 308s with build release packages 295s (run 43609375823) and 148s with 134s build step (run 43379058938). Feature-matrix totals recorded above (CI and local healthy/unhealthy).
-- **Not yet captured:** per-combo feature-matrix durations from CI. CI runs 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` but emitted no per-combination labeled timing rows. Local healthy per-combination durations, pass/fail, and exit values from the staged 2026-11-15 diagnostics run are transcribed in D3.1 (`/tmp/mediapm-diag/matrix/results.tsv`). Per-crate aggregate release totals, `rmeta_time`, and complete per-unit phase/link attribution for the captured release `--timings` run remain unavailable (fields not exposed in the HTML/log). No per-crate/per-phase release aggregate table is available from collected evidence.
+- **CI per-combination durations:** captured for CI run 44865482029 (58/58 pass, per-combination timing lines emitted by test-runner) and transcribed in D3.2. CI runs 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` but emitted no per-combination labeled timing rows, and run 44753912879 failed 1/58 with no per-combination timing rows. Local healthy per-combination durations, pass/fail, and exit values from the staged 2026-11-15 diagnostics run are transcribed in D3.1 (`/tmp/mediapm-diag/matrix/results.tsv`).
+- **Not yet captured:** Per-crate aggregate release totals, `rmeta_time`, and complete per-unit phase/link attribution for the captured release `--timings` run remain unavailable (fields not exposed in the HTML/log). No per-crate/per-phase release aggregate table is available from collected evidence.
 - **Action taken in this task:** record available totals and explicitly defer finer breakdown capture to future measurement work.
 - **Follow-up (2026-11-16, Task 3 transcription):** Per-unit hotspot timings from the stable release `--timings` HTML unit timing table (including frontend/codegen splits where shown and all `mediapm*` unit rows) are transcribed in D4.1 from the captured 2026-11-15 artifact/log; no rerun or regeneration was performed.
 
@@ -240,6 +263,7 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 
 | CI Build & Test run | Commit | Conclusion | Created (UTC) | Sampling |
 |---|---|---|---|---|
+| 44865482029 | 6847623b | success | 2026-11-21T04:18:50Z | detailed logs/jobs (post-cache workflow, restore-key partial cache hits on all jobs, full match false) |
 | 43713782110 | 7295663a | success | 2026-11-15T12:25:40Z | detailed logs/jobs (post-cache workflow, cold save) |
 | 43609375823 | 2eee9aaf | success | 2026-11-14T15:17:30Z | detailed logs/jobs |
 | 43379058938 | 225a5401 | success | 2026-11-13T06:29:31Z | detailed logs/jobs |
@@ -247,9 +271,9 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 | 43020140844 | 48acf3db | success | 2026-11-11T12:25:03Z | listed, not log-sampled |
 | 43013408629+ | 1838c3f etc. | failure | 2026-11-11… | excluded from green timing comparison |
 
-**Commitlint (captured job/step timings):** 43713782049 (7295, 14s, lint 3s), 43609375822 (2eee, 12s, lint 3s), 43379058903 (225a, 16s, lint 4s), 43146911368 (dcfa, 15s, lint 3s), 43020140853 (48ac, 13s, lint 2s) — all success; recent list shows 12/12 success entries queried.
+**Commitlint (captured job/step timings):** 44865482055 (6847623b, 13s, lint 2s), 43713782049 (7295, 14s, lint 3s), 43609375822 (2eee, 12s, lint 3s), 43379058903 (225a, 16s, lint 4s), 43146911368 (dcfa, 15s, lint 3s), 43020140853 (48ac, 13s, lint 2s) — all success; recent list shows 12/12 success entries queried.
 
-**Sample-size limit:** only **1** post-cache-workflow successful CI run exists (437, cold restore/save). No warmed-cache before/after dataset available; comparisons remain context-sensitive.
+**Sample-size limit:** 2 post-cache-workflow successful CI runs are now captured: 43713782110 (cold restore/save) and 44865482029 (restore-key partial cache hits on all jobs, `full match: false`, post-cache steps ran, saved-key details not captured). No clean exact-key warmed before/after dataset is available; comparisons remain context-sensitive.
 
 ### D2 — Local baseline backfill diagnostics (R1/R4)
 
@@ -274,7 +298,7 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 - **Enumeration:** 58 combinations from `RUSTC_WRAPPER= cargo --locked run --package test-runner -- feature-matrix --locked --print` (evidence: `/tmp/mediapm-diag/matrix/combos.txt`, derivation `scripts/test-runner/src/matrix.rs`).
 - **Local full run (healthy):** all 58 executed sequentially as `RUSTC_WRAPPER= cargo --locked check -p <combo>` with per-combo start/end UTC, disk snapshots, real/user/sys, exit, pass/fail recorded. **58/58 pass, 0 failures.** Sequential total real **48.12s** (min 0.11s, max 12.55s, avg 0.830s). Evidence: `/tmp/mediapm-diag/matrix/results.tsv`, `/tmp/mediapm-diag/matrix/logs/*.log`.
 - **Slowest combos (real s):** `mediapm-conductor --no-default-features` 12.55; `mediapm-conductor-builtin-import --features cli` 4.73; `mediapm-conductor --features cli` 4.03; `mediapm-test-support --no-default-features` 3.36; others ≤2.66.
-- **CI extraction:** 437/436/433 logs all report `58 combinations, all clean` but emit no per-combination labeled timing rows; per-combo CI extraction unavailable (absence evidenced).
+- **CI extraction:** 44865482029 emitted per-combination timing lines (58/58 pass, transcribed in D3.2). 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` but emitted no per-combination labeled timing rows; 44753912879 failed 1/58 with no per-combination timing rows (absence evidenced for those runs).
 
 #### D3.1 per-combination transcription (2026-11-16 follow-up, staged diagnostics)
 
@@ -288,7 +312,7 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 | Timing totals (sequential, `results.tsv`) | real 48.12s, user 51.78s, sys 9.37s |
 | Distribution (real s) | min 0.11, max 12.55, avg 0.830 (48.12 / 58) |
 | Slowest combinations (real s) | `mediapm-conductor --no-default-features` 12.55; `mediapm-conductor-builtin-import --features cli` 4.73; `mediapm-conductor --features cli` 4.03; `mediapm-test-support --no-default-features` 3.36; `mediapm-conductor --features test-builtins` 2.66; others ≤2.15 |
-| CI per-combo rows | Not emitted in CI logs for runs 43713782110, 43609375823, and 43379058938; those runs reported `58 combinations, all clean` without per-combination labeled timing rows (absence evidenced). |
+| CI per-combo rows | Emitted in CI run 44865482029 (58/58 pass, per-combination timing lines transcribed in D3.2). Not emitted in CI logs for runs 43713782110, 43609375823, and 43379058938 (reported `58 combinations, all clean` without per-combination labeled timing rows) or 44753912879 (failed 1/58, no per-combination timing rows); absence evidenced for those runs. |
 | Evidence artifacts | `/tmp/mediapm-diag/matrix/results.tsv` (header + 58 rows), `/tmp/mediapm-diag/matrix/combos.txt` (58 lines), `/tmp/mediapm-diag/matrix/logs/*.log` (58 index-aligned logs) |
 
 | Index | Combination (`cargo --locked check -p …`) | Status | Exit | Real (s) | User (s) | Sys (s) |
@@ -351,6 +375,82 @@ Evidence collected via `gh run` data (controller reconnaissance). Times below ar
 | 56 | `mediapm-utils --all-features` | pass | 0 | 0.43 | 0.28 | 0.08 |
 | 57 | `test-runner --no-default-features` | pass | 0 | 0.21 | 0.14 | 0.05 |
 | 58 | `test-runner --all-features` | pass | 0 | 0.12 | 0.08 | 0.03 |
+
+#### D3.2 per-combination transcription (2026-11-21, CI run 44865482029)
+
+| Field | Value |
+|---|---|
+| Record ID / date | `matrix-per-combo-2026-11-21-ci-44865482029` (transcribed 2026-11-21 from `/tmp/t7-evidence.txt`; no rerun or regeneration) |
+| Enumeration / derivation | 58 combinations derived by `test-runner` feature-matrix (same derived set as D3.1; see `scripts/test-runner/src/matrix.rs`) |
+| Command context (captured) | CI job `Feature Matrix` in run 44865482029 executed `cargo --locked run --package test-runner -- feature-matrix --locked`; the runner emitted per-combination lines as `feature matrix: N/58 <combo> pass <elapsed>s`. |
+| Timing semantics | `Elapsed (s)` is the per-combination wall elapsed time reported by test-runner, not `/usr/bin/time` real/user/sys. |
+| Environment / state caveats | GitHub Actions `ubuntu-latest`, workflow `CI: Build & Test`, run 44865482029 (commit 6847623b, push to main, attempt 1). Feature Matrix job had restore-key partial cache hit (`v0-rust-ci-feature-matrix-Linux-x64-bbe94a93-a142a65c`, `full match: false`, byte count not captured); post-cache step ran, saved-key details not captured. |
+| Outcome | 58/58 pass, 0 failures |
+| Timing totals (reported) | Sum of reported per-combination elapsed times ~45.06s; Feature Matrix step "check every feature combination" 51s; Feature Matrix job 71s. |
+| Slowest combinations (elapsed s) | `mediapm --no-default-features` 8.62; `mediapm --features cli` 5.77; `mediapm-conductor --features cli` 3.10; `mediapm-conductor --no-default-features` 2.87; `mediapm --features media-tagger` 2.49; `mediapm --features proptest` 2.50; `mediapm --all-features` 2.44; `mediapm-conductor --features proptest` 2.29; `mediapm-conductor --features test-builtins` 2.33; `mediapm-conductor --all-features` 2.33. |
+| CI per-combo availability | First CI run in the sampled record with per-combination timing lines. Earlier sampled runs 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` without per-combination labeled timing rows; 44753912879 failed 1/58 with no per-combination timing rows. |
+| Evidence artifacts | `/tmp/t7-evidence.txt`, <https://github.com/polyipseity/mediapm/actions/runs/44865482029> |
+
+| Index | Combination | Result | Elapsed (s) |
+|---:|---|---|---:|
+| 01 | `build-utils --no-default-features` | pass | 0.12 |
+| 02 | `build-utils --all-features` | pass | 0.06 |
+| 03 | `cargo-bin --no-default-features` | pass | 0.38 |
+| 04 | `cargo-bin --all-features` | pass | 0.07 |
+| 05 | `mediapm --no-default-features` | pass | 8.62 |
+| 06 | `mediapm --features cli` | pass | 5.77 |
+| 07 | `mediapm --features media-tagger` | pass | 2.49 |
+| 08 | `mediapm --features proptest` | pass | 2.50 |
+| 09 | `mediapm --all-features` | pass | 2.44 |
+| 10 | `mediapm-cas --no-default-features` | pass | 1.11 |
+| 11 | `mediapm-cas --features cli` | pass | 1.08 |
+| 12 | `mediapm-cas --features large-tests` | pass | 1.07 |
+| 13 | `mediapm-cas --all-features` | pass | 0.07 |
+| 14 | `mediapm-cas-cli --no-default-features` | pass | 0.06 |
+| 15 | `mediapm-cas-cli --all-features` | pass | 0.06 |
+| 16 | `mediapm-cli --no-default-features` | pass | 0.26 |
+| 17 | `mediapm-cli --features media-tagger` | pass | 0.23 |
+| 18 | `mediapm-cli --all-features` | pass | 0.06 |
+| 19 | `mediapm-conductor --no-default-features` | pass | 2.87 |
+| 20 | `mediapm-conductor --features cli` | pass | 3.10 |
+| 21 | `mediapm-conductor --features fetch` | pass | 0.16 |
+| 22 | `mediapm-conductor --features progress` | pass | 0.15 |
+| 23 | `mediapm-conductor --features proptest` | pass | 2.29 |
+| 24 | `mediapm-conductor --features test-builtins` | pass | 2.33 |
+| 25 | `mediapm-conductor --features tool-presets` | pass | 0.15 |
+| 26 | `mediapm-conductor --all-features` | pass | 2.33 |
+| 27 | `mediapm-conductor-builtin-archive --no-default-features` | pass | 0.21 |
+| 28 | `mediapm-conductor-builtin-archive --features cli` | pass | 0.24 |
+| 29 | `mediapm-conductor-builtin-archive --all-features` | pass | 0.07 |
+| 30 | `mediapm-conductor-builtin-echo --no-default-features` | pass | 0.09 |
+| 31 | `mediapm-conductor-builtin-echo --features cli` | pass | 0.12 |
+| 32 | `mediapm-conductor-builtin-echo --all-features` | pass | 0.06 |
+| 33 | `mediapm-conductor-builtin-export --no-default-features` | pass | 0.10 |
+| 34 | `mediapm-conductor-builtin-export --features cli` | pass | 0.20 |
+| 35 | `mediapm-conductor-builtin-export --all-features` | pass | 0.07 |
+| 36 | `mediapm-conductor-builtin-fs --no-default-features` | pass | 0.10 |
+| 37 | `mediapm-conductor-builtin-fs --features cli` | pass | 0.12 |
+| 38 | `mediapm-conductor-builtin-fs --all-features` | pass | 0.06 |
+| 39 | `mediapm-conductor-builtin-import --no-default-features` | pass | 0.11 |
+| 40 | `mediapm-conductor-builtin-import --features cli` | pass | 0.33 |
+| 41 | `mediapm-conductor-builtin-import --features fetch` | pass | 0.08 |
+| 42 | `mediapm-conductor-builtin-import --all-features` | pass | 0.09 |
+| 43 | `mediapm-conductor-cli --no-default-features` | pass | 0.15 |
+| 44 | `mediapm-conductor-cli --all-features` | pass | 0.07 |
+| 45 | `mediapm-conductor-examples-concat-tool --no-default-features` | pass | 0.09 |
+| 46 | `mediapm-conductor-examples-concat-tool --all-features` | pass | 0.06 |
+| 47 | `mediapm-test-support --no-default-features` | pass | 0.40 |
+| 48 | `mediapm-test-support --all-features` | pass | 0.08 |
+| 49 | `mediapm-tests --no-default-features` | pass | 0.07 |
+| 50 | `mediapm-tests --all-features` | pass | 0.06 |
+| 51 | `mediapm-utils --no-default-features` | pass | 0.06 |
+| 52 | `mediapm-utils --features cli` | pass | 0.15 |
+| 53 | `mediapm-utils --features nickel` | pass | 0.15 |
+| 54 | `mediapm-utils --features progress` | pass | 0.26 |
+| 55 | `mediapm-utils --features report` | pass | 0.14 |
+| 56 | `mediapm-utils --all-features` | pass | 0.28 |
+| 57 | `test-runner --no-default-features` | pass | 0.15 |
+| 58 | `test-runner --all-features` | pass | 0.06 |
 
 ### D4 — Release/build profiling diagnostics (R11/R5/R7)
 
@@ -469,7 +569,7 @@ Sources re-examined: `scripts/test-runner/src/{doc.rs,test.rs,nextest.rs,cargo.r
 | D0.5 | Unavailable CI fields/APIs/attempt evidence | captured | runner specs/queue internals/per-combo rows absent; API/log saves succeeded |
 | D1.1 | Recent successful main CI sample (min 437/436/433 + discoverable) | captured | `ci-recent-2.json`; 437/436/433 detailed, others listed |
 | D1.2 | Commitlint timings for corresponding/recent commits | captured | 43713782049, 43609375822, 43379058903, 43146911368, 43020140853 job/step timings |
-| D1.3 | Post-cache before/after dataset and sample-size limits | captured | only 1 post-cache-workflow run (437 cold save), no warmed comparison |
+| D1.3 | Post-cache before/after dataset and sample-size limits | captured | 2 post-cache-workflow successful runs captured (437 cold restore/save; 44865482029 restore-key partial cache hits on all jobs, full match false, green); no clean exact-key warmed before/after comparison |
 | D1.4 | Queue/wait/full-step metadata where derivable | captured (derivable only) | timestamps/step deltas; internal queue reasons not exposed |
 | D2.1 | Local `cargo fmt-check` (R4) | captured | pass 0.93s |
 | D2.2 | Local `cargo bin rumdl check .` (R4) | captured | pass 53 files 7.20s |
@@ -481,9 +581,9 @@ Sources re-examined: `scripts/test-runner/src/{doc.rs,test.rs,nextest.rs,cargo.r
 | D2.8 | Local release build + D4 profiling | captured | stable `--timings` 191.10s exit 0, HTML artifact; nightly `-Z timings` attempted 467.37s exit 0 |
 | D2.9 | Local feature-matrix per D3 | captured | 58/58 pass with per-combo timings |
 | D3.1 | Enumerate all 58 combinations/feature sets | captured | `matrix/combos.txt`; combinations transcribed in D3.1 |
-| D3.2 | Per-combination command/duration/exit/pass-fail/order for all 58 (healthy run) | captured | `matrix/results.tsv` + per-combo logs (all pass); per-combo rows transcribed in D3.1 |
-| D3.3 | CI per-combo extraction or absence evidence | captured (absence) | CI reports totals only, no per-combo rows |
-| D3.4 | Totals/pass-fail/anomalies/comparability | captured | 58/58 clean local and CI; variance/totals recorded; local per-combo totals and distribution transcribed in D3.1 |
+| D3.2 | Per-combination command/duration/exit/pass-fail/order for all 58 (healthy run) | captured | local: `matrix/results.tsv` + per-combo logs (all pass, transcribed in D3.1); CI: run 44865482029 emitted 58/58 per-combination timing lines (transcribed in D3.2) |
+| D3.3 | CI per-combo extraction or absence evidence | captured | 44865482029 emitted CI per-combination timing lines (transcribed in D3.2); 43713782110, 43609375823, 43379058938 reported totals only with no per-combo rows, and 44753912879 failed 1/58 with no per-combo rows (absence evidenced) |
+| D3.4 | Totals/pass-fail/anomalies/comparability | captured | 58/58 clean local and CI; variance/totals recorded; local per-combo totals and distribution transcribed in D3.1; CI per-combo elapsed lines for 44865482029 transcribed in D3.2 |
 | D4.1 | Release per-crate/per-phase diagnostics (`--timings`/logs) | captured (transcribed with noted limits) | Stable `--timings` HTML unit timing table transcribed in D4.1 (top units, frontend/codegen splits where shown, and all `mediapm*` unit rows) with artifact/log refs and totals; `rmeta_time`, complete per-unit phase/link attribution, and per-crate aggregate totals remain unavailable from captured artifacts |
 | D4.2 | Dev/build-all/test-all/test-doc-all phase diagnostics where supported | captured | CI compile/execute/rustdoc/test splits captured; local check/clippy/build-profile markers captured |
 | D4.3 | Unavailable profiling flags/modes attempts/evidence | captured | nightly `-Z timings` attempted successfully (diagnostic), stable `--timings` captured |
@@ -631,8 +731,8 @@ The feature-matrix bounded-parallelism no-go is recorded in detail in `.superpow
 | R12 | Excluded (no-go for this closure scope) | D0 scope and D5 feasibility conclusions explicitly excluded R12; no implementation, workflow, hook, or test-runner behavior change was authorized or performed. | Maintainer/owner explicitly approves R12 work in a separate scoped plan with defined safety/equivalence criteria, then records evidence in this file. |
 | Feature-matrix proof gaps: D1/D2 contention and safety (local and CI, N=2/N=4) | No-go / proof-gated (sequential D0 retained) | WP2/WP4 found no bounded D1/D2 runtime evidence; shared-target contention/corruption, D2 isolation/cleanup/disk footprint, and CI slot-level behavior remain unproven. Canonical detailed disposition: `.superpowers/sdd/2026-11-16-task-5-feature-matrix-parallelism-proof-plan/wp5-disposition.md`. | Maintainer/owner runs an approved proof campaign with reviewable slot-level evidence satisfying P1–P5 for one specific design/bound/environment, starting at N=2 and escalating only per the WP5 rules, then updates this table and the WP5 record. |
 | P5 slot accounting (full modeled-state accounting) | No-go / proof-gated | WP3/WP5 record that current D0 lacks slot-level accounting for modeled abnormal states (`spawn_fail`, `child_terminated_signaled`, `cancelled_teardown_incomplete`) and no D1/D2 candidate runtime accounting exists. Canonical detailed disposition: `.superpowers/sdd/2026-11-16-task-5-feature-matrix-parallelism-proof-plan/wp5-disposition.md`. | Maintainer/owner implements slot/state accounting and fault-injection/bounded-teardown validation in an approved plan, captures reviewable per-slot evidence, then updates this table and the WP5 record. |
-| CI per-combination timing rows (sampled runs) | Accepted evidence gap (not collected) | CI logs for runs 43713782110, 43609375823, 43379058938, and 44753912879 (`9a25da7a`, failure, 1 of 58 combinations failed with exit 101) reported no per-combination labeled timing rows; local staged per-combination timings are transcribed in D3.1. | Maintainer adds per-combination timing emission/capture to CI logs or artifacts in a dedicated instrumentation change and records the resulting rows/evidence in this file. |
-| Warmed post-cache CI dataset | Measured (no clean comparable warmed green pair) | CI run 44753912879 (`9a25da7a`, failure) provided measured cache evidence: Build & Test and Release Build had partial restores (`full match: false`) with saved caches, while Feature Matrix and Windows: Workspace Tests had cold restores (`No cache found`) with saved caches. A clean comparable warmed green before/after pair remains unavailable because the run failed (with doctests and build project skipped in Build & Test) and cache state was mixed across jobs. | Maintainer captures a clean comparable warmed green before/after pair (consistent cache state, successful comparable runs) and records it in this file. |
+| CI per-combination timing rows (sampled runs) | Measured (recorded for latest sampled green run) | CI run 44865482029 (6847623b, success) emitted 58/58 per-combination timing lines, transcribed in D3.2, confirming F1/F2 fixes green. Earlier sampled runs 43713782110, 43609375823, and 43379058938 reported `58 combinations, all clean` without per-combination labeled timing rows, and 44753912879 (`9a25da7a`, failure) failed 1/58 with no per-combination timing rows; local staged per-combination timings remain transcribed in D3.1. | Maintainer captures additional CI per-combination timing rows/artifacts for future runs or adds richer per-combination artifacts if needed, then records them in this file. |
+| Warmed post-cache CI dataset | Measured (no clean comparable exact-key warmed before/after pair) | CI run 44865482029 (6847623b, success) provided green warmed-restore evidence: all four jobs restored successfully with restore-key partial hits (`full match: false`) and ran post-cache steps, but saved-key details were not captured. CI run 44753912879 (`9a25da7a`, failure) provided mixed cache evidence: Build & Test and Release Build had partial restores (`full match: false`) with saved caches, while Feature Matrix and Windows: Workspace Tests had cold restores (`No cache found`) with saved caches; it is not a clean comparable warmed green run because it failed and Build & Test skipped doctests/build project. A clean comparable exact-key warmed before/after pair remains unavailable. | Maintainer captures a clean comparable exact-key warmed before/after pair (consistent cache state, successful comparable runs) and records it in this file. |
 | Runner hardware and queue internals (CI) | Accepted environment constraint (unavailable) | GitHub Actions APIs/logs exposed labels/timestamps/cache outcomes but not CPU/RAM/image internals or queue reasons beyond derivable timestamps. | Maintainer captures newly available runner metadata from GitHub Actions, or runs on diagnostic/self-hosted runners with recorded specs and queue context, then records it in this file. |
 | Windows-local runs | Accepted environment constraint (not performed locally) | No Windows-local environment was available in this workspace/sandbox context; CI Windows evidence exists (D0/D6.3) but Windows-local gate runs were not performed. | Maintainer with Windows-local access runs the relevant gates/checks, records command/outcome/timing/environment metadata in this file, and notes any divergence from CI. |
 | `/tmp` diagnostics being ephemeral | Accepted constraint (durable transcriptions recorded) | Staging under `/tmp/mediapm-diag` may not persist, but required transcriptions/artifacts (D3.1, D4.1, and captured timing HTML/log references where available) were recorded in durable repository instruction records. | Maintainer re-runs diagnostics and stages raw logs/artifacts in a durable location if raw evidence becomes necessary, then links that location from this file. |
