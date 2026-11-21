@@ -270,30 +270,6 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
         Ok(())
     }
 
-    async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError> {
-        // The empty-content sentinel is already stored as a full object and is
-        // indelible, so a marker on it would describe nothing.
-        if target == Hash::empty() {
-            return Ok(());
-        }
-        // No WAL entry: the marker is durable through the metadata store's own
-        // persistence (the filesystem store writes it to a side file), and a
-        // replayed WAL entry would only restate it. A store that loses the
-        // marker re-encodes the object on its next maintenance pass, which is
-        // the state a store without a delta producer is in anyway.
-        self.metadata.mark_keep_full(target).await
-    }
-
-    async fn is_keep_full(&self, target: Hash) -> Result<bool, CasError> {
-        // The sentinel is never marked: `mark_keep_full` declines it, so asking
-        // is answered without a metadata lookup and without a marker the store
-        // never writes.
-        if target == Hash::empty() {
-            return Ok(false);
-        }
-        self.metadata.is_keep_full(&target).await
-    }
-
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
         // Sentinel always has empty constraints.
         if target == Hash::empty() {
@@ -369,11 +345,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
         let all_hashes: HashSet<Hash> = self.metadata.list_hashes().await?.into_iter().collect();
         let pruned = self.metadata.prune_targets(&all_hashes).await?;
-        Ok(PruneReport {
-            targets_removed: pruned.targets,
-            bases_removed: pruned.bases,
-            markers_removed: pruned.markers,
-        })
+        Ok(PruneReport { targets_removed: pruned.targets, bases_removed: pruned.bases })
     }
 
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
@@ -431,14 +403,6 @@ where
 {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.deref().set_constraint(target, bases).await
-    }
-
-    async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError> {
-        self.deref().mark_keep_full(target).await
-    }
-
-    async fn is_keep_full(&self, target: Hash) -> Result<bool, CasError> {
-        self.deref().is_keep_full(target).await
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {

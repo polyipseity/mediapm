@@ -35,7 +35,7 @@ mod cache_probe;
 /// directory goes.
 mod fixture_teardown;
 
-/// A `full` capture marks its object keep-full in the CAS; `true` does not.
+/// A `full` capture records the empty-object constraint in the CAS; `true` does not.
 mod capture_keep_full;
 
 /// Name-addressed capture union: one instance serves steps that declare

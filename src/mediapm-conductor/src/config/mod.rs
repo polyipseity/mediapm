@@ -109,9 +109,10 @@ pub struct ToolInputSpec {
 /// - `False`: the bytes stop being garbage-collection roots once the producing
 ///   instance is superseded.
 /// - `True` (default): the bytes are retained as a saved artifact.
-/// - `Full`: as `True`, and the object is marked keep-full in the CAS, so the
-///   maintenance optimizer never stores it as a delta against another blob. It
-///   may still serve as another object's delta base.
+/// - `Full`: as `True`, and the object's only permitted base is recorded as
+///   the empty object in the CAS, so the maintenance optimizer never stores it
+///   as a delta against another blob. It may still serve as another object's
+///   delta base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
@@ -385,8 +386,9 @@ pub struct OutputCaptureSpec {
     /// to the CAS whatever this says, and no reader consults it to decide what a
     /// step may reuse or materialize. `False` keeps the bytes only while the
     /// producing instance is reachable, so the conductor's GC reclaims them once
-    /// that instance is superseded. `Full` marks the object keep-full, so the
-    /// optimizer never stores it as a delta against another blob.
+    /// that instance is superseded. `Full` records the empty object as the
+    /// object's only permitted base, so the optimizer never stores it as a delta
+    /// against another blob.
     ///
     /// This is the one field a step may set on a name its tool already
     /// declares: the tool owns the capture itself (selector and `allow_empty`)

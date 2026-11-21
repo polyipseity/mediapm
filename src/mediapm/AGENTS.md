@@ -55,7 +55,7 @@ All carry explicit top-level `version`. Active config schema is v4; v1-v3 readab
 
 - Variant `save` default `"auto"`: resolves to full for hierarchy-materialized, final-step, or impure-step outputs; otherwise false. Materialized wins.
 - Materialized variant declared `false` is refused at plan build as `MPM-E010` (media, step, variant, hierarchy entry).
-- `full` marks CAS keep-full; missing resolved bytes are fatal. Retention mode does not change capture/production.
+- `full` records the empty object as the target's only permitted base; missing resolved bytes are fatal. Retention mode does not change capture/production.
 - Tool upgrades do not change step identity; use explicit invalidation. See `.agents/instructions/mediapm-architecture.instructions.md`.
 
 ## Managed tool provisioning

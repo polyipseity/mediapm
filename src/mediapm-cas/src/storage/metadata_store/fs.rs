@@ -7,10 +7,9 @@
 //! of O(N).
 //!
 //! Snapshot files use a versioned filename (`metadata-v1.json`) so future format
-//! changes are detectable and migratable. Keep-full markers get a second file in
-//! the same directory (`keep-full-v1.json`) on their own ladder. This module
-//! holds no version knowledge of its own: it consumes the names and codecs from
-//! [`versions`], which owns both ladders.
+//! changes are detectable and migratable. This module holds no version knowledge
+//! of its own: it consumes the names and codecs from [`versions`], which owns the
+//! ladder.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -23,10 +22,7 @@ use super::super::blob_store::BlobStore;
 use super::super::blob_store::FileSystemBlobStore;
 use super::super::wal::Wal;
 use super::mem::InMemoryMetadataStore;
-use super::versions::{
-    self, KEEP_FULL_FORMAT_NAMES, LATEST_KEEP_FULL_FORMAT, LATEST_METADATA_FORMAT,
-    METADATA_FORMAT_NAMES,
-};
+use super::versions::{self, LATEST_METADATA_FORMAT, METADATA_FORMAT_NAMES};
 use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 
 /// In-memory metadata with per-directory persistent snapshots.
@@ -36,15 +32,9 @@ use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 /// disk as a small JSON file (with a versioned filename like
 /// `metadata-v1.json`) via the blob store's aux-file API.
 ///
-/// Keep-full markers are persisted in a second per-directory file
-/// (`keep-full-v1.json`, [`LATEST_KEEP_FULL_FORMAT`]) beside the snapshot. That
-/// file has its own ladder: a build that does not know the marker format never
-/// looks for it, so a store written by a newer build still opens here, and a
-/// marker written here is invisible to a build that only reads snapshots.
-///
 /// On startup, [`rebuild_from_wal`](MetadataStore::rebuild_from_wal) replays
-/// the WAL then overlays all per-directory snapshots and marker files to recover
-/// data that survived WAL trim.
+/// the WAL then overlays all per-directory snapshots to recover data that
+/// survived WAL trim.
 #[derive(Clone)]
 pub struct FileSystemMetadataStore {
     inner: InMemoryMetadataStore,
@@ -76,13 +66,12 @@ impl FileSystemMetadataStore {
     }
 
     /// Flush everything whose hash falls into the same fan-out directory as
-    /// `hash`: entries, constraints and keep-full markers.
+    /// `hash`: entries and constraints.
     ///
-    /// Writes a `metadata-v1.json` and a `keep-full-v1.json` aux file for that
-    /// directory in the latest format of each ladder, and removes either file
-    /// when the facts it holds are empty. After writing, any older format files
-    /// of the same ladder in the same directory are cleaned up (future-proof for
-    /// format bumps).
+    /// Writes a `metadata-v1.json` aux file for that directory in the latest
+    /// format, and removes the snapshot file when the facts it holds are empty.
+    /// After writing, any older format files in the same directory are cleaned
+    /// up (future-proof for format bumps).
     ///
     /// # One critical section per directory
     ///
@@ -134,21 +123,9 @@ impl FileSystemMetadataStore {
             }
         }
 
-        // Collect keep-full markers for hashes sharing this prefix.
-        let mut keep_full = BTreeSet::new();
-        for h in self.inner.list_keep_full().await? {
-            if h.to_hex().starts_with(prefix) {
-                keep_full.insert(h);
-            }
-        }
-
-        if constraints.is_empty() && entries.is_empty() && keep_full.is_empty() {
-            // Remove all known format files of both ladders when the directory
-            // holds nothing.
+        if constraints.is_empty() && entries.is_empty() {
+            // Remove all known snapshot format files when the directory holds nothing.
             for name in METADATA_FORMAT_NAMES {
-                self.blob_store.delete_aux(hash, name).await?;
-            }
-            for name in KEEP_FULL_FORMAT_NAMES {
                 self.blob_store.delete_aux(hash, name).await?;
             }
         } else {
@@ -160,20 +137,6 @@ impl FileSystemMetadataStore {
                     self.blob_store.delete_aux(hash, name).await?;
                 }
             }
-
-            if keep_full.is_empty() {
-                for name in KEEP_FULL_FORMAT_NAMES {
-                    self.blob_store.delete_aux(hash, name).await?;
-                }
-            } else {
-                let json = versions::save_keep_full_to_vec(&keep_full)?;
-                self.blob_store.write_aux(hash, LATEST_KEEP_FULL_FORMAT, Bytes::from(json)).await?;
-                for name in KEEP_FULL_FORMAT_NAMES {
-                    if *name != LATEST_KEEP_FULL_FORMAT {
-                        self.blob_store.delete_aux(hash, name).await?;
-                    }
-                }
-            }
         }
         Ok(())
     }
@@ -181,10 +144,7 @@ impl FileSystemMetadataStore {
     /// Collect the fan-out prefixes of every constraint target and entry.
     ///
     /// A prefix names a fan-out directory, so this is the set of directories
-    /// whose snapshot file has something to say. It says nothing about markers:
-    /// a caller that has just dropped markers has to add the prefixes they
-    /// occupied before it asks, because the markers are already gone from
-    /// `inner` by then.
+    /// whose snapshot file has something to say.
     async fn occupied_prefixes(&self) -> Result<BTreeSet<String>, CasError> {
         let targets: BTreeSet<String> =
             self.inner.list_targets().await?.iter().map(|h| h.to_hex()[..4].to_string()).collect();
@@ -280,35 +240,24 @@ impl MetadataStore for FileSystemMetadataStore {
         self.inner.list_targets().await
     }
 
-    async fn mark_keep_full(&self, hash: Hash) -> Result<(), CasError> {
-        self.inner.mark_keep_full(hash).await?;
-        self.flush_dir(&hash).await
-    }
-
-    async fn is_keep_full(&self, hash: &Hash) -> Result<bool, CasError> {
-        self.inner.is_keep_full(hash).await
-    }
-
-    async fn list_keep_full(&self) -> Result<Vec<Hash>, CasError> {
-        self.inner.list_keep_full().await
-    }
-
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError> {
-        // The marker and target prefixes are read before the prune, because the
-        // prune is what removes them from `inner`: a directory whose only fact
-        // was a marker for an object that no longer exists, or a constraint for
-        // a target that no longer exists, would otherwise keep its file on disk
-        // and resurrect the fact on the next open. Only targets the prune will
-        // drop are collected here, because a surviving constraint's directory is
-        // already named by `occupied_prefixes`.
-        let marked_before = self.inner.list_keep_full().await?;
-        let dropped_before: Vec<Hash> =
-            self.inner.list_targets().await?.into_iter().filter(|t| !live.contains(t)).collect();
+        // Target prefixes are read before the prune, because the prune is what
+        // removes them from `inner`: a directory whose only fact was a
+        // constraint for a target that no longer exists would otherwise keep
+        // its file on disk and resurrect the fact on the next open. A live
+        // target whose bases all become dead is pinned to full and remains
+        // occupied, so its prefix is flushed through occupied_prefixes.
+        let targets_before: Vec<Hash> = self.inner.list_targets().await?;
         let pruned = self.inner.prune_targets(live).await?;
 
         let mut prefixes = self.occupied_prefixes().await?;
-        prefixes.extend(marked_before.iter().map(|h| h.to_hex()[..4].to_string()));
-        prefixes.extend(dropped_before.iter().map(|h| h.to_hex()[..4].to_string()));
+        let targets_after: HashSet<Hash> = self.inner.list_targets().await?.into_iter().collect();
+        prefixes.extend(
+            targets_before
+                .iter()
+                .filter(|t| !targets_after.contains(t))
+                .map(|h| h.to_hex()[..4].to_string()),
+        );
         // prune_targets is infrequent, so flushing every affected directory is
         // acceptable.
         self.flush_prefixes(&prefixes).await?;
@@ -340,17 +289,6 @@ impl MetadataStore for FileSystemMetadataStore {
                 }
                 for (hash, (len, encoding)) in persisted_entries {
                     self.inner.put(hash, MetadataEntry { len, encoding }).await?;
-                }
-            }
-        }
-
-        // Overlay the keep-full markers. Only the names this build knows are
-        // scanned, so a marker file written by a newer build is ignored rather
-        // than parsed under this build's rules.
-        for name in KEEP_FULL_FORMAT_NAMES {
-            for bytes in self.blob_store.all_aux(name).await? {
-                for hash in versions::load_keep_full_from_bytes(name, &bytes)? {
-                    self.inner.mark_keep_full(hash).await?;
                 }
             }
         }
@@ -588,52 +526,10 @@ mod tests {
             .expect("a reopened blob store backs a metadata store");
         let journal = InMemoryWal::new();
         index2.rebuild_from_wal(&journal).await.unwrap();
-        assert_eq!(index2.get_constraint(&live).await.unwrap(), BTreeSet::new());
-    }
-
-    /// A marker for an object the store no longer holds leaves no file behind.
-    ///
-    /// The marker is written into the fan-out directory of the hash it marks,
-    /// and the prune rewrites the directories it visited. A marked hash has no
-    /// metadata entry, so its directory is not one of the occupied ones: the
-    /// flush list has to carry it from the markers read before the prune, or
-    /// the file stays and the marker returns on the next open.
-    #[tokio::test]
-    async fn prune_removes_the_marker_file_of_an_object_that_is_gone() {
-        let (blob, _dir) = test_blob_store().await;
-        let root = blob.root().to_path_buf();
-        let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
-
-        let live = Hash::from_content(b"live entry");
-        index.put(live, MetadataEntry { len: 10, encoding: ObjectEncoding::Full }).await.unwrap();
-
-        // A ghost in a fan-out directory of its own, so the marker file is the
-        // only reason to rewrite that directory.
-        // Bounded: every candidate but one lands outside the live entry's
-        // directory, so a thousand tries is an impossible miss rather than a
-        // search that insists on terminating.
-        let ghost = (0u32..1024)
-            .map(|counter| Hash::from_content(format!("ghost-{counter}").as_bytes()))
-            .find(|hash| hash.to_hex()[..4] != live.to_hex()[..4])
-            .expect("a hash outside the live entry's fan-out directory");
-        index.mark_keep_full(ghost).await.unwrap();
-        blob.read_aux(&ghost, LATEST_KEEP_FULL_FORMAT)
-            .await
-            .expect("the marker file is on disk before the prune");
-
-        let pruned = index.prune_targets(&HashSet::from([live])).await.unwrap();
-        assert_eq!(pruned.markers, 1, "the marker on a hash the store does not hold is dropped");
-        assert!(
-            blob.read_aux(&ghost, LATEST_KEEP_FULL_FORMAT).await.is_err(),
-            "the marker file must be gone from disk, not only from the in-memory map",
-        );
-
-        let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
-            .expect("a reopened blob store backs a metadata store");
-        reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
-        assert!(
-            !reopened.is_keep_full(&ghost).await.unwrap(),
-            "a marker left on disk comes back on the next open",
+        assert_eq!(
+            index2.get_constraint(&live).await.unwrap(),
+            BTreeSet::from([Hash::empty()]),
+            "a pruned-to-empty base set is pinned full on disk, not widened"
         );
     }
 
@@ -680,60 +576,6 @@ mod tests {
         );
     }
 
-    /// A keep-full marker is written to its own file and read back after a
-    /// reopen.
-    ///
-    /// The marker lives in a side file rather than in the metadata snapshot so
-    /// that a build which does not know the marker still reads the snapshot.
-    /// Persistence is what makes it useful: a marker that dies with the process
-    /// would let the next maintenance pass re-encode the object.
-    #[tokio::test]
-    async fn a_keep_full_marker_survives_a_reopen() {
-        let (blob, _dir) = test_blob_store().await;
-        let root = blob.root().to_path_buf();
-        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
-
-        let hash = Hash::from_content(b"kept object");
-        index.put(hash, MetadataEntry { len: 11, encoding: ObjectEncoding::Full }).await.unwrap();
-        index.mark_keep_full(hash).await.unwrap();
-
-        let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
-            .expect("a reopened blob store backs a metadata store");
-        reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
-        assert!(reopened.is_keep_full(&hash).await.unwrap(), "the marker survives a reopen");
-    }
-
-    /// A marker file naming a version this build does not know is ignored.
-    ///
-    /// That is the whole reason the marker is a side file: a newer build may
-    /// mark objects in a shape this build cannot read, and the store must still
-    /// open and treat nothing as marked rather than refusing to start or
-    /// guessing at the bytes.
-    #[tokio::test]
-    async fn an_unknown_keep_full_version_is_ignored() {
-        let (blob, _dir) = test_blob_store().await;
-        let root = blob.root().to_path_buf();
-        let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
-
-        let hash = Hash::from_content(b"kept by a newer build");
-        index.put(hash, MetadataEntry { len: 22, encoding: ObjectEncoding::Full }).await.unwrap();
-        blob.write_aux(&hash, "keep-full-v9.json", Bytes::from_static(br#"{"hashes":[]}"#))
-            .await
-            .unwrap();
-
-        let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
-            .expect("a reopened blob store backs a metadata store");
-        reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
-        assert!(
-            reopened.get(&hash).await.unwrap().is_some(),
-            "the metadata snapshot still loads beside an unknown marker version"
-        );
-        assert!(
-            !reopened.is_keep_full(&hash).await.unwrap(),
-            "an unknown marker version is ignored, not adopted"
-        );
-    }
-
     /// A blob store backs one metadata store; the second claim is refused.
     ///
     /// The pair is what a flush would silently break: each store installs only
@@ -763,28 +605,33 @@ mod tests {
             .expect("a reopened blob store backs a metadata store");
     }
 
-    /// Deleting an object drops its keep-full marker, so the marker file cannot
-    /// outlive the objects it describes.
+    /// Deleting an object drops the constraint that describes it, so a reopened
+    /// store cannot resurrect a base set for a hash it does not hold.
     #[tokio::test]
-    async fn a_deleted_object_loses_its_keep_full_marker() {
+    async fn a_deleted_object_loses_its_constraint() {
         let (blob, _dir) = test_blob_store().await;
         let root = blob.root().to_path_buf();
         let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
 
         let hash = Hash::from_content(b"kept then deleted");
         index.put(hash, MetadataEntry { len: 17, encoding: ObjectEncoding::Full }).await.unwrap();
-        index.mark_keep_full(hash).await.unwrap();
+        index.set_constraint(hash, BTreeSet::from([Hash::empty()])).await.unwrap();
+
         index.delete(&hash).await.unwrap();
 
-        assert!(!index.is_keep_full(&hash).await.unwrap(), "the marker goes with the object");
-        assert!(
-            blob.read_aux(&hash, versions::LATEST_KEEP_FULL_FORMAT).await.is_err(),
-            "no marker file is left behind in the deleted object's directory"
+        assert_eq!(
+            index.get_constraint(&hash).await.unwrap(),
+            BTreeSet::new(),
+            "the constraint goes with the object"
         );
 
         let reopened = FileSystemMetadataStore::new(test_blob_store_at(root).await)
             .expect("a reopened blob store backs a metadata store");
         reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
-        assert!(!reopened.is_keep_full(&hash).await.unwrap(), "the marker is not resurrected");
+        assert_eq!(
+            reopened.get_constraint(&hash).await.unwrap(),
+            BTreeSet::new(),
+            "the constraint is not resurrected"
+        );
     }
 }

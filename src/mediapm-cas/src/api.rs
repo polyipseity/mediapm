@@ -141,16 +141,13 @@ pub trait CasApi: Send + Sync {
     ) -> Result<(), CasError>;
 }
 
-/// Manages compression-hint constraints (target → base hashes) and keep-full
-/// markers.
+/// Manages compression-hint constraints (target to base hashes).
 ///
-/// Constraints are **non-binding hints**: setting one records the intent
-/// that `target` may compress well against `bases`. The system never blocks
-/// on constraint satisfaction.
-///
-/// [`ConstraintApi::mark_keep_full`] is the one member the system obeys: it is
-/// an instruction about how an object's own bytes are stored, not a hint about
-/// what might compress well.
+/// A constraint answers two independent questions: which objects a target may be
+/// compressed against (a non-empty base set restricts the choice, an empty or
+/// absent set leaves it open), and whether the target ends up stored full (only
+/// when the chosen base is the empty object). Storing a target full is therefore
+/// `set_constraint(target, {empty})`, not a marker of its own.
 #[async_trait]
 pub trait ConstraintApi: Send + Sync {
     /// Record that `target` may compress well against `bases`.
@@ -180,23 +177,6 @@ pub trait ConstraintApi: Send + Sync {
     /// records a constraint by another name: a target the store does not hold is
     /// refused with [`CasError::InvalidArgument`] naming the hash.
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
-
-    /// Record that `target` must never be stored as a delta against another
-    /// blob.
-    ///
-    /// This is the CAS half of mediapm's `save = "full"`: the object keeps its
-    /// own full encoding, and it may still serve as another object's delta base.
-    /// The marker is durable (it survives a reopen of the store) and is dropped
-    /// with the object it describes.
-    async fn mark_keep_full(&self, target: Hash) -> Result<(), CasError>;
-
-    /// Report whether `target` was marked keep-full.
-    ///
-    /// This is the read half of [`ConstraintApi::mark_keep_full`], and it exists
-    /// on the public trait because a caller that asked for a full object has to
-    /// be able to observe that the store recorded it; an effect reachable only
-    /// through a private file is an effect no test can assert.
-    async fn is_keep_full(&self, target: Hash) -> Result<bool, CasError>;
 }
 
 /// Describes an atomic modification to a constraint's base set.
@@ -221,11 +201,10 @@ pub trait CasMaintenanceApi: Send + Sync {
     /// combined GC + optimizer.
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError>;
 
-    /// Remove a constraint whose target the store no longer holds, drop the
-    /// dead hashes inside the bases of a constraint that survives, and drop the
-    /// keep-full markers of objects the store no longer holds.
+    /// Remove a constraint whose target the store no longer holds and drop
+    /// dead hashes inside the bases of a constraint that survives.
     ///
-    /// The three are different edits, so [`PruneReport`] counts them separately:
+    /// The two are different edits, so [`PruneReport`] counts them separately:
     /// a dead base does not remove the constraint it sat in.
     async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
 
@@ -245,15 +224,13 @@ pub struct OptimizeReport {
 /// Result of [`CasMaintenanceApi::prune_constraints`].
 ///
 /// Each count names one kind of fact the prune removes. A constraint whose
-/// target is gone, a dead hash inside the surviving bases of a constraint, and
-/// a keep-full marker whose object is gone are all removals, and reporting only
-/// the first says zero while the store changed.
+/// target is gone and a dead hash inside the surviving bases of a constraint
+/// are different edits, and reporting only the first says zero while the store
+/// changed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PruneReport {
     /// Number of constraint entries removed because their target is gone.
     pub targets_removed: usize,
     /// Number of dead hashes dropped from the base sets of live constraints.
     pub bases_removed: usize,
-    /// Number of keep-full markers dropped because their object is gone.
-    pub markers_removed: usize,
 }

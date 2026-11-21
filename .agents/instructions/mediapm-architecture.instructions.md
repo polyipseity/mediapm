@@ -61,7 +61,7 @@ Per-crate `AGENTS.md` files hold detailed invariants and contracts.
 - Per output variant `save` is `"auto"` (default), boolean, or `"full"`. `tools/workflows/mod.rs::resolve_variant_save` resolves to conductor `SaveMode`; explicit policies return themselves.
 - `auto` order: materialized by hierarchy -> `"full"`; final-step or impure-step output -> `true`; otherwise `false`. Materialized wins, so library-linked variants are never delta-stored. `AutoSaveContext` comes from `hierarchy_consumed_variants`.
 - Materialized variant declared `false` is refused at plan build as `MPM-E010` (media, step, variant, hierarchy entry).
-- Mode decides retention, not production: every mode captures when the step runs. `"full"` marks object keep-full in CAS (optimizer may not delta-store it; it may still be a base). Missing resolved bytes are fatal exit-1; unproduced variants are counted misses. Conductor `true` save default applies only to documents mediapm did not synthesize.
+- Mode decides retention, not production: every mode captures when the step runs. `"full"` records the empty object as the target's only permitted base in CAS (the optimizer may not delta-store it; it may still be a base). Missing resolved bytes are fatal exit-1; unproduced variants are counted misses. Conductor `true` save default applies only to documents mediapm did not synthesize.
 
 ## Cache policy and downloads
 

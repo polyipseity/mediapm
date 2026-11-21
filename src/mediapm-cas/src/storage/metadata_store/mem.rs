@@ -4,7 +4,7 @@
 //! in-memory layer of [`FileSystemMetadataStore`](super::fs::FileSystemMetadataStore).
 
 use async_trait::async_trait;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -22,8 +22,7 @@ use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 /// state — essential for concurrent access patterns.
 ///
 /// Constraint data is stored in a separate [`DashMap`] from object metadata.
-/// See [`MetadataStore::get_constraint`] — returns empty set (no `Option`), and
-/// keep-full markers in a [`DashSet`] of their own.
+/// See [`MetadataStore::get_constraint`] — returns empty set (no `Option`).
 ///
 /// # Bases-preservation invariant
 ///
@@ -43,11 +42,6 @@ pub struct InMemoryMetadataStore {
     data: Arc<DashMap<Hash, MetadataEntry>>,
     /// Constraint data (target → bases), independent of metadata.
     constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>,
-    /// Hashes whose bytes must keep their own full encoding.
-    ///
-    /// A plain set rather than a map: the marker carries no payload, and its
-    /// presence is the whole fact.
-    keep_full: Arc<DashSet<Hash>>,
     /// Reverse index: base hash → dependents (hashes with Delta { `base_hash` }).
     dependents: Arc<DashMap<Hash, Vec<Hash>>>,
 }
@@ -96,9 +90,6 @@ impl MetadataStore for InMemoryMetadataStore {
         self.data.remove(hash);
         // Also clean up any associated constraint.
         self.constraints.remove(hash);
-        // A marker about bytes the store no longer holds would outlive its
-        // subject, so it goes with the object.
-        self.keep_full.remove(hash);
         Ok(())
     }
 
@@ -128,10 +119,6 @@ impl MetadataStore for InMemoryMetadataStore {
     }
 
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError> {
-        let markers_before = self.keep_full.len();
-        self.keep_full.retain(|hash| live.contains(hash));
-        let markers = markers_before - self.keep_full.len();
-
         let mut targets = 0;
         let mut bases = 0;
         self.constraints.retain(|target, live_bases| {
@@ -140,26 +127,20 @@ impl MetadataStore for InMemoryMetadataStore {
                 targets += 1;
                 return false;
             }
-            // Per-base pruning: keep only live bases.
-            let bases_before = live_bases.len();
-            live_bases.retain(|b| live.contains(b));
-            bases += bases_before - live_bases.len();
+            // Keep the empty sentinel: it is a base the store answers for
+            // without holding it. A set that was non-empty and becomes empty
+            // after pruning is pinned to full (`{Hash::empty()}`) rather than
+            // dropped or widened to "any base", preserving D3. An explicitly
+            // open empty set means "any base" (D1) and must remain open.
+            let before = live_bases.len();
+            live_bases.retain(|b| *b == Hash::empty() || live.contains(b));
+            bases += before - live_bases.len();
+            if before > 0 && live_bases.is_empty() {
+                live_bases.insert(Hash::empty());
+            }
             true
         });
-        Ok(PrunedConstraints { targets, bases, markers })
-    }
-
-    async fn mark_keep_full(&self, hash: Hash) -> Result<(), CasError> {
-        self.keep_full.insert(hash);
-        Ok(())
-    }
-
-    async fn is_keep_full(&self, hash: &Hash) -> Result<bool, CasError> {
-        Ok(self.keep_full.contains(hash))
-    }
-
-    async fn list_keep_full(&self) -> Result<Vec<Hash>, CasError> {
-        Ok(self.keep_full.iter().map(|hash| *hash).collect())
+        Ok(PrunedConstraints { targets, bases })
     }
 
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
@@ -181,11 +162,10 @@ impl MetadataStore for InMemoryMetadataStore {
                 WalEntry::Delete { hash } => {
                     // A replay is the same removal a live delete performs, so it
                     // drops the facts about the object as well as the object: a
-                    // constraint or a keep-full marker that outlived its subject
-                    // is what the live path already refuses to leave behind.
+                    // constraint that outlived its subject is what the live path
+                    // already refuses to leave behind.
                     self.data.remove(&hash);
                     self.constraints.remove(&hash);
-                    self.keep_full.remove(&hash);
                 }
                 WalEntry::Constraint { target, bases } => {
                     self.constraints.insert(target, bases);
@@ -359,17 +339,15 @@ mod tests {
         let base = Hash::from_content(b"base");
         let dead_target = Hash::from_content(b"dead-target");
         let dead_base = Hash::from_content(b"dead-base");
-        let marked_ghost = Hash::from_content(b"marked-ghost");
 
         index.put(live, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
         index.put(base, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
         index.set_constraint(live, BTreeSet::from([base, dead_base])).await.unwrap();
         index.set_constraint(dead_target, BTreeSet::new()).await.unwrap();
-        index.mark_keep_full(marked_ghost).await.unwrap();
 
         let live_set = HashSet::from([live, base]);
         let pruned = index.prune_targets(&live_set).await.unwrap();
-        assert_eq!(pruned, PrunedConstraints { targets: 1, bases: 1, markers: 1 });
+        assert_eq!(pruned, PrunedConstraints { targets: 1, bases: 1 });
 
         // A second pass over the same live set has nothing left to drop, so a
         // count that drifted or double-counted shows here.
@@ -400,25 +378,32 @@ mod tests {
         assert_eq!(bases, BTreeSet::from([base]));
     }
 
-    /// A keep-full marker is set, read back, and dropped with its object.
-    ///
-    /// The marker describes one object's storage, so keeping it after the
-    /// object is gone would leave the store carrying facts about nothing and
-    /// would grow without bound over a long-lived process.
+    /// Deleting an object drops the constraint that describes it, so a reopened
+    /// store cannot resurrect a base set for a hash it does not hold.
     #[tokio::test]
-    async fn a_deleted_object_loses_its_keep_full_marker() {
+    async fn a_deleted_object_loses_its_constraint() {
         let index = InMemoryMetadataStore::new();
         let kept = Hash::from_content(b"kept");
         let plain = Hash::from_content(b"plain");
 
         index.put(kept, MetadataEntry { len: 4, encoding: ObjectEncoding::Full }).await.unwrap();
         index.put(plain, MetadataEntry { len: 5, encoding: ObjectEncoding::Full }).await.unwrap();
-        index.mark_keep_full(kept).await.unwrap();
+        index.set_constraint(kept, BTreeSet::from([Hash::empty()])).await.unwrap();
 
-        assert!(index.is_keep_full(&kept).await.unwrap(), "the marker is recorded");
-        assert!(!index.is_keep_full(&plain).await.unwrap(), "an unmarked object is not marked");
+        assert_eq!(
+            index.get_constraint(&kept).await.unwrap(),
+            BTreeSet::from([Hash::empty()]),
+            "the constraint is recorded"
+        );
+        assert!(
+            index.get_constraint(&plain).await.unwrap().is_empty(),
+            "an unconstrained object has no bases"
+        );
 
         index.delete(&kept).await.unwrap();
-        assert!(!index.is_keep_full(&kept).await.unwrap(), "the marker goes with the object");
+        assert!(
+            index.get_constraint(&kept).await.unwrap().is_empty(),
+            "the constraint goes with the object"
+        );
     }
 }

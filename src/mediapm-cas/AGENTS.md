@@ -7,7 +7,7 @@
 - `Hash([u8; 32])` in `src/mediapm-cas/src/hash.rs`: BLAKE3-256 content address. `Hash::from_content` hashes raw bytes; `Hash::composite` hashes concatenated digests for ordered composite identity, giving domain separation from raw-content hashing. Ordering is lexicographic on bytes.
 - Empty-content sentinel: `Hash::empty()` is `blake3(b"")`. It is always present and indelible. `get`/`stat` answer empty content without backend lookup; `delete` is a no-op; constraints on empty are accepted but have no effect.
 - Wire/storage form is multihash (`0x1e` blake3, 32-byte digest) via `multihash`. Serde format is human-readable `blake3:<hex>`.
-- Filesystem object layout (`storage/blob_store/versions/v1.rs`): `<root>/v1/blake3/ab/cd/<remaining>` for full objects, `<remaining>.diff` for delta payloads. Directory fan-out keeps per-directory metadata aux files (`metadata-v1.json`, `keep-full-v1.json`).
+- Filesystem object layout (`storage/blob_store/versions/v1.rs`): `<root>/v1/blake3/ab/cd/<remaining>` for full objects, `<remaining>.diff` for delta payloads. Directory fan-out keeps per-directory metadata aux files (`metadata-v1.json`).
 
 ## Public API
 
@@ -16,8 +16,8 @@ Source of truth: `src/mediapm-cas/src/api.rs`, `error.rs`, `hash.rs`.
 - `CasApi` (7 methods): `put`, `get`, `stat`, `delete`, `flush`, `put_stream`, `get_to_writer`. `get` defaults to buffering `get_to_writer`; `put_stream` defaults to buffering into `put`; stores may override both for streaming. No `exists()`; use `get`/`stat` to avoid TOCTOU.
 - Guarantees within one async task: write-then-read, delete-then-read, idempotent put/delete, crash survival after `Ok`. `flush()` materializes committed WAL entries for write-back backends and returns consumed entry count; write-through backends may return 0.
 - `CasError` (`error.rs`): `NotFound`, `InvalidArgument`, `Internal`, `Io`, `CorruptObject { hash, details }`, `TooLarge { hash, size, limit }`, `LockContention { path }`. `TooLarge` is returned when a delta chain exceeds the max depth; normal `get` resolves through `get_to_writer`.
-- `ConstraintApi`: `set_constraint`, `get_constraint`, `patch_constraint`, `mark_keep_full`, `is_keep_full`. Constraints are non-binding compression hints stored separately from object metadata. `mark_keep_full` is obeyed: marked objects stay full, may still be delta bases, survive reopen in filesystem stores, and are dropped with the object. Constraint target must be held by the store; bases must be distinct and cannot include target.
-- `CasMaintenanceApi`: `run_maintenance_cycle() -> OptimizeReport`, `prune_constraints() -> PruneReport`, `list_hashes() -> Vec<Hash>`. `PruneReport` counts target removals, dead bases removed from live constraints, and dead keep-full markers separately.
+- `ConstraintApi`: `set_constraint`, `get_constraint`, `patch_constraint`. A constraint answers two concerns: which objects a target may be compressed against, and whether the target is stored full. A non-empty base set restricts the choice; an empty or absent set leaves it open; storing a target full is `set_constraint(target, {empty})`, not a separate marker. Constraint target must be held by the store; bases must be distinct and cannot include target.
+- `CasMaintenanceApi`: `run_maintenance_cycle() -> OptimizeReport`, `prune_constraints() -> PruneReport`, `list_hashes() -> Vec<Hash>`. `PruneReport` counts target removals and dead bases removed from live constraints separately.
 
 ## Backend and config types
 
@@ -43,11 +43,11 @@ Source of truth: `src/mediapm-cas/src/config.rs`, `defaults.rs`, `storage/in_mem
 ## Key invariants
 
 - **Content identity**: same bytes produce same BLAKE3 hash. Only empty content produces `Hash::empty()`, which is indelible.
-- **Crash safety and atomic writes**: WAL is the crash-safe commitment point; blob/metadata are derived and rebuildable by replay. Filesystem writes use atomic temp-write/rename patterns; metadata/keep-full aux files are versioned.
+- **Crash safety and atomic writes**: WAL is the crash-safe commitment point; blob/metadata are derived and rebuildable by replay. Filesystem writes use atomic temp-write/rename patterns; metadata aux files are versioned.
 - **No TOCTOU**: no `exists()` API. `get`/`stat` return `NotFound` on miss.
 - **Delta chain integrity**: delta reconstruction walks metadata/blob chain, rejects missing bases as `CorruptObject`, prevents cycles, and enforces `MAX_DELTA_CHAIN_DEPTH` (5). Objects over `DELTA_THRESHOLD` are not delta-compressed.
 - **Object size limits**: `WAL_INLINE_LIMIT` selects inline WAL vs external `PutLarge`; `DELTA_THRESHOLD` caps delta eligibility; `TooLarge` reports delta-chain depth/size limit failures.
-- **Constraint invariants**: constraint sets are independent from object metadata; no target/base self-reference; `get_constraint` returns empty set when absent. `prune_constraints` removes dead targets, dead bases in live constraints, and dead keep-full markers. Keep-full markers are durable in filesystem metadata, dropped with object deletion, and cause optimizer to skip delta rewrite.
+- **Constraint invariants**: constraint sets are independent from object metadata; no target/base self-reference; `get_constraint` returns empty set when absent. `prune_constraints` removes dead targets and dead bases in live constraints. A constraint of `{Hash::empty()}` records a full capture and the optimizer must not delta-encode that target while it may still serve as another object's base.
 - **Codec versioning**: delta envelope writers emit current V3; legacy V1/V2 are read-only. New formats live in versioned modules and keep boundary guards.
 - **Delete semantics, no dangling deltas**: deleting a base re-materializes dependents as full before physical base removal. Delete does not cascade to unrelated hashes.
 

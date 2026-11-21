@@ -97,15 +97,14 @@ async fn prune_constraints_approaches_effective_constraints() {
     assert_eq!(bases.len(), 1, "only one effective base remains");
 }
 
-/// Every constraint the prune drops is reported, not only the ones that
+/// Every constraint fact the prune drops is reported, not only the ones that
 /// remove a whole target.
 ///
-/// A prune drops three kinds of fact: a constraint whose target is gone, a
-/// dead base inside a surviving constraint, and a keep-full marker whose
-/// object is gone. Counting only the first reports zero while the prune
-/// rewrites the store.
+/// A prune drops two kinds of fact: a constraint whose target is gone and a
+/// dead base inside a surviving constraint. Counting only the first reports
+/// zero while the prune rewrites the store.
 #[tokio::test]
-async fn prune_constraints_reports_bases_and_markers_it_drops() {
+async fn prune_constraints_reports_bases_it_drops() {
     let cas = new_in_memory_cas();
     let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
     let live_base = cas.put(Bytes::from_static(b"live")).await.unwrap();
@@ -114,11 +113,6 @@ async fn prune_constraints_reports_bases_and_markers_it_drops() {
     let dead_base = Hash::from_content(b"never-stored-base");
     cas.set_constraint(target, [live_base, dead_base].into()).await.unwrap();
 
-    // A marker on an object the store never held. Marking such a hash is
-    // accepted, and the marker outlives nothing, so the prune drops it.
-    let ghost = Hash::from_content(b"never-stored-marked");
-    cas.mark_keep_full(ghost).await.unwrap();
-
     let report = cas.prune_constraints().await.unwrap();
 
     assert_eq!(
@@ -126,12 +120,34 @@ async fn prune_constraints_reports_bases_and_markers_it_drops() {
         BTreeSet::from([live_base]),
         "the dead base is gone from the surviving constraint",
     );
-    assert!(!cas.is_keep_full(ghost).await.unwrap(), "the marker is gone");
     assert_eq!(
         report,
-        mediapm_cas::PruneReport { targets_removed: 0, bases_removed: 1, markers_removed: 1 },
-        "the report counts the base and the marker the prune dropped",
+        mediapm_cas::PruneReport { targets_removed: 0, bases_removed: 1 },
+        "the report counts the dead base the prune dropped",
     );
+}
+
+/// Pruning must never turn "only this base" into "any base", which is what
+/// deleting an object that was a target's sole base would otherwise do.
+#[tokio::test]
+async fn pruning_the_sole_base_pins_full_instead_of_widening_it() {
+    let cas = new_in_memory_cas();
+    let base = cas.put(Bytes::from_static(b"sole base")).await.unwrap();
+    let target = cas.put(Bytes::from_static(b"dependent target")).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+
+    cas.delete(base).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    let pruned = cas.prune_constraints().await.unwrap();
+
+    assert_eq!(
+        cas.get_constraint(target).await.unwrap(),
+        BTreeSet::from([Hash::empty()]),
+        "an emptied base set must pin full, not widen to any base"
+    );
+    // Maintenance may have pruned the dead base already; a direct prune
+    // reports it only when it was still present.
+    assert!(pruned.bases_removed <= 1, "the dead base is counted at most once: {pruned:?}");
 }
 
 /// A maintenance pass whose only change is a pruned constraint base reports
@@ -153,45 +169,20 @@ async fn a_pruned_base_alone_counts_as_maintenance_work() {
 
     let report = cas.run_maintenance_cycle().await.unwrap();
 
-    assert!(
-        cas.get_constraint(target).await.unwrap().is_empty(),
-        "precondition: the dropped base is the pass's only change, so it must be gone",
+    assert_eq!(
+        cas.get_constraint(target).await.unwrap(),
+        BTreeSet::from([Hash::empty()]),
+        "precondition: the sole dead base is pruned and the constraint is pinned full",
     );
     assert!(
         report.maintenance_done,
-        "a pass whose only change was a dropped constraint base reported no work",
+        "a pass whose only change was a pruned constraint base reported no work",
     );
 
     // The same pass over the same store, with nothing left to prune, reports no
     // work: the flag tracks the prune instead of being true for every pass.
     let second = cas.run_maintenance_cycle().await.unwrap();
     assert!(!second.maintenance_done, "a pass with nothing left to prune reported work");
-}
-
-/// A maintenance pass whose only change is a pruned keep-full marker reports
-/// that change as work.
-///
-/// Marking a hash the store never held is accepted — the marker describes how
-/// those bytes must be stored, and the store records it beside the object
-/// rather than refusing an order the caller had already ordered by content. A
-/// marker with no object is therefore exactly the change a pass with no
-/// optimizer work still has to report.
-#[tokio::test]
-async fn a_pruned_marker_alone_counts_as_maintenance_work() {
-    let cas = new_in_memory_cas();
-    let ghost = Hash::from_content(b"never-stored-marked");
-    cas.mark_keep_full(ghost).await.unwrap();
-
-    let report = cas.run_maintenance_cycle().await.unwrap();
-
-    assert!(
-        !cas.is_keep_full(ghost).await.unwrap(),
-        "precondition: the dropped marker is the pass's only change, so it must be gone",
-    );
-    assert!(
-        report.maintenance_done,
-        "a pass whose only change was a dropped keep-full marker reported no work",
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -526,110 +517,41 @@ async fn delta_cache_repeated_reads_work() {
     assert_eq!(stats.cached_bytes, 4096);
 }
 
-/// A target marked keep-full is never rewritten to a delta encoding, and its
-/// bytes still read back whole.
-///
-/// The marker is the CAS half of mediapm's `save = "full"`: the mode promises
-/// the artifact is never stored as a delta against another blob. Nothing in
-/// production creates deltas today, so this test is where the promise is
-/// exercised: it constrains the target exactly as a delta producer would and
-/// proves the optimizer declines.
+/// A `full` capture is expressed as a constraint, so the marker file has no
+/// successor: the empty object is the only base the target may use, and a delta
+/// against it is the object itself.
 #[tokio::test]
-async fn a_keep_full_target_is_never_delta_encoded() {
+async fn a_full_target_records_the_empty_object_as_its_only_base() {
     let cas = new_in_memory_cas();
+    let target = cas.put(Bytes::from_static(b"full target bytes")).await.unwrap();
 
-    let (base_content, target_content) = similar_content_pair(b'A', b"KEPT");
-    let base_hash = cas.put(base_content).await.unwrap();
-    let target_hash = cas.put(target_content.clone()).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
 
-    // The constraint is what the optimizer would act on, so a marker that does
-    // not override it is not a guard at all.
-    cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
-    cas.mark_keep_full(target_hash).await.unwrap();
-    cas.run_maintenance_cycle().await.unwrap();
-
-    let meta = cas.stat(target_hash).await.unwrap();
     assert_eq!(
-        meta.encoding,
-        ObjectEncoding::Full,
-        "a keep-full target stays a full object even when a live base is constrained",
-    );
-    let retrieved = cas.get(target_hash).await.unwrap();
-    assert_eq!(retrieved, target_content, "the kept bytes still read back whole");
-}
-
-/// A keep-full object still serves as another object's delta base.
-///
-/// This is the other half of `save = "full"`: the mode decides how the object
-/// itself is stored, not whether its bytes may be used to reconstruct a sibling.
-#[tokio::test]
-async fn a_keep_full_target_still_serves_as_a_delta_base() {
-    let cas = new_in_memory_cas();
-
-    let (base_content, target_content) = similar_content_pair(b'B', b"THIRD");
-    let base_hash = cas.put(base_content).await.unwrap();
-    let target_hash = cas.put(target_content.clone()).await.unwrap();
-
-    cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
-    cas.mark_keep_full(base_hash).await.unwrap();
-    cas.run_maintenance_cycle().await.unwrap();
-
-    let target_meta = cas.stat(target_hash).await.unwrap();
-    assert_eq!(
-        target_meta.encoding,
-        ObjectEncoding::Delta { base_hash },
-        "a marked base is still selectable as the base of a delta",
-    );
-    let base_meta = cas.stat(base_hash).await.unwrap();
-    assert_eq!(
-        base_meta.encoding,
-        ObjectEncoding::Full,
-        "the marked object keeps its own full encoding"
-    );
-    let retrieved = cas.get(target_hash).await.unwrap();
-    assert_eq!(retrieved, target_content, "the delta reconstructs the third object");
-}
-
-/// The public store reports a keep-full marker for an object that carries one
-/// and not for one that does not, in memory.
-///
-/// The metadata store's own tests prove the marker persists; this proves the
-/// path a caller actually holds — `ConstraintApi` on the assembled store —
-/// answers for it, which is what a caller recording `save = "full"` depends on.
-#[tokio::test]
-async fn keep_full_markers_are_readable_in_memory() {
-    let cas = new_in_memory_cas();
-
-    let marked = cas.put(Bytes::from_static(b"marked in memory")).await.unwrap();
-    let unmarked = cas.put(Bytes::from_static(b"unmarked in memory")).await.unwrap();
-
-    assert!(!cas.is_keep_full(unmarked).await.unwrap(), "a fresh object carries no marker");
-    cas.mark_keep_full(marked).await.unwrap();
-
-    assert!(cas.is_keep_full(marked).await.unwrap(), "the marked object reports its marker");
-    assert!(
-        !cas.is_keep_full(unmarked).await.unwrap(),
-        "marking one object says nothing about another",
+        cas.get_constraint(target).await.unwrap(),
+        BTreeSet::from([Hash::empty()]),
+        "a full capture must record the empty object as its only permitted base"
     );
 }
 
-/// The same answer through a filesystem store, which is the one that also has
-/// to persist the marker.
+/// The constraint restricts the bases, not the reverse: a full object is still a
+/// legal base for another object, so its own entry must survive a prune intact.
 #[tokio::test]
-async fn keep_full_markers_are_readable_on_disk() {
-    let cas = open_file_cas().await;
+async fn a_full_target_still_serves_as_a_delta_base() {
+    let cas = new_in_memory_cas();
+    let base = cas.put(Bytes::from_static(b"base bytes")).await.unwrap();
+    let other = cas.put(Bytes::from_static(b"other bytes")).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
 
-    let marked = cas.put(Bytes::from_static(b"marked on disk")).await.unwrap();
-    let unmarked = cas.put(Bytes::from_static(b"unmarked on disk")).await.unwrap();
+    let pruned = cas.prune_constraints().await.unwrap();
 
-    assert!(!cas.is_keep_full(unmarked).await.unwrap(), "a fresh object carries no marker");
-    cas.mark_keep_full(marked).await.unwrap();
-
-    assert!(cas.is_keep_full(marked).await.unwrap(), "the marked object reports its marker");
-    assert!(
-        !cas.is_keep_full(unmarked).await.unwrap(),
-        "marking one object says nothing about another",
+    assert_eq!(
+        pruned,
+        mediapm_cas::PruneReport { targets_removed: 0, bases_removed: 0 },
+        "a full object's entry names a live base, so nothing is pruned"
     );
+    assert_eq!(cas.get_constraint(base).await.unwrap(), BTreeSet::from([Hash::empty()]));
+    assert_eq!(cas.get_constraint(other).await.unwrap(), BTreeSet::new());
 }
 
 /// Base and target content that differ only in `marker`, so the VCDIFF
@@ -643,4 +565,23 @@ fn similar_content_pair(fill: u8, marker: &[u8]) -> (Bytes, Bytes) {
         Bytes::from(v)
     };
     (base_content, target_content)
+}
+
+/// An explicit empty base set means "any base" (D1), so prune must leave it
+/// open rather than pinning it to full.
+#[tokio::test]
+async fn pruning_preserves_an_explicitly_open_constraint() {
+    let cas = new_in_memory_cas();
+    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
+    cas.set_constraint(target, BTreeSet::new()).await.unwrap();
+
+    cas.run_maintenance_cycle().await.unwrap();
+    let pruned = cas.prune_constraints().await.unwrap();
+
+    assert_eq!(pruned, mediapm_cas::PruneReport { targets_removed: 0, bases_removed: 0 });
+    assert_eq!(
+        cas.get_constraint(target).await.unwrap(),
+        BTreeSet::new(),
+        "an explicitly open constraint must remain open"
+    );
 }

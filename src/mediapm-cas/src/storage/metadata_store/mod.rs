@@ -1,7 +1,7 @@
 //! Metadata trait and types for the CAS storage layer.
 //!
-//! Provides the [`MetadataStore`] trait (entry, constraint and keep-full marker
-//! operations) and the [`MetadataEntry`] type. Implementations:
+//! Provides the [`MetadataStore`] trait (entry and constraint operations) and
+//! the [`MetadataEntry`] type. Implementations:
 //!
 //! - `InMemoryMetadataStore` — ephemeral, all data in `DashMap`s
 //! - `FileSystemMetadataStore` — in-memory with persisted snapshot file
@@ -41,25 +41,19 @@ impl MetadataEntry {
     }
 }
 
-/// What one [`MetadataStore::prune_targets`] pass dropped, counted by kind.
+/// What one [`MetadataStore::prune_targets`] walk removed.
 ///
-/// A prune drops three kinds of fact, and a caller that reports one number
-/// cannot say which: a constraint whose target is gone, a dead hash inside the
-/// base set of a constraint that survives, and a keep-full marker whose object
-/// is gone. The counts come from the same walk that removes them, so a caller
-/// never has to diff two listings and guess at the difference.
+/// The counts come from the walk that removes them, so a caller never has to
+/// diff two listings and guess at the difference.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PrunedConstraints {
     /// Constraint entries removed because their target is not in the live set.
     pub targets: usize,
     /// Dead hashes dropped from the base set of a surviving constraint.
     pub bases: usize,
-    /// Keep-full markers dropped because their object is not in the live set.
-    pub markers: usize,
 }
 
-/// Unified metadata store — payload metadata, constraint hints and keep-full
-/// markers.
+/// Unified metadata store — payload metadata and constraint hints.
 ///
 /// Object metadata (payload size, encoding) is stored via
 /// [`MetadataStore::put`]/[`MetadataStore::get`]/[`MetadataStore::delete`]
@@ -68,13 +62,9 @@ pub struct PrunedConstraints {
 /// [`MetadataStore::set_constraint`]/[`MetadataStore::get_constraint`] —
 /// see §8.6 in AGENTS.md.
 ///
-/// Keep-full markers are stored beside those two, through
-/// [`MetadataStore::mark_keep_full`]: a marked object keeps its own full encoding
-/// and may still serve as another object's delta base.
-///
 /// In-memory implementations are reconstructed from journal replay on startup.
-/// The internal `FileSystemMetadataStore` additionally persists constraints and
-/// keep-full markers to disk so they survive WAL trim and process restart.
+/// The internal `FileSystemMetadataStore` additionally persists constraints to
+/// disk so they survive WAL trim and process restart.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
     /// Store metadata for a hash (replaces existing entry).
@@ -83,8 +73,8 @@ pub trait MetadataStore: Send + Sync {
     /// Retrieve metadata for a hash, if any.
     async fn get(&self, hash: &Hash) -> Result<Option<MetadataEntry>, CasError>;
 
-    /// Delete metadata for a hash, with the constraint and keep-full marker
-    /// that describe those same bytes.
+    /// Delete metadata for a hash, with the constraint that describes those
+    /// same bytes.
     ///
     /// The filesystem store flushes the hash's own fan-out directory here
     /// rather than only the directories it believes are occupied, so a
@@ -127,35 +117,11 @@ pub trait MetadataStore: Send + Sync {
     /// List all constraint targets.
     async fn list_targets(&self) -> Result<Vec<Hash>, CasError>;
 
-    /// Remove a constraint whose target `live` does not hold, drop every hash
-    /// `live` does not hold from the bases of a constraint that survives, and
-    /// drop the keep-full markers of objects `live` does not hold.
+    /// Remove a constraint whose target `live` does not hold and drop every
+    /// hash `live` does not hold from the bases of a constraint that survives.
+    /// A live target whose bases all become dead is pinned to `{Hash::empty()}`
+    /// (full) rather than widened to any base.
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError>;
-
-    // Keep-full markers
-
-    /// Record that `hash` must keep its own full encoding.
-    ///
-    /// The marker is the CAS half of mediapm's `save = "full"`. It is durable
-    /// (the filesystem store writes it to a side file a build that does not know
-    /// the format ignores) and it is dropped with the object it describes, so a
-    /// long-lived store does not accumulate facts about bytes it no longer
-    /// holds.
-    ///
-    /// Marking a hash this store holds no entry for is accepted: the marker is a
-    /// statement about how those bytes must be stored, and the store records it
-    /// beside the object rather than refusing an order the caller had already
-    /// ordered by content.
-    async fn mark_keep_full(&self, hash: Hash) -> Result<(), CasError>;
-
-    /// Report whether `hash` was marked keep-full.
-    async fn is_keep_full(&self, hash: &Hash) -> Result<bool, CasError>;
-
-    /// List every marked hash.
-    ///
-    /// The filesystem store uses this to write one directory's markers, and the
-    /// maintenance sweep uses it to drop markers whose object is gone.
-    async fn list_keep_full(&self) -> Result<Vec<Hash>, CasError>;
 
     /// List hashes that depend on `hash` as their delta base.
     ///

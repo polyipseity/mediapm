@@ -370,14 +370,15 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             if self.is_cancelled() {
                 break;
             }
-            // A keep-full marker is the CAS half of mediapm's `save = "full"`:
-            // the object may be another object's base, but its own bytes are
-            // never rewritten as a delta. This loop is the only delta writer,
-            // so this guard is the whole of that promise.
-            if self.metadata.is_keep_full(target).await? {
+            let bases = self.metadata.get_constraint(target).await?;
+            // A `full` capture records the empty object as the target's only
+            // permitted base. A delta against empty content is the content
+            // itself, so rewriting such a target would buy nothing and would
+            // violate the capture's promise; the object may still serve as
+            // another object's base.
+            if bases.len() == 1 && bases.contains(&Hash::empty()) {
                 continue;
             }
-            let bases = self.metadata.get_constraint(target).await?;
             if !bases.is_empty() {
                 // Effective bases: intersection of stored bases with live
                 // hashes. Dead bases cannot be used for delta reconstruction.
@@ -443,7 +444,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         // Prune dead bases from constraint entries. The live set from Phase 1
         // is still valid — the optimizer only changes encodings, not existence.
         let pruned = self.metadata.prune_targets(&live).await?;
-        if pruned.targets > 0 || pruned.bases > 0 || pruned.markers > 0 {
+        if pruned.targets > 0 || pruned.bases > 0 {
             did_work = true;
         }
 

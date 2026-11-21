@@ -1,20 +1,20 @@
-//! # A `full` capture marks its object keep-full in the CAS
+//! # A `full` capture records the empty object as its only permitted base
 //!
 //! `save = "full"` promises that the artifact is never stored as a delta
 //! against another blob. The coordinator is what turns the promise into a fact:
-//! the capture spec the step declares is the mode the run recorded, and the step
-//! that records it marks the object in the store.
+//! the capture spec the step declares is the mode the run recorded, and the
+//! step that records it constrains the object in the store.
 //!
-//! These tests run a real step and read the marker back through the public CAS
-//! API, so they prove the whole path — document, recorded spec, capture, store —
-//! rather than the capture helper alone. The negative case matters as much as
-//! the positive one: a marker written for every capture would satisfy the
-//! positive test while making the mode meaningless.
+//! These tests run a real step and read the constraint back through the public
+//! CAS API, so they prove the whole path - document, recorded spec, capture,
+//! store - rather than the capture helper alone. The negative case matters as
+//! much as the positive one: a constraint written for every capture would
+//! satisfy the positive test while making the mode meaningless.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{TestConductor, doc_with_workflows, echo_tool, workflow_with_steps};
-use mediapm_cas::ConstraintApi;
+use mediapm_cas::{ConstraintApi, Hash};
 use mediapm_conductor::api::RunWorkflowOptions;
 use mediapm_conductor::{OutputCaptureSpec, SaveMode, WorkflowStepSpec};
 
@@ -66,39 +66,46 @@ async fn run_and_take_alpha_hash(tc: &TestConductor) -> mediapm_cas::Hash {
     instance.outputs["alpha"].hash_nk.expect("alpha output hash")
 }
 
-/// A step whose capture says `full` leaves its output marked in the CAS.
+/// A step whose capture says `full` leaves its output constrained to the empty
+/// base.
 ///
 /// The user-level guarantee: an artifact the config asked to keep whole is
 /// protected from being re-encoded as a delta of another blob.
 #[tokio::test]
-async fn a_full_capture_marks_its_object_keep_full() {
+async fn a_full_capture_records_the_empty_object_as_its_only_base() {
     let tc = TestConductor::new();
     write_one_capture_step(&tc, SaveMode::Full);
 
     let hash = run_and_take_alpha_hash(&tc).await;
 
-    assert!(
-        tc.conductor().cas().is_keep_full(hash).await.expect("the marker must be readable"),
-        "a `full` capture must mark its object keep-full",
+    assert_eq!(
+        tc.conductor().cas().get_constraint(hash).await.expect("the constraint must be readable"),
+        BTreeSet::from([Hash::empty()]),
+        "a full capture must record the empty object as its only permitted base"
     );
     tc.shutdown().await;
 }
 
-/// A step whose capture says `true` leaves its output unmarked.
+/// A step whose capture says `true` leaves its output unconstrained.
 ///
-/// `true` keeps the bytes but promises nothing about their encoding, so a mark
-/// here would make every saved artifact permanently unoptimizable and say
-/// nothing the mode asked for.
+/// `true` keeps the bytes but promises nothing about their encoding, so a
+/// constraint here would make every saved artifact permanently unoptimizable
+/// and say nothing the mode asked for.
 #[tokio::test]
-async fn a_true_capture_leaves_its_object_unmarked() {
+async fn a_true_capture_records_no_constraint() {
     let tc = TestConductor::new();
     write_one_capture_step(&tc, SaveMode::True);
 
     let hash = run_and_take_alpha_hash(&tc).await;
 
     assert!(
-        !tc.conductor().cas().is_keep_full(hash).await.expect("the marker must be readable"),
-        "only a `full` capture marks its object",
+        tc.conductor()
+            .cas()
+            .get_constraint(hash)
+            .await
+            .expect("the constraint must be readable")
+            .is_empty(),
+        "only a `full` capture records a full-capture constraint"
     );
     tc.shutdown().await;
 }

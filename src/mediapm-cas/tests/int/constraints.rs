@@ -176,10 +176,10 @@ async fn a_deleted_target_leaves_no_constraint_behind_for_the_next_run() {
     );
 }
 
-/// Per-base pruning: deleting all bases leaves constraint with empty bases
-/// (no effective constraint = any base or full allowed).
+/// Per-base pruning: deleting all bases pins a live target to full rather
+/// than widening it to any base.
 #[tokio::test]
-async fn prune_all_bases_leaves_empty_entry() {
+async fn prune_all_bases_pins_full() {
     let cas = new_in_memory_cas();
     let target = put_static(&cas, b"target").await;
     let base = put_static(&cas, b"base").await;
@@ -188,8 +188,11 @@ async fn prune_all_bases_leaves_empty_entry() {
     cas.delete(base).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
 
-    let bases = cas.get_constraint(target).await.unwrap();
-    assert!(bases.is_empty(), "all bases pruned -> empty effective set, constraint entry removed");
+    assert_eq!(
+        cas.get_constraint(target).await.unwrap(),
+        BTreeSet::from([Hash::empty()]),
+        "all bases pruned -> pin full, not widen to any base"
+    );
 }
 
 /// Constraint written to WAL (write-back) is visible via WAL fallback

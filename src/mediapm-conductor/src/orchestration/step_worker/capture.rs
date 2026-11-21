@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mediapm_cas::{CasApi, ConstraintApi};
+use mediapm_cas::{CasApi, ConstraintApi, Hash};
 
 use crate::config::{OutputCaptureSpec, SaveMode};
 use crate::error::ConductorError;
@@ -85,8 +85,8 @@ fn sandbox_relative_path(path: &Path, sandbox_dir: &Path) -> Option<String> {
 /// Resolution of one capture attempt before CAS storage.
 ///
 /// `AllowedEmpty` represents an allowed capture that matched nothing: the caller
-/// must record `hash_nk: None` and store nothing (no `cas.put`, no keep-full
-/// mark). `Missing` means nothing matched and the spec is strict; the dispatch
+/// must record `hash_nk: None` and store nothing (no `cas.put`, no full-capture
+/// constraint). `Missing` means nothing matched and the spec is strict; the dispatch
 /// arm turns it into a step failure naming the output, the capture token, the
 /// sandbox path, and the fact that `allow_empty` is false.
 enum CaptureResolution {
@@ -329,17 +329,19 @@ async fn resolve_capture_spec(
 /// the spec beside it says the bytes were produced the way the reusing step
 /// would produce them.
 ///
-/// A capture whose spec says [`SaveMode::Full`] also marks its object keep-full
-/// in the store, because the mark is the only record of what `full` promises:
-/// that these bytes are never re-encoded as a delta against another blob.
+/// A capture whose spec says [`SaveMode::Full`] records the empty object as
+/// the only base that captured object may be compressed against, because a
+/// delta against empty content is the content itself. That constraint is the
+/// whole of what `full` promises.
 ///
 /// # Errors
 ///
 /// Returns [`ConductorError::Cas`] when the bytes cannot be stored, and when a
-/// `full` capture's marker cannot be recorded. The mark fails the step rather
-/// than being retried or ignored: a run that recorded a `full` capture without
-/// its mark would leave the promise in the state document and nothing in the
-/// store, and only the next maintenance pass would discover the difference.
+/// `full` capture's constraint cannot be recorded. The constraint fails the
+/// step rather than being retried or ignored: a run that recorded a `full`
+/// capture without its constraint would leave the promise in the state
+/// document and nothing in the store, and only the next maintenance pass would
+/// discover the difference.
 pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
     cas: &C,
     output_specs: &BTreeMap<String, OutputCaptureSpec>,
@@ -369,9 +371,14 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
             CaptureResolution::Store(data) => {
                 let hash = cas.put(bytes::Bytes::from(data)).await.map_err(ConductorError::Cas)?;
 
-                // After the put, so the mark can only describe an object that exists.
+                // After the put, so the constraint can only describe an object
+                // that exists. The empty object is the only base a `full`
+                // capture may be compressed against, which is what keeps its
+                // bytes whole: a delta against empty content is the content.
                 if spec.save == SaveMode::Full {
-                    cas.mark_keep_full(hash).await.map_err(ConductorError::Cas)?;
+                    cas.set_constraint(hash, BTreeSet::from([Hash::empty()]))
+                        .await
+                        .map_err(ConductorError::Cas)?;
                 }
 
                 records.insert(
