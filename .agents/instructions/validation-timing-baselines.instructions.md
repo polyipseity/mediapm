@@ -32,15 +32,27 @@ Record these fields for every baseline. Write `unknown` or `not captured`, never
 
 | Field | Value |
 | --- | --- |
-| Record | `ci-build-test-44865482029`, 2026-11-21T04:18:50Z-04:33:00Z |
-| Commit | `6847623b99ef40b23da1ac1d1c95a4accded113d` (`main`, push, attempt 1) |
+| Record | `ci-build-test-44900229817`, 2026-11-21T11:40:35Z-11:53:55Z |
+| Commit | `9188a9dcfbe17ebfefd40195a46cb6851ff9d504` (`main`, push, attempt 1, green) |
 | Environment | GitHub Actions ubuntu-latest (3 jobs) + windows-latest (1 job) |
-| Result | success, ~850 s wall |
-| Cache | All four jobs restore-key partial hits, `full match: false`; not an exact-key before/after pair |
-| Counts | Build & Test nextest `[148.026s] 3059 run: 3059 passed (5 slow), 0 skipped`; Feature Matrix 58/58 clean with per-combination timing lines; Release Build and Windows job green |
-| Evidence | <https://github.com/polyipseity/mediapm/actions/runs/44865482029>, `/tmp/t7-evidence.txt` |
+| Result | success, ~800 s wall (Build & Test 797 s, Feature Matrix 102 s, Release Build 127 s, Windows 303 s) |
+| Cache | All four jobs exact-key full matches, `full match: true`, Post Cache `Cache up-to-date` (see warmed pair below) |
+| Counts | Build & Test nextest `[128.694s] 3061 run: 3061 passed (5 slow), 0 skipped`; Feature Matrix 58/58 check clean; Release Build green; Windows nextest 13 + 43 passed |
+| Build & Test steps | cheap checks 329.5 s, install ffprobe 14.0 s, tests 353.4 s (nextest 128.694 s), doctests+rustdoc 34.9 s, build 47.6 s |
+| Evidence | <https://github.com/polyipseity/mediapm/actions/runs/44900229817>, `/tmp/ci-evidence/44900229817/` |
 
-Older CI runs (43609375823, 43379058938, 44753912879 failure, commitlint rows) and the D0-D7 diagnostic pass remain in git history before `91776606`.
+Older CI runs (44865482029, 44880796368 attempt-1 flake/rerun, 43609375823, 43379058938, 44753912879, commitlint rows) and the D0-D7 diagnostic pass remain in git history before `91776606`.
+
+## Warmed exact-key CI cache pair
+
+Before: 44865482029 (`6847623b`, 2026-11-21T04:18:50Z, green, attempt 1) restored on partial keys and saved exact keys. After: 44900229817 (`9188a9dc`, 2026-11-21T11:40:35Z, green, attempt 1) restored those exact keys. The pair is clean (both attempt 1 green, no rerun-to-green). 44880796368 (`e9b75631`) is not used as the after record because attempt 1 failed on the scheduler flake before rerun.
+
+| Job | Before key / restore | After key / restore | Before wall | After wall |
+| --- | --- | --- | --- | --- |
+| Build & Test | `v0-rust-ci-build-Linux-x64-bbe94a93-8274b117` partial, `full match: false` | same key, `full match: true` | 846 s | 797 s |
+| Feature Matrix | `v0-rust-ci-feature-matrix-Linux-x64-bbe94a93-a142a65c` partial, `full match: false` (rustc 1.100.0) | `v0-rust-ci-feature-matrix-Linux-x64-9c09dd5e-8274b117`, `full match: true` (rustc 1.99.1, same-run skew) | 51 s | 102 s |
+| Release Build | `v0-rust-ci-release-Linux-x64-bbe94a93-a142a65c` partial, `full match: false` | `v0-rust-ci-release-Linux-x64-bbe94a93-8274b117`, `full match: true` | 152 s | 127 s |
+| Windows: Workspace Tests | `v0-rust-ci-windows-Windows_NT-x64-21b8dcfc-dd242995` partial, `full match: false` | `v0-rust-ci-windows-Windows_NT-x64-21b8dcfc-c597198c`, `full match: true` | 380 s | 303 s |
 
 ## Newest local baseline
 
@@ -63,7 +75,8 @@ The 2026-11-14 partial/warm time-to-fail record, the 2026-11-15 clean sequential
 | R12 | Excluded, no-go for this closure scope. | D5/D0 in git history. Revisit only with an owner-approved scoped plan. |
 | Feature-matrix parallelism D1/D2 contention, safety, P5 accounting | No-go, proof-gated; sequential D0 retained. | WP5 disposition in git history (`.superpowers/sdd/2026-11-16-task-5-feature-matrix-parallelism-proof-plan/wp5-disposition.md`). |
 | CI per-combination timing rows | Measured for 44865482029; D3.2 table in git history. | Add future run rows here when captured. |
-| Warmed post-cache CI exact-key pair | Open; 44865482029 is restore-key partial only. | Record a clean exact-key green before/after pair here when available. |
+| Warmed post-cache CI exact-key pair | Closed by 44865482029 (before, partial save) and 44900229817 (after, exact hit, both attempt 1 green). | Warmed pair table above; 44880796368 excluded because attempt 1 red. |
+| Same-run rustc skew across CI jobs (stable channel) | Accepted environment constraint. | Feature Matrix observed rustc 1.99.1 while other jobs observed rustc 1.100.0 on 44900229817; env hash differs, so Feature Matrix cache key differs. Do not pin toolchain; record skew when observed. |
 | Runner hardware / queue internals | Accepted environment constraint. | GitHub Actions did not expose them. |
 | Windows-local runs | Accepted environment constraint. | CI Windows evidence in git history; local Windows not run. |
 | `/tmp` diagnostics ephemeral | Accepted; durable transcriptions kept in git history. | Re-stage raw logs durably if needed. |
