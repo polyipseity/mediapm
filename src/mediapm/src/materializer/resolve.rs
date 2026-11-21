@@ -642,8 +642,6 @@ impl ExpectedInputHashes {
     }
 }
 
-/// The strict pass's answer for one step.
-
 /// The material that identifies a step's work, and what stopped it from being
 /// derived.
 struct WorkMaterialResolution {

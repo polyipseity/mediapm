@@ -487,3 +487,61 @@ async fn invalidating_the_last_step_preserves_the_impure_import_output_in_cas()
     drop(service);
     Ok(())
 }
+
+/// Changing the upstream payload bytes re-executes the changed step and its
+/// dependents, and the materializer resolves to the newly produced instances.
+///
+/// A re-execution that produces different bytes creates a new instance record.
+/// The conductor records the current instance in `step_instances`, so the
+/// materializer must select it rather than refuse between disagreeing records.
+#[tokio::test]
+async fn changing_upstream_bytes_re_executes_dependents_and_resolves_the_new_instances()
+-> Result<(), MediaPmError> {
+    let (_mock, _seams) = stub_upstreams().await;
+    let mut runtime = MediaRuntimeStorage::default();
+    runtime.tools.insert("ffmpeg".to_string(), mediapm::ToolRequirement::default());
+    let (mut service, _root, _cache) = service_with_cache(runtime).await?;
+    let step2_options =
+        BTreeMap::from([("crf".to_string(), TransformInputValue::String("23".to_string()))]);
+    let step3_options =
+        BTreeMap::from([("crf".to_string(), TransformInputValue::String("28".to_string()))]);
+    let media_id =
+        seed_three_step_workspace(&mut service, step2_options.clone(), step3_options.clone())
+            .await?;
+
+    let tools = sync_tools(&mut service).await?;
+    assert!(tools.added_tools >= 1, "ffmpeg must be provisioned: {tools:?}");
+
+    let first = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(first.executed_steps, 3, "first run must execute all steps: {first:?}");
+    let cached = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(cached.executed_steps, 0, "steps must be cached before the change: {cached:?}");
+
+    // Replace the ingested payload with different bytes so the import step's
+    // output changes and every dependent step's resolved input changes with it.
+    let cas = service.conductor().cas().clone();
+    let new_hash = cas
+        .put(Bytes::from_static(b"incrementality probe payload, changed"))
+        .await
+        .map_err(|e| MediaPmError::Workflow(format!("seed changed payload: {e}")))?;
+    replace_three_step_source(
+        &mut service,
+        &media_id,
+        &new_hash.to_string(),
+        step2_options,
+        step3_options,
+    )?;
+
+    let rerun = sync_library_with_test_terminal(&mut service, false).await?;
+    assert_eq!(
+        rerun.executed_steps, 3,
+        "changed upstream bytes must re-execute the import and every dependent step: {rerun:?}"
+    );
+    assert!(
+        rerun.missing_paths == 0,
+        "the re-executed workflow must materialize successfully: {rerun:?}"
+    );
+
+    drop(service);
+    Ok(())
+}
