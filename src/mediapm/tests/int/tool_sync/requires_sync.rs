@@ -1,6 +1,7 @@
 use super::v2_state_json;
 use mediapm::{
-    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
+    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRecheck, ToolRegistryEntry,
+    ToolRequirement,
 };
 use mediapm_conductor::cache::Cache;
 use mediapm_conductor::cache::CacheDomainConfig;
@@ -38,7 +39,10 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
         cache_root_override: Some(cache_root.path().to_path_buf()),
         ..MediaRuntimeStorage::default()
     };
-    overrides.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    overrides.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
     let mut state = MediaPmState::default();
@@ -76,7 +80,10 @@ async fn sync_requires_sync_when_the_cache_root_is_held_open() -> Result<(), med
         cache_root_override: Some(cache_root.path().to_path_buf()),
         ..MediaRuntimeStorage::default()
     };
-    overrides.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    overrides.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
     let mut state = MediaPmState::default();
@@ -126,12 +133,10 @@ async fn sync_tool_registry_entry_version_matches_canonical() -> Result<(), medi
         "media-tagger".to_string(),
         // `ToolRegistryEntry.canonical_version` uses the resolved canonical
         // version (git hash), not the requirement's version_spec.
-        ToolRequirement::default(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
     );
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let bytes = std::fs::read(&service.paths().mediapm_state_json)
         .expect("state.json should exist after sync");
@@ -178,6 +183,7 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
                 vcs_hash: None,
                 tag: None,
             }),
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         },
     );
@@ -197,10 +203,13 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
 #[tokio::test]
 async fn sync_no_pruning_for_configured_tools() -> Result<(), mediapm::MediaPmError> {
     let mut runtime = MediaRuntimeStorage::default();
-    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    runtime.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
     let summary = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
     assert_eq!(
         summary.pruned_tools, 0,
@@ -250,9 +259,7 @@ async fn sync_upgrades_v2_state_to_current_format() -> Result<(), mediapm::Media
     let state_path = service.paths().mediapm_state_json.clone();
     std::fs::write(&state_path, serde_json::to_string_pretty(&v2_state_json(false)).unwrap())
         .expect("write v2 state.json");
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     // After sync, state.json should be the current format (array instead of map).
     let content = std::fs::read_to_string(&state_path).expect("read state.json after sync");
@@ -303,7 +310,10 @@ async fn state_default_on_missing_file() -> Result<(), mediapm::MediaPmError> {
 async fn regression_warning_check_uses_sync_cache() -> Result<(), mediapm::MediaPmError> {
     let (mock, _seams) = mock_all_managed_tools().await;
     let mut runtime = MediaRuntimeStorage::default();
-    runtime.tools.insert("ffmpeg".to_string(), ToolRequirement::default());
+    runtime.tools.insert(
+        "ffmpeg".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
     let (service, _root, cache_root) = service_with_cache(runtime).await?;
 
     // A tag no upstream serves, so only this cache can produce it. The macOS
@@ -387,16 +397,18 @@ async fn sync_leaves_no_tool_requiring_sync() -> Result<(), mediapm::MediaPmErro
                 "deno".to_string(),
                 mediapm::ConfigVersionSpec::Latest,
             )]),
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         },
     );
     // deno is declared as well as depended on, so the warning check has a
     // requirement to resolve it against rather than skipping it as undeclared.
-    runtime.tools.insert("deno".to_string(), ToolRequirement::default());
+    runtime.tools.insert(
+        "deno".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let state = read_state(&service);
     for tool_id in ["yt-dlp", "deno"] {

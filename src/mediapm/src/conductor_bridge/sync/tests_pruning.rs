@@ -1,6 +1,6 @@
 //! Stale tool keys and directories: pruning them, and telling an update from an addition.
 
-use crate::config::ToolRequirement;
+use crate::config::{ToolRecheck, ToolRequirement};
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolSpec};
@@ -78,6 +78,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
                 tag: None,
             },
         ),
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
@@ -89,7 +90,7 @@ async fn reconcile_retain_active_set_uses_conductor_tool_ids() {
         &desired_tools,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),
@@ -149,7 +150,7 @@ async fn reconcile_prunes_old_tool_version_clears_content_map() {
 
     // Desired tools with media-tagger.
     let mut desired_tools = BTreeMap::new();
-    let req = ToolRequirement::default();
+    let req = ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() };
     desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
 
     let workspace_cas = super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
@@ -159,7 +160,7 @@ async fn reconcile_prunes_old_tool_version_clears_content_map() {
         &desired_tools,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),
@@ -234,6 +235,7 @@ async fn reconcile_media_tagger_latest(
         "media-tagger".to_string(),
         serde_json::to_value(ToolRequirement {
             version_spec: ConfigVersionSpec::Latest,
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         })
         .unwrap(),
@@ -244,7 +246,7 @@ async fn reconcile_media_tagger_latest(
         &desired_tools,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         state,
         Some(cache_root),
         &ProgressScreen::disabled(),
@@ -473,7 +475,7 @@ async fn reconcile_drops_manual_entries_from_generated_doc() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),
@@ -537,7 +539,7 @@ async fn regression_a_seeded_entry_no_sync_produces_is_pruned() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),
@@ -602,7 +604,7 @@ async fn regression_a_generated_document_naming_an_unregistered_builtin_is_prune
         &BTreeMap::new(),
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),

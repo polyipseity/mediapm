@@ -827,7 +827,7 @@ async fn run_tools_update_precheck(
 
     // The workspace records no tool entry, so every declared tool is deployed
     // and none can be an update. See this function's doc comment.
-    let summary = service.sync_tools_with_tag_update_checks(false, false).await?;
+    let summary = service.sync_tools_with_tag_update_checks(None, false).await?;
     if summary.added_tools != expected_declared_tools || summary.updated_tools != 0 {
         return Err(format!(
             "tools-update precheck expected {expected_declared_tools} added tools and no update but observed added={} updated={} (skipped {:?}, warnings {:?})",

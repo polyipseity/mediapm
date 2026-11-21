@@ -6,7 +6,8 @@ use crate::common::{
     read_generated_doc, read_state, service_with_cache, test_sync_progress_overrides,
 };
 use mediapm::{
-    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
+    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRecheck, ToolRegistryEntry,
+    ToolRequirement,
 };
 use mediapm_conductor::{
     ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, encode_document,
@@ -66,9 +67,7 @@ use mediapm_conductor::{
 async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) = seeded_three_tool_skip_service().await?;
 
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     // The exact specs match the seeded resolved versions → all three tools
     // spec-skip; the inlined structure must survive intact.
@@ -126,9 +125,7 @@ async fn sync_skip_preserves_inlined_deps() -> Result<(), mediapm::MediaPmError>
 async fn sync_env_has_no_deps_garbage() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) = seeded_three_tool_skip_service().await?;
 
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let content = std::fs::read_to_string(&service.paths().env_generated_file)
         .expect("env file should be readable");
@@ -227,6 +224,7 @@ async fn yt_dlp_with_deno_service() -> Result<
                 "deno".to_string(),
                 mediapm::ConfigVersionSpec::Latest,
             )]),
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         },
     );
@@ -243,9 +241,7 @@ async fn yt_dlp_with_deno_service() -> Result<
 async fn sync_inlines_same_step_deps_into_content_map() -> Result<(), mediapm::MediaPmError> {
     let (_mock, _seams) = mock_all_managed_tools().await;
     let (mut service, _root, _cache_root) = yt_dlp_with_deno_service().await?;
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     // Generated doc: the requester's ACTIVE spec (name match + non-empty
     // content map — pruned stale keys keep the name with a cleared map).
@@ -411,7 +407,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
         .expect("write seeded state");
 
     let summary = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
 
     // The skip was reachable and the composite was stale, so the entry had to
@@ -512,9 +508,7 @@ async fn sync_dep_version_change_reprovisions_requester() -> Result<(), mediapm:
 async fn sync_level_ordering_applies_deps_before_requesters() -> Result<(), mediapm::MediaPmError> {
     let (_mock, _seams) = mock_all_managed_tools().await;
     let (mut service, _root, _cache_root) = yt_dlp_with_deno_service().await?;
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let doc = read_generated_doc(&service);
     let deno_spec = doc
@@ -576,7 +570,7 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
     // Run 1
     let (mut svc1, _root1, _cache1) = yt_dlp_with_deno_service().await?;
     let summary1 = svc1
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
     let doc1_bytes = std::fs::read(svc1.paths().conductor_generated_ncl.clone())
         .expect("generated doc readable");
@@ -584,7 +578,7 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
     // Run 2 (separate workspace, separate cache)
     let (mut svc2, _root2, _cache2) = yt_dlp_with_deno_service().await?;
     let summary2 = svc2
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
     let doc2_bytes = std::fs::read(svc2.paths().conductor_generated_ncl.clone())
         .expect("generated doc readable");

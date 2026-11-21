@@ -160,7 +160,7 @@ async fn stub_upstreams()
 async fn sync_tools(
     service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
 ) -> Result<mediapm::ToolsSyncSummary, MediaPmError> {
-    service.sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides()).await
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await
 }
 
 /// Replaces the three-step source, keeping the same media identity, so the next

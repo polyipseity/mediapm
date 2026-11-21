@@ -27,14 +27,19 @@ use crate::tools::downloader::ToolDownloadCache;
 #[cfg(test)]
 use mediapm_conductor::tools::provider::host_arch_label;
 
-/// Whether to force re-resolve or use cached metadata.
+/// Whether a metadata lookup may read the cache.
+///
+/// This answers one question only: may this lookup read a cached answer? It
+/// does not decide whether a recorded deployment may stand in for a resolution;
+/// that decision belongs to the sync's `recheck` gate, which runs before any
+/// metadata lookup happens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum RecheckPolicy {
-    /// Force re-resolve — ignore cached metadata, always fetch from source.
-    ForceReResolve,
-    /// Use cached metadata if available.
+pub enum CacheBypass {
+    /// Read the cache when an entry exists.
     #[default]
-    UseCached,
+    Allowed,
+    /// Ignore the cache, so the answer comes from upstream.
+    Forced,
 }
 
 /// Wraps a [`Cache`] reference and domain, counting every `lookup_bytes` call.
@@ -47,15 +52,15 @@ pub(crate) struct MetadataCacheTracker<'a> {
     inner: &'a Cache,
     domain: String,
     count: AtomicU32,
-    policy: RecheckPolicy,
+    bypass: CacheBypass,
 }
 
 impl<'a> MetadataCacheTracker<'a> {
     /// Creates a new tracker wrapping the given cache and domain.
     ///
     /// Compiled only under `cfg(test)`: the production call site uses
-    /// [`Self::with_policy`] to pick up a recheck policy, so this
-    /// always-`UseCached` shortcut has no non-test caller.
+    /// [`Self::with_bypass`] to pick up a cache-bypass decision, so this
+    /// always-allowed shortcut has no non-test caller.
     #[must_use]
     #[cfg(test)]
     pub(crate) fn new(inner: &'a Cache, domain: &str) -> Self {
@@ -63,24 +68,24 @@ impl<'a> MetadataCacheTracker<'a> {
             inner,
             domain: domain.to_string(),
             count: AtomicU32::new(0),
-            policy: RecheckPolicy::UseCached,
+            bypass: CacheBypass::Allowed,
         }
     }
 
-    /// Creates a new tracker with the given recheck policy.
+    /// Creates a new tracker with the given cache-bypass decision.
     #[must_use]
-    pub(crate) fn with_policy(inner: &'a Cache, domain: &str, policy: RecheckPolicy) -> Self {
-        Self { inner, domain: domain.to_string(), count: AtomicU32::new(0), policy }
+    pub(crate) fn with_bypass(inner: &'a Cache, domain: &str, bypass: CacheBypass) -> Self {
+        Self { inner, domain: domain.to_string(), count: AtomicU32::new(0), bypass }
     }
 
     /// Delegates to [`Cache::lookup_bytes`] for the tracked domain and
     /// increments the internal lookup counter.
     ///
-    /// When `policy` is [`RecheckPolicy::ForceReResolve`], always returns
-    /// `None` (skipping cache) but still counts the lookup for telemetry.
+    /// When the bypass is [`CacheBypass::Forced`], always returns `None`
+    /// (skipping cache) but still counts the lookup for telemetry.
     pub(crate) async fn lookup_bytes(&self, key: &str) -> Option<Vec<u8>> {
         self.count.fetch_add(1, Ordering::Relaxed);
-        if self.policy == RecheckPolicy::ForceReResolve {
+        if self.bypass == CacheBypass::Forced {
             return None;
         }
         self.inner.lookup_bytes(&self.domain, key).await
@@ -787,10 +792,10 @@ pub(crate) async fn resolve_tool_fetch(
     tool_name: &str,
     version_target: &VersionSpec,
     metadata_cache: Option<(&Cache, &str)>,
-    recheck_policy: RecheckPolicy,
+    cache_bypass: CacheBypass,
 ) -> Result<(ResolvedToolFetch, ResolvedToolMetadata), mediapm_conductor::ConductorError> {
     let tracker = metadata_cache
-        .map(|(cache, domain)| MetadataCacheTracker::with_policy(cache, domain, recheck_policy));
+        .map(|(cache, domain)| MetadataCacheTracker::with_bypass(cache, domain, cache_bypass));
     let tracker_ref = tracker.as_ref();
 
     let (fetch, mut metadata) = match tool_name {
@@ -1070,7 +1075,7 @@ mod tests {
                 name,
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await;
             assert!(result.is_ok(), "tool {name}: resolve should succeed");
@@ -1167,13 +1172,9 @@ mod tests {
     )]
     async fn resolve_tool_fetch_rejects_unknown() {
         let _env = lock_process_env();
-        let result = resolve_tool_fetch(
-            "no-such-tool",
-            &VersionSpec::Latest,
-            None,
-            RecheckPolicy::default(),
-        )
-        .await;
+        let result =
+            resolve_tool_fetch("no-such-tool", &VersionSpec::Latest, None, CacheBypass::default())
+                .await;
         assert!(result.is_err(), "unknown tool should return error");
     }
 
@@ -1345,7 +1346,7 @@ mod tests {
             "ffmpeg",
             &VersionSpec::Latest,
             Some((&*cache, "default")),
-            RecheckPolicy::default(),
+            CacheBypass::default(),
         )
         .await
         .expect("ffmpeg resolve should succeed");
@@ -1391,7 +1392,7 @@ mod tests {
             "ffmpeg",
             &VersionSpec::Latest,
             Some((&*cache, "default")),
-            RecheckPolicy::default(),
+            CacheBypass::default(),
         )
         .await
         .expect("ffmpeg resolve should succeed");
@@ -1431,7 +1432,7 @@ mod tests {
             "ffmpeg",
             &VersionSpec::Latest,
             Some((&*cache, "default")),
-            RecheckPolicy::default(),
+            CacheBypass::default(),
         )
         .await
         .expect("ffmpeg resolve should succeed");
@@ -1465,7 +1466,7 @@ mod tests {
             "media-tagger",
             &VersionSpec::Latest,
             Some((&*cache, "default")),
-            RecheckPolicy::default(),
+            CacheBypass::default(),
         )
         .await
         .expect("media-tagger resolve should succeed");
@@ -1526,7 +1527,7 @@ mod tests {
             "ffmpeg",
             &VersionSpec::Latest,
             Some((&*cache, "default")),
-            RecheckPolicy::default(),
+            CacheBypass::default(),
         )
         .await;
 
@@ -1617,7 +1618,7 @@ mod tests {
             "ffmpeg",
             &VersionSpec::Latest,
             Some((&*cache, "default")),
-            RecheckPolicy::default(),
+            CacheBypass::default(),
         )
         .await;
 
@@ -1712,7 +1713,7 @@ mod tests {
                 name,
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -1805,7 +1806,7 @@ mod tests {
                 tool_name,
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -1857,7 +1858,7 @@ mod tests {
                 "ffmpeg",
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -1967,7 +1968,7 @@ mod tests {
                 "yt-dlp",
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -2009,7 +2010,7 @@ mod tests {
                 "ffmpeg",
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -2091,7 +2092,7 @@ mod tests {
                 "deno",
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -2139,7 +2140,7 @@ mod tests {
                 "rsgain",
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -2183,7 +2184,7 @@ mod tests {
                 "sd",
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -2233,14 +2234,10 @@ mod tests {
     )]
     async fn resolve_tool_fetch_media_tagger_canonical_is_git_hash() {
         let _env = lock_process_env();
-        let (_, metadata) = resolve_tool_fetch(
-            "media-tagger",
-            &VersionSpec::Latest,
-            None,
-            RecheckPolicy::default(),
-        )
-        .await
-        .unwrap();
+        let (_, metadata) =
+            resolve_tool_fetch("media-tagger", &VersionSpec::Latest, None, CacheBypass::default())
+                .await
+                .unwrap();
         let canonical = metadata.canonical_version;
         // MEDIAPM_GIT_HASH is the compile-time constant — it may be empty in some
         // test environments without .git, but it must not panic.
@@ -2311,7 +2308,7 @@ mod tests {
                 tool,
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -2319,7 +2316,7 @@ mod tests {
                 tool,
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -2388,7 +2385,7 @@ mod tests {
                 name,
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap_or_else(|e| panic!("resolve {name}: {e}"));
@@ -2408,7 +2405,7 @@ mod tests {
                 "media-tagger",
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap();
@@ -2750,7 +2747,7 @@ mod tests {
                 name,
                 &VersionSpec::Latest,
                 Some((&*cache, "default")),
-                RecheckPolicy::default(),
+                CacheBypass::default(),
             )
             .await
             .unwrap_or_else(|error| panic!("tool {name}: resolve should succeed, got {error:?}"));

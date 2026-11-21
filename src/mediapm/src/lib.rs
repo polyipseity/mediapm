@@ -52,6 +52,7 @@ use std::sync::Arc;
 use url::Url;
 
 pub use conductor_bridge::sync::{content_map_hash, find_active_tool_spec};
+pub use config::ToolRecheck;
 pub use config::versions::{
     apply_v1_contract, apply_v2_contract, apply_v3_contract, apply_v4_contract, apply_v5_contract,
     evaluate_mod_ncl_expression, validate_v1_document, validate_v2_document, validate_v3_document,
@@ -85,7 +86,7 @@ pub use service_standalone::{registered_builtin_ids, resolve_effective_paths_for
 pub use sync_report::{
     SyncLibraryOptions, SyncPhaseObserver, SyncPhaseReport, SyncProgressOverrides,
 };
-pub use tools::provider::RecheckPolicy;
+pub use tools::provider::CacheBypass;
 
 /// Media package descriptor returned by source processing.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -54,8 +54,9 @@ pub enum SyncPhaseReport {
 pub struct SyncLibraryOptions {
     /// Verify materialized content by re-hashing committed files.
     pub verify_materialization: bool,
-    /// Force tag re-resolution instead of using cached metadata.
-    pub check_tag_updates: bool,
+    /// CLI-level recheck override: `Some(Always)` forces resolve and bypasses
+    /// the metadata cache, `None` lets each tool's `recheck_seconds` decide.
+    pub recheck_override: Option<crate::config::ToolRecheck>,
     /// Suppress the three progress screens. Does NOT suppress result
     /// lines — result lines are governed by the observer (see
     /// [`SyncPhaseObserver`]).

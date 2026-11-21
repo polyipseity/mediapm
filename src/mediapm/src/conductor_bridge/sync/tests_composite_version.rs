@@ -6,7 +6,7 @@
 //! pool's gates at sync time or from stored state via
 //! [`dep_segments_from_live_state`] during the post-sync check.
 
-use crate::config::ToolRequirement;
+use crate::config::{ToolRecheck, ToolRequirement};
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use std::collections::BTreeMap;
 
@@ -34,7 +34,7 @@ fn composite_canonical_version_multi_dep_alphabetical() {
 
 #[test]
 fn compute_composite_canonical_version_no_deps() {
-    let req = ToolRequirement::default();
+    let req = ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() };
     let dep_segments = BTreeMap::new();
     let result = compute_composite_canonical_version("v1.0", "ffmpeg", &req, &dep_segments);
     assert_eq!(result, "v1.0");
@@ -66,6 +66,7 @@ fn compute_composite_canonical_version_non_transitive() {
     let req = ToolRequirement {
         version_spec: ConfigVersionSpec::Latest,
         dependencies: deps,
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     // The dep's own stored canonical version is a composite (`ffmpeg-v7.1;x:y`).
@@ -87,6 +88,7 @@ fn compute_composite_canonical_version_with_same_step_deps() {
     let req = ToolRequirement {
         version_spec: ConfigVersionSpec::Latest,
         dependencies: deps,
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     let dep_segments = BTreeMap::from([("ffmpeg".to_string(), "ffmpeg-v7.1".to_string())]);
@@ -115,6 +117,7 @@ fn dep_segments_from_live_state_inherit_matches_any_active_entry() {
     let req = ToolRequirement {
         version_spec: ConfigVersionSpec::Latest,
         dependencies: deps,
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     let live_state: HashMap<String, Vec<ToolRegistryEntry>> = HashMap::from([(
@@ -143,6 +146,7 @@ fn dep_segments_from_live_state_exact_requires_spec_match() {
                 vcs_hash: None,
             }),
         )]),
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     let mismatching = ToolRequirement {
@@ -155,6 +159,7 @@ fn dep_segments_from_live_state_exact_requires_spec_match() {
                 vcs_hash: None,
             }),
         )]),
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     let live_state: HashMap<String, Vec<ToolRegistryEntry>> = HashMap::from([(
@@ -179,6 +184,7 @@ fn dep_segments_from_live_state_skips_empty_content_map() {
     let req = ToolRequirement {
         version_spec: ConfigVersionSpec::Latest,
         dependencies: BTreeMap::from([("ffmpeg".to_string(), ConfigVersionSpec::Latest)]),
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     let live_state: HashMap<String, Vec<ToolRegistryEntry>> =

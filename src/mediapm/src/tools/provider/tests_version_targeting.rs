@@ -100,8 +100,7 @@ async fn exact_tag_fetches_release_assets_and_builds_pinned_urls() {
     }
 
     let result =
-        resolve_tool_fetch("yt-dlp", &exact_tag("2025.07.15"), None, RecheckPolicy::UseCached)
-            .await;
+        resolve_tool_fetch("yt-dlp", &exact_tag("2025.07.15"), None, CacheBypass::Allowed).await;
 
     unsafe {
         std::env::remove_var(GITHUB_API_BASE_ENV);
@@ -158,8 +157,7 @@ async fn exact_tag_missing_asset_names_the_unfilled_slot() {
     }
 
     let result =
-        resolve_tool_fetch("yt-dlp", &exact_tag("2099.01.01"), None, RecheckPolicy::UseCached)
-            .await;
+        resolve_tool_fetch("yt-dlp", &exact_tag("2099.01.01"), None, CacheBypass::Allowed).await;
 
     unsafe {
         std::env::remove_var(GITHUB_API_BASE_ENV);
@@ -203,7 +201,7 @@ async fn ffmpeg_builds_pinned_ffmpeg_is_refused_with_the_retention_reason() {
         ),
     ];
     for (flavor, target) in &pinned_flavors {
-        let result = resolve_tool_fetch("ffmpeg", target, None, RecheckPolicy::UseCached).await;
+        let result = resolve_tool_fetch("ffmpeg", target, None, CacheBypass::Allowed).await;
 
         let Err(error) = result else {
             panic!("a pinned ffmpeg resolve must fail for the {flavor} flavor");
@@ -261,8 +259,7 @@ async fn pinned_tag_with_a_non_dereferenceable_ref_is_refused() {
         std::env::set_var(GITHUB_API_BASE_ENV, server.uri());
     }
 
-    let result =
-        resolve_tool_fetch("yt-dlp", &exact_tag(tag), None, RecheckPolicy::UseCached).await;
+    let result = resolve_tool_fetch("yt-dlp", &exact_tag(tag), None, CacheBypass::Allowed).await;
 
     // SAFETY: same env-lock scope as the set above.
     unsafe {
@@ -337,7 +334,7 @@ async fn stale_tag_as_hash_cache_entry_triggers_reresolve_and_refusal() {
         "yt-dlp",
         &exact_tag(tag),
         Some((&cache, "default")),
-        RecheckPolicy::UseCached,
+        CacheBypass::Allowed,
     )
     .await;
 

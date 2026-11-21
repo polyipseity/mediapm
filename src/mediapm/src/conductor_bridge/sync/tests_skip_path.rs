@@ -1,6 +1,6 @@
 //! The skip path: the runtime it rebuilds and the registry record it writes.
 
-use crate::config::ToolRequirement;
+use crate::config::{ToolRecheck, ToolRequirement};
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolSpec};
@@ -51,7 +51,9 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
 
     // Desired tools with media-tagger.
     let mut desired_tools = BTreeMap::new();
-    let req = ToolRequirement::default();
+    // Reuse is what these tests exercise, so they state the policy that permits
+    // it instead of relying on a default that now re-resolves.
+    let req = ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() };
     desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
 
     let workspace_cas = super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
@@ -61,7 +63,7 @@ async fn reconcile_desired_tools_skipped_tool_preserves_env_entries() {
         &desired_tools,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),
@@ -152,6 +154,7 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
                 tag: None,
             },
         ),
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
@@ -163,7 +166,7 @@ async fn reconcile_keys_tool_runtimes_by_conductor_tool_id() {
         &desired_tools,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),
@@ -245,7 +248,7 @@ async fn regression_skip_path_registers_managed_tool() {
     });
 
     let mut desired_tools = BTreeMap::new();
-    let req = ToolRequirement::default();
+    let req = ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() };
     desired_tools.insert("media-tagger".to_string(), serde_json::to_value(req).unwrap());
 
     let workspace_cas = super::open_workspace_cas_store(&paths).await.expect("open workspace cas");
@@ -255,7 +258,7 @@ async fn regression_skip_path_registers_managed_tool() {
         &desired_tools,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),
@@ -343,6 +346,7 @@ async fn reconcile_media_tagger(
                 tag: None,
             },
         ),
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     let mut desired_tools = BTreeMap::new();
@@ -355,7 +359,7 @@ async fn reconcile_media_tagger(
         &desired_tools,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),
@@ -576,4 +580,210 @@ async fn regression_a_post_resolve_skip_reads_the_newest_deployment() {
         "the newest deployment is another build, so neither record licenses a skip",
     );
     assert_document_and_record_agree(&paths, &report);
+}
+
+/// Fixture for recheck-behavior tests. Extends the skip-path helper pattern
+/// so the same seeded state can exercise different recheck policies without a
+/// parallel setup.
+struct SkipPathFixture {
+    _tmp: mediapm_utils::temp::ManagedTempDir,
+    _cache_root: mediapm_utils::temp::ManagedTempDir,
+    paths: MediaPmPaths,
+    state: MediaPmState,
+    desired_tools: BTreeMap<String, serde_json::Value>,
+    last_report: Option<ToolSyncReport>,
+}
+
+impl SkipPathFixture {
+    /// Creates a fixture for a payload-free builtin tool with a matching spec
+    /// and a pinned version spec so the first skip check can evaluate the
+    /// record.
+    fn new(tool_id: &str) -> Self {
+        let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let cache_root = mediapm_utils::temp::cache_dir().expect("cache dir");
+        let paths = MediaPmPaths::from_root(tmp.path());
+        let spec_content_map = BTreeMap::new();
+        // media-tagger's active spec carries an empty content map, filed under
+        // its bare id. The content map hash is the empty string.
+        let spec_hash = content_map_hash(&spec_content_map);
+        let conductor_tool_id = if spec_hash.is_empty() {
+            tool_id.to_string()
+        } else {
+            format!("{tool_id}@{spec_hash}")
+        };
+        let spec = ToolSpec {
+            name: tool_id.to_string(),
+            kind: ToolKindSpec::default(),
+            runtime: ToolRuntime { content_map: spec_content_map, ..Default::default() },
+            ..Default::default()
+        };
+        let doc = NickelDocument {
+            tools: BTreeMap::from([(conductor_tool_id, spec)]),
+            ..Default::default()
+        };
+        save_conductor_generated_document(&paths, &doc).expect("pre-save generated doc");
+
+        let req = ToolRequirement {
+            version_spec: mediapm_conductor::tools::provider::ConfigVersionSpec::Exact(
+                VersionSpecFields {
+                    version: None,
+                    vcs_hash: Some(crate::global::MEDIAPM_GIT_HASH.to_string()),
+                    tag: None,
+                },
+            ),
+            ..Default::default()
+        };
+        let mut desired_tools = BTreeMap::new();
+        desired_tools.insert(tool_id.to_string(), serde_json::to_value(req).unwrap());
+
+        Self {
+            _tmp: tmp,
+            _cache_root: cache_root,
+            paths,
+            state: MediaPmState::default(),
+            desired_tools,
+            last_report: None,
+        }
+    }
+
+    /// Sets the recheck policy for a desired tool.
+    fn set_recheck_seconds(&mut self, tool_id: &str, recheck: ToolRecheck) {
+        let value = self.desired_tools.get_mut(tool_id).expect("desired tool exists");
+        let mut req: ToolRequirement = serde_json::from_value(value.clone()).expect("req");
+        req.recheck_seconds = recheck;
+        *value = serde_json::to_value(req).expect("serialize req");
+    }
+
+    /// Seeds a matching record for the tool, deployed now.
+    fn seed_matching_record(&mut self, tool_id: &str) {
+        self.seed_matching_record_deployed_ago(tool_id, 0);
+    }
+
+    /// Seeds a matching record deployed `age_secs` ago.
+    fn seed_matching_record_deployed_ago(&mut self, tool_id: &str, age_secs: u64) {
+        let now = mediapm_utils::Timestamp::now().as_unix_secs();
+        let deployed_at = now.saturating_sub(age_secs);
+        self.state.managed_tools.push(ToolRegistryEntry {
+            tool_id: tool_id.to_string(),
+            version: media_tagger_version(),
+            canonical_version: crate::global::MEDIAPM_GIT_HASH.to_string(),
+            content_map_hash: String::new(),
+            deployed_at: mediapm_utils::Timestamp::from_unix_nanos(
+                deployed_at.saturating_mul(1_000_000_000),
+            ),
+            resolved_tag: None,
+            resolved_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            resolved_vcs_hash: Some(crate::global::MEDIAPM_GIT_HASH.to_string()),
+        });
+    }
+
+    /// Runs one reconcile pass and stores the report.
+    async fn run(&mut self) -> ToolSyncReport {
+        let workspace_cas =
+            super::open_workspace_cas_store(&self.paths).await.expect("open workspace cas");
+        let report = reconcile_desired_tools(
+            workspace_cas,
+            &self.paths,
+            &self.desired_tools,
+            &BTreeMap::new(),
+            PayloadStaging::InPlace,
+            None,
+            &self.state,
+            Some(self._cache_root.path()),
+            &ProgressScreen::disabled(),
+            None,
+        )
+        .await
+        .expect("reconcile")
+        .into_report();
+        self.last_report = Some(report.clone());
+        report
+    }
+
+    /// Returns how many resolves the last run performed for the tool.
+    ///
+    /// A first skip resolves nothing; a resolve that ends in a second skip or a
+    /// fetch counts as one. `resolved_field_backfills` is the SkippedAfterResolve
+    /// outcome: the provider resolved, then the composite matched an existing
+    /// deployment, so the resolve happened even though no new artifact was fetched.
+    fn resolve_count(&self, tool_id: &str) -> usize {
+        let report = self.last_report.as_ref().expect("run before counting resolves");
+        let resolved = report.resolved_field_backfills.iter().any(|entry| entry.tool_id == tool_id)
+            || report.tool_records.iter().any(|entry| entry.tool_id == tool_id)
+                && (report.tools_added > 0 || report.tools_updated > 0);
+        usize::from(resolved)
+    }
+}
+
+/// D6: `always` re-resolves even when the recorded deployment matches exactly, so
+/// a user who wants fresh upstream metadata gets it without a flag.
+#[tokio::test]
+async fn recheck_always_resolves_despite_a_matching_record() {
+    let mut fixture = SkipPathFixture::new("media-tagger");
+    fixture.set_recheck_seconds("media-tagger", ToolRecheck::Always);
+    fixture.seed_matching_record("media-tagger");
+
+    let report = fixture.run().await;
+
+    assert_eq!(
+        fixture.resolve_count("media-tagger"),
+        1,
+        "recheck = always must resolve from upstream on every sync"
+    );
+    assert_eq!(report.tools_added, 0, "an unchanged result adds nothing");
+}
+
+/// D6: `never` reuses the record without asking upstream at all.
+#[tokio::test]
+async fn recheck_never_resolves_nothing() {
+    let mut fixture = SkipPathFixture::new("media-tagger");
+    fixture.set_recheck_seconds("media-tagger", ToolRecheck::Never);
+    fixture.seed_matching_record("media-tagger");
+
+    fixture.run().await;
+
+    assert_eq!(
+        fixture.resolve_count("media-tagger"),
+        0,
+        "recheck = never must not contact upstream"
+    );
+}
+
+/// D6: `never` with no recorded deployment must still resolve; the policy
+/// reuses a matching record but cannot reuse what does not exist. The
+/// implementation emits an info notice before resolving (brief Step 8); this
+/// harness asserts the observable resolve/registration behavior.
+#[tokio::test]
+async fn recheck_never_with_no_record_resolves() {
+    let mut fixture = SkipPathFixture::new("media-tagger");
+    fixture.set_recheck_seconds("media-tagger", ToolRecheck::Never);
+    // No record seeded: never cannot reuse what was never deployed.
+
+    let report = fixture.run().await;
+
+    assert_eq!(
+        fixture.resolve_count("media-tagger"),
+        1,
+        "recheck = never with no recorded deployment must resolve"
+    );
+    assert!(
+        report.tool_records.iter().any(|entry| entry.tool_id == "media-tagger"),
+        "resolved tool must be registered in tool_records"
+    );
+}
+
+/// D6: a numeric interval reuses a young record and resolves a stale one.
+#[tokio::test]
+async fn recheck_interval_resolves_only_after_it_elapses() {
+    let mut fixture = SkipPathFixture::new("media-tagger");
+    fixture.set_recheck_seconds("media-tagger", ToolRecheck::AfterSeconds(3600));
+    fixture.seed_matching_record_deployed_ago("media-tagger", 60);
+    fixture.run().await;
+    assert_eq!(fixture.resolve_count("media-tagger"), 0, "a young record is reused");
+
+    let mut stale = SkipPathFixture::new("media-tagger");
+    stale.set_recheck_seconds("media-tagger", ToolRecheck::AfterSeconds(3600));
+    stale.seed_matching_record_deployed_ago("media-tagger", 7200);
+    stale.run().await;
+    assert_eq!(stale.resolve_count("media-tagger"), 1, "an expired record is not reused");
 }

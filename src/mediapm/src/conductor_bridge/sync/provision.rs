@@ -26,8 +26,6 @@ use crate::output::ProgressScreenApi;
 use crate::tools::downloader::ToolDownloadCache;
 #[cfg(test)]
 use crate::tools::provider;
-#[cfg(test)]
-use crate::tools::provider::RecheckPolicy;
 use crate::tools::provider::ResolvedToolMetadata;
 
 /// Result of fetching and importing a tool payload into CAS.
@@ -590,7 +588,7 @@ mod tests {
             "nonexistent-tool",
             &VersionSpec::Latest,
             Some((&*cache, "tool_metadata")),
-            RecheckPolicy::default(),
+            crate::tools::provider::CacheBypass::default(),
         )
         .await;
         assert!(resolve_result.is_err(), "resolve_tool_fetch should reject unknown tools");
@@ -739,7 +737,7 @@ mod tests {
             "yt-dlp",
             &VersionSpec::Latest,
             Some((&*cache, "tool_metadata")),
-            RecheckPolicy::default(),
+            crate::tools::provider::CacheBypass::default(),
         )
         .await
         .unwrap();

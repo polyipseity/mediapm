@@ -33,8 +33,9 @@ use mediapm_conductor::{
     ConfigPayloadStaging, NickelDocument, PayloadStaging, ToolRuntime, ToolSpec,
 };
 
+use crate::config::ToolRecheck;
 use crate::tools::dependency::DependencyTypes;
-use crate::tools::provider::RecheckPolicy;
+use crate::tools::provider::CacheBypass;
 
 use crate::conductor_bridge::documents::{
     apply_builtin_runtime_defaults, load_conductor_generated_document,
@@ -115,12 +116,14 @@ pub(crate) struct ProvisionFailure {
 /// mutations without any async operations.
 #[derive(Debug)]
 enum EntryOutcome {
-    /// First-skip: exact version match against persisted state + CAS available.
+    /// First-skip: the recheck policy permits reuse and the record matches.
     Skipped {
         /// Generated-doc key for the active tool spec.
         key: String,
         /// Runtime from the active tool spec.
         spec_runtime: ToolRuntime,
+        /// Tool record for `managed_tools` registration.
+        tool_record: Box<ToolRegistryEntry>,
     },
     /// Resolved but skipped: composite canonical version already provisioned.
     SkippedAfterResolve {
@@ -167,6 +170,25 @@ enum EntryOutcome {
     },
 }
 
+/// Decides whether a recorded deployment may stand in for a resolution.
+///
+/// `Always` never reuses; `Never` reuses any matching record; a numeric interval
+/// reuses a record younger than it. Matching means what the skip path already
+/// requires: the newest record for the id, the content map the active spec names,
+/// and a payload the workspace still holds.
+fn recheck_permits_reuse(recheck: ToolRecheck, deployed_at: mediapm_utils::Timestamp) -> bool {
+    match recheck {
+        ToolRecheck::Always => false,
+        ToolRecheck::Never => true,
+        ToolRecheck::AfterSeconds(seconds) => {
+            let age = mediapm_utils::Timestamp::now()
+                .as_unix_secs()
+                .saturating_sub(deployed_at.as_unix_secs());
+            age < seconds
+        }
+    }
+}
+
 /// Provisions a single tool entry: resolve metadata, skip checks, and fetch
 /// the tool payload. Returns an [`EntryOutcome`] carrying all computed data;
 /// state mutations happen in [`apply_entry_outcome`].
@@ -185,7 +207,7 @@ enum EntryOutcome {
 /// provisioning.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the parameters are the distinct collaborators the pass reads (the generated document, live tool state, workspace CAS, tool cache, progress screen, recheck policy, per-edge gates/publisher and dep-index map); gathering them into a struct would relocate the list without narrowing any borrow"
+    reason = "the parameters are the distinct collaborators the pass reads (the generated document, live tool state, workspace CAS, tool cache, progress screen, recheck override, per-edge gates/publisher and dep-index map); gathering them into a struct would relocate the list without narrowing any borrow"
 )]
 #[expect(
     clippy::too_many_lines,
@@ -198,7 +220,7 @@ async fn provision_entry(
     workspace_cas: &FileSystemCas,
     cache: &ToolDownloadCache,
     effective_group: &dyn ProgressScreenApi,
-    recheck_policy: RecheckPolicy,
+    recheck_override: Option<ToolRecheck>,
     gates: &pool::DepGates,
     publisher: &mut pool::DepPublisher,
     dep_indices: &BTreeMap<String, usize>,
@@ -206,37 +228,47 @@ async fn provision_entry(
     let tool_id = &entry.tool_id;
     let tool_req = &entry.tool_requirement;
     let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
+    let recheck = recheck_override.unwrap_or(tool_req.recheck_seconds);
+    let cache_bypass = if recheck_override == Some(ToolRecheck::Always) {
+        CacheBypass::Forced
+    } else {
+        CacheBypass::Allowed
+    };
 
-    // First skip check: exact version match against persisted state.
+    if recheck == ToolRecheck::Never && prior_tool_record(live_state, tool_id).is_none() {
+        tracing::info!(
+            tool_id = %tool_id,
+            "recheck_seconds=never but no recorded deployment exists; resolving"
+        );
+    }
+
+    // First skip check: reuse a recorded deployment when the recheck policy
+    // permits it and the record still describes the deployed spec. The policy
+    // check comes first because it is the cheapest and it is the one that can
+    // say "no" for every tool.
     //
-    // Two conditions beyond the version match, because a match is only a skip
-    // when the deployed spec *is* the build the record describes:
-    //
-    // - the record is the newest deployment of this id, the same rule
-    //   `prior_tool_record` applies, rather than the first record that happens
-    //   to name it (the registry keeps every deployment);
-    // - the spec `find_active_tool_spec` would activate carries the content map
-    //   that record was written for. Its preference is the materializer's, not
-    //   this record's, so a document holding another build must not be reported
-    //   as skipped.
-    //
-    // A mismatch falls through to the resolve path instead of failing: a pin the
-    // deployed build no longer satisfies is a normal state that re-provisioning
-    // repairs, and the rewrite below replaces the spec it disagreed with.
-    if tool_req.version_spec != ConfigVersionSpec::Latest
-        && tool_req.version_spec != ConfigVersionSpec::Inherit
-        && let Some(persisted) = prior_tool_record(live_state, tool_id)
+    // Matching means what the skip path already requires: the newest record for
+    // the id, a version spec the record satisfies, the content map the active
+    // spec names, and a payload the workspace still holds. A mismatch falls
+    // through to the resolve path instead of failing: a pin the deployed build
+    // no longer satisfies is a normal state that re-provisioning repairs.
+    if let Some(persisted) = prior_tool_record(live_state, tool_id)
+        && recheck_permits_reuse(recheck, persisted.deployed_at)
     {
-        let resolved_spec = match &tool_req.version_spec {
-            ConfigVersionSpec::Exact(fields) => VersionSpec::Exact(fields.clone()),
-            _ => unreachable!(),
+        let spec_matches = match &tool_req.version_spec {
+            ConfigVersionSpec::Latest | ConfigVersionSpec::Inherit => true,
+            ConfigVersionSpec::Exact(fields) => {
+                let resolved_spec = VersionSpec::Exact(fields.clone());
+                spec_matches_entry(
+                    &resolved_spec,
+                    persisted.resolved_tag.as_deref(),
+                    persisted.resolved_version.as_deref(),
+                    persisted.resolved_vcs_hash.as_deref(),
+                )
+            }
         };
-        if spec_matches_entry(
-            &resolved_spec,
-            persisted.resolved_tag.as_deref(),
-            persisted.resolved_version.as_deref(),
-            persisted.resolved_vcs_hash.as_deref(),
-        ) && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
+        if spec_matches
+            && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
             && content_map_hash(&spec.runtime.content_map) == persisted.content_map_hash
             && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map).await
         {
@@ -248,9 +280,20 @@ async fn provision_entry(
             publisher
                 .publish_version(own_version_segment(&persisted.canonical_version).to_string());
             publisher.publish_own_map(own_map);
+            let tool_record = Box::new(ToolRegistryEntry {
+                tool_id: tool_id.clone(),
+                version: persisted.version.clone(),
+                canonical_version: persisted.canonical_version.clone(),
+                content_map_hash: persisted.content_map_hash.clone(),
+                deployed_at: mediapm_utils::Timestamp::default(),
+                resolved_tag: persisted.resolved_tag.clone(),
+                resolved_version: persisted.resolved_version.clone(),
+                resolved_vcs_hash: persisted.resolved_vcs_hash.clone(),
+            });
             return Ok(EntryOutcome::Skipped {
                 key: key.clone(),
                 spec_runtime: spec.runtime.clone(),
+                tool_record,
             });
         }
     }
@@ -271,7 +314,7 @@ async fn provision_entry(
         tool_id,
         &version_target,
         Some((cache, "tool_metadata")),
-        recheck_policy,
+        cache_bypass,
     )
     .await
     {
@@ -669,8 +712,9 @@ fn apply_entry_outcome(
     let tool_req = &entry.tool_requirement;
 
     match outcome {
-        EntryOutcome::Skipped { key, spec_runtime, .. } => {
+        EntryOutcome::Skipped { key, spec_runtime, tool_record } => {
             tool_runtimes.entry(key).or_insert(spec_runtime);
+            report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
             progress.advance_once(entry_index);
         }
@@ -1177,14 +1221,12 @@ fn build_provisioning_entries(
         // Dependency entries — one per dep, with resolved version spec
         for (dep_id, dep_spec) in &req.dependencies {
             let resolved_spec = resolve_dep_version_spec(dep_spec, dep_id, decoded_tools, tool_id)?;
-            let dep_req = ToolRequirement {
-                version_spec: match resolved_spec {
-                    VersionSpec::Latest => ConfigVersionSpec::Latest,
-                    VersionSpec::Exact(fields) => ConfigVersionSpec::Exact(fields),
-                },
-                dependencies: BTreeMap::new(),
-                ..Default::default()
+            let mut dep_req = decoded_tools.get(dep_id).cloned().unwrap_or_default();
+            dep_req.version_spec = match resolved_spec {
+                VersionSpec::Latest => ConfigVersionSpec::Latest,
+                VersionSpec::Exact(fields) => ConfigVersionSpec::Exact(fields),
             };
+            dep_req.dependencies = BTreeMap::new();
             dep_entries.push(ProvisionEntry {
                 tool_id: dep_id.clone(),
                 tool_requirement: dep_req,
@@ -1547,7 +1589,7 @@ pub(crate) async fn reconcile_desired_tools(
     desired_tools: &BTreeMap<String, serde_json::Value>,
     inherited_env_vars: &BTreeMap<String, Vec<String>>,
     library_payload_staging: PayloadStaging,
-    recheck_policy: RecheckPolicy,
+    recheck_override: Option<ToolRecheck>,
     state: &MediaPmState,
     cache_root_override: Option<&Path>,
     progress_group: &dyn ProgressScreenApi,
@@ -1763,7 +1805,7 @@ pub(crate) async fn reconcile_desired_tools(
             cas_view,
             cache_view,
             progress_group,
-            recheck_policy,
+            recheck_override,
             &gates,
             &mut publisher,
             dep_view,

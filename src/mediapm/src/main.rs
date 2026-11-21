@@ -15,7 +15,7 @@ use clap::{CommandFactory, Parser};
 #[cfg(feature = "cli")]
 use mediapm::MediaPmService;
 #[cfg(feature = "cli")]
-use mediapm::RecheckPolicy;
+use mediapm::ToolRecheck;
 #[cfg(feature = "cli")]
 use mediapm::config::{RuntimeMaterializationConfig, RuntimePathsConfig};
 use mediapm::output::{
@@ -208,11 +208,10 @@ async fn main_cli() -> anyhow::Result<()> {
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
-                let recheck_policy = resolve_recheck_policy(args.recheck_policy);
-                let check_tag_updates = matches!(recheck_policy, RecheckPolicy::ForceReResolve);
+                let recheck_override = resolve_recheck_override(args.recheck_policy);
                 let no_progress = args.no_progress;
                 let summary = service
-                    .sync_tools_with_tag_update_checks(check_tag_updates, no_progress)
+                    .sync_tools_with_tag_update_checks(recheck_override, no_progress)
                     .await?;
                 print_result(
                     mediapm::output::tool_sync_icon(&summary),
@@ -535,19 +534,19 @@ async fn main_cli() -> anyhow::Result<()> {
     }
 }
 
-/// Resolves the recheck policy a `sync` invocation asked for.
+/// Resolves the CLI recheck override a `sync` invocation asked for.
 ///
 /// A free function rather than a method on [`RecheckPolicyArgs`]: the method
 /// form has to be written in the crate that defines the type, and that crate
-/// now lives in `mediapm-cli`, which cannot name `RecheckPolicy`.
+/// now lives in `mediapm-cli`, which cannot name [`ToolRecheck`].
 #[must_use]
-fn resolve_recheck_policy(args: RecheckPolicyArgs) -> RecheckPolicy {
+fn resolve_recheck_override(args: RecheckPolicyArgs) -> Option<ToolRecheck> {
     if args.force_re_resolve {
-        RecheckPolicy::ForceReResolve
+        Some(ToolRecheck::Always)
     } else if args.no_force_re_resolve {
-        RecheckPolicy::UseCached
+        None
     } else {
-        RecheckPolicy::ForceReResolve
+        None
     }
 }
 
@@ -557,11 +556,9 @@ fn resolve_recheck_policy(args: RecheckPolicyArgs) -> RecheckPolicy {
 /// by a test instead of only by a live sync: a flag that parses but never
 /// reaches the options would look identical from the command line.
 fn sync_library_options(args: SyncArgs) -> mediapm::SyncLibraryOptions {
-    let check_tag_updates =
-        matches!(resolve_recheck_policy(args.recheck_policy), RecheckPolicy::ForceReResolve);
     mediapm::SyncLibraryOptions {
         verify_materialization: args.verify_materialization.resolve(true),
-        check_tag_updates,
+        recheck_override: resolve_recheck_override(args.recheck_policy),
         no_progress: args.no_progress,
         observer: Some(std::sync::Arc::new(mediapm::output::observer::CliSyncObserver)),
         force_workflow_rerun: args.force_rerun,

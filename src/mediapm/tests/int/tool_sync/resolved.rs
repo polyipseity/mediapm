@@ -1,5 +1,6 @@
 use mediapm::{
-    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
+    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRecheck, ToolRegistryEntry,
+    ToolRequirement,
 };
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{
@@ -54,9 +55,7 @@ async fn sync_populates_resolved_fields_in_state() -> Result<(), mediapm::MediaP
     runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
     let state: MediaPmState =
@@ -109,9 +108,7 @@ async fn sync_populates_resolved_fields_from_a_download_provider()
     let (_mock, _seams) = mock_all_managed_tools().await;
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let entry = managed_tool_entry(&service, "yt-dlp");
     assert_eq!(
@@ -155,9 +152,7 @@ async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmErr
 
     // First sync provisions media-tagger, populates workspace CAS, and writes
     // conductor.generated.ncl so the skip path can verify content-map bytes.
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let state_path = service.paths().mediapm_state_json.clone();
     let bytes = std::fs::read(&state_path).expect("state.json after provision");
@@ -184,9 +179,7 @@ async fn sync_skip_backfills_resolved_fields() -> Result<(), mediapm::MediaPmErr
     let bytes = serde_json::to_vec(&state).expect("state serializes");
     std::fs::write(&state_path, bytes).expect("write seeded state");
 
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
     let state: MediaPmState =
@@ -248,6 +241,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 tag: None,
             }),
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         },
     );
@@ -303,7 +297,7 @@ async fn sync_exact_version_spec_skips_when_stored_fields_match()
     std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
 
     let summary = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
 
     assert_eq!(
@@ -364,6 +358,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
                 vcs_hash: None,
                 tag: None,
             }),
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         },
     );
@@ -417,9 +412,7 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
     let bytes = encode_document(doc).expect("seeded doc encodes");
     std::fs::write(&generated_path, bytes).expect("write seeded generated doc");
 
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     // The exact spec matches the seeded resolved version → skip fires.
     let content = std::fs::read_to_string(&service.paths().env_generated_file)

@@ -1,4 +1,4 @@
-use mediapm::{MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement};
+use mediapm::{MediaPmState, MediaRuntimeStorage, ToolRecheck, ToolRegistryEntry, ToolRequirement};
 
 use crate::common::stub_upstream::{
     STUB_AUTOBUILD_TAG, STUB_COMMIT_SHA, STUB_DENO_COMMIT_SHA, STUB_MARTIN_RIEDL_BUILD_ID,
@@ -59,11 +59,12 @@ fn tool_entry<'a>(state: &'a MediaPmState, tool_id: &str) -> &'a ToolRegistryEnt
 #[tokio::test]
 async fn sync_stores_composite_canonical_version() -> Result<(), mediapm::MediaPmError> {
     let mut runtime = MediaRuntimeStorage::default();
-    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    runtime.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let bytes = std::fs::read(&service.paths().mediapm_state_json).expect("state.json after sync");
     let state: MediaPmState =
@@ -124,17 +125,22 @@ async fn sync_composite_carries_same_step_dep_segments() -> Result<(), mediapm::
                 ("ffmpeg".to_string(), mediapm::ConfigVersionSpec::Latest),
                 ("deno".to_string(), mediapm::ConfigVersionSpec::Latest),
             ]),
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         },
     );
-    runtime.tools.insert("ffmpeg".to_string(), ToolRequirement::default());
-    runtime.tools.insert("deno".to_string(), ToolRequirement::default());
+    runtime.tools.insert(
+        "ffmpeg".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
+    runtime.tools.insert(
+        "deno".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
 
     let (_mock, _seams) = mock_all_managed_tools().await;
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let state = read_state(&service);
     let yt_dlp = tool_entry(&state, "yt-dlp");
@@ -188,21 +194,20 @@ async fn sync_composite_carries_same_step_dep_segments() -> Result<(), mediapm::
 #[tokio::test]
 async fn sync_skip_triggers_on_unchanged_composite() -> Result<(), mediapm::MediaPmError> {
     let mut runtime = MediaRuntimeStorage::default();
-    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    runtime.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     let state_path = service.paths().mediapm_state_json.clone();
 
     // First sync: media-tagger is provisioned
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
     let state_after_first = std::fs::read(&state_path).expect("state.json after first sync");
 
     // Second sync: media-tagger should be skipped (composite matches)
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
     let state_after_second = std::fs::read(&state_path).expect("state.json after second sync");
 
     assert_eq!(
@@ -228,6 +233,7 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
                 "ffmpeg".to_string(),
                 mediapm::ConfigVersionSpec::Latest,
             )]),
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         },
     );
@@ -260,7 +266,10 @@ async fn sync_logical_requires_sync_composite_comparison() -> Result<(), mediapm
 #[tokio::test]
 async fn sync_logical_requires_sync_on_composite_mismatch() -> Result<(), mediapm::MediaPmError> {
     let mut runtime = MediaRuntimeStorage::default();
-    runtime.tools.insert("media-tagger".to_string(), ToolRequirement::default());
+    runtime.tools.insert(
+        "media-tagger".to_string(),
+        ToolRequirement { recheck_seconds: ToolRecheck::Never, ..Default::default() },
+    );
     let (service, _root, _cache_root) = service_with_cache(runtime).await?;
 
     // Seed state with media-tagger at a WRONG canonical_version.

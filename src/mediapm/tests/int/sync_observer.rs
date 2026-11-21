@@ -469,7 +469,7 @@ mod tests {
     fn sync_library_options_default() {
         let opts = SyncLibraryOptions::default();
         assert!(!opts.verify_materialization);
-        assert!(!opts.check_tag_updates);
+        assert!(opts.recheck_override.is_none());
         assert!(!opts.no_progress);
         assert!(opts.observer.is_none());
     }

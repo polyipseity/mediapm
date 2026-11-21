@@ -1,6 +1,6 @@
 //! Which generated-document entry a tool name resolves to.
 
-use crate::config::ToolRequirement;
+use crate::config::{ToolRecheck, ToolRequirement};
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{ConfigPayloadStaging, NickelDocument, ToolKindSpec, ToolSpec};
@@ -69,6 +69,7 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
                 tag: None,
             },
         ),
+        recheck_seconds: ToolRecheck::Never,
         ..Default::default()
     };
     desired_tools.insert("yt-dlp".to_string(), serde_json::to_value(req).unwrap());
@@ -80,7 +81,7 @@ async fn reconcile_skip_prefers_entry_with_content_map() {
         &desired_tools,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
-        RecheckPolicy::default(),
+        None,
         &state,
         Some(cache_root.path()),
         &ProgressScreen::disabled(),

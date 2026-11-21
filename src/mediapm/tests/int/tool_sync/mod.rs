@@ -15,7 +15,8 @@
 //! of their own behaviour.
 
 use mediapm::{
-    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
+    MediaPmService, MediaPmState, MediaRuntimeStorage, ToolRecheck, ToolRegistryEntry,
+    ToolRequirement,
 };
 use mediapm_conductor::tools::provider::VersionSpecFields;
 use mediapm_conductor::{
@@ -118,6 +119,31 @@ async fn seeded_three_tool_skip_service() -> Result<
                     }),
                 ),
             ]),
+            recheck_seconds: ToolRecheck::Never,
+            ..Default::default()
+        },
+    );
+    runtime.tools.insert(
+        "ffmpeg".to_string(),
+        ToolRequirement {
+            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                version: Some("v7.1".to_string()),
+                vcs_hash: None,
+                tag: None,
+            }),
+            recheck_seconds: ToolRecheck::Never,
+            ..Default::default()
+        },
+    );
+    runtime.tools.insert(
+        "deno".to_string(),
+        ToolRequirement {
+            version_spec: mediapm::ConfigVersionSpec::Exact(VersionSpecFields {
+                version: Some("v1.46.0".to_string()),
+                vcs_hash: None,
+                tag: None,
+            }),
+            recheck_seconds: ToolRecheck::Never,
             ..Default::default()
         },
     );

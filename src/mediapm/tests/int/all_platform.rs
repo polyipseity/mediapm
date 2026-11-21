@@ -208,9 +208,7 @@ async fn every_managed_tool_provisions_a_payload_for_every_os_slot()
     let (_mock, _seams) = mock_all_managed_tools().await;
 
     let (mut service, _root, _cache_root) = service_with_cache(all_managed_tools_storage()).await?;
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let doc = read_generated_doc(&service);
     assert_every_managed_tool_covers_every_os(&doc);

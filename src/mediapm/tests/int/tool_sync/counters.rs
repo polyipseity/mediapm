@@ -33,13 +33,13 @@ async fn regression_a_builtin_that_did_not_change_is_not_updated()
     let (mut service, _root, _cache_root) = service_with_cache(runtime_with_import()).await?;
 
     let first = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
     assert_eq!(first.added_tools, 1, "the first pass deploys the builtin: {first:?}");
     assert_eq!(first.updated_tools, 0, "an absent record is an addition, not an update: {first:?}");
 
     let second = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
     assert_eq!(second.added_tools, 0, "the builtin is already recorded: {second:?}");
     assert_eq!(
@@ -67,7 +67,7 @@ async fn regression_a_builtin_that_did_not_change_is_not_updated()
 async fn regression_a_builtin_build_change_is_an_update() -> Result<(), mediapm::MediaPmError> {
     let (mut service, _root, _cache_root) = service_with_cache(runtime_with_import()).await?;
     let first = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
     assert_eq!(first.added_tools, 1, "the first pass deploys the builtin: {first:?}");
 
@@ -89,7 +89,7 @@ async fn regression_a_builtin_build_change_is_an_update() -> Result<(), mediapm:
         .expect("state.json is writable");
 
     let second = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await?;
     assert_eq!(second.added_tools, 0, "the tool is still recorded: {second:?}");
     assert_eq!(

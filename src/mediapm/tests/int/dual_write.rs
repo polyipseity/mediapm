@@ -33,7 +33,7 @@ async fn conductor_ncl_skips_write_when_unchanged() {
     let (mut service, _root, _cache_root) =
         service_with_cache(MediaRuntimeStorage::default()).await.expect("create service");
     service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await
         .expect("first sync");
     let generated_path = service.paths().conductor_generated_ncl.clone();
@@ -46,7 +46,7 @@ async fn conductor_ncl_skips_write_when_unchanged() {
     // Second sync with identical inputs: generator file should NOT be
     // re-written because content hasn't changed.
     service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await
         .expect("second sync");
     let meta2 = std::fs::metadata(&generated_path).expect("generated file exists");
@@ -79,7 +79,7 @@ async fn regression_state_only_churn_does_not_touch_conductor_file() {
     let (mut service, _root, _cache_root) =
         service_with_cache(runtime).await.expect("create service");
     service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await
         .expect("first sync");
 
@@ -110,7 +110,7 @@ async fn regression_state_only_churn_does_not_touch_conductor_file() {
     // (same as baseline), so payload hasn't changed. The generated NCL should
     // be byte-identical and mtime-unchanged.
     service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await
         .expect("second sync");
 
@@ -160,7 +160,7 @@ async fn dual_write_holds_for_a_downloaded_payload() {
     let (mut service, _root, _cache_root) =
         service_with_cache(runtime).await.expect("create service");
     service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await
         .expect("first sync");
 
@@ -205,7 +205,7 @@ async fn dual_write_holds_for_a_downloaded_payload() {
         .expect("state mtime after backdating");
 
     service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await
         .expect("second sync");
 

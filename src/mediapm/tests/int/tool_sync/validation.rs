@@ -30,7 +30,7 @@ async fn sync_rejects_bad_dependency_key() {
 
     // Sync should fail with MPM-E001 and a suggestion.
     let result = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await;
     let Err(err) = result else {
         panic!("sync should fail with bad dep key, but succeeded");
@@ -73,7 +73,7 @@ async fn sync_rejects_dep_key_not_in_known_types() {
         service_with_cache(runtime).await.expect("service creation");
 
     let result = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await;
     let Err(err) = result else {
         panic!("sync should fail with dep key not in known types, but succeeded");
@@ -103,7 +103,7 @@ async fn sync_rejects_slot_field_on_non_ffmpeg() {
         service_with_cache(runtime).await.expect("service creation");
 
     let result = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await;
     let Err(err) = result else {
         panic!("sync should fail with slot field on non-ffmpeg tool, but succeeded");
@@ -148,9 +148,7 @@ async fn sync_accepts_slot_field_on_ffmpeg() -> Result<(), mediapm::MediaPmError
     let (_mock, _seams) = mock_all_managed_tools().await;
     let (mut service, _root, _cache_root) = service_with_cache(runtime).await?;
 
-    service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
-        .await?;
+    service.sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides()).await?;
 
     let doc = read_generated_doc(&service);
     let content_map = &doc
@@ -194,7 +192,7 @@ async fn sync_accepts_recheck_seconds_on_any_tool() {
         service_with_cache(runtime).await.expect("service creation");
 
     let result = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await;
     assert!(
         result.is_ok(),
@@ -217,7 +215,7 @@ async fn sync_unresolvable_tool_fails_fast_and_writes_nothing() {
         service_with_cache(runtime).await.expect("service creation");
 
     let result = service
-        .sync_tools_with_progress_overrides(false, false, test_sync_progress_overrides())
+        .sync_tools_with_progress_overrides(None, false, test_sync_progress_overrides())
         .await;
     let err = result.expect_err("an unresolvable tool must abort the whole sync");
     let message = err.to_string();

@@ -26,6 +26,7 @@ use crate::conductor_bridge::documents::{
 use crate::conductor_bridge::sync::{
     apply_resolved_field_backfills, open_workspace_cas_store, reconcile_desired_tools,
 };
+use crate::config::ToolRecheck;
 use crate::config::versions;
 use crate::config::{
     MediaPmState, MediaRuntimeStorage, MediaSourceSpec, RuntimeBasePaths, ToolRequirement,
@@ -44,7 +45,6 @@ pub(crate) use crate::service_standalone::*;
 use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
 use crate::tools::downloader::ToolDownloadCache;
 use crate::tools::is_known_tool_id;
-use crate::tools::provider::RecheckPolicy;
 use crate::tools::workflows::{MANAGED_WORKFLOW_PREFIX, reconcile_media_workflows};
 
 use crate::{
@@ -346,7 +346,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
                 tool_id,
                 &VersionSpec::from(&desired.unwrap().version_spec),
                 Some((&cache, "tool_metadata")),
-                RecheckPolicy::default(),
+                crate::tools::provider::CacheBypass::default(),
             )
             .await
             {
@@ -966,11 +966,10 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// Delegates to
     /// [`sync_tools_with_progress_overrides`](Self::sync_tools_with_progress_overrides).
     pub async fn sync_tools(&mut self) -> Result<ToolsSyncSummary, MediaPmError> {
-        self.sync_tools_with_progress_overrides(false, false, SyncProgressOverrides::default())
-            .await
+        self.sync_tools_with_progress_overrides(None, false, SyncProgressOverrides::default()).await
     }
 
-    /// Runs a full tool sync with optional tag-update checks.
+    /// Runs a full tool sync with an optional CLI recheck override.
     ///
     /// # Errors
     ///
@@ -978,11 +977,11 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// [`sync_tools_with_progress_overrides`](Self::sync_tools_with_progress_overrides).
     pub async fn sync_tools_with_tag_update_checks(
         &mut self,
-        check_tag_updates: bool,
+        recheck_override: Option<ToolRecheck>,
         no_progress: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         self.sync_tools_with_progress_overrides(
-            check_tag_updates,
+            recheck_override,
             no_progress,
             SyncProgressOverrides::default(),
         )
@@ -1018,17 +1017,12 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
     /// Delegates to `Self::sync_tools_from_document`.
     pub async fn sync_tools_with_progress_overrides(
         &mut self,
-        check_tag_updates: bool,
+        recheck_override: Option<ToolRecheck>,
         no_progress: bool,
         overrides: SyncProgressOverrides,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
-        let recheck_policy = if check_tag_updates {
-            RecheckPolicy::ForceReResolve
-        } else {
-            RecheckPolicy::UseCached
-        };
 
         // This entry point owns its own sync, so it owns its own terminal.
         // Under `--no-progress` that terminal is inert: no live terminal is
@@ -1038,7 +1032,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         // This entry point runs the tool phase and nothing after it, so no step
         // ever executes from the payloads the phase materialized and the guards
         // end with it.
-        self.sync_tools_from_document(&effective_paths, &merged, recheck_policy, &terminal)
+        self.sync_tools_from_document(&effective_paths, &merged, recheck_override, &terminal)
             .await
             .map(|(summary, _payload_guards)| summary)
     }
@@ -1065,7 +1059,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         &mut self,
         effective_paths: &MediaPmPaths,
         runtime_storage: &MediaRuntimeStorage,
-        recheck_policy: RecheckPolicy,
+        recheck_override: Option<ToolRecheck>,
         terminal: &ProgressTerminal,
     ) -> Result<(ToolsSyncSummary, Vec<ProvisionedTool>), MediaPmError> {
         // Build the desired tools map from runtime storage.
@@ -1104,7 +1098,7 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
             &desired_tools,
             &inherited_env_vars,
             runtime_storage.materialization.payload_staging,
-            recheck_policy,
+            recheck_override,
             &state,
             runtime_storage.cache_root_override.as_deref(),
             &tool_screen,
@@ -1295,7 +1289,7 @@ impl MediaPmService<FileSystemCas> {
         &mut self,
         verify_materialization: bool,
     ) -> Result<SyncSummary, MediaPmError> {
-        self.sync_library_with_tag_update_checks(verify_materialization, false, false).await
+        self.sync_library_with_tag_update_checks(verify_materialization, None, false).await
     }
 
     /// Runs a full library sync with options and an optional phase observer.
@@ -1315,7 +1309,7 @@ impl MediaPmService<FileSystemCas> {
         self.sync_library_with_progress_overrides(options, SyncProgressOverrides::default()).await
     }
 
-    /// Runs a full library sync with optional tag-update checks.
+    /// Runs a full library sync with an optional CLI recheck override.
     ///
     /// # Errors
     ///
@@ -1324,13 +1318,13 @@ impl MediaPmService<FileSystemCas> {
     pub async fn sync_library_with_tag_update_checks(
         &mut self,
         verify_materialization: bool,
-        check_tag_updates: bool,
+        recheck_override: Option<ToolRecheck>,
         no_progress: bool,
     ) -> Result<SyncSummary, MediaPmError> {
         self.sync_library_with_progress_overrides(
             crate::SyncLibraryOptions {
                 verify_materialization,
-                check_tag_updates,
+                recheck_override,
                 no_progress,
                 observer: None,
                 force_workflow_rerun: false,
@@ -1340,7 +1334,7 @@ impl MediaPmService<FileSystemCas> {
         .await
     }
 
-    /// Runs a full library sync with optional tag-update checks and phase observer.
+    /// Runs a full library sync with an optional CLI recheck override and phase observer.
     ///
     /// # Errors
     ///
@@ -1349,14 +1343,14 @@ impl MediaPmService<FileSystemCas> {
     pub async fn sync_library_with_tag_update_checks_and_observer(
         &mut self,
         verify_materialization: bool,
-        check_tag_updates: bool,
+        recheck_override: Option<ToolRecheck>,
         no_progress: bool,
         observer: Option<std::sync::Arc<dyn crate::SyncPhaseObserver + Send + Sync>>,
     ) -> Result<SyncSummary, MediaPmError> {
         self.sync_library_with_progress_overrides(
             crate::SyncLibraryOptions {
                 verify_materialization,
-                check_tag_updates,
+                recheck_override,
                 no_progress,
                 observer,
                 force_workflow_rerun: false,
@@ -1412,7 +1406,7 @@ impl MediaPmService<FileSystemCas> {
     ) -> Result<SyncSummary, MediaPmError> {
         let crate::SyncLibraryOptions {
             verify_materialization,
-            check_tag_updates,
+            recheck_override,
             no_progress,
             observer,
             force_workflow_rerun,
@@ -1425,11 +1419,6 @@ impl MediaPmService<FileSystemCas> {
 
         let effective_paths = self.resolve_effective_paths()?;
         let merged = self.resolve_effective_runtime_storage()?;
-        let recheck_policy = if check_tag_updates {
-            RecheckPolicy::ForceReResolve
-        } else {
-            RecheckPolicy::UseCached
-        };
 
         let mut warnings: Vec<String> = Vec::new();
 
@@ -1440,7 +1429,7 @@ impl MediaPmService<FileSystemCas> {
         // so the user's `--no-progress` flag reaches it through the terminal
         // rather than through a separate flag.
         let (tools_report, payload_guards) = self
-            .sync_tools_from_document(&effective_paths, &merged, recheck_policy, &terminal)
+            .sync_tools_from_document(&effective_paths, &merged, recheck_override, &terminal)
             .await?;
         // The guards hold every provisioned payload for the rest of this run:
         // the workflow phase executes managed tools and the materializer writes
