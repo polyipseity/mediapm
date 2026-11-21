@@ -1215,6 +1215,8 @@ fn script_files_exist_and_are_executable() {
     }
 }
 
+mod docs_budget;
+
 /// Coverage-matrix reference gate.
 ///
 /// The matrix cites code symbols as backticked `a::b::c` paths. This gate
