@@ -22,7 +22,7 @@
 # See nextest docs for details: <https://nexte.st/>
 
 # ── UI/UX ──────────────────────────────────────────────────────────────
-# ── Default profile (local dev) ────────────────────────────────────────
+# ── The profile (local, pre-push and CI) ───────────────────────────────
 # `slow-timeout` takes `{ period, terminate-after }`, and `terminate-after` counts
 # periods, not seconds (nextest's own config reference: "`terminate-after`: Number
 # of periods after which to terminate the test"), so a test's budget is
@@ -37,16 +37,6 @@
 fail-fast = false
 slow-timeout = { period = "10s", terminate-after = 60 }
 leak-timeout = "100ms"
-
-# ── CI profile (more conservative) ─────────────────────────────────────
-# Don't fail fast — collect all failures in one run.
-# Retry flaky tests up to twice before reporting failure.
-# More generous budget (15s x 120 = 1800s = 30min) to account for CI resource
-# contention.
-[profile.ci]
-fail-fast = false
-retries = 2
-slow-timeout = { period = "15s", terminate-after = 120 }
 
 # ── Network-heavy test serialization & timeout ─────────────────────────
 # `mediapm_demo`/`mediapm_demo_online` and the hermetic `all_platform` tests
@@ -69,18 +59,12 @@ slow-timeout = { period = "15s", terminate-after = 120 }
 # periods (660s) clears the deadline by 45s and 12 periods (720s) leaves a whole
 # period of margin for a host where the demo reaches its own deadline slowly.
 # The comparison that holds is therefore a duration against a duration; there is
-# no period count that "equals" the demo's seconds. `default` and `ci` are the
-# profiles the demo runs under locally and in CI, and both override the budget
-# identically.
+# no period count that "equals" the demo's seconds. `default` is the only
+# profile, so local, pre-push and CI runs all carry this same 720s budget.
 [test-groups]
 network = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary(mediapm_demo) or binary(mediapm_demo_online) or test(all_platform)'
-test-group = 'network'
-slow-timeout = { period = "60s", terminate-after = 12 }
-
-[[profile.ci.overrides]]
 filter = 'binary(mediapm_demo) or binary(mediapm_demo_online) or test(all_platform)'
 test-group = 'network'
 slow-timeout = { period = "60s", terminate-after = 12 }
