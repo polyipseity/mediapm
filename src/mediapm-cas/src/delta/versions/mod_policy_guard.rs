@@ -780,7 +780,7 @@ fn non_versions_files_never_name_leaked_versioned_types() {
 ///
 /// ## Why this test exists
 ///
-/// The rule it covers is `versioning-and-migration.instructions.md`: "Files
+/// The rule it covers is `state-and-versioning.instructions.md`: "Files
 /// outside `versions/` interact with versioned symbols through
 /// `versions/mod.rs` only; do not import `versions::vX` directly." Until now
 /// that rule was enforced only as a `git grep` a reviewer was expected to run.

@@ -364,7 +364,7 @@ Design invariants (implemented in `src/mediapm-conductor/src/provision/`):
 
 ## Versioned Schema Editing Policy
 
-See `nickel.instructions.md` (schema strictness S1-S13) and `versioning-and-migration.instructions.md` (cross-transport versioned-struct protocol). Every persisted schema must have a parity test (`schema_sync.rs` pattern) asserting Nickel contract and Rust serde shape agree.
+See `state-and-versioning.instructions.md` for Nickel strictness S1-S13 and the cross-transport versioned-struct protocol. Every persisted schema must have a parity test (`schema_sync.rs` pattern) asserting Nickel contract and Rust serde shape agree.
 
 ## Example Policy
 

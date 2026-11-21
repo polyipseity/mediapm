@@ -92,7 +92,7 @@ Four-document system, all with explicit top-level `version`:
 
 The two conductor documents sit at the workspace root, not under `<mediapm_dir>`: `MediaPmPathOverrides.mediapm_dir` only moves `runtime_root` (`paths.rs`). Only the conductor-path overrides (`conductor_config`, `conductor_generated_config`, `conductor_state_config`, `conductor_schema_dir`) relocate those documents, each resolved relative to the `mediapm.ncl` parent directory.
 
-Config schema versioning (see `.agents/instructions/nickel.instructions.md` for the migration placement and strict version separation policies):
+Config schema versioning (see `.agents/instructions/state-and-versioning.instructions.md` for Nickel migration placement and strict version separation policies):
 
 - v4 is the active config version (`mod.ncl` `current_version = 4`). It rewrites retired media-tagger step option names in `media[*].steps[*].options`: `clear_existing_tags` becomes `preserve_existing_tags` with the boolean string value inverted, and `preserve_images` becomes `preserve_existing_images` with its value kept. v3 added two optional staging decisions: `tools.<tool>.payload_staging`, which may say `inherit`, and `runtime.materialization.payload_staging`, the library default a tool that inherits takes. `MediaPmDocument::effective_payload_staging` resolves one against the other into the strategy a tool runs with, so a caller that needs the strategy never handles `inherit`; the sync records the choice and the conductor resolves it.
 - v2 and v1 remain readable as legacy. v2 drops `MediaPmState` entirely, state being managed separately via `state.json` and outside the config surface; v1 keeps the optional `state` field, and the v1→v2 hop strips it. The v2→v3 hop bumps the marker alone, because both new fields are optional and admit themselves, while the v3→v2 hop drops both, a v2 document having no staging decision to state.
@@ -317,7 +317,7 @@ Cross-crate data flow, shared invariants, and the full module-layer index are in
 - **MediaPM → CAS**: Materialization reads from CAS; all outputs read-only after commit. Hash mismatch means no fallback.
 - **Lock→CAS referential integrity**: Prune must not remove hashes referenced by lock records.
 
-See `versioning-and-migration.instructions.md` for the config versioning pattern and `nickel.instructions.md` for the NCL-to-Rust sync contract (S1-S13).
+See `state-and-versioning.instructions.md` for the config versioning pattern, Nickel conventions, and S1-S13 strictness.
 
 ## Testing & Validation
 
