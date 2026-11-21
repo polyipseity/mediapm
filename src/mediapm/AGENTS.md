@@ -1,361 +1,90 @@
-# `mediapm` Crate Guidance
+# `mediapm` crate
 
-Media orchestration facade over `mediapm-cas` and `mediapm-conductor`: media library sync, managed-tool provisioning, and hierarchy materialization.
+Media orchestration facade over `mediapm-cas` and `mediapm-conductor`: library sync, managed-tool provisioning, and hierarchy materialization. Root `AGENTS.md` and `.agents/instructions/*.instructions.md` are the workspace baseline.
 
-## Module Architecture
+## Module architecture
 
-```text
-lib.rs                     — Re-exports, SyncSummary, ToolsSyncSummary, global cache ops
-main.rs                    — CLI dispatch (clap): sync, tool, media, hierarchy, cas, conductor
-error.rs                   — MediaPmError: 7 variants (see .agents/instructions/sdd-tdd.instructions.md)
-output/                    — CLI formatting + progress: mod.rs (print_sync_summary), observer.rs (CliSyncObserver), progress.rs (ProgressScreen re-exports)
-util.rs                    — first_non_empty_json_string helper
-global.rs                  — MediaPmGlobalPaths, MEDIAPM_GIT_HASH
-paths.rs                   — MediaPmPaths (15 fields), MediaPmPathOverrides
-source_metadata.rs         — Local-source ffprobe probes + conductor CAS root
-hierarchy.rs               — Hierarchy node mutation
-metadata_cache.rs          — JSON metadata cache, TTL-based expiry
-service.rs                 — MediaPmService<Cas> orchestration
-service_standalone.rs      — Standalone helpers (document loading, path resolution)
-example_isolation.rs       — Example/test temp dirs, MEDIAPM_EXAMPLE_* env, cleanup (see temp-and-paths.instructions.md)
-config/                    — Document/config model: types, serde defaults, Nickel I/O, schema versions
-  mod.rs                   —   MediaPmDocument, MediaPmState, MediaRuntimeStorage, re-exports
-  defaults.rs              —   Constants (version=2, slot limits, cache TTLs, materialization order)
-  custom_deserializers.rs  —   Serde helpers (f64→u64, option strings)
-  source_types.rs          —   MediaSourceSpec, MediaStep, MediaStepTool
-  hierarchy_types.rs       —   HierarchyNode (ordered array), flattening, playlist, SanitizeNamesConfig
-  output_types.rs          —   OutputVariantValue (YtDlp | Generic), OutputCaptureKind, OutputSaveConfig
-  nickel_io.rs             —   .ncl eval, load/save/merge documents
-  versions/                —   Nickel schema boundary (mod.rs, mod.ncl, v_latest.rs, document.rs, v1.ncl, v2.ncl, v3.ncl, v4.ncl)
-  validation/              —   Cross-field validation (mod.rs, hierarchy.rs, sources.rs)
-state/                    — MediaPmState serialization + version dispatch
-  mod.rs                   —   Public state persistence surface (ser, versions)
-  ser.rs                   —   to_json_value/from_json_value, legacy .ncl migration
-  versions/                —   State wire formats and dispatch (mod.rs + v1.rs + v2.rs + v3.rs + v4.rs)
-sync_report.rs            — SyncObserver trait, per-phase reports, sync options
-demo_hierarchy_spec.rs    — Demo hierarchy golden layout contract (see examples-and-demos.instructions.md)
+| Module | Role |
+| --- | --- |
+| `config/` | `mediapm.ncl` model, defaults, Nickel I/O, versioned schema, validation. |
+| `state/` | `state.json` serialization/version dispatch. |
+| `service.rs` | `MediaPmService` orchestration and standalone helpers. |
+| `conductor_bridge/` | Conductor integration, tool reconciliation, generated doc/state writes. |
+| `tools/` | Managed tool preset/provider dispatch and workflow synthesis. |
+| `builtins/media_tagger/` | Host builtin: AcoustID, cover art, ffmetadata, MusicBrainz. |
+| `materializer/` | CAS to filesystem writes, playlists, ZIP extraction, progress labels. |
+| `paths.rs`, `global.rs` | Workspace path bundle and user-level cache paths. |
+| `sync_report.rs`, `output/` | Sync observer/report types, CLI formatting/progress. |
+| `metadata_cache.rs`, `source_metadata.rs` | Workspace metadata cache and local ffprobe probes. |
+| `error.rs` | `MediaPmError` taxonomy. |
 
-conductor_bridge/          — Conductor integration
-  mod.rs                   —   ToolSyncReport, reconcile_desired_tools
-  constants.rs             —   Input/output key constants, tool IDs, slot limits
-  documents.rs             —   Load/save conductor NCL documents
-  util.rs                  —   Shared helpers
-  sync/                    —   Tool reconciliation (provision, tool_config, content_import, lifecycle)
-  tool_runtime/            —   ToolSpec/ToolRuntime builders, option tokens, template
+Pointers: code under `src/mediapm/src/`, `.agents/instructions/mediapm-architecture.instructions.md`.
 
-materializer/              — CAS→filesystem materialization
-  mod.rs                   —   sync_hierarchy(), MaterializeReport
-  commit.rs                —   Read-only flag, remove stale paths
-  file_ops.rs              —   Hardlink/symlink/reflink/copy
-  metadata.rs              —   Template/metadata resolution
-  resolve.rs               —   Source/variant hash resolution, existence checks
-  playlist.rs              —   Playlist generation (M3U8, PLS, XSPF, WPL, ASX)
-  progress_labels.rs       —   MaterializationBarLabel truncation order (see workflow-runtime.instructions.md)
-  zip_reader.rs            —   ZIP reading: member/folder extraction, binding parse
+## Key types
 
-tools/                     — Managed tool preset/provider + workflow synthesis
-  mod.rs                   —   Module router, is_known_tool_id()
-  dependency.rs            —   DependencyTypes role flags, known_dependency_type() (see .agents/instructions/tool-provisioning.instructions.md)
-  downloader.rs            —   ToolDownloadCache type alias (re-exports from conductor)
-  preset/                  —   ToolSpec/ToolRuntime builders: deno, ffmpeg, media_tagger, rsgain, sd, yt_dlp
-  provider/                —   Source descriptors (URLs per OS): deno, ffmpeg, import, media_tagger, rsgain, sd, yt_dlp
-  workflows/               —   Step synthesis: ffmpeg, media_tagger, rsgain, yt_dlp, yt_dlp_inputs
+| Type | Purpose |
+| --- | --- |
+| `MediaPmService<Cas>` (`service.rs`) | Orchestration API: sync, add/remove media, tool lifecycle. |
+| `MediaPmPaths` (`paths.rs`) | Resolved canonical path bundle for one workspace root. |
+| `SyncRequest`/`SyncReport` (`sync_report.rs`) | Sync inputs/options and per-phase outcome. |
+| `MaterializeReport` (`materializer/mod.rs`) | Materialization counts, notices, warnings. |
 
-builtins/                  — Native tool implementations
-  mod.rs                   —   Builtin discovery
-  media_tagger/            —   Native tagger: acoustid, cover_art, ffmetadata, musicbrainz, util
-```
-
-## Key Types
-
-| Type | File | Purpose |
-| --- | --- | --- |
-| `MediaPmService<Cas>` | `service.rs` | Orchestration API: sync, add/remove media, tool lifecycle |
-| `MediaPmDocument` | `config/mod.rs` | Deserialized `mediapm.ncl` |
-| `MediaPmState` | `config/mod.rs` | Machine-managed `state.json` |
-| `MediaRuntimeStorage` | `config/mod.rs` | Runtime path overrides (config, CLI, env) |
-| `MediaPmPaths` | `paths.rs` | Resolved canonical path bundle for one workspace root |
-| `MediaPmGlobalPaths` | `global.rs` | User-level cache (`<os-cache>/mediapm/cache/`) |
-| `MediaPmError` | `error.rs` | Error taxonomy (7 variants) |
-| `HierarchyNode` | `config/hierarchy_types.rs` | Ordered node-array hierarchy with recursive children |
-
-## Config Document Model
-
-Four-document system, all with explicit top-level `version`:
+## Config document model
 
 | Document | Default path | Owner | Purpose |
 | --- | --- | --- | --- |
-| `mediapm.ncl` | `<root>/mediapm.ncl` (`paths.mediapm_ncl`) | User | Declares media, hierarchy, tools, runtime |
-| `mediapm.conductor.ncl` | `<root>/mediapm.conductor.ncl` (`paths.conductor_user_ncl`) | User | Conductor user intent + workflow defs; never a reconcile save target |
-| `mediapm.conductor.generated.ncl` | `<root>/mediapm.conductor.generated.ncl` (`paths.conductor_generated_ncl`) | Machine | Tool registry, resolved hashes |
-| `state.json` | `<runtime_root>/state.json` (`paths.mediapm_state_json`; `<runtime_root>` defaults to `<root>/.mediapm`) | Machine | Managed files and their hashes, tool deployment metadata |
+| `mediapm.ncl` | `<root>/mediapm.ncl` | User | Media, hierarchy, tools, runtime. |
+| `mediapm.conductor.ncl` | `<root>/mediapm.conductor.ncl` | User | Conductor intent/workflows; never a reconcile save target. |
+| `mediapm.conductor.generated.ncl` | `<root>/mediapm.conductor.generated.ncl` | Machine | Generated tool registry/resolved hashes. |
+| `state.json` | `<runtime_root>/state.json` | Machine | Managed files and tool deployment metadata. |
 
-The two conductor documents sit at the workspace root, not under `<mediapm_dir>`: `MediaPmPathOverrides.mediapm_dir` only moves `runtime_root` (`paths.rs`). Only the conductor-path overrides (`conductor_config`, `conductor_generated_config`, `conductor_state_config`, `conductor_schema_dir`) relocate those documents, each resolved relative to the `mediapm.ncl` parent directory.
+All carry explicit top-level `version`. Active config schema is v4; v1-v3 readable through Nickel migrations in `config/versions/`. Output variant `save` defaults to `"auto"` (`config/output_types.rs`). See `.agents/instructions/state-and-versioning.instructions.md`.
 
-Config schema versioning (see `.agents/instructions/state-and-versioning.instructions.md` for Nickel migration placement and strict version separation policies):
+## CLI overview
 
-- v4 is the active config version (`mod.ncl` `current_version = 4`). It rewrites retired media-tagger step option names in `media[*].steps[*].options`: `clear_existing_tags` becomes `preserve_existing_tags` with the boolean string value inverted, and `preserve_images` becomes `preserve_existing_images` with its value kept. v3 added two optional staging decisions: `tools.<tool>.payload_staging`, which may say `inherit`, and `runtime.materialization.payload_staging`, the library default a tool that inherits takes. `MediaPmDocument::effective_payload_staging` resolves one against the other into the strategy a tool runs with, so a caller that needs the strategy never handles `inherit`; the sync records the choice and the conductor resolves it.
-- v2 and v1 remain readable as legacy. v2 drops `MediaPmState` entirely, state being managed separately via `state.json` and outside the config surface; v1 keeps the optional `state` field, and the v1→v2 hop strips it. The v2→v3 hop bumps the marker alone, because both new fields are optional and admit themselves, while the v3→v2 hop drops both, a v2 document having no staging decision to state.
-- Each version file owns the migration INTO that version (`v4.ncl` exports `migrate_v3_to_v4`, `v3.ncl` exports `migrate_v2_to_v3` and `migrate_v4_to_v3`, `v2.ncl` exports `migrate_v1_to_v2` and `migrate_v3_to_v2`, `v1.ncl` exports `migrate_v2_to_v1`); `mod.ncl` only dispatches via `migrate_to`, composing the multi-version pairs from those edges. Version files are self-contained and never mix `*V1`/`*V2`/`*V3`/`*V4` contract names.
-- The ladder is Nickel only. `src/config/versions/` carries the embedded `.ncl` sources, the `*Latest` boundary types in `v_latest.rs`, the wire-shaped `MediaPmDocument` in `document.rs`, and the contract-evaluation helpers; it deliberately holds no Rust `decode`/`migrate_to` mirror of the ladder, because every `mediapm.ncl` on disk is read through `mod.ncl`.
-- The boundary is crossed only by the unversioned entry points in `config/versions/mod.rs`: `resolve_runtime_storage` (read direction), `resolve_materialization_preference_order` (read direction for the one knob a caller needs without resolving the whole storage model), and `runtime_boundary` (write direction, with `RuntimeBoundaryDeviations` for the knobs a document moves away from the spelled-out defaults). `MediaPmDocument` is re-exported from `config/mod.rs` — an unversioned name, so naming it is not a leak — and `config/mod.rs` names no `versions::v` path. The `*Latest` family is not publicly nameable, so bumping the active version is not a breaking API change.
-- `no_file_outside_versions_references_a_version_module_path` in `src/mediapm-cas/src/delta/versions/mod_policy_guard.rs` enforces that rule across every workspace member, and `every_versions_dir_keeps_policy_guard_docstring` enforces the `DO NOT REMOVE` marker on every `versions/` file. Both are graded on the tree as it stands, so run them after touching a `versions/` boundary.
-- An output variant's `save` is the schema's only per-variant retention knob, defaulting to `"auto"`. The resolution order, the `MPM-E010` refusal of a materialized variant declared `false`, and what each mode keeps are stated once in `.agents/instructions/mediapm-architecture.instructions.md` ("Output save policy"); the wire shape is `config/output_types.rs::OutputSaveConfig`.
+`mediapm [global flags] <subcommand>` with `sync`, `tool`, `media`, `hierarchy`, `cas`, `conductor`, `global`, `completions`. Flag resolution: CLI arg > `MEDIAPM_*` env > config > default. Definitions in `mediapm-cli`; dispatch in `main.rs`.
 
-## CLI Overview
+## Conductor integration
 
-```text
-mediapm [--root PATH] [--mediapm-dir PATH] [--conductor-config PATH]
-        [--conductor-generated-config PATH] [--conductor-state-config PATH]
-        [--media-state-config PATH] [--env-file PATH] [--retry-impure]
-        <subcommand>
-
-Subcommands:
-  sync                           Reconcile library state
-  tool (add|remove|list|sync|run|prune|refresh-runtime)
-  media (add|add-local|remove|list|invalidate)
-  hierarchy (add|remove)
-  cas [args...]                  Passthrough to mediapm-cas CLI
-  conductor [args...]            Passthrough to mediapm-conductor CLI
-  global (path|init|tool-cache)
-  completions <shell>
-```
-
-Flag resolution: CLI arg > env var (`MEDIAPM_*`) > config > default.
-
-## Conductor Integration
-
-MediaPM creates `Conductor`, passes grouped runtime-storage paths so volatile writes go to `<mediapm_dir>/`:
-
-| Conductor path | MediaPM default |
-| --- | --- |
-| `conductor_dir` | `<mediapm_dir>` (= `runtime_root`, default `{root_dir}/.mediapm`) |
-| `conductor_state_config` | `<mediapm_dir>/state.conductor.json` (overrides the conductor default `state.json`; `paths.rs:87`, `paths.rs:175`) |
-| `cas_store_dir` | `<mediapm_dir>/store` |
-| `conductor_tmp_dir` | `<mediapm_dir>/tmp` |
-| `conductor_schema_dir` | `<mediapm_dir>/schemas` (conductor default, `mediapm-conductor/src/defaults.rs:16`, joined in `mediapm-conductor/src/api.rs:55`) |
-| `conductor_tools_dir` | `<mediapm_dir>/tools` |
-
-Every row but `conductor_state_config` is the conductor's own default from `mediapm-conductor/src/defaults.rs`, because mediapm builds `RuntimeStoragePaths::new(&runtime_root).with_config_paths(...)` (`src/mediapm/src/service.rs:1059`, and `:1414` for the in-memory service) and never applies the conductor's `PathOverrides` — conductor code reads only `conductor_tmp_dir` off that struct (`mediapm-conductor/src/conductor_impl.rs:61`), and the conductor contract export mediapm performs writes to `MediaPmPaths.conductor_schema_dir` = `<mediapm_dir>/config/conductor/` (`src/mediapm/src/paths.rs:89`, read at `service.rs:783`, written by `export_config_contracts` at `src/mediapm/src/lib.rs:283`), not to `<mediapm_dir>/schemas`.
-
-`.mediapm/config/mediapm/` and `.mediapm/config/conductor/` are contract exports, not schema exports: `refresh_runtime_configuration` writes the Nickel sources the runtime evaluates — `mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl` for mediapm and `mod.ncl`, `v1.ncl`, `v2.ncl`, `v3.ncl`, `v4.ncl` for the conductor — so a reader sees the contract the document was validated against, byte for byte. Neither directory holds a JSON schema, and nothing validates one: a schema change is made once in `versions/*.ncl` and reaches both directories unchanged. The mediapm half is optional (`schema_export_dir: None` skips it); the conductor half is always written.
-
-Do not add direct deps from `mediapm` to `mediapm-conductor-builtins/*` crates.
-
-### Explicit invalidation
-
-Instance keys are content-derived, so elapsed time never re-executes a step. Two levers ask for a fresh run, and they differ in scope and lifetime:
-
-- `mediapm media invalidate <media> <step-index>` marks the recorded conductor instances of that step (`ToolCallInstance.invalidated_at`) and writes no mediapm state. The probe that decides reuse misses on a marked instance, so the next sync re-executes that step. `--undo` clears the same markers. A re-execution clears the marker by recording a fresh instance; a failed run leaves it, so the request is never spent on work that did not happen.
-- `mediapm sync --force-rerun` (`SyncLibraryOptions.force_workflow_rerun`) forces every workflow this run executes and leaves nothing behind.
-
-Neither deletes an instance: the re-execution re-records the same content-derived key. `last_impure_sync_at` is not a lever — nothing writes it, and clearing it re-executes nothing. The marker selects on the workflow *and* the step id, so marking one media's step leaves another media's same-named step alone; what it cannot separate is a shared instance, because keys carry no media identity, so two media running the same work hold one instance and re-executing it once serves both. `media invalidate` writes no mediapm state, so it never edits the document's declared `variant_hashes`.
+- MediaPM composes CAS+Conductor; no direct deps from `mediapm` to `mediapm-conductor-builtins/*`.
+- Runtime storage paths keep volatile writes under `<mediapm_dir>`; mediapm exports Nickel contract sources (not JSON schema).
+- Conductor bridge owns generated doc/state writes. `mediapm.conductor.ncl` is user intent; `mediapm.conductor.generated.ncl` is machine-managed; conflicts fail fast.
+- Explicit invalidation: `media invalidate <media> <step-index>` marks recorded instances; `--undo` clears markers; `sync --force-rerun` forces current-run rerun only. Markers select workflow+step id; shared instances can affect same-work media. See `conductor_bridge/`, `mediapm-conductor/AGENTS.md`.
 
 ## Output retention and rerun policy
 
-- The conductor keeps every captured output by default; mediapm defaults output variants to `save = "auto"` because a library keeps what it materializes and drops what it merely consumed.
-- `auto` stores a variant the hierarchy materializes in full and never delta-compresses it; keeps a variant the media's last step or any impure step produced; and keeps everything else only while something still needs it.
-- Impure steps are the case this protects: their outputs stay kept by default so a downstream change reuses them instead of re-running the network, and only an explicit `save = false` on that variant lets them go.
-- A tool upgrade changes no step's identity. Finished work stays finished; `mediapm media invalidate` is the documented way to make an upgraded tool take effect, and `--undo` reverses the marker.
-- Invalidation is per step, per media, and never touches another media's record.
+- Variant `save` default `"auto"`: resolves to full for hierarchy-materialized, final-step, or impure-step outputs; otherwise false. Materialized wins.
+- Materialized variant declared `false` is refused at plan build as `MPM-E010` (media, step, variant, hierarchy entry).
+- `full` marks CAS keep-full; missing resolved bytes are fatal. Retention mode does not change capture/production.
+- Tool upgrades do not change step identity; use explicit invalidation. See `.agents/instructions/mediapm-architecture.instructions.md`.
 
-## Managed Tool Provisioning
+## Managed tool provisioning
 
-5 managed tools carry a preset and a workflow module: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `sd`. `media-tagger` is a sixth managed tool with no preset and no payload at all: it is a **host builtin** mediapm registers on every run (see "Host builtin: media-tagger" below). A seventh, `import`, reaches `resolve_tool_fetch` (`tools/provider/import.rs`, a builtin source-ingest tool with no payload and no preset, so it is absent from `is_known_tool_id` and from `apply_preset`). See `.agents/instructions/tool-provisioning.instructions.md` (provider/preset dispatch, 3-phase provisioning, identity) for details.
+- Managed tools: `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `sd` (preset/workflow), `media-tagger` (host builtin, no payload), `import` (builtin provider, no preset).
+- Provisioning is content-addressed and all-platform; sync is fail-fast and writes nothing on provision failure.
+- Conductor tool id and mediapm tool id are distinct; cache/provision keys use conductor tool ids. `canonical_version` includes direct SameStep dependency segments.
+- User-level download cache: `<os-cache-dir>/mediapm/cache/`; workspace tool cache: `<mediapm_dir>/tools/`. Tests/examples isolate caches.
+- Companion dep keys `deps/{mediapm_tool_id}/{os}/{filename}` use `build_raw_os_conditional_selector`, not `build_os_conditional_selector`. See `.agents/instructions/tool-provisioning.instructions.md`.
 
-**User-level cache**: `<os-cache-dir>/mediapm/cache/` (7-day eviction) — shared download cache distinct from workspace tool cache.
+## Host builtin: media-tagger
 
-**Companion dep path contract**: Inlined companion dep content map keys follow `deps/{mediapm_tool_id}/{os}/{filename}` (e.g. `deps/ffmpeg/macos/ffmpeg`). The OS directory component is already embedded in the key structure. OS-conditional selectors for these paths MUST NOT use `build_os_conditional_selector` (which prepends `{os}/`) — use `build_raw_os_conditional_selector` instead. Using the wrong helper produces double-prefixed paths like `macos/deps/ffmpeg/macos/ffmpeg` that break runtime path resolution. See `mediapm-conductor::tools::helpers` module docs for the two selector flavors.
+Registered every run via `RunWorkflowOptions.host_builtins`; tagging dispatches in-process (`MediaTaggerBuiltin`), not as a child command. Tool entry is bare `media-tagger`, empty content map, builtin kind; prune retains it via `HOST_BUILTIN_IDS`. Retired command options (`option_args`, `leading_args`, `trailing_args`, `enable_acoustid`) are refused explicitly. Removing command parts changed tagging instance keys once, so recorded tagging instances re-execute on first sync after that change. Network/cache behavior is bounded and injectable; see `builtins/media_tagger/{mod,musicbrainz,cover_art}.rs`.
 
-### Builtin dispatch
+## Cache, metadata, materialization, CAS integrity
 
-A builtin step carries no command parts, and that is the whole dispatch rule: `dispatch_tool_execution` (`src/mediapm-conductor/src/orchestration/step_worker/executor.rs`) runs such a step in-process and hands it to `run_builtin` (`orchestration/step_worker/process.rs`), which tries the conductor's own arms first and falls through to the run's host registry. A builtin tool therefore has no command parts, no payload and no launcher script, and its provider answers under its own tool id with an empty source list (`tools/provider/media_tagger.rs`, `tools/provider/import.rs`; `builtin_providers_have_no_sources` in `mediapm-conductor/src/tools/provider/mod.rs`). The provider entry stays so the tool keeps a version identity and a registry record; what it no longer has is a payload.
+- Workspace caches under `<runtime>/cache/`: ffprobe metadata (`mediapm/metadata.json`, 1-day TTL) and media-tagger HTTP cache (`media_tagger/`). Global tool cache: `mediapm global tool-cache status|prune`.
+- Materialization writes directly from CAS to target, no staging commit. Skip compares recorded/resolved content; `zip_member` compares member hash/length. Read-only targets removed before replacement. Link fallback order configurable (`hardlink, symlink, reflink, copy`); fallback is a notice.
+- NFD enforced: config rejects non-NFD user components; resolved/interpolated components normalized before workers start. Reserved chars/traversal rejected.
+- CAS verify is configurable by `VerifyTriggerStrategy` (`Always`, `Modified`, `Sample`, `Stale`) and runtime verify settings. Hash mismatch has no fallback.
 
-The conductor's side of the contract is in `src/mediapm-conductor/AGENTS.md` ("Host-Supplied Builtin Runners"): `HostBuiltin`, `HostBuiltins`, and the run-start check `ensure_document_builtins_run`, which refuses a builtin id neither the conductor nor mediapm supplies before the first step runs. `mediapm builtin media-tagger` is a manual entry point only: a step that names the tool reaches the in-process runner, never that subcommand.
+## Testing and validation
 
-### Host builtin: media-tagger
+- Fast loop: `cargo test-pkg mediapm`, `cargo build-pkg mediapm`, or selective tests. Full/parity gates: `rust-workflow.instructions.md`.
+- Hermetic tests/examples: `IsolatedExampleRoots`, `mediapm_utils::temp::artifact_dir()/cache_dir()`, cache overrides; never real OS user cache in tests.
+- Demo checks: `mediapm_demo` and `mediapm_demo_online` (default offline/hermetic, `--online` real/manual). Demo behavior changes require updating demos and embedded tests.
+- Features: default `cli,media-tagger`; `cli` adds clap/completions; `media-tagger` enables native tagger deps; `proptest` enables property tests.
 
-`media-tagger`'s tagging step declares no command parts and names the `media-tagger` tool. The builtin id lives on the **tool entry**, not on the step: the entry's kind is `ToolKindSpec::Builtin { builtin_id: "media-tagger" }` (`tools/workflows/media_tagger.rs`), because `WorkflowStepSpec` has no field to carry one. The conductor dispatches the step to `MediaTaggerBuiltin` (`src/mediapm/src/builtins/media_tagger/host.rs`), which `conductor_run_workflow_options` registers through `RunWorkflowOptions.host_builtins` on every run. The runner reads the step's option arguments, stages the `content` input hash into the sandbox, and calls the same pipeline the `mediapm builtin media-tagger` subcommand calls. Its tool entry is a bare `media-tagger` key with an empty content map and the `Builtin` kind — no payload and no command parts — and the generated-document prune keeps that bare key through `HOST_BUILTIN_IDS` (`src/mediapm/src/builtins/mod.rs`), because the ordinary rule retains only a production builtin name or a non-empty content map.
+## References
 
-**The options the retired command line consumed are refused, not ignored.** `option_args`, `leading_args`, `trailing_args` and `enable_acoustid` used to reach the tagger through the deleted `build_media_tagger_command`. The step renders no command now, so no field of `InternalMediaTaggerOptions` answers for any of the four, and `options_from_args` fails the step naming the option and its value (`RETIRED_COMMAND_OPTIONS` in `host.rs`) instead of dropping it — a dropped binding would still change the step's instance key. `enable_acoustid` never worked: it rendered `--enable-acoustid`, a flag `mediapm-cli` does not declare (it declares only `--acoustid-api-key` and `--acoustid-endpoint`). A library that sets one of the four must stop.
-
-Two consequences are accepted, not defects:
-
-- **Tagging runs inside the workflow process**, not a child. The library already links `media-tagger`, so this is a scheduling change rather than a new capability; there is no binary to build, export or point at.
-- **The tagging step's instance key changes once**: its command parts vanished, and the key material covers a command's parts and the values it reads. Every recorded tagging instance therefore re-executes on the first sync after this lands. No compatibility is owed: the artifacts it re-derives are the same bytes the old key produced.
-
-### Media metadata caching
-
-Two caches are enabled by default, both workspace-scoped under `<runtime>/cache/` in separate subdirectories:
-
-- **ffprobe cache** (`metadata_cache.rs`): `MediaPmService` owns a `MetadataCache` at `paths.workspace_mediapm_cache_dir()` (`<runtime>/cache/mediapm/metadata.json`, a version-2 file holding `{key: {value, last_access_unix_seconds}}`). Each `add_local_source_*` call consults it keyed by `ffprobe:{path}` (TTL = 1 day, `METADATA_CACHE_ENTRY_TTL_SECONDS`); the probe runs only on a miss. Expired entries are pruned at open and flushed atomically on drop.
-- **media-tagger HTTP cache**: the media-tagger step synthesizes a `cache_dir` input defaulting to `paths.workspace_media_tagger_cache_dir()` (`<runtime>/cache/media_tagger`), threaded through `synthesize_media_tagger_step` → `build_media_tagger_metadata_inputs` as the `cache_dir` step option (overridable via `options.cache_dir`). `MediaTaggerHttpCache` honors a non-empty `cache_dir`; empty disables caching. `cache_expiry_seconds` defaults to `86400`.
-
-`ffprobe` is the only source-metadata probe. Online `${media.metadata.*}` values are resolved during materialization from the yt-dlp `info.json` sidecar held in CAS (`materializer/metadata.rs`, `resolve_variant_metadata_key`); `media add` never contacts a remote source, and `add_media_source_with_position` takes its title, description, and media id from the caller.
-
-### Runtime child environment whitelist
-
-Every runtime child in mediapm runs with a whitelisted environment, not ambient inheritance. `mediapm::child_env` resolves host values from the configured platform inherited env map (falling back to conductor platform defaults when a host platform entry is absent) and `mediapm_utils::child_env` applies the cleared whitelist. This covers mediapm-side runtime children such as local-source ffprobe probes, materialization metadata probes, host builtin and tagging subprocesses, demo verification probes, and other `std::process::Command`/`tokio::process::Command` spawns in runtime paths. A child receives only names declared by the document's platform list, a tool's `inherited_env_vars`, or tool literals; `MEDIAPM_*` variables are read by mediapm in process, and inherited platform names are not `MEDIAPM_*` settings, so `src/mediapm/src/env_registry.rs` needs no entries for them.
-
-### Media-tagger network contract
-
-The media-tagger's MusicBrainz and Cover Art Archive traffic is bounded, injectable, and fails loudly. The module docs in `builtins/media_tagger/{mod,musicbrainz,cover_art}.rs` carry the deep spec; `tests/int/media_tagger_hermetic.rs` drives the whole metadata stage against `wiremock` hosts with both endpoints injected.
-
-The 11 boolean options (`strict_identification`, `write_all_tags`, `write_all_images`, `save_images_to_tags`, `embed_only_one_front_image`, `caa_approved_only`, `preserve_existing_tags`, `preserve_existing_stream_tags`, `preserve_existing_images`, `enable_tag_saving`, `release_ars`) are value arguments (`--write-all-images false` is accepted; a bare `--flag` is a parse error) and their workflow token specs are `TokenSpec::Pair`, so a configured `false` reaches the process. An equality-gated `Bool` token spec combined with clap's `true` default used to flip every configured `false` to `true`. All three `preserve_existing_*` options default to true. `preserve_existing_tags` merges tags while keeping existing values, and setting it to `false` clears preexisting global tags; `preserve_existing_stream_tags` keeps per-stream tags, and `preserve_existing_images` keeps existing attached pictures. The merge preserves every container tag the FFmetadata round-trip can carry, while stream tags, attached pictures, and chapters are preserved through the stream and chapter maps. Container-specific metadata the FFmetadata format cannot express is out of scope and is not carried by the merge.
-
-`musicbrainz_endpoint` and `caa_endpoint` are honored for real: the former remains a full ws/2 URL whose scheme is honored end to end (the default is real HTTPS) and is joined into `GET {endpoint}/recording/{mbid}?fmt=json&inc=...` / `GET {endpoint}/release/{mbid}?fmt=json&inc=...` requests built with the `url` crate, the latter (`DEFAULT_CAA_ENDPOINT`, `https://coverartarchive.org`) replaces the once-hardcoded archive URLs. MusicBrainz fetches use `mediapm_conductor::http::client::shared_http_client()` (shared User-Agent/timeout policy) with mediapm-owned per-entity retries: production policy makes 6 attempts per entity with a 16s max retry delay, honors `Retry-After` seconds clamped to that cap, otherwise applies exponential backoff `250ms * 2^(attempt-1)` capped with up to 20% subtractive deterministic jitter; 408/425/429/5xx and transport failures retry, other 4xx, URI, and JSON parse failures fail fast. One `MUSICBRAINZ_FETCH_DEADLINE` (90s) wraps the whole recording+release fetch, bounding pacing, retries/backoff, and requests for the pair. The MusicBrainz payload cache key stays host:port-based (`MusicBrainzFetchShape`), so scheme-only endpoint variants share one row. Every cover-art GET carries a 30s per-request timeout and the whole cover-art phase runs under one `COVER_ART_PHASE_BUDGET` (60s) deadline.
-
-Fetch failures are loud: a MusicBrainz or cover-art fetch error fails the step — the stale-cache-on-error fallbacks are gone, though a fresh cache hit still short-circuits — and HTTP 404 from the archive is the only legitimate "no art" answer. Cover-art failures are unconditional, not gated by `strict_identification`, because a failed image fetch is a missing asset rather than missing metadata.
-
-### Media-tagger cache contract
-
-`MediaTaggerHttpCache` (implementation home: `builtins/media_tagger/cover_art.rs`) is a JSON index (`media-tagger.json`) plus a CAS `store/` under the step's `cache_dir`. Each namespace is keyed by every input that changes the server's answer, so an option change re-derives locally instead of serving another run's shapes:
-
-| Namespace | Key inputs | TTL |
-| --- | --- | --- |
-| `musicbrainz-payloads` | recording/release MBIDs, `write_all_tags`, `release_ars`, MusicBrainz host\[:port\] | `cache_expiry_seconds` (24h default) |
-| `caa-entries` — the raw archive response; the selection filters run on every read | CAA endpoint URL | `cache_expiry_seconds` |
-| `caa-images` — downloaded image bytes | image URL (size already encoded there) | 30 days base (`MEDIA_TAGGER_LONG_LIVED_MAX_AGE_SECS`) |
-| `acoustid-lookups` — the decoded answer, zero-match included | fingerprint, full AcoustID endpoint URL | 30 days base |
-
-The two long-lived namespaces follow `max(cache_expiry_seconds, 30 days)`; a negative `cache_expiry_seconds` is never-expire for every namespace. The freshness ladder: a fresh row is used directly, a stale row is refetched (fetch failure stays a hard error, never stale-serving), an undecodable row drops from the index and reads as a miss. API keys never enter keys or index entries. Old-format rows (pre-shape MusicBrainz keys, post-filter CAA entries) miss and self-heal; regression tests pin both. Cache construction runs one `evict_expired` pass: stale rows dropped, dangling rows dropped, unreferenced blobs reclaimed through the CAS maintenance listing.
-
-### Global tool cache CLI
-
-`mediapm global tool-cache` inspects and prunes the user-level tool cache (`<os-cache-dir>/mediapm/cache/`), distinct from the workspace metadata caches. Implemented in `src/mediapm/src/global.rs`, it reuses the `mediapm-conductor` `Cache` engine directly (no background loop).
-
-- **`status`** — Opens the cache without the 24-hour prune loop (`Cache::open_without_background`) and reports the summed `entry_count` across the `tools` (7-day TTL) and `tool_metadata` (1-day TTL) domains, plus `tool_cache_dir`, `store_dir`, and `index` paths.
-- **`prune`** — Opens without the loop, then runs `Cache::prune_expired_immediate`, bypassing the `PRUNE_INTERVAL_SECONDS` cooldown across both domains, reporting `removed_entries` and `removed_payloads`. Unreferenced CAS payload blobs are physically deleted; still-referenced entries are retained.
-
-Both accept `--cache-root <dir>` (resolved via `MediaPmGlobalPaths::from_tool_cache_dir`); omitted uses the default user-level root.
-
-### Adding a New Managed Tool
-
-Follow this spec-first, test-first workflow:
-
-1. **Spec first** — Document the tool's contract in `src/mediapm/AGENTS.md`:
-   - Source URL scheme and supported OSes
-   - Companion dependencies (if any)
-   - Input/output contracts for the workflow step
-   - Any special runtime requirements (sandbox, env vars)
-
-2. **Test first** — Write tests before implementation:
-   - Unit tests for the tool's source descriptors (URLs per OS) in `tools/provider/<tool>.rs`
-   - Unit tests for the preset builder in `tools/preset/<tool>.rs`
-   - Unit tests for the workflow synthesis in `tools/workflows/<tool>.rs`
-   - Integration test case in `tests/int/all_platform.rs`
-
-3. **Implement provider** — Create `tools/provider/<tool>.rs`:
-   - Define per-OS `SourceProducer::Fetch` entries with download URLs
-   - Register in `tools/provider/mod.rs` dispatch table
-
-4. **Implement preset** — Create `tools/preset/<tool>.rs`:
-   - Define `pub(crate) fn apply(...) -> (ToolSpec, ToolRuntime)`
-   - Set correct `impure`, `content_map`, `command_selector`, and `slot_limits`
-   - Register in `tools/preset/mod.rs` dispatch table
-
-5. **Implement workflow** — Create (or extend) `tools/workflows/<tool>.rs`:
-   - Define `build_<tool>_command()`, `build_<tool>_inputs()`, `build_<tool>_outputs()`, `build_<tool>_defaults()`
-   - Define `build_<tool>_spec()` composing the above into a full `ToolSpec`
-   - Add `step_<tool>()` synthesizer and register in the step dispatch
-
-6. **Register everywhere**:
-   - Add to `is_known_tool_id()` in `tools/mod.rs`
-   - Add to `tools/mod.rs` module declarations (`pub(crate) mod <tool>;`)
-   - Add config defaults in `config/defaults.rs` if needed
-   - Add CLI test cases in `main.rs` tests (route parsing)
-
-7. **Integration test** — Verify end-to-end:
-   - Provider resolves the correct URLs per OS
-   - Preset produces valid `ToolSpec` with non-empty command/inputs/outputs
-   - Workflow step synthesizes correct command-line tokens
-
-### Canonical version tracking
-
-Every `ToolRegistryEntry` has a non-optional `canonical_version` (`String`). The semantic kind (VCS hash vs version) is fixed per tool at code-writing time:
-
-- **Builtin tools** (`import`): `MEDIAPM_GIT_HASH`, the compile-time constant emitted by `build.rs`.
-- **Per-OS payload tools** (including the host builtin `media-tagger`, which reports the same identity with no payload): the same constant.
-- **GitHub-release tools** (yt-dlp, deno, rsgain, sd): the resolved upstream commit hash, not the tag.
-- **ffmpeg**: the composite `"{autobuild_tag}+{macos_leg_version}"`, where the macOS leg is the martin-riedl build id (e.g. `1759500000_N-127260-g7bc3576910`) when the permalink chain served or the jellyfin-ffmpeg version (e.g. `7.1.3-1`) when the fallback did; the leg is corrected after fetch from the URL that actually served the bytes (`canonical_version_after_fetch`), and the artifact set has no single commit hash, so neither a version nor a VCS hash identifies it.
-
-What the provider resolves is only the tool's own segment. The value persisted in `ToolRegistryEntry.canonical_version` is a **composite**: `compute_composite_canonical_version()` appends one `;{dep_id}:{dep_own_version}` segment per SameStep dependency, sorted by dep id, so a dep's version change re-provisions the requester. Dep segments are non-transitive — each carries the dep's own first segment, never the dep's own composite — and a tool with no SameStep deps stores the bare provider value unchanged. Skip detection compares the composite, not the bare value.
-
-Skip logic: when `reconcile_desired_tools` finds the newest `state.managed_tools` record for a tool id carrying the composite `canonical_version` this pass resolved, and the content map `find_active_tool_spec` would activate for that id hashes to the hash the record stores and the workspace CAS holds that map's content, provisioning is skipped for that tool. The map condition is an equality, not a non-emptiness test: a host builtin with no payload records the empty map and is filed in the document under its bare id, so both sides are empty and the two still describe one build — requiring a non-empty map on either side made such a tool unskippable and rewrote its record with a fresh `deployed_at` on every sync. A record a pass does not skip is rewritten by the re-provisioning that follows, because a pin the deployed build no longer satisfies is a state re-provisioning repairs rather than an error. The `Ok(None)` branch still populates `canonical_version` from the resolved value. `canonical_version` defaults to `""` via `#[serde(default)]` for backward-compat with old state files.
-
-### Tool payload staging
-
-`reconcile_desired_tools` materializes every active payload through `ProvisionCache::materialize` into `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload`, returns the guards with its outcome, and `stamp_payload_roots` records that directory in the generated document as `runtime.payload_root`, for every tool whose content map is non-empty and whose payload directory exists. The guards reach past the `retain_only_tool_dirs` sweep at the end of the same function, so the prune cannot delete a payload the pass just produced, and the caller binds them on `ToolSyncOutcome.payload_guards` for the workflow and materialization phases, because an `in_place` step runs out of the very directory a guard holds.
-
-The staging strategy is the document's, not the sync's. `stamp_payload_roots` writes the library default once, onto the generated document's `runtime.payload_staging`, taken from `runtime.materialization.payload_staging` in `mediapm.ncl`; each tool records its own `payload_staging` choice, `inherit` when `mediapm.ncl` states none; and the conductor resolves the pair while it reads the document (`NickelDocument::effective_payload_staging`), so no consumer sees `inherit`. A copy therefore happens exactly when a document asks for `copy`, at either level — nothing in mediapm picks it on the user's behalf. A tool whose payload directory is absent keeps no root, so it resolves to the library default, and a default that reads a root — `in_place`, or `hard_link` — makes the staging invariant refuse the document by name — at `encode_document` on the way out, at the load check on the way in — so the run stops instead of executing a tool out of a directory that does not exist. A strategy written into `mediapm.conductor.ncl` that differs from one the generated document states fails the merge with a `ConflictingRuntime` on `payload_staging`, because the merge takes an explicit statement over an absent one and refuses two that disagree. A strategy the generated document leaves unstated therefore merges as the user wrote it, which is why the encoder omits a default nobody chose.
-
-The root belongs in the document rather than in a `MEDIAPM_TOOLS_DIR`-style environment variable: a standalone `mediapm-conductor run` of the generated document has to work with none of mediapm's process environment, and an env-only carrier would leave the default strategy with nothing to resolve. The document is also what the conductor already resolves a step from, so one reader answers both questions.
-
-## Cache Architecture (Three-Tier)
-
-See `.agents/instructions/tool-provisioning.instructions.md` (cache and HTTP) for the three-tier cache specification (content, metadata, provision), TTL policies, and hard boundary rules.
-
-## Materialization
-
-Direct CAS→output-path writes; no staging commit. Materialized paths marked read-only after sync. Link fallback order configurable in `runtime.materialization_preference_order` (default: hardlink → symlink → reflink → copy). NFD filenames enforced at two stages: config-declared components are rejected when not NFD-normalized, resolved components (which carry interpolated metadata) are normalized instead. Reserved path chars rejected. ZIP extraction under `<mediapm_dir>/tmp/`.
-
-Name library files with `${media.metadata.artist} - ${media.metadata.title} [${media.id}]`: the canonical `MusicBrainz` recording title carries no artist, so the artist has to come from its own metadata entry, and a template that renders only `${media.metadata.title}` silently drops it.
-
-Skip rule: an entry is skipped only when `state.managed_files` records the hash this run resolved and the target still holds it. A variant carrying a `zip_member` binding stores the archive under that hash but writes one extracted member, so it compares against the member's own hash and length, and replacing a read-only target goes through the same remove-then-write path a store object uses.
-
-The rendered materialization progress screen (per-(entry,variant) file-count bars; rows carry media id / variant / basename with no phase tag) is documented in `.agents/instructions/workflow-runtime.instructions.md`.
-
-## CAS Integrity Verification
-
-Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sample { denominator: 100 }` (default), `Stale { timeout: 604800s }` (default). Gated by `MediaRuntimeStorage.verify_on_read` (typed `Vec<VerifyStrategy>`, snake_case wire names `always`/`modified`/`sample`/`stale`; unknown names rejected at the serde boundary) plus `verify_on_read_sample_denominator` and `verify_on_read_stale_timeout_secs` fields.
-
-## Cross-Crate Invariants
-
-Cross-crate data flow, shared invariants, and the full module-layer index are in `mediapm-architecture.instructions.md`. Key mediapm-specific rules:
-
-- **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence, and runtime env files. MediaPM delegates gitignore creation to `extend_runtime_gitignore()` at construction, dotenv writing to `write_generated_dotenv()` during tool sync, and `.env.example` regeneration to `write_env_example()` at construction and on every refresh.
-- **MediaPM → CAS**: Materialization reads from CAS; all outputs read-only after commit. Hash mismatch means no fallback.
-- **Lock→CAS referential integrity**: Prune must not remove hashes referenced by lock records.
-
-See `state-and-versioning.instructions.md` for the config versioning pattern, Nickel conventions, and S1-S13 strictness.
-
-## Testing & Validation
-
-Development: `cargo test-pkg mediapm` / `cargo build-pkg mediapm` / selective tests.
-
-**Temp isolation:** Examples-as-tests use `mediapm::example_isolation::IsolatedExampleRoots` and `MEDIAPM_EXAMPLE_*` env overrides; integration tests use `mediapm_utils::temp::artifact_dir()` plus `cache_dir()` for `cache_root_override`. See `.agents/instructions/temp-and-paths.instructions.md` for role prefixes, cleanup lifecycle, and example env serialization (process-wide lock held by `IsolatedExampleRoots` / `lock_process_env()`).
-
-**Demo hierarchy golden:** Online link files use two exact naming formats — yt-dlp shape under `sidecars/links/` vs mediapm root projections — encoded in golden helpers and live asserts. Every mediapm-rendered name is `${media.metadata.artist} - ${media.metadata.title}`, so the shared helpers, golden JSON, and the live asserts all carry the artist prefix. Content verification covers exact bytes in the e2e test; in the live demo the resilient structural checks split by route — magic bytes, link format and playlist format run on both of its paths, and the ffprobe metadata tier is the online path's alone. See `.agents/instructions/examples-and-demos.instructions.md`.
-
-Post-change: demo examples:
-
-- `cargo run --package mediapm --example mediapm_demo`
-- `cargo run --package mediapm --example mediapm_demo_online` — the default, offline route: the full pipeline against the stub tool chain and a mocked `MusicBrainz`, no network
-- `cargo run --package mediapm --example mediapm_demo_online -- --online` — the online route: real providers, real tool binaries, network + external tools, human-gated
-- Cache-using examples (`mediapm_demo`, `mediapm_demo_online`, `mediapm_cli_add_tools`, `mediapm_cli_add_hierarchy`) reuse the real user-level tool download cache (`<os-cache-dir>/mediapm/cache`, via `example_isolation::user_level_cache_root()`) at explicit `cargo run --example`, so downloaded tools persist across runs; embedded tests stay isolated via `MEDIAPM_EXAMPLE_CACHE_ROOT`.
-
-The online demo's two routes are selected by argv and by nothing else: a bare invocation runs the full sync against the stub chain offline, which is what the embedded `main_is_exercised` runs in every gate; there is no CI gate and no reduced mode. `--online` runs it against the real upstream, which no gate reaches. The offline route needs a debug build — the provider seams are read only when `debug_assertions` is on, so a release run refuses that route, naming `--release`, instead of provisioning from the real upstream. Both routes export the conductor watchdog budgets from one derivation off the demo's own sync budget: `MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS` and `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` are each the sync budget minus 60s, floored at 60s, and each is left alone when the caller set it; the layering policy lives in `src/mediapm-conductor/AGENTS.md` ("Watchdog layering").
-
-Double-run policy: both demos sync twice — the online demo inside its run path, the offline demo inside its embedded test — and the second run must execute zero workflow instances, materialize zero paths, remove and miss nothing, and raise no warnings. Tool churn is compared against the first run: both runs report `updated_tools == 0`, because the no-payload `import` builtin re-registers on every sync with the same build and no content-map hash, so its entry reconciles to the same identity and is counted as skipped; a payload tool that started churning would raise the second run's count above the first's. The online demo records the second run's tallies in a `second_run` manifest block, and compares a materialized file snapshot (path, length, modification time) taken before and after so even an in-place rewrite of identical size is caught.
-
-Manifest provenance: the online demo's `manifest.json` records `run_mode`, one `managed_tools` record per tool id (canonical version and the resolved tag, version, and VCS hash of the newest deployment), `materialized_file_hashes` (hierarchy-relative path to CAS hash), and `store_size_bytes` (total length of the CAS blobs under `<runtime>/store/blobs/v1/`). Every value is read from the state lockfile the run already loaded, so the manifest adds no files to the library tree and no per-media sidecar exists — the only sidecars a library holds are the ones a tool wrote, yt-dlp's included.
-
-Full workspace: `cargo fmt-check && cargo clippy-all && cargo test-all && cargo test-doc-all`. `cargo test-all` runs nextest plus the tempdir and janitor gates; `cargo test-doc-all` runs the workspace doctests plus the rustdoc link gate, separately because nextest cannot execute doctests. Both delegate to the `test-runner` crate (`scripts/test-runner`).
-
-## Feature Flags
-
-| Feature | Deps | Purpose |
-| --- | --- | --- |
-| `default` = `cli` + `media-tagger` | — | Production set |
-| `cli` | clap, clap_complete | CLI binary |
-| `media-tagger` | chromaprint-next, musicbrainz_rs, ffmetadata | Native tagger builtin |
-| `proptest` | — (`proptest` is a dev-dependency) | Property-based hierarchy tests (`config/hierarchy_types.rs` `proptests` module) |
-
-## Reference Files
-
-- `Cargo.toml` — Dependencies and features
-- `config/mod.rs` — Config types and defaults
-- `paths.rs` — Path resolution
-- `service.rs` — MediaPmService orchestration
-- `error.rs` — Error taxonomy
-- `.agents/instructions/*.instructions.md` — Focused guidance by concern (error taxonomy, paths, cache, provider dispatch, preset dispatch, state persistence, document lifecycle, tool sync coordinator, 3-phase provisioning, content-addressed identity, companion dependencies)
+- Code: `Cargo.toml`, `paths.rs`, `service.rs`, `config/mod.rs`, `error.rs`, `conductor_bridge/sync/mod.rs`, `tools/provider/mod.rs`, `materializer/mod.rs`
+- Instructions: `mediapm-architecture.instructions.md`, `tool-provisioning.instructions.md`, `state-and-versioning.instructions.md`, `temp-and-paths.instructions.md`, `examples-and-demos.instructions.md`
