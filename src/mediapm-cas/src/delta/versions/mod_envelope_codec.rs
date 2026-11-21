@@ -1,7 +1,7 @@
 //! Envelope-codec tests for the `delta/versions/` dispatcher.
 //!
 //! Split out of `mod.rs` because the combined inline test module exceeded the
-//! ~300-line limit in `.agents/instructions/rust-conventions.instructions.md`.
+//! ~300-line limit in `.agents/instructions/rust-workflow.instructions.md`.
 //! Codec correctness and structural policy are different concerns with
 //! different failure modes, so keeping them apart keeps a failure readable.
 //!

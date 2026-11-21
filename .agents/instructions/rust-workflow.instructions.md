@@ -1,74 +1,72 @@
 ---
-description: "Use when editing Rust source, Cargo config, or Rust CI validation in this repository."
-name: "Rust Workflow Guidance"
-applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, .rustfmt.toml, .clippy.toml, .config/**/*.toml, .cargo/**/*.toml, .github/workflows/**/*.yml, .github/workflows/**/*.yaml"
+description: "Use when editing Rust code, Cargo/config, CI, prek, or nextest files. Covers validation workflow, hooks, CI parity, Rust conventions, tests, and doc/lint rules."
+name: "Rust Workflow and Conventions"
+applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, .rustfmt.toml, .clippy.toml, .config/**/*.toml, .cargo/**/*.toml, prek.toml, .github/workflows/**/*.yml, .github/workflows/**/*.yaml"
 ---
 
-# Rust Workflow Guidance
+# Rust workflow and conventions
 
-## Source-of-truth files
+## Source of truth
 
-- `Cargo.toml` (package identity, dependency graph), `.cargo/config.toml` (aliases), `.config/nextest.toml` (runner), `rust-toolchain.toml` (channel/components), `rustfmt.toml`/`clippy.toml` (style/lint), `.github/workflows/ci.yml` (CI), `prek.toml` (pre-commit hooks).
-- `AGENTS.md` + `.agents/instructions/*.instructions.md` for active architecture and implementation contract.
-- Workspace members: `src/mediapm-cas/` (CAS), `src/mediapm-conductor/` (Conductor), `src/mediapm-conductor-builtins/*/` (built-ins), `src/mediapm/` (application).
+- `Cargo.toml`, `.cargo/config.toml`, `.config/nextest.toml`, `rust-toolchain.toml`, `rustfmt.toml`/`clippy.toml`, `.github/workflows/ci.yml`, `prek.toml`.
+- `AGENTS.md` and `.agents/instructions/*.instructions.md` define the active contract. Workspace members: `src/mediapm-cas/`, `src/mediapm-conductor/`, `src/mediapm-conductor-builtins/*/`, `src/mediapm/`.
 
 ## Validation workflow
 
-Default to a **fast inner loop during edits** (targeted iteration). Treat **full workspace/parity gates as explicit checkpoints** (pre-push/CI parity), not routine per-edit commands.
+Default to a fast inner loop during edits. Treat full workspace and parity gates as explicit checkpoints.
 
-- **Default: targeted iteration.** Prefer the narrowest check that covers the change: `cargo test -p <crate> <test_name>` for a tight edit loop, `cargo test-pkg <crate>` / `cargo clippy-pkg <crate>` / `cargo build-pkg <crate>` for crate-scoped checks, or other selective commands such as targeted `cargo check`, `cargo fmt-check`, or `cargo bin rumdl check` as appropriate. Do not run slow full-workspace gates on every edit.
-- **Pre-commit hooks (`prek.toml`).** Hooks cover baseline checks and incremental formatting/linting on changed files at commit time; rely on them rather than re-running full formatting/lint gates manually per edit.
-- **Explicit checkpoints: full/parity gates.** Run `cargo fmt-check`, `cargo bin rumdl check`, `cargo clippy-all`, `cargo test-all`, `cargo test-doc-all`, and `cargo build-all`/feature-matrix only for pre-push/CI parity or when an explicit parity context requires them. `cargo test-doc-all` is intentionally split into separate doctest and rustdoc link-gate phases. `prek.toml` runs the full workspace pre-push gate (`cargo-check`, `clippy`, `test-runner test`, `test-runner doc`); CI mirrors and extends this, so manual full reruns are not required for normal submission.
-- libtest args (e.g. `--test-threads=8`) go AFTER `--`: `cargo test -p mediapm-utils --features progress -- --test-threads=8`.
-- Stale-artifact gotcha: `passthrough_conductor_tool_run_help_is_routable` in `src/mediapm/src/main.rs` can fail spuriously from stale incremental artifacts affecting clap's `try_parse_from`; clean and rebuild with `cargo clean -p mediapm -p mediapm-conductor`.
-- Required manual runtime verification before completion: `cargo run --package mediapm --example mediapm_demo` and `mediapm_demo_online`; neither demo needs a `mediapm` CLI build, because every tool their workflows run is either a fetched payload or a host builtin that runs in-process.
-- For `src/mediapm/**` edits, avoid full online demo runs during normal development; reserve them for push/pre-push unless a reviewer asks for local runtime verification.
-- If source or configs are incomplete, report gaps explicitly instead of inventing commands.
+- **Inner loop.** Use the narrowest check that covers the change: `cargo test -p <crate> <test_name>`, `cargo test-pkg <crate>`, `cargo clippy-pkg <crate>`, `cargo build-pkg <crate>`, or targeted `cargo check`/`cargo fmt-check`/`cargo bin rumdl check`. Do not run slow full-workspace gates on every edit.
+- **Checkpoints.** For pre-push/CI parity, run `cargo fmt-check`, `cargo bin rumdl check`, `cargo clippy-all`, `cargo test-all`, `cargo test-doc-all`, and `cargo build-all`/feature-matrix as required. `test-all` and `test-doc-all` go through the `test-runner` crate; `test-doc-all` runs doctests and then the rustdoc link gate as one command. `prek.toml` pre-push runs `cargo-check`, `clippy`, `test-runner test`, `test-runner doc`; CI mirrors and extends it.
+- **Warnings.** `-D warnings` holds in CI and locally (`.cargo/config.toml` `[build] rustflags = ["-Dwarnings"]`). Fix warnings at the root; bare lint suppression is banned.
+- libtest args go after `--`: `cargo test -p mediapm-utils --features progress -- --test-threads=8`.
+- Stale-artifact gotcha: `passthrough_conductor_tool_run_help_is_routable` in `src/mediapm/src/main.rs` can fail from stale incremental artifacts; `cargo clean -p mediapm -p mediapm-conductor`.
+- Before completion, run `cargo run --package mediapm --example mediapm_demo` and `mediapm_demo_online`. For `src/mediapm/**` edits, avoid full online demo runs during normal development; reserve for push/pre-push unless requested. If source or configs are incomplete, report gaps explicitly.
+
+## Hooks and CI parity
+
+- **prek stages.** pre-commit: conflict/private-key/whitespace checks, `rumdl-fmt`, `fmt` on changed `.rs`. commit-msg: `commitlint` (Conventional Commits, self-provisioned). pre-push: `cargo-check --workspace --all-targets --all-features`, `clippy --workspace --all-targets --all-features`, `test` (`test-runner test --all-features --locked`: nextest, unprefixed-tempdir gate, janitor dry-run gate), `test docs` (`test-runner doc --all-features --locked`: doctests, rustdoc link gate). No `rustdoc` hook id; use `SKIP=test-docs`.
+- **CI parity.** `.github/workflows/ci.yml` mirrors pre-push and extends it. `build` job: cheap checks (`rumdl`, `fmt-check`, `clippy-all`), required setup, then `test-all`, `test-doc-all`, `build-all`. `feature-matrix` derives crate/feature combinations from `cargo metadata` (`test-runner feature-matrix`); it and `build-all` are CI-only, not pre-push. `release` builds `mediapm-cas`, `mediapm-conductor`, `mediapm` with `--release` and exercises completion rendering. `windows` validates scripts, test-runner/temp gates, and targeted Windows checks; no full doctest/rustdoc parity. `online` workflow is manual dispatch against real hosts.
+- **Hook recovery.** `fmt` and `rumdl-fmt` may auto-fix and fail the commit. Verify HEAD unmoved (`git rev-parse HEAD`), `git add` modified files, retry with a fresh `git commit`, never `--amend`. prek stashes unstaged changes around hooks and restores them.
+
+## Nextest caveats
+
+- No doctest support; pair nextest with doctests via `test-doc-all`.
+- Example `main()` is not executed by nextest; embedded example tests cover it.
+- `#[should_panic]` can hit `slow-timeout`; adjust `.config/nextest.toml` only when needed.
+- Leak detection is real. cargo-nextest is pinned in `Cargo.toml` `[workspace.metadata.bin]`; do not tune `leak-timeout` away, do not set `result = "fail"`, and do not add broad per-test overrides.
+- No `--nocapture` by default; use `cargo nextest run --show-output`.
+- Network-heavy tests are serialized (`test-groups network`, `max-threads = 1`, longer `slow-timeout`) as ordering insurance. The group is hermetic today; real-upstream runs are manual/online workflow only. Keep filter/budget aligned with `.config/nextest.toml`.
 
 ## Editing conventions
 
-- Keep changes minimal, deterministic, aligned with the functional-core direction in active instruction files.
-- Keep dependency/feature surfaces explicit: prefer existing workspace deps, remove unused direct deps, gate optional behavior behind Cargo features, avoid default-feature fan-out.
-- Avoid hidden mutable state or databases unless explicitly requested.
-- Keep stack-specific detail here rather than growing root `AGENTS.md`.
-- Document touched Rust code with module-level `//!` and item-level `///` docs (semantics, invariants, side effects, error behavior).
-- Do not assume bootstrap-template structure when changing workspace-wide guidance; verify real members first.
+- Keep changes minimal, deterministic, and aligned with the functional-core direction. Keep planner pure and deterministic; keep side effects in boundary modules.
+- Keep dependency/feature surfaces explicit. Prefer existing workspace deps, remove unused direct deps, gate optional behavior behind Cargo features, avoid default-feature fan-out.
+- Avoid hidden mutable state or databases unless explicitly requested. Preserve managed-file record and migration-provenance semantics. Keep object-store and state-document writes atomic.
+- Keep stack-specific detail in focused instructions, not root `AGENTS.md`. Verify real workspace shape before changing workspace-wide guidance.
+- CLI/API parity: new CLI operations route through library/API entry points; programmatic APIs keep the same validation/failure semantics as CLI paths. Capability gaps between CLI and API are not acceptable. See `AGENTS.md`.
 
-## Rust module split layout convention
+## Module split and naming
 
-- When a module outgrows one file, move `foo.rs` to `foo/mod.rs`, place submodules as `foo/<submodule>.rs`, and keep unit tests inline as `#[cfg(test)]` blocks (split into a themed `foo_<theme>.rs` sibling only past ~300 lines).
-- In `foo/mod.rs` prefer `mod tests;` over `#[path = "..."]`; never keep both `foo.rs` and `foo/mod.rs`; keep `//!` docs on `foo/mod.rs`.
-- After a split, run `cargo test -p <crate> <focused_test_name>` and `cargo build-pkg <crate>`.
+- When a module outgrows one file, move `foo.rs` to `foo/mod.rs`, put submodules in `foo/<submodule>.rs`, keep unit tests inline as `#[cfg(test)]`, and split a themed `foo_<theme>.rs` sibling only past about 300 lines. Prefer `mod tests;`, never keep both `foo.rs` and `foo/mod.rs`, and keep `//!` docs on `foo/mod.rs`. After a split, run `cargo test -p <crate> <focused_test_name>` and `cargo build-pkg <crate>`.
+- All workspace examples use crate-name prefix: `<crate_name>_<example_name>.rs`. Invoke with the full target name, for example `cargo run --package mediapm --example mediapm_demo_online`.
 
-## Example target naming convention
+## Docstrings and lint suppression
 
-- All workspace examples must use the crate-name prefix to avoid Cargo filename-collision warnings: `<crate_name>_<example_name>.rs` (e.g. `cas_demo.rs`, `mediapm_demo_online.rs`).
-- This ensures unique target names across the workspace when running `cargo build --all-targets`.
-- When invoking examples, use the full target name: `cargo run --package cas --example cas_demo`, `cargo run --package conductor --example conductor_runtime_diagnostics`, `cargo run --package mediapm --example mediapm_demo_online`.
-- All examples must follow this convention; enforce it during code review.
+- Add module-level `//!` docs and item-level `///` docs for touched Rust code, including private items in touched files. Explain purpose, invariants, side effects, error behavior, and performance notes when relevant. Do not restate item names. Missing docs on touched helpers/constants/types are regressions.
+- Do not add bare `#[allow(...)]` or `#![allow(...)]` for rustc/clippy. Fix the lint first. If suppression is unavoidable, use narrow item-scoped `#[expect(<lint>, reason = "<why required now>")]`; keep scope minimal, give a concrete reason, treat as debt, and investigate `unfulfilled_lint_expectations`.
 
-## Docstring requirements
+## Test expectations
 
-See `.agents/instructions/rust-conventions.instructions.md` for Rustdoc/docstring depth requirements (module-level `//!`, item-level `///`, invariants, side effects, and error behavior for all touched items).
+- Tests are executable specifications. Cover planner determinism, sync idempotency, record/object integrity, and GC safety where relevant.
+- Workspace-crate integration tests use `tests/mod.rs` plus grouped `tests/e2e/`, `tests/int/`, `tests/prop/` modules.
+- Keep tests deterministic, isolated, and hermetic. Use `mediapm_utils::temp::artifact_dir()`/`cache_dir()` or scoped helpers; never write fixtures into source; never use real OS user cache in tests. Use `cache_root_override`/`MEDIAPM_EXAMPLE_CACHE_ROOT` isolation and hold process env locks as required by `temp-and-paths.instructions.md`.
+- Prefer explicit arrange/act/assert. Use `assert_eq!(actual, expected)` with clear messages. Normalize path separators for platform-safe assertions. Avoid nondeterministic collection ordering in assertions; use ordered collections or sort.
+- Behavior changes need atomic test updates. Demo behavior changes require verifying/updating `mediapm_demo` and `mediapm_demo_online` as applicable. Every example has an embedded test that exercises `main()`.
+- Terminal-rendered tests use exact `assert_eq!(term.contents(), concat!(...))` for deterministic rendered output. Substring/count-only assertions are acceptable only for non-deterministic timing, resize-dependent content where dimension is under test, or a preliminary check followed by an exact assertion.
+- For async tests use `tokio::test`; prefer `start_paused = true` for timeouts/intervals and await spawned handles. Control ambient credentials/env explicitly in tests that depend on absence.
 
-## Lint suppression policy
+## Pointers
 
-- Do not add bare suppression attributes (`#[allow(...)]` or `#![allow(...)]`) for rustc/clippy lints.
-- Prefer direct code fixes for lint findings first.
-- When suppression is truly unavoidable, use item-scoped `#[expect(<lint>, reason = "<substantive rationale>")]`.
-  - Keep scope as narrow as possible (single item/block, never crate-wide).
-  - The `reason` must explain _why the code shape is required now_, not just restate the lint name.
-  - Good reasons reference concrete constraints such as platform behavior, API-shape compatibility, or orchestration-ordering invariants.
-- Treat `#[expect(...)]` as temporary technical debt: remove it when refactors make the lint unnecessary, and investigate any `unfulfilled_lint_expectations` warning rather than suppressing it.
-- For platform edge cases (e.g. `clippy::permissions_set_readonly_false`) and diagnostic-only numeric conversions (e.g. `clippy::cast_precision_loss`), include explicit safety/correctness boundaries in the `reason` string.
-
-## Core architectural constraints
-
-- Keep planner behavior pure and deterministic.
-- Keep side effects concentrated in executor/infrastructure.
-- Preserve managed-file record and migration-provenance semantics.
-- Keep object-store writes and state-document writes atomic.
-
-## CLI/API parity contract
-
-See `AGENTS.md` ("CLI and API Parity" section) for the canonical parity contract. New CLI operations should route through library/API entry points, and capability gaps between CLI and API are not acceptable.
+- `.config/nextest.toml`, `prek.toml`, `.github/workflows/ci.yml`, `.cargo/config.toml`
+- `AGENTS.md`, `rust-workflow.instructions.md` (this file), `temp-and-paths.instructions.md`, `examples-and-demos.instructions.md`, `sdd-tdd.instructions.md`
+- Code: `scripts/test-runner/src/gates/`, `src/mediapm/src/example_isolation.rs`, `src/mediapm-utils/src/temp.rs`

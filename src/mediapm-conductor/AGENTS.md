@@ -374,15 +374,15 @@ Examples that run a workflow run it a second time and their embedded tests asser
 
 ## Validation Workflow
 
-See `rust-workflow.instructions.md` for the canonical validation workflow and command reference, and `ci-workflow.instructions.md` for hook mechanics and CI parity.
+See `rust-workflow.instructions.md` for the canonical validation workflow, hook mechanics, CI parity, and Rust conventions.
 
 ## Rust Docstring Expectations
 
-See `rust-conventions.instructions.md` ("Docstring depth requirement") for the full docstring policy including module-level, item-level, field-level, and test documentation requirements.
+See `rust-workflow.instructions.md` ("Docstrings and lint suppression") for docstring and lint policy.
 
 ## Change Discipline
 
-See `rust-conventions.instructions.md` ("Behavior change expectations") for the atomic test update, demo update, content map, yt-dlp output-variant, regex capture, record model synchronization, and state document coverage requirements.
+See `rust-workflow.instructions.md` ("Test expectations") for atomic test updates and behavior-change coverage, and keep change-specific coverage in the relevant focused instruction files.
 
 ## Specification source
 

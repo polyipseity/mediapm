@@ -87,7 +87,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - This is a multi-member Rust workspace with crate members under `src/`. Do not regress to bootstrap assumptions (single-crate `src/main.rs` with only minimal `Cargo.toml` + `rust-toolchain.toml`).
 - When docs mention `application`, `configuration`, `domain`, `infrastructure`, `support`, treat them as conceptual layering terms unless matching directories are explicitly introduced.
 - Before writing stack-specific guidance, inspect concrete evidence (manifests, lockfiles, source tree, scripts, CI workflows, editor settings, config files).
-- See `.agents/instructions/rust-conventions.instructions.md` for Rustdoc/docstring depth requirements.
+- See `.agents/instructions/rust-workflow.instructions.md` for Rust docstring, lint, and validation rules.
 - When you detect a real stack, add instructions for it in a narrow, well-named instruction file whose `description` and `applyTo` target the relevant files.
 - Prefer linking to canonical config files instead of copying large policy blocks into multiple customization files.
 - Keep customization files narrowly scoped: repo-wide defaults in `AGENTS.md`, detailed file-specific guidance in `.agents/instructions/`.

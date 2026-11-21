@@ -171,7 +171,7 @@ pub(crate) fn encode_delta_state(state: DeltaState) -> Vec<u8> {
 
 // The test module is split into themed siblings because it exceeded the
 // ~300-line inline-test limit in
-// `.agents/instructions/rust-conventions.instructions.md`. Both siblings
+// `.agents/instructions/rust-workflow.instructions.md`. Both siblings
 // carry the non-removable versions policy guard marker in their own module
 // doc, which `every_versions_dir_keeps_policy_guard_docstring` requires of
 // every file in a `versions/` directory.

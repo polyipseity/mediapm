@@ -1,7 +1,7 @@
 ---
 description: "Use when recording validation timing baselines, CI timing evidence, or R1/R4 measurement metadata for mediapm checks and tests."
 name: "Validation Timing Baselines"
-applyTo: ".github/workflows/**/*.yml, .github/workflows/**/*.yaml, prek.toml, .config/nextest.toml, scripts/test-runner/**, .agents/instructions/ci-workflow.instructions.md, .agents/instructions/rust-workflow.instructions.md"
+applyTo: ".github/workflows/**/*.yml, .github/workflows/**/*.yaml, prek.toml, .config/nextest.toml, scripts/test-runner/**, .agents/instructions/rust-workflow.instructions.md"
 ---
 
 # Validation timing baselines

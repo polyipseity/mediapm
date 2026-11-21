@@ -4,90 +4,75 @@ name: "mediapm Architecture and Invariants"
 applyTo: "src/**/*.rs"
 ---
 
-# mediapm Architecture and Invariants
+# mediapm architecture and invariants
 
 ## Purpose
 
 - Keep code aligned with mediapm's crate-oriented architecture and explicit state model.
-- Preserve determinism and auditability of media state transitions.
-- Keep boundaries between planning logic and side effects clear.
+- Preserve deterministic, auditable media state transitions.
+- Keep planning logic separate from side effects.
 
-## Cross-crate engineering principles
+## Cross-crate principles
 
-- **Pure core, imperative shell.** Keep planning, diffing, and key derivation pure and deterministic; confine side effects (filesystem, process, network) to explicit boundary modules.
-- **Incremental by default.** Prefer incremental updates over full rebuilds. Use explicit content-addressed cache keys throughout.
-- **Async I/O with runtime adapters.** Default to Tokio. Use `async-trait` where useful.
-- **Actor concurrency.** Use `ractor` with typed messages for orchestration and stateful actors.
-- **Type-level modeling.** Use newtypes and strong enums to make invalid states unrepresentable. Resolve `Option` at configuration boundaries via serde defaults, not in domain code. All serde defaults are centralized in `src/mediapm/src/config/defaults.rs`.
-- **Deterministic serialization.** Use `serde` + deterministic `serde_json` policy for all content-addressed data.
+- **Pure core, imperative shell.** Planning, diffing, and key derivation stay pure and deterministic; filesystem/process/network side effects live in explicit boundary modules.
+- **Incremental by default.** Prefer incremental updates and explicit content-addressed cache keys.
+- **Async and actors.** Default to Tokio; use `async-trait` where useful. Use `ractor` with typed messages for orchestration/stateful actors.
+- **Type-level invariants.** Use newtypes and strong enums to make invalid states unrepresentable. Resolve `Option` at configuration boundaries via serde defaults, not in domain code. Centralize serde defaults in `src/mediapm/src/config/defaults.rs`.
+- **Deterministic serialization.** Use `serde` with deterministic `serde_json` for content-addressed data.
 
-## Module-layer index
+## Module layer index
 
 | Crate | Role |
-|---|---|
+| --- | --- |
 | `mediapm-cas/` | Content-addressed storage, async CAS API |
 | `mediapm-conductor/` | Workflow orchestration, Nickel config evaluation |
 | `mediapm-conductor-builtins/*/` | Built-in tools (echo, fs, archive, import, export) |
 | `mediapm/` | Media-facing API, CLI, managed-tool lifecycle |
-| `mediapm-cli/`, `mediapm-cas-cli/`, `mediapm-conductor-cli/` | Clap command definitions, shared by each binary and its own build script |
+| `mediapm-cli/`, `mediapm-cas-cli/`, `mediapm-conductor-cli/` | Clap definitions shared by binaries and build scripts |
 | `mediapm-utils/` | Shared utilities for builtins |
 
-Per-crate `AGENTS.md` holds detailed invariants and contracts.
+Per-crate `AGENTS.md` files hold detailed invariants and contracts.
 
 ## Identity and storage invariants
 
-- Canonical identity key is URI (`canonical_uri`), not path display strings.
-- Content identity is BLAKE3 hash; objects stored under `.mediapm/store/blobs/v1/blake3/<0..2>/<2..4>/<4..>`.
-- CAS object files are immutable once imported and persisted as read-only. The store enforces the mode itself, in `FileSystemBlobStore`: every commit path (`atomic_write`, `write_from_reader`, `write_stream`) makes the staged file read-only before its rename, the skip path restores a mode an older build left unset, and every delete path clears the attribute first on Windows, because that platform cannot replace or unlink a read-only file. The mode is therefore a property of the store, not a side effect of the materializer's chmod through a hardlinked output, and a hardlink inherits it; the one exception is Windows, where the attribute belongs to every name of the file and the clear that makes a delete possible on one name is visible on the others. A staged file has the attribute cleared before it is written, so an interrupted commit cannot wedge the next write for that hash.
-- There is no per-media sidecar. Runtime media state is the `ManagedFileRecord`s in `.mediapm/state.json` that name each materialized path, plus the conductor's per-instance record of what each step produced; the only sidecars in a library are the ones a tool wrote, such as yt-dlp's `.url`/`.webloc`/`.desktop` link files and its `.info.json`, `.vtt` and thumbnail outputs.
-- A user-authored `media` map key is one identity with two consumers — `${media.id}` path interpolation and every `ManagedFileRecord.media_id` — so `config::hierarchy_types::validate_media_id` **rejects** at the config boundary (from `flatten_hierarchy_nodes_inner`, beside `validate_hierarchy_path_component`) any id that is empty, carries a control character, has leading or trailing whitespace, contains a path separator or a reserved filename character, or *is* `.`/`..`. Rejecting rather than sanitizing is the policy for the same reason as the NFD rule: the key is the user's to spell correctly, and a sanitized spelling would put `a_b` on disk while the state kept `a/b`. The message is rendered with `escape_debug` and names the code point of a control character, so a diagnostic never splits the log line carrying it. The reserved-character rule calls `path_component::is_rejected_char` — the same predicate the sanitizer rewrites from — so the rule and the rewrite cannot drift; it is deliberately platform-independent, because a `a:b` key the sanitizer rewrites to `a_b` on every platform would split the library on a platform-dependent rule. The boundary is the hierarchy walk *plus* `config::hierarchy_types::validate_media_ids`, which validates **every** key and is called from `build_media_workflow_plan_with_limits`: the walk alone misses a `media` entry no hierarchy node references, and the workflow synthesizer turns every key into a `media/{id}` workflow name. `config::validation::validate_document` and `MediaPmDocument::normalize()` are **not** that boundary — neither is reachable from production, so neither may be cited as coverage.
-- Keep the version marker explicit in every persisted document and every migration sequential per version: the two constants live in `config/defaults.rs` (`MEDIAPM_DOCUMENT_VERSION`, `MEDIAPM_STATE_VERSION`), and the ladders are documented in `state-and-versioning.instructions.md`.
+- Canonical identity key is URI (`canonical_uri`), not path display strings. Content identity is BLAKE3; objects live under `.mediapm/store/blobs/v1/blake3/<0..2>/<2..4>/<4..>`.
+- CAS object files are immutable and read-only once persisted. `FileSystemBlobStore` enforces mode on commit (`atomic_write`, `write_from_reader`, `write_stream`), restores missing mode on skip, and clears read-only before delete on Windows. Hardlinks inherit the mode; on Windows the attribute is shared by names.
+- No per-media sidecar. Runtime media state is `ManagedFileRecord`s in `.mediapm/state.json` plus conductor per-instance output records. Library sidecars are only tool-written files (yt-dlp link/info/subtitle/thumbnail outputs).
+- `media` map keys are validated at the config boundary by `config::hierarchy_types::validate_media_id` (and `validate_media_ids` from `build_media_workflow_plan_with_limits`): reject empty/control/leading-trailing whitespace/path-separator/reserved chars and `.`/`..`. Reject, do not sanitize. Validation is platform-independent via `path_component::is_rejected_char`. `config::validation::validate_document` and `MediaPmDocument::normalize()` are not this boundary.
+- Persisted documents keep explicit integer version markers; migrations are sequential per version. Constants live in `config/defaults.rs` (`MEDIAPM_DOCUMENT_VERSION`, `MEDIAPM_STATE_VERSION`). See `state-and-versioning.instructions.md`.
 
 ## Determinism and safety
 
-- Sort and serialize JSON deterministically for stable diffs.
-- Use atomic write flow for state documents and object writes (temp file + sync + rename).
+- Serialize JSON deterministically for stable diffs.
+- Use atomic temp-write/sync/rename for state and object writes.
 - Keep `plan` output stable for identical inputs.
 - Keep `sync` idempotent for unchanged state.
 
 ## Link materialization
 
-- Respect the document's `materialization_preference_order` (hardlink → symlink → reflink → copy when it is unset) rather than a built-in order: the order is a library decision, and `materialize_file_entry` reads it off `SyncSharedState`, which `sync_hierarchy` fills from the document.
-- A fallback is a notice, not an error and not silence. A method further down the order wrote the file, so the entry lands, and the notice names the entry's relative path and the method that actually wrote it; `MaterializeReport.notices` carries it into the sync summary's warnings, where the CLI prints it as a `Δ` line, and a run that carried one exits as a warning (`3`), because the library is not the layout the document asked for even though every entry landed. No method succeeding is still an error.
-- Write each library entry straight from the CAS object into its target path: validate the object, remove a read-only target, then write, with no staging tree and no rename commit. `MediaPmPaths` declares no staging directory, and the commit step in `materializer/commit.rs` validates and clears the target rather than staging it.
-- A skip is decided against what the target must hold, not against what the store holds. An entry written straight from a CAS object compares the recorded hash and the object's length; an entry whose variant carries a `zip_member` binding stores the archive under the variant hash but writes one extracted member, so it compares the member's own hash and length, and replaces the read-only target through the same remove-then-write path a store object uses.
-- NFD-only filenames are enforced at two stages, because the user controls one input and not the other. At the config stage, `config::hierarchy_types::check_nfd_source` (called from `validate_hierarchy_path_component`) **rejects** a non-NFD component the user declared, with a message distinct from the reserved-character one, before any template placeholder is resolved. At the post-resolution stage, `sync_hierarchy` runs `materializer::commit::sanitize_and_validate_components` over every resolved entry after metadata interpolation and before any entry worker starts, which **normalizes** each component — tag metadata, ffprobe output, and upstream values are not the user's to fix — and rejects `.`/`..` components and unrewritten separators rather than committing them.
-- `rename_files` replacement strings are sanitized with the configured replacement map.
+- Honor `materialization_preference_order` (default: hardlink, symlink, reflink, copy). `materialize_file_entry` reads it from `SyncSharedState`.
+- A fallback is a notice, not error and not silence: record entry path and actual method in `MaterializeReport.notices`, surface as sync warnings/CLI `Δ`, and exit warning (`3`) when any notice exists. No method succeeding is still an error.
+- Write library entries directly from CAS object to target path: validate object, remove read-only target, then write. No staging tree or rename commit. `MediaPmPaths` has no staging directory.
+- Decide skip by target content. Store-object entries compare recorded hash and object length; `zip_member` entries compare member hash/length and replace read-only target through the same remove-then-write path.
+- NFD filenames: config stage rejects non-NFD user-declared components (`check_nfd_source`/`validate_hierarchy_path_component`) with a distinct message. Post-resolution stage normalizes components after interpolation (`sanitize_and_validate_components`) before workers start; reject `.`/`..` and unrewritten separators. Sanitize `rename_files` replacement strings with the configured replacement map.
 
 ## Output save policy
 
-- One `save` policy per output variant: `"auto"` (the default), a boolean, or `"full"`. `tools/workflows/mod.rs::resolve_variant_save` resolves the declaration into the `SaveMode` the conductor records on the capture spec, and an explicit policy is answered with itself without consulting the context.
-- `"auto"` answers in one order, and the order is the rule: a variant the media's hierarchy materializes resolves to `"full"`; otherwise a variant the media's final step produces, or an impure step produces, resolves to `true`; otherwise `false`. A materialized variant wins over both other reasons, so a variant the library links to is never stored as a delta against another blob. The context is `AutoSaveContext`, filled from `config::hierarchy_types::hierarchy_consumed_variants` so the answer matches what the materializer writes.
-- A materialized variant declared `false` contradicts the hierarchy and is refused at plan build as `MPM-E010`, naming the media, the step, the variant and the hierarchy entry whose selector consumes it.
-- The mode decides retention, never production: every mode writes the capture when the step runs. `"full"` additionally marks the object keep-full in the CAS, so the optimizer never stores it as a delta (it may still serve as a base); the materializer errors when a resolved hash names bytes the store could not read, which is the fatal exit-1 band, while a variant nothing produced stays a counted miss. The collector's side of retention — an unsaved output stays rooted while its producing instance is reachable — is in `src/mediapm-conductor/AGENTS.md` section G.
-- In `auto` resolution, the `Full` branch matches on variant name, so a same-named variant from another step in the same media is also kept whole. This can over-retain but never under-retain.
-- The conductor's `true` save default reaches only documents mediapm did not synthesize.
+- Per output variant `save` is `"auto"` (default), boolean, or `"full"`. `tools/workflows/mod.rs::resolve_variant_save` resolves to conductor `SaveMode`; explicit policies return themselves.
+- `auto` order: materialized by hierarchy -> `"full"`; final-step or impure-step output -> `true`; otherwise `false`. Materialized wins, so library-linked variants are never delta-stored. `AutoSaveContext` comes from `hierarchy_consumed_variants`.
+- Materialized variant declared `false` is refused at plan build as `MPM-E010` (media, step, variant, hierarchy entry).
+- Mode decides retention, not production: every mode captures when the step runs. `"full"` marks object keep-full in CAS (optimizer may not delta-store it; it may still be a base). Missing resolved bytes are fatal exit-1; unproduced variants are counted misses. Conductor `true` save default applies only to documents mediapm did not synthesize.
 
-## Cache policy
+## Cache policy and downloads
 
-- Caches carry no entry-count cap. The tool caches below expire on a clock; the materializer's own records (`src/mediapm/src/materializer/outputs.rs`, `<runtime>/cache/mediapm/materialization.json`) expire on change and hold only what the current run confirmed.
-- Managed-tool downloads use shared user-level cache (`<os-cache-dir>/mediapm/cache/`, 7-day eviction).
-- Workspace-scoped tool-content cache at `<mediapm_dir>/tools/` for conductor-level payloads (24h stale-entry eviction).
+- Caches have no entry-count cap. Tool caches expire by clock; materializer records (`<runtime>/cache/mediapm/materialization.json`) expire on change and keep only current-run confirmations.
+- Managed-tool downloads use shared user-level cache (`<os-cache-dir>/mediapm/cache/`, 7-day eviction). Workspace tool-content cache is `<mediapm_dir>/tools/` (24h stale-entry eviction).
+- All-platform download: download and CAS-import managed tool payloads for all supported OSes regardless of host platform. Never filter by host OS in the provisioner.
 
-## All-platform download
+## Pointers
 
-Managed tool payloads are downloaded and CAS-imported for all supported OSes regardless of host platform. Never filter by host OS in the provisioner.
-
-## Tool sync flow reference
-
-| Concern                            | Instruction file                                     |
-| ---------------------------------- | ---------------------------------------------------- |
-| CLI entry & service orchestration  | `src/mediapm/AGENTS.md`                              |
-| Tool provisioning                  | `tool-provisioning.instructions.md`                  |
-| State and versioning               | `state-and-versioning.instructions.md`               |
-| Paths layout                       | `temp-and-paths.instructions.md`                       |
-| Error codes and taxonomy           | `sdd-tdd.instructions.md`                            |
-
-## mediapm-rust-writer agent
-
-A specialized `mediapm-rust-writer` subagent is available in this workspace for implementing Rust code that follows mediapm architecture invariants and typing conventions. Invoke via `runSubagent(agentName: "mediapm-rust-writer")` with a description of the Rust implementation task. The agent applies Rust typing conventions and mediapm architecture invariants to produce idiomatic Rust code matching the project's conventions.
+- `src/mediapm/AGENTS.md` - CLI entry and service orchestration.
+- `tool-provisioning.instructions.md` - tool sync/provisioning/dispatch.
+- `state-and-versioning.instructions.md` - state format, versions, migrations.
+- `temp-and-paths.instructions.md` - paths, temp isolation, janitor contract.
+- `sdd-tdd.instructions.md` - SDD/TDD workflow and error taxonomy.

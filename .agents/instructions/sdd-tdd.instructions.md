@@ -11,7 +11,7 @@ applyTo: "**/*"
 - Artifacts live in `.pi/plans/` (gitignored by `~/.config/git/ignore`). Never create a `docs/` directory; durable facts belong in instruction files, `AGENTS.md`, or coverage-matrix rows.
 - Feature: write spec (update relevant `AGENTS.md` with invariants/contracts/edge cases), then write tests (unit in `#[cfg(test)]`, integration in `tests/int/` or `tests/e2e/`, property with `#[cfg(feature = "proptest")]` for determinism/idempotency/round-trip, demo examples for mediapm full pipeline), then implement, then update coverage matrix. Every example under `src/*/examples/` must exercise `main()` via an embedded test; a nondeterministic example's test asserts whichever path the switch selects rather than skipping (see `examples-and-demos.instructions.md`).
 - Bug fix: write a failing test that reproduces the bug, fix the implementation, run `cargo test --no-fail-fast` for no regressions, add a spec entry if the bug revealed an `AGENTS.md` gap.
-- Terminal-rendered tests (progress bar, spinner, terminal output) must use `assert_eq!(actual, expected)` with `concat!(...)`. Substring/count-only assertions are acceptable only in the narrow exceptions documented in `rust-conventions.instructions.md` ("Terminal output matching").
+- Terminal-rendered tests (progress bar, spinner, terminal output) must use `assert_eq!(actual, expected)` with `concat!(...)`. Substring/count-only assertions are acceptable only in the narrow exceptions documented in `rust-workflow.instructions.md` ("Test expectations").
 
 ## Regression requirements (schema strictness)
 
