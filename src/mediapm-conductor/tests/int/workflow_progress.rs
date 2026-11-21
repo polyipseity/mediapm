@@ -41,7 +41,7 @@ fn step(id: &str, tool: &str, text: &str) -> WorkflowStepSpec {
         tool: tool.into(),
         inputs: BTreeMap::from([("text".into(), text.into())]),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     }
 }
@@ -53,7 +53,7 @@ fn step_depends(id: &str, tool: &str, text: &str, depends_on: &[&str]) -> Workfl
         tool: tool.into(),
         inputs: BTreeMap::from([("text".into(), text.into())]),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: depends_on.iter().map(ToString::to_string).collect(),
     }
 }
@@ -77,7 +77,7 @@ fn flaky_step(
             ("key".into(), key.into()),
         ]),
         outputs: BTreeMap::new(),
-        max_retries,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(max_retries) }),
         depends_on: Vec::new(),
     }
 }
@@ -614,7 +614,10 @@ async fn regression_idle_slot_prefix_stops_at_the_activity_marker() {
             impure: false,
             // Two retries, so the slot passes through PendingRetry before it
             // fails for good and all three non-active states are recorded.
-            steps: vec![WorkflowStepSpec { max_retries: 2, ..step("s1", "broken", "") }],
+            steps: vec![WorkflowStepSpec {
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(2) }),
+                ..step("s1", "broken", "")
+            }],
         }],
     ));
 
@@ -805,7 +808,10 @@ async fn regression_worker_invariant_holds() {
             display_name: None,
             description: None,
             impure: false,
-            steps: vec![WorkflowStepSpec { max_retries: 2, ..step("s1", "broken", "") }],
+            steps: vec![WorkflowStepSpec {
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(2) }),
+                ..step("s1", "broken", "")
+            }],
         }],
     ));
 
@@ -971,7 +977,10 @@ async fn retry_exhausted_progress_ops() {
             display_name: None,
             description: None,
             impure: false,
-            steps: vec![WorkflowStepSpec { max_retries: 2, ..step("s1", "broken", "") }],
+            steps: vec![WorkflowStepSpec {
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(2) }),
+                ..step("s1", "broken", "")
+            }],
         }],
     ));
 
@@ -1054,10 +1063,11 @@ async fn no_retry_when_max_retries_zero() {
     tc.shutdown().await;
 }
 
-/// An impure broken step with `max_retries: 2` is NOT retried when
-/// `retry_impure` is false (the default) — it fails on the first attempt.
+/// D4a: impurity no longer gates retries. An impure tool with two retries is
+/// dispatched three times, and the pending-retry marker that the old flag
+/// suppressed now appears exactly as it does for a pure tool.
 #[tokio::test]
-async fn impure_no_retry_without_flag() {
+async fn impure_retries_like_any_other_tool() {
     fix_worker_pool_size();
     let tc = TestConductor::new();
     let impure_broken = {
@@ -1072,43 +1082,18 @@ async fn impure_no_retry_without_flag() {
             display_name: None,
             description: None,
             impure: true,
-            steps: vec![WorkflowStepSpec { max_retries: 2, ..step("s1", "broken", "") }],
+            steps: vec![WorkflowStepSpec {
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(2) }),
+                ..step("s1", "broken", "")
+            }],
         }],
     ));
 
-    let (tracker, summary) = run_with_progress_opts(
-        &tc,
-        "default",
-        RunWorkflowOptions { retry_impure: false, ..Default::default() },
-    )
-    .await;
-    assert_eq!(summary.total_steps, 1);
-    assert_eq!(summary.executed_steps, 0);
-    assert_eq!(summary.failed_steps, 1);
+    let (tracker, summary) =
+        run_with_progress_opts(&tc, "default", RunWorkflowOptions::default()).await;
 
-    let ops = tracker.ops();
-    let recorded = tracker.recorded();
-    assert_eq!(count_dispatches(&ops), 1, "impure step not retried without flag");
-    assert_eq!(
-        count_markers_w(&ops_on_worker_slots(&recorded)),
-        0,
-        "the only attempt is final, so the slot carries no pending-retry marker"
-    );
-    assert_eq!(
-        count_markers_w(&ops_on_overall(&recorded)),
-        0,
-        "the overall row records no label ops since its prefix is the static seed"
-    );
-    assert_eq!(
-        count_markers_f(&ops_on_worker_slots(&recorded)),
-        1,
-        "final-failure marker on the only attempt"
-    );
-    assert_eq!(
-        count_markers_f(&ops_on_overall(&recorded)),
-        0,
-        "the overall row does not carry the failure marker"
-    );
+    assert_eq!(summary.failed_steps, 1);
+    assert_eq!(count_dispatches(&tracker.ops()), 3, "two retries means three dispatches");
     tc.shutdown().await;
 }
 
@@ -1255,7 +1240,10 @@ async fn overall_bar_finishes_error_when_a_step_failed() {
             display_name: None,
             description: None,
             impure: false,
-            steps: vec![WorkflowStepSpec { max_retries: 0, ..step("s1", "broken", "") }],
+            steps: vec![WorkflowStepSpec {
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
+                ..step("s1", "broken", "")
+            }],
         }],
     ));
 
@@ -1391,7 +1379,10 @@ async fn final_failure_tally_counts_the_terminal_outcome() {
             display_name: None,
             description: None,
             impure: false,
-            steps: vec![WorkflowStepSpec { max_retries: 1, ..step("s1", "broken", "") }],
+            steps: vec![WorkflowStepSpec {
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(1) }),
+                ..step("s1", "broken", "")
+            }],
         }],
     ));
 

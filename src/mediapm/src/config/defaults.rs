@@ -108,9 +108,6 @@ pub fn default_mediapm_state_version() -> u32 {
     MEDIAPM_STATE_VERSION
 }
 
-/// Default retry-impure flag.
-pub const DEFAULT_RETRY_IMPURE: bool = false;
-
 /// Default path sanitization mode.
 #[must_use]
 pub fn default_path_sanitization() -> SanitizeNamesConfig {
@@ -169,12 +166,6 @@ pub fn default_profiler_enabled() -> bool {
 #[must_use]
 pub fn default_verify_materialization() -> bool {
     DEFAULT_VERIFY_MATERIALIZATION
-}
-
-/// Serde default function returning the retry-impure flag.
-#[must_use]
-pub fn default_retry_impure() -> bool {
-    DEFAULT_RETRY_IMPURE
 }
 
 /// Default payload staging strategy: run the command under the provisioned

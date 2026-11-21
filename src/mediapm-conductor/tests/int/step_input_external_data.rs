@@ -69,7 +69,7 @@ fn write_declared_input_workflow(tc: &TestConductor, hash: Hash) {
                 ..OutputCaptureSpec::default()
             },
         )]),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     };
 

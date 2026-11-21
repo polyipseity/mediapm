@@ -163,7 +163,7 @@ pub(crate) fn synthesize_rsgain_step_chain(
                 apply_output_capture.clone(),
                 ffmpeg_slot_output_capture(0),
             )]),
-            max_retries: 0,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         });
 
         let mut rsgain_inputs = BTreeMap::from([
@@ -197,7 +197,7 @@ pub(crate) fn synthesize_rsgain_step_chain(
                 output_binding.output_name.clone(),
                 rsgain_workflow_output_capture(&output_binding.output_name),
             )]),
-            max_retries: 0,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         });
 
         let metadata_export_inputs = BTreeMap::from([
@@ -225,7 +225,7 @@ pub(crate) fn synthesize_rsgain_step_chain(
                 apply_output_capture.clone(),
                 ffmpeg_slot_output_capture(0),
             )]),
-            max_retries: 0,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         });
 
         let metadata_rewrite_inputs = BTreeMap::from([
@@ -245,7 +245,7 @@ pub(crate) fn synthesize_rsgain_step_chain(
             inputs: metadata_rewrite_inputs,
             depends_on: vec![metadata_export_step_id.clone()],
             outputs: BTreeMap::from([(OUTPUT_CONTENT.to_string(), sd_output_capture())]),
-            max_retries: 0,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         });
 
         let metadata_r128_rewrite_inputs = BTreeMap::from([
@@ -265,7 +265,7 @@ pub(crate) fn synthesize_rsgain_step_chain(
             inputs: metadata_r128_rewrite_inputs,
             depends_on: vec![metadata_rewrite_step_id.clone()],
             outputs: BTreeMap::from([(OUTPUT_CONTENT.to_string(), sd_output_capture())]),
-            max_retries: 0,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         });
 
         let mut apply_depends_on = vec![metadata_r128_rewrite_step_id.clone()];
@@ -313,7 +313,7 @@ pub(crate) fn synthesize_rsgain_step_chain(
                     allow_empty: false,
                 },
             )]),
-            max_retries: 0,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         });
 
         variant_producers.insert(
@@ -688,7 +688,7 @@ pub(crate) fn build_rsgain_spec(
         build_rsgain_outputs(),
         build_rsgain_default_input_defaults(),
         false, // impure
-        0,     // max_concurrent_calls
+        None,  // max_concurrent_calls
         0,     // max_retries
     );
     // The hermetic stub chain publishes these names in the host environment.

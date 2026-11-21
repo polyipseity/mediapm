@@ -91,10 +91,9 @@ pub(crate) struct ToolCallInstanceV2 {
     /// Whether the tool is impure.
     ///
     /// Impure steps depend on externals not captured in their inputs. The
-    /// flag records that fact (it drives `retry_impure` retry semantics and
-    /// `last_impure_sync_at` provenance) but never alters the instance key:
-    /// time never invalidates an instance. Re-execution follows changed key
-    /// material or the run-scoped explicit `force_rerun` invalidation.
+    /// flag records that fact for provenance and never alters the instance
+    /// key: time never invalidates an instance. Re-execution follows changed
+    /// key material or the run-scoped explicit `force_rerun` invalidation.
     pub impure: bool,
     /// Execution timestamp recorded at run time. Provenance only; never part
     /// of any instance key.

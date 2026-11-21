@@ -146,7 +146,7 @@ async fn main_cli() -> anyhow::Result<()> {
             env_generated_file: cli.env_generated_file.clone().unwrap_or_default(),
         },
         materialization: RuntimeMaterializationConfig::default(),
-        retry_impure: cli.retry_impure,
+
         ..MediaRuntimeStorage::default()
     };
     let _passthrough_rt = rt.clone();

@@ -82,7 +82,7 @@ fn producer_step(text: &str) -> WorkflowStepSpec {
                 ..OutputCaptureSpec::default()
             },
         )]),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     }
 }
@@ -106,7 +106,7 @@ fn consumer_step() -> WorkflowStepSpec {
                 ..OutputCaptureSpec::default()
             },
         )]),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: vec!["producer".to_string()],
     }
 }

@@ -350,7 +350,7 @@ pub fn runtime_boundary(deviations: RuntimeBoundaryDeviations) -> MediaRuntimeSt
             ),
         },
         path_sanitization: None,
-        retry_impure: Some(defaults::default_retry_impure()),
+
         tools: BTreeMap::new(),
     }
 }
@@ -637,7 +637,6 @@ mod tests {
             &RuntimeBasePaths { workspace_root: "/w".into(), mediapm_dir: "/m".into() },
         );
 
-        assert!(!resolved.retry_impure);
         assert_eq!(resolved.path_sanitization, crate::config::SanitizeNamesConfig::default());
         assert_eq!(
             resolved.materialization.materialization_preference_order,
@@ -840,7 +839,7 @@ mod tests {
         assert!(boundary.caching.reconstructed_cache_ttl_seconds.is_some());
         assert!(boundary.lifecycle.instance_ttl_seconds.is_some());
         assert!(boundary.environment.profiler_enabled.is_some());
-        assert!(boundary.retry_impure.is_some());
+
         assert!(
             boundary.materialization.payload_staging.is_none(),
             "the staging default stays absent: absent already means `in_place`"

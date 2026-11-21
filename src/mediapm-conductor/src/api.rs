@@ -212,8 +212,6 @@ pub trait ConductorApi<C: CasApi>: Send + Sync {
 /// Options for a single workflow run.
 #[derive(Default)]
 pub struct RunWorkflowOptions {
-    /// Number of retry attempts for impure steps.
-    pub retry_impure: bool,
     /// Explicit invalidation for this run: skip the per-step instance-cache
     /// probe so every step executes fresh, even when its instance was just
     /// recorded.
@@ -255,8 +253,7 @@ pub struct RunWorkflowOptions {
 impl std::fmt::Debug for RunWorkflowOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("RunWorkflowOptions");
-        dbg.field("retry_impure", &self.retry_impure)
-            .field("force_rerun", &self.force_rerun)
+        dbg.field("force_rerun", &self.force_rerun)
             .field("tool_selector", &self.tool_selector)
             .field("host_builtins", &self.host_builtins);
         #[cfg(feature = "progress")]

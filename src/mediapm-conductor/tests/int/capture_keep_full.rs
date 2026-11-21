@@ -35,7 +35,7 @@ fn write_one_capture_step(tc: &TestConductor, save: SaveMode) {
         tool: "echo@v1".to_string(),
         inputs: BTreeMap::from([("text".to_string(), "payload".to_string())]),
         outputs: BTreeMap::from([("alpha".to_string(), stdout_spec("alpha", save))]),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     };
     tc.write_config(doc_with_workflows(

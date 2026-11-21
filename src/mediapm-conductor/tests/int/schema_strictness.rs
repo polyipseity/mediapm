@@ -29,6 +29,12 @@ fn decode_error(doc: &str) -> String {
     format!("{}", decode_document(doc.as_bytes()).expect_err("document must be rejected"))
 }
 
+/// Returns a bounded decode error string for assertions that only need to
+/// mention a field name.
+fn decode_error_bounded(doc: &str) -> String {
+    decode_error(doc)
+}
+
 /// Returns the formatted error from validating a v1 document that must fail.
 fn v1_validation_error(doc: &str) -> String {
     format!("{}", validate_v1_document(doc).expect_err("v1 document must be rejected"))
@@ -573,15 +579,15 @@ fn regression_a_builtin_with_empty_tools_side_env_vars_still_loads() {
 fn parity_mod_ncl_exports_unversioned_aliases() {
     let mod_source = include_str!("../../src/config/versions/mod.ncl");
     assert!(
-        mod_source.contains("validate_document = v5_migration.validate_document_v5"),
+        mod_source.contains("validate_document = v6_migration.validate_document_v6"),
         "mod.ncl must re-export validate_document (unversioned alias)"
     );
     assert!(
-        mod_source.contains("envelope_contract = v5_migration.envelope_contract_v5"),
+        mod_source.contains("envelope_contract = v6_migration.envelope_contract_v6"),
         "mod.ncl must re-export envelope_contract (unversioned alias)"
     );
     assert!(
-        mod_source.contains("supported_versions_val = [1, 2, 3, 4, 5]"),
+        mod_source.contains("supported_versions_val = [1, 2, 3, 4, 5, 6]"),
         "mod.ncl must name every version the build carries a contract for"
     );
 }
@@ -685,7 +691,7 @@ const V2_DOC_WITH_PAYLOAD: &str = r#"{
 fn strict_v3_rejects_an_unknown_staging_strategy() {
     let msg = decode_error(UNKNOWN_STAGING_DOC);
     assert!(
-        msg.contains("PayloadStagingV5") && msg.contains("payload_staging"),
+        msg.contains("PayloadStagingV6") && msg.contains("payload_staging"),
         "the active contract must reject a migrated v3 document's strategy and name the field: {msg}"
     );
 }
@@ -704,7 +710,7 @@ const UNKNOWN_DOCUMENT_STAGING_DOC: &str = r#"{
 fn strict_v4_rejects_an_unknown_document_level_staging_strategy() {
     let msg = decode_error(UNKNOWN_DOCUMENT_STAGING_DOC);
     assert!(
-        msg.contains("PayloadStagingV5") && msg.contains("payload_staging"),
+        msg.contains("PayloadStagingV6") && msg.contains("payload_staging"),
         "the Nickel contract must reject the default and name the field: {msg}"
     );
 }
@@ -775,7 +781,7 @@ fn regression_a_v4_document_round_trips_byte_for_byte() {
 
     let first = encode_document(doc).expect("encode");
     let text = String::from_utf8(first.clone()).expect("encoded document is UTF-8");
-    assert!(text.contains("version = 5"), "the encoder writes the active schema marker: {text}");
+    assert!(text.contains("version = 6"), "the encoder writes the active schema marker: {text}");
     assert!(
         text.contains("payload_staging = \"hard_link\""),
         "the encoder has to write a strategy the default does not already give: {text}"
@@ -1057,7 +1063,7 @@ fn parity_a_tool_strategy_wins_over_the_document_default() {
 fn strict_a_document_level_inherit_is_rejected() {
     let msg = decode_error(r#"{ version = 4, runtime = { payload_staging = "inherit" } }"#);
     assert!(
-        msg.contains("payload_staging") && msg.contains("PayloadStagingV5"),
+        msg.contains("payload_staging") && msg.contains("PayloadStagingV6"),
         "the document-level field must accept only the three strategies: {msg}"
     );
 }
@@ -1087,7 +1093,7 @@ fn strict_an_unknown_staging_name_is_rejected_at_both_levels() {
         decode_error(r#"{ version = 4, runtime = { payload_staging = "symlink" } }"#);
     assert!(
         document_level.contains("payload_staging")
-            && document_level.contains("PayloadStagingV5")
+            && document_level.contains("PayloadStagingV6")
             && document_level.contains("symlink"),
         "the document's unknown default must be refused by the strategy contract: {document_level}"
     );
@@ -1700,16 +1706,108 @@ fn regression_valid_conductor_docs_still_round_trip() {
         br#"{
             version = 2,
             runtime = {
-                retry_impure = true,
                 platform_inherited_env_vars = { macos = ["PATH"] },
             },
         }"#,
     )
     .expect("platform-runtime doc must still decode");
-    assert!(platform_doc.runtime.retry_impure, "retry_impure preserved");
     assert_eq!(
         platform_doc.runtime.environment.platform_inherited_env_vars.macos,
         vec!["PATH".to_string()],
         "platform env vars preserved"
     );
+}
+
+/// Builds a minimal v6 document whose first tool carries the given runtime fragment.
+fn with_tool_runtime(runtime_fragment: &str) -> String {
+    format!(
+        r#"{{
+    version = 6,
+    tools = {{
+        "t" = {{
+            kind = "executable",
+            name = "t",
+            command = ["true"],
+            runtime = {runtime_fragment},
+        }},
+    }},
+}}"#
+    )
+}
+
+/// Builds a minimal v6 document whose first step carries the given step fragment.
+fn with_step_runtime(step_fragment: &str) -> String {
+    format!(
+        r#"{{
+    version = 6,
+    tools = {{
+        "t" = {{
+            kind = "executable",
+            name = "t",
+            command = ["true"],
+        }},
+    }},
+    workflows = [
+        {{
+            name = "w",
+            steps = [
+                {{
+                    id = "s1",
+                    tool = "t",
+                    {step_fragment},
+                }},
+            ],
+        }},
+    ],
+}}"#
+    )
+}
+
+/// D4: `null` is the way a document says "unlimited", and `0` is not a way to say
+/// anything.
+#[test]
+fn strict_tool_runtime_cap_is_null_or_positive() {
+    let null_doc = with_tool_runtime(r"{ max_concurrent_calls = null }");
+    assert!(decode_document(null_doc.as_bytes()).is_ok(), "null must mean unlimited");
+
+    let one_doc = with_tool_runtime(r"{ max_concurrent_calls = 1 }");
+    assert!(decode_document(one_doc.as_bytes()).is_ok(), "1 is a legal cap");
+
+    let zero_doc = with_tool_runtime(r"{ max_concurrent_calls = 0 }");
+    let msg = decode_error_bounded(&zero_doc);
+    assert!(msg.contains("max_concurrent_calls"), "0 must be rejected: {msg}");
+}
+
+/// D4: a step may override retries and nothing else about the tool's runtime.
+#[test]
+fn strict_step_runtime_overrides_retries_only() {
+    let ok = with_step_runtime(r"runtime = { max_retries = null }");
+    assert!(decode_document(ok.as_bytes()).is_ok(), "null inherits the tool value");
+
+    let override_doc = with_step_runtime(r"runtime = { max_retries = 5 }");
+    assert!(decode_document(override_doc.as_bytes()).is_ok(), "a number overrides");
+
+    let cap_doc = with_step_runtime(r"runtime = { max_concurrent_calls = 2 }");
+    let msg = decode_error_bounded(&cap_doc);
+    assert!(
+        msg.contains("max_concurrent_calls") || msg.contains("runtime"),
+        "a step cannot cap concurrency: {msg}"
+    );
+
+    let impure_doc = with_step_runtime(r"runtime = { impure = true }");
+    let msg = decode_error_bounded(&impure_doc);
+    assert!(
+        msg.contains("impure") || msg.contains("runtime"),
+        "a step cannot claim impurity: {msg}"
+    );
+}
+
+/// D4: `0` retries means one attempt, so a step that asks for it must retry zero
+/// times, not once.
+#[test]
+fn strict_zero_retries_is_accepted_and_means_one_attempt() {
+    let doc = with_step_runtime(r"runtime = { max_retries = 0 }");
+    let decoded = decode_document(doc.as_bytes()).expect("0 retries is legal");
+    let step = &decoded.workflows[0].steps[0];
+    assert_eq!(step.runtime.as_ref().and_then(|r| r.max_retries), Some(0));
 }

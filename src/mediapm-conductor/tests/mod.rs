@@ -85,7 +85,7 @@ fn echo_step(tool_id: &str, text: &str) -> WorkflowStepSpec {
         tool: tool_id.into(),
         inputs: BTreeMap::from([("text".into(), text.into())]),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     }
 }
@@ -115,7 +115,7 @@ fn bare_step(id: &str, tool: &str, depends_on: &[&str]) -> WorkflowStepSpec {
         tool: tool.into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: depends_on.iter().map(ToString::to_string).collect(),
     }
 }

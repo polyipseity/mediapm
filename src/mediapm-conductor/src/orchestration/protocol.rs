@@ -70,14 +70,13 @@ pub(crate) struct UnifiedToolSpec {
     ///
     /// Progress rows read this field and render nothing when it is `None`.
     pub version: Option<String>,
-    /// Whether the tool is impure, which gates retries: an impure step retries
-    /// only when the run sets `retry_impure`. It does not make the call unique
-    /// and does not prevent cache hits — instance keys derive from content.
+    /// Whether the tool is impure. Impurity records provenance and forces a
+    /// fresh instance per call; retries are bounded by `max_retries`.
     pub is_impure: bool,
     /// Maximum concurrent calls allowed for this tool.
     ///
-    /// `0` means unlimited.
-    pub max_concurrent_calls: usize,
+    /// `None` means unlimited.
+    pub max_concurrent_calls: Option<usize>,
     /// Maximum retry count after the initial failed call.
     pub max_retries: usize,
     /// Declared input contract keyed by input name.
@@ -281,7 +280,7 @@ mod tests {
                 name: "mediapm.tools.yt-dlp@somehash".to_string(),
                 version: None,
                 is_impure: false,
-                max_concurrent_calls: 0,
+                max_concurrent_calls: None,
                 max_retries: 0,
                 inputs: BTreeMap::new(),
                 default_inputs: BTreeMap::new(),
@@ -321,7 +320,7 @@ mod tests {
             name: "ffmpeg".to_string(),
             version: None,
             is_impure: false,
-            max_concurrent_calls: 0,
+            max_concurrent_calls: None,
             max_retries: 0,
             inputs: BTreeMap::new(),
             default_inputs: BTreeMap::new(),

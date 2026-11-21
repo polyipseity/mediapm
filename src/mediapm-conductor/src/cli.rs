@@ -201,7 +201,6 @@ async fn cmd_run(workflow_name: &str, force_rerun: bool) -> Result<(), Conductor
         (Arc::new(g), Arc::new(overall))
     };
     let options = RunWorkflowOptions {
-        retry_impure: false,
         force_rerun,
         tool_selector: None,
         // The binary is its own host and ships no runners of its own: a document

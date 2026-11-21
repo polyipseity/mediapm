@@ -6,10 +6,11 @@
 # - All version files must be present in the workspace alongside mod.ncl.
 let SupportedVersion_pred =
   std.contract.from_predicate (fun value =>
-    value == 1 || value == 2 || value == 3 || value == 4 || value == 5
+    value == 1 || value == 2 || value == 3 || value == 4 || value == 5 || value == 6
   )
 in
 
+let v6_migration = import "v6.ncl" in
 let v5_migration = import "v5.ncl" in
 let v4_migration = import "v4.ncl" in
 let v3_migration = import "v3.ncl" in
@@ -80,12 +81,44 @@ let migrate_to_fn = fun requested_version =>
       v1_migration.migrate_v2_to_v1
         (v2_migration.migrate_v3_to_v2
           (v3_migration.migrate_v4_to_v3 (v4_migration.migrate_v5_to_v4 data)))
+    else if version == 5 && target == 6 then
+      v6_migration.migrate_v5_to_v6 data
+    else if version == 6 && target == 5 then
+      v5_migration.migrate_v6_to_v5 data
+    else if version == 4 && target == 6 then
+      v6_migration.migrate_v5_to_v6 (v5_migration.migrate_v4_to_v5 data)
+    else if version == 6 && target == 4 then
+      v4_migration.migrate_v5_to_v4 (v5_migration.migrate_v6_to_v5 data)
+    else if version == 3 && target == 6 then
+      v6_migration.migrate_v5_to_v6
+        (v5_migration.migrate_v4_to_v5 (v4_migration.migrate_v3_to_v4 data))
+    else if version == 6 && target == 3 then
+      v3_migration.migrate_v4_to_v3
+        (v4_migration.migrate_v5_to_v4 (v5_migration.migrate_v6_to_v5 data))
+    else if version == 2 && target == 6 then
+      v6_migration.migrate_v5_to_v6
+        (v5_migration.migrate_v4_to_v5
+          (v4_migration.migrate_v3_to_v4 (v3_migration.migrate_v2_to_v3 data)))
+    else if version == 6 && target == 2 then
+      v2_migration.migrate_v3_to_v2
+        (v3_migration.migrate_v4_to_v3
+          (v4_migration.migrate_v5_to_v4 (v5_migration.migrate_v6_to_v5 data)))
+    else if version == 1 && target == 6 then
+      v6_migration.migrate_v5_to_v6
+        (v5_migration.migrate_v4_to_v5
+          (v4_migration.migrate_v3_to_v4
+            (v3_migration.migrate_v2_to_v3 (v2_migration.migrate_v1_to_v2 data))))
+    else if version == 6 && target == 1 then
+      v1_migration.migrate_v2_to_v1
+        (v2_migration.migrate_v3_to_v2
+          (v3_migration.migrate_v4_to_v3
+            (v4_migration.migrate_v5_to_v4 (v5_migration.migrate_v6_to_v5 data))))
     else
       data | UnreachableMigrationPair
 in
 
-let current_version_val = (5 | SupportedVersion_pred) in
-let supported_versions_val = [1, 2, 3, 4, 5] in
+let current_version_val = (6 | SupportedVersion_pred) in
+let supported_versions_val = [1, 2, 3, 4, 5, 6] in
 
 {
   current_version = current_version_val,
@@ -93,7 +126,7 @@ let supported_versions_val = [1, 2, 3, 4, 5] in
   migrate_to = migrate_to_fn,
   SupportedVersion = SupportedVersion_pred,
   # ||| Unversioned alias for the latest-schema document validator.
-  validate_document = v5_migration.validate_document_v5,
+  validate_document = v6_migration.validate_document_v6,
   # ||| Unversioned alias for the latest-schema envelope contract.
-  envelope_contract = v5_migration.envelope_contract_v5,
+  envelope_contract = v6_migration.envelope_contract_v6,
 }

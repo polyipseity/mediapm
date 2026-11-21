@@ -264,12 +264,6 @@ fn v1_nickel_schema_structure() {
         );
     }
 
-    // --- S-B4: retry_impure is bool-guarded ---
-    assert!(
-        schema.contains("retry_impure | Bool | optional"),
-        "v1.ncl RuntimeStorageV1.retry_impure must be bool-guarded"
-    );
-
     // --- S-B5: tool-level outputs use the OutputPolicyV1 record ---
     assert!(
         schema.contains("outputs | { _ : OutputPolicyV1 } | optional"),

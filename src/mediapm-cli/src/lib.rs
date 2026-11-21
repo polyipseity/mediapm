@@ -113,9 +113,6 @@ pub struct Cli {
     /// Override for `runtime.media_state_config`.
     #[arg(long, env = "MEDIAPM_MEDIA_STATE_CONFIG")]
     pub media_state_config: Option<PathBuf>,
-    /// Enables `CorruptObject` retry for impure workflow steps.
-    #[arg(long, env = "MEDIAPM_RETRY_IMPURE")]
-    pub retry_impure: bool,
     /// Top-level command selector.
     #[command(subcommand)]
     pub command: Command,

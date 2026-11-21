@@ -46,6 +46,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::{TestConductor, doc_with_workflows};
 use mediapm_conductor::api::RunWorkflowOptions;
@@ -53,6 +54,7 @@ use mediapm_conductor::{
     OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
     WorkflowSpec, WorkflowStepSpec,
 };
+use mediapm_utils::progress::recording::{ProgressOp, RecordingProgressTracker};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -113,14 +115,14 @@ fn slow_step(
         tool: "slow@v1".into(),
         inputs,
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: depends_on.iter().map(ToString::to_string).collect(),
     }
 }
 
-/// Creates a `slow@v1` `ToolSpec` with a `max_concurrent_calls` cap (`0` =
-/// unlimited), mirroring [`slow_tool`].
-fn capped_slow_tool(name: &str, cap: usize) -> ToolSpec {
+/// Creates a `slow@v1` `ToolSpec` with a `max_concurrent_calls` cap, where
+/// `None` means unlimited, mirroring [`slow_tool`].
+fn capped_slow_tool(name: &str, cap: Option<usize>) -> ToolSpec {
     ToolSpec {
         runtime: ToolRuntime { max_concurrent_calls: cap, ..ToolRuntime::default() },
         ..slow_tool(name)
@@ -187,7 +189,7 @@ fn flaky_step(id: &str, failures: usize, max_retries: usize, key: &str) -> Workf
             ("key".into(), key.into()),
         ]),
         outputs: BTreeMap::new(),
-        max_retries,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(max_retries) }),
         depends_on: Vec::new(),
     }
 }
@@ -211,7 +213,7 @@ fn echo_producer_step(id: &str, text: &str, depends_on: &[&str]) -> WorkflowStep
                 ..OutputCaptureSpec::default()
             },
         )]),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: depends_on.iter().map(ToString::to_string).collect(),
     }
 }
@@ -500,6 +502,115 @@ async fn retry_releases_the_worker_for_the_re_dispatched_attempt() {
         "both steps succeed only after one retry, which requires the worker released: {summary:?}"
     );
     tc.shutdown().await;
+}
+
+/// Counts dispatch operations from recorded progress ops.
+fn count_dispatches(ops: &[ProgressOp]) -> usize {
+    ops.iter()
+        .filter(|op| matches!(op, ProgressOp::SetTruncation { prefix, .. } if prefix.contains("[active]")))
+        .count()
+}
+
+/// Harness for retry-count assertions: one step, one always-failing tool.
+struct FailAlwaysHarness {
+    tc: TestConductor,
+    tracker: RecordingProgressTracker,
+    overall: mediapm_utils::progress::recording::RecordingTrackedHandle,
+}
+
+impl FailAlwaysHarness {
+    /// Builds a one-step workflow whose tool exits non-zero every time.
+    fn new(tool_retries: usize, step_retries: Option<usize>) -> Self {
+        fix_worker_pool_size();
+        let tc = TestConductor::new();
+        let mut broken = ToolSpec {
+            version: None,
+            kind: ToolKindSpec::Executable {
+                command: vec!["mediapm-tool-that-does-not-exist".to_string()],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            name: "broken".into(),
+            inputs: BTreeMap::new(),
+            default_inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            runtime: ToolRuntime { max_retries: tool_retries, ..Default::default() },
+        };
+        // `impure: false` so retries are permitted by policy.
+        broken.runtime.impure = false;
+        let step = WorkflowStepSpec {
+            id: "s1".into(),
+            tool: "broken".into(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            runtime: step_retries.map(|max_retries| mediapm_conductor::config::StepRuntime {
+                max_retries: Some(max_retries),
+            }),
+            depends_on: Vec::new(),
+        };
+        tc.write_config(doc_with_workflows(
+            BTreeMap::from([("broken".into(), broken)]),
+            vec![WorkflowSpec {
+                name: "default".into(),
+                display_name: None,
+                description: None,
+                impure: false,
+                steps: vec![step],
+            }],
+        ));
+        let (tracker, overall) = RecordingProgressTracker::with_overall("workflow", 1);
+        Self { tc, tracker, overall }
+    }
+
+    /// Runs the workflow and returns its summary.
+    async fn run(&self) -> mediapm_conductor::RunSummary {
+        self.tc
+            .conductor()
+            .run_workflow(
+                "default",
+                RunWorkflowOptions {
+                    progress_group: Some(Arc::new(self.tracker.clone())),
+                    overall_bar: Some(Arc::new(self.overall.clone())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("workflow should complete with a failure summary")
+    }
+
+    /// Counts dispatched attempts from the recorded progress ops.
+    fn attempt_count(&self) -> usize {
+        count_dispatches(&self.tracker.ops())
+    }
+
+    /// Stops the conductor owned by this harness.
+    async fn shutdown(self) {
+        self.tc.shutdown().await;
+    }
+}
+
+/// D4: `0` retries means exactly one attempt, `1` means two, and a step's
+/// override beats the tool's count. The tool's count is what a step that says
+/// nothing inherits.
+#[tokio::test]
+async fn retry_counts_resolve_from_step_over_tool() {
+    for (tool_retries, step_retries, expected_attempts) in
+        [(0usize, None, 1usize), (1, None, 2), (3, Some(0), 1), (0, Some(2), 3)]
+    {
+        let harness = FailAlwaysHarness::new(tool_retries, step_retries);
+        let summary = harness.run().await;
+
+        assert_eq!(
+            harness.attempt_count(),
+            expected_attempts,
+            "tool={tool_retries} step={step_retries:?} must dispatch {expected_attempts} time(s)"
+        );
+        assert_eq!(
+            summary.failed_steps, 1,
+            "the step still fails, it just tries the right number of times"
+        );
+        harness.shutdown().await;
+    }
 }
 
 /// A step's request carries exactly its own branch's outputs: a sibling
@@ -849,7 +960,7 @@ async fn tool_cap_serializes_a_single_tool() {
     let tc = TestConductor::new();
     let log = tc.path().join("events.log");
     tc.write_config(doc_with_workflows(
-        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", 1))]),
+        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", Some(1)))]),
         vec![WorkflowSpec {
             name: "default".into(),
             display_name: None,
@@ -890,8 +1001,8 @@ async fn tool_cap_does_not_block_other_tools() {
     let log = tc.path().join("events.log");
     tc.write_config(doc_with_workflows(
         BTreeMap::from([
-            ("slow-x@v1".into(), capped_slow_tool("slow-x@v1", 1)),
-            ("slow-y@v1".into(), capped_slow_tool("slow-y@v1", 0)),
+            ("slow-x@v1".into(), capped_slow_tool("slow-x@v1", Some(1))),
+            ("slow-y@v1".into(), capped_slow_tool("slow-y@v1", None)),
         ]),
         vec![WorkflowSpec {
             name: "default".into(),
@@ -927,21 +1038,20 @@ async fn tool_cap_does_not_block_other_tools() {
     tc.shutdown().await;
 }
 
-/// `max_concurrent_calls = 0` means unlimited: three independent steps of
+/// `max_concurrent_calls = None` means unlimited: three independent steps of
 /// one uncapped tool dispatch together on the 2-worker pool instead of
 /// serializing.
 ///
 /// `a` holds until the log records `start b`: any implicit serialization
-/// (e.g. treating 0 as a cap of 1) would make a's hold time out and the
-/// step fail, while a "never run" reading of 0 parks everything and trips
-/// the scheduler's stall guard — either regression fails loudly.
+/// would make a's hold time out and the step fail, while a "never run"
+/// reading would park everything and trip the scheduler's stall guard.
 #[tokio::test]
-async fn tool_cap_zero_runs_all_steps() {
+async fn tool_cap_none_runs_all_steps() {
     fix_worker_pool_size();
     let tc = TestConductor::new();
     let log = tc.path().join("events.log");
     tc.write_config(doc_with_workflows(
-        BTreeMap::from([("slow-cap0@v1".into(), capped_slow_tool("slow-cap0@v1", 0))]),
+        BTreeMap::from([("slow-cap0@v1".into(), capped_slow_tool("slow-cap0@v1", None))]),
         vec![WorkflowSpec {
             name: "default".into(),
             display_name: None,
@@ -977,7 +1087,7 @@ async fn tool_cap_settle_releases_a_parked_step() {
     let tc = TestConductor::new();
     let log = tc.path().join("events.log");
     tc.write_config(doc_with_workflows(
-        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", 1))]),
+        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", Some(1)))]),
         vec![WorkflowSpec {
             name: "default".into(),
             display_name: None,
@@ -1012,7 +1122,7 @@ async fn tool_cap_park_does_not_livelock() {
     let tc = TestConductor::new();
     let log = tc.path().join("events.log");
     tc.write_config(doc_with_workflows(
-        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", 1))]),
+        BTreeMap::from([("slow-cap@v1".into(), capped_slow_tool("slow-cap@v1", Some(1)))]),
         vec![WorkflowSpec {
             name: "default".into(),
             display_name: None,

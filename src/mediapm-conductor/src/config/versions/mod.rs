@@ -44,8 +44,10 @@ pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
 pub(crate) const V3_NCL_SOURCE: &str = include_str!("v3.ncl");
 /// Source of the v4 Nickel contract (needed for migration down from v5).
 pub(crate) const V4_NCL_SOURCE: &str = include_str!("v4.ncl");
-/// Source of the v5 Nickel contract.
+/// Source of the v5 Nickel contract (needed for migration down from v6).
 pub(crate) const V5_NCL_SOURCE: &str = include_str!("v5.ncl");
+/// Source of the v6 Nickel contract.
+pub(crate) const V6_NCL_SOURCE: &str = include_str!("v6.ncl");
 
 /// Fixed embedded migration helper module.
 pub(crate) const MOD_NCL_SOURCE: &str = include_str!("mod.ncl");
@@ -68,6 +70,7 @@ pub fn contract_sources() -> &'static [(&'static str, &'static str)] {
         ("v3.ncl", V3_NCL_SOURCE),
         ("v4.ncl", V4_NCL_SOURCE),
         ("v5.ncl", V5_NCL_SOURCE),
+        ("v6.ncl", V6_NCL_SOURCE),
     ]
 }
 
@@ -77,7 +80,7 @@ pub fn contract_sources() -> &'static [(&'static str, &'static str)] {
 /// version both read this list, so a version added to the arms alone cannot
 /// reach a document while staying out of the message that says which versions
 /// exist.
-pub(crate) const SUPPORTED_VERSIONS: &[u32] = &[1, 2, 3, 4, 5];
+pub(crate) const SUPPORTED_VERSIONS: &[u32] = &[1, 2, 3, 4, 5, 6];
 
 /// Resolves one requested schema marker to the embedded Nickel contract file name.
 pub(super) fn resolve_version_contract(
@@ -90,6 +93,7 @@ pub(super) fn resolve_version_contract(
         3 => Ok("v3.ncl"),
         4 => Ok("v4.ncl"),
         5 => Ok("v5.ncl"),
+        6 => Ok("v6.ncl"),
         _ => {
             let supported = SUPPORTED_VERSIONS.iter().map(u32::to_string).collect::<Vec<_>>();
             Err(ConductorError::Workflow(format!(
@@ -765,6 +769,80 @@ mod tests {
                 || msg.contains("extra field")
                 || msg.contains("unknown"),
             "error should mention unknown field: {msg}"
+        );
+    }
+
+    /// v5↔v6 migration normalizes tool `max_concurrent_calls` unlimited representation.
+    #[test]
+    fn v5_v6_migration_normalizes_tool_max_concurrent_calls_unlimited() {
+        let v5_source = r#"{
+            version = 5,
+            tools = {
+                "t" = {
+                    kind = "executable",
+                    name = "t",
+                    command = ["true"],
+                    runtime = { max_concurrent_calls = 0 },
+                },
+            },
+        }"#;
+        let to_v6: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                v5_source,
+                6,
+                "configuration document",
+            )
+            .expect("v5->v6 must migrate max_concurrent_calls 0 to null");
+        assert_eq!(to_v6["version"].as_f64(), Some(6.0));
+        assert_eq!(
+            to_v6["tools"]["t"]["runtime"]["max_concurrent_calls"],
+            serde_json::Value::Null,
+            "v5 unlimited (0) must become v6 unlimited (null)"
+        );
+        // Different whitespace avoids the migration cache entry written by the
+        // serde_json::Value migration above, so decode_document deserializes the
+        // latest struct form directly.
+        let v5_source_for_decode = r#"{
+            version = 5,
+            tools = {
+                "t" = {
+                    kind = "executable",
+                    name = "t",
+                    command = ["true"],
+                    runtime = { max_concurrent_calls = 0, },
+                },
+            },
+        }"#;
+        let decoded = decode_document(v5_source_for_decode.as_bytes())
+            .expect("migrated v5 document must validate as latest v6");
+        assert_eq!(
+            decoded.tools["t"].runtime.max_concurrent_calls, None,
+            "decoded latest document must represent unlimited as None"
+        );
+
+        let v6_source = r#"{
+            version = 6,
+            tools = {
+                "t" = {
+                    kind = "executable",
+                    name = "t",
+                    command = ["true"],
+                    runtime = { max_concurrent_calls = null },
+                },
+            },
+        }"#;
+        let to_v5: serde_json::Value =
+            crate::config::nickel_io::migrate_document_source_to_version(
+                v6_source,
+                5,
+                "configuration document",
+            )
+            .expect("v6->v5 must migrate max_concurrent_calls null to 0");
+        assert_eq!(to_v5["version"].as_f64(), Some(5.0));
+        assert_eq!(
+            to_v5["tools"]["t"]["runtime"]["max_concurrent_calls"].as_f64(),
+            Some(0.0),
+            "v6 unlimited (null) must become v5 unlimited (0)"
         );
     }
 }

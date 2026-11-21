@@ -153,7 +153,7 @@ pub(crate) fn build_deno_spec(
         build_deno_outputs(),
         build_deno_default_input_defaults(),
         false, // impure
-        0,     // max_concurrent_calls
+        None,  // max_concurrent_calls
         0,     // max_retries
     );
     // The hermetic stub chain publishes these names in the host environment.
@@ -204,7 +204,7 @@ mod tests {
         let os_exec_paths = BTreeMap::from([("linux".into(), "deno".into())]);
         let (_spec, runtime) = build_deno_spec(content_map, &os_exec_paths);
         assert!(!runtime.impure);
-        assert_eq!(runtime.max_concurrent_calls, 0);
+        assert_eq!(runtime.max_concurrent_calls, None);
         assert_eq!(runtime.max_retries, 0);
     }
 }

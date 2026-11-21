@@ -41,7 +41,7 @@ fn producer_step(text: &str) -> WorkflowStepSpec {
                 ..OutputCaptureSpec::default()
             },
         )]),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     }
 }
@@ -57,7 +57,7 @@ fn consumer_step() -> WorkflowStepSpec {
             "${step_output.producer.result}".to_string(),
         )]),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: vec!["producer".to_string()],
     }
 }

@@ -76,12 +76,6 @@ pub fn env_registry() -> &'static [EnvVarEntry] {
             group: EnvVarGroup::CliPaths,
         },
         EnvVarEntry {
-            name: "MEDIAPM_RETRY_IMPURE",
-            default: "",
-            doc: "Enables CorruptObject retry for impure steps (default: retry disabled).",
-            group: EnvVarGroup::Core,
-        },
-        EnvVarEntry {
             name: "MEDIAPM_NO_PROGRESS",
             default: "",
             doc: "Suppresses progress output when set.",

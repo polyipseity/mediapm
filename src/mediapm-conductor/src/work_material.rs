@@ -348,7 +348,7 @@ mod tests {
                 "${step_output.step-0-probe.primary}".to_string(),
             )]),
             outputs: BTreeMap::new(),
-            max_retries: 0,
+            runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
             depends_on: vec!["step-0-probe".to_string()],
         };
         (tool, step)

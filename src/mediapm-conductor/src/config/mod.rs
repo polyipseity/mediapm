@@ -508,13 +508,19 @@ impl ConfigPayloadStaging {
     }
 }
 
+/// Default maximum retries for a tool after the first failed attempt.
+///
+/// Three is the documented default: enough to ride out a transient failure
+/// without making a broken step expensive to notice.
+pub const DEFAULT_TOOL_MAX_RETRIES: usize = 3;
+
 /// Runtime configuration for a tool (replaces the old separate `tool_configs`
 /// map in the V1 schema).
 ///
 /// The `runtime` property on a tool holds fields that must NOT be part of the
 /// tool-call-instance identity computation.  Changes to runtime fields affect
 /// scheduling and sandbox materialization but do not invalidate cached outputs.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolRuntime {
     /// Content map: relative path → CAS hash or inline base64 payload.
@@ -526,12 +532,9 @@ pub struct ToolRuntime {
     pub content_map: ToolContentMap,
     /// Whether this tool performs impure (side-effecting) operations.
     ///
-    /// Impurity gates retries: an impure step retries only when the run sets
-    /// `retry_impure`, because repeating a side effect is not free the way
-    /// recomputing pure output is. It never affects caching — instance keys are
-    /// content-derived, so an impure step with unchanged material is served
-    /// from the instance cache like any other, and re-executing it takes
-    /// changed material or an explicit forced re-run.
+    /// Impurity still records provenance and forces a fresh instance per call.
+    /// It no longer gates retries: `max_retries` answers that directly, per
+    /// tool and per step, because a failed attempt moves no state pointer.
     #[serde(default)]
     pub impure: bool,
     /// Environment variable names to inherit from the host process.
@@ -544,11 +547,13 @@ pub struct ToolRuntime {
     pub inherited_env_vars: Vec<String>,
     /// Maximum concurrent calls allowed for this tool.
     ///
-    /// `0` means unlimited.
+    /// `None` means unlimited, which is also the default. A document that wants a
+    /// cap states a positive count; `0` is refused at load rather than silently
+    /// meaning unlimited, because the two are different intents.
     #[serde(default)]
-    pub max_concurrent_calls: usize,
+    pub max_concurrent_calls: Option<usize>,
     /// Maximum retry attempts for this tool after the first failed attempt.
-    #[serde(default)]
+    #[serde(default = "default_tool_max_retries")]
     pub max_retries: usize,
     /// Absolute path of the directory holding this tool's provisioned payload
     /// tree.
@@ -568,6 +573,27 @@ pub struct ToolRuntime {
     /// rather than silently copying.
     #[serde(default)]
     pub payload_staging: ConfigPayloadStaging,
+}
+
+const fn default_tool_max_retries() -> usize {
+    DEFAULT_TOOL_MAX_RETRIES
+}
+
+impl Default for ToolRuntime {
+    fn default() -> Self {
+        Self {
+            content_map: BTreeMap::new(),
+            impure: false,
+            inherited_env_vars: Vec::new(),
+            max_concurrent_calls: None,
+            // Three retries is the documented default and the only reason this is
+            // hand-written: a derived `Default` would say zero and quietly make
+            // the default dead.
+            max_retries: DEFAULT_TOOL_MAX_RETRIES,
+            payload_root: String::new(),
+            payload_staging: ConfigPayloadStaging::Inherit,
+        }
+    }
 }
 
 /// Platform-grouped inherited environment-variable names (S-D3).
@@ -733,11 +759,6 @@ pub struct ConductorRuntimeConfig {
     /// Platform environment configuration (inherited env var names).
     #[serde(default)]
     pub environment: RuntimePlatformEnvConfig,
-    /// Whether impure tool calls may be retried automatically.
-    ///
-    /// Absent in config resolves to `false` at the boundary.
-    #[serde(default)]
-    pub retry_impure: bool,
     /// How a step stages the payload of a tool that names no strategy of its
     /// own.
     ///
@@ -770,8 +791,6 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
                 A: MapAccess<'de>,
             {
                 let mut environment = RuntimePlatformEnvConfig::default();
-                let mut retry_impure = false;
-                let mut seen_retry_impure = false;
                 let mut payload_staging = PayloadStaging::default();
 
                 while let Some(key) = map.next_key::<String>()? {
@@ -785,29 +804,19 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfig {
                         "platform_inherited_env_vars" => {
                             environment.platform_inherited_env_vars = map.next_value()?;
                         }
-                        "retry_impure" => {
-                            retry_impure = map.next_value()?;
-                            seen_retry_impure = true;
-                        }
                         "payload_staging" => {
                             payload_staging = map.next_value()?;
                         }
                         other => {
                             return Err(A::Error::unknown_field(
                                 other,
-                                &[
-                                    "environment",
-                                    "payload_staging",
-                                    "platform_inherited_env_vars",
-                                    "retry_impure",
-                                ],
+                                &["environment", "payload_staging", "platform_inherited_env_vars"],
                             ));
                         }
                     }
                 }
 
-                let _ = seen_retry_impure;
-                Ok(ConductorRuntimeConfig { environment, retry_impure, payload_staging })
+                Ok(ConductorRuntimeConfig { environment, payload_staging })
             }
         }
 
@@ -923,6 +932,19 @@ pub struct WorkflowSpec {
     pub steps: Vec<WorkflowStepSpec>,
 }
 
+/// What a step is allowed to override about its tool's runtime.
+///
+/// Retries are the only member. Impurity and the concurrency cap are properties
+/// of the tool call itself, not of one invocation of it, so a document that
+/// states either on a step fails to load instead of being ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StepRuntime {
+    /// Retries after the first failed attempt; `None` inherits the tool's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<usize>,
+}
+
 /// Specification for one workflow step (tool call reference).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -941,9 +963,9 @@ pub struct WorkflowStepSpec {
     /// spec. See `merge_output_specs` in the step executor.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, OutputCaptureSpec>,
-    /// Override the tool's `max_retries` for this specific step.
-    #[serde(default)]
-    pub max_retries: usize,
+    /// Runtime overrides for this step. Absent means inherit everything from the tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<StepRuntime>,
     /// Explicit execution-order dependencies on prior step ids.
     ///
     /// Every `${step_output.<step_id>...}` reference in `inputs` must have a
@@ -1174,12 +1196,13 @@ mod tests {
         assert_eq!(policy, OutputPolicy::Bool(true));
     }
 
-    /// Verifies default `ToolRuntime` has impure=false and zero retries.
+    /// Verifies default `ToolRuntime` has impure=false and three retries.
     #[test]
     fn tool_runtime_defaults() {
         let rt = ToolRuntime::default();
         assert!(!rt.impure);
-        assert_eq!(rt.max_retries, 0);
+        assert_eq!(rt.max_retries, DEFAULT_TOOL_MAX_RETRIES);
+        assert_eq!(rt.max_concurrent_calls, None);
         assert!(rt.content_map.is_empty());
     }
 
@@ -1654,12 +1677,12 @@ mod tests {
     // ── ConductorRuntimeConfig (resolved, no-Option) ─────────────────────
 
     /// Documents that the resolved `ConductorRuntimeConfig` carries plain
-    /// values (not `Option`): defaults are `retry_impure = false` and the
-    /// platform env-var lists are the document defaults.
+    /// values (not `Option`): the platform env-var lists are the document
+    /// defaults and the payload staging default is `in_place`.
     #[test]
     fn conductor_runtime_config_default_has_platform_default_inherited_env_vars() {
         let cfg = ConductorRuntimeConfig::default();
-        assert!(!cfg.retry_impure);
+        assert_eq!(cfg.payload_staging, PayloadStaging::InPlace);
         assert_eq!(cfg.environment.platform_inherited_env_vars.windows.len(), 46);
         assert_eq!(cfg.environment.platform_inherited_env_vars.linux.len(), 51);
         assert_eq!(cfg.environment.platform_inherited_env_vars.macos.len(), 40);

@@ -128,14 +128,14 @@ pub(super) enum MergeConflict {
 ///   `Unsaved`); absent `save` is implicit `Saved` and never beats an
 ///   explicit value. Descriptions are never merged and always stay `None` in
 ///   the merged result.
-/// - **Runtime** — per-field merge of `retry_impure`,
-///   `platform_inherited_env_vars` and `payload_staging` where an explicit
-///   value wins over an implicit (absent) one; two explicit CONFLICTING values
-///   error ([`MergeConflict::ConflictingRuntime`]).
+/// - **Runtime** — per-field merge of `platform_inherited_env_vars` and
+///   `payload_staging` where an explicit value wins over an implicit (absent)
+///   one; two explicit CONFLICTING values error
+///   ([`MergeConflict::ConflictingRuntime`]).
 ///
-/// Boundary defaults (`save_mode = Saved`, `retry_impure = false`,
-/// `payload_staging = in_place`) are applied once at the end, so the returned
-/// document is definite for all merge-relevant fields.
+/// Boundary defaults (`save_mode = Saved`, `payload_staging = in_place`) are
+/// applied once at the end, so the returned document is definite for all
+/// merge-relevant fields.
 ///
 /// # Errors
 ///
@@ -159,8 +159,7 @@ struct MergeState {
     tool_sources: BTreeMap<String, PathBuf>,
     /// Path each workflow name was first declared in.
     workflow_sources: BTreeMap<String, PathBuf>,
-    /// Path of the first document that explicitly set `retry_impure`.
-    runtime_retry_source: Option<PathBuf>,
+
     /// Path of the first document that explicitly set platform env vars.
     runtime_platform_source: Option<PathBuf>,
     /// Path of the first document that explicitly set the staging default.
@@ -181,7 +180,7 @@ impl MergeState {
             },
             tool_sources: BTreeMap::new(),
             workflow_sources: BTreeMap::new(),
-            runtime_retry_source: None,
+
             runtime_platform_source: None,
             runtime_staging_source: None,
             conflicts: Vec::new(),
@@ -260,20 +259,6 @@ impl MergeState {
         // Per-field, explicit wins over implicit; two explicit conflicting
         // values error.
         let rt = &source.envelope.runtime;
-        match (self.runtime_retry_source.as_ref(), rt.retry_impure) {
-            (Some(first_path), Some(value)) if self.merged.runtime.retry_impure != Some(value) => {
-                self.conflicts.push(MergeConflict::ConflictingRuntime {
-                    field: "retry_impure",
-                    first_path: first_path.clone(),
-                    second_path: source.path.clone(),
-                });
-            }
-            (None, Some(value)) => {
-                self.runtime_retry_source = Some(source.path.clone());
-                self.merged.runtime.retry_impure = Some(value);
-            }
-            _ => {}
-        }
         if let Some(platform_env) = &rt.environment.platform_inherited_env_vars {
             match self.runtime_platform_source.as_ref() {
                 Some(first_path)
@@ -344,8 +329,7 @@ impl MergeState {
             )));
         }
         // Defaults applied once at the end: the merged document is definite
-        // for all merge-relevant fields (save_mode, retry_impure, and the
-        // staging default).
+        // for all merge-relevant fields (save_mode and the staging default).
         let doc = NickelDocument::try_from(self.merged)?;
         doc.validate_external_data_invariant()?;
         doc.validate_payload_staging_invariant()?;
@@ -414,25 +398,22 @@ mod tests {
         assert_eq!(doc.workflows.len(), 0, "merging no documents yields no workflows");
     }
 
-    /// Documents that grouped-field merge across two documents keeps both
-    /// the scalar `retry_impure` flag and the nested platform env-var config:
-    /// one document sets `retry_impure = true`, the other sets
-    /// `platform_inherited_env_vars.macos = ["PATH"]`, and the merged result
-    /// carries both.
+    /// Documents that grouped-field merge across two documents keeps the
+    /// nested platform env-var config and the document-level staging default
+    /// when different documents set them.
     #[test]
     fn merge_runtime_merges_grouped_fields() {
-        let env_retry = NickelEnvelopeLatest {
+        let env_staging = NickelEnvelopeLatest {
             version: NICKEL_VERSION_LATEST,
             tools: BTreeMap::new(),
             workflows: Vec::new(),
             external_data: BTreeMap::new(),
             runtime: ConductorRuntimeConfigLatest {
                 environment: RuntimePlatformEnvConfigLatest::default(),
-                retry_impure: Some(true),
-                payload_staging: None,
+                payload_staging: Some(PayloadStagingLatest::HardLink),
             },
         };
-        let mut env_platform = env_retry.clone();
+        let mut env_platform = env_staging.clone();
         env_platform.runtime = ConductorRuntimeConfigLatest {
             environment: RuntimePlatformEnvConfigLatest {
                 platform_inherited_env_vars: Some(PlatformInheritedEnvVars {
@@ -440,17 +421,16 @@ mod tests {
                     ..Default::default()
                 }),
             },
-            retry_impure: None,
             payload_staging: None,
         };
 
         let doc = merge_documents(&[
-            SourceDocument { path: PathBuf::from("a.ncl"), envelope: env_retry },
+            SourceDocument { path: PathBuf::from("a.ncl"), envelope: env_staging },
             SourceDocument { path: PathBuf::from("b.ncl"), envelope: env_platform },
         ])
         .expect("merge succeeds");
 
-        assert!(doc.runtime.retry_impure, "retry_impure must survive merge");
+        assert_eq!(doc.runtime.payload_staging, crate::config::PayloadStaging::HardLink);
         assert!(
             doc.runtime.environment.platform_inherited_env_vars.macos.contains(&"PATH".to_string()),
             "platform env vars must survive merge"
@@ -541,7 +521,9 @@ mod tests {
                     tool: "echo".into(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
-                    max_retries: 0,
+                    runtime: Some(crate::config::versions::v_latest::StepRuntimeLatest {
+                        max_retries: Some(0),
+                    }),
                     depends_on: Vec::new(),
                 })
                 .collect(),
@@ -772,22 +754,6 @@ mod tests {
         assert_eq!(result.external_data.get(&hash).unwrap().description, None);
     }
 
-    /// Verifies runtime `retry_impure` merges explicitly-set values and
-    /// applies the `false` default to implicit ones.
-    #[test]
-    fn merge_documents_runtime_explicit_beats_implicit() {
-        let env1 = envelope();
-        let mut env2 = envelope();
-        env2.runtime.retry_impure = Some(true);
-        let result =
-            merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)]).unwrap();
-        assert!(result.runtime.retry_impure);
-        // No explicit value anywhere → default false.
-        let env3 = envelope();
-        let result = merge_documents(&[source("/dummy/c.ncl", env3)]).unwrap();
-        assert!(!result.runtime.retry_impure);
-    }
-
     /// Verifies runtime `platform_inherited_env_vars` merges explicitly-set
     /// platform maps and skips empty (implicit) ones.
     #[test]
@@ -805,21 +771,6 @@ mod tests {
             result.runtime.environment.platform_inherited_env_vars.env_names_for("linux"),
             Some(&vec!["PATH".to_string()])
         );
-    }
-
-    /// Verifies two documents explicitly setting conflicting `retry_impure`
-    /// values error with a runtime-field conflict.
-    #[test]
-    fn merge_documents_runtime_conflicting_explicit_values_rejected() {
-        let mut env1 = envelope();
-        env1.runtime.retry_impure = Some(true);
-        let mut env2 = envelope();
-        env2.runtime.retry_impure = Some(false);
-        let err = merge_documents(&[source("/dummy/a.ncl", env1), source("/dummy/b.ncl", env2)])
-            .unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("merge conflicts"), "error should mention merge conflicts: {msg}");
-        assert!(msg.contains("runtime field 'retry_impure'"), "error should name the field: {msg}");
     }
 
     /// Verifies two documents explicitly setting conflicting
@@ -858,7 +809,7 @@ mod tests {
         env_user
             .external_data
             .insert(hash, external_data(None, Some(OutputPolicyLatest::Bool(true))));
-        env_user.runtime.retry_impure = Some(true);
+
         let mut env_generated = envelope();
         env_generated.workflows.push(workflow("w", &["s1"]));
         env_generated.external_data.insert(hash, external_data(None, None));

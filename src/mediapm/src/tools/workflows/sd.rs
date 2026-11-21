@@ -146,7 +146,7 @@ pub(crate) fn build_sd_spec(
         build_sd_outputs(),
         build_sd_default_input_defaults(),
         false, // impure
-        0,     // max_concurrent_calls
+        None,  // max_concurrent_calls
         0,     // max_retries
     );
     // The hermetic stub chain publishes these names in the host environment.

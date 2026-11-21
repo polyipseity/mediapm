@@ -332,8 +332,9 @@ mod tests {
             name: name.to_string(),
             version: None,
             is_impure: false,
-            max_concurrent_calls: 0,
-            max_retries: 0,
+            // D4: unlimited cap and the documented default retry count.
+            max_concurrent_calls: None,
+            max_retries: crate::config::DEFAULT_TOOL_MAX_RETRIES,
             inputs: BTreeMap::new(),
             default_inputs: BTreeMap::new(),
             command_parts,

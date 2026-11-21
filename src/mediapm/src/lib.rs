@@ -496,7 +496,7 @@ pub fn merge_runtime_storage(
             profiler_enabled: override_value.environment.profiler_enabled,
         },
         path_sanitization: override_value.path_sanitization.clone(),
-        retry_impure: override_value.retry_impure,
+
         tools: {
             let mut m = config_value.tools.clone();
             m.extend(override_value.tools.clone());
@@ -604,7 +604,6 @@ pub(crate) fn conductor_run_workflow_options(
     let env_pairs =
         crate::child_env::host_inherited_env_pairs(&runtime_storage.environment.inherited_env_vars);
     Ok(mediapm_conductor::RunWorkflowOptions {
-        retry_impure: runtime_storage.retry_impure,
         progress_group,
         overall_bar,
         host_builtins: crate::builtins::host_builtins(env_pairs).map_err(|error| {

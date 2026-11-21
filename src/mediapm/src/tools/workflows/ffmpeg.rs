@@ -186,7 +186,7 @@ pub(crate) fn synthesize_ffmpeg_step(
         tool: tool_id.to_string(),
         inputs,
         outputs,
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on,
     });
 
@@ -800,7 +800,7 @@ pub(crate) fn build_ffmpeg_spec(
             slot_limits.max_output_slots,
         ),
         false, // impure
-        0,     // max_concurrent_calls
+        None,  // max_concurrent_calls
         0,     // max_retries
     );
     // The hermetic stub chain publishes these names in the host environment.
@@ -933,7 +933,7 @@ mod tests {
             &os_exec_paths,
             FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 },
         );
-        assert_eq!(runtime.max_concurrent_calls, 0);
+        assert_eq!(runtime.max_concurrent_calls, None);
         assert_eq!(runtime.max_retries, 0);
         assert_eq!(
             runtime.inherited_env_vars,

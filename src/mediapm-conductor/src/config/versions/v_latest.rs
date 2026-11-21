@@ -18,14 +18,14 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    CaptureKind, ConfigPayloadStaging, NickelDocument, OutputCaptureSpec, PayloadStaging, SaveMode,
-    ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
-    WorkflowStepSpec,
+    CaptureKind, ConfigPayloadStaging, DEFAULT_TOOL_MAX_RETRIES, NickelDocument, OutputCaptureSpec,
+    PayloadStaging, SaveMode, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
+    WorkflowSpec, WorkflowStepSpec,
 };
 use crate::error::ConductorError;
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
-pub(crate) const NICKEL_VERSION_LATEST: u32 = 5;
+pub(crate) const NICKEL_VERSION_LATEST: u32 = 6;
 
 // ---------------------------------------------------------------------------
 // Persisted envelope types — these match the `v4.ncl` Nickel contract exactly
@@ -292,12 +292,18 @@ pub(crate) struct ToolRuntimeLatest {
     /// Inherited env var names to resolve from host environment.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) inherited_env_vars: Vec<String>,
-    /// Max concurrent calls.
-    #[serde(default)]
-    pub(crate) max_concurrent_calls: usize,
-    /// Max retries.
-    #[serde(default)]
-    pub(crate) max_retries: usize,
+    /// Maximum concurrent calls allowed for this tool.
+    ///
+    /// `None` means unlimited, which is also the default. `0` is refused at
+    /// load by the contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) max_concurrent_calls: Option<usize>,
+    /// Maximum retry attempts after the first failed attempt.
+    ///
+    /// `None` means the document states no override, which resolves to the
+    /// documented default of three retries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) max_retries: Option<usize>,
     /// Absolute path of the provisioned payload directory, when the document
     /// names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -330,9 +336,6 @@ pub(crate) struct ConductorRuntimeConfigLatest {
     /// Platform environment configuration (inherited env var names).
     #[serde(default)]
     pub(crate) environment: RuntimePlatformEnvConfigLatest,
-    /// Whether impure tool calls may be retried automatically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) retry_impure: Option<bool>,
     /// How a step stages the payload of a tool that names no strategy of its
     /// own. `None` means the document states no default, which resolves to
     /// `in_place`.
@@ -362,7 +365,6 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
                 A: MapAccess<'de>,
             {
                 let mut environment = RuntimePlatformEnvConfigLatest::default();
-                let mut retry_impure = None;
                 let mut payload_staging = None;
 
                 while let Some(key) = map.next_key::<String>()? {
@@ -375,9 +377,6 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
                         // into the nested `environment` sub-record.
                         "platform_inherited_env_vars" => {
                             environment.platform_inherited_env_vars = Some(map.next_value()?);
-                        }
-                        "retry_impure" => {
-                            retry_impure = map.next_value()?;
                         }
                         "payload_staging" => {
                             // A Nickel string reaches an enum field as a
@@ -395,18 +394,13 @@ impl<'de> Deserialize<'de> for ConductorRuntimeConfigLatest {
                         other => {
                             return Err(A::Error::unknown_field(
                                 other,
-                                &[
-                                    "environment",
-                                    "payload_staging",
-                                    "platform_inherited_env_vars",
-                                    "retry_impure",
-                                ],
+                                &["environment", "payload_staging", "platform_inherited_env_vars"],
                             ));
                         }
                     }
                 }
 
-                Ok(ConductorRuntimeConfigLatest { environment, retry_impure, payload_staging })
+                Ok(ConductorRuntimeConfigLatest { environment, payload_staging })
             }
         }
 
@@ -688,6 +682,15 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
     }
 }
 
+/// Latest persisted step runtime override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StepRuntimeLatest {
+    /// Retries after the first failed attempt; `None` inherits the tool's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) max_retries: Option<usize>,
+}
+
 /// Latest persisted workflow step spec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -702,9 +705,9 @@ pub(crate) struct WorkflowStepSpecLatest {
     /// Output capture specs keyed by output name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) outputs: BTreeMap<String, OutputCaptureSpecLatest>,
-    /// Max retries.
-    #[serde(default)]
-    pub(crate) max_retries: usize,
+    /// Runtime overrides for this step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) runtime: Option<StepRuntimeLatest>,
     /// Explicit dependencies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) depends_on: Vec<String>,
@@ -873,8 +876,6 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
 impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig {
     fn from(rt: ConductorRuntimeConfigLatest) -> Self {
         super::super::ConductorRuntimeConfig {
-            // `None` (absent in config) resolves to `false` at the boundary.
-            retry_impure: rt.retry_impure.unwrap_or(false),
             environment: super::super::RuntimePlatformEnvConfig {
                 // Absent `platform_inherited_env_vars` resolves to the platform
                 // defaults; an explicitly stated value wins as-is (absent
@@ -896,7 +897,6 @@ impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig
 impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest {
     fn from(rt: super::super::ConductorRuntimeConfig) -> Self {
         ConductorRuntimeConfigLatest {
-            retry_impure: Some(rt.retry_impure),
             environment: RuntimePlatformEnvConfigLatest {
                 // Always emit the stated per-platform lists so the wire
                 // document carries the defaults explicitly when they apply.
@@ -1034,7 +1034,7 @@ fn tool_runtime_from_latest(rt: ToolRuntimeLatest) -> ToolRuntime {
         impure: rt.impure,
         inherited_env_vars: rt.inherited_env_vars,
         max_concurrent_calls: rt.max_concurrent_calls,
-        max_retries: rt.max_retries,
+        max_retries: rt.max_retries.unwrap_or(DEFAULT_TOOL_MAX_RETRIES),
         payload_root: rt.payload_root.unwrap_or_default(),
         payload_staging: rt
             .payload_staging
@@ -1058,6 +1058,9 @@ fn tool_runtime_from_latest(rt: ToolRuntimeLatest) -> ToolRuntime {
 /// generated one, the merge rejects a field set to two different values, and a
 /// generated document that stated `in_place` every time would collide with a
 /// user document that legally states `copy`.
+/// Writes a tool runtime, omitting the two policy values that restate the
+/// defaults so a generated document cannot collide with a user document that
+/// legally states them.
 fn tool_runtime_to_latest(rt: ToolRuntime, document_default: PayloadStaging) -> ToolRuntimeLatest {
     let resolved = rt.payload_staging.resolve(document_default);
     ToolRuntimeLatest {
@@ -1065,7 +1068,7 @@ fn tool_runtime_to_latest(rt: ToolRuntime, document_default: PayloadStaging) -> 
         impure: rt.impure,
         inherited_env_vars: rt.inherited_env_vars,
         max_concurrent_calls: rt.max_concurrent_calls,
-        max_retries: rt.max_retries,
+        max_retries: (rt.max_retries != DEFAULT_TOOL_MAX_RETRIES).then_some(rt.max_retries),
         payload_root: (!rt.payload_root.is_empty()).then_some(rt.payload_root),
         payload_staging: (resolved != document_default)
             .then(|| ConfigPayloadStagingLatest::from(resolved)),
@@ -1103,7 +1106,7 @@ fn step_spec_from_latest(step: WorkflowStepSpecLatest) -> Result<WorkflowStepSpe
         tool: step.tool,
         inputs: step.inputs,
         outputs,
-        max_retries: step.max_retries,
+        runtime: step.runtime.map(step_runtime_from_latest),
         depends_on: step.depends_on,
     })
 }
@@ -1118,9 +1121,17 @@ fn step_spec_to_latest(step: WorkflowStepSpec) -> WorkflowStepSpecLatest {
             .into_iter()
             .map(|(name, o)| (name, output_capture_spec_to_latest(o)))
             .collect(),
-        max_retries: step.max_retries,
+        runtime: step.runtime.map(step_runtime_to_latest),
         depends_on: step.depends_on,
     }
+}
+
+fn step_runtime_from_latest(runtime: StepRuntimeLatest) -> crate::config::StepRuntime {
+    crate::config::StepRuntime { max_retries: runtime.max_retries }
+}
+
+fn step_runtime_to_latest(runtime: crate::config::StepRuntime) -> StepRuntimeLatest {
+    StepRuntimeLatest { max_retries: runtime.max_retries }
 }
 
 #[cfg(test)]
@@ -1222,7 +1233,7 @@ mod tests {
                             allow_empty: false,
                         },
                     )]),
-                    max_retries: 0,
+                    runtime: None,
                     depends_on: vec![],
                 }],
             }],
@@ -1284,7 +1295,7 @@ mod tests {
                             content_map: BTreeMap::new(),
                             impure: true,
                             inherited_env_vars: Vec::new(),
-                            max_concurrent_calls: 2,
+                            max_concurrent_calls: Some(2),
                             max_retries: 1,
                             ..ToolRuntime::default()
                         },
@@ -1407,20 +1418,17 @@ mod tests {
         assert!(format!("{err}").contains("bogus_field"));
     }
 
-    /// Documents that a boundary `ConductorRuntimeConfigLatest` with
-    /// `retry_impure: None`, no `payload_staging`, and absent
-    /// `platform_inherited_env_vars` resolves to `false`, `in_place`, and the
-    /// platform-default inherited env names through the `From` impl (no
-    /// `Option` leaks into the resolved type).
+    /// Documents that a boundary `ConductorRuntimeConfigLatest` with no
+    /// `payload_staging` and absent `platform_inherited_env_vars` resolves to
+    /// `in_place` and the platform-default inherited env names through the
+    /// `From` impl (no `Option` leaks into the resolved type).
     #[test]
     fn conductor_runtime_config_from_latest_absent_resolves_defaults() {
         let latest = ConductorRuntimeConfigLatest {
             environment: RuntimePlatformEnvConfigLatest::default(),
-            retry_impure: None,
             payload_staging: None,
         };
         let cfg: crate::config::ConductorRuntimeConfig = latest.into();
-        assert!(!cfg.retry_impure);
         assert_eq!(
             cfg.payload_staging,
             PayloadStaging::InPlace,

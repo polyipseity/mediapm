@@ -101,7 +101,7 @@ async fn a_tools_env_vars_reach_the_process_its_step_runs() {
         tool: "yt-dlp".into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     };
     tc.write_config(doc_with_workflows(
@@ -194,7 +194,7 @@ async fn a_command_part_env_reference_resolves_by_its_provenance() {
         tool: tool.to_string(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     };
 

@@ -1208,7 +1208,7 @@ mod tests {
                             tool: "echo".to_string(),
                             inputs: BTreeMap::new(),
                             outputs: BTreeMap::new(),
-                            max_retries: 0,
+                            runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                             depends_on: Vec::new(),
                         })
                         .collect(),

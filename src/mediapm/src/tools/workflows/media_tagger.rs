@@ -158,7 +158,7 @@ pub(crate) fn synthesize_media_tagger_step(
                     allow_empty: false,
                 },
             )]),
-            max_retries: 0,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         });
 
         // Apply step: merge the metadata back into a copy of the source.
@@ -183,7 +183,7 @@ pub(crate) fn synthesize_media_tagger_step(
                     step.tool.is_impure(),
                 )?,
             )]),
-            max_retries: 0,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         });
 
         pending_variant_updates.push((

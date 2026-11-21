@@ -193,8 +193,7 @@ pub struct MediaRuntimeStorageLatest {
     pub environment: RuntimeEnvironmentConfigLatest,
     #[serde(default)]
     pub path_sanitization: Option<SanitizeNamesConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_impure: Option<bool>,
+
     // Holding field for the boundary conversion (tools live at the document
     // top level, not inside runtime); never serialized.
     #[serde(default, skip_serializing)]
@@ -330,7 +329,7 @@ pub fn resolve_runtime_storage(
                 .unwrap_or_else(defaults::default_profiler_enabled),
         },
         path_sanitization: latest.path_sanitization.clone().unwrap_or(SanitizeNamesConfig::Inherit),
-        retry_impure: latest.retry_impure.unwrap_or(false),
+
         tools: latest.tools.clone(),
         cache_root_override: None,
     }

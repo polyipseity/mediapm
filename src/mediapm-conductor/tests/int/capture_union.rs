@@ -45,7 +45,7 @@ fn echo_step(
         tool: "echo@v1".to_string(),
         inputs: BTreeMap::from([("text".to_string(), "payload".to_string())]),
         outputs,
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: depends_on.iter().map(ToString::to_string).collect(),
     }
 }
@@ -360,7 +360,7 @@ async fn a_cache_hit_neither_claims_nor_rewrites_a_siblings_entry() {
     let tc = TestConductor::new();
     let write = |beta_stream: &str| {
         let mut tool = echo_tool("echo@v1");
-        tool.runtime.max_concurrent_calls = 1;
+        tool.runtime.max_concurrent_calls = Some(1);
         tc.write_config(doc_with_workflows(
             BTreeMap::from([("echo@v1".to_string(), tool)]),
             vec![workflow_with_steps(
@@ -479,7 +479,7 @@ fn fs_step(content: &str) -> WorkflowStepSpec {
                 ..OutputCaptureSpec::default()
             },
         )]),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     }
 }

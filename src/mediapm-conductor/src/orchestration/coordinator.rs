@@ -705,9 +705,10 @@ where
                     // tool is under `max_concurrent_calls`. A saturated tool's
                     // step parks (kept out of `ready`) and yields its worker, so
                     // the cap serializes one tool without blocking others.
-                    let cap = tool_spec.max_concurrent_calls;
                     let running = in_flight_by_tool.get(&step.tool).copied().unwrap_or(0);
-                    if cap > 0 && running >= cap {
+                    if let Some(cap) = tool_spec.max_concurrent_calls
+                        && running >= cap
+                    {
                         free_workers.push_back(worker_idx);
                         parked.push((step_id.clone(), attempt));
                         continue;
@@ -858,17 +859,19 @@ where
                 })?;
                 let StepCompletion { step_id, attempt, worker_idx, step, result } = completion;
 
-                // Retry policy is decided per attempt: a step retries while
-                // attempts remain (`attempt <= max_retries`, so a step is
-                // dispatched at most `max_retries + 1` times) and either the
-                // tool is not impure or the run opted into retrying impure
-                // steps.
-                let may_retry = (attempt as usize) <= step.max_retries
-                    && step.max_retries > 0
-                    && match find_tool_by_name(&unified.tools, &step.tool) {
-                        Some(t) => !t.is_impure || options.retry_impure,
-                        None => false,
-                    };
+                // Retries resolve once, here: a step may lower or raise its
+                // tool's count, and an absent override means the tool's value
+                // applies. `0` is a real answer, so the comparison is on the
+                // attempt count, not on a truthiness test.
+                let effective_max_retries = step
+                    .runtime
+                    .and_then(|r| r.max_retries)
+                    .unwrap_or_else(|| {
+                        find_tool_by_name(&unified.tools, &step.tool)
+                            .map_or(crate::config::DEFAULT_TOOL_MAX_RETRIES, |t| t.max_retries)
+                    });
+                let may_retry =
+                    (attempt as usize) <= effective_max_retries && effective_max_retries > 0;
 
                 // `settled` is false only for a retry: the step re-enters the
                 // ready queue without releasing its dependents and without
@@ -1147,9 +1150,11 @@ where
                         .map(|s| s.tool.as_str())
                         .unwrap_or_default();
                     let parked_spec = find_tool_by_name(&unified.tools, parked_tool);
-                    let cap = parked_spec.map_or(0, |t| t.max_concurrent_calls);
                     let running = in_flight_by_tool.get(parked_tool).copied().unwrap_or(0);
-                    if cap > 0 && running >= cap {
+                    let capped = parked_spec
+                        .and_then(|t| t.max_concurrent_calls)
+                        .is_some_and(|cap| running >= cap);
+                    if capped {
                         still_parked.push((parked_id, parked_attempt));
                     } else {
                         ready.push_back((parked_id, parked_attempt));
@@ -1345,7 +1350,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: Vec::new(),
             },
             WorkflowStepSpec {
@@ -1353,7 +1358,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["a".to_string()],
             },
             WorkflowStepSpec {
@@ -1361,7 +1366,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["a".to_string()],
             },
         ];
@@ -1386,7 +1391,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["b".to_string()],
             },
             WorkflowStepSpec {
@@ -1394,7 +1399,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["a".to_string()],
             },
         ];
@@ -1410,7 +1415,7 @@ mod tests {
             tool: "echo".to_string(),
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
-            max_retries: 0,
+            runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
             depends_on: vec!["nonexistent".to_string()],
         }];
 
@@ -1426,7 +1431,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: Vec::new(),
             },
             WorkflowStepSpec {
@@ -1437,7 +1442,7 @@ mod tests {
                     "${step_output.step-1.result}".to_string(),
                 )]),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["step-1".to_string()],
             },
         ];
@@ -1468,7 +1473,7 @@ mod tests {
                     ..crate::config::OutputCaptureSpec::default()
                 },
             )]),
-            max_retries: 0,
+            runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
             depends_on: Vec::new(),
         }];
 
@@ -1488,7 +1493,7 @@ mod tests {
             tool: "echo".to_string(),
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
-            max_retries: 0,
+            runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
             depends_on: Vec::new(),
         }];
 
@@ -1553,7 +1558,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: Vec::new(),
             },
             WorkflowStepSpec {
@@ -1561,7 +1566,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["a".to_string()],
             },
             WorkflowStepSpec {
@@ -1569,7 +1574,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["a".to_string()],
             },
             WorkflowStepSpec {
@@ -1577,7 +1582,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["b".to_string(), "c".to_string()],
             },
             WorkflowStepSpec {
@@ -1585,7 +1590,7 @@ mod tests {
                 tool: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: Vec::new(),
             },
         ];

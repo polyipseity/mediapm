@@ -3382,7 +3382,7 @@ mod tests {
                         allow_empty: false,
                     },
                 )]),
-                max_retries: 1,
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(1) }),
                 depends_on: Vec::new(),
             }],
         }
@@ -3597,7 +3597,7 @@ mod tests {
                         allow_empty: true,
                     },
                 )]),
-                max_retries: 1,
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(1) }),
                 depends_on: Vec::new(),
             }],
         }
@@ -4778,7 +4778,7 @@ mod tests {
                         allow_empty: false,
                     },
                 )]),
-                max_retries: 0,
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: Vec::new(),
             }],
         };
@@ -4996,7 +4996,7 @@ mod tests {
                         allow_empty: false,
                     },
                 )]),
-                max_retries: 1,
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(1) }),
                 depends_on: Vec::new(),
             }],
         }
@@ -5123,7 +5123,7 @@ mod tests {
                         allow_empty: false,
                     },
                 )]),
-                max_retries: 1,
+                runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(1) }),
                 depends_on: Vec::new(),
             }],
         };

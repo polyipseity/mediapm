@@ -88,7 +88,7 @@ fn stub_sleeping_workflow(tc: &TestConductor, seconds: u64) {
         tool: "sleeper".into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     };
     tc.write_config(doc_with_workflows(

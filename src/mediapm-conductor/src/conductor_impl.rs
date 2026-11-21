@@ -231,14 +231,8 @@ where
         let (unified, fresh_state) =
             load_unified_config_and_state_async(&*self.cas, self.storage_paths(), &config_paths)
                 .await?;
-        // Apply conductor runtime config defaults to options
-        let options = {
-            let mut opts = options;
-            if !opts.retry_impure && unified.runtime.retry_impure {
-                opts.retry_impure = true;
-            }
-            opts
-        };
+        // Apply conductor runtime config defaults to options.
+        let options = options;
         // Seed the in-memory state from the freshly loaded file state when no
         // session state exists yet, so the actor receives the latest cached
         // instances from disk.
@@ -1992,7 +1986,7 @@ mod tests {
                 tool: "fail".to_string(),
                 inputs: std::collections::BTreeMap::new(),
                 outputs: std::collections::BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["step-a".to_string()],
             }
         } else {
@@ -2012,7 +2006,7 @@ mod tests {
                         allow_empty: false,
                     },
                 )]),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: vec!["step-a".to_string()],
             }
         };
@@ -2044,7 +2038,7 @@ mod tests {
                                 allow_empty: false,
                             },
                         )]),
-                        max_retries: 0,
+                        runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                         depends_on: Vec::new(),
                     },
                     second,

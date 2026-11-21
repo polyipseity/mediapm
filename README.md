@@ -45,7 +45,7 @@ Tag-update policy: `mediapm sync` does **not** check remote updates for tag-only
 - `.mediapm/state.ncl` — machine-managed realized state.
 - `mediapm.conductor.ncl` / `mediapm.conductor.generated.ncl` — conductor runtime docs.
 
-Conductor config documents merge rather than last-one-wins: user documents are combined with the generated document, `external_data` entries union by hash with the most permissive explicit `save` policy winning, and optional runtime fields (`retry_impure`) take the explicit value, two conflicting explicit values failing the merge.
+Conductor config documents merge rather than last-one-wins: user documents are combined with the generated document, `external_data` entries union by hash with the most permissive explicit `save` policy winning.
 
 See `src/mediapm/examples/` for annotated bootstrapping and tool-addition examples.
 

@@ -120,7 +120,7 @@ pub(crate) fn assemble_tool_spec(
     outputs: BTreeMap<String, OutputCaptureSpec>,
     default_inputs: BTreeMap<String, InputBinding>,
     impure: bool,
-    max_concurrent_calls: usize,
+    max_concurrent_calls: Option<usize>,
     max_retries: usize,
 ) -> (ToolSpec, ToolRuntime) {
     let runtime = ToolRuntime {

@@ -95,7 +95,7 @@ pub fn apply(
             impure: false,
             content_map: content_map.clone(),
             max_retries: 0,
-            max_concurrent_calls: 0,
+            max_concurrent_calls: None,
             // `sd` is invoked from the content map the caller hands it, so it
             // needs no payload root and stages that map by copying it.
             payload_staging: ConfigPayloadStaging::Copy,

@@ -390,6 +390,84 @@ let migrate_v4_to_v5_fn = fun data =>
   with_workflows & { version = 5 }
 in
 
+# ||| Migrates one v6 tool runtime to v5.
+# |||
+# ||| v6 represents unlimited concurrency as `max_concurrent_calls = null`; v5
+# ||| represents it as `0`. Absent stays absent.
+let migrate_tool_runtime_v6_to_v5 = fun rt =>
+  if std.record.has_field "max_concurrent_calls" rt then
+    if rt.max_concurrent_calls == null then
+      (drop_field "max_concurrent_calls" rt) & { max_concurrent_calls = 0 }
+    else
+      rt
+  else
+    rt
+in
+
+# ||| Migrates one v6 tool spec to v5 by normalizing its runtime.
+let migrate_tool_spec_v6_to_v5 = fun spec =>
+  if std.record.has_field "runtime" spec then
+    (drop_field "runtime" spec)
+    & { runtime = migrate_tool_runtime_v6_to_v5 spec.runtime }
+  else
+    spec
+in
+
+# ||| v6 → v5: unfold step runtime overrides back to the bare retry field.
+# |||
+# ||| v6 allows `runtime.max_retries = null` to mean "inherit the tool"; v5 has
+# ||| no nullable retry, so a null override is dropped and the step falls back to
+# ||| v5's default retry value. Tool `runtime.max_concurrent_calls == null`
+# ||| becomes `0` (unlimited).
+let migrate_v6_to_v5_fn = fun data =>
+  let without_version = drop_field "version" data in
+  let with_tools =
+    if std.record.has_field "tools" without_version then
+      (drop_field "tools" without_version)
+      & {
+        tools =
+          without_version.tools
+          |> std.record.map (fun _key => fun spec => migrate_tool_spec_v6_to_v5 spec),
+      }
+    else
+      without_version
+  in
+  let with_workflows =
+    if std.record.has_field "workflows" with_tools then
+      (drop_field "workflows" with_tools)
+      & {
+        workflows = std.array.map (fun wf =>
+          let without_steps = drop_field "steps" wf in
+          let steps_v5 =
+            if std.record.has_field "steps" wf then
+              std.array.map (fun step =>
+                let runtime =
+                  if std.record.has_field "runtime" step then step.runtime else {}
+                in
+                let legacy =
+                  if std.record.has_field "max_retries" runtime then runtime.max_retries else null
+                in
+                let without_runtime = drop_field "runtime" step in
+                if legacy == null then
+                  without_runtime
+                else
+                  without_runtime & { max_retries = legacy }
+              ) wf.steps
+            else
+              []
+          in
+          if std.record.has_field "steps" wf then
+            without_steps & { steps = steps_v5 }
+          else
+            wf
+        ) with_tools.workflows
+      }
+    else
+      with_tools
+  in
+  with_workflows & { version = 5 }
+in
+
 {
   # ||| Validates one Nickel value as schema v5.
   validate_document_v5 = fun data => data | NickelDocumentV5,
@@ -399,4 +477,7 @@ in
 
   # ||| Migrates a v4 document to schema v5.
   migrate_v4_to_v5 = migrate_v4_to_v5_fn,
+
+  # ||| Migrates a v6 document to schema v5.
+  migrate_v6_to_v5 = migrate_v6_to_v5_fn,
 }

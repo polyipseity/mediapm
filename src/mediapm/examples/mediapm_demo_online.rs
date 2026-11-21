@@ -1905,8 +1905,9 @@ fn assert_yt_dlp_concurrency_policy(
     machine: &NickelDocument,
     yt_dlp_tool_id: &str,
 ) -> ExampleResult<i32> {
-    let observed = find_managed_tool_spec(machine, yt_dlp_tool_id)
-        .map_or(-1, |t| t.runtime.max_concurrent_calls as i32);
+    let observed = find_managed_tool_spec(machine, yt_dlp_tool_id).map_or(-1, |t| {
+        t.runtime.max_concurrent_calls.map_or(0, |v| i32::try_from(v).unwrap_or(i32::MAX))
+    });
 
     if observed == 1 {
         return Ok(1);
@@ -1951,7 +1952,11 @@ fn assert_yt_dlp_retry_policy(
             .iter()
             .filter(|step| step.tool.eq_ignore_ascii_case("yt-dlp"))
             .collect::<Vec<_>>();
-        if !yt_dlp_steps.is_empty() && yt_dlp_steps.iter().all(|step| step.max_retries == 1) {
+        if !yt_dlp_steps.is_empty()
+            && yt_dlp_steps
+                .iter()
+                .all(|step| step.runtime.as_ref().and_then(|r| r.max_retries) == Some(1))
+        {
             return Ok(1);
         }
     }

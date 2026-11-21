@@ -166,7 +166,7 @@ pub(crate) fn synthesize_yt_dlp_step(
             tool: tool_id.to_string(),
             inputs,
             outputs,
-            max_retries: 1,
+            runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(1) }),
             depends_on: Vec::new(),
         });
 
@@ -605,9 +605,9 @@ pub(crate) fn build_yt_dlp_spec(
         build_yt_dlp_inputs(),
         build_yt_dlp_outputs(),
         build_yt_dlp_default_input_defaults(),
-        true, // impure — yt-dlp requires network
-        1,    // max_concurrent_calls
-        1,    // max_retries
+        true,    // impure — yt-dlp requires network
+        Some(1), // max_concurrent_calls
+        1,       // max_retries
     );
     // The hermetic stub chain publishes these names in the host environment.
     // Declaring them lets whitelisted yt-dlp steps receive the emit-mode stub's
@@ -1002,7 +1002,7 @@ mod tests {
         let os_exec_paths = BTreeMap::from([("linux".into(), "yt-dlp".into())]);
         let (_spec, runtime) = build_yt_dlp_spec(content_map, &os_exec_paths);
         assert!(runtime.impure);
-        assert_eq!(runtime.max_concurrent_calls, 1);
+        assert_eq!(runtime.max_concurrent_calls, Some(1));
         assert_eq!(runtime.max_retries, 1);
     }
 }

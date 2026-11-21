@@ -42,7 +42,9 @@ fn build_document() -> NickelDocument {
                         // Declares nothing, so its instance records no output
                         // and cannot serve a caller that requires one.
                         outputs: BTreeMap::new(),
-                        max_retries: 0,
+                        runtime: Some(mediapm_conductor::config::StepRuntime {
+                            max_retries: Some(0),
+                        }),
                         depends_on: Vec::new(),
                     },
                     WorkflowStepSpec {
@@ -56,7 +58,9 @@ fn build_document() -> NickelDocument {
                             "consumer after a run that declared no outputs".to_string(),
                         )]),
                         outputs: BTreeMap::new(),
-                        max_retries: 0,
+                        runtime: Some(mediapm_conductor::config::StepRuntime {
+                            max_retries: Some(0),
+                        }),
                         depends_on: vec!["shared_a".to_string()],
                     },
                 ],
@@ -80,7 +84,9 @@ fn build_document() -> NickelDocument {
                                 allow_empty: false,
                             },
                         )]),
-                        max_retries: 0,
+                        runtime: Some(mediapm_conductor::config::StepRuntime {
+                            max_retries: Some(0),
+                        }),
                         depends_on: Vec::new(),
                     },
                     WorkflowStepSpec {
@@ -91,7 +97,9 @@ fn build_document() -> NickelDocument {
                             "${step_output.shared_b.result}".to_string(),
                         )]),
                         outputs: BTreeMap::new(),
-                        max_retries: 0,
+                        runtime: Some(mediapm_conductor::config::StepRuntime {
+                            max_retries: Some(0),
+                        }),
                         depends_on: vec!["shared_b".to_string()],
                     },
                 ],

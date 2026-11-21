@@ -515,7 +515,7 @@ mod tests {
                     .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
                     .collect(),
                 outputs: BTreeMap::new(),
-                max_retries: 0,
+                runtime: Some(crate::config::StepRuntime { max_retries: Some(0) }),
                 depends_on: Vec::new(),
             }],
             ..WorkflowSpec::default()

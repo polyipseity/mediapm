@@ -338,8 +338,7 @@ pub struct MediaRuntimeStorage {
     pub environment: RuntimeEnvironmentConfig,
     #[serde(default = "defaults::default_path_sanitization")]
     pub path_sanitization: SanitizeNamesConfig,
-    #[serde(default = "defaults::default_retry_impure")]
-    pub retry_impure: bool,
+
     #[serde(default, skip)]
     pub tools: BTreeMap<String, ToolRequirement>,
     /// Sole exception to the no-Option policy; reason: testing only.
@@ -390,7 +389,7 @@ impl Default for MediaRuntimeStorage {
             lifecycle: RuntimeLifecycleConfig::default(),
             environment: RuntimeEnvironmentConfig::default(),
             path_sanitization: defaults::default_path_sanitization(),
-            retry_impure: defaults::default_retry_impure(),
+
             tools: BTreeMap::new(),
             cache_root_override: None,
         }

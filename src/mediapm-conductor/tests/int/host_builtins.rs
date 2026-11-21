@@ -165,7 +165,7 @@ fn capturing_step(id: &str, tool: &str) -> WorkflowStepSpec {
                 ..OutputCaptureSpec::default()
             },
         )]),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     }
 }
@@ -196,7 +196,7 @@ fn slow_step(id: &str, log: &Path) -> WorkflowStepSpec {
             ("label".to_string(), id.to_string()),
         ]),
         outputs: BTreeMap::new(),
-        max_retries: 0,
+        runtime: Some(mediapm_conductor::config::StepRuntime { max_retries: Some(0) }),
         depends_on: Vec::new(),
     }
 }
