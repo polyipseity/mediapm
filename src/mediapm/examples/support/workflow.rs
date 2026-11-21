@@ -207,7 +207,7 @@ fn dispatch(bar: &ProgressBarHandle, workflow_id: &str, step_id: &str, tool: &st
 /// The last child bar is a per-step bar carrying a version and a progress
 /// tally. A real run registers worker-slot bars only, so that row shows a
 /// label the renderer supports rather than a frame a live workflow draws.
-/// `progress-output.instructions.md` still describes per-step child bars on
+/// `workflow-runtime.instructions.md` still describes per-step child bars on
 /// this screen, and that description is what this row is checking.
 ///
 /// The grid keeps its ANSI colour escapes, the same bytes the terminal received.

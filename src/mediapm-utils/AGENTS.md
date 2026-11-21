@@ -24,7 +24,7 @@ See `.agents/instructions/temp-and-paths.instructions.md` for the canonical temp
 
 ### MEDIAPM_PROGRESS_DEBUG
 
-See `progress-output.instructions.md` ("Debug JSONL") for the full JSONL debug format, field names, and monitoring instructions.
+See `workflow-runtime.instructions.md` ("Rendering facts") for the debug JSONL format, field names, and monitoring instructions.
 
 ## Optional `progress` feature
 
@@ -34,4 +34,4 @@ See `progress-output.instructions.md` ("Debug JSONL") for the full JSONL debug f
 - The conductor *CLI binary* and the `mediapm` crate enable this feature.
 - **SI prefixes are 1000-based**: `format_count` and `format_rate` use decimal SI prefixes (`k` = 1,000, `M` = 1,000,000, `G` = 1,000,000,000), not binary (`Ki` = 1,024). Byte counts and transfer rates follow the same convention.
 
-All progress bar rendering, templates, glyphs, colors, prefix/suffix shapes, truncation dispatch, per-screen specs, post-finish result messages, and pre-roll contract live in `progress-output.instructions.md` and `progress-budget.instructions.md`. Read those files before editing progress code. The actual rendered format is verified by `src/mediapm-utils/tests/progress_output/*.rs`.
+All progress bar rendering, truncation, provider byte-budget tracking, and related invariants live in `workflow-runtime.instructions.md`. Read that file before editing progress code. The actual rendered format is verified by `src/mediapm-utils/tests/progress_output/*.rs`.

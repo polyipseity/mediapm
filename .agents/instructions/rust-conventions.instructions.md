@@ -205,6 +205,6 @@ Avoid these known anti-patterns: bare one-line docs that repeat the function nam
 
 ## CLI output style
 
-All CLI output primitives, progress bar architecture, per-screen summary formats, formatting helpers, duration formatting, the dependency boundary rule, and the output stream policy live in `progress-output.instructions.md`. Read that file before editing any CLI output code.
+All CLI output primitives, progress bar architecture, per-screen summary formats, formatting helpers, duration formatting, the dependency boundary rule, and the output stream policy live in `workflow-runtime.instructions.md`. Read that file before editing any CLI output code.
 
 The `--quiet` / `MEDIAPM_QUIET` flags suppress hints and progress. The `--no-progress` flag or `ProgressGroup::disabled()` suppresses progress bars entirely.

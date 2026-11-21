@@ -50,7 +50,7 @@ materializer/              — CAS→filesystem materialization
   metadata.rs              —   Template/metadata resolution
   resolve.rs               —   Source/variant hash resolution, existence checks
   playlist.rs              —   Playlist generation (M3U8, PLS, XSPF, WPL, ASX)
-  progress_labels.rs       —   MaterializationBarLabel truncation order (see progress-output.instructions.md)
+  progress_labels.rs       —   MaterializationBarLabel truncation order (see workflow-runtime.instructions.md)
   zip_reader.rs            —   ZIP reading: member/folder extraction, binding parse
 
 tools/                     — Managed tool preset/provider + workflow synthesis
@@ -303,7 +303,7 @@ Name library files with `${media.metadata.artist} - ${media.metadata.title} [${m
 
 Skip rule: an entry is skipped only when `state.managed_files` records the hash this run resolved and the target still holds it. A variant carrying a `zip_member` binding stores the archive under that hash but writes one extracted member, so it compares against the member's own hash and length, and replacing a read-only target goes through the same remove-then-write path a store object uses.
 
-The rendered materialization progress screen (per-(entry,variant) file-count bars; rows carry media id / variant / basename with no phase tag) is documented in `.agents/instructions/progress-output.instructions.md` (Screen C).
+The rendered materialization progress screen (per-(entry,variant) file-count bars; rows carry media id / variant / basename with no phase tag) is documented in `.agents/instructions/workflow-runtime.instructions.md`.
 
 ## CAS Integrity Verification
 

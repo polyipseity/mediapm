@@ -32,6 +32,6 @@ See `crate::tools::provider::mod.rs` for the pipeline implementation and types.
 
 ### Item semantics and progress tracking
 
-Item semantics per phase, counting mechanism invariants, per-format extraction tracking, and the `MultiItemBudget` API are fully documented in `progress-budget.instructions.md` ("Phase-loop mapping" and "Counting mechanism accuracy guarantees"). Read that file before editing provider progress code.
+Item semantics per phase, counting mechanism invariants, per-format extraction tracking, and the `MultiItemBudget` API are documented in `workflow-runtime.instructions.md` ("MultiItemBudget and provider progress"). Read that file before editing provider progress code.
 
 SI prefixes are 1000-based: `format_count` and `format_rate` use decimal SI prefixes, not binary.

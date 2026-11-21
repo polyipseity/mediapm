@@ -20,7 +20,7 @@
 //! move, so it is recorded in `support/workflow.rs` rather than pinned here.
 //!
 //! The per-screen spec is the "Screen B: Workflow" section of
-//! `.agents/instructions/progress-output.instructions.md`, which tabulates
+//! `.agents/instructions/workflow-runtime.instructions.md`, which tabulates
 //! what each worker-slot state fills into the label.
 //!
 //! The data is synthetic, so the example runs offline and in about a

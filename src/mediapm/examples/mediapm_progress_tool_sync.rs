@@ -20,7 +20,7 @@
 //! leave its transcripts rendered at a height its content outgrew.
 //!
 //! The per-screen spec is the "Screen A: tool-sync" section of
-//! `.agents/instructions/progress-output.instructions.md`.
+//! `.agents/instructions/workflow-runtime.instructions.md`.
 //!
 //! The data is synthetic, so the example runs offline and in about a
 //! millisecond.
