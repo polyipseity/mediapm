@@ -541,13 +541,7 @@ async fn main_cli() -> anyhow::Result<()> {
 /// now lives in `mediapm-cli`, which cannot name [`ToolRecheck`].
 #[must_use]
 fn resolve_recheck_override(args: RecheckPolicyArgs) -> Option<ToolRecheck> {
-    if args.force_re_resolve {
-        Some(ToolRecheck::Always)
-    } else if args.no_force_re_resolve {
-        None
-    } else {
-        None
-    }
+    if args.force_re_resolve { Some(ToolRecheck::Always) } else { None }
 }
 
 /// Builds the library-sync options `mediapm sync` runs with.

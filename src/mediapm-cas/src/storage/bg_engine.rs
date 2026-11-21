@@ -302,9 +302,8 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             if !seen.insert(current) {
                 return Ok(true);
             }
-            let entry = match self.metadata.get(&current).await? {
-                Some(entry) => entry,
-                None => return Ok(false),
+            let Some(entry) = self.metadata.get(&current).await? else {
+                return Ok(false);
             };
             match entry.encoding {
                 ObjectEncoding::Delta { base_hash } => {
@@ -375,6 +374,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// Delegates to WAL consumer, metadata store, and blob store operations.
     ///
     /// Returns `true` if any work was done.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "optimizer and constraint-pruning phases share live-set state and cancellation checks; splitting would widen borrow plumbing without clarifying either phase"
+    )]
     pub async fn run_maintenance(&self) -> Result<bool, CasError> {
         // Drain WAL first so we have a consistent view.
         self.run_wal_consumer().await?;
@@ -436,32 +439,28 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             // must be rematerialized to full when the empty object is chosen.
             if candidates.iter().any(|candidate| *candidate == Hash::empty()) {
                 let entry = self.metadata.get(target).await?;
-                if let Some(entry) = entry {
-                    if let ObjectEncoding::Delta { base_hash } = entry.encoding {
-                        let Some(target_bytes) = self.read_full_bytes(target).await? else {
-                            continue;
-                        };
-                        self.blob
-                            .write(*target, ObjectEncoding::Full, target_bytes.clone())
-                            .await?;
-                        self.blob
-                            .delete_encoding(*target, ObjectEncoding::Delta { base_hash })
-                            .await?;
-                        let existing_bases = self.metadata.get_constraint(target).await?;
-                        self.metadata
-                            .put(
-                                *target,
-                                MetadataEntry {
-                                    len: target_bytes.len() as u64,
-                                    encoding: ObjectEncoding::Full,
-                                },
-                            )
-                            .await?;
-                        if !existing_bases.is_empty() {
-                            self.metadata.set_constraint(*target, existing_bases).await?;
-                        }
-                        did_work = true;
+                if let Some(entry) = entry
+                    && let ObjectEncoding::Delta { base_hash } = entry.encoding
+                {
+                    let Some(target_bytes) = self.read_full_bytes(target).await? else {
+                        continue;
+                    };
+                    self.blob.write(*target, ObjectEncoding::Full, target_bytes.clone()).await?;
+                    self.blob.delete_encoding(*target, ObjectEncoding::Delta { base_hash }).await?;
+                    let existing_bases = self.metadata.get_constraint(target).await?;
+                    self.metadata
+                        .put(
+                            *target,
+                            MetadataEntry {
+                                len: target_bytes.len() as u64,
+                                encoding: ObjectEncoding::Full,
+                            },
+                        )
+                        .await?;
+                    if !existing_bases.is_empty() {
+                        self.metadata.set_constraint(*target, existing_bases).await?;
                     }
+                    did_work = true;
                 }
                 continue;
             }

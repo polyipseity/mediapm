@@ -587,7 +587,7 @@ async fn regression_a_post_resolve_skip_reads_the_newest_deployment() {
 /// parallel setup.
 struct SkipPathFixture {
     _tmp: mediapm_utils::temp::ManagedTempDir,
-    _cache_root: mediapm_utils::temp::ManagedTempDir,
+    cache_root: mediapm_utils::temp::ManagedTempDir,
     paths: MediaPmPaths,
     state: MediaPmState,
     desired_tools: BTreeMap<String, serde_json::Value>,
@@ -638,7 +638,7 @@ impl SkipPathFixture {
 
         Self {
             _tmp: tmp,
-            _cache_root: cache_root,
+            cache_root,
             paths,
             state: MediaPmState::default(),
             desired_tools,
@@ -689,7 +689,7 @@ impl SkipPathFixture {
             PayloadStaging::InPlace,
             None,
             &self.state,
-            Some(self._cache_root.path()),
+            Some(self.cache_root.path()),
             &ProgressScreen::disabled(),
             None,
         )
@@ -703,7 +703,7 @@ impl SkipPathFixture {
     /// Returns how many resolves the last run performed for the tool.
     ///
     /// A first skip resolves nothing; a resolve that ends in a second skip or a
-    /// fetch counts as one. `resolved_field_backfills` is the SkippedAfterResolve
+    /// fetch counts as one. `resolved_field_backfills` is the `SkippedAfterResolve`
     /// outcome: the provider resolved, then the composite matched an existing
     /// deployment, so the resolve happened even though no new artifact was fetched.
     fn resolve_count(&self, tool_id: &str) -> usize {

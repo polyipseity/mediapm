@@ -46,11 +46,6 @@ pub enum SyncPhaseReport {
 /// Uses `Default` to reproduce the behavior of the legacy
 /// `sync_library(verify)` signature with no observer.
 #[derive(Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag is an independent caller decision with a distinct effect; grouping any of \
-              them into an enum would invent a shared meaning the sync does not have"
-)]
 pub struct SyncLibraryOptions {
     /// Verify materialized content by re-hashing committed files.
     pub verify_materialization: bool,

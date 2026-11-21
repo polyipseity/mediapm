@@ -78,9 +78,7 @@ managed tool content root for sd
       save = true,
     },
   },
-  runtime = {
-    retry_impure = false,
-  },
+  runtime = {},
   tools = {
     "archive@v1" = {
       builtin_id = "archive@v1",

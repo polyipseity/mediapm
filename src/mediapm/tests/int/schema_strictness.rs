@@ -100,9 +100,9 @@ fn decode_document_is_ok(source: impl AsRef<[u8]>) -> bool {
 /// The bound keeps a failing test readable when a Nickel trace is long; the
 /// `recheck_seconds` / field name we care about appears near the start.
 fn decode_error_bounded(source: impl AsRef<[u8]>) -> String {
+    const MAX: usize = 2000;
     let err = decode_document(source).expect_err("document must fail to decode");
     let msg = err.to_string();
-    const MAX: usize = 2000;
     if msg.len() > MAX { format!("{}...(truncated)", &msg[..MAX]) } else { msg }
 }
 
@@ -169,9 +169,9 @@ fn without_tool_recheck() -> String {
 
 /// Builds a minimal v5 document that states no `profiler_enabled`.
 fn without_profiler_setting() -> String {
-    r#"{
+    r"{
   version = 5,
-}"#
+}"
     .to_string()
 }
 
@@ -1856,7 +1856,9 @@ fn parity_instance_ttl_defaults_to_three_days() {
 /// because every demo sets it to `true` and nothing else would notice a flip.
 #[test]
 fn parity_profiler_defaults_to_disabled() {
-    assert!(!mediapm::config::defaults::DEFAULT_PROFILER_ENABLED);
+    const {
+        assert!(!mediapm::config::defaults::DEFAULT_PROFILER_ENABLED);
+    };
     let doc = without_profiler_setting();
     let decoded = decode_document(doc.as_bytes()).expect("a document without profiler loads");
     assert!(

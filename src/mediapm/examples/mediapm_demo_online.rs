@@ -1885,11 +1885,6 @@ fn configure_demo_ffprobe_command(
     Ok(())
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "demo assertion compares a small runtime concurrency value against a sentinel integer and only needs a diagnostic value"
-)]
 fn assert_yt_dlp_concurrency_policy(
     machine: &NickelDocument,
     yt_dlp_tool_id: &str,
