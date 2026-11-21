@@ -456,11 +456,13 @@ async fn resolve_variant_hash_from_workflow_state(
 
 /// Resolves concrete output hashes for each workflow step using conductor state.
 ///
-/// Every step is offered to strict input-key matching first. A step whose key
-/// matches no recorded instance falls back to the instances that name it:
-/// exactly one answers, several answer only when they record the same hash for
-/// every required output, and several that disagree are an error rather than a
-/// pick.
+/// Steps are resolved in workflow order so a dependent sees its producer's
+/// outputs. For each step one procedure enumerates the instances that could
+/// answer for it and selects by precedence: the record whose content-addressed
+/// key re-derives from this step's material, then the instance the state names
+/// as the step's current one (`step_instances`), then a lone record or several
+/// that record the same hash for every required output. Records that disagree
+/// and are chosen by none of those authorities are an error rather than a pick.
 pub(super) async fn resolve_workflow_step_output_hashes(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
@@ -469,45 +471,19 @@ pub(super) async fn resolve_workflow_step_output_hashes(
 ) -> Result<Option<StepOutputHashes>, MediaPmError> {
     let mut step_outputs = StepOutputHashes::new();
     let required_step_output_names = collect_required_step_output_names(workflow);
-    let mut unresolved_inputs_by_step: BTreeMap<String, UnresolvedInputs> = BTreeMap::new();
 
     for step in &workflow.steps {
-        let strict = resolve_single_step_output_hashes_strict(
+        if let Some(outputs) = resolve_step_output_hashes(
             cas,
-            generated_doc,
-            state,
-            step,
-            &required_step_output_names,
-            &step_outputs,
-        )
-        .await?;
-        // Kept for the relaxed pass: a refusal has to say that the strict key was
-        // never derived, and which input stopped it.
-        if !strict.unresolved_inputs.is_empty() {
-            unresolved_inputs_by_step.insert(step.id.clone(), strict.unresolved_inputs);
-        }
-        if let Some(outputs) = strict.outputs
-            && step_declared_outputs_resolved(step, &outputs)
-        {
-            step_outputs.insert(step.id.clone(), outputs);
-        }
-    }
-
-    for step in &workflow.steps {
-        if step_outputs
-            .get(&step.id)
-            .is_some_and(|outputs| step_declared_outputs_resolved(step, outputs))
-        {
-            continue;
-        }
-        let unresolved_inputs = unresolved_inputs_by_step.remove(&step.id).unwrap_or_default();
-        if let Some(outputs) = resolve_single_step_output_hashes_relaxed(
             generated_doc,
             state,
             &workflow.name,
             step,
-            &unresolved_inputs,
-        )? && step_declared_outputs_resolved(step, &outputs)
+            &required_step_output_names,
+            &step_outputs,
+        )
+        .await?
+            && step_declared_outputs_resolved(step, &outputs)
         {
             step_outputs.insert(step.id.clone(), outputs);
         }
@@ -667,21 +643,31 @@ impl ExpectedInputHashes {
 }
 
 /// The strict pass's answer for one step.
-struct StrictStepResolution {
-    /// The outputs the step's key matched, or nothing when no instance matched.
-    outputs: Option<BTreeMap<String, Option<Hash>>>,
-    /// The inputs that stopped this pass from deriving the step's key.
-    unresolved_inputs: UnresolvedInputs,
+
+/// The material that identifies a step's work, and what stopped it from being
+/// derived.
+struct WorkMaterialResolution {
+    /// The step's work material, absent when an input could not be resolved to
+    /// the bytes the key hashes.
+    material: Option<mediapm_conductor::StepWorkMaterial>,
+    /// The inputs that prevented derivation, with the reason each failed.
+    unresolved: UnresolvedInputs,
 }
 
-async fn resolve_single_step_output_hashes_strict(
+/// Derives the material that identifies a step's work from the document and the
+/// outputs this pass has resolved so far.
+///
+/// A binding whose value could not be reconstructed leaves `material` empty: the
+/// key derived without that term is not this step's key. The unresolved inputs
+/// are kept for the refusal, because a reader cannot tell a legitimate re-run
+/// from a state that can never satisfy its own key without knowing which one it
+/// is.
+async fn derive_step_work_material(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
-    state: &ConductorState,
     step: &mediapm_conductor::WorkflowStepSpec,
-    required_step_output_names: &RequiredStepOutputNames,
     prior_step_outputs: &StepOutputHashes,
-) -> Result<StrictStepResolution, MediaPmError> {
+) -> Result<WorkMaterialResolution, MediaPmError> {
     let merged_step_inputs =
         merge_step_inputs_with_tool_defaults(generated_doc, &step.tool, &step.inputs)?;
     let expected =
@@ -689,10 +675,10 @@ async fn resolve_single_step_output_hashes_strict(
             .await?;
     let ExpectedInputHashes { inputs, mut unresolved } = expected;
     let Some(mut expected_inputs) = inputs else {
-        return Ok(StrictStepResolution { outputs: None, unresolved_inputs: unresolved });
+        return Ok(WorkMaterialResolution { material: None, unresolved });
     };
 
-    let (conductor_tool_key, tool_spec) = find_active_tool_spec(generated_doc, &step.tool)
+    let (_, tool_spec) = find_active_tool_spec(generated_doc, &step.tool)
         .map(|(key, spec)| (key.clone(), spec))
         .ok_or_else(|| {
             MediaPmError::Workflow(format!(
@@ -700,12 +686,7 @@ async fn resolve_single_step_output_hashes_strict(
                 step.id, step.tool
             ))
         })?;
-    // The same environment the worker's template contexts resolve `${env.…}`
-    // against, so the reader and the worker cannot disagree about a binding.
     let execution_env_vars = generated_doc.execution_env_vars_for(tool_spec);
-
-    let required_output_names =
-        required_step_output_names.get(&step.id).cloned().unwrap_or_default();
 
     let resolved_values = build_instance_key_resolved_value_bytes(
         cas,
@@ -716,128 +697,78 @@ async fn resolve_single_step_output_hashes_strict(
         &execution_env_vars,
     )
     .await?;
-    // A binding the worker resolved and this pass could not leaves a term out of
-    // the key, and the key derived without it is not this step's key.
     expected_inputs.unresolved_input_names.extend(resolved_values.unresolved_names());
-    // A name whose hash never reconstructed already carries its own cause from
-    // the pass that recorded it. Only the binding's own failures are new here, and
-    // the engine hands on each failure's own words.
     record_unresolved_bindings(&mut unresolved, &resolved_values.unresolved_bindings);
     record_unresolved_members(&mut unresolved, &resolved_values.unresolved_members);
-    let key_material = materializer_key_material(
-        generated_doc,
-        &step.tool,
+    if !expected_inputs.unresolved_input_names.is_empty() {
+        return Ok(WorkMaterialResolution { material: None, unresolved });
+    }
+
+    let material = mediapm_conductor::StepWorkMaterial::for_step(
+        tool_command_parts(tool_spec),
+        &mediapm_conductor::tool_literal_env_vars(tool_spec),
+        &tool_spec.outputs,
+        &step.outputs,
         &merged_step_inputs,
         &resolved_values.values,
-    )?;
-
-    // At most one instance can match, so there is nothing to choose between.
-    // The filter's second clause is [`instance_matches_expected_inputs`], which
-    // re-derives the key from this step's material and compares it to the key the
-    // record is filed under; the map holds one record per key. A second matching
-    // record would need the same derived key under a different stored key, which
-    // the map cannot hold. The recency ordering and the preference for an
-    // instance whose bytes are still present both outlived the reason they were
-    // written: they chose between candidates that cannot coexist, and the
-    // preference could not change the answer, because the fallback picked the
-    // same instance when nothing was materializable.
-    let matched = state.tool_call_instances.iter().find(|(instance_key, instance)| {
-        (instance.tool_call_id == step.tool || instance.tool_call_id == conductor_tool_key)
-            && instance_matches_expected_inputs(
-                instance_key,
-                instance,
-                &expected_inputs,
-                &key_material,
-            )
-            && instance_matches_expected_output_names(instance, &step.outputs)
-            && instance_matches_required_output_names(instance, &required_output_names)
-    });
-
-    let Some((_, instance)) = matched else {
-        return Ok(StrictStepResolution { outputs: None, unresolved_inputs: unresolved });
-    };
-
-    Ok(StrictStepResolution {
-        outputs: Some(output_hashes_from_instance(instance)),
-        unresolved_inputs: unresolved,
-    })
+    );
+    Ok(WorkMaterialResolution { material: Some(material), unresolved })
 }
 
-fn step_declared_outputs_resolved(
-    step: &mediapm_conductor::WorkflowStepSpec,
-    outputs: &BTreeMap<String, Option<Hash>>,
-) -> bool {
-    step.outputs.keys().all(|output_name| outputs.contains_key(output_name))
-}
-
-/// Returns true when an instance records this step among the steps it served.
+/// Resolves one step's outputs.
 ///
-/// Both halves of a ref decide: the workflow and the step id. A ref written
-/// before refs carried a workflow id reads with an empty one, and an empty
-/// workflow id names no workflow, so such a record answers nothing through the
-/// relaxed pass. The step is then a miss, and the next run executes it. An
-/// instance that records no ref at all names no step and is not a candidate
-/// either: the record is the only provenance a state has for what served a step.
-fn instance_names_step(instance: &ToolCallInstance, workflow_name: &str, step_id: &str) -> bool {
-    instance
-        .step_ids_nk
-        .iter()
-        .any(|recorded| recorded.step_id == step_id && recorded.workflow_id == workflow_name)
-}
-
-/// Resolves one step's outputs from the instances that name it, when its key
-/// matched none.
-///
-/// A candidate is an instance of the step's tool that records this step among
-/// the steps it served and records every required output name. Recorded names
-/// decide candidacy. Whether the store still holds the bytes does not: a record
-/// whose object is gone still answers for the step, and the read path reports
-/// the lost object as the run's failure instead of this pass reporting a step
-/// that produced nothing.
-///
-/// Three outcomes:
-///
-/// - no candidate: the step produced nothing this state can name, so the caller
-///   records a miss;
-/// - one candidate, or several that record the same hash for every required
-///   output: that is the step's work, and its hashes answer. Agreement chooses
-///   nothing, which makes it safe where a choice between records would not be;
-/// - several that disagree on a required output: this refuses, naming the
-///   workflow, the step, the tool key and every candidate. A step names the
-///   work it performs, so a state where two records answer to it with different
-///   bytes needs a re-run, which `mediapm media invalidate <media-id>
-///   <step-index>` starts. One limit belongs with that advice: a step whose
-///   inputs do not resolve derives no key, so the re-run reports the same
-///   disagreement. The refusal names those inputs and the reason each failed.
-fn resolve_single_step_output_hashes_relaxed(
+/// Selection is by precedence: a record whose stored key re-derives from the
+/// work this document describes for the step; failing that, the record the state
+/// points to for this workflow and step; failing that, a lone record or several
+/// that agree on every required output. Several that disagree and satisfy none
+/// of the earlier authorities are an error, because choosing between them would
+/// guess.
+async fn resolve_step_output_hashes(
+    cas: &FileSystemCas,
     generated_doc: &NickelDocument,
     state: &ConductorState,
     workflow_name: &str,
     step: &mediapm_conductor::WorkflowStepSpec,
-    unresolved_inputs: &UnresolvedInputs,
+    required_step_output_names: &RequiredStepOutputNames,
+    prior_step_outputs: &StepOutputHashes,
 ) -> Result<Option<BTreeMap<String, Option<Hash>>>, MediaPmError> {
-    let conductor_tool_key = find_active_tool_spec(generated_doc, &step.tool)
-        .map(|(key, _)| key.clone())
+    let work = derive_step_work_material(cas, generated_doc, step, prior_step_outputs).await?;
+
+    let (conductor_tool_key, _) = find_active_tool_spec(generated_doc, &step.tool)
+        .map(|(key, spec)| (key.clone(), spec))
         .ok_or_else(|| {
             MediaPmError::Workflow(format!(
                 "workflow step '{}' references unknown tool '{}' in generated config",
                 step.id, step.tool
             ))
         })?;
+    let required_output_names =
+        required_step_output_names.get(&step.id).cloned().unwrap_or_default();
 
-    let required_output_names: BTreeSet<String> = step.outputs.keys().cloned().collect();
-    let mut candidates = Vec::new();
-    for (instance_key, instance) in &state.tool_call_instances {
-        if instance.tool_call_id != step.tool && instance.tool_call_id != conductor_tool_key {
-            continue;
-        }
-        if !instance_names_step(instance, workflow_name, &step.id) {
-            continue;
-        }
-        if !required_output_names.iter().all(|name| instance.outputs.contains_key(name)) {
-            continue;
-        }
-        candidates.push((instance_key, instance));
+    let candidates: Vec<(&Hash, &ToolCallInstance)> = state
+        .tool_call_instances
+        .iter()
+        .filter(|(_, instance)| {
+            (instance.tool_call_id == step.tool || instance.tool_call_id == conductor_tool_key)
+                && instance_names_step(instance, workflow_name, &step.id)
+                && instance_matches_expected_output_names(instance, &step.outputs)
+                && instance_matches_required_output_names(instance, &required_output_names)
+        })
+        .collect();
+
+    if let Some(material) = &work.material
+        && let Some((_, instance)) = candidates.iter().find(|(key, instance)| {
+            mediapm_conductor::instance_matches_work(**key, instance, material)
+        })
+    {
+        return Ok(Some(output_hashes_from_instance(instance)));
+    }
+
+    if let Some(pointer) =
+        state.step_instances.get(workflow_name).and_then(|steps| steps.get(&step.id))
+        && let Some((_, instance)) = candidates.iter().find(|(key, _)| *key == pointer)
+    {
+        return Ok(Some(output_hashes_from_instance(instance)));
     }
 
     match candidates.as_slice() {
@@ -866,18 +797,53 @@ fn resolve_single_step_output_hashes_relaxed(
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            let strict_note = describe_unresolved_inputs(unresolved_inputs);
+            let derivation_note = describe_derivation_unavailable(&work);
             Err(MediaPmError::Workflow(format!(
                 "workflow '{workflow_name}' step '{}': no single instance answers for it, and {} \
                  instances of tool '{conductor_tool_key}' name that step while recording different \
                  required outputs: {described}; refusing to choose between them. \
                  `mediapm media invalidate <media-id> <step-index>` marks the record this state \
-                 holds for the step, and the next sync runs it again.{strict_note}",
+                 holds for the step, and the next sync runs it again.{derivation_note}",
                 step.id,
                 several.len(),
             )))
         }
     }
+}
+
+/// The clause that says why no content-addressed record and no pointer chose.
+///
+/// Empty when the step's key could be derived or when no specific input blocked
+/// derivation. A key that could not be derived is the case where a re-run meets
+/// the same refusal until its inputs resolve.
+fn describe_derivation_unavailable(work: &WorkMaterialResolution) -> String {
+    if work.material.is_some() || work.unresolved.is_empty() {
+        return String::new();
+    }
+    describe_unresolved_inputs(&work.unresolved)
+}
+
+fn step_declared_outputs_resolved(
+    step: &mediapm_conductor::WorkflowStepSpec,
+    outputs: &BTreeMap<String, Option<Hash>>,
+) -> bool {
+    step.outputs.keys().all(|output_name| outputs.contains_key(output_name))
+}
+
+/// Returns whether `instance` records serving `step_id` inside `workflow_name`.
+///
+/// One instance may answer several steps, and the same step id can appear in
+/// several workflows, so the pair identifies the serving and the workflow it
+/// belongs to. A ref written before refs carried a workflow id reads with an
+/// empty one, and an empty workflow id names no workflow, so such a record
+/// answers nothing. The step is then a miss, and the next run executes it. An
+/// instance that records no ref at all names no step and is not a candidate
+/// either: the record is the only provenance a state has for what served a step.
+fn instance_names_step(instance: &ToolCallInstance, workflow_name: &str, step_id: &str) -> bool {
+    instance
+        .step_ids_nk
+        .iter()
+        .any(|recorded| recorded.step_id == step_id && recorded.workflow_id == workflow_name)
 }
 
 /// Returns the hashes an instance recorded, keyed by the names it recorded them
@@ -910,34 +876,6 @@ fn merge_step_inputs_with_tool_defaults(
     Ok(merge_step_input_bindings(step_inputs, tool_spec))
 }
 
-/// Rebuilds the key material of one step from a generated document.
-///
-/// The materializer does not run the command, so it feeds
-/// [`mediapm_conductor::key_material_for_tool`] the same inputs the executor
-/// derives from: each binding's resolved value bytes, the bindings
-/// themselves, and the tool's non-empty literal `env_vars` — the map that
-/// makes a literal `${env.…}` reference deterministic for both sides. A
-/// selector's source is therefore the hash the binding names, which is the
-/// object the executor would have staged.
-fn materializer_key_material(
-    generated_doc: &NickelDocument,
-    step_tool: &str,
-    merged_bindings: &BTreeMap<String, String>,
-    resolved_values: &BTreeMap<String, Vec<u8>>,
-) -> Result<Vec<Hash>, MediaPmError> {
-    let (_, tool_spec) = find_active_tool_spec(generated_doc, step_tool).ok_or_else(|| {
-        MediaPmError::Workflow(format!(
-            "workflow step references unknown tool '{step_tool}' in generated config",
-        ))
-    })?;
-    Ok(mediapm_conductor::key_material_for_tool(
-        tool_command_parts(tool_spec),
-        resolved_values,
-        merged_bindings,
-        &mediapm_conductor::tool_literal_env_vars(tool_spec),
-    ))
-}
-
 /// The bytes an instance key hashes, and the inputs that kept this pass from
 /// producing them.
 ///
@@ -959,7 +897,7 @@ struct ResolvedKeyValueBytes {
     /// A `:zip(...)` selector is the one binding that needs the store here, so a
     /// failed read or a missing member is a fact about the bytes rather than
     /// about the document. It is recorded with its cause instead of aborting the
-    /// pass: the strict matcher's job is to decide whether a recorded instance
+    /// path: deciding whether a recorded instance
     /// answers this step, and a step whose key cannot be derived is a miss. The
     /// relaxed pass then names that instance, and the member's own read reports
     /// the failure against the path it was materializing.
@@ -996,7 +934,7 @@ impl ResolvedKeyValueBytes {
 ///   command surface resolves it.
 /// - A binding whose template raises is reported in
 ///   [`mediapm_conductor::InstanceKeyInputValues::unresolved`] with the engine's
-///   own error text, so the caller refuses the strict match instead of hashing an
+///   own error text, so the caller refuses a content-key match instead of hashing an
 ///   omission.
 async fn build_instance_key_resolved_value_bytes(
     cas: &FileSystemCas,
@@ -1141,11 +1079,11 @@ fn instance_matches_required_output_names(
         .all(|output_name| instance_output_ref(instance, output_name).is_some())
 }
 
-/// Returns the clause that names the inputs which stopped the strict pass.
+/// Returns the clause that names the inputs whose values stopped the key from
+/// being derived.
 ///
-/// Empty when the strict pass derived the step's key and still matched no
-/// instance: nothing then stands between the re-run and a different answer, so
-/// the refusal has no second limit to state.
+/// Empty when the step's key could be derived: the re-run can then produce a
+/// record that answers for it, so the refusal carries no second limit.
 fn describe_unresolved_inputs(unresolved_inputs: &UnresolvedInputs) -> String {
     if unresolved_inputs.is_empty() {
         return String::new();
@@ -1157,7 +1095,7 @@ fn describe_unresolved_inputs(unresolved_inputs: &UnresolvedInputs) -> String {
         .join(", ");
     let noun = if unresolved_inputs.len() == 1 { "input" } else { "inputs" };
     format!(
-        " The strict pass could not derive this step's key: {noun} {described} did not \
+        " This step's key could not be derived: {noun} {described} did not \
          resolve. The re-run meets this refusal as well until that does."
     )
 }
@@ -1169,7 +1107,7 @@ fn describe_unresolved_inputs(unresolved_inputs: &UnresolvedInputs) -> String {
 /// whole derivation: the key would be composed without that term, and a key
 /// missing a term is not this step's key. A binding whose bytes the store lacks
 /// leaves the input recorded as unresolved, which keeps every instance out of the
-/// strict match for the same reason.
+/// content-key match for the same reason.
 async fn resolve_expected_input_hashes(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
@@ -1285,31 +1223,6 @@ async fn resolve_input_binding_hash(
     }
 
     Ok(InputBindingHashResolution::Resolved(Hash::from_content(value.as_bytes())))
-}
-
-/// Returns true when one runtime instance was recorded from the step's inputs
-/// and materialized tool content.
-///
-/// Instance identity is content-derived only: the matcher recomposes the two
-/// terms the step worker composed — the domain and the unified tools-catalog key
-/// — followed by the key material the command names in argv order, which
-/// [`materializer_key_material`] rebuilds from the same spec. A step's capture
-/// declarations are not part of it, because two steps running the same work
-/// share one instance however differently they name what they record. Finding
-/// the names a step binds inside that instance is a separate question, answered
-/// by name in [`instance_matches_expected_output_names`].
-pub(super) fn instance_matches_expected_inputs(
-    instance_key: &Hash,
-    instance: &ToolCallInstance,
-    expected_inputs: &ExpectedStepInputs,
-    key_material: &[Hash],
-) -> bool {
-    // An input whose hash this traversal could not reconstruct would drop out of
-    // the key material, and the key derived without it is not this step's key.
-    if !expected_inputs.unresolved_input_names.is_empty() {
-        return false;
-    }
-    mediapm_conductor::instance_matches_stored_key(*instance_key, instance, key_material)
 }
 
 /// Returns whether `instance` records every name `expected_outputs` binds.
@@ -1857,25 +1770,21 @@ mod tests {
         )
         .await
         .expect("build ffmpeg instance-key resolved values");
-        let key_material = materializer_key_material(
-            &generated,
-            &ffmpeg_step.tool,
+        let material = mediapm_conductor::StepWorkMaterial::for_step(
+            tool_command_parts(tool_spec),
+            &mediapm_conductor::tool_literal_env_vars(tool_spec),
+            &tool_spec.outputs,
+            &ffmpeg_step.outputs,
             &merged_ffmpeg_inputs,
             &resolved_values.values,
-        )
-        .expect("derive ffmpeg key material");
+        );
         let ffmpeg_instance = state
             .tool_call_instances
             .iter()
             .find(|(instance_key, instance)| {
                 (instance.tool_call_id == ffmpeg_step.tool
                     || instance.tool_call_id == *conductor_tool_key)
-                    && instance_matches_expected_inputs(
-                        instance_key,
-                        instance,
-                        &expected_inputs,
-                        &key_material,
-                    )
+                    && mediapm_conductor::instance_matches_work(**instance_key, instance, &material)
             })
             .expect("ffmpeg instance matching step inputs");
         assert!(ffmpeg_instance.1.outputs.contains_key("primary"));
@@ -2753,16 +2662,15 @@ mod tests {
         claiming_steps: BTreeSet<String>,
     }
 
-    /// Derives the deterministic binding hashes one workflow step's inputs
-    /// produce today.
+    /// Derives the work material one workflow step's inputs produce today.
     ///
     /// Resolution is the materializer's own — merge the active tool's contract
     /// under the step's declarations, resolve every hash-backed binding against
     /// the recorded predecessors' outputs, then hash the resolved values —
     /// because the planner's subject is which step claims which instance, not how
-    /// a binding resolves. The result is the key material for
-    /// `plan_demo_instance_key_rewrites`, which composes it with the instance's
-    /// own recorded tool identity and materialized inputs.
+    /// a binding resolves. The result feeds `plan_demo_instance_key_rewrites`,
+    /// which composes it with the instance's own recorded tool identity and
+    /// materialized inputs.
     ///
     /// A step whose recorded predecessors are missing cannot be planned: the
     /// fixture is then incomplete rather than stale, so the error names the step.
@@ -2771,7 +2679,7 @@ mod tests {
         generated: &NickelDocument,
         step: &mediapm_conductor::WorkflowStepSpec,
         step_outputs: &StepOutputHashes,
-    ) -> Result<Vec<Hash>, String> {
+    ) -> Result<mediapm_conductor::StepWorkMaterial, String> {
         let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
             .map_err(|error| format!("step '{}': merging step inputs failed: {error}", step.id))?;
         let Some(expected_inputs) =
@@ -2810,8 +2718,14 @@ mod tests {
                 step.id,
             ));
         }
-        materializer_key_material(generated, &step.tool, &merged, &resolved_values.values)
-            .map_err(|error| format!("step '{}': composing key material failed: {error}", step.id))
+        Ok(mediapm_conductor::StepWorkMaterial::for_step(
+            tool_command_parts(tool_spec),
+            &mediapm_conductor::tool_literal_env_vars(tool_spec),
+            &tool_spec.outputs,
+            &step.outputs,
+            &merged,
+            &resolved_values.values,
+        ))
     }
 
     /// Pairs every recorded instance with the steps that claim it, returning one
@@ -2890,10 +2804,16 @@ mod tests {
                     active_tool_key,
                 ));
             }
-            let current_key = mediapm_conductor::derive_tool_call_instance_key(
-                &instance.tool_call_id,
-                &key_material,
-            );
+            let current_key = key_material
+                .key_at(&instance.tool_call_id, instance.key_version)
+                .ok_or_else(|| {
+                    format!(
+                        "step '{}' cannot derive key version {} for instance {}",
+                        step.id,
+                        instance.key_version,
+                        stored_key.to_hex(),
+                    )
+                })?;
             if let Some(rewrite) = rewrites.get_mut(stored_key) {
                 if rewrite.current_key != current_key {
                     let known_step = rewrite.claiming_steps.first().map_or("", String::as_str);
@@ -3930,8 +3850,8 @@ mod tests {
 
         let message = error.to_string();
         assert!(
-            message.contains("The strict pass could not derive this step's key"),
-            "the refusal says the key never matched, rather than implying it did: {message}"
+            message.contains("This step's key could not be derived"),
+            "the refusal says the key could not be derived, rather than implying it matched: {message}"
         );
         assert!(
             message.contains("'url'")
@@ -3972,7 +3892,7 @@ mod tests {
         )]);
         let described = describe_unresolved_inputs(&one);
         assert!(
-            described.contains("could not derive this step's key"),
+            described.contains("This step's key could not be derived"),
             "the clause says the key was never derived: {described}"
         );
         assert!(
@@ -5443,6 +5363,94 @@ mod tests {
         assert!(
             message.contains(PINNED_MEMBER),
             "the message must name the member the binding asked for: {message}"
+        );
+    }
+
+    /// A v8-keyed instance is resolved by content-key match.
+    ///
+    /// Instances are recorded under v8; a resolver that derives a v7 key never
+    /// finds them. The match must re-derive at the record's own key version.
+    #[tokio::test]
+    async fn a_v8_keyed_instance_is_resolved_by_content_key_match() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let hash = put_payload(&cas, b"v8-infojson", "v8 infojson").await;
+
+        let generated = relaxed_generated_doc();
+        let workflow = infojson_workflow();
+        let step = workflow.steps.first().expect("infojson step");
+        let (_, tool_spec) = find_active_tool_spec(&generated, &step.tool).expect("yt-dlp spec");
+        let merged = merge_step_inputs_with_tool_defaults(&generated, &step.tool, &step.inputs)
+            .expect("merge inputs");
+        let material = mediapm_conductor::StepWorkMaterial::for_step(
+            tool_command_parts(tool_spec),
+            &mediapm_conductor::tool_literal_env_vars(tool_spec),
+            &tool_spec.outputs,
+            &step.outputs,
+            &merged,
+            &BTreeMap::new(),
+        );
+        let conductor_tool_key = "yt-dlp".to_string();
+        let stored_key = material
+            .key_at(&conductor_tool_key, mediapm_conductor::INSTANCE_KEY_VERSION)
+            .expect("v8 key");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            stored_key,
+            infojson_instance(hash, 1, Some(infojson_step_ref(&workflow.name))),
+        );
+
+        let resolved = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
+            .await
+            .expect("resolve v8-keyed instance")
+            .expect("step output");
+        assert_eq!(
+            resolved.get(INFOJSON_STEP_ID).and_then(|outputs| outputs.get("yt_dlp_infojson_file")),
+            Some(&Some(hash)),
+            "a v8-keyed instance whose key re-derives must be selected"
+        );
+    }
+
+    /// The state pointer selects the instance when no content-key match applies.
+    ///
+    /// A legitimate re-execution produces a new instance with a different key but
+    /// the same step/tool/output shape as an older record. The pointer names the
+    /// instance the run produced, so it must win over agreement between records.
+    #[tokio::test]
+    async fn the_step_instance_pointer_selects_the_current_record() {
+        let cas_root = mediapm_utils::temp::artifact_dir().expect("temp cas dir");
+        let cas = FileSystemCas::open(cas_root.path()).await.expect("open cas");
+        let old_hash = put_payload(&cas, b"old-infojson", "old infojson").await;
+        let new_hash = put_payload(&cas, b"new-infojson", "new infojson").await;
+
+        let generated = relaxed_generated_doc();
+        let workflow = infojson_workflow();
+        let old_key = Hash::from_content(b"old-record");
+        let new_key = Hash::from_content(b"new-record");
+
+        let mut state = ConductorState::new_empty();
+        state.tool_call_instances.insert(
+            old_key,
+            infojson_instance(old_hash, 1, Some(infojson_step_ref(&workflow.name))),
+        );
+        state.tool_call_instances.insert(
+            new_key,
+            infojson_instance(new_hash, 2, Some(infojson_step_ref(&workflow.name))),
+        );
+        state.step_instances.insert(
+            workflow.name.clone(),
+            BTreeMap::from([(INFOJSON_STEP_ID.to_string(), new_key)]),
+        );
+
+        let resolved = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
+            .await
+            .expect("resolve via pointer")
+            .expect("step output");
+        assert_eq!(
+            resolved.get(INFOJSON_STEP_ID).and_then(|outputs| outputs.get("yt_dlp_infojson_file")),
+            Some(&Some(new_hash)),
+            "the pointer must select the current record when outputs disagree"
         );
     }
 }
