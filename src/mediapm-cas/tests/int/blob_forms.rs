@@ -41,6 +41,42 @@ fn similar(fill: u8, marker: &[u8]) -> Vec<u8> {
     buffer
 }
 
+/// Overwrite a committed payload with bytes that cannot be the right content.
+///
+/// Objects are committed read-only, so the write bit has to come back before the
+/// file can be made wrong, which is exactly what an external tamper does.
+/// `Permissions::set_readonly(false)` is the cross-platform spelling: it clears
+/// the Windows attribute and grants the write bits on Unix, and the file it is
+/// applied to lives in a temp directory either way.
+///
+/// A file that is not there is created corrupt: an interrupted promotion can
+/// leave the full payload absent, and a test that stages that state must not
+/// need a second helper to describe it.
+fn corrupt(path: &std::path::Path) {
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            let mut permissions = metadata.permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                permissions.set_mode(permissions.mode() | 0o200);
+            }
+            #[cfg(windows)]
+            {
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "clearing the read-only attribute is how a Windows test tampers with a committed blob"
+                )]
+                permissions.set_readonly(false);
+            }
+            std::fs::set_permissions(path, permissions).expect("make the payload writable");
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("payload metadata: {error}"),
+    }
+    std::fs::write(path, b"not the bytes this hash names").expect("corrupt the payload");
+}
+
 /// An object stored once has exactly one form, and that form is full.
 #[tokio::test]
 async fn a_freshly_stored_object_has_one_form() {
@@ -200,4 +236,88 @@ async fn a_soft_constraint_does_not_promote_a_delta_target() {
         matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
         "a non-empty base set leaves storage mode to the optimizer"
     );
+}
+
+/// A sound delta must rescue a corrupt full payload instead of the read
+/// failing, because either form means the data exists.
+///
+/// The store verifies on read here: without a verifying store a corrupt file
+/// reads back silently and this test would pass with no fallback at all. The
+/// index names `Full`, so this is the indexed form that is unsound and the
+/// `.diff` is the only copy left, which is the case the fallback exists for.
+#[tokio::test]
+async fn a_corrupt_full_payload_is_served_from_the_sound_delta() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(similar(b'D', b"CHANGED"))).await.unwrap();
+    let expected = similar(b'D', b"REPLACED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(
+        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
+        "the setup requires a delta-encoded target"
+    );
+
+    // A promotion writes the full payload and deletes the delta, so an
+    // interrupted promotion that left both on disk is: index=Full, full
+    // corrupt, delta sound. Recreate that state by saving the delta, promoting
+    // through the public API, restoring the delta, and corrupting the full.
+    let (full, delta) = form_paths(&cas, target);
+    assert!(delta.is_file(), "the setup requires a delta payload");
+    let saved_delta = std::fs::read(&delta).expect("read the delta payload");
+    cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
+    assert_eq!(
+        cas.stat(target).await.unwrap().encoding,
+        ObjectEncoding::Full,
+        "the promotion must leave the index naming Full"
+    );
+    std::fs::write(&delta, &saved_delta).expect("restore the delta payload");
+    corrupt(&full);
+
+    assert_eq!(
+        cas.get(target).await.unwrap(),
+        Bytes::from(expected),
+        "the sound delta must serve the read the corrupt full payload cannot"
+    );
+}
+
+/// A sound full payload must rescue a corrupt delta the same way.
+///
+/// The index names `Delta`, so the delta is the indexed form and the full
+/// payload is the fallback; the collapse then records the form it kept.
+#[tokio::test]
+async fn a_corrupt_delta_payload_is_served_from_the_sound_full() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(similar(b'E', b"CHANGED"))).await.unwrap();
+    let expected = similar(b'E', b"REPLACED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(
+        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
+        "the setup requires a delta-encoded target"
+    );
+
+    // The collision the staging-name fix in Task 2 also protects against: both
+    // forms exist, and the one the index names is the broken one.
+    let (full, delta) = form_paths(&cas, target);
+    std::fs::write(&full, &expected).expect("restore the full payload");
+    assert!(full.is_file(), "the setup requires a full payload");
+    corrupt(&delta);
+
+    assert_eq!(
+        cas.get(target).await.unwrap(),
+        Bytes::from(expected),
+        "the sound full payload must serve the read the corrupt delta cannot"
+    );
+
+    cas.run_maintenance_cycle().await.unwrap();
+    assert_eq!(
+        cas.stat(target).await.unwrap().encoding,
+        ObjectEncoding::Full,
+        "the collapse must keep the form that reads and record it"
+    );
+    assert!(!delta.is_file(), "the corrupt delta payload must not survive the collapse");
 }

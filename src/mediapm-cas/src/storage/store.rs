@@ -257,7 +257,9 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasStore<J, M, B> {
         let ObjectEncoding::Delta { base_hash } = self.stat(target).await?.encoding else {
             return Ok(false);
         };
-        let bytes = self.read_view.get(&target).await?;
+        let Some(bytes) = self.read_view.try_read(&target).await? else {
+            return Ok(false);
+        };
         let len = bytes.len() as u64;
         self.blob.write(target, ObjectEncoding::Full, bytes).await?;
         self.metadata.put(target, MetadataEntry { len, encoding: ObjectEncoding::Full }).await?;

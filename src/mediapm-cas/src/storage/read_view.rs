@@ -43,6 +43,13 @@ pub(crate) trait ReadView: Send + Sync {
     /// deleted.
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError>;
 
+    /// Read bytes, answering `Ok(None)` when the object is absent.
+    ///
+    /// The distinction between absence and failure matters to callers that promote
+    /// or repair: an absent object is nothing to do, a failed read is something to
+    /// report.
+    async fn try_read(&self, hash: &Hash) -> Result<Option<Bytes>, CasError>;
+
     /// Write object contents into `writer` directly (streaming).
     /// Returns [`CasError::NotFound`] if the object does not exist.
     async fn get_to_writer(
@@ -179,15 +186,8 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
         })
     }
 
-    /// Inner fetch: Metadata + Blob → WAL fallback with transparent delta
-    /// reconstruction.
-    ///
-    /// Returns `Ok(Some(data))` if found, `Ok(None)` if confirmed absent.
-    ///
-    /// Delta-encoded entries are resolved by walking the delta chain
-    /// iteratively (not recursively) to avoid Rust async recursion
-    /// restrictions.
-    async fn fetch_inner(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
+    /// The read the index already describes, with no fallback.
+    async fn try_indexed(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
         // Check Metadata for metadata.
         let Some(entry) = self.metadata.get(hash).await? else {
             // WAL fallback: data may only exist as pending Put.
@@ -247,6 +247,85 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
         .await
         .map(Some)
     }
+
+    /// Read one object, falling back to the other physical form when the
+    /// indexed form fails.
+    ///
+    /// Either form means the data exists, so a read that finds the indexed form
+    /// unsound must serve the other rather than fail: that is what makes a
+    /// half-finished promotion recoverable instead of fatal. Repair is the
+    /// collapse pass's job (`BackgroundEngine::collapse_blob_forms`), so this
+    /// path only falls back.
+    ///
+    /// A fallback is reported at `warn`, because it means the tree holds a form
+    /// the index does not name and the next collapse pass has work to do.
+    async fn read_with_fallback(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
+        let indexed = self.try_indexed(hash).await;
+        match indexed {
+            Ok(Some(bytes)) => Ok(Some(bytes)),
+            Ok(None) => {
+                if matches!(self.wal.check_pending(hash).await, PendingState::Tombstone) {
+                    return Ok(None);
+                }
+                self.try_other_form(hash).await
+            }
+            Err(CasError::CorruptObject { details, .. }) => {
+                let recovered = self.try_other_form(hash).await?;
+                if let Some(bytes) = recovered {
+                    tracing::warn!(
+                        hash = %hash,
+                        details = %details,
+                        "served an object from its other physical form"
+                    );
+                    return Ok(Some(bytes));
+                }
+                Err(CasError::CorruptObject { hash: Some(*hash), details })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Read whichever physical form the tree holds.
+    ///
+    /// The delta goes first because that is the form an interrupted promotion
+    /// leaves newest, and a form that reads but cannot reconstruct `hash` is
+    /// treated as absent: serving bytes for the wrong content address is worse
+    /// than reporting the object missing. `blake3::hash` is the same check the
+    /// store performs on a full payload read, reused here because the read view
+    /// has no verify-on-read configuration of its own.
+    async fn try_other_form(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
+        let present = self.blob.present_encodings(hash).await?;
+        if present.delta
+            && let Ok(envelope) = self.blob.read_delta(hash).await
+            && let Ok(stored) = StoredObject::decode_delta(&envelope)
+        {
+            let entry = MetadataEntry {
+                len: stored.state().content_len,
+                encoding: ObjectEncoding::Delta { base_hash: stored.state().base_hash },
+            };
+            if let Ok(bytes) = resolve_full_bytes(
+                hash,
+                &entry,
+                &self.metadata,
+                &self.blob,
+                self.reconstructed_cache.as_deref(),
+                "delta self-reference detected",
+                "delta chain: base",
+            )
+            .await
+                && blake3::hash(&bytes).as_bytes() == hash.as_bytes()
+            {
+                return Ok(Some(bytes));
+            }
+        }
+        if present.full
+            && let Ok(bytes) = self.blob.read(hash).await
+            && blake3::hash(&bytes).as_bytes() == hash.as_bytes()
+        {
+            return Ok(Some(bytes));
+        }
+        Ok(None)
+    }
 }
 
 #[async_trait]
@@ -255,9 +334,13 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
 {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
         self.pending
-            .execute(*hash, || self.fetch_inner(hash))
+            .execute(*hash, || self.read_with_fallback(hash))
             .await?
             .ok_or(CasError::NotFound(*hash))
+    }
+
+    async fn try_read(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
+        self.read_with_fallback(hash).await
     }
 
     async fn get_to_writer(

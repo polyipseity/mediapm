@@ -117,3 +117,20 @@ pub(crate) async fn open_file_cas_with_background(bg_interval: Duration) -> File
     .unwrap();
     FileCasFixture { cas, _dir: dir }
 }
+
+/// Creates a fresh artifact tempdir and opens a `FileSystemCas` that verifies
+/// every payload it reads.
+///
+/// [`open_file_cas`] passes no strategies, so a payload corrupted on disk reads
+/// back silently and a test of corruption behaviour would assert nothing. This
+/// opens the store the way a configuration with `verify_on_read` does.
+pub(crate) async fn open_file_cas_verifying() -> FileCasFixture {
+    let dir = artifact_dir();
+    let cas = mediapm_cas::FileSystemCas::open_with_strategies(
+        dir.path(),
+        vec![mediapm_cas::VerifyTriggerStrategy::Always],
+    )
+    .await
+    .unwrap();
+    FileCasFixture { cas, _dir: dir }
+}

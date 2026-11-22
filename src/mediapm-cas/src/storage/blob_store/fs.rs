@@ -699,7 +699,13 @@ impl BlobStore for FileSystemBlobStore {
         let mtime = meta.modified().ok();
         let data = fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
         if self.verify_evaluator.should_verify(hash, mtime) {
-            Self::verify_hash(&path, hash).await?;
+            // A delta envelope is a derived encoding: its bytes are the patch
+            // plus the base it applies to, so they cannot hash to `hash`. What
+            // the format does carry is `diff_hash`, which V3 validates over the
+            // patch payload, and decoding runs that validation. A V1/V2 envelope
+            // has no integrity field of its own, so it is accepted as read: the
+            // reconstruction it feeds is hash-checked by the caller.
+            crate::delta::object::StoredObject::decode_delta(&data)?;
             self.verify_evaluator.record_verification(hash, mtime);
         }
         Ok(Bytes::from(data))
@@ -950,6 +956,22 @@ mod tests {
         assert!(store.read(&hash).await.is_err());
     }
 
+    /// Builds a valid delta envelope for blob-store path tests.
+    ///
+    /// `read_delta` verifies the envelope on a verifying store, so a test that
+    /// stores a delta must store an envelope `decode_delta` accepts rather than
+    /// raw bytes.
+    fn valid_delta_envelope(base: Hash, target_bytes: &[u8]) -> Bytes {
+        let base_bytes = b"delta-test-base";
+        let patch = crate::delta::patch::DeltaPatch::diff(base_bytes, target_bytes).unwrap();
+        let stored = crate::delta::object::StoredObject::delta(
+            base,
+            target_bytes.len() as u64,
+            patch.encode().to_vec(),
+        );
+        Bytes::from(stored.encode())
+    }
+
     #[tokio::test]
     async fn filesystem_delta_path_works() {
         let dir = mediapm_utils::temp::artifact_dir().unwrap();
@@ -961,7 +983,8 @@ mod tests {
         .unwrap();
 
         let base = Hash::from_content(b"base");
-        let data = Bytes::from_static(b"delta envelope data");
+        let target_bytes = b"delta envelope data";
+        let data = valid_delta_envelope(base, target_bytes);
         let hash = Hash::from_content(&data);
 
         // Write as delta.
@@ -985,12 +1008,16 @@ mod tests {
         .unwrap();
 
         let base = Hash::from_content(b"base");
-        let data = Bytes::from_static(b"dual blob");
-        let hash = Hash::from_content(&data);
+        let full_data = Bytes::from_static(b"dual blob");
+        let hash = Hash::from_content(&full_data);
+        let delta_data = valid_delta_envelope(base, b"dual blob delta target");
 
         // Write both full and delta.
-        store.write(hash, ObjectEncoding::Full, data.clone()).await.unwrap();
-        store.write(hash, ObjectEncoding::Delta { base_hash: base }, data).await.unwrap();
+        store.write(hash, ObjectEncoding::Full, full_data.clone()).await.unwrap();
+        store
+            .write(hash, ObjectEncoding::Delta { base_hash: base }, delta_data.clone())
+            .await
+            .unwrap();
 
         // Both paths exist before delete.
         assert!(store.read(&hash).await.is_ok());
@@ -1012,12 +1039,16 @@ mod tests {
         .unwrap();
 
         let base = Hash::from_content(b"base");
-        let data = Bytes::from_static(b"dual encoding blob");
-        let hash = Hash::from_content(&data);
+        let full_data = Bytes::from_static(b"dual encoding blob");
+        let hash = Hash::from_content(&full_data);
+        let delta_data = valid_delta_envelope(base, b"dual encoding delta target");
 
         // Write both full and delta.
-        store.write(hash, ObjectEncoding::Full, data.clone()).await.unwrap();
-        store.write(hash, ObjectEncoding::Delta { base_hash: base }, data).await.unwrap();
+        store.write(hash, ObjectEncoding::Full, full_data.clone()).await.unwrap();
+        store
+            .write(hash, ObjectEncoding::Delta { base_hash: base }, delta_data.clone())
+            .await
+            .unwrap();
 
         assert!(store.read(&hash).await.is_ok());
         assert!(store.read_delta(&hash).await.is_ok());

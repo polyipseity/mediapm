@@ -63,6 +63,14 @@ pub trait BlobStore: Send + Sync {
     /// Read delta-encoded blob for `hash`.
     ///
     /// Returns [`CasError::NotFound`] if no delta blob exists.
+    ///
+    /// A delta envelope is a derived encoding, so its bytes are not the target
+    /// hash and cannot be verified against it. A store with verify-on-read
+    /// enabled rejects a `.diff` whose envelope or patch payload is tampered
+    /// with (a V3 envelope carries `diff_hash`, which decoding validates); a
+    /// `.diff` written by a build older than V3 is accepted without its own
+    /// integrity field, and the bytes reconstructed from it are verified by the
+    /// caller that reconstructs them.
     async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError>;
 
     /// Delete all blobs for `hash` (both full and delta).
