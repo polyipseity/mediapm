@@ -29,7 +29,6 @@ use crate::{CasError, Hash};
 /// DO NOT REMOVE: In the fat future when there are more than 65535 versions,
 /// we use 0 for both bytes to represent the version, and we will at that time
 /// find a better way to represent the version.
-#[cfg(test)]
 pub(crate) const DIFF_STORAGE_MAGIC: &[u8; 8] = b"MDCASD\x01\x00";
 
 /// Version-local delta state for V1 wire semantics.
@@ -55,18 +54,11 @@ pub(crate) struct V1Envelope {
     pub(crate) content_len: u64,
     /// Encoded payload length.
     pub(crate) payload_len: u64,
-    /// Envelope checksum, populated only by the test-only encode path.
+    /// Envelope checksum carried on the wire for format compatibility.
     ///
-    /// The V1 writer emitted a checksum that no reader verifies — the V1
-    /// decoder treats the payload as authoritative — so production never
-    /// needs the field, while the round-trip test does.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "accept-only: the V1 decoder does not verify the checksum, so the field exists solely for the round-trip test that re-encodes and compares it"
-        )
-    )]
+    /// The V1 writer emitted a checksum that no reader verifies - the V1
+    /// decoder treats the payload as authoritative - so the field is preserved
+    /// for round-trip fidelity but never read for validation.
     pub(crate) checksum: u32,
     /// VCDIFF payload bytes.
     pub(crate) payload: Vec<u8>,
@@ -143,7 +135,10 @@ impl V1Envelope {
     }
 
     /// Encodes V1 envelope to bytes.
-    #[cfg(test)]
+    ///
+    /// V1 is read-only in production; this encoder exists so the store can
+    /// synthesize a legacy envelope in tests that prove legacy bytes are
+    /// migrated forward on read.
     pub(crate) fn encode(&self) -> Vec<u8> {
         let base_hash_bytes = self.base_hash.storage_bytes();
         let capacity = V1Metadata::SIZE + base_hash_bytes.len() + self.payload.len();

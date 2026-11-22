@@ -741,11 +741,23 @@ impl BlobStore for FileSystemBlobStore {
         if self.verify_evaluator.should_verify(hash, mtime) {
             // A delta envelope is a derived encoding: its bytes are the patch
             // plus the base it applies to, so they cannot hash to `hash`. What
-            // the format does carry is `diff_hash`, which V3 validates over the
-            // patch payload, and decoding runs that validation. A V1/V2 envelope
-            // has no integrity field of its own, so it is accepted as read: the
-            // reconstruction it feeds is hash-checked by the caller.
-            crate::delta::object::StoredObject::decode_delta(&data)?;
+            // the format carries is `diff_hash`, introduced in V3 and validated
+            // by decoding. A V1 or V2 envelope has no integrity field, so
+            // accepting it would be accepting unverifiable bytes under a
+            // strategy that promised to verify: it is re-encoded in the current
+            // format instead, once, and then verified like any other envelope.
+            let (version, state) = crate::delta::versions::decode_delta_state_versioned(&data)?;
+            if version < crate::delta::versions::LATEST_DELTA_VERSION {
+                let base_hash = state.base_hash;
+                let rewritten = crate::delta::versions::encode_delta_state(state);
+                self.write(*hash, ObjectEncoding::Delta { base_hash }, Bytes::from(rewritten))
+                    .await?;
+                tracing::info!(
+                    hash = %hash,
+                    from_version = version,
+                    "rewrote a legacy delta envelope in the current format so it carries an integrity field"
+                );
+            }
             self.verify_evaluator.record_verification(hash, mtime);
         }
         Ok(Bytes::from(data))

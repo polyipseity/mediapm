@@ -81,12 +81,13 @@ pub(crate) fn parse_multihash_from_bytes(
     crate::Hash::from_storage_bytes_with_len(bytes)
 }
 
-/// Decodes versioned `.diff` bytes into version-agnostic [`DeltaState`].
+/// Decodes a `.diff` envelope, reporting the wire version it was written in.
 ///
-/// This function is the only version-dispatch entry point. It peeks at
-/// `magic_with_embedded_version` and dispatches to the matching version parser,
-/// migrating older formats forward to the latest state representation via `From` impls.
-pub(crate) fn decode_delta_state(bytes: &[u8]) -> Result<DeltaState, CasError> {
+/// [`decode_delta_state`] answers what the bytes mean and deliberately forgets
+/// which format carried that meaning. A caller that must rewrite a legacy
+/// envelope needs the version too - not to decode it differently, but to know
+/// whether a rewrite is owed - so it is returned rather than re-derived.
+pub(crate) fn decode_delta_state_versioned(bytes: &[u8]) -> Result<(u32, DeltaState), CasError> {
     if bytes.len() < ENVELOPE_PREFIX_LEN {
         return Err(CasError::corrupt_object(
             "delta envelope: buffer too short for magic-with-version prefix",
@@ -95,27 +96,27 @@ pub(crate) fn decode_delta_state(bytes: &[u8]) -> Result<DeltaState, CasError> {
 
     let version = decode_magic_embedded_version(bytes)?;
 
-    match version {
+    let state = match version {
         3 => {
             let envelope = v3::V3Envelope::parse(bytes)?;
             envelope.validate()?;
             let state = v3::DeltaStateV3::from(envelope);
-            Ok(DeltaState {
+            DeltaState {
                 base_hash: state.base_hash,
                 content_len: state.content_len,
                 payload: state.payload,
-            })
+            }
         }
         2 => {
             let envelope = v2::V2Envelope::parse(bytes)?;
             envelope.validate()?;
             let state_v2 = v2::DeltaStateV2::from(envelope);
             let state_v3 = v3::DeltaStateV3::from(state_v2);
-            Ok(DeltaState {
+            DeltaState {
                 base_hash: state_v3.base_hash,
                 content_len: state_v3.content_len,
                 payload: state_v3.payload,
-            })
+            }
         }
         1 => {
             let envelope = v1::V1Envelope::parse(bytes)?;
@@ -123,16 +124,29 @@ pub(crate) fn decode_delta_state(bytes: &[u8]) -> Result<DeltaState, CasError> {
             let state_v1 = v1::DeltaStateV1::from(envelope);
             let state_v2 = v2::DeltaStateV2::from(state_v1);
             let state_v3 = v3::DeltaStateV3::from(state_v2);
-            Ok(DeltaState {
+            DeltaState {
                 base_hash: state_v3.base_hash,
                 content_len: state_v3.content_len,
                 payload: state_v3.payload,
-            })
+            }
         }
         _ => {
-            Err(CasError::corrupt_object(format!("delta envelope: unsupported version {version}")))
+            return Err(CasError::corrupt_object(format!(
+                "delta envelope: unsupported version {version}"
+            )));
         }
-    }
+    };
+
+    Ok((u32::from(version), state))
+}
+
+/// Decodes versioned `.diff` bytes into version-agnostic [`DeltaState`].
+///
+/// This function is the only version-dispatch entry point. It peeks at
+/// `magic_with_embedded_version` and dispatches to the matching version parser,
+/// migrating older formats forward to the latest state representation via `From` impls.
+pub(crate) fn decode_delta_state(bytes: &[u8]) -> Result<DeltaState, CasError> {
+    decode_delta_state_versioned(bytes).map(|(_, state)| state)
 }
 
 /// Shared payload-length validation for V1/V2 envelopes.
@@ -169,6 +183,40 @@ pub(crate) fn encode_delta_state(state: DeltaState) -> Vec<u8> {
     envelope.encode()
 }
 
+/// Wire version written by [`encode_delta_state`].
+///
+/// A reader that rewrites a legacy envelope compares the version it found with
+/// this constant, so the "is this current?" decision lives next to the writer
+/// that defines what "current" means.
+pub(crate) const LATEST_DELTA_VERSION: u32 = 3;
+
+/// Re-encodes delta state as a legacy V1 envelope.
+///
+/// Used by tests that verify a verifying store rewrites legacy bytes on first
+/// read. V1 has no integrity field, so it is the format the rewrite targets.
+pub(crate) fn legacy_delta_bytes_for_tests(state: &DeltaState) -> Vec<u8> {
+    let payload_len = u64::try_from(state.payload.len()).expect("payload length exceeds u64::MAX");
+    let envelope = v1::V1Envelope {
+        base_hash: state.base_hash,
+        content_len: state.content_len,
+        payload_len,
+        checksum: 0,
+        payload: state.payload.clone(),
+    };
+    envelope.encode()
+}
+
+/// Decodes a current delta envelope and re-encodes it as a legacy V1 envelope.
+///
+/// Integration tests build legacy on-disk bytes through this helper so they
+/// exercise the rewrite path without naming a version module.
+#[doc(hidden)]
+#[must_use]
+pub fn legacy_delta_v1_wire_from_current(current: &[u8]) -> Vec<u8> {
+    let state = decode_delta_state(current).expect("current delta envelope must decode");
+    legacy_delta_bytes_for_tests(&state)
+}
+
 // The test module is split into themed siblings because it exceeded the
 // ~300-line inline-test limit in
 // `.agents/instructions/rust-workflow.instructions.md`. Both siblings
@@ -179,3 +227,66 @@ pub(crate) fn encode_delta_state(state: DeltaState) -> Vec<u8> {
 mod mod_envelope_codec;
 #[cfg(test)]
 mod mod_policy_guard;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dispatch must report which version it found, because the caller that
+    /// rewrites a legacy envelope needs to know there is something to rewrite.
+    #[test]
+    fn the_versioned_decode_reports_the_format_it_read() {
+        let state = DeltaState {
+            base_hash: crate::Hash::from_content(b"base"),
+            content_len: 4,
+            payload: vec![b'd', b'i', b'f', b'f'],
+        };
+        let v3 = encode_delta_state(state.clone());
+        let (version, decoded) =
+            decode_delta_state_versioned(&v3).expect("a V3 envelope must decode");
+        assert_eq!(version, 3);
+        assert_eq!(decoded, state);
+
+        let v1_state = v1::DeltaStateV1 {
+            base_hash: state.base_hash,
+            content_len: state.content_len,
+            payload: state.payload.clone(),
+        };
+        let v1_bytes = v1::V1Envelope::from(v1_state).encode();
+        let (version, decoded) =
+            decode_delta_state_versioned(&v1_bytes).expect("a V1 envelope must decode");
+        assert_eq!(version, 1, "a V1 envelope must be reported as V1, not as the state it became");
+        assert_eq!(decoded, state);
+    }
+
+    /// Re-encoding a legacy state must produce bytes the current format owns,
+    /// which is what makes the one-time rewrite a fix rather than a copy.
+    #[test]
+    fn re_encoding_a_legacy_state_yields_a_v3_envelope() {
+        let state = DeltaState {
+            base_hash: crate::Hash::from_content(b"base"),
+            content_len: 4,
+            payload: vec![b'd', b'i', b'f', b'f'],
+        };
+        let rewritten = encode_delta_state(state.clone());
+        let (version, decoded) =
+            decode_delta_state_versioned(&rewritten).expect("re-encoded bytes must decode");
+        assert_eq!(version, 3, "the rewrite must land on the newest format");
+        assert_eq!(decoded, state);
+    }
+
+    /// The version constant is the writer's claim; pinning it to the bytes the
+    /// writer actually emits keeps a future format bump from forgetting to move
+    /// the constant.
+    #[test]
+    fn latest_delta_version_matches_the_writer() {
+        let state = DeltaState {
+            base_hash: crate::Hash::from_content(b"base"),
+            content_len: 1,
+            payload: vec![0],
+        };
+        let bytes = encode_delta_state(state);
+        let (version, _) = decode_delta_state_versioned(&bytes).expect("fresh bytes must decode");
+        assert_eq!(version, LATEST_DELTA_VERSION);
+    }
+}

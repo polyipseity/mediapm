@@ -213,3 +213,36 @@ pub(crate) fn corrupt(path: &std::path::Path) {
     }
     std::fs::write(path, b"not the bytes this hash names").expect("corrupt the payload");
 }
+
+/// Clears the read-only attribute a committed object carries.
+///
+/// Test setup sometimes has to stage a corrupt or legacy file in place of a
+/// committed object. That is what a tamper does, and the attribute has to come
+/// back before the write can land.
+pub(crate) fn make_writable(path: &std::path::Path) {
+    let metadata = std::fs::metadata(path).expect("payload metadata");
+    let mut permissions = metadata.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(permissions.mode() | 0o200);
+    }
+    #[cfg(windows)]
+    {
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "clearing the read-only attribute is how a Windows test tampers with a committed blob"
+        )]
+        permissions.set_readonly(false);
+    }
+    std::fs::set_permissions(path, permissions).expect("make the payload writable");
+}
+
+/// Re-encodes a current delta envelope as a legacy V1 envelope.
+///
+/// Integration tests use this to stage legacy on-disk bytes without naming a
+/// version module. The returned bytes carry no integrity field, which is the
+/// state a verifying store is meant to repair on first read.
+pub(crate) fn legacy_delta_envelope(current: &[u8]) -> Vec<u8> {
+    mediapm_cas::legacy_delta_v1_wire_from_current(current)
+}

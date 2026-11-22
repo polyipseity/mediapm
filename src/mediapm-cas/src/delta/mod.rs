@@ -7,4 +7,4 @@
 
 pub(crate) mod object;
 pub(crate) mod patch;
-mod versions;
+pub(crate) mod versions;
