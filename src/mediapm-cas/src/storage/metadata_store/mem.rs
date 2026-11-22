@@ -4,7 +4,7 @@
 //! in-memory layer of [`FileSystemMetadataStore`](super::fs::FileSystemMetadataStore).
 
 use async_trait::async_trait;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -15,8 +15,8 @@ use crate::hash::Hash;
 use super::super::wal::{Wal, WalEntry, WalPosition};
 use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 
-/// An in-memory [`MetadataStore`] backed by `Arc<DashMap>` for both entry and
-/// constraint data.
+/// An in-memory [`MetadataStore`] backed by concurrent maps for entry,
+/// constraint, and corruption data.
 ///
 /// Clones share the same backing data, so all references observe the same
 /// state — essential for concurrent access patterns.
@@ -44,6 +44,8 @@ pub struct InMemoryMetadataStore {
     constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>,
     /// Reverse index: base hash → dependents (hashes with Delta { `base_hash` }).
     dependents: Arc<DashMap<Hash, Vec<Hash>>>,
+    /// Hashes whose every physical form is known to be unsound.
+    corrupted: Arc<DashSet<Hash>>,
 }
 
 impl InMemoryMetadataStore {
@@ -142,6 +144,17 @@ impl MetadataStore for InMemoryMetadataStore {
             true
         });
         Ok(PrunedConstraints { targets, bases })
+    }
+
+    async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
+        Ok(self.corrupted.iter().map(|entry| *entry.key()).collect())
+    }
+
+    async fn restore_corrupted(&self, hashes: BTreeSet<Hash>) -> Result<(), CasError> {
+        for hash in hashes {
+            self.corrupted.insert(hash);
+        }
+        Ok(())
     }
 
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {

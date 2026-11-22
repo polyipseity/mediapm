@@ -132,6 +132,28 @@ pub trait MetadataStore: Send + Sync {
         Ok(0)
     }
 
+    /// List hashes whose every physical form is known to be unsound.
+    ///
+    /// The default is empty because a store that does not persist a corruption
+    /// record has nothing to report; `FileSystemMetadataStore` overrides this
+    /// once Task 2 gives it a real set.
+    async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
+        Ok(Vec::new())
+    }
+
+    /// Restore persisted corruption records into this store.
+    ///
+    /// Semantics are union/extend: the provided hashes are added to any
+    /// corruption record already held by this store. This makes per-overlay
+    /// rebuild calls across snapshot directories safe, because each directory
+    /// contributes its own hashes without replacing another directory's record.
+    ///
+    /// The default discards the record because a store with no corruption
+    /// backing has nowhere to put it.
+    async fn restore_corrupted(&self, _hashes: BTreeSet<Hash>) -> Result<(), CasError> {
+        Ok(())
+    }
+
     /// List hashes that depend on `hash` as their delta base.
     ///
     /// Default O(N) implementation iterates all entries inline. In-memory

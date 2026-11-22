@@ -6,7 +6,7 @@
 //! API so each mutation flushes only its hash's directory — O(N/D) I/O instead
 //! of O(N).
 //!
-//! Snapshot files use a versioned filename (`metadata-v1.json`) so future format
+//! Snapshot files use a versioned filename (`metadata-v3.json`) so future format
 //! changes are detectable and migratable. This module holds no version knowledge
 //! of its own: it consumes the names and codecs from [`versions`], which owns the
 //! ladder.
@@ -31,7 +31,7 @@ use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 /// Delegates all operations to an [`InMemoryMetadataStore`]. After every
 /// mutation, only the fan-out directory of the affected hash is flushed to
 /// disk as a small JSON file (with a versioned filename like
-/// `metadata-v1.json`) via the blob store's aux-file API.
+/// `metadata-v3.json`) via the blob store's aux-file API.
 ///
 /// On startup, [`rebuild_from_wal`](MetadataStore::rebuild_from_wal) replays
 /// the WAL then overlays all per-directory snapshots to recover data that
@@ -67,9 +67,9 @@ impl FileSystemMetadataStore {
     }
 
     /// Flush everything whose hash falls into the same fan-out directory as
-    /// `hash`: entries and constraints.
+    /// `hash`: entries, constraints, and corruption records.
     ///
-    /// Writes a `metadata-v1.json` aux file for that directory in the latest
+    /// Writes a `metadata-v3.json` aux file for that directory in the latest
     /// format, and removes the snapshot file when the facts it holds are empty.
     /// After writing, any older format files in the same directory are cleaned
     /// up (future-proof for format bumps).
@@ -105,34 +105,43 @@ impl FileSystemMetadataStore {
         let _dir = self.blob_store.lock_aux_dir(hash).await;
         let prefix = &hash.to_hex()[..4];
 
+        let mut snapshot = versions::Snapshot::default();
+
         // Collect constraints for targets sharing this prefix.
-        let mut constraints = BTreeMap::new();
         for t in self.inner.list_targets().await? {
             if t.to_hex().starts_with(prefix) {
                 let bases = self.inner.get_constraint(&t).await?;
-                constraints.insert(t, bases);
+                snapshot.delta_bases.insert(t, bases);
             }
         }
 
         // Collect entries for hashes sharing this prefix. Only the length is
         // persisted: which physical form holds the payload is a property of the
         // tree, so the snapshot must not carry a second copy of it.
-        let mut entries = BTreeMap::new();
         for h in self.inner.list_hashes().await? {
             if h.to_hex().starts_with(prefix)
                 && let Some(entry) = self.inner.get(&h).await?
             {
-                entries.insert(h, entry.len);
+                snapshot.lengths.insert(h, entry.len);
             }
         }
 
-        if constraints.is_empty() && entries.is_empty() {
+        for h in self.inner.list_corrupted().await? {
+            if h.to_hex().starts_with(prefix) {
+                snapshot.corrupted.insert(h);
+            }
+        }
+
+        if snapshot.delta_bases.is_empty()
+            && snapshot.lengths.is_empty()
+            && snapshot.corrupted.is_empty()
+        {
             // Remove all known snapshot format files when the directory holds nothing.
             for name in METADATA_FORMAT_NAMES {
                 self.blob_store.delete_aux(hash, name).await?;
             }
         } else {
-            let json = versions::save_to_vec(&constraints, &entries)?;
+            let json = versions::save_to_vec(&snapshot)?;
             self.blob_store.write_aux(hash, LATEST_METADATA_FORMAT, Bytes::from(json)).await?;
             // Clean up any legacy format files in this directory.
             for name in METADATA_FORMAT_NAMES {
@@ -219,11 +228,15 @@ impl FileSystemMetadataStore {
             }
             for (directory, bytes) in self.blob_store.all_aux_with_dir(name).await? {
                 let _dir = self.blob_store.lock_aux_dir_at(directory.clone()).await;
-                let (constraints, lengths) = versions::load_named_from_bytes(name, &bytes)?;
-                let entries = self.derive_entries(lengths).await?;
+                let snapshot = versions::load_named_from_bytes(name, &bytes)?;
+                let entries = self.derive_entries(snapshot.lengths).await?;
                 let lengths: BTreeMap<Hash, u64> =
                     entries.iter().map(|(hash, entry)| (*hash, entry.len)).collect();
-                let serialized = versions::save_to_vec(&constraints, &lengths)?;
+                let serialized = versions::save_to_vec(&versions::Snapshot {
+                    delta_bases: snapshot.delta_bases,
+                    lengths,
+                    corrupted: BTreeSet::new(),
+                })?;
                 // Write to the directory the legacy file was found in, even if
                 // the snapshot contains cross-directory facts (a malformed but
                 // possible legacy state). The directory-derived representative
@@ -351,6 +364,10 @@ impl MetadataStore for FileSystemMetadataStore {
         Self::migrate_legacy_snapshots(self).await
     }
 
+    async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
+        self.inner.list_corrupted().await
+    }
+
     /// # Ordering: the journal is newer than a snapshot
     ///
     /// A snapshot is a per-directory capture of an older state, and the journal
@@ -375,15 +392,16 @@ impl MetadataStore for FileSystemMetadataStore {
         // being a regression.
         for name in METADATA_FORMAT_NAMES.iter().rev() {
             for (_directory, bytes) in self.blob_store.all_aux_with_dir(name).await? {
-                let (persisted_constraints, persisted_lengths) =
-                    versions::load_named_from_bytes(name, &bytes)?;
-                let persisted_entries = self.derive_entries(persisted_lengths).await?;
-                for (target, bases) in persisted_constraints {
+                let snapshot = versions::load_named_from_bytes(name, &bytes)?;
+                let versions::Snapshot { delta_bases, lengths, corrupted } = snapshot;
+                let persisted_entries = self.derive_entries(lengths).await?;
+                for (target, bases) in delta_bases {
                     self.inner.set_constraint(target, bases).await?;
                 }
                 for (hash, entry) in persisted_entries {
                     self.inner.put(hash, entry).await?;
                 }
+                self.inner.restore_corrupted(corrupted).await?;
             }
         }
 
@@ -738,8 +756,8 @@ mod tests {
         );
     }
 
-    /// A directory holding a v1 snapshot must be rewritten to v2 and the v1
-    /// file deleted, with every fact intact across a reopen.
+    /// A directory holding a v1 snapshot must be rewritten to the current
+    /// format and the v1 file deleted, with every fact intact across a reopen.
     ///
     /// The legacy bytes come from `versions::legacy_snapshot_bytes_for_tests`,
     /// not from a fixture: hand-written bytes would drift from the format the
@@ -772,7 +790,7 @@ mod tests {
             "the sweep must delete the legacy snapshot it migrated"
         );
         assert!(
-            blob.read_aux(&entry, "metadata-v2.json").await.is_ok(),
+            blob.read_aux(&entry, LATEST_METADATA_FORMAT).await.is_ok(),
             "the sweep must leave a current-format snapshot behind"
         );
 

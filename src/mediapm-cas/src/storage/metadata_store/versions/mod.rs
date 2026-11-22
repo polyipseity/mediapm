@@ -1,25 +1,26 @@
 //! Version dispatch for the metadata store's per-directory snapshots.
 //!
-//! V1 and V2 are supported. Neither snapshot carries a version field inside the
-//! document: the version lives entirely in the filename (`metadata-v2.json`).
-//! This module therefore owns *both* halves of the ladder — the filenames and
-//! the codecs — because splitting them is how a `metadata-v2.json` written by
-//! one module gets handed to a V1 parser by another. [`fs`](super::fs) consumes
-//! the names; it holds no version knowledge of its own.
+//! V1, V2, and V3 are supported. No snapshot carries a version field inside
+//! the document: the version lives entirely in the filename
+//! (`metadata-v3.json`). This module therefore owns *both* halves of the
+//! ladder — the filenames and the codecs — because splitting them is how a
+//! `metadata-v3.json` written by one module gets handed to a V2 parser by
+//! another. [`fs`](super::fs) consumes the names; it holds no version
+//! knowledge of its own.
 //!
 //! ## What adding a format costs
 //!
-//! One new `vN.rs` exporting `parse_vN_snapshot`, `serialize_vN_snapshot` and a
-//! `load_vN_snapshot` that parses in its own format and migrates into the
+//! One new `vN.rs` exporting `parse_vN_snapshot`, `serialize_vN_snapshot` and
+//! a `load_vN_snapshot` that parses in its own format and migrates into the
 //! current model; one new arm in [`snapshot_loader_for_version`]; one new arm
 //! in [`save_to_vec`]; and one new entry in [`METADATA_FORMAT_NAMES`].
 //!
 //! The read half is one seam per version rather than a parse seam plus a
 //! migration seam. Each version's `load_vN_snapshot` returns the *current*
 //! model, so no caller can parse a file under one version's rules and then
-//! forget to carry it forward — a second seam that only ever calls the first is
-//! indirection, and it is exactly the place where a `metadata-v2.json` reaches
-//! a V1 parser.
+//! forget to carry it forward — a second seam that only ever calls the first
+//! is indirection, and it is exactly the place where a `metadata-v2.json`
+//! reaches a V1 parser.
 //!
 //! ## DO NOT REMOVE: versions policy guard
 //!
@@ -35,6 +36,7 @@
 
 mod v1;
 mod v2;
+mod v3;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -43,12 +45,22 @@ use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-/// Return type for snapshot load functions: (constraints, entries by length).
+/// One fan-out directory's persisted facts.
 ///
-/// An entry records only how long the payload is. Which physical form holds it
-/// (`<hash>` for full, `<hash>.diff` for delta) is read from the tree at load,
-/// so this model deliberately has no `encoding` field to disagree with disk.
-pub(crate) type SnapshotData = (BTreeMap<Hash, BTreeSet<Hash>>, BTreeMap<Hash, u64>);
+/// The three fields are the whole snapshot. `lengths` is a payload length per
+/// hash and nothing else: which physical form holds the bytes is read from the
+/// tree at load. `delta_bases` names the bases a delta may be compressed
+/// against. `corrupted` names the hashes whose every physical form is unsound,
+/// so a reader that finds one does not have to rediscover it by probing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Snapshot {
+    /// Constraint target to its candidate bases.
+    pub(crate) delta_bases: BTreeMap<Hash, BTreeSet<Hash>>,
+    /// Payload length per hash.
+    pub(crate) lengths: BTreeMap<Hash, u64>,
+    /// Hashes whose every physical form fails verification.
+    pub(crate) corrupted: BTreeSet<Hash>,
+}
 
 /// The per-directory snapshot filename this build writes.
 ///
@@ -56,7 +68,7 @@ pub(crate) type SnapshotData = (BTreeMap<Hash, BTreeSet<Hash>>, BTreeMap<Hash, u
 /// filename *is* the version marker: a constant owned by the layout module and
 /// a codec owned by this module could disagree, and nothing would notice until
 /// a reader dispatched on the wrong parser.
-pub(crate) const LATEST_METADATA_FORMAT: &str = "metadata-v2.json";
+pub(crate) const LATEST_METADATA_FORMAT: &str = "metadata-v3.json";
 
 /// Every per-directory metadata filename this build can read, newest first.
 ///
@@ -71,7 +83,8 @@ pub(crate) const LATEST_METADATA_FORMAT: &str = "metadata-v2.json";
 /// over a newer current one in the same directory while both formats coexist.
 /// Listing the newest first is what makes that iteration a `.rev()` rather
 /// than a magic constant in the caller.
-pub(crate) const METADATA_FORMAT_NAMES: &[&str] = &[LATEST_METADATA_FORMAT, "metadata-v1.json"];
+pub(crate) const METADATA_FORMAT_NAMES: &[&str] =
+    &["metadata-v3.json", "metadata-v2.json", "metadata-v1.json"];
 
 /// Current metadata snapshot format version.
 ///
@@ -81,18 +94,18 @@ pub(crate) const METADATA_FORMAT_NAMES: &[&str] = &[LATEST_METADATA_FORMAT, "met
 /// snapshot readable without any in-band marker. A second format is therefore a
 /// second filename, listed in [`METADATA_FORMAT_NAMES`], plus a new `vN.rs` and
 /// new dispatch arms.
-pub(crate) const SNAPSHOT_VERSION: u32 = 2;
+pub(crate) const SNAPSHOT_VERSION: u32 = 3;
 
 /// Every snapshot format version this build can read, ascending.
 ///
 /// Reading a version outside this set would mean applying a parser to bytes it
 /// was never written for, so the loader rejects it rather than guessing.
-pub(crate) const SUPPORTED_SNAPSHOT_VERSIONS: &[u32] = &[1, 2];
+pub(crate) const SUPPORTED_SNAPSHOT_VERSIONS: &[u32] = &[1, 2, 3];
 
 /// The single error every unknown-version path funnels through.
 ///
 /// Naming the version that was found is the point: a caller holding
-/// `metadata-v2.json` must be able to tell "this build does not know that
+/// `metadata-v3.json` must be able to tell "this build does not know that
 /// format" from "that file is corrupt", and a message listing only the
 /// expected set gives it nothing to act on.
 fn unsupported_version_error(version: u32, context: &str) -> CasError {
@@ -131,15 +144,23 @@ fn snapshot_version_from_name(name: &str) -> Result<u32, CasError> {
 ///
 /// Takes the raw snapshot bytes and yields `None` when the input is empty,
 /// which every version treats as an absent snapshot rather than an error.
-type SnapshotLoader = fn(&[u8]) -> Result<Option<SnapshotData>, CasError>;
+type SnapshotLoader = fn(&[u8]) -> Result<Option<Snapshot>, CasError>;
 
 /// Read a V1 snapshot and carry it into the current model.
 ///
-/// The seam lives here rather than in either version file because it is the one
-/// place allowed to name two versions: [`v1`] parses its own format, [`v2`]
-/// owns the rewrite into its own shape, and this joins them.
-fn load_snapshot_v1(data: &[u8]) -> Result<Option<SnapshotData>, CasError> {
-    Ok(v1::parse_v1_snapshot(data)?.map(v2::migrate_v1_to_v2))
+/// V1 migrates to V2 in `v2`, V2 migrates to V3 in `v3`, and this module owns
+/// the chain because each version module may reference only its immediate
+/// predecessor.
+fn load_snapshot_v1(data: &[u8]) -> Result<Option<Snapshot>, CasError> {
+    Ok(v1::parse_v1_snapshot(data)?.map(|v1| v3::migrate_v2_to_v3(v2::migrate_v1_to_v2(v1))))
+}
+
+/// Read a V2 snapshot and carry it into the current model.
+///
+/// V2 parses its own shape; V3 owns the rewrite into the current model. The
+/// bridge lives here so `v2` does not reference a forward version.
+fn load_snapshot_v2(data: &[u8]) -> Result<Option<Snapshot>, CasError> {
+    Ok(v2::parse_v2_snapshot(data)?.map(v3::migrate_v2_to_v3))
 }
 
 /// Resolves one snapshot version to its loader.
@@ -151,13 +172,14 @@ fn load_snapshot_v1(data: &[u8]) -> Result<Option<SnapshotData>, CasError> {
 fn snapshot_loader_for_version(version: u32) -> Result<SnapshotLoader, CasError> {
     match version {
         1 => Ok(load_snapshot_v1),
-        2 => Ok(v2::load_v2_snapshot),
+        2 => Ok(load_snapshot_v2),
+        3 => Ok(v3::load_v3_snapshot),
         other => Err(unsupported_version_error(other, "")),
     }
 }
 
 /// Decode a snapshot of one known version.
-fn load_snapshot_for_version(version: u32, data: &[u8]) -> Result<SnapshotData, CasError> {
+fn load_snapshot_for_version(version: u32, data: &[u8]) -> Result<Snapshot, CasError> {
     Ok(snapshot_loader_for_version(version)?(data)?.unwrap_or_default())
 }
 
@@ -174,7 +196,7 @@ fn load_snapshot_for_version(version: u32, data: &[u8]) -> Result<SnapshotData, 
 /// Returns [`CasError::InvalidArgument`] when `name` does not encode a
 /// readable format version, and the parser's own error when the bytes do not
 /// match the format that version defines.
-pub(crate) fn load_named_from_bytes(name: &str, data: &[u8]) -> Result<SnapshotData, CasError> {
+pub(crate) fn load_named_from_bytes(name: &str, data: &[u8]) -> Result<Snapshot, CasError> {
     load_snapshot_for_version(snapshot_version_from_name(name)?, data)
 }
 
@@ -182,12 +204,9 @@ pub(crate) fn load_named_from_bytes(name: &str, data: &[u8]) -> Result<SnapshotD
 ///
 /// Dispatches on [`SNAPSHOT_VERSION`] for symmetry with the read path, so
 /// writing and reading agree on which format is current.
-pub(crate) fn save_to_vec(
-    constraints: &BTreeMap<Hash, BTreeSet<Hash>>,
-    entries: &BTreeMap<Hash, u64>,
-) -> Result<Vec<u8>, CasError> {
+pub(crate) fn save_to_vec(snapshot: &Snapshot) -> Result<Vec<u8>, CasError> {
     match SNAPSHOT_VERSION {
-        2 => v2::serialize_v2_snapshot(constraints, entries),
+        3 => v3::serialize_v3_snapshot(snapshot),
         // Unreachable while `SUPPORTED_SNAPSHOT_VERSIONS` and
         // `snapshot_loader_for_version` agree with this match, which
         // `every_supported_snapshot_version_has_a_parser` proves. Serializing
@@ -210,14 +229,21 @@ pub(crate) fn legacy_snapshot_bytes_for_tests(
     v1::serialize_v1_snapshot(constraints, entries).expect("serialize a V1 snapshot")
 }
 
-/// Decode the body both codecs share: hex keys into typed maps.
+/// The two-map body shared by every snapshot codec: delta bases and lengths.
 ///
-/// Both version files hand their raw maps here, so the hex-decoding contract
-/// and its error messages exist once instead of in each codec.
+/// Corruption is version-specific, so the shared decoder returns only the
+/// fields every format carries.
+pub(crate) type SnapshotBody = (BTreeMap<Hash, BTreeSet<Hash>>, BTreeMap<Hash, u64>);
+
+/// Decode constraint hex keys into typed maps and pass through lengths.
+///
+/// Each codec decodes its own length keys because the on-disk shape differs by
+/// version; the constraint body has the same hex-keyed shape across formats, so
+/// its decoding and error messages live here once.
 pub(crate) fn decode_snapshot_body(
     constraints: BTreeMap<String, Vec<String>>,
     entries: BTreeMap<Hash, u64>,
-) -> Result<SnapshotData, CasError> {
+) -> Result<SnapshotBody, CasError> {
     let mut decoded = BTreeMap::new();
     for (target_hex, base_hexes) in constraints {
         let target: Hash = target_hex.parse().map_err(|_| CasError::CorruptObject {
@@ -439,29 +465,103 @@ mod tests {
         let target = Hash::from_content(b"target");
         let base = Hash::from_content(b"base");
         let entry = Hash::from_content(b"entry");
-        let constraints = BTreeMap::from([(target, BTreeSet::from([base]))]);
-        let entries = BTreeMap::from([(entry, 11u64)]);
+        let snapshot = Snapshot {
+            delta_bases: BTreeMap::from([(target, BTreeSet::from([base]))]),
+            lengths: BTreeMap::from([(entry, 11u64)]),
+            corrupted: BTreeSet::new(),
+        };
 
-        let bytes = save_to_vec(&constraints, &entries).expect("serialize current snapshot");
-        let (read_constraints, read_entries) =
-            load_named_from_bytes(LATEST_METADATA_FORMAT, &bytes)
-                .expect("dispatch must read the snapshot back");
-        assert_eq!(read_constraints, constraints);
-        assert_eq!(read_entries, entries);
+        let bytes = save_to_vec(&snapshot).expect("serialize current snapshot");
+        let read = load_named_from_bytes(LATEST_METADATA_FORMAT, &bytes)
+            .expect("dispatch must read the snapshot back");
+        assert_eq!(read, snapshot);
+    }
+
+    /// The current format carries exactly three facts per directory: the delta
+    /// bases, the payload lengths, and which hashes are known corrupt.
+    #[test]
+    fn a_v3_snapshot_records_lengths_delta_bases_and_corruption() {
+        let target = Hash::from_content(b"target");
+        let base = Hash::from_content(b"base");
+        let entry = Hash::from_content(b"entry");
+        let corrupt = Hash::from_content(b"corrupt");
+        let snapshot = Snapshot {
+            delta_bases: BTreeMap::from([(target, BTreeSet::from([base]))]),
+            lengths: BTreeMap::from([(entry, 11u64)]),
+            corrupted: BTreeSet::from([corrupt]),
+        };
+
+        let bytes = save_to_vec(&snapshot).expect("serialize a v3 snapshot");
+        let text = String::from_utf8(bytes.clone()).expect("a snapshot is UTF-8 JSON");
+        for field in ["\"delta_bases\"", "\"lengths\"", "\"corrupted\""] {
+            assert!(text.contains(field), "a v3 snapshot must name {field}: {text}");
+        }
+        for gone in ["\"constraints\"", "\"entries\""] {
+            assert!(!text.contains(gone), "v3 renamed {gone} away: {text}");
+        }
+
+        let read = load_named_from_bytes(LATEST_METADATA_FORMAT, &bytes)
+            .expect("dispatch must read the snapshot back");
+        assert_eq!(read, snapshot, "a v3 snapshot must round-trip every field");
+    }
+
+    /// A v2 file must keep loading after the rename, and its facts must arrive
+    /// under the new names with no corruption recorded.
+    #[test]
+    fn a_v2_snapshot_loads_into_the_v3_model() {
+        let target = Hash::from_content(b"target");
+        let base = Hash::from_content(b"base");
+        let entry = Hash::from_content(b"entry");
+        let snapshot = Snapshot {
+            delta_bases: BTreeMap::from([(target, BTreeSet::from([base]))]),
+            lengths: BTreeMap::from([(entry, 9u64)]),
+            corrupted: BTreeSet::new(),
+        };
+        let v2_bytes = v2::serialize_v2_snapshot(&snapshot.delta_bases, &snapshot.lengths)
+            .expect("serialize a v2 snapshot");
+
+        let read = load_named_from_bytes("metadata-v2.json", &v2_bytes)
+            .expect("a v2 snapshot must still load");
+        assert_eq!(read.delta_bases, snapshot.delta_bases);
+        assert_eq!(read.lengths, snapshot.lengths);
+        assert!(read.corrupted.is_empty(), "v2 has no corruption record to migrate");
+    }
+
+    /// `corrupted` is a set of hashes with no clock beside them. A timestamp
+    /// nothing reads is a field waiting to disagree with the tree.
+    #[test]
+    fn a_v3_snapshot_stores_corruption_as_bare_hashes() {
+        let corrupt = Hash::from_content(b"corrupt");
+        let bytes = save_to_vec(&Snapshot {
+            delta_bases: BTreeMap::new(),
+            lengths: BTreeMap::new(),
+            corrupted: BTreeSet::from([corrupt]),
+        })
+        .expect("serialize a v3 snapshot");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("a snapshot is JSON");
+        assert_eq!(
+            value["corrupted"],
+            serde_json::json!([corrupt.to_string()]),
+            "a corruption record is an array of hex hashes and nothing else"
+        );
     }
 
     /// The current format must carry exactly one fact per entry: its length.
     /// `encoding` is derived from which file exists, so persisting it would be
     /// a second copy that can disagree with the tree.
     #[test]
-    fn a_v2_snapshot_records_lengths_and_no_encoding() {
+    fn a_v3_snapshot_records_lengths_and_no_encoding() {
         let entry = Hash::from_content(b"entry");
-        let bytes = save_to_vec(&BTreeMap::new(), &BTreeMap::from([(entry, 11u64)]))
-            .expect("serialize a v2 snapshot");
+        let bytes = save_to_vec(&Snapshot {
+            delta_bases: BTreeMap::new(),
+            lengths: BTreeMap::from([(entry, 11u64)]),
+            corrupted: BTreeSet::new(),
+        })
+        .expect("serialize a v3 snapshot");
         let text = String::from_utf8(bytes).expect("a snapshot is UTF-8 JSON");
         assert!(
             !text.contains("encoding"),
-            "a v2 snapshot must not persist an encoding, the tree already states it: {text}"
+            "a v3 snapshot must not persist an encoding, the tree already states it: {text}"
         );
         assert!(
             text.contains(&entry.to_string()),
@@ -505,15 +605,16 @@ mod tests {
 
         let v1_bytes = v1::serialize_v1_snapshot(&constraints, &entries)
             .expect("serialize a v1 snapshot that still records encodings");
-        let (read_constraints, read_entries) = load_named_from_bytes("metadata-v1.json", &v1_bytes)
+        let read = load_named_from_bytes("metadata-v1.json", &v1_bytes)
             .expect("a v1 snapshot must load into the current model");
 
-        assert_eq!(read_constraints, constraints, "constraints survive the migration");
+        assert_eq!(read.delta_bases, constraints, "constraints survive the migration");
         assert_eq!(
-            read_entries,
+            read.lengths,
             BTreeMap::from([(full, 7u64), (delta, 9u64)]),
             "the migration keeps every length and drops every encoding"
         );
+        assert!(read.corrupted.is_empty(), "v1 has no corruption record to migrate");
     }
 
     /// The format list is read newest-first and applied oldest-first, so its
@@ -522,7 +623,7 @@ mod tests {
     fn the_format_list_is_newest_first() {
         assert_eq!(
             METADATA_FORMAT_NAMES,
-            &["metadata-v2.json", "metadata-v1.json"],
+            &["metadata-v3.json", "metadata-v2.json", "metadata-v1.json"],
             "readers iterate this list newest-first and apply it oldest-first"
         );
     }
@@ -543,25 +644,28 @@ mod tests {
         let target = Hash::from_content(b"target");
         let entry = Hash::from_content(b"entry");
         let constraints = BTreeMap::from([(target, BTreeSet::from([Hash::from_content(b"base")]))]);
+        let lengths = BTreeMap::from([(entry, 5u64)]);
 
-        let v2_bytes = save_to_vec(&constraints, &BTreeMap::from([(entry, 5u64)]))
-            .expect("serialize a v2 snapshot");
+        let v3_bytes = save_to_vec(&Snapshot {
+            delta_bases: constraints.clone(),
+            lengths: lengths.clone(),
+            corrupted: BTreeSet::new(),
+        })
+        .expect("serialize a v3 snapshot");
+        let v2_bytes =
+            v2::serialize_v2_snapshot(&constraints, &lengths).expect("serialize a v2 snapshot");
         let v1_bytes = v1::serialize_v1_snapshot(
             &constraints,
             &BTreeMap::from([(entry, (5u64, ObjectEncoding::Full))]),
         )
         .expect("serialize a v1 snapshot");
 
-        for (version, bytes) in [(2u32, v2_bytes), (1u32, v1_bytes)] {
+        for (version, bytes) in [(3u32, v3_bytes), (2u32, v2_bytes), (1u32, v1_bytes)] {
             let name = format!("metadata-v{version}.json");
-            let (read_constraints, read_entries) =
-                load_named_from_bytes(&name, &bytes).expect("a supported version must load");
-            assert_eq!(read_constraints, constraints, "version {version} lost its constraints");
-            assert_eq!(
-                read_entries,
-                BTreeMap::from([(entry, 5u64)]),
-                "version {version} lost its entries"
-            );
+            let read = load_named_from_bytes(&name, &bytes).expect("a supported version must load");
+            assert_eq!(read.delta_bases, constraints, "version {version} lost its constraints");
+            assert_eq!(read.lengths, lengths, "version {version} lost its entries");
+            assert!(read.corrupted.is_empty(), "version {version} invented corruption");
         }
     }
 
@@ -574,9 +678,9 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::from([(entry, (3u64, ObjectEncoding::Full))]),
         );
-        let (_, read_entries) = load_named_from_bytes("metadata-v1.json", &bytes)
+        let read = load_named_from_bytes("metadata-v1.json", &bytes)
             .expect("the seeded legacy bytes must load through dispatch");
-        assert_eq!(read_entries, BTreeMap::from([(entry, 3u64)]));
+        assert_eq!(read.lengths, BTreeMap::from([(entry, 3u64)]));
     }
 
     /// A filename naming a version this build does not implement must be
@@ -590,10 +694,14 @@ mod tests {
     fn unknown_snapshot_version_is_rejected_and_named() {
         let target = Hash::from_content(b"target");
         let constraints = BTreeMap::from([(target, BTreeSet::from([Hash::from_content(b"base")]))]);
-        let valid_v1_bytes =
-            save_to_vec(&constraints, &BTreeMap::new()).expect("serialize a valid V1 snapshot");
+        let valid_v1_bytes = save_to_vec(&Snapshot {
+            delta_bases: constraints,
+            lengths: BTreeMap::new(),
+            corrupted: BTreeSet::new(),
+        })
+        .expect("serialize a valid V3 snapshot");
 
-        for version in [0u32, 3, 7, 999] {
+        for version in [0u32, 4, 7, 999] {
             let name = format!("metadata-v{version}.json");
             let err = load_named_from_bytes(&name, &valid_v1_bytes)
                 .expect_err("an unknown version must not be parsed under a known version's rules");
