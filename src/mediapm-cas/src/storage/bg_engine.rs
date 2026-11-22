@@ -285,6 +285,176 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         Ok(())
     }
 
+    /// Remove a target's full payload once its delta payload reconstructs it.
+    ///
+    /// The delta was written immediately before this call, so the full payload
+    /// is a second copy of bytes the delta already holds. The reconstruction
+    /// here is the tripwire that keeps that claim honest: when the stored delta
+    /// does not reconstruct the target within the verified length, nothing is
+    /// deleted and the caller's own read-back guard falls back to full.
+    async fn reclaim_full_after_delta_verified(
+        &self,
+        target: Hash,
+        _base: Hash,
+        verified_len: u64,
+    ) -> Result<(), CasError> {
+        let reconstructs = self.read_full_bytes(&target).await?.is_some_and(|bytes| {
+            bytes.len() as u64 == verified_len
+                && blake3::hash(&bytes).as_bytes() == target.as_bytes()
+        });
+        if !reconstructs {
+            return Ok(());
+        }
+        self.blob.delete_encoding(target, ObjectEncoding::Full).await
+    }
+
+    /// Converge every live target that holds both physical forms.
+    ///
+    /// Two forms are legitimate only while a transition is in flight, and the
+    /// recorded intent says which form survives:
+    ///
+    /// - intent `Full` with a `.diff` present: the delta is the leftover, so it
+    ///   is deleted. A full payload that no longer validates is rewritten from
+    ///   the delta first, because deleting the delta first would discard the
+    ///   only sound copy.
+    /// - intent `Delta` with a full payload present: the full payload is the
+    ///   leftover, and it is deleted only when the delta reconstructs the
+    ///   target, because deleting it is what would otherwise lose the object.
+    ///
+    /// This runs under the caller's `consume_lock`, which is the same exclusion
+    /// the optimizer's own writes take, so a both-forms state observed here is
+    /// abandoned rather than mid-transition. The synchronous promotion in
+    /// `set_constraint` finishes its own transition under the same lock before
+    /// returning, so it cannot be caught half-written.
+    ///
+    /// Both branches read through `verified_form_bytes`, which builds a
+    /// throwaway entry with `len: 0`: `resolve_full_bytes` dispatches on
+    /// `encoding` and never consults `len`, and the hash comparison is what
+    /// decides soundness, so a recorded length would be a second claim to keep
+    /// in sync for nothing.
+    ///
+    /// A form that reads but does not hash to the target, or whose own
+    /// integrity check fails, is reported as absent rather than as corrupt,
+    /// because this is the pass that decides which copy to keep: the other copy
+    /// may still be sound, so a hard error would abort a collapse that can
+    /// succeed.
+    async fn verified_form_bytes(
+        &self,
+        target: &Hash,
+        encoding: ObjectEncoding,
+    ) -> Result<Option<Bytes>, CasError> {
+        let entry = MetadataEntry { len: 0, encoding };
+        match super::read_view::resolve_full_bytes(
+            target,
+            &entry,
+            &self.metadata,
+            &self.blob,
+            self.reconstructed_cache.as_deref(),
+            "delta self-reference detected while collapsing blob forms",
+            "delta chain: base",
+        )
+        .await
+        {
+            Ok(bytes) if blake3::hash(&bytes).as_bytes() == target.as_bytes() => Ok(Some(bytes)),
+            // A form that is missing, reads but hashes wrong, or fails its own
+            // integrity check is unsound, and the other form may still be
+            // sound, so neither is an error here. Anything else (I/O, an
+            // over-long chain) is not a statement about this one copy and
+            // propagates.
+            Ok(_) | Err(CasError::NotFound(_) | CasError::CorruptObject { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn collapse_blob_forms(&self) -> Result<bool, CasError> {
+        let mut did_work = false;
+        let mut targets = self.metadata.list_hashes().await?;
+        targets.sort_unstable();
+        for target in targets {
+            if self.is_cancelled() {
+                break;
+            }
+            let Some(entry) = self.metadata.get(&target).await? else {
+                continue;
+            };
+            let present = self.blob.present_encodings(&target).await?;
+            if !(present.full && present.delta) {
+                continue;
+            }
+            match entry.encoding {
+                ObjectEncoding::Full => {
+                    // Intent is full, so the delta is the leftover. The full
+                    // payload is rewritten from it first when it no longer
+                    // verifies, because deleting the delta would then discard
+                    // the only sound copy.
+                    let base_hash = match self.blob.read_delta(&target).await {
+                        Ok(envelope) => StoredObject::decode_delta(&envelope)
+                            .map(|stored| stored.state().base_hash)?,
+                        Err(CasError::NotFound(_)) => continue,
+                        Err(error) => return Err(error),
+                    };
+                    if self.verified_form_bytes(&target, ObjectEncoding::Full).await?.is_none() {
+                        let Some(repaired) = self
+                            .verified_form_bytes(&target, ObjectEncoding::Delta { base_hash })
+                            .await?
+                        else {
+                            tracing::warn!(
+                                hash = %target,
+                                "both physical forms fail to verify; leaving both in place"
+                            );
+                            continue;
+                        };
+                        let repaired_len = repaired.len() as u64;
+                        self.blob.write(target, ObjectEncoding::Full, repaired).await?;
+                        self.metadata
+                            .put(
+                                target,
+                                MetadataEntry { len: repaired_len, encoding: ObjectEncoding::Full },
+                            )
+                            .await?;
+                    }
+                    self.blob.delete_encoding(target, ObjectEncoding::Delta { base_hash }).await?;
+                    did_work = true;
+                }
+                ObjectEncoding::Delta { base_hash } => {
+                    if self
+                        .verified_form_bytes(&target, ObjectEncoding::Delta { base_hash })
+                        .await?
+                        .is_some()
+                    {
+                        // Intent is delta, so the full payload is the leftover.
+                        self.blob.delete_encoding(target, ObjectEncoding::Full).await?;
+                    } else if self
+                        .verified_form_bytes(&target, ObjectEncoding::Full)
+                        .await?
+                        .is_some()
+                    {
+                        // The delta is the unsound copy: drop it and record the
+                        // full payload the tree still holds, which is the repair
+                        // the owner of a corrupt delta wants.
+                        self.blob
+                            .delete_encoding(target, ObjectEncoding::Delta { base_hash })
+                            .await?;
+                        self.metadata
+                            .put(
+                                target,
+                                MetadataEntry { len: entry.len, encoding: ObjectEncoding::Full },
+                            )
+                            .await?;
+                    } else {
+                        tracing::warn!(
+                            hash = %target,
+                            "both physical forms fail to verify; leaving both in place"
+                        );
+                        continue;
+                    }
+                    did_work = true;
+                }
+            }
+        }
+        Ok(did_work)
+    }
+
     /// Report whether storing `target` as a delta against `base` would create a
     /// delta chain cycle or an excessively deep chain.
     ///
@@ -375,7 +545,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         Ok(result)
     }
 
-    /// Run maintenance: optimizer + constraint pruning.
+    /// Run maintenance: optimizer + blob-form collapse + constraint pruning.
     ///
     /// 1. **Optimizer**: for each live object, select candidate bases from its
     ///    constraint (an absent or empty base set means any live object except
@@ -384,7 +554,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     ///    non-empty real base, compute a VCDIFF delta and keep it only when it
     ///    is smaller than the full payload, skipping candidates that would form
     ///    a cycle or an excessively deep delta chain.
-    /// 2. **Constraint pruning**: per-base prune so each entry converges
+    /// 2. **Blob-form collapse**: converge every live target that holds both
+    ///    physical forms toward its recorded intent, so a transition that
+    ///    produced two copies cannot persist across intervals.
+    /// 3. **Constraint pruning**: per-base prune so each entry converges
     ///    toward its effective constraint set (intersection of stored bases
     ///    with live hashes), pinning a live target whose bases all became dead
     ///    to full instead of widening it. Only prunes metadata, never objects.
@@ -495,6 +668,21 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             let Some(best_base) = best_base else {
                 continue;
             };
+            // Already optimal: the target is delta-encoded against the base this
+            // pass would choose, and the stored payload still reconstructs it.
+            // Rewriting it would produce the same bytes and a second both-forms
+            // window, so the pass must report no work instead of churning on
+            // every interval.
+            if let Some(entry) = self.metadata.get(target).await?
+                && let ObjectEncoding::Delta { base_hash } = entry.encoding
+                && base_hash == best_base
+                && self
+                    .read_full_bytes(target)
+                    .await?
+                    .is_some_and(|bytes| blake3::hash(&bytes).as_bytes() == target.as_bytes())
+            {
+                continue;
+            }
             // Reconstruct full bytes for target and base.
             let Some(target_bytes) = self.read_full_bytes(target).await? else {
                 continue;
@@ -540,6 +728,16 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                 self.blob
                     .write(*target, ObjectEncoding::Delta { base_hash: best_base }, envelope)
                     .await?;
+                // Reclaim the full payload now that a verified delta holds the
+                // same bytes. The read-back inside the reclaim is what makes
+                // deleting it safe: if the stored delta cannot reconstruct the
+                // target, nothing is deleted.
+                self.reclaim_full_after_delta_verified(
+                    *target,
+                    best_base,
+                    target_bytes.len() as u64,
+                )
+                .await?;
                 // Preserve constraint bases.
                 let existing_bases = self.metadata.get_constraint(target).await?;
                 self.metadata
@@ -555,13 +753,13 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                     self.metadata.set_constraint(*target, existing_bases.clone()).await?;
                 }
                 // Read-back guard: some delta/base combinations decode
-                // incorrectly later in the same maintenance cycle. If the
-                // stored delta cannot be reconstructed to the target hash,
-                // revert to full.
+                // incorrectly later in the same maintenance cycle. If the stored
+                // delta cannot be reconstructed to the target hash, revert to
+                // full.
                 let roundtrip_ok = self
                     .read_full_bytes(target)
                     .await?
-                    .is_some_and(|b| blake3::hash(&b).as_bytes() == target.as_bytes());
+                    .is_some_and(|bytes| blake3::hash(&bytes).as_bytes() == target.as_bytes());
                 if !roundtrip_ok {
                     self.blob.write(*target, ObjectEncoding::Full, target_bytes.clone()).await?;
                     self.blob
@@ -585,7 +783,16 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             }
         }
 
-        // === Phase 2: Constraint pruning ===
+        // === Phase 2: Blob-form collapse ===
+        // Both physical forms of one object are legitimate only while a
+        // transition is in flight. Converging them here, under the same
+        // `consume_lock` the optimizer writes under, is what keeps a store from
+        // carrying two copies indefinitely.
+        if self.collapse_blob_forms().await? {
+            did_work = true;
+        }
+
+        // === Phase 3: Constraint pruning ===
         // Prune dead bases from constraint entries. The live set from Phase 1
         // is still valid — the optimizer only changes encodings, not existence.
         let pruned = self.metadata.prune_targets(&live).await?;
