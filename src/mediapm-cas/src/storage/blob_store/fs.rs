@@ -30,8 +30,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::BlobStore;
 use super::versions::{CURRENT_BLOB_PATH_VERSION, hash_to_delta_path, hash_to_path};
+use super::{BlobStore, PresentEncodings};
 use crate::api::{ObjectEncoding, VerifyTriggerStrategy};
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -265,6 +265,53 @@ impl FileSystemBlobStore {
         lock.lock_owned().await
     }
 
+    /// Hold one fan-out directory's aux lock by directory path.
+    ///
+    /// [`Self::lock_aux_dir`] derives the directory from a hash; a sweep walks
+    /// directories, so it has the directory already and must not invent a hash
+    /// to reach the same lock. Both key on the same `PathBuf`, so they are one
+    /// lock.
+    pub(crate) async fn lock_aux_dir_at(&self, dir: PathBuf) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = Arc::clone(&*self.aux_dir_locks.entry(dir).or_default());
+        lock.lock_owned().await
+    }
+
+    /// Every aux file called `name`, with the directory that holds it.
+    ///
+    /// [`Self::all_aux`] answers what the facts are; a rewrite also needs to
+    /// know where they are, because it must delete the file it replaced and
+    /// hold that directory's lock while it does.
+    pub(crate) async fn all_aux_with_dir(
+        &self,
+        name: &str,
+    ) -> Result<Vec<(PathBuf, Bytes)>, CasError> {
+        let fanout_root = self.root.join(CURRENT_BLOB_PATH_VERSION).join("blake3");
+        let mut results = Vec::new();
+        let mut level1 = match fs::read_dir(&fanout_root).await {
+            Ok(dir) => dir,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(CasError::Io(error)),
+        };
+        while let Some(l1_entry) = level1.next_entry().await.map_err(CasError::Io)? {
+            if !l1_entry.file_type().await.map_err(CasError::Io)?.is_dir() {
+                continue;
+            }
+            let mut level2 = fs::read_dir(l1_entry.path()).await.map_err(CasError::Io)?;
+            while let Some(l2_entry) = level2.next_entry().await.map_err(CasError::Io)? {
+                if !l2_entry.file_type().await.map_err(CasError::Io)?.is_dir() {
+                    continue;
+                }
+                let directory = l2_entry.path();
+                match fs::read(directory.join(name)).await {
+                    Ok(data) => results.push((directory, Bytes::from(data))),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(CasError::Io(error)),
+                }
+            }
+        }
+        Ok(results)
+    }
+
     /// Drop a commit lock once no commit is waiting on it.
     ///
     /// A map entry per target written would grow with the store for the life of
@@ -293,6 +340,18 @@ impl FileSystemBlobStore {
         self.io_gate.run(move || std::fs::create_dir_all(&parent)).await.map_err(CasError::Io)
     }
 
+    /// The staging path for one final path.
+    ///
+    /// Derived by appending rather than through `Path::with_extension`, which
+    /// maps both `<hex>` and `<hex>.diff` onto `<hex>.tmp` and thereby gives two
+    /// distinct objects one staging file, each guarded by a different commit
+    /// lock.
+    fn staging_path(path: &Path) -> PathBuf {
+        let mut name = path.file_name().map(std::ffi::OsString::from).unwrap_or_default();
+        name.push(".tmp");
+        path.with_file_name(name)
+    }
+
     /// Write bytes atomically to a path: temp file then rename.
     ///
     /// Staging and the rename share one lease so the pair cannot be split by a
@@ -302,7 +361,7 @@ impl FileSystemBlobStore {
     /// object is never observable as writable, and the file the rename replaces
     /// has its attribute cleared first on the platform that requires it.
     async fn atomic_write(&self, path: &Path, data: Bytes) -> Result<(), CasError> {
-        let tmp_path = path.with_extension("tmp");
+        let tmp_path = Self::staging_path(path);
         let final_path = path.to_path_buf();
         self.io_gate
             .run(move || {
@@ -575,7 +634,7 @@ impl BlobStore for FileSystemBlobStore {
         // take turns as well: two interleaved writers would each hash bytes the
         // other partly wrote.
         let _commit = self.lock_commit(&path).await;
-        let tmp_path = path.with_extension("tmp");
+        let tmp_path = Self::staging_path(&path);
 
         // Write to temp file in 64 KiB chunks while incrementally hashing.
         // Only creating the file needs a lease: the writes below go through
@@ -644,6 +703,13 @@ impl BlobStore for FileSystemBlobStore {
             self.verify_evaluator.record_verification(hash, mtime);
         }
         Ok(Bytes::from(data))
+    }
+
+    async fn present_encodings(&self, hash: &Hash) -> Result<PresentEncodings, CasError> {
+        Ok(PresentEncodings {
+            full: hash_to_path(&self.root, hash).is_file(),
+            delta: hash_to_delta_path(&self.root, hash).is_file(),
+        })
     }
 
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
@@ -1457,7 +1523,7 @@ mod tests {
         let data = Bytes::from_static(b"payload behind a wedged staging file");
         let hash = Hash::from_content(&data);
         let object_path = hash_to_path(dir.path(), &hash);
-        let staging_path = object_path.with_extension("tmp");
+        let staging_path = FileSystemBlobStore::staging_path(&object_path);
         std::fs::create_dir_all(object_path.parent().expect("hash path has a parent"))
             .expect("create fan-out");
         std::fs::write(&staging_path, b"interrupted commit").expect("plant staging file");
@@ -1486,7 +1552,7 @@ mod tests {
         let other_object = hash_to_path(dir.path(), &other_hash);
         std::fs::create_dir_all(other_object.parent().expect("hash path has a parent"))
             .expect("create fan-out");
-        let other_staging = other_object.with_extension("tmp");
+        let other_staging = FileSystemBlobStore::staging_path(&other_object);
         std::fs::write(&other_staging, b"interrupted commit").expect("plant reader staging file");
         std::fs::set_permissions(&other_staging, staged)
             .expect("make reader staging file read-only");

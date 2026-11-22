@@ -123,6 +123,15 @@ pub trait MetadataStore: Send + Sync {
     /// (full) rather than widened to any base.
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError>;
 
+    /// Rewrite every legacy snapshot this store can see into the current
+    /// format, then delete the legacy file. Returns how many were migrated.
+    ///
+    /// Defaulted to a no-op because only a store with an on-disk snapshot
+    /// format has anything to migrate; `FileSystemMetadataStore` overrides it.
+    async fn migrate_legacy_snapshots(&self) -> Result<usize, CasError> {
+        Ok(0)
+    }
+
     /// List hashes that depend on `hash` as their delta base.
     ///
     /// Default O(N) implementation iterates all entries inline. In-memory

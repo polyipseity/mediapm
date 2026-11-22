@@ -21,6 +21,19 @@ use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
+/// Which physical forms a hash has on disk.
+///
+/// The index records intent; this records fact. Both are needed: a both-forms
+/// state is legitimate while the optimizer is mid-transition and must not be
+/// collapsed during it, so the collapse decides from the two together.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PresentEncodings {
+    /// A full payload file exists.
+    pub full: bool,
+    /// A `.diff` payload file exists.
+    pub delta: bool,
+}
+
 /// Content-addressed blob storage.
 ///
 /// Provides read/write/delete for data indexed by content hash.
@@ -63,6 +76,21 @@ pub trait BlobStore: Send + Sync {
         // Default: ignore (in-memory and simple impls).
         let _ = (hash, encoding);
         Ok(())
+    }
+
+    /// Which physical forms `hash` has.
+    ///
+    /// The default answers "full or nothing", which is what a store that keeps
+    /// one entry per hash can honestly say: the in-memory store ignores the
+    /// `.diff` distinction, so it has no second form to report. The file system
+    /// separates the forms and overrides this, because for that store the two
+    /// files are the fact.
+    async fn present_encodings(&self, hash: &Hash) -> Result<PresentEncodings, CasError> {
+        match self.read(hash).await {
+            Ok(_) => Ok(PresentEncodings { full: true, delta: false }),
+            Err(CasError::NotFound(_)) => Ok(PresentEncodings::default()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Return the on-disk path for `hash`'s full blob, if this is a

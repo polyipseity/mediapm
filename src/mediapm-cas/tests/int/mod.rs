@@ -1,4 +1,5 @@
 mod api_workflows;
+mod blob_forms;
 
 /// The binary's own entry point reaches its subcommands (cli-only: the test
 /// spawns the binary, which Cargo builds only when the `cli` feature is on).

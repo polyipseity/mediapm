@@ -145,6 +145,13 @@ impl FileSystemCas {
             // run→sleep lifecycle ensures first real maintenance runs
             // promptly after this window.
             tokio::time::sleep(Duration::from_millis(500)).await;
+            // Sweep legacy metadata snapshots before the first maintenance
+            // pass: a store last written by a build that used the old format
+            // keeps those files until something rewrites them, and until then
+            // both formats coexist on disk.
+            if let Err(error) = store_clone.metadata_store().migrate_legacy_snapshots().await {
+                tracing::warn!(error = %error, "legacy metadata snapshot sweep failed");
+            }
             loop {
                 if cancelled_clone.load(Ordering::Relaxed) {
                     break;
@@ -186,6 +193,21 @@ impl FileSystemCas {
     pub async fn close(self) {
         self.bg_guard.shutdown().await;
         self.io_gate.close();
+    }
+
+    /// Rewrite every directory holding a legacy metadata snapshot to the
+    /// current format. Returns how many were migrated.
+    ///
+    /// Public because the sweep is also a one-shot maintenance action: `open`
+    /// runs it in the background, and a test or a command can ask for it
+    /// deterministically instead of waiting for an interval.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to the metadata store, which reports an unreadable snapshot
+    /// rather than skipping it.
+    pub async fn migrate_legacy_metadata_snapshots(&self) -> Result<usize, CasError> {
+        self.metadata_store().migrate_legacy_snapshots().await
     }
 
     /// Open or create a file-system CAS store at `dir` with the given

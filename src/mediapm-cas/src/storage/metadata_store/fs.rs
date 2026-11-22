@@ -16,7 +16,6 @@ use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::api::ObjectEncoding;
-use crate::delta::object::StoredObject;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -166,39 +165,84 @@ impl FileSystemMetadataStore {
         Ok(())
     }
 
-    /// Builds a metadata entry from a persisted length by asking the tree which
-    /// physical form holds the payload.
+    /// Attach an encoding to every persisted length by asking the tree.
     ///
-    /// Interim bridge only. The snapshot no longer persists an encoding, so a
-    /// load has to read it from disk, and this is the smallest honest version of
-    /// that read: a full file wins, a `.diff`-only object supplies its base hash
-    /// from the envelope header, and an entry whose bytes are gone is dropped
-    /// instead of resurrected as an object nothing can read.
-    ///
-    /// A later task folds this into the full derived-load path (one helper that
-    /// serves every snapshot format, alongside the legacy-snapshot sweep), so
-    /// this exists to keep the crate compiling against the new snapshot model
-    /// rather than to be the final shape.
-    async fn entry_for_persisted_length(
+    /// A snapshot records lengths only, because the physical form is a property
+    /// of the tree. Deriving it here is what keeps the index and the bytes from
+    /// disagreeing, and an entry whose bytes are gone is dropped rather than
+    /// resurrected as an object nothing can read.
+    async fn derive_entries(
         &self,
-        hash: Hash,
-        len: u64,
-    ) -> Result<Option<MetadataEntry>, CasError> {
-        if self.blob_store.read(&hash).await.is_ok() {
-            return Ok(Some(MetadataEntry { len, encoding: ObjectEncoding::Full }));
+        lengths: BTreeMap<Hash, u64>,
+    ) -> Result<BTreeMap<Hash, MetadataEntry>, CasError> {
+        let mut derived = BTreeMap::new();
+        for (hash, len) in lengths {
+            let present = self.blob_store.present_encodings(&hash).await?;
+            let encoding = if present.full {
+                // Full wins: a both-forms state is a transition in flight and
+                // the full form is authoritative while it lasts.
+                ObjectEncoding::Full
+            } else if present.delta {
+                // A `.diff` with no full payload is the only copy, so an
+                // envelope that does not decode is a corrupt object naming this
+                // hash rather than something to skip: it is the last copy, not a
+                // redundant one.
+                let envelope = self.blob_store.read_delta(&hash).await?;
+                let stored = crate::delta::object::StoredObject::decode_delta(&envelope).map_err(
+                    |error| CasError::CorruptObject {
+                        hash: Some(hash),
+                        details: format!("delta-only object does not decode: {error}"),
+                    },
+                )?;
+                ObjectEncoding::Delta { base_hash: stored.state().base_hash }
+            } else {
+                continue;
+            };
+            derived.insert(hash, MetadataEntry { len, encoding });
         }
-        let Ok(envelope) = self.blob_store.read_delta(&hash).await else {
-            return Ok(None);
-        };
-        let stored =
-            StoredObject::decode_delta(&envelope).map_err(|error| CasError::CorruptObject {
-                hash: Some(hash),
-                details: format!("delta-only object does not decode: {error}"),
-            })?;
-        Ok(Some(MetadataEntry {
-            len,
-            encoding: ObjectEncoding::Delta { base_hash: stored.state().base_hash },
-        }))
+        Ok(derived)
+    }
+
+    /// Rewrite every directory holding a legacy snapshot into the current
+    /// format, then delete the legacy file.
+    ///
+    /// Eager but not on the open path: rewriting every directory during `open`
+    /// would make opening proportional to the store, which is what the deferred
+    /// WAL consumer exists to avoid. Each directory is rewritten under its own
+    /// aux lock, so a concurrent flush of that directory either sees the legacy
+    /// file (and rewrites it) or sees the current one.
+    async fn migrate_legacy_snapshots(&self) -> Result<usize, CasError> {
+        let mut migrated = 0usize;
+        for name in METADATA_FORMAT_NAMES {
+            if *name == LATEST_METADATA_FORMAT {
+                continue;
+            }
+            for (directory, bytes) in self.blob_store.all_aux_with_dir(name).await? {
+                let _dir = self.blob_store.lock_aux_dir_at(directory.clone()).await;
+                let (constraints, lengths) = versions::load_named_from_bytes(name, &bytes)?;
+                let entries = self.derive_entries(lengths).await?;
+                let lengths: BTreeMap<Hash, u64> =
+                    entries.iter().map(|(hash, entry)| (*hash, entry.len)).collect();
+                let serialized = versions::save_to_vec(&constraints, &lengths)?;
+                // Write to the directory the legacy file was found in, even if
+                // the snapshot contains cross-directory facts (a malformed but
+                // possible legacy state). The directory-derived representative
+                // maps to the same fan-out directory.
+                let cd = directory.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+                let ab = directory
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                let representative = Self::prefix_hash(&format!("{ab}{cd}"))?;
+                self.blob_store
+                    .write_aux(&representative, LATEST_METADATA_FORMAT, Bytes::from(serialized))
+                    .await?;
+                self.blob_store.delete_aux(&representative, name).await?;
+                migrated += 1;
+            }
+        }
+        Ok(migrated)
     }
 
     /// Builds a hash whose hex representation starts with `prefix`.
@@ -303,6 +347,10 @@ impl MetadataStore for FileSystemMetadataStore {
         Ok(pruned)
     }
 
+    async fn migrate_legacy_snapshots(&self) -> Result<usize, CasError> {
+        Self::migrate_legacy_snapshots(self).await
+    }
+
     /// # Ordering: the journal is newer than a snapshot
     ///
     /// A snapshot is a per-directory capture of an older state, and the journal
@@ -317,27 +365,31 @@ impl MetadataStore for FileSystemMetadataStore {
     /// Both properties hold that way: a fact the journal never mentions survives
     /// a trim, and a fact the journal removed stays removed.
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
-        // Overlay per-directory snapshots from all known format names.
-        // This transparently handles both current and legacy format files.
-        for name in METADATA_FORMAT_NAMES {
-            for bytes in self.blob_store.all_aux(name).await? {
+        // Overlay per-directory snapshots from every known format name.
+        //
+        // Applied oldest-first, newest last, because the names are listed
+        // newest-first for readers that want the current format: applying them
+        // in list order would let a stale legacy snapshot overwrite a newer
+        // current one held in the same directory. Both formats coexist while
+        // the sweep catches up, so this order is what keeps a legacy file from
+        // being a regression.
+        for name in METADATA_FORMAT_NAMES.iter().rev() {
+            for (_directory, bytes) in self.blob_store.all_aux_with_dir(name).await? {
                 let (persisted_constraints, persisted_lengths) =
                     versions::load_named_from_bytes(name, &bytes)?;
+                let persisted_entries = self.derive_entries(persisted_lengths).await?;
                 for (target, bases) in persisted_constraints {
                     self.inner.set_constraint(target, bases).await?;
                 }
-                for (hash, len) in persisted_lengths {
-                    if let Some(entry) = self.entry_for_persisted_length(hash, len).await? {
-                        self.inner.put(hash, entry).await?;
-                    }
+                for (hash, entry) in persisted_entries {
+                    self.inner.put(hash, entry).await?;
                 }
             }
         }
 
-        // Replay the journal last, so an operation recorded since a snapshot was
-        // captured wins over that snapshot.
+        // Replay the journal last, so an operation recorded since a snapshot
+        // was captured wins over that snapshot.
         self.inner.rebuild_from_wal(wal).await?;
-
         Ok(())
     }
 }
@@ -683,6 +735,133 @@ mod tests {
             reopened.get_constraint(&hash).await.unwrap(),
             BTreeSet::new(),
             "the constraint is not resurrected"
+        );
+    }
+
+    /// A directory holding a v1 snapshot must be rewritten to v2 and the v1
+    /// file deleted, with every fact intact across a reopen.
+    ///
+    /// The legacy bytes come from `versions::legacy_snapshot_bytes_for_tests`,
+    /// not from a fixture: hand-written bytes would drift from the format the
+    /// previous build actually wrote, which is the only format this migration
+    /// can ever be asked to read.
+    #[tokio::test]
+    async fn a_legacy_snapshot_is_migrated_and_deleted() {
+        let (blob, dir) = test_blob_store().await;
+        let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
+
+        let target = Hash::from_content(b"migration-target");
+        let base = Hash::from_content(b"migration-base");
+        let entry = Hash::from_content(b"migration-entry");
+        index.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+        blob.write(entry, ObjectEncoding::Full, Bytes::from_static(b"entry-bytes")).await.unwrap();
+        index.put(entry, MetadataEntry { len: 17, encoding: ObjectEncoding::Full }).await.unwrap();
+
+        // What a store written by the previous build holds on disk, in the
+        // directory the entry lives in.
+        let legacy = versions::legacy_snapshot_bytes_for_tests(
+            &BTreeMap::from([(target, BTreeSet::from([base]))]),
+            &BTreeMap::from([(entry, (17u64, ObjectEncoding::Full))]),
+        );
+        blob.write_aux(&entry, "metadata-v1.json", Bytes::from(legacy)).await.unwrap();
+
+        let migrated = index.migrate_legacy_snapshots().await.expect("the sweep runs");
+        assert_eq!(migrated, 1, "one directory held a legacy snapshot");
+        assert!(
+            blob.read_aux(&entry, "metadata-v1.json").await.is_err(),
+            "the sweep must delete the legacy snapshot it migrated"
+        );
+        assert!(
+            blob.read_aux(&entry, "metadata-v2.json").await.is_ok(),
+            "the sweep must leave a current-format snapshot behind"
+        );
+
+        // A restart is a new open of the same root, so the first handle goes.
+        drop(index);
+        drop(blob);
+        let reopened =
+            FileSystemMetadataStore::new(test_blob_store_at(dir.path().join("blobs")).await)
+                .expect("a reopened blob store backs a metadata store");
+        reopened.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
+        assert_eq!(
+            reopened.get_constraint(&target).await.unwrap(),
+            BTreeSet::from([base]),
+            "the migrated snapshot must carry the constraints forward"
+        );
+        assert_eq!(
+            reopened.get(&entry).await.unwrap().map(|entry| entry.len),
+            Some(17),
+            "the migrated snapshot must carry the entry lengths forward"
+        );
+    }
+
+    /// A store that is already current has nothing to migrate, and the sweep
+    /// must not rewrite a file it did not need to touch.
+    #[tokio::test]
+    async fn a_current_snapshot_is_not_rewritten() {
+        let (blob, _dir) = test_blob_store().await;
+        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
+        let target = Hash::from_content(b"current-target");
+        index.set_constraint(target, BTreeSet::from([Hash::from_content(b"b")])).await.unwrap();
+
+        assert_eq!(
+            index.migrate_legacy_snapshots().await.expect("the sweep runs"),
+            0,
+            "a store that is already current has nothing to migrate"
+        );
+    }
+
+    /// Encoding must be derived from the tree at load: a full file wins over a
+    /// `.diff`, a `.diff`-only object loads as a delta, and an entry whose
+    /// bytes are gone is dropped instead of resurrected as a phantom object.
+    #[tokio::test]
+    async fn load_derives_encoding_from_the_tree() {
+        let (blob, _dir) = test_blob_store().await;
+        let full = Hash::from_content(b"derived-full");
+        let delta = Hash::from_content(b"derived-delta");
+        let base = Hash::from_content(b"derived-base");
+        let ghost = Hash::from_content(b"derived-ghost");
+
+        blob.write(full, ObjectEncoding::Full, Bytes::from_static(b"full bytes")).await.unwrap();
+        let stored = crate::delta::object::StoredObject::delta(base, 11, b"delta bytes".to_vec());
+        blob.write(delta, ObjectEncoding::Delta { base_hash: base }, Bytes::from(stored.encode()))
+            .await
+            .unwrap();
+
+        // One snapshot naming all three, of which one hash has no bytes at all.
+        let index_file = serde_json::json!({
+            "constraints": {},
+            "entries": {
+                full.to_string(): 10u64,
+                delta.to_string(): 11u64,
+                ghost.to_string(): 5u64,
+            },
+        });
+        blob.write_aux(
+            &full,
+            "metadata-v2.json",
+            Bytes::from(serde_json::to_vec(&index_file).expect("serialize the snapshot")),
+        )
+        .await
+        .unwrap();
+
+        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
+        index.rebuild_from_wal(&InMemoryWal::new()).await.unwrap();
+
+        assert_eq!(
+            index.get(&full).await.unwrap(),
+            Some(MetadataEntry { len: 10, encoding: ObjectEncoding::Full }),
+            "a full file must load as Full"
+        );
+        assert_eq!(
+            index.get(&delta).await.unwrap(),
+            Some(MetadataEntry { len: 11, encoding: ObjectEncoding::Delta { base_hash: base } }),
+            "a .diff-only object must load as Delta with the header's base"
+        );
+        assert_eq!(
+            index.get(&ghost).await.unwrap(),
+            None,
+            "an entry whose bytes do not exist must be dropped, not resurrected"
         );
     }
 }
