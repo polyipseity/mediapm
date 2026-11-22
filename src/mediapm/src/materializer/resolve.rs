@@ -731,6 +731,10 @@ async fn derive_step_work_material(
 /// that agree on every required output. Several that disagree and satisfy none
 /// of the earlier authorities are an error, because choosing between them would
 /// guess.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "deployment-aware resolution adds one required context parameter; grouping would obscure the call flow"
+)]
 async fn resolve_step_output_hashes(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
@@ -2400,6 +2404,10 @@ mod tests {
     /// candidate slice is required to hold exactly one entry; candidacy requires
     /// `derived == *stored_key` against the unique keys of a `BTreeMap`, so at
     /// most one entry can ever match and only the zero case can fire.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "oracle test helper covers full derivation flow in one readable sequence"
+    )]
     async fn oracle_derive_demo_instance_keys(
         cas: &FileSystemCas,
         generated: &NickelDocument,
@@ -5148,6 +5156,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration-style regression test keeps setup and assertions together"
+    )]
     #[tokio::test]
     async fn relaxed_resolution_matches_versioned_yt_dlp_tool_call_id() {
         use mediapm_conductor::{

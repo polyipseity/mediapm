@@ -296,6 +296,19 @@ async fn a_durable_full_constraint_materializes_the_payload_before_returning() {
     );
 }
 
+/// The default is unchanged, so an ordinary constraint keeps the cost it has
+/// today: no extra fsyncs, and `{empty}` remains hard.
+#[tokio::test]
+async fn the_default_durability_is_no_extra_flags() {
+    assert_eq!(CasDurability::default(), CasDurability::NONE);
+    assert!(!CasDurability::default().contains(CasDurability::STORE));
+    assert!(!CasDurability::default().contains(CasDurability::METADATA));
+    assert_eq!(
+        CasDurability::STORE | CasDurability::METADATA,
+        CasDurability::STORE.with(CasDurability::METADATA)
+    );
+}
+
 /// A legacy `.diff` has no integrity field, so a verifying store could not check
 /// it. The first read must rewrite it in the current format, after which the
 /// store can verify it like any other object.

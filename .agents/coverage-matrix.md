@@ -1594,3 +1594,21 @@ Step instance identity is derived from the step's logical tool name and key mate
 | Optimizer is idempotent on an encoded target | `blob_forms.rs` `a_second_pass_over_a_delta_target_does_no_work` | [covered] |
 | A tool's runtime is derived from its spec | `tools/workflows/tests_definition.rs` `every_managed_tool_derives_one_runtime` | [covered] |
 | The live tool set comes from the document | `conductor_bridge/sync/live_tools.rs` `only_provisioned_tools_are_live` | [covered] |
+
+## Corrupt-object recording, durable constraints, and resolver truth (2026-11-22)
+
+| Item | Status | Test |
+| --- | --- | --- |
+| Snapshot v3 carries `delta_bases`, `lengths`, `corrupted` | [covered] | `metadata_store::versions` unit tests |
+| V1 and V2 snapshots still load into the v3 model | [covered] | `a_v2_snapshot_loads_into_the_v3_model`, `a_v1_snapshot_loads_into_the_current_model_without_its_encoding` |
+| Corruption is recorded, reported, and cleared | [covered] | `corrupt_objects` integration tests |
+| The corruption record survives a restart | [covered] | `the_corruption_record_survives_a_restart` |
+| `CasDurability` defaults to no extra syncs | [covered] | `blob_forms.rs` `the_default_durability_is_no_extra_flags` |
+| A durable full constraint materializes before returning | [covered] | `a_durable_full_constraint_materializes_the_payload_before_returning` |
+| Legacy delta envelopes are rewritten on first read | [covered] | `a_legacy_delta_envelope_is_rewritten_on_first_read` |
+| `get_to_writer` serves the sound form on a verifying store | [covered] | `get_to_writer_serves_the_sound_form_when_the_indexed_one_is_corrupt` |
+| `get_to_writer` streams without buffering when not verifying | [covered] | `get_to_writer_streams_directly_on_a_non_verifying_store` |
+| The CLI lists known-corrupt objects | [covered] | `corrupted_takes_no_arguments`, `cli_entry_point::corrupted_lists_recorded_objects` |
+| The newest deployment decides the active tool key | [covered] | `sync::tests_active_tool_spec` `the_deployment_record_beats_a_first_key_with_a_live_map` |
+| A document with no deployment record still resolves | [covered] | `sync::tests_active_tool_spec` `a_tool_with_no_deployment_record_falls_back_to_the_content_map` |
+| Every update path clears superseded content maps | [covered] | `tests_pruning`, `tests_skip_path` |

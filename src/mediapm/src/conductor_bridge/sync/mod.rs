@@ -854,7 +854,7 @@ fn apply_entry_outcome(
                     .or_insert_with(|| payload_free_tool_spec(&tool_id));
             }
             let live_key = if is_builtin_code {
-                active_spec_key(generated_doc, &deployments, &tool_id)
+                active_spec_key(generated_doc, deployments, &tool_id)
                     .unwrap_or_else(|| tool_id.clone())
             } else {
                 tool_id.clone()
@@ -2193,7 +2193,7 @@ fn stamp_payload_roots(
         let Ok(payload_root) = payload_dir.into_os_string().into_string() else {
             continue;
         };
-        let Some(spec_key) = active_spec_key(generated_doc, &deployments, conductor_tool_id) else {
+        let Some(spec_key) = active_spec_key(generated_doc, deployments, conductor_tool_id) else {
             continue;
         };
         // `live_keys` holds conductor tool ids (`{name}@{hash}`, or the bare

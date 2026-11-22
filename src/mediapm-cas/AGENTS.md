@@ -7,7 +7,7 @@
 - `Hash([u8; 32])` in `src/mediapm-cas/src/hash.rs`: BLAKE3-256 content address. `Hash::from_content` hashes raw bytes; `Hash::composite` hashes concatenated digests for ordered composite identity, giving domain separation from raw-content hashing. Ordering is lexicographic on bytes.
 - Empty-content sentinel: `Hash::empty()` is `blake3(b"")`. It is always present and indelible. `get`/`stat` answer empty content without backend lookup; `delete` is a no-op; constraints on empty are accepted but have no effect.
 - Wire/storage form is multihash (`0x1e` blake3, 32-byte digest) via `multihash`. Serde format is human-readable `blake3:<hex>`.
-- Filesystem object layout (`storage/blob_store/versions/v1.rs`): `<root>/v1/blake3/ab/cd/<remaining>` for full objects, `<remaining>.diff` for delta payloads. Directory fan-out keeps one per-directory index file, `metadata-v2.json`; it records payload lengths and constraints only, because which physical form an object has is a property of the tree.
+- Filesystem object layout (`storage/blob_store/versions/v1.rs`): `<root>/v1/blake3/ab/cd/<remaining>` for full objects, `<remaining>.diff` for delta payloads. Directory fan-out keeps one per-directory index file, `metadata-v3.json`, carrying `delta_bases`, `lengths`, and `corrupted`, with V1 and V2 snapshots readable through the oldest-first overlay. The index records payload lengths and constraints; which physical form an object has is a property of the tree.
 
 ## Public API
 
@@ -16,8 +16,8 @@ Source of truth: `src/mediapm-cas/src/api.rs`, `error.rs`, `hash.rs`.
 - `CasApi` (7 methods): `put`, `get`, `stat`, `delete`, `flush`, `put_stream`, `get_to_writer`. `get` defaults to buffering `get_to_writer`; `put_stream` defaults to buffering into `put`; stores may override both for streaming. No `exists()`; use `get`/`stat` to avoid TOCTOU.
 - Guarantees within one async task: write-then-read, delete-then-read, idempotent put/delete, crash survival after `Ok`. `flush()` materializes committed WAL entries for write-back backends and returns consumed entry count; write-through backends may return 0.
 - `CasError` (`error.rs`): `NotFound`, `InvalidArgument`, `Internal`, `Io`, `CorruptObject { hash, details }`, `TooLarge { hash, size, limit }`, `LockContention { path }`. `TooLarge` is returned when a delta chain exceeds the max depth; normal `get` resolves through `get_to_writer`.
-- `ConstraintApi`: `set_constraint`, `get_constraint`, `patch_constraint`. A constraint answers two concerns: which objects a target may be compressed against, and whether the target is stored full. A non-empty base set restricts the choice; an empty or absent set leaves it open; storing a target full is `set_constraint(target, {empty})`, not a separate marker. Constraint target must be held by the store; bases must be distinct and cannot include target.
-- `CasMaintenanceApi`: `run_maintenance_cycle() -> OptimizeReport`, `prune_constraints() -> PruneReport`, `list_hashes() -> Vec<Hash>`. `PruneReport` counts target removals and dead bases removed from live constraints separately.
+- `ConstraintApi`: `set_constraint`, `set_constraint_with`, `get_constraint`, `patch_constraint`. A constraint answers two concerns: which objects a target may be compressed against, and whether the target is stored full. A non-empty base set restricts the choice; an empty or absent set leaves it open; storing a target full is `set_constraint(target, {empty})`, not a separate marker. `set_constraint_with` takes `CasDurability`; `{empty}` is hard regardless, and `STORE`/`METADATA` add the fsyncs a caller may need before it can use the bytes. Constraint target must be held by the store; bases must be distinct and cannot include target.
+- `CasMaintenanceApi`: `run_maintenance_cycle() -> OptimizeReport`, `prune_constraints() -> PruneReport`, `list_hashes() -> Vec<Hash>`, `list_corrupted_objects() -> Vec<Hash>`. `OptimizeReport` reports `corrupted_objects`; `PruneReport` counts target removals and dead bases removed from live constraints separately. The `mediapm-cas corrupted` subcommand lists known corrupt objects.
 
 ## Backend and config types
 
@@ -38,7 +38,7 @@ Source of truth: `src/mediapm-cas/src/config.rs`, `defaults.rs`, `storage/in_mem
 
 ## Data flow
 
-`put` hashes content, then writes inline WAL `Put` for small objects or materializes blob and appends `PutLarge` for large objects. `delete` appends a WAL tombstone; physical removal is deferred. The background engine consumes WAL, materializes blob+metadata, advances checkpoint, trims WAL, and runs maintenance, whose phases are: delta optimization, blob-form collapse, constraint pruning, and on the first iteration a legacy snapshot sweep. Reads go metadata -> blob -> WAL fallback through `ComposedReadView`, reconstructing delta chains transparently. `flush` forces WAL consumption for write-back stores.
+`put` hashes content, then writes inline WAL `Put` for small objects or materializes blob and appends `PutLarge` for large objects. `delete` appends a WAL tombstone; physical removal is deferred. The background engine consumes WAL, materializes blob+metadata, advances checkpoint, trims WAL, and runs maintenance, whose phases are: delta optimization, blob-form collapse, constraint pruning, and on the first iteration a legacy snapshot sweep. The collapse pass records `corrupted` hashes (a set, no timestamp) when no form verifies and clears them when one does again; `OptimizeReport.corrupted_objects` and `mediapm-cas corrupted` surface that record. Reads go metadata -> blob -> WAL fallback through `ComposedReadView`, reconstructing delta chains transparently. `flush` forces WAL consumption for write-back stores.
 
 ## Key invariants
 
@@ -49,7 +49,7 @@ Source of truth: `src/mediapm-cas/src/config.rs`, `defaults.rs`, `storage/in_mem
 - **Delta chain integrity**: delta reconstruction walks metadata/blob chain, rejects missing bases as `CorruptObject`, prevents cycles, and enforces `MAX_DELTA_CHAIN_DEPTH` (5). Objects over `DELTA_THRESHOLD` are not delta-compressed.
 - **Object size limits**: `WAL_INLINE_LIMIT` selects inline WAL vs external `PutLarge`; `DELTA_THRESHOLD` caps delta eligibility; `TooLarge` reports delta-chain depth/size limit failures.
 - **Constraint strength**: `{Hash::empty()}` is hard and is enforced inside `set_constraint`, which materializes the full payload before returning. Every other base set is soft and converges at a maintenance pass. An absent or empty set leaves base choice open.
-- **Codec versioning**: delta envelope writers emit current V3; legacy V1/V2 are read-only. New formats live in versioned modules and keep boundary guards.
+- **Codec versioning**: delta envelope writers emit current V3; legacy V1/V2 are readable. A legacy V1/V2 delta envelope read by a verifying store is re-encoded in the current format on first read. New formats live in versioned modules and keep boundary guards.
 - **Delete semantics, no dangling deltas**: deleting a base re-materializes dependents as full before physical base removal. Delete does not cascade to unrelated hashes.
 
 ## Wrapper pattern and integration

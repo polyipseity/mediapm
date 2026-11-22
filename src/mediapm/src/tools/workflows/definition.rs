@@ -57,18 +57,9 @@ impl ToolDefinition {
         self.spec
     }
 
-    /// Take the spec and the runtime derived from it.
-    ///
-    /// The only way to obtain both, so the pair a caller receives cannot carry
-    /// a runtime the spec does not.
+    /// Take the spec and the runtime derived from it, for tests that need both halves.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "paired accessor exercised by tests; non-test call sites currently take only the spec"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn into_parts(self) -> (ToolSpec, ToolRuntime) {
         let runtime = self.spec.runtime.clone();
         (self.spec, runtime)

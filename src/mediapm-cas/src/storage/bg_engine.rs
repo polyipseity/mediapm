@@ -115,7 +115,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     ///
     /// The lock is a leaf guard: it must not be held across any call that
     /// re-enters this method, because [`tokio::sync::Mutex`] is not
-    /// reentrant. [`run_maintenance`](Self::run_maintenance) and
+    /// reentrant. `run_maintenance` and
     /// [`drain_all`](Self::drain_all) call this method and therefore must
     /// acquire the lock through it only, never directly.
     ///
@@ -833,7 +833,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// # Errors
     ///
     /// Delegates to [`run_wal_consumer`](Self::run_wal_consumer) and
-    /// [`run_maintenance`](Self::run_maintenance).
+    /// `run_maintenance`.
     pub async fn drain_all(&self) -> Result<(), CasError> {
         self.run_wal_consumer().await?;
         self.run_maintenance().await?;
