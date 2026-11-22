@@ -359,14 +359,23 @@ impl FileSystemBlobStore {
     ///
     /// The staged file is made read-only before it is renamed, so a committed
     /// object is never observable as writable, and the file the rename replaces
-    /// has its attribute cleared first on the platform that requires it.
-    async fn atomic_write(&self, path: &Path, data: Bytes) -> Result<(), CasError> {
+    /// has its attribute cleared first on the platform that requires it. With
+    /// `sync`, the file and its parent directory are fsynced before the call
+    /// returns, so a crash after the rename has the bytes on disk rather than
+    /// only in the page cache.
+    async fn atomic_write(&self, path: &Path, data: Bytes, sync: bool) -> Result<(), CasError> {
         let tmp_path = Self::staging_path(path);
         let final_path = path.to_path_buf();
         self.io_gate
             .run(move || {
                 Self::clear_staging_read_only(&tmp_path)?;
-                std::fs::write(&tmp_path, &data)?;
+                {
+                    let mut file = std::fs::File::create(&tmp_path)?;
+                    std::io::Write::write_all(&mut file, &data)?;
+                    if sync {
+                        file.sync_all()?;
+                    }
+                }
                 let staged = std::fs::metadata(&tmp_path)?.permissions();
                 std::fs::set_permissions(&tmp_path, without_write_bits(staged))?;
                 match std::fs::metadata(&final_path) {
@@ -379,7 +388,14 @@ impl FileSystemBlobStore {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
-                std::fs::rename(&tmp_path, &final_path)
+                std::fs::rename(&tmp_path, &final_path)?;
+                if sync
+                    && let Some(parent) = final_path.parent()
+                    && let Ok(directory) = std::fs::File::open(parent)
+                {
+                    directory.sync_all()?;
+                }
+                Ok(())
             })
             .await
             .map_err(CasError::Io)
@@ -512,6 +528,59 @@ impl FileSystemBlobStore {
         }
         Ok(())
     }
+
+    async fn write_with_sync(
+        &self,
+        hash: Hash,
+        encoding: ObjectEncoding,
+        data: Bytes,
+        sync: bool,
+    ) -> Result<(), CasError> {
+        self.ensure_parent(&hash).await?;
+        let path = match encoding {
+            ObjectEncoding::Full => hash_to_path(&self.root, &hash),
+            ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
+        };
+        let _commit = self.lock_commit(&path).await;
+        let already_materialized = matches!(encoding, ObjectEncoding::Full)
+            && fs::metadata(&path).await.is_ok_and(|meta| meta.is_file());
+        if already_materialized {
+            Self::enforce_read_only(&path).await?;
+            if sync {
+                let file = fs::File::open(&path).await.map_err(CasError::Io)?;
+                file.sync_all().await.map_err(CasError::Io)?;
+            }
+        } else {
+            self.atomic_write(&path, data, sync).await?;
+        }
+        if let Ok(meta) = fs::metadata(&path).await {
+            self.verify_evaluator.record_verification(&hash, meta.modified().ok());
+        }
+        Ok(())
+    }
+
+    async fn write_aux_with_sync(
+        &self,
+        hash: &Hash,
+        name: &str,
+        data: Bytes,
+        sync: bool,
+    ) -> Result<(), CasError> {
+        if name.contains('/') || name.contains("..") {
+            return Err(CasError::InvalidArgument(format!(
+                "aux name must not contain '/' or '..': {name:?}"
+            )));
+        }
+        let path = self.aux_path(hash, name);
+        if let Some(parent) = path.parent().map(Path::to_path_buf) {
+            self.io_gate
+                .run(move || std::fs::create_dir_all(&parent))
+                .await
+                .map_err(CasError::Io)?;
+        }
+        let _commit = self.lock_commit(&path).await;
+        self.atomic_write(&path, data, sync).await
+    }
 }
 
 #[async_trait]
@@ -524,45 +593,16 @@ impl BlobStore for FileSystemBlobStore {
         encoding: ObjectEncoding,
         data: Bytes,
     ) -> Result<(), CasError> {
-        self.ensure_parent(&hash).await?;
-        let path = match encoding {
-            ObjectEncoding::Full => hash_to_path(&self.root, &hash),
-            ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
-        };
-        // Two commits of one target share its staging name, so they take turns.
-        let _commit = self.lock_commit(&path).await;
-        // A full-encoding object is immutable once it exists: the path is
-        // derived from the hash, so an object already sitting there holds
-        // exactly these bytes. Rewriting it would not repair anything — the
-        // write-tmp-then-rename commit installs a NEW inode, silently
-        // detaching every hardlink already materialized from the old one
-        // (the hierarchy materializer hardlinks outputs straight from this
-        // path). The WAL consumer re-applies Put entries that a materializer
-        // may already have materialized, so an unguarded rewrite here is what
-        // breaks those links.
-        //
-        // Delta envelopes are deliberately excluded: they are a derived
-        // encoding the optimizer may legitimately re-encode against a
-        // different base, and nothing hardlinks them.
-        let already_materialized = matches!(encoding, ObjectEncoding::Full)
-            && fs::metadata(&path).await.is_ok_and(|meta| meta.is_file());
-        if already_materialized {
-            // An object written by a build that did not set the attribute is
-            // writable. Its bytes are already correct, so only the mode
-            // changes: rewriting them would detach the hardlinks made from it.
-            Self::enforce_read_only(&path).await?;
-        } else {
-            self.atomic_write(&path, data.clone()).await?;
-        }
-        // Seed mtime for verify-on-read tracking. Runs on the skip path too:
-        // the object is present and its mtime is what the verify-on-read
-        // strategies compare against, and leaving it unrecorded would make a
-        // never-rewritten object look unverified and trigger a re-verify on
-        // every read.
-        if let Ok(meta) = fs::metadata(&path).await {
-            self.verify_evaluator.record_verification(&hash, meta.modified().ok());
-        }
-        Ok(())
+        self.write_with_sync(hash, encoding, data, false).await
+    }
+
+    async fn write_syncing(
+        &self,
+        hash: Hash,
+        encoding: ObjectEncoding,
+        data: Bytes,
+    ) -> Result<(), CasError> {
+        self.write_with_sync(hash, encoding, data, true).await
     }
 
     async fn read(&self, hash: &Hash) -> Result<Bytes, CasError> {
@@ -818,22 +858,16 @@ impl BlobStore for FileSystemBlobStore {
     }
 
     async fn write_aux(&self, hash: &Hash, name: &str, data: Bytes) -> Result<(), CasError> {
-        if name.contains('/') || name.contains("..") {
-            return Err(CasError::InvalidArgument(format!(
-                "aux name must not contain '/' or '..': {name:?}"
-            )));
-        }
-        let path = self.aux_path(hash, name);
-        if let Some(parent) = path.parent().map(Path::to_path_buf) {
-            self.io_gate
-                .run(move || std::fs::create_dir_all(&parent))
-                .await
-                .map_err(CasError::Io)?;
-        }
-        // Every hash in one fan-out directory writes the same snapshot file, so
-        // commits of it take turns rather than racing on one staging name.
-        let _commit = self.lock_commit(&path).await;
-        self.atomic_write(&path, data).await
+        self.write_aux_with_sync(hash, name, data, false).await
+    }
+
+    async fn write_aux_syncing(
+        &self,
+        hash: &Hash,
+        name: &str,
+        data: Bytes,
+    ) -> Result<(), CasError> {
+        self.write_aux_with_sync(hash, name, data, true).await
     }
 
     async fn read_aux(&self, hash: &Hash, name: &str) -> Result<Bytes, CasError> {

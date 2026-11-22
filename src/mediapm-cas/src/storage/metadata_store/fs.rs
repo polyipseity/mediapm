@@ -101,7 +101,7 @@ impl FileSystemMetadataStore {
     /// store, and the divergent fact sets this would otherwise order cannot
     /// exist. Clones of one metadata store share the index the snapshot is
     /// taken from, so they hold one fact set between them.
-    async fn flush_dir(&self, hash: &Hash) -> Result<(), CasError> {
+    async fn flush_dir(&self, hash: &Hash, sync: bool) -> Result<(), CasError> {
         let _dir = self.blob_store.lock_aux_dir(hash).await;
         let prefix = &hash.to_hex()[..4];
 
@@ -142,7 +142,13 @@ impl FileSystemMetadataStore {
             }
         } else {
             let json = versions::save_to_vec(&snapshot)?;
-            self.blob_store.write_aux(hash, LATEST_METADATA_FORMAT, Bytes::from(json)).await?;
+            if sync {
+                self.blob_store
+                    .write_aux_syncing(hash, LATEST_METADATA_FORMAT, Bytes::from(json))
+                    .await?;
+            } else {
+                self.blob_store.write_aux(hash, LATEST_METADATA_FORMAT, Bytes::from(json)).await?;
+            }
             // Clean up any legacy format files in this directory.
             for name in METADATA_FORMAT_NAMES {
                 if *name != LATEST_METADATA_FORMAT {
@@ -169,7 +175,7 @@ impl FileSystemMetadataStore {
     async fn flush_prefixes(&self, prefixes: &BTreeSet<String>) -> Result<(), CasError> {
         for prefix in prefixes {
             let representative = Self::prefix_hash(prefix)?;
-            self.flush_dir(&representative).await?;
+            self.flush_dir(&representative, false).await?;
         }
         Ok(())
     }
@@ -295,7 +301,7 @@ impl MetadataStore for FileSystemMetadataStore {
 
     async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError> {
         self.inner.put(hash, entry).await?;
-        self.flush_dir(&hash).await
+        self.flush_dir(&hash, false).await
     }
 
     async fn get(&self, hash: &Hash) -> Result<Option<MetadataEntry>, CasError> {
@@ -304,7 +310,7 @@ impl MetadataStore for FileSystemMetadataStore {
 
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
         self.inner.delete(hash).await?;
-        self.flush_dir(hash).await
+        self.flush_dir(hash, false).await
     }
 
     async fn list_dependents(&self, hash: &Hash) -> Result<Vec<Hash>, CasError> {
@@ -325,7 +331,7 @@ impl MetadataStore for FileSystemMetadataStore {
 
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.inner.set_constraint(target, bases).await?;
-        self.flush_dir(&target).await
+        self.flush_dir(&target, false).await
     }
 
     async fn get_constraint(&self, target: &Hash) -> Result<BTreeSet<Hash>, CasError> {
@@ -366,12 +372,16 @@ impl MetadataStore for FileSystemMetadataStore {
 
     async fn mark_corrupted(&self, hash: Hash) -> Result<(), CasError> {
         self.inner.mark_corrupted(hash).await?;
-        self.flush_dir(&hash).await
+        self.flush_dir(&hash, false).await
     }
 
     async fn clear_corrupted(&self, hash: &Hash) -> Result<(), CasError> {
         self.inner.clear_corrupted(hash).await?;
-        self.flush_dir(hash).await
+        self.flush_dir(hash, false).await
+    }
+
+    async fn sync_hash(&self, hash: &Hash) -> Result<(), CasError> {
+        self.flush_dir(hash, true).await
     }
 
     async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
@@ -685,7 +695,7 @@ mod tests {
         // `set_constraint` names the same directory, so a test that used it
         // would be measuring the seeding rather than the prune.
         index.inner.set_constraint(ghost, BTreeSet::from([base])).await.unwrap();
-        index.flush_dir(&ghost).await.unwrap();
+        index.flush_dir(&ghost, false).await.unwrap();
         assert!(
             blob.read_aux(&ghost, LATEST_METADATA_FORMAT).await.is_ok(),
             "the constraint file must exist before the prune",

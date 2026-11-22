@@ -141,6 +141,49 @@ pub trait CasApi: Send + Sync {
     ) -> Result<(), CasError>;
 }
 
+/// How durable a constraint's side effects must be when the call returns.
+///
+/// A hard constraint can force the store to change a payload file (today only a
+/// promotion to full), and every constraint changes the index. Those are
+/// independent facts, so they are independent flags rather than one
+/// "be durable" switch.
+///
+/// A hand-rolled byte newtype rather than a flags crate: the workspace
+/// deliberately carries no `bitflags` dependency, and two flags do not warrant
+/// one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CasDurability(u8);
+
+impl CasDurability {
+    /// Neither the payload files nor the index are synced. The constraint is
+    /// journaled, which is what survives a process crash.
+    pub const NONE: Self = Self(0);
+    /// Sync every payload file the call changes, before returning.
+    pub const STORE: Self = Self(1 << 0);
+    /// Sync the metadata snapshot the call changes, before returning.
+    pub const METADATA: Self = Self(1 << 1);
+
+    /// Whether every flag in `other` is set in `self`.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The union of two durability requests.
+    #[must_use]
+    pub const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl std::ops::BitOr for CasDurability {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        self.with(other)
+    }
+}
+
 /// Manages compression-hint constraints (target to base hashes).
 ///
 /// A constraint answers two independent questions: which objects a target may be
@@ -150,6 +193,23 @@ pub trait CasApi: Send + Sync {
 /// `set_constraint(target, {empty})`, not a marker of its own.
 #[async_trait]
 pub trait ConstraintApi: Send + Sync {
+    /// Record a constraint, and state how durable its side effects must be.
+    ///
+    /// Identical to [`Self::set_constraint`] except for [`CasDurability`]: a
+    /// caller that needs the bytes on disk when this returns asks for
+    /// `STORE`, and one that needs the index entry too asks for
+    /// `STORE | METADATA`.
+    ///
+    /// # Errors
+    ///
+    /// The same preconditions as [`Self::set_constraint`].
+    async fn set_constraint_with(
+        &self,
+        target: Hash,
+        bases: BTreeSet<Hash>,
+        durability: CasDurability,
+    ) -> Result<(), CasError>;
+
     /// Record that `target` may compress well against `bases`.
     ///
     /// # Errors
@@ -163,7 +223,9 @@ pub trait ConstraintApi: Send + Sync {
     /// maintenance pass.
     ///
     /// `bases` must be distinct and must not contain `target` itself.
-    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
+    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
+        self.set_constraint_with(target, bases, CasDurability::default()).await
+    }
 
     /// Retrieve the bases recorded for `target`. Returns an empty set when
     /// no constraint exists (no `Option` wrapper).

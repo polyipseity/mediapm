@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use bytes::Bytes;
 
 use mediapm_cas::Hash;
-use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ObjectEncoding};
+use mediapm_cas::api::{CasApi, CasDurability, CasMaintenanceApi, ConstraintApi, ObjectEncoding};
 
 use crate::common;
 
@@ -257,4 +257,55 @@ async fn a_corrupt_delta_payload_is_served_from_the_sound_full() {
         "the collapse must keep the form that reads and record it"
     );
     assert!(!delta.is_file(), "the corrupt delta payload must not survive the collapse");
+}
+
+/// The capture path opts into durability, so the promotion it forces must be
+/// visible on disk when the call returns, not at the next maintenance pass.
+///
+/// The assertion is that the full file exists immediately. A store that only
+/// journaled the promotion would need a maintenance cycle first, and a caller
+/// that hardlinks straight after capture would get `NotFound`.
+#[tokio::test]
+async fn a_durable_full_constraint_materializes_the_payload_before_returning() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(common::similar(b'I', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(common::similar(b'I', b"REPLACED"))).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(
+        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
+        "the setup requires a delta-encoded target"
+    );
+
+    cas.set_constraint_with(
+        target,
+        BTreeSet::from([Hash::empty()]),
+        CasDurability::STORE | CasDurability::METADATA,
+    )
+    .await
+    .unwrap();
+
+    let (full, delta) = common::form_paths(&cas, target);
+    assert!(full.is_file(), "the durable constraint must leave the full payload on disk");
+    assert!(!delta.is_file(), "the promoted-from delta must not survive");
+    assert_eq!(
+        cas.stat(target).await.unwrap().encoding,
+        ObjectEncoding::Full,
+        "the index must name the form the tree now holds"
+    );
+}
+
+/// The default is unchanged, so an ordinary constraint keeps the cost it has
+/// today: no fsync, and the promotion is still immediate because `{empty}` is
+/// hard.
+#[tokio::test]
+async fn the_default_durability_is_no_extra_flags() {
+    assert_eq!(CasDurability::default(), CasDurability::NONE);
+    assert!(!CasDurability::default().contains(CasDurability::STORE));
+    assert!(!CasDurability::default().contains(CasDurability::METADATA));
+    assert_eq!(
+        CasDurability::STORE | CasDurability::METADATA,
+        CasDurability::STORE.with(CasDurability::METADATA)
+    );
 }

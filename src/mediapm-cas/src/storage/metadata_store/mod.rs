@@ -165,6 +165,14 @@ pub trait MetadataStore: Send + Sync {
         Ok(())
     }
 
+    /// Sync the metadata snapshot that records `hash` to durable storage.
+    ///
+    /// Defaulted to a no-op: an in-memory store has no snapshot file to sync.
+    async fn sync_hash(&self, hash: &Hash) -> Result<(), CasError> {
+        let _ = hash;
+        Ok(())
+    }
+
     /// List hashes that depend on `hash` as their delta base.
     ///
     /// Default O(N) implementation iterates all entries inline. In-memory

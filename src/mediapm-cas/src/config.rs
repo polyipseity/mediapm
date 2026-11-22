@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 use std::ops::Deref;
 
 use crate::api::{
-    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectMeta, OptimizeReport,
-    PruneReport,
+    CasApi, CasDurability, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectMeta,
+    OptimizeReport, PruneReport,
 };
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -217,8 +217,13 @@ impl CasMaintenanceApi for ConfiguredCas {
 
 #[async_trait]
 impl ConstraintApi for ConfiguredCas {
-    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
-        forward!(self.set_constraint(target, bases).await)
+    async fn set_constraint_with(
+        &self,
+        target: Hash,
+        bases: BTreeSet<Hash>,
+        durability: CasDurability,
+    ) -> Result<(), CasError> {
+        forward!(self.set_constraint_with(target, bases, durability).await)
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {

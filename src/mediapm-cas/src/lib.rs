@@ -48,8 +48,8 @@ pub mod cli;
 
 // Re-export the most important types at crate root for convenience.
 pub use api::{
-    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding, ObjectMeta,
-    OptimizeReport, PruneReport, VerifyTriggerStrategy,
+    CasApi, CasDurability, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding,
+    ObjectMeta, OptimizeReport, PruneReport, VerifyTriggerStrategy,
 };
 pub use background::BackgroundMaintenanceGuard;
 pub use config::{

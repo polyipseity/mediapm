@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::api::{
-    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding, ObjectMeta,
-    OptimizeReport, PruneReport,
+    CasApi, CasDurability, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding,
+    ObjectMeta, OptimizeReport, PruneReport,
 };
 use crate::defaults::WAL_INLINE_LIMIT;
 use crate::error::CasError;
@@ -249,8 +249,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasStore<J, M, B> {
     /// Returns whether anything changed. The write order is the one the
     /// optimizer uses: the full payload first, the entry second, the delta
     /// payload last, so a failure at any step leaves the object readable in at
-    /// least one form.
-    async fn promote_to_full(&self, target: Hash) -> Result<bool, CasError> {
+    /// least one form. With `sync`, the new full payload is fsynced before the
+    /// promotion returns, so a caller that asked for a durable full file gets
+    /// one.
+    async fn promote_to_full(&self, target: Hash, sync: bool) -> Result<bool, CasError> {
         // `stat` is the read path, so a target whose entry is still only in the
         // write-back journal is answered from the journal instead of looking
         // absent. A journaled target is always full, so it returns early below.
@@ -261,7 +263,11 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasStore<J, M, B> {
             return Ok(false);
         };
         let len = bytes.len() as u64;
-        self.blob.write(target, ObjectEncoding::Full, bytes).await?;
+        if sync {
+            self.blob.write_syncing(target, ObjectEncoding::Full, bytes).await?;
+        } else {
+            self.blob.write(target, ObjectEncoding::Full, bytes).await?;
+        }
         self.metadata.put(target, MetadataEntry { len, encoding: ObjectEncoding::Full }).await?;
         self.blob.delete_encoding(target, ObjectEncoding::Delta { base_hash }).await?;
         Ok(true)
@@ -270,7 +276,12 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasStore<J, M, B> {
 
 #[async_trait]
 impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B> {
-    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
+    async fn set_constraint_with(
+        &self,
+        target: Hash,
+        bases: BTreeSet<Hash>,
+        durability: CasDurability,
+    ) -> Result<(), CasError> {
         // Sentinel always has empty constraints.
         if target == Hash::empty() {
             return Ok(());
@@ -298,13 +309,19 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
         // the object and nothing else.
         if bases.contains(&Hash::empty()) {
             let _consume = self.bg_engine.consume_lock().await;
-            self.promote_to_full(target).await?;
+            self.promote_to_full(target, durability.contains(CasDurability::STORE)).await?;
         }
 
         // Materialize Index immediately when SYNC_MATERIALIZE is true.
-        // Otherwise, the WAL consumer (BackgroundEngine) will apply it.
-        if M::SYNC_MATERIALIZE {
+        // Otherwise, the WAL consumer (BackgroundEngine) will apply it. A
+        // caller asking for metadata durability is asking for the index entry
+        // now, not for the deferred path, so that case materializes and syncs
+        // regardless of SYNC_MATERIALIZE.
+        if M::SYNC_MATERIALIZE || durability.contains(CasDurability::METADATA) {
             self.metadata.set_constraint(target, bases).await?;
+            if durability.contains(CasDurability::METADATA) {
+                self.metadata.sync_hash(&target).await?;
+            }
         }
         Ok(())
     }
@@ -448,8 +465,13 @@ impl<T, J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for T
 where
     T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {
-    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
-        self.deref().set_constraint(target, bases).await
+    async fn set_constraint_with(
+        &self,
+        target: Hash,
+        bases: BTreeSet<Hash>,
+        durability: CasDurability,
+    ) -> Result<(), CasError> {
+        self.deref().set_constraint_with(target, bases, durability).await
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {

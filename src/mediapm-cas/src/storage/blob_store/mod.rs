@@ -55,6 +55,28 @@ pub trait BlobStore: Send + Sync {
         data: Bytes,
     ) -> Result<(), CasError>;
 
+    /// Write a payload, syncing the file and its parent directory first.
+    ///
+    /// Defaulted to [`Self::write`]: an in-memory store has nothing to sync.
+    async fn write_syncing(
+        &self,
+        hash: Hash,
+        encoding: ObjectEncoding,
+        data: Bytes,
+    ) -> Result<(), CasError> {
+        self.write(hash, encoding, data).await
+    }
+
+    /// Write an auxiliary file, syncing the file and its parent directory.
+    async fn write_aux_syncing(
+        &self,
+        hash: &Hash,
+        name: &str,
+        data: Bytes,
+    ) -> Result<(), CasError> {
+        self.write_aux(hash, name, data).await
+    }
+
     /// Read full blob for `hash`.
     ///
     /// Returns [`CasError::NotFound`] if no full blob exists.

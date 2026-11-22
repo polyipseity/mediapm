@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mediapm_cas::{CasApi, ConstraintApi, Hash};
+use mediapm_cas::{CasApi, CasDurability, ConstraintApi, Hash};
 
 use crate::config::{OutputCaptureSpec, SaveMode};
 use crate::error::ConductorError;
@@ -375,10 +375,20 @@ pub(super) async fn capture_outputs<C: CasApi + ConstraintApi + Send + Sync>(
                 // that exists. The empty object is the only base a `full`
                 // capture may be compressed against, which is what keeps its
                 // bytes whole: a delta against empty content is the content.
+                //
+                // A `full` capture promises whole bytes, and a caller may
+                // hardlink the payload straight after this returns. That makes
+                // the constraint as hard as any: the file and its index entry
+                // are on disk before this call returns, not at the next
+                // maintenance pass.
                 if spec.save == SaveMode::Full {
-                    cas.set_constraint(hash, BTreeSet::from([Hash::empty()]))
-                        .await
-                        .map_err(ConductorError::Cas)?;
+                    cas.set_constraint_with(
+                        hash,
+                        BTreeSet::from([Hash::empty()]),
+                        CasDurability::STORE | CasDurability::METADATA,
+                    )
+                    .await
+                    .map_err(ConductorError::Cas)?;
                 }
 
                 records.insert(
