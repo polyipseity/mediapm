@@ -6,9 +6,8 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{ToolRuntime, ToolSpec};
-
 use crate::tools::preset;
+use crate::tools::workflows::definition::ToolDefinition;
 
 /// ffmpeg slot-limit configuration derived from tool requirements.
 #[derive(Debug, Clone, Copy, Default)]
@@ -31,14 +30,14 @@ pub(crate) fn resolve_ffmpeg_slot_limits(max_input: u32, max_output: u32) -> Ffm
     FfmpegSlotLimits { max_input_slots: max_input as usize, max_output_slots: max_output as usize }
 }
 
-/// Builds a full [`ToolSpec`] and [`ToolRuntime`] for one managed tool by
-/// delegating to the appropriate per-tool preset.
+/// Builds a [`ToolDefinition`] for one managed tool by delegating to the
+/// appropriate per-tool preset.
 pub(crate) fn build_tool_spec(
     tool_name: &str,
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     preset::apply_preset(tool_name, content_map, os_exec_paths, ffmpeg_slot_limits)
 }
 
@@ -63,7 +62,8 @@ mod tests {
         for tool_name in &["deno", "yt-dlp", "ffmpeg", "rsgain", "sd"] {
             let os_exec_paths = BTreeMap::from([("linux".into(), (*tool_name).to_string())]);
             let (spec, runtime) =
-                build_tool_spec(tool_name, content_map.clone(), &os_exec_paths, limits);
+                build_tool_spec(tool_name, content_map.clone(), &os_exec_paths, limits)
+                    .into_parts();
             assert_eq!(spec.name, *tool_name);
             assert_eq!(runtime.content_map, content_map);
         }
@@ -86,7 +86,7 @@ mod tests {
 
         let yt_os = BTreeMap::from([("linux".into(), "yt-dlp".into())]);
         let yt_dlp_outputs =
-            build_tool_spec("yt-dlp", content_map.clone(), &yt_os, limits).0.outputs;
+            build_tool_spec("yt-dlp", content_map.clone(), &yt_os, limits).spec().outputs.clone();
         assert_eq!(
             yt_dlp_outputs[OUTPUT_SANDBOX_ARTIFACTS].capture.to_token(),
             "folder:downloads",
@@ -105,8 +105,10 @@ mod tests {
 
         for tool_name in &["ffmpeg", "rsgain", "sd", "deno"] {
             let os_exec_paths = BTreeMap::from([("linux".into(), (*tool_name).to_string())]);
-            let outputs =
-                build_tool_spec(tool_name, content_map.clone(), &os_exec_paths, limits).0.outputs;
+            let outputs = build_tool_spec(tool_name, content_map.clone(), &os_exec_paths, limits)
+                .spec()
+                .outputs
+                .clone();
             assert_eq!(
                 outputs[OUTPUT_SANDBOX_ARTIFACTS].capture.to_token(),
                 "folder:inputs",

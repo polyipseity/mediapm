@@ -12,9 +12,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::config::CaptureKind;
-use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
-};
+use mediapm_conductor::{InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec};
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
 
@@ -23,6 +21,7 @@ use crate::conductor_bridge::constants::{
     OUTPUT_SANDBOX_ARTIFACTS,
 };
 
+use super::definition::ToolDefinition;
 use super::spec::assemble_tool_spec;
 
 /// Fixed sandbox path used for deno input materialization.
@@ -135,7 +134,7 @@ fn build_deno_default_input_defaults() -> BTreeMap<String, InputBinding> {
     ])
 }
 
-/// Builds the full [`ToolSpec`] and [`ToolRuntime`] for the managed `deno` tool.
+/// Builds the [`ToolDefinition`] for the managed `deno` tool.
 ///
 /// deno is a pure tool with no network access requirements. It is provisioned
 /// as a managed binary for companion tool use, not as a workflow step runner.
@@ -143,9 +142,9 @@ fn build_deno_default_input_defaults() -> BTreeMap<String, InputBinding> {
 pub(crate) fn build_deno_spec(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     let command_path = build_os_conditional_selector(os_exec_paths);
-    let (mut spec, mut runtime) = assemble_tool_spec(
+    let mut definition = assemble_tool_spec(
         "deno",
         content_map,
         build_deno_command(&command_path),
@@ -158,10 +157,9 @@ pub(crate) fn build_deno_spec(
     // Declaring them lets whitelisted deno steps receive the invocation log when
     // a run mounts the chain.
     for name in ["MEDIAPM_STUB_MANIFEST", "MEDIAPM_STUB_INVOCATIONS"] {
-        runtime.inherited_env_vars.push(name.to_owned());
-        spec.runtime.inherited_env_vars.push(name.to_owned());
+        definition.spec_mut().runtime.inherited_env_vars.push(name.to_owned());
     }
-    (spec, runtime)
+    definition
 }
 
 #[cfg(test)]
@@ -200,7 +198,7 @@ mod tests {
     fn build_deno_spec_sets_correct_runtime_defaults() {
         let content_map = BTreeMap::from([("bin/deno".to_string(), "abc123".to_string())]);
         let os_exec_paths = BTreeMap::from([("linux".into(), "deno".into())]);
-        let (_spec, runtime) = build_deno_spec(content_map, &os_exec_paths);
+        let runtime = build_deno_spec(content_map, &os_exec_paths).runtime();
         assert!(!runtime.impure);
         assert_eq!(runtime.max_concurrent_calls, None);
         assert_eq!(

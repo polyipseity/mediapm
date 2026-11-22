@@ -48,12 +48,13 @@ fn os_exec_paths(tool: &str) -> BTreeMap<String, String> {
 /// the output of a step that runs again on every sync.
 #[test]
 fn impure_classification_matches_every_tool_builder() {
-    let (_spec, yt_dlp) = build_yt_dlp_spec(BTreeMap::new(), &os_exec_paths("yt-dlp"));
+    let yt_dlp = build_yt_dlp_spec(BTreeMap::new(), &os_exec_paths("yt-dlp")).runtime();
     #[cfg(feature = "media-tagger")]
-    let (_spec, media_tagger) = build_media_tagger_spec();
-    let (_spec, rsgain) = build_rsgain_spec(BTreeMap::new(), &os_exec_paths("rsgain"));
-    let (_spec, ffmpeg) =
-        build_ffmpeg_spec(BTreeMap::new(), &os_exec_paths("ffmpeg"), FfmpegSlotLimits::default());
+    let media_tagger = build_media_tagger_spec().runtime();
+    let rsgain = build_rsgain_spec(BTreeMap::new(), &os_exec_paths("rsgain")).runtime();
+    let ffmpeg =
+        build_ffmpeg_spec(BTreeMap::new(), &os_exec_paths("ffmpeg"), FfmpegSlotLimits::default())
+            .runtime();
 
     #[cfg_attr(
         not(feature = "media-tagger"),

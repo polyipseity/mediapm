@@ -8,8 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, SaveMode, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowSpec,
-    WorkflowStepSpec,
+    InputBinding, OutputCaptureSpec, SaveMode, ToolInputSpec, WorkflowSpec, WorkflowStepSpec,
 };
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
@@ -20,6 +19,7 @@ use crate::config::output_types::ResolvedStepVariantFlow;
 use crate::config::{MediaStep, OutputVariantValue};
 use crate::error::MediaPmError;
 
+use super::definition::ToolDefinition;
 use super::{
     AutoSaveContext, VariantProducer, ffmpeg_step_id, resolve_input_variant_producer,
     resolve_variant_save, step_option_input_bindings,
@@ -777,15 +777,15 @@ fn build_ffmpeg_default_input_defaults(
     defaults
 }
 
-/// Builds the full [`mediapm_conductor::ToolSpec`] and [`mediapm_conductor::ToolRuntime`] for ffmpeg.
+/// Builds the [`ToolDefinition`] for ffmpeg.
 #[must_use]
 pub(crate) fn build_ffmpeg_spec(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
     slot_limits: FfmpegSlotLimits,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     let command_path = build_os_conditional_selector(os_exec_paths);
-    let (mut spec, mut runtime) = super::spec::assemble_tool_spec(
+    let mut definition = super::spec::assemble_tool_spec(
         "ffmpeg",
         content_map,
         build_ffmpeg_command(
@@ -805,10 +805,9 @@ pub(crate) fn build_ffmpeg_spec(
     // Declaring them lets whitelisted ffmpeg steps receive the invocation log
     // when a run mounts the chain.
     for name in ["MEDIAPM_STUB_MANIFEST", "MEDIAPM_STUB_INVOCATIONS"] {
-        runtime.inherited_env_vars.push(name.to_owned());
-        spec.runtime.inherited_env_vars.push(name.to_owned());
+        definition.spec_mut().runtime.inherited_env_vars.push(name.to_owned());
     }
-    (spec, runtime)
+    definition
 }
 
 #[cfg(test)]
@@ -926,11 +925,12 @@ mod tests {
         use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
         let content_map = BTreeMap::new();
         let os_exec_paths = BTreeMap::from([("linux".into(), "ffmpeg".into())]);
-        let (_spec, runtime) = build_ffmpeg_spec(
+        let runtime = build_ffmpeg_spec(
             content_map,
             &os_exec_paths,
             FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 },
-        );
+        )
+        .runtime();
         assert_eq!(runtime.max_concurrent_calls, None);
         assert_eq!(
             runtime.max_retries,

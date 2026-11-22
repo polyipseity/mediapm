@@ -4,15 +4,14 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{ToolRuntime, ToolSpec};
-
 use crate::tools::workflows;
+use crate::tools::workflows::definition::ToolDefinition;
 
-/// Builds the [`ToolSpec`] and [`ToolRuntime`] for `sd`.
+/// Builds the [`ToolDefinition`] for `sd`.
 #[must_use]
 pub(crate) fn apply(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     workflows::sd::build_sd_spec(content_map, os_exec_paths)
 }

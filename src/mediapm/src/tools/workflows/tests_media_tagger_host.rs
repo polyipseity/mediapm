@@ -174,13 +174,13 @@ fn run_document(
     source_hash: mediapm_cas::Hash,
     cache_dir: &std::path::Path,
 ) -> NickelDocument {
-    let (tagger_spec_for_plan, _) = build_media_tagger_spec();
+    let tagger_spec_for_plan = build_media_tagger_spec().into_spec();
     let ffmpeg_spec_for_plan = crate::tools::workflows::ffmpeg::build_ffmpeg_spec(
         BTreeMap::new(),
         &BTreeMap::new(),
         crate::conductor_bridge::tool_runtime::FfmpegSlotLimits::default(),
     )
-    .0;
+    .into_spec();
     let generated = NickelDocument {
         tools: BTreeMap::from([
             ("media-tagger".to_string(), tagger_spec_for_plan),
@@ -209,7 +209,7 @@ fn run_document(
     );
     metadata_step.inputs.remove(crate::conductor_bridge::constants::INPUT_CONTENT);
 
-    let (tagger_spec, tagger_runtime) = build_media_tagger_spec();
+    let (tagger_spec, tagger_runtime) = build_media_tagger_spec().into_parts();
     // The runtime map is what a sync stamps on the entry it writes: a host
     // builtin holds no payload, so nothing here names a content root.
     assert!(tagger_runtime.content_map.is_empty(), "a host builtin holds no payload");

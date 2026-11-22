@@ -8,6 +8,7 @@
 //! mediapm document, and persists the result into the conductor generated
 //! document (adding only the external-data refs those workflows consume).
 
+pub(crate) mod definition;
 pub(crate) mod deno;
 pub(crate) mod ffmpeg;
 #[cfg(feature = "media-tagger")]
@@ -1115,6 +1116,9 @@ pub(crate) fn reconcile_media_workflows(
 }
 
 #[cfg(test)]
+mod tests_definition;
+
+#[cfg(test)]
 mod tests_impure_parity;
 
 #[cfg(test)]
@@ -1442,13 +1446,15 @@ mod tests {
 
     fn tools_document(names: &[&str]) -> NickelDocument {
         use mediapm_conductor::{ToolKindSpec, ToolSpec};
+
+        use super::definition::ToolDefinition;
         let slot_limits = FfmpegSlotLimits::default();
         let empty_map = std::collections::BTreeMap::new();
         NickelDocument {
             tools: names
                 .iter()
                 .map(|&name| {
-                    let (spec, _runtime) = match name {
+                    let definition = match name {
                         "ffmpeg" => {
                             ffmpeg::build_ffmpeg_spec(empty_map.clone(), &empty_map, slot_limits)
                         }
@@ -1457,26 +1463,20 @@ mod tests {
                         "sd" => sd::build_sd_spec(empty_map.clone(), &empty_map),
                         #[cfg(feature = "media-tagger")]
                         "media-tagger" => media_tagger::build_media_tagger_spec(),
-                        "import" => (
-                            ToolSpec {
-                                version: None,
-                                name: "import".to_string(),
-                                kind: ToolKindSpec::Builtin { builtin_id: "import".to_string() },
-                                ..ToolSpec::default()
-                            },
-                            mediapm_conductor::ToolRuntime::default(),
-                        ),
-                        other => (
-                            ToolSpec {
-                                version: None,
-                                name: other.to_string(),
-                                kind: ToolKindSpec::default(),
-                                ..ToolSpec::default()
-                            },
-                            mediapm_conductor::ToolRuntime::default(),
-                        ),
+                        "import" => ToolDefinition::new(ToolSpec {
+                            version: None,
+                            name: "import".to_string(),
+                            kind: ToolKindSpec::Builtin { builtin_id: "import".to_string() },
+                            ..ToolSpec::default()
+                        }),
+                        other => ToolDefinition::new(ToolSpec {
+                            version: None,
+                            name: other.to_string(),
+                            kind: ToolKindSpec::default(),
+                            ..ToolSpec::default()
+                        }),
                     };
-                    (name.to_string(), spec)
+                    (name.to_string(), definition.into_spec())
                 })
                 .collect(),
             ..NickelDocument::default()
@@ -2862,7 +2862,7 @@ mod tests {
         use crate::config::MediaStepTool;
         use crate::tools::workflows::media_tagger::build_media_tagger_spec;
 
-        let (spec, _runtime) = build_media_tagger_spec();
+        let spec = build_media_tagger_spec().into_spec();
         let generated_doc = NickelDocument {
             tools: BTreeMap::from([(spec.name.clone(), spec)]),
             ..NickelDocument::default()

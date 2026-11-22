@@ -15,11 +15,10 @@ pub(crate) mod yt_dlp;
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{ToolRuntime, ToolSpec};
-
 use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
+use crate::tools::workflows::definition::ToolDefinition;
 
-/// Builds a [`ToolSpec`] and [`ToolRuntime`] for the named managed tool.
+/// Builds a [`ToolDefinition`] for the named managed tool.
 ///
 /// # Panics
 ///
@@ -30,7 +29,7 @@ pub(crate) fn apply_preset(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
     slot_limits: FfmpegSlotLimits,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     match tool_name {
         n if n.eq_ignore_ascii_case("ffmpeg") => {
             ffmpeg::apply(content_map, os_exec_paths, slot_limits)
@@ -54,7 +53,7 @@ mod tests {
         let empty_paths = BTreeMap::new();
         let defaults = FfmpegSlotLimits::default();
         for name in &["ffmpeg", "yt-dlp", "deno", "rsgain", "sd"] {
-            let (spec, _runtime) = apply_preset(name, empty_map.clone(), &empty_paths, defaults);
+            let spec = apply_preset(name, empty_map.clone(), &empty_paths, defaults).into_spec();
             assert!(
                 !spec.inputs.is_empty() || !spec.outputs.is_empty(),
                 "tool {name}: should have at least one input or output"

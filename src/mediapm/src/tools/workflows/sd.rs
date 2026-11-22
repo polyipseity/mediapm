@@ -7,9 +7,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::config::CaptureKind;
-use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
-};
+use mediapm_conductor::{InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec};
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
 
@@ -18,6 +16,7 @@ use crate::conductor_bridge::constants::{
     OUTPUT_CONTENT, OUTPUT_SANDBOX_ARTIFACTS,
 };
 
+use super::definition::ToolDefinition;
 use super::spec::assemble_tool_spec;
 
 /// Fixed sandbox file path used by `sd` in-place rewrite operations.
@@ -131,14 +130,14 @@ fn build_sd_default_input_defaults() -> BTreeMap<String, InputBinding> {
     defaults
 }
 
-/// Builds the full [`ToolSpec`] and [`ToolRuntime`] for the managed `sd` tool.
+/// Builds the [`ToolDefinition`] for the managed `sd` tool.
 #[must_use]
 pub(crate) fn build_sd_spec(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     let command_path = build_os_conditional_selector(os_exec_paths);
-    let (mut spec, mut runtime) = assemble_tool_spec(
+    let mut definition = assemble_tool_spec(
         "sd",
         content_map,
         build_sd_command(&command_path),
@@ -151,10 +150,9 @@ pub(crate) fn build_sd_spec(
     // Declaring them lets whitelisted sd steps receive the invocation log when
     // a run mounts the chain.
     for name in ["MEDIAPM_STUB_MANIFEST", "MEDIAPM_STUB_INVOCATIONS"] {
-        runtime.inherited_env_vars.push(name.to_owned());
-        spec.runtime.inherited_env_vars.push(name.to_owned());
+        definition.spec_mut().runtime.inherited_env_vars.push(name.to_owned());
     }
-    (spec, runtime)
+    definition
 }
 
 #[cfg(test)]
@@ -207,7 +205,7 @@ mod tests {
         content_map.insert("windows/sd.exe".into(), "ghi".into());
 
         let os_exec_paths = BTreeMap::from([("linux".into(), "sd".into())]);
-        let (_spec, runtime) = build_sd_spec(content_map.clone(), &os_exec_paths);
+        let runtime = build_sd_spec(content_map.clone(), &os_exec_paths).runtime();
 
         assert_eq!(runtime.content_map.len(), 3);
         assert_eq!(runtime.content_map["linux/sd"], "abc");
@@ -219,7 +217,7 @@ mod tests {
     fn build_sd_spec_returns_executable_kind() {
         let content_map = BTreeMap::new();
         let os_exec_paths = BTreeMap::from([("linux".into(), "sd".into())]);
-        let (spec, _runtime) = build_sd_spec(content_map, &os_exec_paths);
+        let spec = build_sd_spec(content_map, &os_exec_paths).into_spec();
         let mediapm_conductor::ToolKindSpec::Executable { command, .. } = &spec.kind else {
             panic!("expected Executable kind");
         };
@@ -231,13 +229,13 @@ mod tests {
     fn build_sd_spec_sets_impure_false() {
         let content_map = BTreeMap::new();
         let os_exec_paths = BTreeMap::from([("linux".into(), "sd".into())]);
-        let (_spec, runtime) = build_sd_spec(content_map, &os_exec_paths);
+        let runtime = build_sd_spec(content_map, &os_exec_paths).runtime();
         assert!(!runtime.impure);
     }
 
     #[test]
     fn sd_states_no_policy_so_the_defaults_apply() {
-        let (_, runtime) = build_sd_spec(BTreeMap::new(), &BTreeMap::new());
+        let runtime = build_sd_spec(BTreeMap::new(), &BTreeMap::new()).runtime();
         assert_eq!(runtime.max_concurrent_calls, None, "sd leaves the cap unlimited");
         assert_eq!(
             runtime.max_retries,

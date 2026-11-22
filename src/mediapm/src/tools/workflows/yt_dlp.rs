@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
-    WorkflowSpec, WorkflowStepSpec,
+    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, WorkflowSpec,
+    WorkflowStepSpec,
 };
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
@@ -25,6 +25,7 @@ use crate::config::source_types::step_option_scalar;
 use crate::config::{MediaStep, MediaStepTool, OutputVariantValue, YtDlpOutputKind};
 use crate::error::MediaPmError;
 
+use super::definition::ToolDefinition;
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
 use super::yt_dlp_inputs::{resolve_step_output_binding, yt_dlp_variant_inputs};
 use super::{
@@ -591,14 +592,14 @@ fn build_yt_dlp_default_input_defaults() -> BTreeMap<String, InputBinding> {
     defaults
 }
 
-/// Builds the full [`ToolSpec`] and [`ToolRuntime`] for the managed yt-dlp tool.
+/// Builds the [`ToolDefinition`] for the managed yt-dlp tool.
 #[must_use]
 pub(crate) fn build_yt_dlp_spec(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     let command_path = build_os_conditional_selector(os_exec_paths);
-    let (mut spec, mut runtime) = assemble_tool_spec(
+    let mut definition = assemble_tool_spec(
         "yt-dlp",
         content_map,
         build_yt_dlp_command(&command_path),
@@ -610,18 +611,15 @@ pub(crate) fn build_yt_dlp_spec(
     // yt-dlp is the one tool that overrides both policies: a download must not
     // run beside another one, and a failed download must not silently repeat a
     // network call.
-    runtime.max_concurrent_calls = Some(1);
-    runtime.max_retries = 0;
-    spec.runtime.max_concurrent_calls = Some(1);
-    spec.runtime.max_retries = 0;
+    definition.spec_mut().runtime.max_concurrent_calls = Some(1);
+    definition.spec_mut().runtime.max_retries = 0;
     // The hermetic stub chain publishes these names in the host environment.
     // Declaring them lets whitelisted yt-dlp steps receive the emit-mode stub's
     // manifest and the invocation log when a run mounts the chain.
     for name in ["MEDIAPM_STUB_MANIFEST", "MEDIAPM_STUB_INVOCATIONS"] {
-        runtime.inherited_env_vars.push(name.to_owned());
-        spec.runtime.inherited_env_vars.push(name.to_owned());
+        definition.spec_mut().runtime.inherited_env_vars.push(name.to_owned());
     }
-    (spec, runtime)
+    definition
 }
 
 #[cfg(test)]
@@ -1003,7 +1001,7 @@ mod tests {
 
     #[test]
     fn yt_dlp_states_both_policies_explicitly() {
-        let (spec, runtime) = build_yt_dlp_spec(BTreeMap::new(), &BTreeMap::new());
+        let (spec, runtime) = build_yt_dlp_spec(BTreeMap::new(), &BTreeMap::new()).into_parts();
         assert_eq!(
             runtime.max_concurrent_calls,
             Some(1),

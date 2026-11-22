@@ -4,15 +4,14 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{ToolRuntime, ToolSpec};
-
 use crate::tools::workflows;
+use crate::tools::workflows::definition::ToolDefinition;
 
-/// Builds the [`ToolSpec`] and [`ToolRuntime`] for `deno`.
+/// Builds the [`ToolDefinition`] for `deno`.
 #[must_use]
 pub(crate) fn apply(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     workflows::deno::build_deno_spec(content_map, os_exec_paths)
 }

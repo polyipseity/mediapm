@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use mediapm_conductor::config::CaptureKind;
 use mediapm_conductor::{
     InputBinding, NickelDocument, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec,
-    ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+    WorkflowSpec, WorkflowStepSpec,
 };
 
 use mediapm_conductor::tools::helpers::build_os_conditional_selector;
@@ -23,6 +23,7 @@ use crate::config::source_types::step_option_scalar;
 use crate::config::{MediaStep, MediaStepTool, OutputVariantValue, TransformInputValue};
 use crate::error::MediaPmError;
 
+use super::definition::ToolDefinition;
 use super::ffmpeg::{
     ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_file_regex,
     ffmpeg_output_path_input_name, ffmpeg_sandbox_output_path,
@@ -673,14 +674,14 @@ fn build_rsgain_default_input_defaults() -> BTreeMap<String, InputBinding> {
     defaults
 }
 
-/// Builds the full [`ToolSpec`] and [`ToolRuntime`] for the managed rsgain tool.
+/// Builds the [`ToolDefinition`] for the managed rsgain tool.
 #[must_use]
 pub(crate) fn build_rsgain_spec(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     let command_path = build_os_conditional_selector(os_exec_paths);
-    let (mut spec, mut runtime) = assemble_tool_spec(
+    let mut definition = assemble_tool_spec(
         "rsgain",
         content_map,
         build_rsgain_command(&command_path),
@@ -693,10 +694,9 @@ pub(crate) fn build_rsgain_spec(
     // Declaring them lets whitelisted rsgain steps receive the invocation log
     // when a run mounts the chain.
     for name in ["MEDIAPM_STUB_MANIFEST", "MEDIAPM_STUB_INVOCATIONS"] {
-        runtime.inherited_env_vars.push(name.to_owned());
-        spec.runtime.inherited_env_vars.push(name.to_owned());
+        definition.spec_mut().runtime.inherited_env_vars.push(name.to_owned());
     }
-    (spec, runtime)
+    definition
 }
 
 #[cfg(test)]
@@ -756,7 +756,7 @@ mod tests {
     fn build_rsgain_spec_uses_os_exec_paths() {
         let content_map = BTreeMap::new();
         let os_exec_paths = BTreeMap::from([("linux".into(), "rsgain".into())]);
-        let (_spec, runtime) = build_rsgain_spec(content_map, &os_exec_paths);
+        let runtime = build_rsgain_spec(content_map, &os_exec_paths).runtime();
         assert!(!runtime.impure);
     }
 

@@ -114,7 +114,7 @@ pub(crate) fn host_builtin_tool_spec(tool_id: &str) -> Option<mediapm_conductor:
     // keeps this from becoming a second list of ids.
     #[cfg(feature = "media-tagger")]
     if tool_id.eq_ignore_ascii_case(MEDIA_TAGGER_BUILTIN_ID) {
-        return Some(crate::tools::workflows::media_tagger::build_media_tagger_spec().0);
+        return Some(crate::tools::workflows::media_tagger::build_media_tagger_spec().into_spec());
     }
     None
 }

@@ -351,9 +351,10 @@ fn generated_document_states_only_overridden_policies() {
     use std::io::Write;
 
     let (yt_dlp_spec, yt_dlp_runtime) =
-        crate::tools::workflows::yt_dlp::build_yt_dlp_spec(BTreeMap::new(), &BTreeMap::new());
+        crate::tools::workflows::yt_dlp::build_yt_dlp_spec(BTreeMap::new(), &BTreeMap::new())
+            .into_parts();
     let (sd_spec, sd_runtime) =
-        crate::tools::workflows::sd::build_sd_spec(BTreeMap::new(), &BTreeMap::new());
+        crate::tools::workflows::sd::build_sd_spec(BTreeMap::new(), &BTreeMap::new()).into_parts();
 
     let mut document = NickelDocument::default();
     document

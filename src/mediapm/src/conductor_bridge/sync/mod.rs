@@ -705,11 +705,11 @@ fn refresh_skipped_spec_runtime(
     };
     let content_map = existing_spec.runtime.content_map.clone();
     let limits = resolve_ffmpeg_slot_limits(max_input_slots, max_output_slots);
-    let (_spec, preset_runtime) = build_tool_spec(bare_id, content_map, &BTreeMap::new(), limits);
+    let preset_runtime = build_tool_spec(bare_id, content_map, &BTreeMap::new(), limits).runtime();
 
     if let Some(spec) = generated_doc.tools.get_mut(key) {
         spec.runtime.impure = preset_runtime.impure;
-        spec.runtime.inherited_env_vars = preset_runtime.inherited_env_vars.clone();
+        spec.runtime.inherited_env_vars.clone_from(&preset_runtime.inherited_env_vars);
         spec.runtime.max_concurrent_calls = preset_runtime.max_concurrent_calls;
         spec.runtime.max_retries = preset_runtime.max_retries;
         // Keep content_map, payload_root, payload_staging from the existing
@@ -798,7 +798,7 @@ fn apply_entry_outcome(
 
             let ffmpeg_limits =
                 resolve_ffmpeg_slot_limits(tool_req.max_input_slots, tool_req.max_output_slots);
-            let (mut spec, runtime) = build_tool_spec(
+            let mut definition = build_tool_spec(
                 &tool_id,
                 payload.content_map,
                 &payload.os_exec_paths,
@@ -807,7 +807,8 @@ fn apply_entry_outcome(
             // The provider resolved this human-readable version, so the
             // generated document can carry the claim it actually made. A
             // workflow row reads it back through the merged tool spec.
-            spec.version = Some(payload.human_readable_version.clone());
+            definition.spec_mut().version = Some(payload.human_readable_version.clone());
+            let (spec, runtime) = definition.into_parts();
 
             let record = ToolRegistryEntry {
                 tool_id: tool_id.clone(),

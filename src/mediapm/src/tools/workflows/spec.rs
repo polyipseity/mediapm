@@ -12,6 +12,8 @@ use mediapm_conductor::{
     InputBinding, OutputCaptureSpec, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
 };
 
+use super::definition::ToolDefinition;
+
 /// Describes how one option input is rendered as CLI tokens.
 ///
 /// Each variant carries the CLI flag string(s) to emit when the input is
@@ -102,10 +104,13 @@ pub(crate) fn command_option_tokens_for_tool(
         .collect()
 }
 
-/// Builds a full [`ToolSpec`] and [`ToolRuntime`] from per-tool parts.
+/// Builds a [`ToolDefinition`] from per-tool parts.
 ///
-/// Callers (per-tool workflow files) provide the individual component
-/// builders; this helper assembles them into the final pair.
+/// Callers (per-tool workflow files) provide the individual component builders;
+/// this assembles them into the one value the rest of the pipeline mutates. A
+/// mandated policy is stamped by the caller through
+/// [`ToolDefinition::spec_mut`], so the document states only what a preset
+/// overrides and the returned runtime cannot disagree with it.
 #[must_use]
 pub(crate) fn assemble_tool_spec(
     tool_name: &str,
@@ -115,18 +120,8 @@ pub(crate) fn assemble_tool_spec(
     outputs: BTreeMap<String, OutputCaptureSpec>,
     default_inputs: BTreeMap<String, InputBinding>,
     impure: bool,
-) -> (ToolSpec, ToolRuntime) {
-    let runtime = ToolRuntime {
-        content_map,
-        impure,
-        inherited_env_vars: Vec::new(),
-        // Every mandated policy is applied by the caller after assembly, so this
-        // builder stays the one place a tool's defaults are decided and the
-        // document states only what a preset actually overrides.
-        ..ToolRuntime::default()
-    };
-
-    let spec = ToolSpec {
+) -> ToolDefinition {
+    ToolDefinition::new(ToolSpec {
         version: None,
         kind: ToolKindSpec::Executable {
             command,
@@ -137,8 +132,11 @@ pub(crate) fn assemble_tool_spec(
         inputs,
         default_inputs,
         outputs,
-        runtime: runtime.clone(),
-    };
-
-    (spec, runtime)
+        runtime: ToolRuntime {
+            content_map,
+            impure,
+            inherited_env_vars: Vec::new(),
+            ..ToolRuntime::default()
+        },
+    })
 }

@@ -28,6 +28,7 @@ use crate::config::output_types::{OutputVariantValue, ResolvedStepVariantFlow};
 use crate::config::source_types::step_option_scalar;
 use crate::error::MediaPmError;
 
+use super::definition::ToolDefinition;
 use super::ffmpeg::{
     ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_file_path,
     ffmpeg_output_path_input_name,
@@ -500,9 +501,7 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 /// The step's bindings remain the source of values: no default lives here, but
 /// plan-build validation uses this set to reject unknown step options.
 #[must_use]
-pub(crate) fn build_media_tagger_spec() -> (ToolSpec, ToolRuntime) {
-    let runtime =
-        ToolRuntime { impure: true, max_concurrent_calls: Some(1), ..ToolRuntime::default() };
+pub(crate) fn build_media_tagger_spec() -> ToolDefinition {
     let accepted_inputs = [
         "acoustid_api_key",
         "acoustid_endpoint",
@@ -543,16 +542,19 @@ pub(crate) fn build_media_tagger_spec() -> (ToolSpec, ToolRuntime) {
             )
         })
         .collect();
-    let spec = ToolSpec {
+    ToolDefinition::new(ToolSpec {
         version: None,
         kind: ToolKindSpec::Builtin { builtin_id: MEDIA_TAGGER_BUILTIN_ID.to_string() },
         name: MEDIA_TAGGER_BUILTIN_ID.to_string(),
         inputs,
         default_inputs: BTreeMap::new(),
         outputs: build_media_tagger_outputs(),
-        runtime: runtime.clone(),
-    };
-    (spec, runtime)
+        runtime: ToolRuntime {
+            impure: true,
+            max_concurrent_calls: Some(1),
+            ..ToolRuntime::default()
+        },
+    })
 }
 
 #[cfg(test)]
@@ -564,7 +566,7 @@ mod tests {
 
     #[test]
     fn media_tagger_caps_concurrency_and_inherits_the_retry_default() {
-        let (_, runtime) = build_media_tagger_spec();
+        let runtime = build_media_tagger_spec().runtime();
         assert_eq!(
             runtime.max_concurrent_calls,
             Some(1),
@@ -608,7 +610,7 @@ mod tests {
     /// captures a run records, so they stay part of the definition.
     #[test]
     fn the_tool_definition_is_a_payload_free_builtin() {
-        let (spec, runtime) = build_media_tagger_spec();
+        let (spec, runtime) = build_media_tagger_spec().into_parts();
 
         assert_eq!(
             spec.kind,
@@ -667,7 +669,7 @@ mod tests {
             )
         });
 
-        let (spec, runtime) = build_media_tagger_spec();
+        let (spec, runtime) = build_media_tagger_spec().into_parts();
         assert_eq!(entry.kind, spec.kind, "the entry must dispatch to the host runner");
         assert_eq!(entry.name, spec.name, "the entry keeps the builtin id as its name");
         assert_eq!(entry.inputs, spec.inputs, "the definition declares no input of its own");

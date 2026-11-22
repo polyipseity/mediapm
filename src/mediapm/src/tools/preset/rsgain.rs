@@ -4,10 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{ToolRuntime, ToolSpec};
-
 use crate::tools::dependency::DependencyTypes;
 use crate::tools::workflows;
+use crate::tools::workflows::definition::ToolDefinition;
 
 /// Returns the known `DependencyTypes` for each dependency of rsgain.
 #[must_use]
@@ -15,11 +14,11 @@ pub(crate) fn dependency_types() -> BTreeMap<&'static str, DependencyTypes> {
     BTreeMap::from([("ffmpeg", DependencyTypes::CROSS_STEP), ("sd", DependencyTypes::CROSS_STEP)])
 }
 
-/// Builds the [`ToolSpec`] and [`ToolRuntime`] for `rsgain`.
+/// Builds the [`ToolDefinition`] for `rsgain`.
 #[must_use]
 pub(crate) fn apply(
     content_map: BTreeMap<String, String>,
     os_exec_paths: &BTreeMap<String, String>,
-) -> (ToolSpec, ToolRuntime) {
+) -> ToolDefinition {
     workflows::rsgain::build_rsgain_spec(content_map, os_exec_paths)
 }
