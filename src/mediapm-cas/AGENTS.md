@@ -7,7 +7,7 @@
 - `Hash([u8; 32])` in `src/mediapm-cas/src/hash.rs`: BLAKE3-256 content address. `Hash::from_content` hashes raw bytes; `Hash::composite` hashes concatenated digests for ordered composite identity, giving domain separation from raw-content hashing. Ordering is lexicographic on bytes.
 - Empty-content sentinel: `Hash::empty()` is `blake3(b"")`. It is always present and indelible. `get`/`stat` answer empty content without backend lookup; `delete` is a no-op; constraints on empty are accepted but have no effect.
 - Wire/storage form is multihash (`0x1e` blake3, 32-byte digest) via `multihash`. Serde format is human-readable `blake3:<hex>`.
-- Filesystem object layout (`storage/blob_store/versions/v1.rs`): `<root>/v1/blake3/ab/cd/<remaining>` for full objects, `<remaining>.diff` for delta payloads. Directory fan-out keeps per-directory metadata aux files (`metadata-v1.json`).
+- Filesystem object layout (`storage/blob_store/versions/v1.rs`): `<root>/v1/blake3/ab/cd/<remaining>` for full objects, `<remaining>.diff` for delta payloads. Directory fan-out keeps one per-directory index file, `metadata-v2.json`; it records payload lengths and constraints only, because which physical form an object has is a property of the tree.
 
 ## Public API
 
@@ -38,16 +38,17 @@ Source of truth: `src/mediapm-cas/src/config.rs`, `defaults.rs`, `storage/in_mem
 
 ## Data flow
 
-`put` hashes content, then writes inline WAL `Put` for small objects or materializes blob and appends `PutLarge` for large objects. `delete` appends a WAL tombstone; physical removal is deferred. The background engine consumes WAL, materializes blob+metadata, advances checkpoint, trims WAL, and runs maintenance. Reads go metadata -> blob -> WAL fallback through `ComposedReadView`, reconstructing delta chains transparently. `flush` forces WAL consumption for write-back stores.
+`put` hashes content, then writes inline WAL `Put` for small objects or materializes blob and appends `PutLarge` for large objects. `delete` appends a WAL tombstone; physical removal is deferred. The background engine consumes WAL, materializes blob+metadata, advances checkpoint, trims WAL, and runs maintenance, whose phases are: delta optimization, blob-form collapse, constraint pruning, and on the first iteration a legacy snapshot sweep. Reads go metadata -> blob -> WAL fallback through `ComposedReadView`, reconstructing delta chains transparently. `flush` forces WAL consumption for write-back stores.
 
 ## Key invariants
 
 - **Content identity**: same bytes produce same BLAKE3 hash. Only empty content produces `Hash::empty()`, which is indelible.
 - **Crash safety and atomic writes**: WAL is the crash-safe commitment point; blob/metadata are derived and rebuildable by replay. Filesystem writes use atomic temp-write/rename patterns; metadata aux files are versioned.
 - **No TOCTOU**: no `exists()` API. `get`/`stat` return `NotFound` on miss.
+- **Blob forms**: one content address has at most two physical forms, `<hash>` (full) and `<hash>.diff` (delta). Neither means the data does not exist, in which case the index entry is dropped at load. Either means it does. Both are legitimate only while a transition is in flight and are collapsed toward the recorded `encoding`: intent `Full` deletes the delta, intent `Delta` deletes the full payload once the delta reconstructs the target. A read that finds the indexed form corrupt serves the other and logs a warning; repair is the collapse pass's job.
 - **Delta chain integrity**: delta reconstruction walks metadata/blob chain, rejects missing bases as `CorruptObject`, prevents cycles, and enforces `MAX_DELTA_CHAIN_DEPTH` (5). Objects over `DELTA_THRESHOLD` are not delta-compressed.
 - **Object size limits**: `WAL_INLINE_LIMIT` selects inline WAL vs external `PutLarge`; `DELTA_THRESHOLD` caps delta eligibility; `TooLarge` reports delta-chain depth/size limit failures.
-- **Constraint invariants**: constraint sets are independent from object metadata; no target/base self-reference; `get_constraint` returns empty set when absent. `prune_constraints` removes dead targets and dead bases in live constraints. A constraint of `{Hash::empty()}` records a full capture and the optimizer must not delta-encode that target while it may still serve as another object's base.
+- **Constraint strength**: `{Hash::empty()}` is hard and is enforced inside `set_constraint`, which materializes the full payload before returning. Every other base set is soft and converges at a maintenance pass. An absent or empty set leaves base choice open.
 - **Codec versioning**: delta envelope writers emit current V3; legacy V1/V2 are read-only. New formats live in versioned modules and keep boundary guards.
 - **Delete semantics, no dangling deltas**: deleting a base re-materializes dependents as full before physical base removal. Delete does not cascade to unrelated hashes.
 

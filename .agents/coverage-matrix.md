@@ -1580,3 +1580,17 @@ Step instance identity is derived from the step's logical tool name and key mate
 | --- | --- | --- |
 | The per-combination feature-matrix progress line reports the combination index, package/flag label, outcome, and elapsed time in the fixed `feature matrix: {index}/{total} ... {outcome} {elapsed:.2}s` shape. | `scripts/test-runner/src/matrix.rs` `matrix::tests::probe_result_line_formats_index_package_flags_outcome_and_elapsed` | [covered] |
 | Container-specific metadata the FFmetadata format cannot express is not carried by the tagger merge. The merge preserves container tags through the FFmetadata round-trip and preserves stream tags, attached pictures, and chapters through the stream and chapter maps, but no automated test asserts absence for metadata that a given container format cannot express in FFmetadata. | — (merge contract documented in `src/mediapm/AGENTS.md` and implemented in `src/mediapm/src/builtins/media_tagger/mod.rs` via `extract_existing_ffmetadata_map` and the merge/apply path; coverage is limited to the documented contract because non-expressible container metadata has no representable FFmetadata assertion) | [by-design] |
+
+## Blob-form invariant and tool-spec ownership (2026-11-22)
+
+| Spec item | Test(s) | Status |
+| --- | --- | --- |
+| Blob forms: neither form means absent | `src/mediapm-cas/tests/int/blob_forms.rs` `a_freshly_stored_object_has_one_form` | [covered] |
+| Blob forms: both forms collapse toward intent | `blob_forms.rs` `a_delta_rewrite_reclaims_the_full_payload`, `an_intent_full_target_loses_its_leftover_delta` | [covered] |
+| Blob forms: a corrupt form is served from the other | `blob_forms.rs` `a_corrupt_full_payload_is_served_from_the_sound_delta`, `a_corrupt_delta_payload_is_served_from_the_sound_full` | [covered] |
+| Constraint `{empty}` is hard | `blob_forms.rs` `pinning_full_is_effective_without_a_maintenance_pass`, `pinning_full_leaves_no_delta_payload_behind` | [covered] |
+| Metadata v2 drops `encoding` and migrates v1 | `metadata_store/versions/mod.rs` `a_v1_snapshot_loads_into_the_current_model_without_its_encoding`, `metadata_store/fs.rs` `a_legacy_snapshot_is_migrated_and_deleted` | [covered] |
+| Encoding is derived from the tree at load | `metadata_store/fs.rs` `load_derives_encoding_from_the_tree` | [covered] |
+| Optimizer is idempotent on an encoded target | `blob_forms.rs` `a_second_pass_over_a_delta_target_does_no_work` | [covered] |
+| A tool's runtime is derived from its spec | `tools/workflows/tests_definition.rs` `every_managed_tool_derives_one_runtime` | [covered] |
+| The live tool set comes from the document | `conductor_bridge/sync/live_tools.rs` `only_provisioned_tools_are_live` | [covered] |

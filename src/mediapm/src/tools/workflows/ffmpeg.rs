@@ -1,7 +1,7 @@
 //! Ffmpeg workflow step synthesis and spec generation.
 //!
 //! Produces the conductor workflow steps for one `ffmpeg` media transform step,
-//! and provides builders for the full [`ToolSpec`] / [`ToolRuntime`] used during
+//! and provides builders for the full [`mediapm_conductor::ToolSpec`] / [`mediapm_conductor::ToolRuntime`] used during
 //! managed-tool registration.
 
 use std::collections::{BTreeMap, BTreeSet};

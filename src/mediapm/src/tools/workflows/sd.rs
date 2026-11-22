@@ -1,6 +1,6 @@
 //! sd workflow spec generation.
 //!
-//! Produces the [`ToolSpec`] and [`ToolRuntime`] for the managed `sd`
+//! Produces the [`mediapm_conductor::ToolSpec`] and [`mediapm_conductor::ToolRuntime`] for the managed `sd`
 //! (string-replacement) tool. Does not produce workflow steps — sd is a
 //! utility tool used internally by step expansions.
 

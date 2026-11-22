@@ -1,6 +1,6 @@
 //! Managed-tool runtime contract dispatcher.
 //!
-//! This module dispatches [`ToolSpec`] and [`ToolRuntime`] construction to
+//! This module dispatches [`mediapm_conductor::ToolSpec`] and [`mediapm_conductor::ToolRuntime`] construction to
 //! per-tool workflow modules. It also defines the shared [`FfmpegSlotLimits`]
 //! type used by the ffmpeg spec builder and the sync pipeline.
 

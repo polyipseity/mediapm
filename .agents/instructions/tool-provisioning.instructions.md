@@ -11,7 +11,7 @@ Merged guidance for tool sync coordination, identity, 3-phase provisioning, prov
 ## Two id concepts (never confuse)
 
 - **MediaPM tool id**: plain logical id (`yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`, `import`). Used in `mediapm.ncl` tool keys, dependency keys, `ToolRegistryEntry.tool_id`, `step.tool`, and env var name stem (hash-free).
-- **MediaPM conductor tool id**: generated-doc `tools` map key `"{name}@{hash}"` when content map is non-empty, else bare name. Used as provision-cache key, `tool_runtimes` key, payload dir `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/`, and `.env.generated` payload path root. Mediapm must never key provisioning state by the plain tool id.
+- **MediaPM conductor tool id**: generated-doc `tools` map key `"{name}@{hash}"` when content map is non-empty, else bare name. Used as provision-cache key, payload dir `<tools_dir>/<sanitize_tool_id(conductor_tool_id)>/payload/`, and `.env.generated` payload path root. Mediapm must never key provisioning state by the plain tool id.
 
 ## Coordinator flow
 
@@ -20,7 +20,7 @@ Merged guidance for tool sync coordination, identity, 3-phase provisioning, prov
 - Skip requires newest deployment record, active spec content map hash match, and workspace content map available. Skip still registers one full `ToolRegistryEntry` in `report.tool_records` (never only backfills). Every provisioned tool contributes exactly one `tool_records` entry (Resolved or Skip). `resolved_field_backfills` is secondary provenance backfill only.
 - `recheck_seconds` decides when to resolve (`always` re-resolves every sync, `never` reuses a matching record without contacting upstream and resolves with an info notice when no record exists, `N` reuses until the record is N seconds old), it is independent of the metadata cache TTL, and it applies uniformly including to payload-free builtins.
 - `find_active_tool_spec(doc, tool_name)` is the only way to resolve the active spec: prefer first name match with non-empty content map, else first name match, else `None`. Do not inline name-match loops.
-- Active/pruning set is the live `tool_runtimes` keys (mediapm conductor tool ids). Prune generated-doc stale `"{name}@{old_hash}"` keys and filesystem dirs outside that set. `retain_only_tool_dirs`/prune paths operate on conductor tool ids.
+- The sync derives the live tool set from the generated document at each point of use (`live_tool_specs`, keyed by the run's own provisioned tool ids), so no second copy of a tool's runtime exists. Prune generated-doc stale `"{name}@{old_hash}"` keys and filesystem dirs outside that set. `retain_only_tool_dirs`/prune paths operate on conductor tool ids.
 - `logical_tool_requires_sync` must resolve from the same cache root used by sync (`runtime_storage_overrides.cache_root_override`) and pass the same metadata cache handle.
 
 ## Identity and composite version
@@ -49,7 +49,7 @@ Merged guidance for tool sync coordination, identity, 3-phase provisioning, prov
 
 ## Preset dispatch and workflows
 
-- `apply_preset(tool_name, content_map, os_exec_paths, slot_limits)` dispatches case-insensitively to per-tool spec builders (`tools/preset/`), producing `ToolSpec` and `ToolRuntime`. Unknown tool panics. Called only after successful provisioning with populated content map/os exec paths. Workflow synthesis lives in `tools/workflows/`.
+- `apply_preset(tool_name, content_map, os_exec_paths, slot_limits)` dispatches case-insensitively to per-tool spec builders (`tools/preset/`), producing `ToolSpec` and `ToolRuntime`. A tool's policy is stated once, in its `ToolSpec.runtime`; `ToolDefinition` derives the runtime a caller reads from that one field, so a preset cannot set a policy the generated document never sees. Unknown tool panics. Called only after successful provisioning with populated content map/os exec paths. Workflow synthesis lives in `tools/workflows/`.
 - Command templates use `${...}` engine only (`${context.os == ...}`, `${inputs.<key>}`, `${env.<VAR>}`); no `{tool_dir}`/`{os}` placeholders. Content-map keys are payload-relative and read consistently by staging strategies. Variant capture shape is resolver-owned: capture kind defaults from variant kind, subtitle language selection scopes capture token for file/folder captures, zip member binding only where declared, invalid combinations refused as `MPM-E011`.
 - Dependency types come from per-preset registries (`DependencyTypes` in `tools/dependency.rs`), explicit and non-transitive/direct-only. Key invariants: impure tools marked impure, required concurrency/retry defaults preserved per workflow, step input variant refs are either `${step_output...}` or `${external_data.<hash>}` declared in plan external data.
 

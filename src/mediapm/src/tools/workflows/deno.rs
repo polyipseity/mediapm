@@ -1,6 +1,6 @@
 //! deno workflow spec generation.
 //!
-//! Produces the [`ToolSpec`] and [`ToolRuntime`] for the managed `deno`
+//! Produces the [`mediapm_conductor::ToolSpec`] and [`mediapm_conductor::ToolRuntime`] for the managed `deno`
 //! JavaScript/TypeScript runtime (used as a companion dependency for tools
 //! like `yt-dlp`). Does not produce workflow steps.
 //!

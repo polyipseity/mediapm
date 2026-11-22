@@ -377,7 +377,7 @@ fn build_media_tagger_apply_output(
 /// The `ffmpeg_version` option is consumed by this synthesizer (never
 /// forwarded as a metadata input). An unset option or the `"global"` selector
 /// resolves the active ffmpeg tool; a pinned version request also resolves
-/// through the active ffmpeg tool because managed [`ToolSpec`] entries carry
+/// through the active ffmpeg tool because managed [`mediapm_conductor::ToolSpec`] entries carry
 /// no version field to match against (the old version-filtering registry
 /// lookup has no equivalent in the content-addressed tool registry).
 ///
