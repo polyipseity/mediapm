@@ -354,7 +354,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                 // corrupt delta chain and repair the metadata so later reads
                 // do not hit the same corruption.
                 if let Ok(full_bytes) = self.blob.read(hash).await {
-                    let _ = self.blob.delete_encoding(*hash, entry.encoding.clone()).await;
+                    let _ = self.blob.delete_encoding(*hash, entry.encoding).await;
                     let _ = self
                         .metadata
                         .put(
@@ -533,8 +533,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                 let verify_patch = DeltaPatch::decode(verify_obj.payload());
                 let verified = verify_patch
                     .apply(&base_bytes, *target, *target, best_base)
-                    .ok()
-                    .is_some_and(|b| blake3::hash(&b).as_bytes() == target.as_bytes());
+                    .is_ok_and(|b| blake3::hash(&b).as_bytes() == target.as_bytes());
                 if !verified {
                     continue;
                 }

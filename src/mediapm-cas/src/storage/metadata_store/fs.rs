@@ -15,6 +15,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use crate::api::ObjectEncoding;
+use crate::delta::object::StoredObject;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -113,13 +115,15 @@ impl FileSystemMetadataStore {
             }
         }
 
-        // Collect entries for hashes sharing this prefix.
+        // Collect entries for hashes sharing this prefix. Only the length is
+        // persisted: which physical form holds the payload is a property of the
+        // tree, so the snapshot must not carry a second copy of it.
         let mut entries = BTreeMap::new();
         for h in self.inner.list_hashes().await? {
             if h.to_hex().starts_with(prefix)
                 && let Some(entry) = self.inner.get(&h).await?
             {
-                entries.insert(h, (entry.len, entry.encoding));
+                entries.insert(h, entry.len);
             }
         }
 
@@ -160,6 +164,41 @@ impl FileSystemMetadataStore {
             self.flush_dir(&representative).await?;
         }
         Ok(())
+    }
+
+    /// Builds a metadata entry from a persisted length by asking the tree which
+    /// physical form holds the payload.
+    ///
+    /// Interim bridge only. The snapshot no longer persists an encoding, so a
+    /// load has to read it from disk, and this is the smallest honest version of
+    /// that read: a full file wins, a `.diff`-only object supplies its base hash
+    /// from the envelope header, and an entry whose bytes are gone is dropped
+    /// instead of resurrected as an object nothing can read.
+    ///
+    /// A later task folds this into the full derived-load path (one helper that
+    /// serves every snapshot format, alongside the legacy-snapshot sweep), so
+    /// this exists to keep the crate compiling against the new snapshot model
+    /// rather than to be the final shape.
+    async fn entry_for_persisted_length(
+        &self,
+        hash: Hash,
+        len: u64,
+    ) -> Result<Option<MetadataEntry>, CasError> {
+        if self.blob_store.read(&hash).await.is_ok() {
+            return Ok(Some(MetadataEntry { len, encoding: ObjectEncoding::Full }));
+        }
+        let Ok(envelope) = self.blob_store.read_delta(&hash).await else {
+            return Ok(None);
+        };
+        let stored =
+            StoredObject::decode_delta(&envelope).map_err(|error| CasError::CorruptObject {
+                hash: Some(hash),
+                details: format!("delta-only object does not decode: {error}"),
+            })?;
+        Ok(Some(MetadataEntry {
+            len,
+            encoding: ObjectEncoding::Delta { base_hash: stored.state().base_hash },
+        }))
     }
 
     /// Builds a hash whose hex representation starts with `prefix`.
@@ -282,13 +321,15 @@ impl MetadataStore for FileSystemMetadataStore {
         // This transparently handles both current and legacy format files.
         for name in METADATA_FORMAT_NAMES {
             for bytes in self.blob_store.all_aux(name).await? {
-                let (persisted_constraints, persisted_entries) =
+                let (persisted_constraints, persisted_lengths) =
                     versions::load_named_from_bytes(name, &bytes)?;
                 for (target, bases) in persisted_constraints {
                     self.inner.set_constraint(target, bases).await?;
                 }
-                for (hash, (len, encoding)) in persisted_entries {
-                    self.inner.put(hash, MetadataEntry { len, encoding }).await?;
+                for (hash, len) in persisted_lengths {
+                    if let Some(entry) = self.entry_for_persisted_length(hash, len).await? {
+                        self.inner.put(hash, entry).await?;
+                    }
                 }
             }
         }
@@ -435,13 +476,23 @@ mod tests {
 
         let (blob, _dir) = test_blob_store().await;
         let root = blob.root().to_path_buf();
-        let index =
-            std::sync::Arc::new(FileSystemMetadataStore::new(blob).expect("the metadata store"));
+        let index = std::sync::Arc::new(
+            FileSystemMetadataStore::new(blob.clone()).expect("the metadata store"),
+        );
         let entry = || MetadataEntry { len: 1, encoding: ObjectEncoding::Full };
 
         let mut used: BTreeSet<String> = BTreeSet::new();
         for round in 0..RACE_ROUNDS {
             let (left, right) = fresh_pair(&mut used, round);
+            // The snapshot carries lengths only; rebuild derives encoding from the
+            // tree. A real entry therefore needs a physical form on disk, or the
+            // rebuild drops it as absent by design.
+            blob.write(left, ObjectEncoding::Full, Bytes::from_static(b"x"))
+                .await
+                .expect("left blob");
+            blob.write(right, ObjectEncoding::Full, Bytes::from_static(b"y"))
+                .await
+                .expect("right blob");
             let (left_index, right_index) =
                 (std::sync::Arc::clone(&index), std::sync::Arc::clone(&index));
             let (left_entry, right_entry) = (entry(), entry());

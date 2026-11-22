@@ -6,10 +6,10 @@
 //! The `entries` field uses `#[serde(default)]` so old files
 //! (constraints-only) remain loadable.
 //!
-//! This module owns two things: the V1 codec (`parse_v1_snapshot` /
-//! `serialize_v1_snapshot`) and the V1 → current migration hook
-//! (`migrate_v1_to_current`) that a future `v2.rs` would replace.
-//!
+//! This module owns only the V1 codec (`parse_v1_snapshot` /
+//! `serialize_v1_snapshot`) and the V1-local model a parse produces. The V1 →
+//! V2 rewrite lives in [`v2`](super::v2), because V2 owns the contract its own
+//! result has to satisfy.
 //!
 //! ## DO NOT REMOVE: versions policy guard
 //!
@@ -24,8 +24,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
-
-use super::SnapshotData;
 
 /// On-disk representation of a constraint entry.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -56,10 +54,24 @@ struct SnapshotFile {
     entries: BTreeMap<String, EntryData>,
 }
 
-/// Parse V1 snapshot data from raw bytes.
+/// A snapshot decoded from the V1 format, before migration.
 ///
-/// Returns `None` if the data is empty (no snapshot file).
-pub(crate) fn parse_v1_snapshot(data: &[u8]) -> Result<Option<SnapshotData>, CasError> {
+/// V1 records an encoding per entry and the current model derives it from the
+/// tree, so this type exists only so the migration sees both shapes. It is
+/// never returned to a caller outside this `versions` directory.
+pub(crate) struct SnapshotV1 {
+    /// Constraints: target to its bases.
+    pub(crate) constraints: BTreeMap<Hash, BTreeSet<Hash>>,
+    /// Entries: hash to (payload length, encoding).
+    pub(crate) entries: BTreeMap<Hash, (u64, ObjectEncoding)>,
+}
+
+/// Parse V1 snapshot data from raw bytes into the V1-local model.
+///
+/// Returns `None` if the data is empty (no snapshot file). The result still
+/// carries each entry's encoded form; dropping it is the migration's job, not
+/// the parser's, because a V1 reader must keep reading V1 files as written.
+pub(crate) fn parse_v1_snapshot(data: &[u8]) -> Result<Option<SnapshotV1>, CasError> {
     if data.is_empty() {
         return Ok(None);
     }
@@ -112,10 +124,24 @@ pub(crate) fn parse_v1_snapshot(data: &[u8]) -> Result<Option<SnapshotData>, Cas
         entries.insert(hash, (data.len, encoding));
     }
 
-    Ok(Some((constraints, entries)))
+    Ok(Some(SnapshotV1 { constraints, entries }))
 }
 
 /// Serialize V1 snapshot (constraints + entries) to a `Vec<u8>`.
+///
+/// Nothing writes V1 in production after the V2 bump. The writer stays because
+/// it is what the V1 → V2 migration is tested against: a hand-written fixture
+/// would drift from the bytes the V1 format actually produced, and those bytes
+/// are the only input the migration can ever be asked to read.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "nothing writes V1 in production after the V2 bump; the writer exists so the \
+                  V1 to V2 migration is tested against bytes the V1 format actually produced \
+                  instead of a hand-written fixture that could drift from it"
+    )
+)]
 pub(crate) fn serialize_v1_snapshot(
     constraints: &BTreeMap<Hash, BTreeSet<Hash>>,
     entries: &BTreeMap<Hash, (u64, ObjectEncoding)>,
@@ -138,47 +164,25 @@ pub(crate) fn serialize_v1_snapshot(
     serde_json::to_vec_pretty(&file).map_err(|e| CasError::Io(std::io::Error::other(e)))
 }
 
-/// Migrate a snapshot decoded from the V1 format into the current snapshot model.
-///
-/// V1 is the newest format this build implements, so the migration is the
-/// identity today. The hook exists so the ladder has exactly one place where
-/// "carry an old snapshot forward" is written: a V2 cannot change the V1
-/// struct (the V1 loader must keep reading V1 files byte-for-byte as they
-/// were written), so the difference between the two shapes has to live in a
-/// function that sees both.
-///
-/// ## What a real V1 → V2 migration would have to do
-///
-/// - **Renamed, re-typed, or regrouped fields**: read [`SnapshotFile`] and emit
-///   the V2 struct. This is the only function allowed to know both shapes.
-/// - **New required data with no V1 source**: the snapshot cannot supply it,
-///   and inventing a value would fabricate metadata that later verification
-///   would contradict. The field must be optional, or the file must be
-///   re-derived from the WAL
-///   (`MetadataStore::rebuild_from_wal` replays the same facts) before this
-///   migration runs.
-/// - **Dropped or narrowed data**: the caller deletes the superseded file once
-///   this returns `Ok`, which is why
-///   [`METADATA_FORMAT_NAMES`](super::METADATA_FORMAT_NAMES) keeps the old
-///   name readable for exactly as long as the migration may still need it.
-/// - **A version this build does not know**: unreachable from here.
-///   [`migrate_snapshot_to_current`](super::migrate_snapshot_to_current)
-///   rejects an unregistered version before it reaches this function, so a
-///   `metadata-v2.json` written by a newer build is an error on this build
-///   rather than a V1 parse.
-///
-/// # Errors
-///
-/// Cannot fail while V1 is the current format; the signature is fallible
-/// because the rewrite a V2 introduces is not, and the dispatch in
-/// `versions/mod.rs` calls every version through the one fallible seam rather
-/// than special-casing the newest.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "the migration seam must be fallible before it is fallible in fact: a V2 rewrite \
-              that can reject a snapshot it cannot rewrite would otherwise force a signature \
-              change on every caller at exactly the moment the ladder is being extended"
-)]
-pub(crate) fn migrate_v1_to_current(snapshot: SnapshotData) -> Result<SnapshotData, CasError> {
-    Ok(snapshot)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The v1 parser and writer must keep describing v1 files exactly, so a
+    /// store written by an older build is still recovered. The `encoding`
+    /// field is part of that contract even though the current model drops it.
+    #[test]
+    fn v1_bytes_keep_their_encoding_field() {
+        let entry = Hash::from_content(b"entry");
+        let bytes = serialize_v1_snapshot(
+            &BTreeMap::new(),
+            &BTreeMap::from([(entry, (3u64, ObjectEncoding::Full))]),
+        )
+        .expect("serialize");
+        let text = String::from_utf8(bytes).expect("UTF-8 JSON");
+        assert!(
+            text.contains("\"encoding\": \"full\""),
+            "the v1 writer must keep emitting the field a v1 reader expects: {text}"
+        );
+    }
 }
