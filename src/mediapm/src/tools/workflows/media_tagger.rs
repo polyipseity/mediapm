@@ -22,7 +22,7 @@ use crate::conductor_bridge::constants::{
     INPUT_CONTENT, INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS,
     OUTPUT_CONTENT, OUTPUT_SANDBOX_ARTIFACTS,
 };
-use crate::conductor_bridge::sync::find_active_tool_spec;
+use crate::conductor_bridge::sync::{ToolDeployments, find_active_tool_spec};
 use crate::config::MediaStep;
 use crate::config::output_types::{OutputVariantValue, ResolvedStepVariantFlow};
 use crate::config::source_types::step_option_scalar;
@@ -95,12 +95,13 @@ pub(crate) fn synthesize_media_tagger_step(
     mappings: &[ResolvedStepVariantFlow],
     tool_id: &str,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     media_tagger_cache_dir: &Path,
     context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
-    let ffmpeg_tool_id = resolve_media_tagger_ffmpeg_tool_id(step, generated_doc)?;
+    let ffmpeg_tool_id = resolve_media_tagger_ffmpeg_tool_id(step, generated_doc, deployments)?;
     let ffmpeg_bin_for_metadata = resolve_media_tagger_ffmpeg_bin(step);
 
     let mut pending_variant_updates = Vec::new();
@@ -388,6 +389,7 @@ fn build_media_tagger_apply_output(
 fn resolve_media_tagger_ffmpeg_tool_id(
     step: &MediaStep,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
 ) -> Result<String, MediaPmError> {
     let requested_version =
         step_option_scalar(step, "ffmpeg_version").map(str::trim).filter(|value| !value.is_empty());
@@ -395,23 +397,25 @@ fn resolve_media_tagger_ffmpeg_tool_id(
     match requested_version {
         // No pin or the "global" selector: use the active ffmpeg tool.
         None | Some("global") => {
-            let (_, spec) = find_active_tool_spec(generated_doc, "ffmpeg").ok_or_else(|| {
-                MediaPmError::Workflow(
-                    "media-tagger step requires active logical tool 'ffmpeg' for metadata apply"
-                        .to_string(),
-                )
-            })?;
+            let (_, spec) = find_active_tool_spec(generated_doc, deployments, "ffmpeg")
+                .ok_or_else(|| {
+                    MediaPmError::Workflow(
+                        "media-tagger step requires active logical tool 'ffmpeg' for metadata apply"
+                            .to_string(),
+                    )
+                })?;
             Ok(spec.name.clone())
         }
         // Pinned `ffmpeg_version`: any registered ffmpeg tool satisfies the
         // request (managed specs carry no version data to match); prefer the
         // active entry.
         Some(requested_version) => {
-            let (_, spec) = find_active_tool_spec(generated_doc, "ffmpeg").ok_or_else(|| {
-                MediaPmError::Workflow(format!(
-                    "media-tagger step requested ffmpeg_version '{requested_version}', but no matching ffmpeg tool is registered in conductor machine config"
-                ))
-            })?;
+            let (_, spec) =
+                find_active_tool_spec(generated_doc, deployments, "ffmpeg").ok_or_else(|| {
+                    MediaPmError::Workflow(format!(
+                        "media-tagger step requested ffmpeg_version '{requested_version}', but no matching ffmpeg tool is registered in conductor machine config"
+                    ))
+                })?;
             Ok(spec.name.clone())
         }
     }

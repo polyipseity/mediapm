@@ -99,7 +99,6 @@ fn fetched_none_registers_a_spec_without_a_version() {
     let mut generated_doc = NickelDocument::default();
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
-    let mut pruned_tools = 0usize;
 
     apply_entry_outcome(
         &entry,
@@ -112,9 +111,9 @@ fn fetched_none_registers_a_spec_without_a_version() {
             resolved_vcs_hash: Some("0123456789abcdef".to_string()),
         },
         &mut generated_doc,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         &mut report,
         &mut live_state,
-        &mut pruned_tools,
         0,
         &progress,
     );
@@ -164,7 +163,6 @@ fn fetched_none_stamps_the_runtime_its_entry_declares() {
     let mut generated_doc = NickelDocument::default();
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
-    let mut pruned_tools = 0usize;
 
     apply_entry_outcome(
         &entry,
@@ -177,9 +175,9 @@ fn fetched_none_stamps_the_runtime_its_entry_declares() {
             resolved_vcs_hash: Some("0123456789abcdef".to_string()),
         },
         &mut generated_doc,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         &mut report,
         &mut live_state,
-        &mut pruned_tools,
         0,
         &progress,
     );

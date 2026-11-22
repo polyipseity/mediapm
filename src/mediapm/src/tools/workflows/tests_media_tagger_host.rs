@@ -191,6 +191,7 @@ fn run_document(
     let plan = build_media_workflow_plan_with_limits(
         document,
         &generated,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         crate::conductor_bridge::tool_runtime::FfmpegSlotLimits::default(),
         cache_dir,
     )

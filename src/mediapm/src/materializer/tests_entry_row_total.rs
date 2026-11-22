@@ -44,6 +44,7 @@ async fn entry_row_total_and_advances(build: impl FnOnce(String) -> MediaPmDocum
         true,
         &ConductorState::new_empty(),
         &NickelDocument::default(),
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(ProgressBarHandle::disabled())),
         None,

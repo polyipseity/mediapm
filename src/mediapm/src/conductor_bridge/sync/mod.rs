@@ -8,12 +8,14 @@
 //! 5. Apply lifecycle transitions (tag updates, stale entries)
 //! 6. Write generated runtime env file
 //! 7. Save the generated document
+pub(crate) mod deployments;
 pub(crate) mod external_data;
 pub(crate) mod lifecycle;
 mod live_tools;
 mod pool;
 pub(crate) mod provision;
 
+pub use deployments::ToolDeployments;
 use live_tools::live_tool_specs;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -215,6 +217,7 @@ fn recheck_permits_reuse(recheck: ToolRecheck, deployed_at: mediapm_utils::Times
 async fn provision_entry(
     entry: &ProvisionEntry,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     live_state: &HashMap<String, Vec<ToolRegistryEntry>>,
     workspace_cas: &FileSystemCas,
     cache: &ToolDownloadCache,
@@ -267,7 +270,7 @@ async fn provision_entry(
             }
         };
         if spec_matches
-            && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
+            && let Some((key, spec)) = find_active_tool_spec(generated_doc, deployments, tool_id)
             && content_map_hash(&spec.runtime.content_map) == persisted.content_map_hash
             && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map).await
         {
@@ -437,7 +440,8 @@ async fn provision_entry(
 
             if let Some(record) = newest_record
                 && record.canonical_version == expected_composite
-                && let Some((key, spec)) = find_active_tool_spec(generated_doc, tool_id)
+                && let Some((key, spec)) =
+                    find_active_tool_spec(generated_doc, deployments, tool_id)
                 && content_map_hash(&spec.runtime.content_map) == record.content_map_hash
                 && workspace_content_map_is_available(workspace_cas, &spec.runtime.content_map)
                     .await
@@ -678,6 +682,7 @@ pub fn content_map_hash(content_map: &BTreeMap<String, String>) -> String {
 /// last run's retry count forward.
 fn stamp_preset_policy(
     generated_doc: &mut NickelDocument,
+    deployments: &ToolDeployments,
     conductor_tool_id: &str,
     max_input_slots: u32,
     max_output_slots: u32,
@@ -691,7 +696,7 @@ fn stamp_preset_policy(
         build_tool_spec(bare_id, BTreeMap::new(), &BTreeMap::new(), limits).runtime();
     // Resolve the key first and mutate second: holding a `&ToolSpec` from the
     // lookup across the `get_mut` would borrow the document twice.
-    let key = find_active_tool_spec(generated_doc, conductor_tool_id)
+    let key = find_active_tool_spec(generated_doc, deployments, conductor_tool_id)
         .map(|(key, _spec)| key.clone())
         .or_else(|| {
             generated_doc
@@ -736,9 +741,9 @@ fn apply_entry_outcome(
     entry: &ProvisionEntry,
     outcome: EntryOutcome,
     generated_doc: &mut NickelDocument,
+    deployments: &ToolDeployments,
     report: &mut ToolSyncReport,
     live_state: &mut HashMap<String, Vec<ToolRegistryEntry>>,
-    pruned_tools: &mut usize,
     entry_index: usize,
     progress: &OverallProgress,
 ) {
@@ -751,10 +756,12 @@ fn apply_entry_outcome(
             // download is not a reason to keep a stale retry count.
             stamp_preset_policy(
                 generated_doc,
+                deployments,
                 &key,
                 tool_req.max_input_slots,
                 tool_req.max_output_slots,
             );
+            clear_superseded_content_maps(generated_doc, &tool_record.tool_id, &key);
             report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
             progress.advance_once(entry_index);
@@ -762,10 +769,12 @@ fn apply_entry_outcome(
         EntryOutcome::SkippedAfterResolve { key, backfill, tool_record, .. } => {
             stamp_preset_policy(
                 generated_doc,
+                deployments,
                 &key,
                 tool_req.max_input_slots,
                 tool_req.max_output_slots,
             );
+            clear_superseded_content_maps(generated_doc, &tool_record.tool_id, &key);
             report.resolved_field_backfills.push(backfill);
             report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
@@ -816,29 +825,7 @@ fn apply_entry_outcome(
             let tool_key =
                 if map_hash.is_empty() { tool_id.clone() } else { format!("{tool_id}@{map_hash}") };
 
-            // Prune old version keys.
-            //
-            // Clear their content maps so `find_active_tool_spec` and the retain
-            // pass cannot treat a superseded key as active: the live set is
-            // derived from the provisioned record, but the document may still be
-            // read through `find_active_tool_spec`, which prefers the first
-            // non-empty content map in BTreeMap key order.
-            let prefix = format!("{tool_id}@");
-            let old: Vec<String> = generated_doc
-                .tools
-                .keys()
-                .filter(|k| {
-                    (k.starts_with(&prefix) || k.as_str() == tool_id.as_str())
-                        && k.as_str() != tool_key.as_str()
-                })
-                .cloned()
-                .collect();
-            *pruned_tools += old.len();
-            for k in &old {
-                if let Some(spec) = generated_doc.tools.get_mut(k) {
-                    spec.runtime.content_map.clear();
-                }
-            }
+            clear_superseded_content_maps(generated_doc, &tool_id, &tool_key);
 
             generated_doc.tools.insert(tool_key.clone(), spec);
         }
@@ -856,10 +843,6 @@ fn apply_entry_outcome(
             // document's contents. A builtin is registered under its own keyed
             // entry, so writing a bare-id spec here would shadow it. A host
             // builtin gets the definition the crate that supplies the runner
-            // writes — a builtin id, not a bare command-less executable — so
-            // the entry names the implementation a step dispatches to.
-            //
-            // A host builtin gets the definition the crate that supplies the runner
             // writes — a builtin id, not a bare command-less executable — so the
             // entry names the implementation a step dispatches to. The runtime it
             // declares is the one the document carries; the sync derives its live
@@ -870,6 +853,13 @@ fn apply_entry_outcome(
                     .entry(tool_id.clone())
                     .or_insert_with(|| payload_free_tool_spec(&tool_id));
             }
+            let live_key = if is_builtin_code {
+                active_spec_key(generated_doc, &deployments, &tool_id)
+                    .unwrap_or_else(|| tool_id.clone())
+            } else {
+                tool_id.clone()
+            };
+            clear_superseded_content_maps(generated_doc, &tool_id, &live_key);
 
             let record = ToolRegistryEntry {
                 tool_id: tool_id.clone(),
@@ -1504,29 +1494,30 @@ pub(crate) fn dep_segments_from_live_state(
     segments
 }
 
-/// Find the active spec for a logical tool name in a generated document.
+/// Resolve the generated-document entry a tool is currently deployed as.
 ///
-/// The generated doc may hold several specs with the same bare name: a previous
-/// run may have left older keys behind, and the active tool is the spec whose
-/// `runtime.content_map` is non-empty. This build no longer clears a pruned
-/// key's `content_map`, but older documents still carry cleared keys, so the
-/// preference remains. This is the single authoritative resolution used by the
-/// reconcile skip paths and by callers that need the current managed-tool
-/// identity (e.g. the demo examples).
+/// The deployment record decides, because key order cannot: `ffmpeg@<a>` and
+/// `ffmpeg@<b>` are the same bare id, so only state knows which one the last
+/// sync wrote. When state names a key the document holds, that entry is the
+/// answer — which is also how a payload-free builtin resolves, since its record
+/// has no content-map hash and therefore names the bare id.
 ///
-/// Resolution contract:
-/// - Prefer the first spec (deterministic `BTreeMap` key order) whose
-///   `runtime.content_map` is non-empty — that is the active entry.
-/// - Fall back to the first spec matching `tool_name` (any content map) so a
-///   no-payload tool (empty map) still resolves deterministically.
-/// - Return `None` when no spec matches `tool_name`.
-///
-/// Returns the generated-doc key and the matched spec.
+/// The document-only rules remain as the fallback for a document with no
+/// deployment record (a document written before state tracked it) and for a
+/// deployment whose key the document no longer holds: the non-empty content map
+/// first, then any name match.
 #[must_use]
 pub fn find_active_tool_spec<'a>(
     doc: &'a NickelDocument,
+    deployments: &ToolDeployments,
     tool_name: &str,
 ) -> Option<(&'a String, &'a ToolSpec)> {
+    if let Some(active) = deployments.active_key(tool_name)
+        && let Some((key, spec)) = doc.tools.get_key_value(active)
+        && spec.name == tool_name
+    {
+        return Some((key, spec));
+    }
     let mut fallback: Option<(&'a String, &'a ToolSpec)> = None;
     for (key, spec) in &doc.tools {
         if spec.name != tool_name {
@@ -1540,6 +1531,34 @@ pub fn find_active_tool_spec<'a>(
         }
     }
     fallback
+}
+
+/// Empty the content maps of every generated-document key for `tool_id` except
+/// `live_key`.
+///
+/// A keyed entry whose map is non-empty answers a document-only resolution, so
+/// leaving a superseded key populated is what makes two keys for one tool look
+/// live. The maps are cleared rather than the entries removed: the entry keeps
+/// its spec for display, and the retain pass drops it on the next sync because
+/// an empty map for a managed name is what marks it superseded.
+fn clear_superseded_content_maps(
+    generated_doc: &mut NickelDocument,
+    tool_id: &str,
+    live_key: &str,
+) -> usize {
+    let prefix = format!("{tool_id}@");
+    let stale: Vec<String> = generated_doc
+        .tools
+        .keys()
+        .filter(|key| (**key == tool_id || key.starts_with(&prefix)) && key.as_str() != live_key)
+        .cloned()
+        .collect();
+    for key in &stale {
+        if let Some(spec) = generated_doc.tools.get_mut(key) {
+            spec.runtime.content_map.clear();
+        }
+    }
+    stale.len()
 }
 
 /// Opens (or creates) the workspace-scoped persistent CAS store used for tool payloads.
@@ -1638,6 +1657,7 @@ pub(crate) async fn reconcile_desired_tools(
     overall_bar: Option<Arc<dyn ProgressBarApi>>,
 ) -> Result<ToolSyncOutcome, MediaPmError> {
     let mut report = ToolSyncReport::default();
+    let deployments = ToolDeployments::from_records(&state.managed_tools);
 
     // Decode every declared requirement once. Everything below reads this map —
     // the validation loop, the staging choices and the provisioning entries —
@@ -1834,10 +1854,12 @@ pub(crate) async fn reconcile_desired_tools(
     let cache_view: &ToolDownloadCache = &cache;
     let dep_view: &BTreeMap<String, usize> = &dep_indices;
     let progress_view: &OverallProgress = &progress;
+    let deployments_view: &ToolDeployments = &deployments;
     let pool_result = pool::run_pool(jobs, concurrency, |job, gates, mut publisher| async move {
         let outcome = provision_entry(
             &job.input,
             gen_view,
+            deployments_view,
             live_view,
             cas_view,
             cache_view,
@@ -1878,9 +1900,9 @@ pub(crate) async fn reconcile_desired_tools(
                     &entries[idx],
                     outcome,
                     &mut generated_doc,
+                    &deployments,
                     &mut report,
                     &mut live_state,
-                    &mut pruned_tools,
                     idx,
                     progress.as_ref(),
                 );
@@ -2011,7 +2033,7 @@ pub(crate) async fn reconcile_desired_tools(
     let provisioned: Vec<String> =
         report.tool_records.iter().map(|record| record.tool_id.clone()).collect();
     let live_keys: Vec<String> =
-        live_tool_specs(&generated_doc, &provisioned).into_keys().collect();
+        live_tool_specs(&generated_doc, &deployments, &provisioned).into_keys().collect();
     let active_conductor_ids: HashSet<String> = live_keys.iter().cloned().collect();
 
     // 4-6. Everything the tail of the pass writes: the tools runtime directory,
@@ -2051,6 +2073,7 @@ pub(crate) async fn reconcile_desired_tools(
         stamp_payload_roots(
             paths,
             &mut generated_doc,
+            &deployments,
             &live_keys,
             &tool_staging_choices,
             library_payload_staging,
@@ -2061,7 +2084,7 @@ pub(crate) async fn reconcile_desired_tools(
         //    path values from the sanitized conductor id).
         // One map, built here and dropped here: the env file needs a runtime per
         // live tool, and the document is where those runtimes live.
-        let live = live_tool_specs(&generated_doc, &provisioned);
+        let live = live_tool_specs(&generated_doc, &deployments, &provisioned);
         let runtimes: BTreeMap<String, ToolRuntime> = live
             .iter()
             .map(|(conductor_tool_id, spec)| {
@@ -2156,6 +2179,7 @@ pub(crate) async fn reconcile_desired_tools(
 fn stamp_payload_roots(
     paths: &MediaPmPaths,
     generated_doc: &mut NickelDocument,
+    deployments: &ToolDeployments,
     live_keys: &[String],
     tool_staging_choices: &BTreeMap<String, ConfigPayloadStaging>,
     library_payload_staging: PayloadStaging,
@@ -2169,7 +2193,7 @@ fn stamp_payload_roots(
         let Ok(payload_root) = payload_dir.into_os_string().into_string() else {
             continue;
         };
-        let Some(spec_key) = active_spec_key(generated_doc, conductor_tool_id) else {
+        let Some(spec_key) = active_spec_key(generated_doc, &deployments, conductor_tool_id) else {
             continue;
         };
         // `live_keys` holds conductor tool ids (`{name}@{hash}`, or the bare
@@ -2194,11 +2218,16 @@ fn stamp_payload_roots(
 /// The live set carries conductor tool ids, but callers may still name a bare
 /// tool id; `find_active_tool_spec` resolves either to the same spec the
 /// materializer would use.
-fn active_spec_key(generated_doc: &NickelDocument, conductor_tool_id: &str) -> Option<String> {
+fn active_spec_key(
+    generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
+    conductor_tool_id: &str,
+) -> Option<String> {
     if generated_doc.tools.contains_key(conductor_tool_id) {
         return Some(conductor_tool_id.to_string());
     }
-    find_active_tool_spec(generated_doc, conductor_tool_id).map(|(key, _spec)| key.clone())
+    find_active_tool_spec(generated_doc, deployments, conductor_tool_id)
+        .map(|(key, _spec)| key.clone())
 }
 
 #[cfg(test)]

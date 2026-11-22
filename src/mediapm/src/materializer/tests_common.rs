@@ -586,6 +586,7 @@ pub(super) async fn run_sync(
         false,
         &ConductorState::new_empty(),
         &NickelDocument::default(),
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         progress_group,
         overall_bar,
         None,

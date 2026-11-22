@@ -24,7 +24,8 @@ use crate::conductor_bridge::documents::{
     load_conductor_generated_document, load_conductor_user_document,
 };
 use crate::conductor_bridge::sync::{
-    apply_resolved_field_backfills, open_workspace_cas_store, reconcile_desired_tools,
+    ToolDeployments, apply_resolved_field_backfills, open_workspace_cas_store,
+    reconcile_desired_tools,
 };
 use crate::config::ToolRecheck;
 use crate::config::versions;
@@ -1135,11 +1136,13 @@ impl<Cas: WorkspaceProvisioningCas + CasApi + CasMaintenanceApi + Send + Sync + 
         let user_doc = load_conductor_user_document(effective_paths)?;
         let mut generated_doc = load_conductor_generated_document(effective_paths)?;
         let document = ensure_and_load_mediapm_document(effective_paths)?;
+        let deployments = ToolDeployments::from_records(&state.managed_tools);
         reconcile_media_workflows(
             effective_paths,
             &document,
             &mut generated_doc,
             user_doc.as_ref(),
+            &deployments,
         )?;
 
         Ok((
@@ -1542,9 +1545,11 @@ impl MediaPmService<FileSystemCas> {
         // 5. Check if any tools require sync.
         self.append_tool_sync_hint_warning(&mut warnings, &state).await?;
 
+        let deployments = ToolDeployments::from_records(&state.managed_tools);
         materializer::backfill_source_variant_hashes_from_workflow_outputs(
             &mut document,
             &generated_doc,
+            &deployments,
             &conductor_state,
             self.conductor.cas(),
         )
@@ -1575,6 +1580,7 @@ impl MediaPmService<FileSystemCas> {
             verify_materialization,
             &conductor_state,
             &generated_doc,
+            &deployments,
             materialize_pg.clone(),
             materialize_overall.clone(),
             Some(Arc::clone(&self.metadata_cache)),

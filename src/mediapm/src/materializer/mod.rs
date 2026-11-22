@@ -24,6 +24,7 @@ use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use self::progress_labels::{MaterializationBarLabel, split_entry_path};
+use crate::conductor_bridge::sync::ToolDeployments;
 use crate::config::hierarchy_types::{
     FlattenedHierarchyEntry, HierarchyEntryKind, PlaylistItemRef, PlaylistOutputMode,
     ValidatedHierarchyEntry, collect_playlist_media_index, expand_variant_selectors,
@@ -245,6 +246,7 @@ pub async fn sync_hierarchy(
     verify_materialization: bool,
     conductor_state: &ConductorState,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     progress_group: Option<Arc<dyn ProgressScreenApi + Send + Sync>>,
     overall_bar: Option<Arc<dyn ProgressBarApi>>,
     metadata_cache: Option<Arc<MetadataCache>>,
@@ -263,6 +265,7 @@ pub async fn sync_hierarchy(
         cas.clone(),
         Some(conductor_state.clone()),
         generated_doc.clone(),
+        deployments.clone(),
         ffmpeg_slot_limits,
         metadata_cache,
         inherited_env_pairs,

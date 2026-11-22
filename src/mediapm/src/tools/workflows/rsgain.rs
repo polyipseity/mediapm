@@ -31,7 +31,7 @@ use super::ffmpeg::{
 use super::spec::{TokenSpec, assemble_tool_spec, command_option_tokens_for_tool};
 use super::yt_dlp_inputs::resolve_step_output_binding;
 use super::{
-    AutoSaveContext, FfmpegSlotLimits, VariantProducer, media_step_id,
+    AutoSaveContext, FfmpegSlotLimits, ToolDeployments, VariantProducer, media_step_id,
     resolve_input_variant_producer, resolve_selected_dependency_tool_id, resolve_step_tool_id,
     resolve_variant_save, step_option_input_bindings,
 };
@@ -69,15 +69,16 @@ pub(crate) fn synthesize_rsgain_step_chain(
     mappings: &[ResolvedStepVariantFlow],
     tool_id: &str,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
     context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
-    let ffmpeg_tool_id = resolve_selected_dependency_tool_id("ffmpeg", generated_doc)?;
-    let sd_tool_id = resolve_selected_dependency_tool_id("sd", generated_doc)?;
+    let ffmpeg_tool_id = resolve_selected_dependency_tool_id("ffmpeg", generated_doc, deployments)?;
+    let sd_tool_id = resolve_selected_dependency_tool_id("sd", generated_doc, deployments)?;
     let rsgain_tool_id = if tool_id.is_empty() {
-        resolve_step_tool_id(MediaStepTool::Rsgain, generated_doc)?
+        resolve_step_tool_id(MediaStepTool::Rsgain, generated_doc, deployments)?
     } else {
         tool_id.to_string()
     };

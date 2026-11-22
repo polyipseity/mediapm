@@ -48,6 +48,7 @@ async fn run_sync_result(
         false,
         &ConductorState::new_empty(),
         &NickelDocument::default(),
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         None,
         None,
         None,

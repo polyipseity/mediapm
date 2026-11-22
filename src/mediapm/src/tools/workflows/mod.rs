@@ -32,7 +32,7 @@ use mediapm_conductor::{
 };
 
 use crate::conductor_bridge::documents::save_conductor_generated_document;
-use crate::conductor_bridge::sync::find_active_tool_spec;
+use crate::conductor_bridge::sync::{ToolDeployments, find_active_tool_spec};
 pub(crate) use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
 use crate::config::hierarchy_types::{
     hierarchy_consumed_variants, hierarchy_entry_paths_for_variant, validate_media_ids,
@@ -161,9 +161,10 @@ pub(crate) fn resolve_variant_save(
 pub(crate) fn resolve_step_tool_id(
     tool: MediaStepTool,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
 ) -> Result<String, MediaPmError> {
     let tool_name = tool.as_str();
-    let (_, spec) = find_active_tool_spec(generated_doc, tool_name).ok_or_else(|| {
+    let (_, spec) = find_active_tool_spec(generated_doc, deployments, tool_name).ok_or_else(|| {
         if tool == MediaStepTool::Import {
             MediaPmError::Workflow(
                 "builtin tool 'import@v1' is required but not registered in conductor machine config"
@@ -189,12 +190,14 @@ pub(crate) fn resolve_step_tool_id(
 pub(crate) fn resolve_selected_dependency_tool_id(
     tool_name: &str,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
 ) -> Result<String, MediaPmError> {
-    let (_, spec) = find_active_tool_spec(generated_doc, tool_name).ok_or_else(|| {
-        MediaPmError::Workflow(format!(
-            "dependency tool '{tool_name}' is required but not active; add it under mediapm.ncl tools and run tool sync"
-        ))
-    })?;
+    let (_, spec) =
+        find_active_tool_spec(generated_doc, deployments, tool_name).ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "dependency tool '{tool_name}' is required but not active; add it under mediapm.ncl tools and run tool sync"
+            ))
+        })?;
     Ok(spec.name.clone())
 }
 
@@ -689,10 +692,11 @@ fn synthesize_import_step(
     step: &MediaStep,
     mappings: &[ResolvedStepVariantFlow],
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     context: &AutoSaveContext,
 ) -> Result<(), MediaPmError> {
-    let tool_id = resolve_step_tool_id(step.tool, generated_doc)?;
+    let tool_id = resolve_step_tool_id(step.tool, generated_doc, deployments)?;
     let kind = step_option_scalar(step, INPUT_IMPORT_KIND)
         .map_or_else(|| IMPORT_KIND_CAS_HASH.to_string(), ToString::to_string);
     let hash = step_option_scalar(step, "hash").map(ToString::to_string).ok_or_else(|| {
@@ -780,11 +784,14 @@ fn validate_step_option_inputs(
     step_index: usize,
     step: &MediaStep,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
 ) -> Result<(), MediaPmError> {
     if step.options.is_empty() {
         return Ok(());
     }
-    let Some((_tool_key, spec)) = find_active_tool_spec(generated_doc, step.tool.as_str()) else {
+    let Some((_tool_key, spec)) =
+        find_active_tool_spec(generated_doc, deployments, step.tool.as_str())
+    else {
         // Missing/inactive tools are reported by the existing synthesis and
         // resolution paths with their established messages.
         return Ok(());
@@ -824,6 +831,7 @@ fn synthesize_media_steps(
     media_id: &str,
     source: &MediaSourceSpec,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
     media_tagger_cache_dir: &Path,
@@ -832,7 +840,7 @@ fn synthesize_media_steps(
     for (step_index, step) in source.steps.iter().enumerate() {
         let mappings = resolve_step_variant_flow(step)
             .map_err(|reason| MediaPmError::Workflow(format!("step #{step_index} {reason}")))?;
-        validate_step_option_inputs(media_id, step_index, step, generated_doc)?;
+        validate_step_option_inputs(media_id, step_index, step, generated_doc, deployments)?;
         let producer_snapshot = variant_producers.clone();
 
         match step.tool {
@@ -845,12 +853,13 @@ fn synthesize_media_steps(
                     step,
                     &mappings,
                     generated_doc,
+                    deployments,
                     variant_producers,
                     context,
                 )?;
             }
             MediaStepTool::YtDlp => {
-                let tool_id = resolve_step_tool_id(step.tool, generated_doc)?;
+                let tool_id = resolve_step_tool_id(step.tool, generated_doc, deployments)?;
                 yt_dlp::synthesize_yt_dlp_step(
                     workflow,
                     media_id,
@@ -864,7 +873,7 @@ fn synthesize_media_steps(
                 )?;
             }
             MediaStepTool::Ffmpeg => {
-                let tool_id = resolve_step_tool_id(step.tool, generated_doc)?;
+                let tool_id = resolve_step_tool_id(step.tool, generated_doc, deployments)?;
                 ffmpeg::synthesize_ffmpeg_step(
                     workflow,
                     media_id,
@@ -890,7 +899,7 @@ fn synthesize_media_steps(
                     )));
                 }
                 #[cfg(feature = "media-tagger")]
-                let tool_id = resolve_step_tool_id(step.tool, generated_doc)?;
+                let tool_id = resolve_step_tool_id(step.tool, generated_doc, deployments)?;
                 #[cfg(feature = "media-tagger")]
                 media_tagger::synthesize_media_tagger_step(
                     workflow,
@@ -900,6 +909,7 @@ fn synthesize_media_steps(
                     &mappings,
                     &tool_id,
                     generated_doc,
+                    deployments,
                     &producer_snapshot,
                     variant_producers,
                     media_tagger_cache_dir,
@@ -907,7 +917,7 @@ fn synthesize_media_steps(
                 )?;
             }
             MediaStepTool::Rsgain => {
-                let tool_id = resolve_step_tool_id(step.tool, generated_doc)?;
+                let tool_id = resolve_step_tool_id(step.tool, generated_doc, deployments)?;
                 rsgain::synthesize_rsgain_step_chain(
                     workflow,
                     media_id,
@@ -916,6 +926,7 @@ fn synthesize_media_steps(
                     &mappings,
                     &tool_id,
                     generated_doc,
+                    deployments,
                     &producer_snapshot,
                     variant_producers,
                     ffmpeg_slot_limits,
@@ -1006,6 +1017,7 @@ fn reject_unsaved_materialized_variants(
 fn build_media_workflow_plan_with_limits(
     document: &MediaPmDocument,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     ffmpeg_slot_limits: FfmpegSlotLimits,
     media_tagger_cache_dir: &Path,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
@@ -1052,6 +1064,7 @@ fn build_media_workflow_plan_with_limits(
             media_id,
             source,
             generated_doc,
+            deployments,
             &mut variant_producers,
             ffmpeg_slot_limits,
             media_tagger_cache_dir,
@@ -1083,6 +1096,7 @@ pub(crate) fn reconcile_media_workflows(
     document: &MediaPmDocument,
     generated_doc: &mut NickelDocument,
     user_doc: Option<&NickelDocument>,
+    deployments: &ToolDeployments,
 ) -> Result<(), MediaPmError> {
     generated_doc.workflows.retain(|workflow| !workflow.name.starts_with(MANAGED_WORKFLOW_PREFIX));
 
@@ -1090,6 +1104,7 @@ pub(crate) fn reconcile_media_workflows(
     let plan = build_media_workflow_plan_with_limits(
         document,
         generated_doc,
+        deployments,
         ffmpeg_slot_limits,
         &paths.workspace_media_tagger_cache_dir(),
     )?;
@@ -1505,6 +1520,7 @@ mod tests {
         build_media_workflow_plan_with_limits(
             document,
             generated_doc,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
             resolve_ffmpeg_slot_limits(document),
             Path::new(""),
         )
@@ -1937,6 +1953,7 @@ mod tests {
         let error = build_media_workflow_plan_with_limits(
             &document,
             &generated_doc,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
             resolve_ffmpeg_slot_limits(&document),
             Path::new(""),
         )
@@ -1949,6 +1966,7 @@ mod tests {
         let plan = build_media_workflow_plan_with_limits(
             &document,
             &generated_doc,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
             FfmpegSlotLimits { max_input_slots: 128, max_output_slots: 128 },
             Path::new(""),
         )

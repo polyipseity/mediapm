@@ -1,5 +1,6 @@
 //! The skip path: the runtime it rebuilds and the registry record it writes.
 
+use super::deployments::ToolDeployments;
 use crate::config::{ToolRecheck, ToolRequirement};
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
@@ -422,7 +423,7 @@ fn media_tagger_record(
 /// checks exist to prevent.
 fn assert_document_and_record_agree(paths: &MediaPmPaths, report: &ToolSyncReport) {
     let doc = load_conductor_generated_document(paths).expect("load the generated document");
-    let (key, spec) = find_active_tool_spec(&doc, "media-tagger")
+    let (key, spec) = find_active_tool_spec(&doc, &ToolDeployments::empty(), "media-tagger")
         .expect("the freshly provisioned tool is active");
     let recorded = report
         .tool_records
@@ -786,4 +787,77 @@ async fn recheck_interval_resolves_only_after_it_elapses() {
     stale.seed_matching_record_deployed_ago("media-tagger", 7200);
     stale.run().await;
     assert_eq!(stale.resolve_count("media-tagger"), 1, "an expired record is not reused");
+}
+
+/// A skip reuse path clears superseded same-tool content maps, the same
+/// invariant fetch/apply paths enforce.
+#[test]
+fn skip_reuse_clears_superseded_content_maps() {
+    use mediapm_utils::Timestamp;
+    let screen = ProgressScreen::disabled();
+    let bar: Arc<dyn ProgressBarApi> = Arc::new(screen.add_bar(0, "skip"));
+    let progress = OverallProgress::new(&bar);
+    let entry = ProvisionEntry {
+        tool_id: "ffmpeg".to_string(),
+        tool_requirement: ToolRequirement::default(),
+        kind: EntryKind::Explicit,
+    };
+    let mut doc = NickelDocument {
+        tools: BTreeMap::from([
+            (
+                "ffmpeg@old".to_string(),
+                ToolSpec {
+                    name: "ffmpeg".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([("bin/ffmpeg".to_string(), "h1".to_string())]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+            (
+                "ffmpeg@new".to_string(),
+                ToolSpec {
+                    name: "ffmpeg".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([("bin/ffmpeg".to_string(), "h2".to_string())]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+        ]),
+        ..Default::default()
+    };
+    let mut report = ToolSyncReport::default();
+    let mut live_state = std::collections::HashMap::new();
+    apply_entry_outcome(
+        &entry,
+        EntryOutcome::Skipped {
+            key: "ffmpeg@new".to_string(),
+            tool_record: Box::new(ToolRegistryEntry {
+                tool_id: "ffmpeg".to_string(),
+                version: "v".to_string(),
+                canonical_version: "c".to_string(),
+                content_map_hash: "new".to_string(),
+                deployed_at: Timestamp::from_unix_nanos(1),
+                resolved_tag: None,
+                resolved_version: None,
+                resolved_vcs_hash: None,
+            }),
+        },
+        &mut doc,
+        &ToolDeployments::empty(),
+        &mut report,
+        &mut live_state,
+        0,
+        &progress,
+    );
+    assert!(doc.tools["ffmpeg@old"].runtime.content_map.is_empty());
+    assert_eq!(
+        doc.tools["ffmpeg@new"].runtime.content_map.get("bin/ffmpeg"),
+        Some(&"h2".to_string())
+    );
 }

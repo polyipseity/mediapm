@@ -4068,12 +4068,15 @@ fn find_managed_tool_spec<'a>(
     machine: &'a NickelDocument,
     logical_name: &str,
 ) -> ExampleResult<&'a ToolSpec> {
-    mediapm::find_active_tool_spec(machine, logical_name).map(|(_, spec)| spec).ok_or_else(|| {
-        format!(
-            "machine config is missing immutable managed tool id for logical tool '{logical_name}'"
-        )
-        .into()
-    })
+    let deployments = mediapm::ToolDeployments::empty();
+    mediapm::find_active_tool_spec(machine, &deployments, logical_name)
+        .map(|(_, spec)| spec)
+        .ok_or_else(|| {
+            format!(
+                "machine config is missing immutable managed tool id for logical tool '{logical_name}'"
+            )
+            .into()
+        })
 }
 
 fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> ExampleResult<String> {

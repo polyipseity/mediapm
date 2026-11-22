@@ -40,6 +40,7 @@ async fn run_zip_member_sync_with_pack(
         false,
         &ConductorState::new_empty(),
         &NickelDocument::default(),
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         None,
         None,
         None,

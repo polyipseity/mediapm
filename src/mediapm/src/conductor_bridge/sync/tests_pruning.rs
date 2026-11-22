@@ -1,5 +1,6 @@
 //! Stale tool keys and directories: pruning them, and telling an update from an addition.
 
+use super::deployments::ToolDeployments;
 use crate::config::{ToolRecheck, ToolRequirement};
 use crate::output::ProgressScreen;
 use mediapm_conductor::tools::provider::VersionSpecFields;
@@ -402,8 +403,9 @@ async fn stale_seed_drives_name_match_reprovision_and_prune_in_one_pass() {
         "the stale key must be dropped once its content map is cleared, keys: {:?}",
         after.tools.keys().collect::<Vec<_>>()
     );
-    let (active_key, active_spec) = find_active_tool_spec(&after, "media-tagger")
-        .expect("the freshly provisioned tool must resolve as active");
+    let (active_key, active_spec) =
+        find_active_tool_spec(&after, &ToolDeployments::empty(), "media-tagger")
+            .expect("the freshly provisioned tool must resolve as active");
     assert_ne!(
         active_key, "media-tagger@blake3:stale",
         "the active key must be the fresh content hash, got {active_key}"
@@ -653,7 +655,7 @@ async fn a_sync_writes_the_host_builtin_entry_with_no_payload() {
     );
 
     let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
-    let (key, spec) = find_active_tool_spec(&doc, "media-tagger")
+    let (key, spec) = find_active_tool_spec(&doc, &ToolDeployments::empty(), "media-tagger")
         .expect("the entry the sync wrote must resolve for a step that names the tool");
     assert_eq!(key, "media-tagger", "a payload-free tool is filed under its bare id");
     assert!(
@@ -692,7 +694,7 @@ async fn a_second_sync_keeps_the_host_builtin_entry() {
     let second = reconcile_media_tagger_latest(&paths, &state, cache_root.path()).await;
 
     let doc = load_conductor_generated_document(&paths).expect("load generated doc after sync");
-    let (key, spec) = find_active_tool_spec(&doc, "media-tagger").expect(
+    let (key, spec) = find_active_tool_spec(&doc, &ToolDeployments::empty(), "media-tagger").expect(
         "the entry must survive the pass after the one that wrote it, otherwise the tagging step stops resolving",
     );
     assert_eq!(key, "media-tagger");

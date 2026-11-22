@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use mediapm_conductor::{NickelDocument, ToolSpec};
 
-use super::find_active_tool_spec;
+use super::{ToolDeployments, find_active_tool_spec};
 
 /// The specs of the tools this run provisioned, keyed by generated-document key.
 ///
@@ -20,11 +20,12 @@ use super::find_active_tool_spec;
 #[must_use]
 pub(crate) fn live_tool_specs<'a>(
     doc: &'a NickelDocument,
+    deployments: &ToolDeployments,
     provisioned: &[String],
 ) -> BTreeMap<String, &'a ToolSpec> {
     let mut live = BTreeMap::new();
     for tool_id in provisioned {
-        if let Some((key, spec)) = find_active_tool_spec(doc, tool_id) {
+        if let Some((key, spec)) = find_active_tool_spec(doc, deployments, tool_id) {
             live.insert(key.clone(), spec);
         }
     }
@@ -71,7 +72,7 @@ mod tests {
         doc.tools.insert("yt-dlp@v2".to_string(), spec("yt-dlp", &[("linux/yt-dlp", "new")]));
         doc.tools.insert("ffmpeg@v1".to_string(), spec("ffmpeg", &[("linux/ffmpeg", "kept")]));
 
-        let live = live_tool_specs(&doc, &["yt-dlp".to_string()]);
+        let live = live_tool_specs(&doc, &ToolDeployments::empty(), &["yt-dlp".to_string()]);
         assert_eq!(live.keys().collect::<Vec<_>>(), vec!["yt-dlp@v2"], "the active spec wins");
         assert!(
             !live.contains_key("ffmpeg@v1"),
@@ -86,7 +87,7 @@ mod tests {
         let mut doc = NickelDocument::default();
         doc.tools.insert("import".to_string(), spec("import", &[]));
 
-        let live = live_tool_specs(&doc, &["import".to_string()]);
+        let live = live_tool_specs(&doc, &ToolDeployments::empty(), &["import".to_string()]);
         assert_eq!(live.keys().collect::<Vec<_>>(), vec!["import"]);
     }
 
@@ -95,6 +96,8 @@ mod tests {
     #[test]
     fn a_tool_without_a_spec_is_not_live() {
         let doc = NickelDocument::default();
-        assert!(live_tool_specs(&doc, &["missing".to_string()]).is_empty());
+        assert!(
+            live_tool_specs(&doc, &ToolDeployments::empty(), &["missing".to_string()]).is_empty()
+        );
     }
 }

@@ -226,6 +226,7 @@ async fn the_synthesized_apply_step_consumes_the_metadata_document() {
     let plan = build_media_workflow_plan_with_limits(
         &document,
         &generated,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         resolve_ffmpeg_slot_limits(&document),
         workspace.path(),
     )

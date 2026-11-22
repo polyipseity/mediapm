@@ -238,6 +238,7 @@ async fn a_playlist_whose_path_is_a_directory_is_counted_as_missing() {
         false,
         &ConductorState::new_empty(),
         &NickelDocument::default(),
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         Some(Arc::new(recording.clone())),
         Some(Arc::new(overall.clone())),
         None,

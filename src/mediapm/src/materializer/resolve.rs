@@ -7,7 +7,7 @@ use mediapm_conductor::{
     ConductorState, NickelDocument, ToolCallInstance, merge_step_input_bindings,
 };
 
-use crate::conductor_bridge::sync::find_active_tool_spec;
+use crate::conductor_bridge::sync::{ToolDeployments, find_active_tool_spec};
 use crate::config::MediaPmDocument;
 use crate::config::hierarchy_types::HierarchyEntry;
 use crate::config::source_types::MediaSourceSpec;
@@ -131,6 +131,7 @@ fn is_zip_content(data: &[u8]) -> bool {
 pub(crate) async fn backfill_source_variant_hashes_from_workflow_outputs(
     document: &mut MediaPmDocument,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     conductor_state: &ConductorState,
     cas: &FileSystemCas,
 ) -> Result<(), MediaPmError> {
@@ -144,9 +145,14 @@ pub(crate) async fn backfill_source_variant_hashes_from_workflow_outputs(
             continue;
         };
 
-        let Some(step_outputs) =
-            resolve_workflow_step_output_hashes(cas, generated_doc, conductor_state, workflow)
-                .await?
+        let Some(step_outputs) = resolve_workflow_step_output_hashes(
+            cas,
+            generated_doc,
+            deployments,
+            conductor_state,
+            workflow,
+        )
+        .await?
         else {
             continue;
         };
@@ -417,6 +423,7 @@ async fn resolve_variant_hash_from_workflow_state(
             let result = resolve_workflow_step_output_hashes(
                 &lookup.cas,
                 &lookup.generated_doc,
+                &lookup.deployments,
                 state,
                 workflow,
             )
@@ -466,6 +473,7 @@ async fn resolve_variant_hash_from_workflow_state(
 pub(super) async fn resolve_workflow_step_output_hashes(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     state: &ConductorState,
     workflow: &mediapm_conductor::WorkflowSpec,
 ) -> Result<Option<StepOutputHashes>, MediaPmError> {
@@ -476,6 +484,7 @@ pub(super) async fn resolve_workflow_step_output_hashes(
         if let Some(outputs) = resolve_step_output_hashes(
             cas,
             generated_doc,
+            deployments,
             state,
             &workflow.name,
             step,
@@ -663,11 +672,12 @@ struct WorkMaterialResolution {
 async fn derive_step_work_material(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     step: &mediapm_conductor::WorkflowStepSpec,
     prior_step_outputs: &StepOutputHashes,
 ) -> Result<WorkMaterialResolution, MediaPmError> {
     let merged_step_inputs =
-        merge_step_inputs_with_tool_defaults(generated_doc, &step.tool, &step.inputs)?;
+        merge_step_inputs_with_tool_defaults(generated_doc, deployments, &step.tool, &step.inputs)?;
     let expected =
         resolve_expected_input_hashes(cas, generated_doc, &merged_step_inputs, prior_step_outputs)
             .await?;
@@ -676,7 +686,7 @@ async fn derive_step_work_material(
         return Ok(WorkMaterialResolution { material: None, unresolved });
     };
 
-    let (_, tool_spec) = find_active_tool_spec(generated_doc, &step.tool)
+    let (_, tool_spec) = find_active_tool_spec(generated_doc, deployments, &step.tool)
         .map(|(key, spec)| (key.clone(), spec))
         .ok_or_else(|| {
             MediaPmError::Workflow(format!(
@@ -724,15 +734,17 @@ async fn derive_step_work_material(
 async fn resolve_step_output_hashes(
     cas: &FileSystemCas,
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     state: &ConductorState,
     workflow_name: &str,
     step: &mediapm_conductor::WorkflowStepSpec,
     required_step_output_names: &RequiredStepOutputNames,
     prior_step_outputs: &StepOutputHashes,
 ) -> Result<Option<BTreeMap<String, Option<Hash>>>, MediaPmError> {
-    let work = derive_step_work_material(cas, generated_doc, step, prior_step_outputs).await?;
+    let work = derive_step_work_material(cas, generated_doc, deployments, step, prior_step_outputs)
+        .await?;
 
-    let (conductor_tool_key, _) = find_active_tool_spec(generated_doc, &step.tool)
+    let (conductor_tool_key, _) = find_active_tool_spec(generated_doc, deployments, &step.tool)
         .map(|(key, spec)| (key.clone(), spec))
         .ok_or_else(|| {
             MediaPmError::Workflow(format!(
@@ -863,14 +875,16 @@ fn output_hashes_from_instance(instance: &ToolCallInstance) -> BTreeMap<String, 
 /// conductor `resolve_step_inputs` key collection.
 fn merge_step_inputs_with_tool_defaults(
     generated_doc: &NickelDocument,
+    deployments: &ToolDeployments,
     step_tool: &str,
     step_inputs: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, MediaPmError> {
-    let (_, tool_spec) = find_active_tool_spec(generated_doc, step_tool).ok_or_else(|| {
-        MediaPmError::Workflow(format!(
-            "workflow step references unknown tool '{step_tool}' in generated config",
-        ))
-    })?;
+    let (_, tool_spec) =
+        find_active_tool_spec(generated_doc, deployments, step_tool).ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "workflow step references unknown tool '{step_tool}' in generated config",
+            ))
+        })?;
     Ok(merge_step_input_bindings(step_inputs, tool_spec))
 }
 
@@ -1383,10 +1397,16 @@ mod tests {
             }
         }
 
-        let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, workflow)
-            .await
-            .expect("resolve workflow step outputs")
-            .expect("expected step outputs");
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
+            &state,
+            workflow,
+        )
+        .await
+        .expect("resolve workflow step outputs")
+        .expect("expected step outputs");
 
         assert!(
             step_outputs.contains_key("step-1-ffmpeg"),
@@ -1429,9 +1449,15 @@ mod tests {
             }
         }
 
-        let before = resolve_workflow_step_output_hashes(&cas, &generated, &state, workflow)
-            .await
-            .expect("resolve workflow step outputs without the duplicate");
+        let before = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
+            &state,
+            workflow,
+        )
+        .await
+        .expect("resolve workflow step outputs without the duplicate");
 
         let mut duplicated = state.clone();
         let recorded = duplicated
@@ -1444,9 +1470,15 @@ mod tests {
             .tool_call_instances
             .insert(Hash::from_content(b"a-second-record-for-the-same-tool"), recorded);
 
-        let after = resolve_workflow_step_output_hashes(&cas, &generated, &duplicated, workflow)
-            .await
-            .expect("resolve workflow step outputs with the duplicate");
+        let after = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
+            &duplicated,
+            workflow,
+        )
+        .await
+        .expect("resolve workflow step outputs with the duplicate");
 
         assert_eq!(
             before, after,
@@ -1537,9 +1569,15 @@ mod tests {
 
         for (index, step) in workflow.steps.iter().enumerate() {
             let (tool_call_id, tool_spec) =
-                find_active_tool_spec(&generated, &step.tool).expect("the step's tool spec");
-            let merged = merge_step_inputs_with_tool_defaults(&generated, &step.tool, &step.inputs)
-                .expect("merge step inputs with the tool's defaults");
+                find_active_tool_spec(&generated, &ToolDeployments::empty(), &step.tool)
+                    .expect("the step's tool spec");
+            let merged = merge_step_inputs_with_tool_defaults(
+                &generated,
+                &ToolDeployments::empty(),
+                &step.tool,
+                &step.inputs,
+            )
+            .expect("merge step inputs with the tool's defaults");
             let execution_env = generated.execution_env_vars_for(tool_spec);
             let values = resolve_instance_key_input_values::<FileSystemCas>(
                 &merged,
@@ -1643,10 +1681,16 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let resolved = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
-            .await
-            .expect("resolve workflow step outputs")
-            .expect("the recorded instances supply every step");
+        let resolved = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("resolve workflow step outputs")
+        .expect("the recorded instances supply every step");
 
         for step in &workflow.steps {
             let expected = recorded.get(&step.id).expect("recorded outputs for the step");
@@ -1687,19 +1731,31 @@ mod tests {
             }
         }
 
-        let before = resolve_workflow_step_output_hashes(&cas, &generated, &state, workflow)
-            .await
-            .expect("resolve before marking")
-            .expect("expected step outputs");
+        let before = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
+            &state,
+            workflow,
+        )
+        .await
+        .expect("resolve before marking")
+        .expect("expected step outputs");
 
         let mut marked = state.clone();
         for instance in marked.tool_call_instances.values_mut() {
             instance.invalidated_at_nk = Some(mediapm_utils::Timestamp::now());
         }
-        let after = resolve_workflow_step_output_hashes(&cas, &generated, &marked, workflow)
-            .await
-            .expect("resolve after marking")
-            .expect("expected step outputs");
+        let after = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
+            &marked,
+            workflow,
+        )
+        .await
+        .expect("resolve after marking")
+        .expect("expected step outputs");
 
         assert_eq!(
             before, after,
@@ -1745,6 +1801,7 @@ mod tests {
 
         let merged_ffmpeg_inputs = merge_step_inputs_with_tool_defaults(
             &generated,
+            &ToolDeployments::empty(),
             &ffmpeg_step.tool,
             &ffmpeg_step.inputs,
         )
@@ -1757,7 +1814,8 @@ mod tests {
                 .expect("ffmpeg expected inputs");
 
         let (conductor_tool_key, tool_spec) =
-            find_active_tool_spec(&generated, &ffmpeg_step.tool).expect("active ffmpeg tool");
+            find_active_tool_spec(&generated, &ToolDeployments::empty(), &ffmpeg_step.tool)
+                .expect("active ffmpeg tool");
         let resolved_values = build_instance_key_resolved_value_bytes(
             &cas,
             &ffmpeg_step.inputs,
@@ -2353,18 +2411,22 @@ mod tests {
         let mut paired = Vec::new();
 
         for step in &workflow.steps {
-            let (tool_call_id, tool_spec) = find_active_tool_spec(generated, &step.tool)
-                .map(|(key, spec)| (key.clone(), spec))
-                .ok_or_else(|| {
-                    format!(
-                        "step '{}' references unknown tool '{}' in the generated document",
-                        step.id, step.tool,
-                    )
-                })?;
-            let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
-                .map_err(|error| {
-                    format!("step '{}': merging step inputs failed: {error}", step.id)
-                })?;
+            let (tool_call_id, tool_spec) =
+                find_active_tool_spec(generated, &ToolDeployments::empty(), &step.tool)
+                    .map(|(key, spec)| (key.clone(), spec))
+                    .ok_or_else(|| {
+                        format!(
+                            "step '{}' references unknown tool '{}' in the generated document",
+                            step.id, step.tool,
+                        )
+                    })?;
+            let merged = merge_step_inputs_with_tool_defaults(
+                generated,
+                &ToolDeployments::empty(),
+                &step.tool,
+                &step.inputs,
+            )
+            .map_err(|error| format!("step '{}': merging step inputs failed: {error}", step.id))?;
             let Some(expected_inputs) =
                 resolve_expected_input_hashes(cas, generated, &merged, &step_outputs)
                     .await
@@ -2678,8 +2740,13 @@ mod tests {
         step: &mediapm_conductor::WorkflowStepSpec,
         step_outputs: &StepOutputHashes,
     ) -> Result<mediapm_conductor::StepWorkMaterial, String> {
-        let merged = merge_step_inputs_with_tool_defaults(generated, &step.tool, &step.inputs)
-            .map_err(|error| format!("step '{}': merging step inputs failed: {error}", step.id))?;
+        let merged = merge_step_inputs_with_tool_defaults(
+            generated,
+            &ToolDeployments::empty(),
+            &step.tool,
+            &step.inputs,
+        )
+        .map_err(|error| format!("step '{}': merging step inputs failed: {error}", step.id))?;
         let Some(expected_inputs) =
             resolve_expected_input_hashes(cas, generated, &merged, step_outputs)
                 .await
@@ -2693,7 +2760,9 @@ mod tests {
                 step.id,
             ));
         };
-        let Some((_, tool_spec)) = find_active_tool_spec(generated, &step.tool) else {
+        let Some((_, tool_spec)) =
+            find_active_tool_spec(generated, &ToolDeployments::empty(), &step.tool)
+        else {
             return Err(format!("step '{}' references a tool with no active spec", step.id));
         };
         let execution_env = generated.execution_env_vars_for(tool_spec);
@@ -2770,7 +2839,8 @@ mod tests {
         let mut rewrites: BTreeMap<Hash, DemoInstanceKeyRewrite> = BTreeMap::new();
         for step in &workflow.steps {
             let Some(active_tool_key) =
-                find_active_tool_spec(generated, &step.tool).map(|(key, _)| key.clone())
+                find_active_tool_spec(generated, &ToolDeployments::empty(), &step.tool)
+                    .map(|(key, _)| key.clone())
             else {
                 return Err(format!(
                     "step '{}' references unknown tool '{}' in the generated document",
@@ -3495,12 +3565,15 @@ mod tests {
         );
 
         let workflow = infojson_workflow();
-        let error =
-            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
-                .await
-                .expect_err(
-                    "two records that disagree about a required output must not be chosen between",
-                );
+        let error = resolve_workflow_step_output_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect_err("two records that disagree about a required output must not be chosen between");
 
         let message = error.to_string();
         assert!(
@@ -3555,11 +3628,16 @@ mod tests {
         );
 
         let workflow = infojson_workflow();
-        let step_outputs =
-            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
-                .await
-                .expect("agreement between candidates is not an ambiguity")
-                .expect("the agreeing records answer for the step");
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("agreement between candidates is not an ambiguity")
+        .expect("the agreeing records answer for the step");
 
         assert_eq!(
             step_outputs
@@ -3715,6 +3793,7 @@ mod tests {
             cas,
             Some(state),
             generated_doc,
+            ToolDeployments::empty(),
             resolve_ffmpeg_slot_limits(&document),
             None,
             crate::child_env::default_host_inherited_env_pairs(),
@@ -3752,11 +3831,16 @@ mod tests {
             .insert(Hash::from_content(b"other-instance"), infojson_instance(other_hash, 2, None));
 
         let workflow = infojson_workflow();
-        let step_outputs =
-            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
-                .await
-                .expect("a record that never served the step is not a candidate")
-                .expect("the record that names the step answers for it");
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("a record that never served the step is not a candidate")
+        .expect("the record that names the step answers for it");
 
         assert_eq!(
             step_outputs
@@ -3789,10 +3873,15 @@ mod tests {
         // The tool has to resolve for the pass to run at all, and the record
         // still answers nothing because its ref names no workflow.
         let workflow = infojson_workflow();
-        let step_outputs =
-            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
-                .await
-                .expect("a ref that names no workflow is not an error");
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("a ref that names no workflow is not an error");
 
         assert!(
             step_outputs.is_none(),
@@ -3841,10 +3930,15 @@ mod tests {
             .inputs
             .insert("url".to_string(), "${step_output.step-0-0-import.video_untagged}".to_string());
 
-        let error =
-            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
-                .await
-                .expect_err("two records that disagree must not be chosen between");
+        let error = resolve_workflow_step_output_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect_err("two records that disagree must not be chosen between");
 
         let message = error.to_string();
         assert!(
@@ -4343,6 +4437,7 @@ mod tests {
             let step_outputs = resolve_workflow_step_output_hashes(
                 &cas,
                 &relaxed_generated_doc(),
+                &crate::conductor_bridge::sync::ToolDeployments::empty(),
                 &state,
                 &named(served),
             )
@@ -4363,6 +4458,7 @@ mod tests {
         let step_outputs = resolve_workflow_step_output_hashes(
             &cas,
             &relaxed_generated_doc(),
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
             &state,
             &named("mediapm.media.third"),
         )
@@ -4395,10 +4491,15 @@ mod tests {
         );
 
         let workflow = infojson_workflow();
-        let step_outputs =
-            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
-                .await
-                .expect("a record of another workflow is not an error");
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("a record of another workflow is not an error");
 
         assert!(
             step_outputs.is_none(),
@@ -4490,10 +4591,15 @@ mod tests {
             .insert("yt_dlp_description_file".to_string(), capture("yt_dlp_description_file"));
         step.outputs.insert("yt_dlp_infojson_file".to_string(), capture("yt_dlp_infojson_file"));
 
-        let error =
-            resolve_workflow_step_output_hashes(&cas, &relaxed_generated_doc(), &state, &workflow)
-                .await
-                .expect_err("agreement on one output does not settle the other required output");
+        let error = resolve_workflow_step_output_hashes(
+            &cas,
+            &relaxed_generated_doc(),
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect_err("agreement on one output does not settle the other required output");
 
         let message = error.to_string();
         assert!(message.contains(INFOJSON_STEP_ID), "the refusal names the step: {message}");
@@ -4570,6 +4676,7 @@ mod tests {
             cas.clone(),
             Some(state),
             generated_doc,
+            crate::conductor_bridge::sync::ToolDeployments::empty(),
             resolve_ffmpeg_slot_limits(&document),
             None,
             crate::child_env::default_host_inherited_env_pairs(),
@@ -4679,6 +4786,7 @@ mod tests {
             cas.clone(),
             Some(state),
             generated_doc,
+            ToolDeployments::empty(),
             resolve_ffmpeg_slot_limits(&document),
             None,
             crate::child_env::default_host_inherited_env_pairs(),
@@ -4853,6 +4961,7 @@ mod tests {
         let step_outputs = resolve_workflow_step_output_hashes(
             &cas,
             &generated_doc,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
             &state,
             &generated_doc.workflows[0],
         )
@@ -4879,6 +4988,7 @@ mod tests {
         backfill_source_variant_hashes_from_workflow_outputs(
             &mut document,
             &generated_doc,
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
             &state,
             &cas,
         )
@@ -5017,10 +5127,16 @@ mod tests {
         let state = primary_download_infojson_state(primary_video_hash, infojson_hash);
         let workflow = primary_download_infojson_workflow();
 
-        let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
-            .await
-            .expect("resolve workflow outputs")
-            .expect("expected workflow step outputs");
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("resolve workflow outputs")
+        .expect("expected workflow step outputs");
 
         let outputs = step_outputs
             .get("step-0-2-yt-dlp-infojson-to-infojson")
@@ -5128,10 +5244,16 @@ mod tests {
             }],
         };
 
-        let step_outputs = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
-            .await
-            .expect("resolve workflow outputs")
-            .expect("expected workflow step outputs");
+        let step_outputs = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("resolve workflow outputs")
+        .expect("expected workflow step outputs");
 
         let outputs = step_outputs
             .get("step-0-2-yt-dlp-infojson-to-infojson")
@@ -5326,6 +5448,7 @@ mod tests {
             cas.clone(),
             Some(state),
             generated,
+            ToolDeployments::empty(),
             slot_limits,
             None,
             crate::child_env::default_host_inherited_env_pairs(),
@@ -5377,9 +5500,16 @@ mod tests {
         let generated = relaxed_generated_doc();
         let workflow = infojson_workflow();
         let step = workflow.steps.first().expect("infojson step");
-        let (_, tool_spec) = find_active_tool_spec(&generated, &step.tool).expect("yt-dlp spec");
-        let merged = merge_step_inputs_with_tool_defaults(&generated, &step.tool, &step.inputs)
-            .expect("merge inputs");
+        let (_, tool_spec) =
+            find_active_tool_spec(&generated, &ToolDeployments::empty(), &step.tool)
+                .expect("yt-dlp spec");
+        let merged = merge_step_inputs_with_tool_defaults(
+            &generated,
+            &ToolDeployments::empty(),
+            &step.tool,
+            &step.inputs,
+        )
+        .expect("merge inputs");
         let material = mediapm_conductor::StepWorkMaterial::for_step(
             tool_command_parts(tool_spec),
             &mediapm_conductor::tool_literal_env_vars(tool_spec),
@@ -5399,10 +5529,16 @@ mod tests {
             infojson_instance(hash, 1, Some(infojson_step_ref(&workflow.name))),
         );
 
-        let resolved = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
-            .await
-            .expect("resolve v8-keyed instance")
-            .expect("step output");
+        let resolved = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("resolve v8-keyed instance")
+        .expect("step output");
         assert_eq!(
             resolved.get(INFOJSON_STEP_ID).and_then(|outputs| outputs.get("yt_dlp_infojson_file")),
             Some(&Some(hash)),
@@ -5441,10 +5577,16 @@ mod tests {
             BTreeMap::from([(INFOJSON_STEP_ID.to_string(), new_key)]),
         );
 
-        let resolved = resolve_workflow_step_output_hashes(&cas, &generated, &state, &workflow)
-            .await
-            .expect("resolve via pointer")
-            .expect("step output");
+        let resolved = resolve_workflow_step_output_hashes(
+            &cas,
+            &generated,
+            &ToolDeployments::empty(),
+            &state,
+            &workflow,
+        )
+        .await
+        .expect("resolve via pointer")
+        .expect("step output");
         assert_eq!(
             resolved.get(INFOJSON_STEP_ID).and_then(|outputs| outputs.get("yt_dlp_infojson_file")),
             Some(&Some(new_hash)),

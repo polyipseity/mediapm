@@ -458,7 +458,6 @@ fn apply_pass_reasserting_a_counted_entry_does_not_double_advance() {
     let mut generated_doc = NickelDocument::default();
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
-    let mut pruned_tools = 0usize;
 
     apply_entry_outcome(
         &entry,
@@ -476,9 +475,9 @@ fn apply_pass_reasserting_a_counted_entry_does_not_double_advance() {
             }),
         },
         &mut generated_doc,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         &mut report,
         &mut live_state,
-        &mut pruned_tools,
         0,
         &progress,
     );

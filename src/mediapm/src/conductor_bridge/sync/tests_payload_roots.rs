@@ -69,7 +69,14 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
     let live_keys = vec![conductor_tool_id.to_string()];
     let choices = BTreeMap::from([("scripted".to_string(), ConfigPayloadStaging::InPlace)]);
 
-    stamp_payload_roots(&paths, &mut document, &live_keys, &choices, PayloadStaging::InPlace);
+    stamp_payload_roots(
+        &paths,
+        &mut document,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
+        &live_keys,
+        &choices,
+        PayloadStaging::InPlace,
+    );
 
     let expected = payload_dir
         .to_str()
@@ -104,6 +111,7 @@ fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
     stamp_payload_roots(
         &paths,
         &mut document,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         &live_keys,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
@@ -188,6 +196,7 @@ fn a_tool_without_a_content_map_is_not_stamped() {
     stamp_payload_roots(
         &paths,
         &mut document,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
         &live_keys,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
@@ -283,7 +292,14 @@ fn regression_a_hard_link_request_survives_a_sync() {
     let live_keys = vec![conductor_tool_id.to_string()];
     let choices = BTreeMap::from([("scripted".to_string(), ConfigPayloadStaging::HardLink)]);
 
-    stamp_payload_roots(&paths, &mut document, &live_keys, &choices, PayloadStaging::HardLink);
+    stamp_payload_roots(
+        &paths,
+        &mut document,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
+        &live_keys,
+        &choices,
+        PayloadStaging::HardLink,
+    );
 
     assert_eq!(
         document.runtime.payload_staging,
@@ -337,7 +353,14 @@ fn regression_an_override_is_written_once_in_the_emitted_document() {
         ("inheriting".to_string(), ConfigPayloadStaging::Inherit),
     ]);
 
-    stamp_payload_roots(&paths, &mut document, &live_keys, &choices, PayloadStaging::Copy);
+    stamp_payload_roots(
+        &paths,
+        &mut document,
+        &crate::conductor_bridge::sync::ToolDeployments::empty(),
+        &live_keys,
+        &choices,
+        PayloadStaging::Copy,
+    );
 
     assert_eq!(
         document.tools[overriding].runtime.payload_staging,

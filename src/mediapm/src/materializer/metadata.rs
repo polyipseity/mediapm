@@ -15,6 +15,7 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{ConductorState, NickelDocument};
 use regex::Regex;
 
+use crate::conductor_bridge::sync::ToolDeployments;
 use crate::config::MediaPmDocument;
 use crate::config::hierarchy_types::{
     FlattenedHierarchyEntry, HierarchyFolderRenameRule, missing_media_id_path_error,
@@ -46,6 +47,8 @@ pub(super) struct MaterializationLookupContext {
     pub(super) conductor_state: Option<ConductorState>,
     /// Generated conductor document carrying managed workflows and tools.
     pub(super) generated_doc: NickelDocument,
+    /// Active deployment keys, so tool resolution follows state rather than key order.
+    pub(super) deployments: ToolDeployments,
     /// Effective ffmpeg slot limits for variant binding resolution.
     pub(super) ffmpeg_slot_limits: FfmpegSlotLimits,
     /// Cache for per-workflow step output hash resolution during one sync pass.
@@ -70,6 +73,7 @@ impl MaterializationLookupContext {
         cas: FileSystemCas,
         conductor_state: Option<ConductorState>,
         generated_doc: NickelDocument,
+        deployments: ToolDeployments,
         ffmpeg_slot_limits: FfmpegSlotLimits,
         metadata_cache: Option<Arc<MetadataCache>>,
         inherited_env_pairs: Vec<(String, String)>,
@@ -78,6 +82,7 @@ impl MaterializationLookupContext {
             cas,
             conductor_state,
             generated_doc,
+            deployments,
             ffmpeg_slot_limits,
             step_output_hashes_cache: Arc::new(Mutex::new(BTreeMap::new())),
             metadata_cache,
@@ -779,6 +784,7 @@ mod tests {
             false,
             &ConductorState::new_empty(),
             &NickelDocument::default(),
+            &crate::conductor_bridge::sync::ToolDeployments::empty(),
             None,
             None,
             Some(Arc::new(MetadataCache::open(&cache_dir))),
