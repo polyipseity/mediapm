@@ -209,6 +209,10 @@ impl CasMaintenanceApi for ConfiguredCas {
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
         forward!(self.list_hashes().await)
     }
+
+    async fn list_corrupted_objects(&self) -> Result<Vec<Hash>, CasError> {
+        forward!(self.list_corrupted_objects().await)
+    }
 }
 
 #[async_trait]

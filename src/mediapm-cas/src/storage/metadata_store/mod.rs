@@ -132,11 +132,22 @@ pub trait MetadataStore: Send + Sync {
         Ok(0)
     }
 
-    /// List hashes whose every physical form is known to be unsound.
+    /// Record that `hash` has no sound physical form.
     ///
-    /// The default is empty because a store that does not persist a corruption
-    /// record has nothing to report; `FileSystemMetadataStore` overrides this
-    /// once Task 2 gives it a real set.
+    /// Defaulted to a no-op: a store with no persistent snapshot has no record
+    /// to keep, and a reader of such a store rediscovers corruption by reading.
+    async fn mark_corrupted(&self, hash: Hash) -> Result<(), CasError> {
+        let _ = hash;
+        Ok(())
+    }
+
+    /// Clear a corruption record, because a sound form exists again.
+    async fn clear_corrupted(&self, hash: &Hash) -> Result<(), CasError> {
+        let _ = hash;
+        Ok(())
+    }
+
+    /// List every hash recorded as corrupt, sorted.
     async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
         Ok(Vec::new())
     }

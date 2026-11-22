@@ -377,8 +377,12 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M
                       the address space that holds them"
         )]
         let count = self.bg_engine.run_wal_consumer().await? as usize;
-        let maint_done = self.bg_engine.run_maintenance().await?;
-        Ok(OptimizeReport { wal_entries_consumed: count, maintenance_done: maint_done })
+        let outcome = self.bg_engine.run_maintenance().await?;
+        Ok(OptimizeReport {
+            wal_entries_consumed: count,
+            maintenance_done: outcome.did_work,
+            corrupted_objects: outcome.corrupted_objects,
+        })
     }
 
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
@@ -389,6 +393,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M
 
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
         self.metadata.list_hashes().await
+    }
+
+    async fn list_corrupted_objects(&self) -> Result<Vec<Hash>, CasError> {
+        self.metadata.list_corrupted().await
     }
 }
 
@@ -468,5 +476,9 @@ where
 
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
         self.deref().list_hashes().await
+    }
+
+    async fn list_corrupted_objects(&self) -> Result<Vec<Hash>, CasError> {
+        self.deref().list_corrupted_objects().await
     }
 }

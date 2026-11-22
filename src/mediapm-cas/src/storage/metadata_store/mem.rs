@@ -146,8 +146,20 @@ impl MetadataStore for InMemoryMetadataStore {
         Ok(PrunedConstraints { targets, bases })
     }
 
+    async fn mark_corrupted(&self, hash: Hash) -> Result<(), CasError> {
+        self.corrupted.insert(hash);
+        Ok(())
+    }
+
+    async fn clear_corrupted(&self, hash: &Hash) -> Result<(), CasError> {
+        self.corrupted.remove(hash);
+        Ok(())
+    }
+
     async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
-        Ok(self.corrupted.iter().map(|entry| *entry.key()).collect())
+        let mut hashes: Vec<Hash> = self.corrupted.iter().map(|entry| *entry.key()).collect();
+        hashes.sort_unstable();
+        Ok(hashes)
     }
 
     async fn restore_corrupted(&self, hashes: BTreeSet<Hash>) -> Result<(), CasError> {
@@ -419,5 +431,39 @@ mod tests {
             index.get_constraint(&kept).await.unwrap().is_empty(),
             "the constraint goes with the object"
         );
+    }
+
+    #[tokio::test]
+    async fn mark_clear_and_list_corrupted_are_sorted_and_idempotent() {
+        let index = InMemoryMetadataStore::new();
+        let a = Hash::from_content(b"corrupt-a");
+        let b = Hash::from_content(b"corrupt-b");
+
+        index.mark_corrupted(b).await.unwrap();
+        index.mark_corrupted(a).await.unwrap();
+        index.mark_corrupted(a).await.unwrap();
+
+        let mut expected = vec![a, b];
+        expected.sort_unstable();
+        assert_eq!(index.list_corrupted().await.unwrap(), expected);
+
+        index.clear_corrupted(&a).await.unwrap();
+        index.clear_corrupted(&a).await.unwrap();
+        assert_eq!(index.list_corrupted().await.unwrap(), vec![b]);
+    }
+
+    #[tokio::test]
+    async fn restore_corrupted_unions_without_dropping_existing_records() {
+        let index = InMemoryMetadataStore::new();
+        let existing = Hash::from_content(b"existing-corrupt");
+        let restored_a = Hash::from_content(b"restored-a");
+        let restored_b = Hash::from_content(b"restored-b");
+
+        index.mark_corrupted(existing).await.unwrap();
+        index.restore_corrupted(BTreeSet::from([restored_b, restored_a])).await.unwrap();
+
+        let mut expected = vec![existing, restored_a, restored_b];
+        expected.sort_unstable();
+        assert_eq!(index.list_corrupted().await.unwrap(), expected);
     }
 }

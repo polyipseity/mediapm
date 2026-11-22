@@ -14,76 +14,13 @@ use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ObjectEncoding}
 
 use crate::common;
 
-/// The full-blob path and the delta-blob path for one hash.
-fn form_paths(
-    cas: &common::FileCasFixture,
-    hash: Hash,
-) -> (std::path::PathBuf, std::path::PathBuf) {
-    let full = cas.object_path_for_hash(hash).expect("a file-system store exposes object paths");
-    let mut delta = full.clone();
-    delta.set_extension(full.extension().map_or_else(
-        || std::ffi::OsString::from("diff"),
-        |extension| {
-            let mut suffix = extension.to_os_string();
-            suffix.push(".diff");
-            suffix
-        },
-    ));
-    (full, delta)
-}
-
-/// Two similar buffers with one marker replaced, large enough that VCDIFF finds
-/// a payload worth storing as a delta.
-fn similar(fill: u8, marker: &[u8]) -> Vec<u8> {
-    let mut buffer = vec![fill; 4096];
-    let start = buffer.len() - marker.len();
-    buffer[start..].copy_from_slice(marker);
-    buffer
-}
-
-/// Overwrite a committed payload with bytes that cannot be the right content.
-///
-/// Objects are committed read-only, so the write bit has to come back before the
-/// file can be made wrong, which is exactly what an external tamper does.
-/// `Permissions::set_readonly(false)` is the cross-platform spelling: it clears
-/// the Windows attribute and grants the write bits on Unix, and the file it is
-/// applied to lives in a temp directory either way.
-///
-/// A file that is not there is created corrupt: an interrupted promotion can
-/// leave the full payload absent, and a test that stages that state must not
-/// need a second helper to describe it.
-fn corrupt(path: &std::path::Path) {
-    match std::fs::metadata(path) {
-        Ok(metadata) => {
-            let mut permissions = metadata.permissions();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                permissions.set_mode(permissions.mode() | 0o200);
-            }
-            #[cfg(windows)]
-            {
-                #[expect(
-                    clippy::permissions_set_readonly_false,
-                    reason = "clearing the read-only attribute is how a Windows test tampers with a committed blob"
-                )]
-                permissions.set_readonly(false);
-            }
-            std::fs::set_permissions(path, permissions).expect("make the payload writable");
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => panic!("payload metadata: {error}"),
-    }
-    std::fs::write(path, b"not the bytes this hash names").expect("corrupt the payload");
-}
-
 /// An object stored once has exactly one form, and that form is full.
 #[tokio::test]
 async fn a_freshly_stored_object_has_one_form() {
     let cas = common::open_file_cas().await;
     let hash = cas.put(Bytes::from_static(b"only one form")).await.unwrap();
     cas.ensure_blob_materialized(hash).await.unwrap();
-    let (full, delta) = form_paths(&cas, hash);
+    let (full, delta) = common::form_paths(&cas, hash);
     assert!(full.is_file(), "a fresh object is written full");
     assert!(!delta.is_file(), "a fresh object has no delta payload");
 }
@@ -94,8 +31,8 @@ async fn a_freshly_stored_object_has_one_form() {
 #[tokio::test]
 async fn pinning_full_is_effective_without_a_maintenance_pass() {
     let cas = common::open_file_cas().await;
-    let base = cas.put(Bytes::from(similar(b'A', b"CHANGED"))).await.unwrap();
-    let target = cas.put(Bytes::from(similar(b'A', b"OTHERED"))).await.unwrap();
+    let base = cas.put(Bytes::from(common::similar(b'A', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(common::similar(b'A', b"OTHERED"))).await.unwrap();
 
     cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
@@ -107,7 +44,7 @@ async fn pinning_full_is_effective_without_a_maintenance_pass() {
 
     cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
 
-    let (full, delta) = form_paths(&cas, target);
+    let (full, delta) = common::form_paths(&cas, target);
     assert!(full.is_file(), "a pinned-full target must have its full form immediately");
     assert!(!delta.is_file(), "the now-redundant delta payload must be gone");
     assert_eq!(
@@ -115,7 +52,7 @@ async fn pinning_full_is_effective_without_a_maintenance_pass() {
         ObjectEncoding::Full,
         "the index must agree with the tree without a maintenance pass"
     );
-    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(similar(b'A', b"OTHERED")));
+    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(common::similar(b'A', b"OTHERED")));
 }
 
 /// The optimizer must leave exactly one form behind: after a delta rewrite the
@@ -123,20 +60,20 @@ async fn pinning_full_is_effective_without_a_maintenance_pass() {
 #[tokio::test]
 async fn a_delta_rewrite_reclaims_the_full_payload() {
     let cas = common::open_file_cas().await;
-    let base = cas.put(Bytes::from(similar(b'A', b"CHANGED"))).await.unwrap();
-    let target = cas.put(Bytes::from(similar(b'A', b"REPLACED"))).await.unwrap();
+    let base = cas.put(Bytes::from(common::similar(b'A', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(common::similar(b'A', b"REPLACED"))).await.unwrap();
     cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
 
     cas.run_maintenance_cycle().await.unwrap();
 
-    let (full, delta) = form_paths(&cas, target);
+    let (full, delta) = common::form_paths(&cas, target);
     assert!(delta.is_file(), "the delta payload must exist after a rewrite");
     assert!(
         !full.is_file(),
         "the full payload is the copy the delta replaces, so it must be reclaimed"
     );
-    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(similar(b'A', b"REPLACED")));
+    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(common::similar(b'A', b"REPLACED")));
 }
 
 /// A second pass over an already-optimal target must report no work and must
@@ -145,8 +82,8 @@ async fn a_delta_rewrite_reclaims_the_full_payload() {
 #[tokio::test]
 async fn a_second_pass_over_a_delta_target_does_no_work() {
     let cas = common::open_file_cas().await;
-    let base = cas.put(Bytes::from(similar(b'A', b"CHANGED"))).await.unwrap();
-    let target = cas.put(Bytes::from(similar(b'A', b"REPLACED"))).await.unwrap();
+    let base = cas.put(Bytes::from(common::similar(b'A', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(common::similar(b'A', b"REPLACED"))).await.unwrap();
     cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
@@ -173,14 +110,14 @@ async fn a_second_pass_over_a_delta_target_does_no_work() {
 #[tokio::test]
 async fn an_intent_full_target_loses_its_leftover_delta() {
     let cas = common::open_file_cas().await;
-    let base = cas.put(Bytes::from(similar(b'A', b"CHANGED"))).await.unwrap();
-    let expected = similar(b'A', b"REPLACED");
+    let base = cas.put(Bytes::from(common::similar(b'A', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'A', b"REPLACED");
     let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
     cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
 
-    let (full, delta) = form_paths(&cas, target);
+    let (full, delta) = common::form_paths(&cas, target);
     let leftover = std::fs::read(&delta).expect("read the delta payload");
     cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
     // The optimizer promotes an empty-constraint delta target to full; running a
@@ -200,22 +137,22 @@ async fn an_intent_full_target_loses_its_leftover_delta() {
 #[tokio::test]
 async fn pinning_full_leaves_no_delta_payload_behind() {
     let cas = common::open_file_cas().await;
-    let base = cas.put(Bytes::from(similar(b'B', b"CHANGED"))).await.unwrap();
-    let target = cas.put(Bytes::from(similar(b'B', b"REPLACED"))).await.unwrap();
+    let base = cas.put(Bytes::from(common::similar(b'B', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(common::similar(b'B', b"REPLACED"))).await.unwrap();
     cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
 
-    let (full, delta) = form_paths(&cas, target);
+    let (full, delta) = common::form_paths(&cas, target);
     assert!(!full.is_file() && delta.is_file(), "the setup requires a delta-only target");
 
     cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
 
-    let (full, delta) = form_paths(&cas, target);
+    let (full, delta) = common::form_paths(&cas, target);
     assert!(full.is_file(), "pinning full must materialize the full payload synchronously");
     assert!(!delta.is_file(), "pinning full must remove the delta payload synchronously");
     assert_eq!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Full);
-    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(similar(b'B', b"REPLACED")));
+    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(common::similar(b'B', b"REPLACED")));
 }
 
 /// A soft constraint must not promote anything: only the empty object names
@@ -223,8 +160,8 @@ async fn pinning_full_leaves_no_delta_payload_behind() {
 #[tokio::test]
 async fn a_soft_constraint_does_not_promote_a_delta_target() {
     let cas = common::open_file_cas().await;
-    let base = cas.put(Bytes::from(similar(b'C', b"CHANGED"))).await.unwrap();
-    let target = cas.put(Bytes::from(similar(b'C', b"REPLACED"))).await.unwrap();
+    let base = cas.put(Bytes::from(common::similar(b'C', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(common::similar(b'C', b"REPLACED"))).await.unwrap();
     cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
     cas.run_maintenance_cycle().await.unwrap();
@@ -248,8 +185,8 @@ async fn a_soft_constraint_does_not_promote_a_delta_target() {
 #[tokio::test]
 async fn a_corrupt_full_payload_is_served_from_the_sound_delta() {
     let cas = common::open_file_cas_verifying().await;
-    let base = cas.put(Bytes::from(similar(b'D', b"CHANGED"))).await.unwrap();
-    let expected = similar(b'D', b"REPLACED");
+    let base = cas.put(Bytes::from(common::similar(b'D', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'D', b"REPLACED");
     let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
     cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
@@ -263,7 +200,7 @@ async fn a_corrupt_full_payload_is_served_from_the_sound_delta() {
     // interrupted promotion that left both on disk is: index=Full, full
     // corrupt, delta sound. Recreate that state by saving the delta, promoting
     // through the public API, restoring the delta, and corrupting the full.
-    let (full, delta) = form_paths(&cas, target);
+    let (full, delta) = common::form_paths(&cas, target);
     assert!(delta.is_file(), "the setup requires a delta payload");
     let saved_delta = std::fs::read(&delta).expect("read the delta payload");
     cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
@@ -273,7 +210,7 @@ async fn a_corrupt_full_payload_is_served_from_the_sound_delta() {
         "the promotion must leave the index naming Full"
     );
     std::fs::write(&delta, &saved_delta).expect("restore the delta payload");
-    corrupt(&full);
+    common::corrupt(&full);
 
     assert_eq!(
         cas.get(target).await.unwrap(),
@@ -289,8 +226,8 @@ async fn a_corrupt_full_payload_is_served_from_the_sound_delta() {
 #[tokio::test]
 async fn a_corrupt_delta_payload_is_served_from_the_sound_full() {
     let cas = common::open_file_cas_verifying().await;
-    let base = cas.put(Bytes::from(similar(b'E', b"CHANGED"))).await.unwrap();
-    let expected = similar(b'E', b"REPLACED");
+    let base = cas.put(Bytes::from(common::similar(b'E', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'E', b"REPLACED");
     let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
     cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
     cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
@@ -302,10 +239,10 @@ async fn a_corrupt_delta_payload_is_served_from_the_sound_full() {
 
     // The collision the staging-name fix in Task 2 also protects against: both
     // forms exist, and the one the index names is the broken one.
-    let (full, delta) = form_paths(&cas, target);
+    let (full, delta) = common::form_paths(&cas, target);
     std::fs::write(&full, &expected).expect("restore the full payload");
     assert!(full.is_file(), "the setup requires a full payload");
-    corrupt(&delta);
+    common::corrupt(&delta);
 
     assert_eq!(
         cas.get(target).await.unwrap(),

@@ -32,6 +32,19 @@ use super::wal::{Wal, WalEntry, WalPosition};
 /// of [`BackgroundEngine::reconstructed_cache_stats`].
 pub use super::reconstructed_cache::ReconstructedCacheStats;
 
+/// The facts one maintenance pass reports to its caller.
+///
+/// `corrupted_objects` is the count after the pass, not the number the pass
+/// newly recorded, so a caller that asks "is anything still corrupt?" reads one
+/// field instead of diffing two snapshots.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct MaintenanceOutcome {
+    /// Whether the pass changed stored state.
+    pub(crate) did_work: bool,
+    /// Hashes currently recorded as having no sound physical form.
+    pub(crate) corrupted_objects: usize,
+}
+
 /// Background engine driving WAL consumption and maintenance.
 pub struct BackgroundEngine<J: Wal, M: MetadataStore, B: BlobStore> {
     wal: J,
@@ -400,8 +413,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                         else {
                             tracing::warn!(
                                 hash = %target,
-                                "both physical forms fail to verify; leaving both in place"
+                                "both physical forms fail to verify; recording the hash as corrupt and leaving both in place for manual repair"
                             );
+                            self.metadata.mark_corrupted(target).await?;
+                            did_work = true;
                             continue;
                         };
                         let repaired_len = repaired.len() as u64;
@@ -412,6 +427,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                                 MetadataEntry { len: repaired_len, encoding: ObjectEncoding::Full },
                             )
                             .await?;
+                        self.metadata.clear_corrupted(&target).await?;
                     }
                     self.blob.delete_encoding(target, ObjectEncoding::Delta { base_hash }).await?;
                     did_work = true;
@@ -441,11 +457,14 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                                 MetadataEntry { len: entry.len, encoding: ObjectEncoding::Full },
                             )
                             .await?;
+                        self.metadata.clear_corrupted(&target).await?;
                     } else {
                         tracing::warn!(
                             hash = %target,
-                            "both physical forms fail to verify; leaving both in place"
+                            "both physical forms fail to verify; recording the hash as corrupt and leaving both in place for manual repair"
                         );
+                        self.metadata.mark_corrupted(target).await?;
+                        did_work = true;
                         continue;
                     }
                     did_work = true;
@@ -535,6 +554,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                             },
                         )
                         .await;
+                    self.metadata.clear_corrupted(hash).await?;
                     Some(full_bytes)
                 } else {
                     None
@@ -566,12 +586,13 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     ///
     /// Delegates to WAL consumer, metadata store, and blob store operations.
     ///
-    /// Returns `true` if any work was done.
+    /// Returns a [`MaintenanceOutcome`] describing the work done and the number
+    /// of hashes currently recorded as corrupt.
     #[expect(
         clippy::too_many_lines,
         reason = "optimizer and constraint-pruning phases share live-set state and cancellation checks; splitting would widen borrow plumbing without clarifying either phase"
     )]
-    pub async fn run_maintenance(&self) -> Result<bool, CasError> {
+    pub(crate) async fn run_maintenance(&self) -> Result<MaintenanceOutcome, CasError> {
         // Drain WAL first so we have a consistent view.
         self.run_wal_consumer().await?;
 
@@ -588,7 +609,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         let mut did_work = false;
 
         if self.is_cancelled() {
-            return Ok(did_work);
+            return Ok(MaintenanceOutcome {
+                did_work,
+                corrupted_objects: self.metadata.list_corrupted().await?.len(),
+            });
         }
 
         // === Phase 1: Optimizer ===
@@ -791,6 +815,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         if self.collapse_blob_forms().await? {
             did_work = true;
         }
+        let corrupted_objects = self.metadata.list_corrupted().await?.len();
 
         // === Phase 3: Constraint pruning ===
         // Prune dead bases from constraint entries. The live set from Phase 1
@@ -800,7 +825,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             did_work = true;
         }
 
-        Ok(did_work)
+        Ok(MaintenanceOutcome { did_work, corrupted_objects })
     }
 
     /// Run both WAL consumer and maintenance until nothing remains to do.
@@ -1005,5 +1030,23 @@ mod tests {
             consumed <= 8,
             "entry counts {consumed} exceed the 8 WAL entries: the same range was consumed twice"
         );
+    }
+
+    /// A corruption record is part of the maintenance outcome, so a pass that
+    /// clears it reports the new count instead of a stale one.
+    #[tokio::test]
+    async fn maintenance_reports_corrupted_count_and_clear_transition() {
+        let (store, _wal, metadata, _blob) = shared_mem_store();
+        let cas = InMemoryCas(store);
+        let hash = cas.put(Bytes::from_static(b"corrupt-me")).await.unwrap();
+        cas.0.bg_engine().run_wal_consumer().await.unwrap();
+
+        metadata.mark_corrupted(hash).await.unwrap();
+        let marked = cas.0.bg_engine().run_maintenance().await.unwrap();
+        assert_eq!(marked.corrupted_objects, 1);
+
+        metadata.clear_corrupted(&hash).await.unwrap();
+        let cleared = cas.0.bg_engine().run_maintenance().await.unwrap();
+        assert_eq!(cleared.corrupted_objects, 0);
     }
 }

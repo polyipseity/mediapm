@@ -134,3 +134,82 @@ pub(crate) async fn open_file_cas_verifying() -> FileCasFixture {
     .unwrap();
     FileCasFixture { cas, _dir: dir }
 }
+
+/// Open a verifying file-system CAS over a directory the caller owns.
+///
+/// [`open_file_cas_verifying`] returns a fixture that owns its directory, which
+/// a restart test cannot use: it needs to drop one store and open another over
+/// the same root. The caller keeps the directory, so it outlives every handle.
+pub(crate) async fn open_file_cas_verifying_at(
+    root: &std::path::Path,
+) -> mediapm_cas::FileSystemCas {
+    mediapm_cas::FileSystemCas::open_with_strategies(
+        root,
+        vec![mediapm_cas::VerifyTriggerStrategy::Always],
+    )
+    .await
+    .unwrap()
+}
+
+/// The full-blob path and the delta-blob path for one hash.
+pub(crate) fn form_paths(
+    cas: &mediapm_cas::FileSystemCas,
+    hash: mediapm_cas::Hash,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let full = cas.object_path_for_hash(hash).expect("a file-system store exposes object paths");
+    let mut delta = full.clone();
+    delta.set_extension(full.extension().map_or_else(
+        || std::ffi::OsString::from("diff"),
+        |extension| {
+            let mut suffix = extension.to_os_string();
+            suffix.push(".diff");
+            suffix
+        },
+    ));
+    (full, delta)
+}
+
+/// Two similar buffers with one marker replaced, large enough that VCDIFF finds
+/// a payload worth storing as a delta.
+pub(crate) fn similar(fill: u8, marker: &[u8]) -> Vec<u8> {
+    let mut buffer = vec![fill; 4096];
+    let start = buffer.len() - marker.len();
+    buffer[start..].copy_from_slice(marker);
+    buffer
+}
+
+/// Overwrite a committed payload with bytes that cannot be the right content.
+///
+/// Objects are committed read-only, so the write bit has to come back before the
+/// file can be made wrong, which is exactly what an external tamper does.
+/// `Permissions::set_readonly(false)` is the cross-platform spelling: it clears
+/// the Windows attribute and grants the write bits on Unix, and the file it is
+/// applied to lives in a temp directory either way.
+///
+/// A file that is not there is created corrupt: an interrupted promotion can
+/// leave the full payload absent, and a test that stages that state must not
+/// need a second helper to describe it.
+pub(crate) fn corrupt(path: &std::path::Path) {
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            let mut permissions = metadata.permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                permissions.set_mode(permissions.mode() | 0o200);
+            }
+            #[cfg(windows)]
+            {
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "clearing the read-only attribute is how a Windows test tampers with a committed blob"
+                )]
+                permissions.set_readonly(false);
+            }
+            std::fs::set_permissions(path, permissions).expect("make the payload writable");
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("payload metadata: {error}"),
+    }
+    std::fs::write(path, b"not the bytes this hash names").expect("corrupt the payload");
+}

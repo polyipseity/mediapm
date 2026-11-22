@@ -210,6 +210,9 @@ pub trait CasMaintenanceApi: Send + Sync {
 
     /// List all hashes currently in the store (best-effort).
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError>;
+
+    /// List hashes whose every physical form is known to be unsound.
+    async fn list_corrupted_objects(&self) -> Result<Vec<Hash>, CasError>;
 }
 
 /// Result of [`CasMaintenanceApi::run_maintenance_cycle`].
@@ -219,6 +222,12 @@ pub struct OptimizeReport {
     pub wal_entries_consumed: usize,
     /// Whether maintenance work was done.
     pub maintenance_done: bool,
+    /// Number of hashes currently recorded as having no sound physical form.
+    ///
+    /// A count rather than a list because a maintenance report answers "is there
+    /// anything to fix", and the list is what the explicit inspection command is
+    /// for.
+    pub corrupted_objects: usize,
 }
 
 /// Result of [`CasMaintenanceApi::prune_constraints`].

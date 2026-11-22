@@ -364,6 +364,16 @@ impl MetadataStore for FileSystemMetadataStore {
         Self::migrate_legacy_snapshots(self).await
     }
 
+    async fn mark_corrupted(&self, hash: Hash) -> Result<(), CasError> {
+        self.inner.mark_corrupted(hash).await?;
+        self.flush_dir(&hash).await
+    }
+
+    async fn clear_corrupted(&self, hash: &Hash) -> Result<(), CasError> {
+        self.inner.clear_corrupted(hash).await?;
+        self.flush_dir(hash).await
+    }
+
     async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
         self.inner.list_corrupted().await
     }
