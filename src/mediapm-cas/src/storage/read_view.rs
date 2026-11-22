@@ -359,8 +359,18 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
                     Ok(())
                 }
                 PendingState::PresentExternal { .. } => {
-                    // Materialized large object — stream from blob.
-                    self.blob.read_to_writer(hash, writer).await
+                    let mtime = self.blob.materialized_mtime(hash, ObjectEncoding::Full).await;
+                    if self.blob.should_verify_on_read(hash, mtime) {
+                        use tokio::io::AsyncWriteExt;
+                        let bytes = self
+                            .read_with_fallback(hash)
+                            .await?
+                            .ok_or(CasError::NotFound(*hash))?;
+                        writer.write_all(&bytes).await?;
+                    } else {
+                        self.blob.read_to_writer(hash, writer).await?;
+                    }
+                    Ok(())
                 }
                 PendingState::Tombstone => Err(CasError::NotFound(*hash)),
                 PendingState::NotPresent => {
@@ -373,7 +383,19 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
                     if let Some(entry) = self.metadata.get(hash).await? {
                         match entry.encoding {
                             ObjectEncoding::Full => {
-                                return self.blob.read_to_writer(hash, writer).await;
+                                let mtime =
+                                    self.blob.materialized_mtime(hash, ObjectEncoding::Full).await;
+                                if self.blob.should_verify_on_read(hash, mtime) {
+                                    use tokio::io::AsyncWriteExt;
+                                    let bytes = self
+                                        .read_with_fallback(hash)
+                                        .await?
+                                        .ok_or(CasError::NotFound(*hash))?;
+                                    writer.write_all(&bytes).await?;
+                                } else {
+                                    self.blob.read_to_writer(hash, writer).await?;
+                                }
+                                return Ok(());
                             }
                             ObjectEncoding::Delta { .. } => {
                                 let bytes = resolve_full_bytes(

@@ -429,6 +429,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                             .await?;
                         self.metadata.clear_corrupted(&target).await?;
                     }
+                    self.metadata.clear_corrupted(&target).await?;
                     self.blob.delete_encoding(target, ObjectEncoding::Delta { base_hash }).await?;
                     did_work = true;
                 }
@@ -440,6 +441,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                     {
                         // Intent is delta, so the full payload is the leftover.
                         self.blob.delete_encoding(target, ObjectEncoding::Full).await?;
+                        self.metadata.clear_corrupted(&target).await?;
                     } else if self
                         .verified_form_bytes(&target, ObjectEncoding::Full)
                         .await?
