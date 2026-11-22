@@ -825,6 +825,15 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         self.cancelled.load(Ordering::SeqCst)
     }
 
+    /// The serialization guard every maintenance pass holds.
+    ///
+    /// Exposed to the store so a state transition that must not interleave with
+    /// a maintenance pass takes the same exclusion the pass does, instead of
+    /// introducing a second lock that would have to be ordered against it.
+    pub(crate) async fn consume_lock(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.consume_lock).lock_owned().await
+    }
+
     /// Return the current checkpoint position.
     pub fn checkpoint_position(&self) -> WalPosition {
         WalPosition::from_u64(self.checkpoint.load(Ordering::SeqCst))

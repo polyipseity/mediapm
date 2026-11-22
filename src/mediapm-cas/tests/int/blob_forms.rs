@@ -157,3 +157,47 @@ async fn an_intent_full_target_loses_its_leftover_delta() {
     assert!(!delta.is_file(), "an intent-Full target must not keep a leftover delta");
     assert_eq!(cas.get(target).await.unwrap(), Bytes::from(expected));
 }
+
+/// Pinning full must converge the tree, not only the index: the delta payload
+/// is gone and the full payload exists when `set_constraint` returns, and that
+/// holds even though no maintenance pass ran.
+#[tokio::test]
+async fn pinning_full_leaves_no_delta_payload_behind() {
+    let cas = common::open_file_cas().await;
+    let base = cas.put(Bytes::from(similar(b'B', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(similar(b'B', b"REPLACED"))).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let (full, delta) = form_paths(&cas, target);
+    assert!(!full.is_file() && delta.is_file(), "the setup requires a delta-only target");
+
+    cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
+
+    let (full, delta) = form_paths(&cas, target);
+    assert!(full.is_file(), "pinning full must materialize the full payload synchronously");
+    assert!(!delta.is_file(), "pinning full must remove the delta payload synchronously");
+    assert_eq!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Full);
+    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(similar(b'B', b"REPLACED")));
+}
+
+/// A soft constraint must not promote anything: only the empty object names
+/// full storage, so naming a real base leaves the mode to the optimizer.
+#[tokio::test]
+async fn a_soft_constraint_does_not_promote_a_delta_target() {
+    let cas = common::open_file_cas().await;
+    let base = cas.put(Bytes::from(similar(b'C', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(similar(b'C', b"REPLACED"))).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }));
+
+    // Re-stating the same soft constraint must change nothing.
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    assert!(
+        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
+        "a non-empty base set leaves storage mode to the optimizer"
+    );
+}

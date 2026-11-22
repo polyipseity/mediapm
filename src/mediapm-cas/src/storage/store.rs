@@ -242,6 +242,28 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasStore<J, M, B> {
             Err(other) => Err(other),
         }
     }
+
+    /// Materialize a delta-encoded target as a full payload, then drop the
+    /// delta payload.
+    ///
+    /// Returns whether anything changed. The write order is the one the
+    /// optimizer uses: the full payload first, the entry second, the delta
+    /// payload last, so a failure at any step leaves the object readable in at
+    /// least one form.
+    async fn promote_to_full(&self, target: Hash) -> Result<bool, CasError> {
+        // `stat` is the read path, so a target whose entry is still only in the
+        // write-back journal is answered from the journal instead of looking
+        // absent. A journaled target is always full, so it returns early below.
+        let ObjectEncoding::Delta { base_hash } = self.stat(target).await?.encoding else {
+            return Ok(false);
+        };
+        let bytes = self.read_view.get(&target).await?;
+        let len = bytes.len() as u64;
+        self.blob.write(target, ObjectEncoding::Full, bytes).await?;
+        self.metadata.put(target, MetadataEntry { len, encoding: ObjectEncoding::Full }).await?;
+        self.blob.delete_encoding(target, ObjectEncoding::Delta { base_hash }).await?;
+        Ok(true)
+    }
 }
 
 #[async_trait]
@@ -261,6 +283,21 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
 
         // Write the constraint to WAL first (crash-safe commitment).
         self.wal.append(WalEntry::Constraint { target, bases: bases.clone() }).await?;
+
+        // Naming the empty object as a base is the only way to say "store this
+        // full", and a guarantee that only holds at the next maintenance pass is
+        // not one. The transition runs under the WAL consumer lock so a
+        // concurrent maintenance pass cannot interleave a delta write with it.
+        // The guarantee holds when the call returns; a crash between the journal
+        // append and the promotion is converged by the next maintenance pass,
+        // whose optimizer already answers a `Hash::empty()` base by
+        // rematerializing the target to full. The constraint itself is still
+        // recorded by the branch below and by the journal replay, so this writes
+        // the object and nothing else.
+        if bases.contains(&Hash::empty()) {
+            let _consume = self.bg_engine.consume_lock().await;
+            self.promote_to_full(target).await?;
+        }
 
         // Materialize Index immediately when SYNC_MATERIALIZE is true.
         // Otherwise, the WAL consumer (BackgroundEngine) will apply it.
