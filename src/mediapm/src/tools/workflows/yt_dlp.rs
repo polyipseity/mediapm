@@ -612,6 +612,8 @@ pub(crate) fn build_yt_dlp_spec(
     // network call.
     runtime.max_concurrent_calls = Some(1);
     runtime.max_retries = 0;
+    spec.runtime.max_concurrent_calls = Some(1);
+    spec.runtime.max_retries = 0;
     // The hermetic stub chain publishes these names in the host environment.
     // Declaring them lets whitelisted yt-dlp steps receive the emit-mode stub's
     // manifest and the invocation log when a run mounts the chain.
@@ -1001,7 +1003,7 @@ mod tests {
 
     #[test]
     fn yt_dlp_states_both_policies_explicitly() {
-        let (_, runtime) = build_yt_dlp_spec(BTreeMap::new(), &BTreeMap::new());
+        let (spec, runtime) = build_yt_dlp_spec(BTreeMap::new(), &BTreeMap::new());
         assert_eq!(
             runtime.max_concurrent_calls,
             Some(1),
@@ -1010,6 +1012,15 @@ mod tests {
         assert_eq!(
             runtime.max_retries, 0,
             "yt-dlp must not retry by default, because a retried download repeats a network call"
+        );
+        assert_eq!(
+            spec.runtime.max_concurrent_calls,
+            Some(1),
+            "the generated spec must carry the same cap, otherwise a skipped or serialized tool reverts to unlimited"
+        );
+        assert_eq!(
+            spec.runtime.max_retries, 0,
+            "the generated spec must carry the same retry policy, otherwise a skipped or serialized tool reverts to the default"
         );
     }
 }

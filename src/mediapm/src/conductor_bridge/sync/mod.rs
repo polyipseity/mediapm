@@ -677,6 +677,53 @@ pub fn content_map_hash(content_map: &BTreeMap<String, String>) -> String {
     format!("blake3:{}", blake3::hash(json.as_bytes()).to_hex())
 }
 
+/// Refreshes a skipped tool's runtime policy from the current preset.
+///
+/// A skip reuses the existing content map and payload, but the preset's
+/// runtime policy (retries, concurrency, impurity, inherited env vars) may
+/// have changed since the tool was last provisioned. The generated document
+/// must carry the current policy, otherwise a stale runtime survives across
+/// skips.
+fn refresh_skipped_spec_runtime(
+    key: &str,
+    spec_runtime: ToolRuntime,
+    generated_doc: &mut NickelDocument,
+    max_input_slots: u32,
+    max_output_slots: u32,
+) -> ToolRuntime {
+    let bare_id = key.split_once('@').map_or(key, |(bare, _)| bare);
+    let is_managed = matches!(
+        bare_id.to_ascii_lowercase().as_str(),
+        "ffmpeg" | "yt-dlp" | "deno" | "rsgain" | "sd"
+    );
+    if !is_managed {
+        return spec_runtime;
+    }
+
+    let Some(existing_spec) = generated_doc.tools.get(key) else {
+        return spec_runtime;
+    };
+    let content_map = existing_spec.runtime.content_map.clone();
+    let limits = resolve_ffmpeg_slot_limits(max_input_slots, max_output_slots);
+    let (_spec, preset_runtime) = build_tool_spec(bare_id, content_map, &BTreeMap::new(), limits);
+
+    if let Some(spec) = generated_doc.tools.get_mut(key) {
+        spec.runtime.impure = preset_runtime.impure;
+        spec.runtime.inherited_env_vars = preset_runtime.inherited_env_vars.clone();
+        spec.runtime.max_concurrent_calls = preset_runtime.max_concurrent_calls;
+        spec.runtime.max_retries = preset_runtime.max_retries;
+        // Keep content_map, payload_root, payload_staging from the existing
+        // spec/runtime: they describe the deployed payload, not the policy.
+    }
+
+    let mut refreshed = spec_runtime;
+    refreshed.impure = preset_runtime.impure;
+    refreshed.inherited_env_vars = preset_runtime.inherited_env_vars;
+    refreshed.max_concurrent_calls = preset_runtime.max_concurrent_calls;
+    refreshed.max_retries = preset_runtime.max_retries;
+    refreshed
+}
+
 /// Applies a single entry outcome to the shared mutable state.
 ///
 /// This is the ordered-merge half of the provisioning design: outcomes are
@@ -713,13 +760,27 @@ fn apply_entry_outcome(
 
     match outcome {
         EntryOutcome::Skipped { key, spec_runtime, tool_record } => {
-            tool_runtimes.entry(key).or_insert(spec_runtime);
+            let refreshed = refresh_skipped_spec_runtime(
+                &key,
+                spec_runtime,
+                generated_doc,
+                tool_req.max_input_slots,
+                tool_req.max_output_slots,
+            );
+            tool_runtimes.insert(key, refreshed);
             report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
             progress.advance_once(entry_index);
         }
         EntryOutcome::SkippedAfterResolve { key, spec_runtime, backfill, tool_record, .. } => {
-            tool_runtimes.entry(key).or_insert(spec_runtime);
+            let refreshed = refresh_skipped_spec_runtime(
+                &key,
+                spec_runtime,
+                generated_doc,
+                tool_req.max_input_slots,
+                tool_req.max_output_slots,
+            );
+            tool_runtimes.insert(key, refreshed);
             report.resolved_field_backfills.push(backfill);
             report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
