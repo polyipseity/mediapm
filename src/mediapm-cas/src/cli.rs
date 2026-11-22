@@ -10,7 +10,7 @@ use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 use std::io::{self, Read, Write};
 
-use crate::api::CasApi;
+use crate::api::{CasApi, CasMaintenanceApi};
 use crate::config::CasConfig;
 use crate::defaults;
 use crate::error::CasError;
@@ -114,6 +114,27 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 "powershell" => generate(Shell::PowerShell, &mut cmd, &name, &mut stdout),
                 "zsh" => generate(Shell::Zsh, &mut cmd, &name, &mut stdout),
                 _ => return Err(anyhow::anyhow!("unsupported shell: {shell}")),
+            }
+        }
+        CasCommand::Corrupted => {
+            let corrupted = cas.list_corrupted_objects().await?;
+            if corrupted.is_empty() {
+                println!("no corrupt objects recorded");
+                return Ok(());
+            }
+            println!("{} corrupt object(s) recorded:", corrupted.len());
+            for hash in corrupted {
+                // Both candidate paths, because the diagnostic is which file
+                // reads wrong and the store cannot say more than "one of these
+                // two, or both".
+                println!("{hash}");
+                match cas.object_path_for_hash(hash) {
+                    Some(full) => println!("  full:  {}", full.display()),
+                    None => println!("  full:  (this backend has no on-disk path)"),
+                }
+                if let Some(delta) = cas.delta_path_for_hash(hash) {
+                    println!("  delta: {}", delta.display());
+                }
             }
         }
     }

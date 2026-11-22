@@ -130,6 +130,16 @@ pub trait BlobStore: Send + Sync {
         None
     }
 
+    /// Return the on-disk path for `hash`'s delta blob, if this is a
+    /// filesystem-backed store. In-memory stores return `None`.
+    ///
+    /// Symmetric with [`materialized_path`](Self::materialized_path): it
+    /// answers where this form would live, not whether the file exists.
+    fn materialized_delta_path(&self, hash: &Hash) -> Option<PathBuf> {
+        let _ = hash;
+        None
+    }
+
     /// The modification time of the materialized payload for `hash`, if any.
     ///
     /// `encoding` selects which physical form to stat: a full read cares about

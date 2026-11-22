@@ -146,6 +146,31 @@ pub enum ConfiguredCas {
     FileSystem(FileSystemCas),
 }
 
+impl ConfiguredCas {
+    /// Return the on-disk path for a hash's full blob, if this backend
+    /// exposes filesystem paths. In-memory stores return `None`.
+    #[must_use]
+    pub fn object_path_for_hash(&self, hash: Hash) -> Option<PathBuf> {
+        match self {
+            Self::InMemory(_) => None,
+            Self::FileSystem(cas) => cas.object_path_for_hash(hash),
+        }
+    }
+
+    /// Return the on-disk path for a hash's delta blob, if this backend
+    /// exposes filesystem paths. In-memory stores return `None`.
+    ///
+    /// Symmetric with [`object_path_for_hash`](Self::object_path_for_hash): it
+    /// answers where this form would live, not whether the file exists.
+    #[must_use]
+    pub fn delta_path_for_hash(&self, hash: Hash) -> Option<PathBuf> {
+        match self {
+            Self::InMemory(_) => None,
+            Self::FileSystem(cas) => cas.delta_path_for_hash(hash),
+        }
+    }
+}
+
 /// Forwards a method call to each variant of [`ConfiguredCas`].
 macro_rules! forward {
     ($self:ident.$method:ident($($arg:ident),*).await) => {

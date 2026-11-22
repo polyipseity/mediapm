@@ -19,7 +19,14 @@
 //! path a user takes. Cargo builds the binary only when the `cli` feature is on,
 //! so the module is gated to match.
 
+use std::collections::BTreeSet;
 use std::process::Command;
+
+use bytes::Bytes;
+use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi};
+use mediapm_cas::hash::Hash;
+
+use crate::common;
 
 /// The name this CLI's completion scripts register their completions under.
 ///
@@ -170,5 +177,53 @@ fn an_unsupported_shell_is_rejected() {
         run.stdout.is_empty(),
         "a rejected shell must not leave a script on stdout; stdout: {}",
         run.stdout,
+    );
+}
+
+/// `corrupted` reports every hash the store has already recorded as corrupt.
+///
+/// The command is a read over recorded state, not a probe: it must name the hash
+/// and both candidate paths, because the diagnostic is which file reads wrong and
+/// the store cannot say more than "one of these two, or both".
+#[tokio::test]
+async fn corrupted_lists_recorded_objects() {
+    let dir = common::artifact_dir();
+    let target = {
+        let cas = common::open_file_cas_verifying_at(dir.path()).await;
+        let base = cas.put(Bytes::from(common::similar(b'F', b"CHANGED"))).await.unwrap();
+        let target = cas.put(Bytes::from(common::similar(b'F', b"REPLACED"))).await.unwrap();
+        cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+        cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+        cas.run_maintenance_cycle().await.unwrap();
+
+        let (full, delta) = common::form_paths(&cas, target);
+        common::corrupt(&full);
+        common::corrupt(&delta);
+        assert_eq!(cas.run_maintenance_cycle().await.unwrap().corrupted_objects, 1);
+        target
+    };
+
+    let storage = dir.path().to_str().expect("artifact dir is utf-8");
+    let run = run_binary(&["--storage", storage, "corrupted"]);
+    assert!(run.success, "`corrupted` exited with failure; stderr: {}", run.stderr);
+
+    let (full, delta) = {
+        let cas = common::open_file_cas_verifying_at(dir.path()).await;
+        common::form_paths(&cas, target)
+    };
+    assert!(
+        run.stdout.contains(&target.to_hex()),
+        "output must name the corrupt hash; stdout: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains(&format!("  full:  {}", full.display())),
+        "output must name the full candidate path; stdout: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains(&format!("  delta: {}", delta.display())),
+        "output must name the delta candidate path; stdout: {}",
+        run.stdout
     );
 }

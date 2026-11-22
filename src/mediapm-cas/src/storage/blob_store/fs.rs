@@ -870,6 +870,10 @@ impl BlobStore for FileSystemBlobStore {
         Some(hash_to_path(&self.root, hash))
     }
 
+    fn materialized_delta_path(&self, hash: &Hash) -> Option<PathBuf> {
+        Some(hash_to_delta_path(&self.root, hash))
+    }
+
     async fn materialized_mtime(
         &self,
         hash: &Hash,

@@ -55,6 +55,8 @@ pub enum CasCommand {
         /// Shell name (bash, elvish, fish, powershell, zsh).
         shell: String,
     },
+    /// List objects whose every physical form is corrupt.
+    Corrupted,
 }
 
 /// Builds the command tree the binary parses with.
@@ -81,7 +83,7 @@ mod tests {
     fn command_declares_the_expected_subcommands() {
         let declared: Vec<String> =
             command().get_subcommands().map(|sub| sub.get_name().to_owned()).collect();
-        assert_eq!(declared, ["put", "get", "stat", "delete", "completions"]);
+        assert_eq!(declared, ["put", "get", "stat", "delete", "completions", "corrupted"]);
     }
 
     /// The name is the binary's rather than the defining crate's, because it
@@ -101,7 +103,7 @@ mod tests {
     /// than the error a subcommand's own missing arguments would raise.
     #[test]
     fn parser_accepts_every_declared_subcommand() {
-        for name in ["put", "get", "stat", "delete", "completions"] {
+        for name in ["put", "get", "stat", "delete", "completions", "corrupted"] {
             let error = Cli::try_parse_from(["mediapm-cas", name, "--help"])
                 .expect_err("a help request is reported as an error by clap");
             assert_eq!(
@@ -128,5 +130,18 @@ mod tests {
         let cli = Cli::try_parse_from(["mediapm-cas", "put"]).expect("parse put");
         assert_eq!(cli.storage, "memory");
         assert!(matches!(cli.command, CasCommand::Put));
+    }
+
+    /// The inspection command takes no arguments: it reports what the store
+    /// already knows, and a path or hash argument would invite a caller to
+    /// believe it probes on demand.
+    #[test]
+    fn corrupted_takes_no_arguments() {
+        let cli = Cli::try_parse_from(["mediapm-cas", "corrupted"]).expect("parse corrupted");
+        assert!(matches!(cli.command, CasCommand::Corrupted));
+        assert!(
+            Cli::try_parse_from(["mediapm-cas", "corrupted", "extra"]).is_err(),
+            "the command accepts no positional arguments"
+        );
     }
 }

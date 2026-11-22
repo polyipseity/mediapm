@@ -250,6 +250,16 @@ impl FileSystemCas {
         self.blob().materialized_path(&hash)
     }
 
+    /// Return the on-disk path for a hash's delta blob (`.diff`), if this
+    /// store can materialize it. In-memory stores return `None`.
+    ///
+    /// Symmetric with [`object_path_for_hash`](Self::object_path_for_hash): it
+    /// answers where this form would live, not whether the file exists.
+    #[must_use]
+    pub fn delta_path_for_hash(&self, hash: Hash) -> Option<PathBuf> {
+        self.blob().materialized_delta_path(&hash)
+    }
+
     /// Ensure the blob for `hash` is materialized in the blob store on
     /// disk, even if it was originally committed as a WAL-only small blob.
     ///
