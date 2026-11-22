@@ -410,6 +410,21 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
             PendingState::PresentExternal { .. } | PendingState::NotPresent => {}
         }
 
+        // A verifying store would find a corrupt payload only after streaming
+        // bad bytes into a writer that cannot rewind. Buffering through the
+        // fallback is the only way to answer with the sound form, and it costs
+        // one copy on the path that was already going to hash every byte.
+        // The mtime must come from the physical form being read: a Modified
+        // strategy compares it against the last verified mtime for this hash,
+        // so a delta-only object or a tampered delta beside an unchanged full
+        // file would be misclassified if we stat the wrong form.
+        let mtime = self.blob.materialized_mtime(hash, entry.encoding).await;
+        if self.blob.should_verify_on_read(hash, mtime) {
+            let bytes = self.read_with_fallback(hash).await?.ok_or(CasError::NotFound(*hash))?;
+            writer.write_all(&bytes).await?;
+            return Ok(());
+        }
+
         match entry.encoding {
             ObjectEncoding::Full => self.blob.read_to_writer(hash, writer).await,
             ObjectEncoding::Delta { .. } => {

@@ -135,6 +135,22 @@ pub(crate) async fn open_file_cas_verifying() -> FileCasFixture {
     FileCasFixture { cas, _dir: dir }
 }
 
+/// Creates a fresh artifact tempdir and opens a `FileSystemCas` that verifies
+/// a payload only when its on-disk mtime has changed.
+///
+/// This is the regression surface for form-aware mtime checks: the evaluator
+/// must compare against the physical form being read, not an unrelated one.
+pub(crate) async fn open_file_cas_modified() -> FileCasFixture {
+    let dir = artifact_dir();
+    let cas = mediapm_cas::FileSystemCas::open_with_strategies(
+        dir.path(),
+        vec![mediapm_cas::VerifyTriggerStrategy::Modified],
+    )
+    .await
+    .unwrap();
+    FileCasFixture { cas, _dir: dir }
+}
+
 /// Open a verifying file-system CAS over a directory the caller owns.
 ///
 /// [`open_file_cas_verifying`] returns a fixture that owns its directory, which

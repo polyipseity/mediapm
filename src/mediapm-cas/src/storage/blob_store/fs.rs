@@ -607,8 +607,8 @@ impl BlobStore for FileSystemBlobStore {
 
     async fn read(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_path(&self.root, hash);
-        let meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        let mtime = meta.modified().ok();
+        let _meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
+        let mtime = self.materialized_mtime(hash, ObjectEncoding::Full).await;
         let data = fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
         if self.verify_evaluator.should_verify(hash, mtime) {
             Self::verify_hash(&path, hash).await?;
@@ -623,8 +623,8 @@ impl BlobStore for FileSystemBlobStore {
         writer: &mut (dyn AsyncWrite + Send + Unpin),
     ) -> Result<(), CasError> {
         let path = hash_to_path(&self.root, hash);
-        let meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        let mtime = meta.modified().ok();
+        let _meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
+        let mtime = self.materialized_mtime(hash, ObjectEncoding::Full).await;
         let mut file = fs::File::open(&path).await.map_err(|_| CasError::NotFound(*hash))?;
         if self.verify_evaluator.should_verify(hash, mtime) {
             // Verify hash while streaming: compute hash incrementally
@@ -735,8 +735,9 @@ impl BlobStore for FileSystemBlobStore {
 
     async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_delta_path(&self.root, hash);
-        let meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        let mtime = meta.modified().ok();
+        let _meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
+        let mtime =
+            self.materialized_mtime(hash, ObjectEncoding::Delta { base_hash: Hash::empty() }).await;
         let data = fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
         if self.verify_evaluator.should_verify(hash, mtime) {
             // A delta envelope is a derived encoding: its bytes are the patch
@@ -867,6 +868,22 @@ impl BlobStore for FileSystemBlobStore {
 
     fn materialized_path(&self, hash: &Hash) -> Option<PathBuf> {
         Some(hash_to_path(&self.root, hash))
+    }
+
+    async fn materialized_mtime(
+        &self,
+        hash: &Hash,
+        encoding: ObjectEncoding,
+    ) -> Option<std::time::SystemTime> {
+        let path = match encoding {
+            ObjectEncoding::Full => hash_to_path(&self.root, hash),
+            ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, hash),
+        };
+        fs::metadata(path).await.ok().and_then(|meta| meta.modified().ok())
+    }
+
+    fn should_verify_on_read(&self, hash: &Hash, mtime: Option<std::time::SystemTime>) -> bool {
+        self.verify_evaluator.should_verify(hash, mtime)
     }
 
     async fn write_aux(&self, hash: &Hash, name: &str, data: Bytes) -> Result<(), CasError> {

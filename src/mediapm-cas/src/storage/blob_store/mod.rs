@@ -130,6 +130,35 @@ pub trait BlobStore: Send + Sync {
         None
     }
 
+    /// The modification time of the materialized payload for `hash`, if any.
+    ///
+    /// `encoding` selects which physical form to stat: a full read cares about
+    /// the full file's mtime, a delta read cares about the delta file's. A
+    /// Modified verify-on-read strategy keys its comparison on this mtime, so
+    /// the caller must pass the form it is about to read; passing the wrong
+    /// form makes tamper detection compare against an unrelated file.
+    ///
+    /// Defaulted to `None`: an in-memory store has no on-disk file whose
+    /// mtime a verify-on-read strategy could compare.
+    async fn materialized_mtime(
+        &self,
+        hash: &Hash,
+        encoding: ObjectEncoding,
+    ) -> Option<std::time::SystemTime> {
+        let _ = (hash, encoding);
+        None
+    }
+
+    /// Whether a read of `hash` is scheduled to verify the payload it returns.
+    ///
+    /// Defaulted to `false`: an in-memory store cannot hold a payload that was
+    /// corrupted between its write and its read, so it has nothing to verify and
+    /// a caller may stream.
+    fn should_verify_on_read(&self, hash: &Hash, mtime: Option<std::time::SystemTime>) -> bool {
+        let _ = (hash, mtime);
+        false
+    }
+
     /// Whether `put()` should materialize [`BlobStore`] + metadata synchronously
     /// (write-through), or defer to the WAL consumer (write-back).
     /// `InMemory` impls return `true`; `FileSystem` impls return `false`.

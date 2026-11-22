@@ -328,3 +328,104 @@ async fn a_legacy_delta_envelope_is_rewritten_on_first_read() {
         "the first read must rewrite the legacy envelope in the current format"
     );
 }
+
+/// A streaming read on a verifying store must serve the sound form, not stream
+/// the corrupt one and fail after the caller already took the bytes.
+#[tokio::test]
+async fn get_to_writer_serves_the_sound_form_when_the_indexed_one_is_corrupt() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(common::similar(b'K', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'K', b"REPLACED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(
+        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
+        "the setup requires a delta-encoded target"
+    );
+
+    // Promote to full so the index names the full form, then restore the delta
+    // and corrupt the full payload. This is the state an interrupted promotion
+    // leaves: index=Full, full corrupt, delta sound.
+    let (full, delta) = common::form_paths(&cas, target);
+    assert!(delta.is_file(), "the setup requires a delta payload");
+    let saved_delta = std::fs::read(&delta).expect("read the delta payload");
+    cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
+    assert_eq!(
+        cas.stat(target).await.unwrap().encoding,
+        ObjectEncoding::Full,
+        "the promotion must leave the index naming Full"
+    );
+    std::fs::write(&delta, &saved_delta).expect("restore the delta payload");
+    common::corrupt(&full);
+
+    let mut written = Vec::new();
+    cas.get_to_writer(target, &mut written).await.expect("a sound delta must serve the stream");
+    assert_eq!(written, expected, "the stream must carry the sound form's bytes");
+    assert!(delta.is_file(), "the fallback must not delete the sound form");
+}
+
+/// A non-verifying store streams without buffering, because it cannot detect
+/// corruption at all: the bytes a caller gets are the file's bytes either way.
+#[tokio::test]
+async fn get_to_writer_streams_directly_on_a_non_verifying_store() {
+    let cas = common::open_file_cas().await;
+    let data = common::similar(b'L', b"WHOLE");
+    let hash = cas.put(Bytes::from(data.clone())).await.unwrap();
+
+    let mut written = Vec::new();
+    cas.get_to_writer(hash, &mut written).await.expect("a sound payload must stream");
+    assert_eq!(written, data);
+}
+
+/// A Modified verify-on-read strategy must key its mtime check on the physical
+/// form being read. With both forms present and the delta tampered after the
+/// first verified read, a delta read must still detect the tamper even though
+/// the full file's mtime is unchanged.
+#[tokio::test]
+async fn modified_verify_detects_a_tampered_delta_when_full_mtime_is_unchanged() {
+    let cas = common::open_file_cas_modified().await;
+    let base = cas.put(Bytes::from(common::similar(b'M', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'M', b"REPLACED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(
+        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
+        "the setup requires a delta-encoded target"
+    );
+
+    // First read verifies and records the delta form's mtime.
+    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(expected.clone()));
+
+    // Keep both forms, but tamper only the delta. The full file's mtime must
+    // stay unchanged, which is the case that caught the old full-path-only
+    // materialized_mtime.
+    let (full, delta) = common::form_paths(&cas, target);
+    assert!(full.is_file() || delta.is_file(), "the target must have a physical form");
+    // Ensure a full form exists so the old bug has an unchanged full mtime to
+    // compare against; keep the delta as the indexed/read form.
+    if !full.is_file() {
+        // Reconstruct full from sound state by promoting then restoring delta.
+        let saved_delta = std::fs::read(&delta).expect("read delta");
+        cas.set_constraint(target, BTreeSet::from([Hash::empty()])).await.unwrap();
+        std::fs::write(&delta, &saved_delta).expect("restore delta");
+        cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+        cas.run_maintenance_cycle().await.unwrap();
+    }
+    let full_mtime_before = std::fs::metadata(&full).ok().and_then(|m| m.modified().ok());
+    common::corrupt(&delta);
+    let full_mtime_after = std::fs::metadata(&full).ok().and_then(|m| m.modified().ok());
+    assert_eq!(
+        full_mtime_before, full_mtime_after,
+        "tampering the delta must not change the full file's mtime"
+    );
+
+    let err = cas.get(target).await.unwrap_err();
+    assert!(
+        matches!(err, mediapm_cas::CasError::CorruptObject { .. }),
+        "a tampered delta must be detected even when full mtime is unchanged, got {err:?}"
+    );
+}
