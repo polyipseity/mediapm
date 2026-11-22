@@ -50,14 +50,13 @@ fn document_with_tool(
     document
 }
 
-/// The stamp names the provisioned directory on both carriers, and the strategy
-/// that reads it.
+/// The stamp names the provisioned directory and the strategy in the
+/// document, which is the one carrier a step reads.
 ///
 /// The document is what a run executes a tool from, whether the run is this
-/// process or a standalone `mediapm-conductor run`; the runtime map is what the
-/// sync itself reads to materialize a payload and write `.env.generated`. A
-/// stamp that reached only one of them would leave the two disagreeing about the
-/// same tool.
+/// process or a standalone `mediapm-conductor run`. The sync no longer keeps a
+/// second runtime map beside it: the live set is derived from the document when
+/// a carrier needs it.
 #[test]
 fn regression_stamp_payload_roots_names_the_provisioned_directory() {
     let root = mediapm_utils::temp::artifact_dir().expect("workspace root");
@@ -67,17 +66,10 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
     std::fs::create_dir_all(&payload_dir).expect("provisioned payload dir");
 
     let mut document = document_with_tool(conductor_tool_id, ConfigPayloadStaging::Copy, "");
-    let mut runtimes = BTreeMap::from([(
-        conductor_tool_id.to_string(),
-        ToolRuntime {
-            content_map: document.tools[conductor_tool_id].runtime.content_map.clone(),
-            payload_staging: ConfigPayloadStaging::Copy,
-            ..Default::default()
-        },
-    )]);
+    let live_keys = vec![conductor_tool_id.to_string()];
     let choices = BTreeMap::from([("scripted".to_string(), ConfigPayloadStaging::InPlace)]);
 
-    stamp_payload_roots(&paths, &mut document, &mut runtimes, &choices, PayloadStaging::InPlace);
+    stamp_payload_roots(&paths, &mut document, &live_keys, &choices, PayloadStaging::InPlace);
 
     let expected = payload_dir
         .to_str()
@@ -92,11 +84,6 @@ fn regression_stamp_payload_roots_names_the_provisioned_directory() {
         ConfigPayloadStaging::InPlace,
         "the tool stated a strategy, so the stamp carries that strategy rather than overriding it"
     );
-    assert_eq!(
-        runtimes[conductor_tool_id].payload_root, expected,
-        "the runtime map drives provisioning and the generated dotenv, so it has to name the same root"
-    );
-    assert_eq!(runtimes[conductor_tool_id].payload_staging, ConfigPayloadStaging::InPlace);
 }
 
 /// A tool whose payload directory is absent keeps what its spec builder
@@ -112,19 +99,12 @@ fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
     let conductor_tool_id = "scripted@blake3:def";
 
     let mut document = document_with_tool(conductor_tool_id, ConfigPayloadStaging::Copy, "");
-    let mut runtimes = BTreeMap::from([(
-        conductor_tool_id.to_string(),
-        ToolRuntime {
-            content_map: document.tools[conductor_tool_id].runtime.content_map.clone(),
-            payload_staging: ConfigPayloadStaging::Copy,
-            ..Default::default()
-        },
-    )]);
+    let live_keys = vec![conductor_tool_id.to_string()];
 
     stamp_payload_roots(
         &paths,
         &mut document,
-        &mut runtimes,
+        &live_keys,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
     );
@@ -137,7 +117,6 @@ fn a_tool_without_a_provisioned_directory_keeps_its_declared_strategy() {
         document.tools[conductor_tool_id].runtime.payload_staging,
         ConfigPayloadStaging::Copy
     );
-    assert_eq!(runtimes[conductor_tool_id].payload_staging, ConfigPayloadStaging::Copy);
 }
 
 /// A payload a run holds stays on disk through a retain pass that keeps nothing.
@@ -163,18 +142,10 @@ async fn regression_a_payload_survives_a_retain_pass_while_the_run_holds_it() {
 
     let content_map = BTreeMap::from([("linux/scripted".to_string(), hash.to_string())]);
     let mut document = document_with_tool(&conductor_tool_id, ConfigPayloadStaging::InPlace, "");
-    document.tools.get_mut(&conductor_tool_id).expect("the spec").runtime.content_map =
-        content_map.clone();
-    let runtimes = BTreeMap::from([(
-        conductor_tool_id.clone(),
-        ToolRuntime {
-            content_map,
-            payload_staging: ConfigPayloadStaging::InPlace,
-            ..Default::default()
-        },
-    )]);
+    document.tools.get_mut(&conductor_tool_id).expect("the spec").runtime.content_map = content_map;
+    let live_keys = vec![conductor_tool_id.clone()];
 
-    let guards = materialize_active_tool_runtimes(&paths.tools_dir, cas, &document, &runtimes)
+    let guards = materialize_active_tool_runtimes(&paths.tools_dir, cas, &document, &live_keys)
         .await
         .expect("materializing the only active tool succeeds");
     let payload_dir = provisioned_payload_dir(&paths.tools_dir, &conductor_tool_id);
@@ -212,15 +183,12 @@ fn a_tool_without_a_content_map_is_not_stamped() {
 
     let mut document = document_with_tool(conductor_tool_id, ConfigPayloadStaging::Copy, "");
     document.tools.get_mut(conductor_tool_id).expect("the spec").runtime.content_map.clear();
-    let mut runtimes = BTreeMap::from([(
-        conductor_tool_id.to_string(),
-        ToolRuntime { payload_staging: ConfigPayloadStaging::Copy, ..Default::default() },
-    )]);
+    let live_keys = vec![conductor_tool_id.to_string()];
 
     stamp_payload_roots(
         &paths,
         &mut document,
-        &mut runtimes,
+        &live_keys,
         &BTreeMap::new(),
         PayloadStaging::InPlace,
     );
@@ -229,7 +197,6 @@ fn a_tool_without_a_content_map_is_not_stamped() {
         document.tools[conductor_tool_id].runtime.payload_root, "",
         "a tool with no payload has no payload root"
     );
-    assert_eq!(runtimes[conductor_tool_id].payload_root, "");
 }
 
 /// Encodes a document and hands back its source.
@@ -313,27 +280,15 @@ fn regression_a_hard_link_request_survives_a_sync() {
 
     let mut document = document_with_tool(conductor_tool_id, ConfigPayloadStaging::Inherit, "");
     declare_content_map_hashes(&mut document);
-    let mut runtimes = BTreeMap::from([(
-        conductor_tool_id.to_string(),
-        ToolRuntime {
-            content_map: document.tools[conductor_tool_id].runtime.content_map.clone(),
-            payload_staging: ConfigPayloadStaging::Inherit,
-            ..Default::default()
-        },
-    )]);
+    let live_keys = vec![conductor_tool_id.to_string()];
     let choices = BTreeMap::from([("scripted".to_string(), ConfigPayloadStaging::HardLink)]);
 
-    stamp_payload_roots(&paths, &mut document, &mut runtimes, &choices, PayloadStaging::HardLink);
+    stamp_payload_roots(&paths, &mut document, &live_keys, &choices, PayloadStaging::HardLink);
 
     assert_eq!(
         document.runtime.payload_staging,
         PayloadStaging::HardLink,
         "the library records its request once, at the document level"
-    );
-    assert_eq!(
-        runtimes[conductor_tool_id].payload_staging,
-        ConfigPayloadStaging::HardLink,
-        "the runtime map the sync itself reads carries the same choice"
     );
 
     let encoded = encode_source(document);
@@ -376,34 +331,21 @@ fn regression_an_override_is_written_once_in_the_emitted_document() {
     document.tools.extend(second.tools);
     declare_content_map_hashes(&mut document);
 
-    let mut runtimes: BTreeMap<String, ToolRuntime> = [overriding, inheriting]
-        .into_iter()
-        .map(|id| {
-            let content_map = document.tools[id].runtime.content_map.clone();
-            (
-                id.to_string(),
-                ToolRuntime {
-                    content_map,
-                    payload_staging: ConfigPayloadStaging::Inherit,
-                    ..Default::default()
-                },
-            )
-        })
-        .collect();
+    let live_keys = vec![overriding.to_string(), inheriting.to_string()];
     let choices = BTreeMap::from([
         ("chosen".to_string(), ConfigPayloadStaging::InPlace),
         ("inheriting".to_string(), ConfigPayloadStaging::Inherit),
     ]);
 
-    stamp_payload_roots(&paths, &mut document, &mut runtimes, &choices, PayloadStaging::Copy);
+    stamp_payload_roots(&paths, &mut document, &live_keys, &choices, PayloadStaging::Copy);
 
     assert_eq!(
-        runtimes[overriding].payload_staging,
+        document.tools[overriding].runtime.payload_staging,
         ConfigPayloadStaging::InPlace,
-        "the runtime map carries the choice the tool's requirement stated"
+        "the overriding tool's choice is stamped in the document"
     );
     assert_eq!(
-        runtimes[inheriting].payload_staging,
+        document.tools[inheriting].runtime.payload_staging,
         ConfigPayloadStaging::Inherit,
         "a tool that stated nothing keeps saying nothing, so the document default decides"
     );

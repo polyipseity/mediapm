@@ -97,7 +97,6 @@ fn fetched_none_registers_a_spec_without_a_version() {
         kind: EntryKind::Explicit,
     };
     let mut generated_doc = NickelDocument::default();
-    let mut tool_runtimes = BTreeMap::new();
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
     let mut pruned_tools = 0usize;
@@ -113,7 +112,6 @@ fn fetched_none_registers_a_spec_without_a_version() {
             resolved_vcs_hash: Some("0123456789abcdef".to_string()),
         },
         &mut generated_doc,
-        &mut tool_runtimes,
         &mut report,
         &mut live_state,
         &mut pruned_tools,
@@ -134,12 +132,6 @@ fn fetched_none_registers_a_spec_without_a_version() {
         !generated_doc.tools.keys().any(|key| key.contains('@')),
         "an empty content map yields the bare tool id as the document key: {keys:?}",
         keys = generated_doc.tools.keys().collect::<Vec<_>>()
-    );
-
-    assert_eq!(
-        tool_runtimes.keys().map(String::as_str).collect::<Vec<_>>(),
-        vec!["media-tagger"],
-        "the runtime map .env.generated reads is keyed by the same bare conductor tool id",
     );
 
     let record =
@@ -170,7 +162,6 @@ fn fetched_none_stamps_the_runtime_its_entry_declares() {
         kind: EntryKind::Explicit,
     };
     let mut generated_doc = NickelDocument::default();
-    let mut tool_runtimes = BTreeMap::new();
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
     let mut pruned_tools = 0usize;
@@ -186,7 +177,6 @@ fn fetched_none_stamps_the_runtime_its_entry_declares() {
             resolved_vcs_hash: Some("0123456789abcdef".to_string()),
         },
         &mut generated_doc,
-        &mut tool_runtimes,
         &mut report,
         &mut live_state,
         &mut pruned_tools,
@@ -198,11 +188,6 @@ fn fetched_none_stamps_the_runtime_its_entry_declares() {
     assert!(
         spec.runtime.impure,
         "the tagger reaches the network, so the definition it is written from is impure",
-    );
-    assert_eq!(
-        tool_runtimes.get("media-tagger").map(|runtime| runtime.impure),
-        Some(true),
-        "the runtime the sync records must be the classification its entry declares",
     );
 }
 

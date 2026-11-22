@@ -29,7 +29,6 @@ fn report_after_fetched(warnings: Vec<String>) -> ToolSyncReport {
         kind: EntryKind::Explicit,
     };
     let mut generated_doc = NickelDocument::default();
-    let mut tool_runtimes = BTreeMap::new();
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
     let mut pruned_tools = 0usize;
@@ -56,7 +55,6 @@ fn report_after_fetched(warnings: Vec<String>) -> ToolSyncReport {
             },
         },
         &mut generated_doc,
-        &mut tool_runtimes,
         &mut report,
         &mut live_state,
         &mut pruned_tools,

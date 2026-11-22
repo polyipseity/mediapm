@@ -456,7 +456,6 @@ fn apply_pass_reasserting_a_counted_entry_does_not_double_advance() {
         kind: EntryKind::Explicit,
     };
     let mut generated_doc = NickelDocument::default();
-    let mut tool_runtimes = BTreeMap::new();
     let mut report = ToolSyncReport::default();
     let mut live_state = std::collections::HashMap::new();
     let mut pruned_tools = 0usize;
@@ -465,7 +464,6 @@ fn apply_pass_reasserting_a_counted_entry_does_not_double_advance() {
         &entry,
         EntryOutcome::Skipped {
             key: "ffmpeg".to_string(),
-            spec_runtime: ToolRuntime::default(),
             tool_record: Box::new(ToolRegistryEntry {
                 tool_id: "ffmpeg".to_string(),
                 version: "v".to_string(),
@@ -478,7 +476,6 @@ fn apply_pass_reasserting_a_counted_entry_does_not_double_advance() {
             }),
         },
         &mut generated_doc,
-        &mut tool_runtimes,
         &mut report,
         &mut live_state,
         &mut pruned_tools,
