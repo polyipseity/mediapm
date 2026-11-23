@@ -1602,16 +1602,20 @@ Step instance identity is derived from the step's logical tool name and key mate
 | Snapshot v3 carries `delta_bases`, `lengths`, `corrupted` | [covered] | `metadata_store::versions` unit tests |
 | V1 and V2 snapshots still load into the v3 model | [covered] | `a_v2_snapshot_loads_into_the_v3_model`, `a_v1_snapshot_loads_into_the_current_model_without_its_encoding` |
 | V1 snapshot rejects unknown fields | [covered] | `regression_v1_snapshot_rejects_unknown_field` |
+| Nested v1 record strictness | [covered] | `regression_v1_constraint_entry_rejects_unknown_field`, `regression_v1_entry_data_rejects_unknown_field` |
 | Corruption is recorded, reported, and cleared | [covered] | `corrupt_objects` integration tests |
 | The corruption record survives a restart | [covered] | `the_corruption_record_survives_a_restart` |
-| A sole corrupt form read records corruption and delete/verified fallback clear it | [covered] | `delete_clears_corruption_record`, `a_sole_corrupt_form_read_records_corruption`, `a_verified_fallback_read_clears_corruption_record`, `a_verified_fallback_from_missing_indexed_form_clears_corruption_record` |
+| A sole corrupt form read records corruption and delete/verified fallback clear it | [covered] | `delete_clears_corruption_record`, `a_sole_corrupt_form_read_records_corruption`, `a_verified_fallback_read_clears_corruption_record`, `a_verified_fallback_from_missing_indexed_form_clears_corruption_record`, `a_plain_unverified_indexed_read_does_not_clear_the_record` |
+| Best-effort read-path clearing serves verified bytes on clear failure | [covered] | `a_clearing_failure_still_serves_the_verified_bytes`, `a_clearing_failure_on_missing_indexed_fallback_still_serves_the_verified_bytes` |
 | `CasDurability` defaults to no extra syncs | [covered] | `blob_forms.rs` `the_default_durability_is_no_extra_flags` |
 | A durable full constraint materializes before returning | [covered] | `a_durable_full_constraint_materializes_the_payload_before_returning` |
-| Legacy delta envelopes are rewritten on first read | [covered] | `a_legacy_delta_envelope_is_rewritten_on_first_read` |
+| One snapshot install on the durable path | [covered] | `metadata_store::fs::tests::a_syncing_constraint_install_writes_the_snapshot_once` |
+| STORE and METADATA durability flags are independent | [covered] | `store_durability_writes_the_full_payload_before_return`, `store_durability_does_not_install_metadata_syncing`, `metadata_durability_makes_the_constraint_readable_without_rewriting_bytes` |
+| Legacy delta envelopes are rewritten on first read | [covered] | `storage::blob_store::fs::tests::legacy_delta_envelope_is_rewritten_in_place` |
 | Legacy delta rewrite records a fresh mtime | [covered] | `legacy_delta_rewrite_records_fresh_mtime` |
 | `get_to_writer` serves the sound form on a verifying store | [covered] | `get_to_writer_serves_the_sound_form_when_the_indexed_one_is_corrupt` |
 | `get_to_writer` streams without buffering when not verifying | [covered] | `get_to_writer_streams_directly_on_a_non_verifying_store` |
 | The CLI lists known-corrupt objects | [covered] | `corrupted_takes_no_arguments`, `cli_entry_point::corrupted_lists_recorded_objects` |
 | The newest deployment decides the active tool key | [covered] | `sync::tests_active_tool_spec` `the_deployment_record_beats_a_first_key_with_a_live_map` |
 | A document with no deployment record still resolves | [covered] | `sync::tests_active_tool_spec` `a_tool_with_no_deployment_record_falls_back_to_the_content_map` |
-| One post-apply pass clears superseded content maps for provisioned tool ids in the run | [covered] | `sync::tests_active_tool_spec::a_stale_sibling_key_is_cleared_but_the_live_one_is_kept`, `sync::tests_skip_path::skip_reuse_clears_superseded_content_maps`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_fetched_outcome`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_no_payload_outcome`, `sync::tests_pruning::reconcile_prunes_old_tool_version_clears_content_map` |
+| One post-apply pass clears superseded content maps for provisioned tool ids in the run | [covered] | `sync::tests_active_tool_spec::a_stale_sibling_key_is_cleared_but_the_live_one_is_kept`, `sync::tests_skip_path::skip_reuse_clears_superseded_content_maps`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_fetched_outcome`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_no_payload_outcome`, `sync::tests_pruning::reconcile_prunes_old_tool_version_clears_content_map`, `int::tool_sync::superseded_maps::a_skipping_sync_clears_a_stale_sibling_map_through_reconcile` |
