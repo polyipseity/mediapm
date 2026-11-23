@@ -40,6 +40,8 @@ use super::{MetadataEntry, MetadataStore, PrunedConstraints};
 pub struct FileSystemMetadataStore {
     inner: InMemoryMetadataStore,
     blob_store: FileSystemBlobStore,
+    #[cfg(test)]
+    install_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl FileSystemMetadataStore {
@@ -63,7 +65,22 @@ impl FileSystemMetadataStore {
     /// metadata store.
     pub fn new(blob_store: FileSystemBlobStore) -> Result<Self, CasError> {
         blob_store.claim_metadata_owner()?;
-        Ok(Self { inner: InMemoryMetadataStore::new(), blob_store })
+        Ok(Self {
+            inner: InMemoryMetadataStore::new(),
+            blob_store,
+            #[cfg(test)]
+            install_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    /// The number of snapshot installs performed by this store.
+    ///
+    /// Counts every write of the latest snapshot file, including synced
+    /// installs. Used to pin that a durable constraint path does not write the
+    /// same directory twice.
+    #[cfg(test)]
+    pub(crate) fn install_count(&self) -> usize {
+        self.install_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Flush everything whose hash falls into the same fan-out directory as
@@ -148,6 +165,10 @@ impl FileSystemMetadataStore {
                     .await?;
             } else {
                 self.blob_store.write_aux(hash, LATEST_METADATA_FORMAT, Bytes::from(json)).await?;
+            }
+            #[cfg(test)]
+            {
+                self.install_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             // Clean up any legacy format files in this directory.
             for name in METADATA_FORMAT_NAMES {
@@ -332,6 +353,15 @@ impl MetadataStore for FileSystemMetadataStore {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.inner.set_constraint(target, bases).await?;
         self.flush_dir(&target, false).await
+    }
+
+    async fn set_constraint_syncing(
+        &self,
+        target: Hash,
+        bases: BTreeSet<Hash>,
+    ) -> Result<(), CasError> {
+        self.inner.set_constraint(target, bases).await?;
+        self.flush_dir(&target, true).await
     }
 
     async fn get_constraint(&self, target: &Hash) -> Result<BTreeSet<Hash>, CasError> {
@@ -916,6 +946,25 @@ mod tests {
         assert!(
             index.list_corrupted().await.unwrap().is_empty(),
             "delete must clear corruption record"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_syncing_constraint_install_writes_the_snapshot_once() {
+        let root = mediapm_utils::temp::artifact_dir().unwrap();
+        let blob = test_blob_store_at(root.path().to_path_buf()).await;
+        let index = FileSystemMetadataStore::new(blob.clone()).expect("the metadata store");
+        let target = Hash::from_content(b"syncing-target");
+        index.put(target, MetadataEntry { len: 4, encoding: ObjectEncoding::Full }).await.unwrap();
+
+        let before = index.install_count();
+        index.set_constraint_syncing(target, BTreeSet::from([Hash::empty()])).await.unwrap();
+        let after = index.install_count();
+
+        assert_eq!(
+            after - before,
+            1,
+            "a durable constraint installs one snapshot, not two: {before} -> {after}"
         );
     }
 }

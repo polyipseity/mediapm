@@ -316,11 +316,14 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
         // Otherwise, the WAL consumer (BackgroundEngine) will apply it. A
         // caller asking for metadata durability is asking for the index entry
         // now, not for the deferred path, so that case materializes and syncs
-        // regardless of SYNC_MATERIALIZE.
+        // regardless of SYNC_MATERIALIZE. The syncing path installs the
+        // snapshot once; a plain SYNC_MATERIALIZE store only needs the entry
+        // materialized.
         if M::SYNC_MATERIALIZE || durability.contains(CasDurability::METADATA) {
-            self.metadata.set_constraint(target, bases).await?;
             if durability.contains(CasDurability::METADATA) {
-                self.metadata.sync_hash(&target).await?;
+                self.metadata.set_constraint_syncing(target, bases).await?;
+            } else {
+                self.metadata.set_constraint(target, bases).await?;
             }
         }
         Ok(())

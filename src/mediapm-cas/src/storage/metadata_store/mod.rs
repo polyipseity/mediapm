@@ -173,6 +173,22 @@ pub trait MetadataStore: Send + Sync {
         Ok(())
     }
 
+    /// Install a constraint and make its snapshot durable before returning.
+    ///
+    /// Defaulted to [`Self::set_constraint`] followed by [`Self::sync_hash`]:
+    /// a store whose snapshot write is already synced, or which has no
+    /// snapshot, needs nothing more. A store that can install the snapshot
+    /// once with the sync set overrides this so the directory is not written
+    /// twice.
+    async fn set_constraint_syncing(
+        &self,
+        target: Hash,
+        bases: BTreeSet<Hash>,
+    ) -> Result<(), CasError> {
+        self.set_constraint(target, bases).await?;
+        self.sync_hash(&target).await
+    }
+
     /// List hashes that depend on `hash` as their delta base.
     ///
     /// Default O(N) implementation iterates all entries inline. In-memory
