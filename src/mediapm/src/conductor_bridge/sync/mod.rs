@@ -1560,7 +1560,12 @@ fn clear_all_superseded_content_maps(
         if !seen.insert(tool_id.clone()) {
             continue;
         }
-        let live_key = active_spec_key(generated_doc, deployments, &tool_id)
+        // Resolve the live key through the deployment-aware active spec, not
+        // `active_spec_key`: a stale bare key present in the document would
+        // short-circuit `active_spec_key` before deployments are consulted,
+        // causing the live hashed key's content map to be cleared instead.
+        let live_key = find_active_tool_spec(generated_doc, deployments, &tool_id)
+            .map(|(key, _spec)| key.clone())
             .unwrap_or_else(|| tool_id.clone());
         cleared += clear_superseded_content_maps(generated_doc, &tool_id, &live_key);
     }

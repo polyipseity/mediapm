@@ -959,3 +959,72 @@ fn post_apply_pass_clears_superseded_content_maps_for_fetched_and_no_payload_out
     assert!(no_payload_doc.tools["media-tagger@old"].runtime.content_map.is_empty());
     assert!(no_payload_doc.tools["media-tagger"].runtime.content_map.is_empty());
 }
+
+/// Regression: a stale bare tool key coexisting with a live hashed key must not
+/// be treated as live. `clear_all_superseded_content_maps` resolves the live key
+/// through the deployment-aware active spec; it must not short-circuit on a
+/// stale bare key present in the document.
+#[test]
+fn regression_clear_all_superseded_content_maps_prefers_deployment_over_stale_bare_key() {
+    use mediapm_utils::Timestamp;
+
+    let mut doc = NickelDocument {
+        tools: BTreeMap::from([
+            (
+                "ffmpeg".to_string(),
+                ToolSpec {
+                    name: "ffmpeg".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "bin/ffmpeg".to_string(),
+                            "stale-bare".to_string(),
+                        )]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+            (
+                "ffmpeg@new".to_string(),
+                ToolSpec {
+                    name: "ffmpeg".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "bin/ffmpeg".to_string(),
+                            "live-hashed".to_string(),
+                        )]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+        ]),
+        ..Default::default()
+    };
+    let deployments = ToolDeployments::from_records(&[ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: "v".to_string(),
+        canonical_version: "c".to_string(),
+        content_map_hash: "new".to_string(),
+        deployed_at: Timestamp::from_unix_nanos(4),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    }]);
+
+    let cleared =
+        clear_all_superseded_content_maps(&mut doc, &deployments, vec!["ffmpeg".to_string()]);
+
+    assert_eq!(cleared, 1, "only the stale bare key should be cleared");
+    assert!(
+        doc.tools["ffmpeg"].runtime.content_map.is_empty(),
+        "stale bare key must be cleared when deployments name the hashed key live"
+    );
+    assert_eq!(
+        doc.tools["ffmpeg@new"].runtime.content_map.get("bin/ffmpeg"),
+        Some(&"live-hashed".to_string()),
+        "live hashed key content map must be preserved"
+    );
+}
