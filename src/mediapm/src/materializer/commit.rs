@@ -446,11 +446,17 @@ mod tests {
 
     /// Hierarchy path of the single entry [`a_dangling_symlink_output_is_replaced_by_the_next_run`]
     /// re-syncs.
-    #[cfg(unix)]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "their one caller is a symlink fixture, which is unix-only")
+    )]
     const SYNC_ENTRY_PATH: &str = "song";
 
     /// Bytes the entry in that test is materialized from.
-    #[cfg(unix)]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "their one caller is a symlink fixture, which is unix-only")
+    )]
     const SYNC_ENTRY_PAYLOAD: &[u8] = b"dangling-symlink-output";
 
     /// Runs `sync_hierarchy` over `document` with no progress output.
@@ -461,7 +467,10 @@ mod tests {
     ///
     /// One caller, and it drives a symlink fixture, so it compiles out with that
     /// test on Windows.
-    #[cfg(unix)]
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "their one caller is a symlink fixture, which is unix-only")
+    )]
     async fn run_materialize(
         paths: &MediaPmPaths,
         document: &MediaPmDocument,

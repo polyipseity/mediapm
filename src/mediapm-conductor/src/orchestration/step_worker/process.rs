@@ -493,10 +493,15 @@ mod tests {
     ///
     /// Both users drive a `#!/bin/sh` fixture, so the guard compiles out on
     /// Windows with them.
-    #[cfg(unix)]
+    #[cfg_attr(
+        not(unix),
+        expect(
+            dead_code,
+            reason = "both users drive a shell fixture, so the guard is unreferenced on Windows"
+        )
+    )]
     struct ExecutableTimeoutOverride(Option<String>);
 
-    #[cfg(unix)]
     impl ExecutableTimeoutOverride {
         /// Sets the executable-timeout env override to `secs` for this guard's lifetime.
         fn set(secs: u64) -> Self {
@@ -509,7 +514,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     impl Drop for ExecutableTimeoutOverride {
         fn drop(&mut self) {
             // Safety: mirrors `set`; restores the pre-test env state.

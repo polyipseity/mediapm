@@ -555,22 +555,6 @@ async fn a_folder_whose_nested_member_lands_first_is_counted_as_missing() {
     );
 }
 
-/// Name of the directory inside the folder that is made read-only, so no
-/// child directory can be created in it.
-const READ_ONLY_DIR: &str = "read-only";
-
-/// The member that needs a directory inside [`READ_ONLY_DIR`].
-///
-/// Two levels below the read-only directory on purpose: its own parent does
-/// not exist, so `create_dir_all` is the call that meets the read-only
-/// directory. One level down would leave the parent already there and the
-/// run would fail at the write after it, past the branch under test.
-const READ_ONLY_BLOCKED_MEMBER: &str = "read-only/sub/member.bin";
-
-/// Bytes [`READ_ONLY_BLOCKED_MEMBER`] holds. The member never lands, so the
-/// content only has to be what the archive carries.
-const READ_ONLY_BLOCKED_PAYLOAD: &[u8] = b"member payload that never lands";
-
 /// A folder the disk will not let the run write fails the run instead of
 /// counting the member missing.
 ///
@@ -588,14 +572,19 @@ const READ_ONLY_BLOCKED_PAYLOAD: &[u8] = b"member payload that never lands";
 async fn a_folder_whose_member_directory_cannot_be_made_fails_the_run() {
     use std::os::unix::fs::PermissionsExt as _;
 
+    // The member is two levels below the read-only directory on purpose: its own
+    // parent does not exist, so `create_dir_all` is the call that meets the
+    // read-only directory. One level down would leave the parent already there
+    // and the run would fail at the write after it, past the branch under test.
+    const READ_ONLY_DIR: &str = "read-only";
+    const BLOCKED_MEMBER: &str = "read-only/sub/member.bin";
+    const BLOCKED_PAYLOAD: &[u8] = b"member payload that never lands";
+
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
     let archive = cas
-        .put(bytes::Bytes::from(zip_payload(&[(
-            READ_ONLY_BLOCKED_MEMBER,
-            READ_ONLY_BLOCKED_PAYLOAD,
-        )])))
+        .put(bytes::Bytes::from(zip_payload(&[(BLOCKED_MEMBER, BLOCKED_PAYLOAD)])))
         .await
         .unwrap();
 

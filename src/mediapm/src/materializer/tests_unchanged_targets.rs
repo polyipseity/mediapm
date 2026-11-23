@@ -374,15 +374,6 @@ async fn an_output_edited_to_the_same_length_is_written_again() {
     );
 }
 
-/// Payload whose object one library entry is redirected at while another
-/// payload of the same length stands in for the content the document resolves.
-///
-/// Same length on purpose. A decoy that held a different number of bytes would
-/// be caught by the length comparison that runs for every method without a
-/// relationship, so the test would pass against a build that never read a
-/// symlink at all.
-const DECOY_PAYLOAD: &[u8] = b"SAME-NUMBER-OF-BYTES";
-
 /// A library entry that is a symlink naming the CAS object is declined.
 ///
 /// The re-sync reads the link and finds the path the document resolved, so
@@ -433,6 +424,11 @@ async fn a_symlink_naming_the_right_object_skips() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_symlink_naming_the_wrong_object_is_written_again() {
+    // Same length on purpose. A decoy with a different length would be caught by
+    // the length comparison that runs for every method without a relationship, so
+    // the test would pass against a build that never read a symlink at all.
+    const DECOY_PAYLOAD: &[u8] = b"SAME-NUMBER-OF-BYTES";
+
     let root = mediapm_utils::temp::artifact_dir().unwrap();
     let paths = MediaPmPaths::from_root(root.path());
     let cas = open_hierarchy_cas(&paths).await;
