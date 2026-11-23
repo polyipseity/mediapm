@@ -286,3 +286,28 @@ pub(crate) fn make_writable_dir(path: &std::path::Path) {
         assert!(status.success(), "icacls failed to restore directory writes");
     }
 }
+
+/// RAII guard that restores write permission to a directory made read-only by
+/// [`make_read_only_dir`].
+///
+/// A test that makes a directory read-only to exercise a bookkeeping failure
+/// path must still restore it when an assertion panics, or the leftover
+/// permissions poison later cleanup.
+pub(crate) struct ReadOnlyDirGuard {
+    path: std::path::PathBuf,
+}
+
+impl ReadOnlyDirGuard {
+    /// Makes `path` read-only and returns a guard that restores write permission
+    /// on drop.
+    pub(crate) fn new(path: &std::path::Path) -> Self {
+        make_read_only_dir(path);
+        Self { path: path.to_path_buf() }
+    }
+}
+
+impl Drop for ReadOnlyDirGuard {
+    fn drop(&mut self) {
+        make_writable_dir(&self.path);
+    }
+}

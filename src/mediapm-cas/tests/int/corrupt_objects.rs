@@ -3,7 +3,7 @@
 use bytes::Bytes;
 
 use crate::common;
-use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi};
+use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ObjectEncoding};
 use mediapm_cas::hash::Hash;
 use std::collections::BTreeSet;
 
@@ -171,25 +171,78 @@ async fn a_verified_fallback_from_missing_indexed_form_clears_corruption_record(
     let report = cas.run_maintenance_cycle().await.unwrap();
     assert_eq!(report.corrupted_objects, 1, "precondition: hash recorded as corrupt");
 
-    // Remove whichever form is indexed and keep the other sound. If the indexed
-    // form was delta, the restored delta read is a plain unverified Ok(Some)
-    // and must not clear corruption; in that case remove delta and restore full
-    // so the missing-indexed path exercises the verified-fallback clearing.
-    std::fs::write(&delta, &delta_bytes).expect("restore delta payload");
-    std::fs::remove_file(&full).expect("remove full form");
-
-    let read = cas.get(target).await.unwrap();
-    assert_eq!(read.as_ref(), expected.as_slice(), "first recovery must return correct bytes");
-    if !cas.list_corrupted_objects().await.unwrap().is_empty() {
-        std::fs::write(&full, &expected).expect("restore full payload");
-        std::fs::remove_file(&delta).expect("remove delta form");
-        let read = cas.get(target).await.unwrap();
-        assert_eq!(read.as_ref(), expected.as_slice(), "second recovery must return correct bytes");
+    let indexed = cas.stat(target).await.unwrap().encoding;
+    // A missing indexed file surfaces as Err(NotFound) and the verified other
+    // form clears the record.
+    match indexed {
+        ObjectEncoding::Full => {
+            std::fs::write(&delta, &delta_bytes).expect("restore the non-indexed delta form");
+            std::fs::remove_file(&full).expect("remove the indexed full form");
+        }
+        ObjectEncoding::Delta { .. } => {
+            std::fs::write(&full, &expected).expect("restore the non-indexed full form");
+            std::fs::remove_file(&delta).expect("remove the indexed delta form");
+        }
     }
 
+    let read = cas.get(target).await.unwrap();
+    assert_eq!(read.as_ref(), expected.as_slice(), "verified fallback must return correct bytes");
     assert!(
         cas.list_corrupted_objects().await.unwrap().is_empty(),
         "verified fallback from missing indexed form must clear corruption record"
+    );
+}
+
+/// A plain unverified indexed read must not clear a corruption record.
+///
+/// The read path only clears the record after serving a verified fallback. A
+/// store without verify-on-read can return the indexed bytes without proving
+/// them, so it has no evidence the corruption record is stale. If the corrupt
+/// indexed bytes cannot be returned as a successful read (for example, a delta
+/// payload that fails to decode without verification), the read error must
+/// still leave the record in place.
+#[tokio::test]
+async fn a_plain_unverified_indexed_read_does_not_clear_the_record() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(common::similar(b'U', b"CHANGED"))).await.unwrap();
+    let target = cas.put(Bytes::from(common::similar(b'U', b"REPLACED"))).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let (full, delta) = common::form_paths(&cas, target);
+    common::corrupt(&full);
+    common::corrupt(&delta);
+    let report = cas.run_maintenance_cycle().await.unwrap();
+    assert_eq!(report.corrupted_objects, 1, "precondition: hash recorded as corrupt");
+
+    // Reopen without verify-on-read so the read takes the indexed path with no
+    // hash check. The corrupt bytes may be returned as-is; either way the
+    // corruption record must survive because no verified fallback ran.
+    let cas = cas.reopen().await;
+    let read = cas.get(target).await;
+    match read {
+        Ok(bytes) => {
+            assert_eq!(
+                bytes.as_ref(),
+                b"not the bytes this hash names",
+                "without verify-on-read the store returns the corrupt indexed bytes"
+            );
+        }
+        Err(err) => {
+            // A delta payload can fail to decode without hash verification, so
+            // the read cannot succeed. The record must still survive because no
+            // verified fallback cleared it.
+            assert!(
+                matches!(err, mediapm_cas::CasError::CorruptObject { .. }),
+                "unexpected error from corrupt unverified indexed read: {err:?}"
+            );
+        }
+    }
+    assert_eq!(
+        cas.list_corrupted_objects().await.unwrap(),
+        vec![target],
+        "a plain unverified indexed read must not clear the corruption record"
     );
 }
 
@@ -207,18 +260,68 @@ async fn a_clearing_failure_still_serves_the_verified_bytes() {
     cas.run_maintenance_cycle().await.unwrap();
 
     let (full, delta) = common::form_paths(&cas, target);
+    let delta_bytes = std::fs::read(&delta).expect("read delta before corruption");
     common::corrupt(&full);
     common::corrupt(&delta);
     let report = cas.run_maintenance_cycle().await.unwrap();
     assert_eq!(report.corrupted_objects, 1, "precondition: hash recorded as corrupt");
 
-    // Make the sound form readable but the snapshot directory unwritable, so the
-    // recovery path can read bytes and cannot clear the record.
-    std::fs::write(&full, &expected).expect("restore full payload");
+    let indexed = cas.stat(target).await.unwrap().encoding;
+    // Keep the indexed form corrupt so the read hits the CorruptObject fallback
+    // branch, restore the other physical form as sound, and make the corruption
+    // record unwritable. The read must still return the verified bytes.
+    match indexed {
+        ObjectEncoding::Full => {
+            std::fs::write(&delta, &delta_bytes).expect("restore the non-indexed delta form");
+        }
+        ObjectEncoding::Delta { .. } => {
+            std::fs::write(&full, &expected).expect("restore the non-indexed full form");
+        }
+    }
     let aux_dir = common::aux_dir_for(&cas, target);
-    common::make_read_only_dir(&aux_dir);
+    let _read_only = common::ReadOnlyDirGuard::new(&aux_dir);
 
     let read = cas.get(target).await.expect("a verified read must not fail on a bookkeeping error");
     assert_eq!(read.as_ref(), expected.as_slice());
-    common::make_writable_dir(&aux_dir);
+}
+
+/// A missing indexed form follows the same best-effort clearing rule: the read
+/// already holds verified bytes, so a bookkeeping write failure must not turn
+/// the recovery into a failure.
+#[tokio::test]
+async fn a_clearing_failure_on_missing_indexed_fallback_still_serves_the_verified_bytes() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(common::similar(b'N', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'N', b"REPLACED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let (full, delta) = common::form_paths(&cas, target);
+    let delta_bytes = std::fs::read(&delta).expect("read delta before corruption");
+    common::corrupt(&full);
+    common::corrupt(&delta);
+    let report = cas.run_maintenance_cycle().await.unwrap();
+    assert_eq!(report.corrupted_objects, 1, "precondition: hash recorded as corrupt");
+
+    let indexed = cas.stat(target).await.unwrap().encoding;
+    // A missing indexed file surfaces as Err(NotFound) and the verified other
+    // form clears the record. Make the clearing write fail to prove the read
+    // still serves the bytes.
+    match indexed {
+        ObjectEncoding::Full => {
+            std::fs::write(&delta, &delta_bytes).expect("restore the non-indexed delta form");
+            std::fs::remove_file(&full).expect("remove the indexed full form");
+        }
+        ObjectEncoding::Delta { .. } => {
+            std::fs::write(&full, &expected).expect("restore the non-indexed full form");
+            std::fs::remove_file(&delta).expect("remove the indexed delta form");
+        }
+    }
+    let aux_dir = common::aux_dir_for(&cas, target);
+    let _read_only = common::ReadOnlyDirGuard::new(&aux_dir);
+
+    let read = cas.get(target).await.expect("a verified read must not fail on a bookkeeping error");
+    assert_eq!(read.as_ref(), expected.as_slice());
 }
