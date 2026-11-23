@@ -19,7 +19,7 @@ use super::common::{mk_with_capacity, mk_with_capacity_and_ts};
 fn parallel_workers_with_a_failed_worker() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(6, 80, 5, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
 
     let a = screen.add_bar(5, "worker-a");
     let b = screen.add_bar(5, "worker-b");
@@ -28,7 +28,7 @@ fn parallel_workers_with_a_failed_worker() {
     // Minor 2 — this cannot change the pinned bytes).
     a.set_animating(true);
     b.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
 
     a.advance(3);
     b.advance(2);
@@ -160,8 +160,8 @@ fn materializer_consumer_lifecycle() {
 #[test]
 fn tool_sync_consumer_lifecycle() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("syncing tools", 2).build();
-    _overall.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("syncing tools", 2).build();
+    overall.set_animating(true);
 
     let t1 = screen.add_bar(0, "yt-dlp");
     t1.advance(1);
@@ -305,7 +305,7 @@ fn workers_with_interleaved_advances() {
 fn worker_children_fill_the_small_grid() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(4, 80, 3, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
 
     let c1 = screen.add_bar(5, "child-a");
     let c2 = screen.add_bar(5, "child-b");
@@ -313,7 +313,7 @@ fn worker_children_fill_the_small_grid() {
     c1.set_animating(true);
     c2.set_animating(true);
     c3.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     c1.set_position(2);
     c2.set_position(4);
     c3.set_position(5);
@@ -337,12 +337,12 @@ fn worker_children_fill_the_small_grid() {
 #[test]
 fn child_capacity_excludes_the_overall_slot() {
     let (terminal, term) = mk_with_capacity(3, 40, 2);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
-    _overall.set_animating(true);
-    let _c1 = screen.add_bar(3, "alpha");
-    let _c2 = screen.add_bar(3, "beta");
-    _c1.set_animating(true);
-    _c2.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
+    overall.set_animating(true);
+    let c1 = screen.add_bar(3, "alpha");
+    let c2 = screen.add_bar(3, "beta");
+    c1.set_animating(true);
+    c2.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -355,13 +355,13 @@ fn child_capacity_excludes_the_overall_slot() {
     );
 
     let (terminal, term) = mk_with_capacity(3, 40, 2);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
-    _overall.set_animating(true);
-    let _c1 = screen.add_bar(3, "alpha");
-    let _c2 = screen.add_bar(3, "beta");
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
+    overall.set_animating(true);
+    let c1 = screen.add_bar(3, "alpha");
+    let c2 = screen.add_bar(3, "beta");
     let _c3 = screen.add_bar(3, "gamma");
-    _c1.set_animating(true);
-    _c2.set_animating(true);
+    c1.set_animating(true);
+    c2.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -379,11 +379,11 @@ fn child_capacity_excludes_the_overall_slot() {
 fn repeated_position_setting_yields_last_value() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(6, 80, 5, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 100).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 100).build();
 
     let worker = screen.add_bar(50, "worker");
     worker.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     for i in 0..20 {
         worker.set_position(i * 2);
     }

@@ -8,8 +8,6 @@
 //!
 //! Only available when the `progress` feature is enabled.
 
-#![allow(clippy::missing_panics_doc)]
-
 use crate::progress::BarStyle;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -226,6 +224,10 @@ impl RecordingProgressTracker {
     /// This is what a per-row assertion needs: filter on
     /// [`RecordedProgressOp::bar`] before counting, so an overall row's
     /// terminal marker cannot land in a worker slot's count.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recording lock is poisoned.
     #[must_use]
     pub fn recorded(&self) -> Vec<RecordedProgressOp> {
         self.ops.lock().expect("recording lock").clone()
@@ -236,12 +238,20 @@ impl RecordingProgressTracker {
     ///
     /// Every bar lands in one sequence, so this cannot answer "how many did
     /// this row do". Use [`recorded`](Self::recorded) when the row matters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recording lock is poisoned.
     #[must_use]
     pub fn ops(&self) -> Vec<ProgressOp> {
         self.ops.lock().expect("recording lock").iter().map(|entry| entry.op.clone()).collect()
     }
 
     /// Clear all recorded operations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recording lock is poisoned.
     pub fn clear(&self) {
         self.ops.lock().expect("recording lock").clear();
     }
@@ -426,6 +436,10 @@ impl RecordingTrackedHandle {
     /// Re-activate a finished bar. Clears the terminal state marker and
     /// resets elapsed tracking; the next frame redraws the row as active
     /// because it re-syncs every slot from the shared state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a recording or elapsed-time lock is poisoned.
     pub fn restart(&self) {
         self.push(ProgressOp::Restart);
         *self.finished_elapsed.lock().expect("recording finished_elapsed lock") = None;
@@ -440,6 +454,10 @@ impl RecordingTrackedHandle {
     /// holds every bar's operations and cannot answer what one bar did. Use
     /// [`recorded`](Self::recorded) plus the bar id when the answer must be
     /// about one bar.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recording lock is poisoned.
     #[must_use]
     pub fn ops(&self) -> Vec<ProgressOp> {
         self.ops.lock().expect("recording lock").iter().map(|entry| entry.op.clone()).collect()
@@ -454,6 +472,10 @@ impl RecordingTrackedHandle {
     /// an answer about one bar filters the entries on
     /// [`bar`](Self::bar) instead of trusting the log to hold one bar's
     /// operations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recording lock is poisoned.
     #[must_use]
     pub fn recorded(&self) -> Vec<RecordedProgressOp> {
         self.ops.lock().expect("recording lock").clone()

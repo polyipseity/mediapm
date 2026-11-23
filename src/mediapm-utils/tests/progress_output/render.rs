@@ -19,10 +19,10 @@ use super::common::{H, W, mk_with_capacity, mk_with_capacity_and_ts};
 #[test]
 fn active_child_with_overall_renders_exactly() {
     let (terminal, term) = mk_with_capacity(3, 80, 2);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
     let child = screen.add_bar(5, "child");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.set_position(0);
     screen.tick();
     assert_eq!(
@@ -49,12 +49,12 @@ fn active_child_with_overall_renders_exactly() {
 fn every_row_shares_one_budget_when_a_suffix_grows() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(4, 80, 3, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
-    let _child = screen.add_bar(5, "child");
-    let _sibling = screen.add_bar(12345, "sibling");
-    _child.set_animating(true);
-    _sibling.set_animating(true);
-    _overall.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
+    let child = screen.add_bar(5, "child");
+    let sibling = screen.add_bar(12345, "sibling");
+    child.set_animating(true);
+    sibling.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     // Four minutes eighteen seconds of wall clock with no mutation at all:
     // the elapsed suffix crosses the minute boundary from `0s` to `4m18s`,
@@ -83,8 +83,8 @@ fn every_row_shares_one_budget_when_a_suffix_grows() {
 fn an_unbound_slot_draws_an_empty_line() {
     let (terminal, term) = mk_with_capacity(4, 80, 4);
     let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
-    let _child = screen.add_bar(5, "child");
-    _child.set_animating(true);
+    let child = screen.add_bar(5, "child");
+    child.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -102,9 +102,9 @@ fn an_unbound_slot_draws_an_empty_line() {
 #[test]
 fn failed_child_with_overall_shows_marker() {
     let (terminal, term) = mk_with_capacity(3, 80, 2);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
     let child = screen.add_bar(5, "child");
-    _overall.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     child.finish_error();
     screen.tick();
@@ -123,9 +123,9 @@ fn failed_child_with_overall_shows_marker() {
 #[test]
 fn success_child_with_overall_renders_full_bar() {
     let (terminal, term) = mk_with_capacity(3, 80, 2);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
     let child = screen.add_bar(5, "child");
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.set_position(5);
     screen.tick();
     child.finish_success();
@@ -208,9 +208,9 @@ fn overall_failed_while_child_succeeded_renders_marker() {
 fn failed_child_custom_suffix_renders() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 5).build();
     let child = screen.add_bar(5, "child");
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.set_position(3);
     ts.advance(Duration::from_secs(1));
     screen.tick();
@@ -235,10 +235,10 @@ fn failed_child_custom_suffix_renders() {
 fn rate_and_eta_at_known_progress() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
     let child = screen.add_bar(1000, "test");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.set_position(500);
     ts.advance(Duration::from_secs(1));
     screen.tick();
@@ -266,10 +266,10 @@ fn rate_and_eta_at_known_progress() {
 fn a_stale_tick_still_draws_the_reserved_eta() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
     let child = screen.add_bar(1000, "test");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     // The first frame absorbs the initial dimension change. That frame
     // short-circuits its dirty swap (`resized || …`), so the following tick is
     // the one that turns the progress into a draw, and the tick after it is
@@ -295,10 +295,10 @@ fn a_stale_tick_still_draws_the_reserved_eta() {
 fn idle_bar_renders_zero_rate() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
-    let _child = screen.add_bar(100, "idle");
-    _child.set_animating(true);
-    _overall.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
+    let child = screen.add_bar(100, "idle");
+    child.set_animating(true);
+    overall.set_animating(true);
     ts.advance(Duration::from_secs(2));
     screen.tick();
     assert_eq!(
@@ -318,10 +318,10 @@ fn idle_bar_renders_zero_rate() {
 fn rate_stable_on_stale_ticks() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
     let child = screen.add_bar(1000, "test");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.set_position(500);
     screen.tick();
     ts.advance(Duration::from_millis(60));
@@ -355,10 +355,10 @@ fn rate_stable_on_stale_ticks() {
 fn rate_recomputed_after_more_progress() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(3, 80, 2, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
     let child = screen.add_bar(2000, "test");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.set_position(10);
     ts.advance(Duration::from_millis(2));
     screen.tick();
@@ -402,8 +402,8 @@ fn rate_recomputed_after_more_progress() {
 fn label_within_the_prefix_budget_is_not_truncated() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
     let screen = terminal.screen().build();
-    let _child = screen.add_bar(5, "abcdefghijklmnopqrstuvwxyz");
-    _child.set_animating(true);
+    let child = screen.add_bar(5, "abcdefghijklmnopqrstuvwxyz");
+    child.set_animating(true);
     screen.tick();
     let contents = term.contents();
     let bar_line = contents.lines().next_back().expect("a bar line must be drawn");
@@ -425,10 +425,10 @@ fn label_within_the_prefix_budget_is_not_truncated() {
 #[test]
 fn zero_total_bar_renders() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 0).build();
-    let _child = screen.add_bar(0, "zero");
-    _child.set_animating(true);
-    _overall.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("overall", 0).build();
+    let child = screen.add_bar(0, "zero");
+    child.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -450,10 +450,10 @@ fn zero_total_bar_renders() {
 #[test]
 fn no_line_carries_an_elapsed_bracket() {
     let (terminal, term) = mk_with_capacity(H, W, 4);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
-    let _child = screen.add_bar(3, "tool-a");
-    _child.set_animating(true);
-    _overall.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("overall", 5).build();
+    let child = screen.add_bar(3, "tool-a");
+    child.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     let contents = term.contents();
     for line in contents.lines() {

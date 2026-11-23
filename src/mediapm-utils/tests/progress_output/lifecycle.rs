@@ -25,11 +25,11 @@ use super::common::{
 #[test]
 fn active_bar_survives_join_and_its_line_is_frozen() {
     let (terminal, term) = mk_with_capacity(5, 80, 3);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
 
-    let _bar = screen.add_bar(5, "alpha");
-    _bar.set_animating(true);
-    _overall.set_animating(true);
+    let bar = screen.add_bar(5, "alpha");
+    bar.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     screen.join();
 
@@ -52,11 +52,11 @@ fn active_bar_survives_join_and_its_line_is_frozen() {
 #[test]
 fn join_and_clear_collapses_blank_slots_only() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
 
     let child = screen.add_bar(5, "fetch");
     child.finish_success();
-    _overall.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     screen.join_and_clear();
     assert_eq!(
@@ -74,11 +74,11 @@ fn join_and_clear_collapses_blank_slots_only() {
 #[test]
 fn finalized_overall_bar_persists() {
     let (terminal, term) = mk_with_capacity(5, 80, 3);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
 
     let child = screen.add_bar(5, "fetch");
     child.advance(5);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     child.finish_success();
     screen.tick();
@@ -98,12 +98,12 @@ fn finalized_overall_bar_persists() {
 #[test]
 fn join_keeps_every_bound_bar() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 5).build();
 
     let child = screen.add_bar(3, "fetch");
     child.advance(3);
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     screen.join();
     assert_eq!(
@@ -120,8 +120,8 @@ fn join_keeps_every_bound_bar() {
 #[test]
 fn finalized_screen_without_children_draws_only_the_overall() {
     let (terminal, term) = mk_with_capacity(4, 80, 3);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
-    _overall.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
+    overall.set_animating(true);
 
     screen.tick();
     screen.join_and_clear();
@@ -174,10 +174,10 @@ fn disabled_screen_handles_report_no_total() {
 #[test]
 fn finished_child_stays_visible() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
 
     let child = screen.add_bar(5, "fetch");
-    _overall.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     child.finish_success();
     screen.tick();
@@ -199,11 +199,11 @@ fn finished_child_stays_visible() {
 #[test]
 fn all_finished_bars_persist() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 2).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 2).build();
 
     let c1 = screen.add_bar(3, "alpha");
     let c2 = screen.add_bar(5, "beta");
-    _overall.set_animating(true);
+    overall.set_animating(true);
     c1.advance(3);
     c2.advance(5);
     screen.tick();
@@ -229,11 +229,11 @@ fn all_finished_bars_persist() {
 #[test]
 fn finishing_a_slot_twice_is_idempotent() {
     let (terminal, term) = mk_with_capacity(5, 80, 3);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
 
     let child = screen.add_bar(5, "fetch");
     child.advance(5);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     child.finish_success();
     screen.tick();
@@ -268,13 +268,13 @@ fn finishing_a_slot_twice_is_idempotent() {
 #[test]
 fn finish_and_clear_zeroes_the_line_and_reuses_the_slot() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
 
-    let _c1 = screen.add_bar(5, "keep");
+    let c1 = screen.add_bar(5, "keep");
     let c2 = screen.add_bar(5, "clear");
-    _c1.set_animating(true);
+    c1.set_animating(true);
     c2.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -304,8 +304,8 @@ fn finish_and_clear_zeroes_the_line_and_reuses_the_slot() {
         "finish_and_clear_zeroes_the_line_and_reuses_the_slot/before_reuse"
     );
 
-    let _c3 = screen.add_bar(5, "new");
-    _c3.set_animating(true);
+    let c3 = screen.add_bar(5, "new");
+    c3.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -330,20 +330,20 @@ fn finish_and_clear_zeroes_the_line_and_reuses_the_slot() {
 #[test]
 fn finish_and_clear_keeps_other_bars() {
     let (terminal, term) = mk_with_capacity(6, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 5).build();
 
     let keep = screen.add_bar(3, "keep");
     let clear = screen.add_bar(3, "clear");
     keep.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     keep.advance(3);
     clear.advance(3);
     screen.tick();
     assert!(term.contents().contains("clear"), "precondition: both children are drawn");
 
     clear.finish_and_clear();
-    let _new = screen.add_bar(3, "new");
-    _new.set_animating(true);
+    let new = screen.add_bar(3, "new");
+    new.set_animating(true);
     screen.tick();
 
     let contents = term.contents();
@@ -396,13 +396,13 @@ fn error_bar_keeps_progress_and_visibility() {
 fn recycle_finished_slot_after_full() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(6, 80, 5, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 5).build();
 
     let children: Vec<_> = (0..4).map(|i| screen.add_bar(2, &format!("task{i}"))).collect();
     for child in &children {
         child.set_animating(true);
     }
-    _overall.set_animating(true);
+    overall.set_animating(true);
     ts.advance(Duration::from_secs(1));
     screen.tick();
     assert_eq!(
@@ -434,8 +434,8 @@ fn recycle_finished_slot_after_full() {
         "recycle_finished_slot_after_full/cleared"
     );
 
-    let _c4 = screen.add_bar(2, "task4");
-    _c4.set_animating(true);
+    let c4 = screen.add_bar(2, "task4");
+    c4.set_animating(true);
     ts.advance(Duration::from_secs(1));
     screen.tick();
     assert_eq!(
@@ -458,7 +458,7 @@ fn recycle_finished_slot_after_full() {
 fn recycle_oldest_finished_slot() {
     let ts = Arc::new(TestTimeSource::new());
     let (terminal, term) = mk_with_capacity_and_ts(10, 80, 6, &ts);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 5).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 5).build();
 
     // Name and phase go in as components. What is under test here is the slot
     // recycling, not how the label was spelled.
@@ -473,7 +473,7 @@ fn recycle_oldest_finished_slot() {
         )
     };
 
-    _overall.set_animating(true);
+    overall.set_animating(true);
     let a1 = bar("a", "resolve", 1);
     let a2 = bar("a", "fetch", 1);
     let a3 = bar("a", "process", 1);
@@ -523,11 +523,11 @@ fn recycle_oldest_finished_slot() {
 #[test]
 fn finalize_full_lifecycle_exact() {
     let (terminal, term) = mk_with_capacity(8, 80, 5);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
 
     let c1 = screen.add_bar(5, "alpha");
     let c2 = screen.add_bar(3, "beta");
-    _overall.set_animating(true);
+    overall.set_animating(true);
     c1.advance(5);
     c1.finish_success();
     c2.advance(3);
@@ -563,12 +563,12 @@ fn finalize_full_lifecycle_exact() {
 #[test]
 fn finalize_leaves_no_blank_lines() {
     let (terminal, term) = mk_with_capacity(6, 80, 4);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 3).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 3).build();
 
     let c1 = screen.add_bar(5, "alpha");
     let c2 = screen.add_bar(5, "beta");
     let c3 = screen.add_bar(5, "gamma");
-    _overall.set_animating(true);
+    overall.set_animating(true);
     for child in [&c1, &c2, &c3] {
         child.advance(5);
         child.finish_success();
@@ -604,9 +604,9 @@ fn finalize_leaves_no_blank_lines() {
 #[test]
 fn overall_stays_bottom_with_finished_children() {
     let (terminal, term) = mk_with_capacity(5, 80, 4);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
 
-    _overall.set_animating(true);
+    overall.set_animating(true);
     for i in 0..3 {
         let child = screen.add_bar(2, &format!("child{i}"));
         child.advance(2);

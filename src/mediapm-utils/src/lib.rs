@@ -16,7 +16,6 @@
 //! The `report` feature enables the centralized output primitives in `report`.
 
 #![warn(clippy::all, clippy::pedantic, missing_docs)]
-#![allow(clippy::module_name_repetitions)]
 
 pub mod builtin;
 pub mod child_env;

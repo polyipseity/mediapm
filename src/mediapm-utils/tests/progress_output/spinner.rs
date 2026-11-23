@@ -29,12 +29,12 @@ const BRAILLE_TICKS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '�
 #[test]
 fn worker_spinner_style_renders_idle_and_active() {
     let (terminal, term) = mk_with_capacity(5, 80, 4);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
 
     let _idle = screen.add_bar_with_style(0, "idle", BarStyle::WorkerSpinner);
     let busy = screen.add_bar_with_style(5, "busy", BarStyle::WorkerSpinner);
     busy.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     busy.advance(5);
     screen.tick();
 
@@ -146,13 +146,13 @@ fn spinner_advances_only_while_a_bar_is_active() {
 #[test]
 fn zero_total_fill_depends_on_the_bar_style() {
     let (terminal, term) = mk_with_capacity(4, 40, 3);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 1).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 1).build();
 
-    let _tracked = screen.add_bar(0, "step-zero");
-    let _blank = screen.add_bar_with_style(0, "worker-zero", BarStyle::WorkerSpinner);
-    _tracked.set_animating(true);
-    _blank.set_animating(true);
-    _overall.set_animating(true);
+    let tracked = screen.add_bar(0, "step-zero");
+    let blank = screen.add_bar_with_style(0, "worker-zero", BarStyle::WorkerSpinner);
+    tracked.set_animating(true);
+    blank.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
 
     let contents = term.contents();

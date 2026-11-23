@@ -25,10 +25,10 @@ use super::common::{bar_cells, drawn_width, mk_with_capacity, mk_with_dims, with
 fn dimension_source_columns_do_not_change_the_frame() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
     let (terminal, term) = mk_with_dims(5, 80, 4, &dims, None, false);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
-    let _child = screen.add_bar(7, "tool-a");
-    _child.set_animating(true);
-    _overall.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
+    let child = screen.add_bar(7, "tool-a");
+    child.set_animating(true);
+    overall.set_animating(true);
 
     screen.tick();
     let wide = term.contents();
@@ -69,17 +69,17 @@ fn dimension_source_columns_do_not_change_the_frame() {
 #[test]
 fn narrow_draw_target_drops_the_bar_not_the_label() {
     let (wide_terminal, wide_term) = mk_with_capacity(4, 40, 3);
-    let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
-    let _child = wide_screen.add_bar(7, "tool-a");
-    _child.set_animating(true);
-    _overall.set_animating(true);
+    let (wide_screen, overall) = wide_terminal.screen().with_overall("overall", 10).build();
+    let child = wide_screen.add_bar(7, "tool-a");
+    child.set_animating(true);
+    overall.set_animating(true);
     wide_screen.tick();
 
     let (narrow_terminal, narrow_term) = mk_with_capacity(4, 20, 3);
-    let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
-    let _child = narrow_screen.add_bar(7, "tool-a");
-    _child.set_animating(true);
-    _overall.set_animating(true);
+    let (narrow_screen, overall) = narrow_terminal.screen().with_overall("overall", 10).build();
+    let child = narrow_screen.add_bar(7, "tool-a");
+    child.set_animating(true);
+    overall.set_animating(true);
     narrow_screen.tick();
 
     let wide = wide_term.contents();
@@ -115,18 +115,18 @@ fn narrow_draw_target_drops_the_bar_not_the_label() {
 #[test]
 fn wider_draw_target_expands_the_bar() {
     let (narrow_terminal, narrow_term) = mk_with_capacity(4, 40, 3);
-    let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
+    let (narrow_screen, overall) = narrow_terminal.screen().with_overall("overall", 10).build();
     let child = narrow_screen.add_bar(10, "tool-a");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.advance(5);
     narrow_screen.tick();
 
     let (wide_terminal, wide_term) = mk_with_capacity(4, 120, 3);
-    let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
+    let (wide_screen, overall) = wide_terminal.screen().with_overall("overall", 10).build();
     let child = wide_screen.add_bar(10, "tool-a");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.advance(5);
     wide_screen.tick();
 
@@ -175,10 +175,10 @@ fn wider_draw_target_expands_the_bar() {
 #[test]
 fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
     let (narrow_terminal, narrow_term) = mk_with_capacity(4, 20, 3);
-    let (narrow_screen, _overall) = narrow_terminal.screen().with_overall("overall", 10).build();
+    let (narrow_screen, overall) = narrow_terminal.screen().with_overall("overall", 10).build();
     let child = narrow_screen.add_bar(10, "tool-a");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.set_suffix_components(SuffixComponents {
         custom: "already downloaded".into(),
         ..Default::default()
@@ -186,10 +186,10 @@ fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
     narrow_screen.tick();
 
     let (wide_terminal, wide_term) = mk_with_capacity(4, 120, 3);
-    let (wide_screen, _overall) = wide_terminal.screen().with_overall("overall", 10).build();
+    let (wide_screen, overall) = wide_terminal.screen().with_overall("overall", 10).build();
     let child = wide_screen.add_bar(10, "tool-a");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.set_suffix_components(SuffixComponents {
         custom: "already downloaded".into(),
         ..Default::default()
@@ -229,11 +229,11 @@ fn narrow_draw_target_does_not_render_an_oversize_custom_suffix() {
 fn height_shrink_orphans_and_grow_reattaches() {
     let dims = Arc::new(TestDimensionSource::new((5, 80)));
     let (terminal, term) = mk_with_dims(5, 80, 4, &dims, None, true);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
 
     let child = screen.add_bar(7, "fetch");
     child.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     child.advance(3);
     screen.tick();
     assert_eq!(
@@ -287,10 +287,10 @@ fn height_shrink_orphans_and_grow_reattaches() {
 fn dynamic_height_grows_the_slot_count_to_the_terminal_height() {
     let dims = Arc::new(TestDimensionSource::new((2, 80)));
     let (terminal, term) = mk_with_dims(24, 80, 6, &dims, None, true);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
-    let _c1 = screen.add_bar(7, "fetch");
-    _c1.set_animating(true);
-    _overall.set_animating(true);
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
+    let c1 = screen.add_bar(7, "fetch");
+    c1.set_animating(true);
+    overall.set_animating(true);
 
     screen.tick();
     let at_two = term.contents();
@@ -356,11 +356,11 @@ fn dynamic_height_grows_the_slot_count_to_the_terminal_height() {
 fn height_shrink_removes_blank_slots() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (terminal, term) = mk_with_dims(7, 80, 6, &dims, None, true);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
 
-    let _child = screen.add_bar(7, "fetch");
-    _child.set_animating(true);
-    _overall.set_animating(true);
+    let child = screen.add_bar(7, "fetch");
+    child.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     let tall = term.contents();
     assert_eq!(tall.lines().count(), 6, "six rows render six reserved slots");
@@ -401,13 +401,13 @@ fn height_shrink_removes_blank_slots() {
 fn height_grow_appends_blank_slots_above_the_bars() {
     let dims = Arc::new(TestDimensionSource::new((4, 80)));
     let (terminal, term) = mk_with_dims(7, 80, 6, &dims, None, true);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
 
-    let _old = screen.add_bar(7, "oldest");
-    let _new = screen.add_bar(7, "newest");
-    _old.set_animating(true);
-    _new.set_animating(true);
-    _overall.set_animating(true);
+    let old = screen.add_bar(7, "oldest");
+    let new = screen.add_bar(7, "newest");
+    old.set_animating(true);
+    new.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     let short = term.contents();
     assert_eq!(short.lines().count(), 4, "four rows render four slots");
@@ -455,13 +455,13 @@ fn height_grow_appends_blank_slots_above_the_bars() {
 fn height_shrink_then_grow_restores_the_frame() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (terminal, term) = mk_with_dims(7, 80, 6, &dims, None, true);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
 
-    let _old = screen.add_bar(7, "oldest");
-    let _new = screen.add_bar(7, "newest");
-    _old.set_animating(true);
-    _new.set_animating(true);
-    _overall.set_animating(true);
+    let old = screen.add_bar(7, "oldest");
+    let new = screen.add_bar(7, "newest");
+    old.set_animating(true);
+    new.set_animating(true);
+    overall.set_animating(true);
     screen.tick();
     let before = term.contents();
     assert_eq!(
@@ -525,10 +525,10 @@ fn height_sequence_without_overall() {
     let (terminal, term) = mk_with_dims(4, 80, 4, &dims, None, true);
     let screen = terminal.screen().build();
 
-    let _old = screen.add_bar(5, "bar 2");
-    let _new = screen.add_bar(3, "bar 1");
-    _old.set_animating(true);
-    _new.set_animating(true);
+    let old = screen.add_bar(5, "bar 2");
+    let new = screen.add_bar(3, "bar 1");
+    old.set_animating(true);
+    new.set_animating(true);
     screen.tick();
     assert_eq!(
         &term.contents(),
@@ -629,13 +629,13 @@ fn dynamic_height_clamps_at_the_slot_limit() {
 fn partial_height_shrink_keeps_active_children() {
     let dims = Arc::new(TestDimensionSource::new((6, 80)));
     let (terminal, term) = mk_with_dims(7, 80, 6, &dims, None, true);
-    let (screen, _overall) = terminal.screen().with_overall("overall", 10).build();
+    let (screen, overall) = terminal.screen().with_overall("overall", 10).build();
 
     let old = screen.add_bar(7, "oldest");
     let new = screen.add_bar(7, "newest");
     old.set_animating(true);
     new.set_animating(true);
-    _overall.set_animating(true);
+    overall.set_animating(true);
     old.advance(2);
     new.advance(4);
     screen.tick();
