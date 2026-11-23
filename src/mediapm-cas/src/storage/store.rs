@@ -507,3 +507,317 @@ where
         self.deref().list_corrupted_objects().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeSet, HashSet};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+
+    use crate::api::{CasApi, CasDurability, CasMaintenanceApi, ConstraintApi, ObjectEncoding};
+    use crate::error::CasError;
+    use crate::hash::Hash;
+    use crate::storage::blob_store::{BlobStore, InMemoryBlobStore};
+    use crate::storage::metadata_store::{
+        InMemoryMetadataStore, MetadataEntry, MetadataStore, PrunedConstraints,
+    };
+    use crate::storage::wal::{InMemoryWal, Wal, WalPosition};
+
+    use super::CasStore;
+
+    /// A metadata store that counts syncing constraint installs and delegates
+    /// everything else to an in-memory store. `SYNC_MATERIALIZE` is false so a
+    /// durability flag, not the store default, decides whether metadata is
+    /// installed immediately.
+    #[derive(Clone)]
+    struct CountingMetadataStore {
+        inner: InMemoryMetadataStore,
+        syncing_installs: Arc<AtomicUsize>,
+    }
+
+    impl CountingMetadataStore {
+        fn new(syncing_installs: Arc<AtomicUsize>) -> Self {
+            Self { inner: InMemoryMetadataStore::new(), syncing_installs }
+        }
+    }
+
+    #[async_trait]
+    impl MetadataStore for CountingMetadataStore {
+        const SYNC_MATERIALIZE: bool = false;
+
+        async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError> {
+            self.inner.put(hash, entry).await
+        }
+
+        async fn get(&self, hash: &Hash) -> Result<Option<MetadataEntry>, CasError> {
+            self.inner.get(hash).await
+        }
+
+        async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
+            self.inner.delete(hash).await
+        }
+
+        async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
+            self.inner.list_hashes().await
+        }
+
+        async fn len(&self) -> usize {
+            self.inner.len().await
+        }
+
+        async fn set_constraint(
+            &self,
+            target: Hash,
+            bases: BTreeSet<Hash>,
+        ) -> Result<(), CasError> {
+            self.inner.set_constraint(target, bases).await
+        }
+
+        async fn get_constraint(&self, target: &Hash) -> Result<BTreeSet<Hash>, CasError> {
+            self.inner.get_constraint(target).await
+        }
+
+        async fn list_targets(&self) -> Result<Vec<Hash>, CasError> {
+            self.inner.list_targets().await
+        }
+
+        async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError> {
+            self.inner.prune_targets(live).await
+        }
+
+        async fn mark_corrupted(&self, hash: Hash) -> Result<(), CasError> {
+            self.inner.mark_corrupted(hash).await
+        }
+
+        async fn clear_corrupted(&self, hash: &Hash) -> Result<(), CasError> {
+            self.inner.clear_corrupted(hash).await
+        }
+
+        async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
+            self.inner.list_corrupted().await
+        }
+
+        async fn restore_corrupted(&self, hashes: BTreeSet<Hash>) -> Result<(), CasError> {
+            self.inner.restore_corrupted(hashes).await
+        }
+
+        async fn sync_hash(&self, hash: &Hash) -> Result<(), CasError> {
+            self.inner.sync_hash(hash).await
+        }
+
+        async fn set_constraint_syncing(
+            &self,
+            target: Hash,
+            bases: BTreeSet<Hash>,
+        ) -> Result<(), CasError> {
+            self.syncing_installs.fetch_add(1, Ordering::SeqCst);
+            self.inner.set_constraint_syncing(target, bases).await
+        }
+
+        async fn list_dependents(&self, hash: &Hash) -> Result<Vec<Hash>, CasError> {
+            self.inner.list_dependents(hash).await
+        }
+
+        async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
+            self.inner.rebuild_from_wal(wal).await
+        }
+    }
+
+    /// A blob store that counts payload writes and delegates to an in-memory
+    /// store.
+    #[derive(Clone)]
+    struct CountingBlobStore {
+        inner: InMemoryBlobStore,
+        writes: Arc<AtomicUsize>,
+    }
+
+    impl CountingBlobStore {
+        fn new(writes: Arc<AtomicUsize>) -> Self {
+            Self { inner: InMemoryBlobStore::new(), writes }
+        }
+    }
+
+    #[async_trait]
+    impl BlobStore for CountingBlobStore {
+        async fn write(
+            &self,
+            hash: Hash,
+            encoding: ObjectEncoding,
+            data: Bytes,
+        ) -> Result<(), CasError> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.inner.write(hash, encoding, data).await
+        }
+
+        async fn write_syncing(
+            &self,
+            hash: Hash,
+            encoding: ObjectEncoding,
+            data: Bytes,
+        ) -> Result<(), CasError> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.inner.write_syncing(hash, encoding, data).await
+        }
+
+        async fn read(&self, hash: &Hash) -> Result<Bytes, CasError> {
+            self.inner.read(hash).await
+        }
+
+        async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError> {
+            self.inner.read_delta(hash).await
+        }
+
+        async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
+            self.inner.delete(hash).await
+        }
+
+        async fn delete_encoding(
+            &self,
+            hash: Hash,
+            encoding: ObjectEncoding,
+        ) -> Result<(), CasError> {
+            self.inner.delete_encoding(hash, encoding).await
+        }
+
+        async fn present_encodings(
+            &self,
+            hash: &Hash,
+        ) -> Result<crate::storage::blob_store::PresentEncodings, CasError> {
+            self.inner.present_encodings(hash).await
+        }
+
+        fn materialized_path(&self, hash: &Hash) -> Option<std::path::PathBuf> {
+            self.inner.materialized_path(hash)
+        }
+
+        fn materialized_delta_path(&self, hash: &Hash) -> Option<std::path::PathBuf> {
+            self.inner.materialized_delta_path(hash)
+        }
+
+        async fn materialized_mtime(
+            &self,
+            hash: &Hash,
+            form: crate::storage::blob_store::BlobForm,
+        ) -> Option<std::time::SystemTime> {
+            self.inner.materialized_mtime(hash, form).await
+        }
+
+        fn should_verify_on_read(&self, hash: &Hash, mtime: Option<std::time::SystemTime>) -> bool {
+            self.inner.should_verify_on_read(hash, mtime)
+        }
+
+        async fn read_to_writer(
+            &self,
+            hash: &Hash,
+            writer: &mut (dyn tokio::io::AsyncWrite + Send + Unpin),
+        ) -> Result<(), CasError> {
+            self.inner.read_to_writer(hash, writer).await
+        }
+
+        async fn write_from_reader(
+            &self,
+            hash: Hash,
+            encoding: ObjectEncoding,
+            reader: &mut (dyn tokio::io::AsyncRead + Send + Unpin),
+            content_len: u64,
+        ) -> Result<(), CasError> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.inner.write_from_reader(hash, encoding, reader, content_len).await
+        }
+
+        async fn write_stream(
+            &self,
+            encoding: ObjectEncoding,
+            reader: &mut (dyn tokio::io::AsyncRead + Send + Unpin),
+        ) -> Result<(Hash, u64), CasError> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.inner.write_stream(encoding, reader).await
+        }
+
+        async fn write_aux(&self, hash: &Hash, name: &str, data: Bytes) -> Result<(), CasError> {
+            self.inner.write_aux(hash, name, data).await
+        }
+
+        async fn read_aux(&self, hash: &Hash, name: &str) -> Result<Bytes, CasError> {
+            self.inner.read_aux(hash, name).await
+        }
+
+        async fn delete_aux(&self, hash: &Hash, name: &str) -> Result<(), CasError> {
+            self.inner.delete_aux(hash, name).await
+        }
+
+        async fn all_aux(&self, name: &str) -> Result<Vec<Bytes>, CasError> {
+            self.inner.all_aux(name).await
+        }
+    }
+
+    fn new_counting_store() -> (
+        CasStore<InMemoryWal, CountingMetadataStore, CountingBlobStore>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
+        let syncing_installs = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let store = CasStore::new(
+            InMemoryWal::new(),
+            CountingMetadataStore::new(syncing_installs.clone()),
+            CountingBlobStore::new(writes.clone()),
+            WalPosition::ZERO,
+            Duration::from_secs(60),
+        );
+        (store, syncing_installs, writes)
+    }
+
+    #[tokio::test]
+    async fn store_durability_does_not_install_metadata_syncing() {
+        let (store, syncing_installs, _writes) = new_counting_store();
+
+        let base = store.put(Bytes::from_static(b"base payload")).await.unwrap();
+        let target = store.put(Bytes::from_static(b"target payload")).await.unwrap();
+        store.run_maintenance_cycle().await.unwrap();
+        syncing_installs.store(0, Ordering::SeqCst);
+
+        store
+            .set_constraint_with(target, BTreeSet::from([base]), CasDurability::STORE)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            syncing_installs.load(Ordering::SeqCst),
+            0,
+            "STORE durability must not install a metadata snapshot synchronously"
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_durability_makes_the_constraint_readable_without_rewriting_bytes() {
+        let (store, syncing_installs, writes) = new_counting_store();
+
+        let base = store.put(Bytes::from_static(b"base payload")).await.unwrap();
+        let target = store.put(Bytes::from_static(b"target payload")).await.unwrap();
+        store.run_maintenance_cycle().await.unwrap();
+        writes.store(0, Ordering::SeqCst);
+
+        store
+            .set_constraint_with(target, BTreeSet::from([base]), CasDurability::METADATA)
+            .await
+            .unwrap();
+
+        let bases = store.get_constraint(target).await.unwrap();
+        assert_eq!(bases, BTreeSet::from([base]), "the constraint must be readable immediately");
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            0,
+            "METADATA durability must not rewrite the target's payload bytes"
+        );
+        assert_eq!(
+            syncing_installs.load(Ordering::SeqCst),
+            1,
+            "METADATA durability must install the metadata snapshot once"
+        );
+    }
+}

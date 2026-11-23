@@ -409,3 +409,36 @@ async fn modified_verify_detects_a_tampered_delta_when_full_mtime_is_unchanged()
         "a tampered delta must be detected even when full mtime is unchanged, got {err:?}"
     );
 }
+
+/// `STORE` durability makes the promoted full payload present on disk when the
+/// call returns. The companion assertion, that no syncing metadata install ran,
+/// lives in the store unit tests where a counting metadata store can be injected.
+#[tokio::test]
+async fn store_durability_writes_the_full_payload_before_return() {
+    let cas = common::open_file_cas().await;
+    let base = cas.put(Bytes::from(common::similar(b'S', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'S', b"OTHERED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+    assert!(
+        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
+        "the setup requires the target to be delta-encoded first"
+    );
+
+    cas.set_constraint_with(target, BTreeSet::from([Hash::empty()]), CasDurability::STORE)
+        .await
+        .unwrap();
+
+    let (full, delta) = common::form_paths(&cas, target);
+    assert!(full.is_file(), "STORE durability must leave the full payload on disk immediately");
+    assert!(!delta.is_file(), "the redundant delta payload must be gone after promotion");
+    assert_eq!(
+        cas.stat(target).await.unwrap().encoding,
+        ObjectEncoding::Full,
+        "the index must agree with the promoted form without a maintenance pass"
+    );
+    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(expected));
+}
