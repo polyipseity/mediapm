@@ -845,14 +845,12 @@ fn skip_reuse_clears_superseded_content_maps() {
     );
 }
 
-/// Fetched and no-payload outcomes leave stale siblings behind in the document
-/// until the post-apply structural pass clears them; this proves the pass covers
-/// both outcome shapes by the same code path.
+/// A fetched outcome leaves the stale sibling in the document until the
+/// post-apply structural pass clears it.
 #[test]
-fn post_apply_pass_clears_superseded_content_maps_for_fetched_and_no_payload_outcomes() {
+fn post_apply_pass_clears_superseded_content_maps_for_fetched_outcome() {
     use mediapm_utils::Timestamp;
 
-    // Fetched: the apply inserted `ffmpeg@new` and left `ffmpeg@old` populated.
     let mut fetched_doc = NickelDocument {
         tools: BTreeMap::from([
             (
@@ -909,8 +907,14 @@ fn post_apply_pass_clears_superseded_content_maps_for_fetched_and_no_payload_out
         fetched_doc.tools["ffmpeg@new"].runtime.content_map.get("bin/ffmpeg"),
         Some(&"new".to_string())
     );
+}
 
-    // No-payload: the active spec is the bare tool id and a stale keyed sibling remains.
+/// A no-payload outcome leaves a stale keyed sibling in the document until the
+/// post-apply structural pass clears it.
+#[test]
+fn post_apply_pass_clears_superseded_content_maps_for_no_payload_outcome() {
+    use mediapm_utils::Timestamp;
+
     let mut no_payload_doc = NickelDocument {
         tools: BTreeMap::from([
             (

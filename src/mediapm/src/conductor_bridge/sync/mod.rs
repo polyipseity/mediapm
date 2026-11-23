@@ -733,10 +733,6 @@ fn stamp_preset_policy(
     clippy::too_many_arguments,
     reason = "this is the ordered-merge half of the provisioning design, so it deliberately takes every shared collection the merge can touch rather than hiding the merge surface behind accessors"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "each outcome variant's merge is a few lines and they are written in variant order to mirror the production order; extracting them would separate each merge from the invariant that only one variant applies per entry"
-)]
 fn apply_entry_outcome(
     entry: &ProvisionEntry,
     outcome: EntryOutcome,
@@ -1565,8 +1561,7 @@ fn clear_all_superseded_content_maps(
         // short-circuit `active_spec_key` before deployments are consulted,
         // causing the live hashed key's content map to be cleared instead.
         let live_key = find_active_tool_spec(generated_doc, deployments, &tool_id)
-            .map(|(key, _spec)| key.clone())
-            .unwrap_or_else(|| tool_id.clone());
+            .map_or_else(|| tool_id.clone(), |(key, _spec)| key.clone());
         cleared += clear_superseded_content_maps(generated_doc, &tool_id, &live_key);
     }
     cleared

@@ -97,6 +97,24 @@ async fn a_folder_row_and_a_playlist_row_advance_and_terminate() {
 /// one file a non-archive variant writes, so the fraction beside the member
 /// rows is the archive's shape;
 ///
+fn truncation_prefixes(ops: &[ProgressOp]) -> Vec<String> {
+    ops.iter()
+        .filter_map(|op| match op {
+            ProgressOp::SetTruncation { prefix, .. } => Some(prefix.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn add_bar_seeds(ops: &[ProgressOp]) -> Vec<(u64, String)> {
+    ops.iter()
+        .filter_map(|op| match op {
+            ProgressOp::AddBar { total, label } => Some((*total, label.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// each advance is tagged to the sub-bar's own row and not to the parent's,
 /// which is what [`BarId::index`] is for, so the parent cannot appear to
 /// finish its members;
@@ -136,15 +154,8 @@ async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
     .expect("sync_hierarchy should succeed");
 
     let ops = recording.ops();
-    let rendered: Vec<String> = ops
-        .iter()
-        .filter_map(|op| match op {
-            ProgressOp::SetTruncation { prefix, .. } => Some(prefix.clone()),
-            _ => None,
-        })
-        .collect();
     assert_eq!(
-        rendered,
+        truncation_prefixes(&ops),
         vec![
             "materializing".to_string(),
             "[src1] album".to_string(),
@@ -153,16 +164,8 @@ async fn a_zip_folder_variant_opens_a_sub_bar_under_its_parent_row() {
         "the parent row names the entry's identity, and the member row under it adds the \
          variant; got {ops:?}",
     );
-
-    let seeds: Vec<(u64, String)> = ops
-        .iter()
-        .filter_map(|op| match op {
-            ProgressOp::AddBar { total, label } => Some((*total, label.clone())),
-            _ => None,
-        })
-        .collect();
     assert_eq!(
-        seeds,
+        add_bar_seeds(&ops),
         vec![
             (1, "materializing".to_string()),
             (1, "album".to_string()),
