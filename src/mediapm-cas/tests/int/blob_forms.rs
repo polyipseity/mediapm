@@ -442,3 +442,39 @@ async fn store_durability_writes_the_full_payload_before_return() {
     );
     assert_eq!(cas.get(target).await.unwrap(), Bytes::from(expected));
 }
+
+/// `METADATA` durability makes the constraint readable from a reopened store
+/// without running a maintenance cycle, and it must not rewrite object bytes.
+#[tokio::test]
+async fn metadata_durability_persists_the_constraint_across_reopen_without_rewriting_bytes() {
+    let cas = common::open_file_cas().await;
+    let base = cas.put(Bytes::from_static(b"base payload")).await.unwrap();
+    let target = cas.put(Bytes::from_static(b"target payload")).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let (full, delta) = common::form_paths(&cas, target);
+    let full_bytes_before = std::fs::read(&full).expect("read target full payload before");
+    let delta_before = delta.exists();
+
+    cas.set_constraint_with(target, BTreeSet::from([base]), CasDurability::METADATA).await.unwrap();
+
+    let bases = cas.get_constraint(target).await.unwrap();
+    assert_eq!(bases, BTreeSet::from([base]), "the constraint must be readable immediately");
+    assert_eq!(
+        std::fs::read(&full).expect("read target full payload after"),
+        full_bytes_before,
+        "METADATA durability must not rewrite the target's payload bytes"
+    );
+    assert_eq!(
+        delta.exists(),
+        delta_before,
+        "METADATA durability must not change the target's physical form"
+    );
+
+    let cas = cas.reopen().await;
+    assert_eq!(
+        cas.get_constraint(target).await.unwrap(),
+        BTreeSet::from([base]),
+        "METADATA durability must make the constraint readable after reopen without maintenance"
+    );
+}

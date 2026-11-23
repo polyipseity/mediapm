@@ -928,15 +928,18 @@ mod tests {
     //! (a restart from an un-checkpointed position, a cloned engine, or a
     //! background consumer that overlaps a foreground `flush`).
 
+    use std::collections::{BTreeSet, HashSet};
     use std::time::Duration;
 
     use bytes::Bytes;
 
     use super::*;
-    use crate::api::{CasApi, CasMaintenanceApi, ConstraintApi};
-    use crate::storage::blob_store::InMemoryBlobStore;
+    use crate::api::{CasApi, CasMaintenanceApi, ConstraintApi, ObjectEncoding};
+    use crate::storage::blob_store::{BlobStore, InMemoryBlobStore};
     use crate::storage::in_memory::InMemoryCas;
-    use crate::storage::metadata_store::InMemoryMetadataStore;
+    use crate::storage::metadata_store::{
+        InMemoryMetadataStore, MetadataEntry, MetadataStore, PrunedConstraints,
+    };
     use crate::storage::store::CasStore;
     use crate::storage::wal::InMemoryWal;
 
@@ -1069,5 +1072,178 @@ mod tests {
         metadata.clear_corrupted(&hash).await.unwrap();
         let cleared = cas.0.bg_engine().run_maintenance().await.unwrap();
         assert_eq!(cleared.corrupted_objects, 0);
+    }
+
+    /// Metadata wrapper that fails corruption-record clearing, so tests can
+    /// exercise best-effort clear paths.
+    #[derive(Clone)]
+    struct FailClearMetadata<M> {
+        inner: M,
+    }
+
+    #[async_trait::async_trait]
+    impl<M: MetadataStore> MetadataStore for FailClearMetadata<M> {
+        async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError> {
+            self.inner.put(hash, entry).await
+        }
+
+        async fn get(&self, hash: &Hash) -> Result<Option<MetadataEntry>, CasError> {
+            self.inner.get(hash).await
+        }
+
+        async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
+            self.inner.delete(hash).await
+        }
+
+        async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
+            self.inner.list_hashes().await
+        }
+
+        async fn len(&self) -> usize {
+            self.inner.len().await
+        }
+
+        async fn set_constraint(
+            &self,
+            target: Hash,
+            bases: BTreeSet<Hash>,
+        ) -> Result<(), CasError> {
+            self.inner.set_constraint(target, bases).await
+        }
+
+        async fn get_constraint(&self, target: &Hash) -> Result<BTreeSet<Hash>, CasError> {
+            self.inner.get_constraint(target).await
+        }
+
+        async fn list_targets(&self) -> Result<Vec<Hash>, CasError> {
+            self.inner.list_targets().await
+        }
+
+        async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<PrunedConstraints, CasError> {
+            self.inner.prune_targets(live).await
+        }
+
+        async fn clear_corrupted(&self, _hash: &Hash) -> Result<(), CasError> {
+            Err(CasError::internal("simulated clear_corrupted failure"))
+        }
+
+        async fn mark_corrupted(&self, hash: Hash) -> Result<(), CasError> {
+            self.inner.mark_corrupted(hash).await
+        }
+
+        async fn list_corrupted(&self) -> Result<Vec<Hash>, CasError> {
+            self.inner.list_corrupted().await
+        }
+
+        async fn sync_hash(&self, hash: &Hash) -> Result<(), CasError> {
+            self.inner.sync_hash(hash).await
+        }
+
+        async fn set_constraint_syncing(
+            &self,
+            target: Hash,
+            bases: BTreeSet<Hash>,
+        ) -> Result<(), CasError> {
+            self.inner.set_constraint_syncing(target, bases).await
+        }
+
+        async fn rebuild_from_wal(
+            &self,
+            wal: &dyn crate::storage::wal::Wal,
+        ) -> Result<(), CasError> {
+            self.inner.rebuild_from_wal(wal).await
+        }
+    }
+
+    /// A `read_full_bytes` recovery that serves bytes from the full-blob fallback
+    /// must not fail if clearing the corruption record fails. The bytes are
+    /// already in hand; the clear is best-effort and the collapse pass remains
+    /// authoritative.
+    #[tokio::test]
+    async fn read_full_bytes_recovery_clear_failure_is_best_effort() {
+        #[derive(Clone)]
+        struct SplitBlobStore {
+            full: InMemoryBlobStore,
+            delta: InMemoryBlobStore,
+        }
+
+        impl SplitBlobStore {
+            fn new() -> Self {
+                Self { full: InMemoryBlobStore::new(), delta: InMemoryBlobStore::new() }
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl BlobStore for SplitBlobStore {
+            async fn write(
+                &self,
+                hash: Hash,
+                encoding: ObjectEncoding,
+                data: Bytes,
+            ) -> Result<(), CasError> {
+                match encoding {
+                    ObjectEncoding::Full => self.full.write(hash, encoding, data).await,
+                    ObjectEncoding::Delta { .. } => self.delta.write(hash, encoding, data).await,
+                }
+            }
+
+            async fn read(&self, hash: &Hash) -> Result<Bytes, CasError> {
+                self.full.read(hash).await
+            }
+
+            async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError> {
+                self.delta.read_delta(hash).await
+            }
+
+            async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
+                self.full.delete(hash).await?;
+                self.delta.delete(hash).await
+            }
+        }
+
+        let wal = InMemoryWal::new();
+        let inner_meta = InMemoryMetadataStore::new();
+        let blob = SplitBlobStore::new();
+        let metadata = FailClearMetadata { inner: inner_meta.clone() };
+        let store =
+            CasStore::new(wal.clone(), metadata, blob.clone(), WalPosition::ZERO, Duration::ZERO);
+
+        let (base_bytes, target_bytes) = similar_content_pair(b'R', b"CLEAR");
+        let base = store.put(base_bytes).await.unwrap();
+        let target = store.put(target_bytes.clone()).await.unwrap();
+        store.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+        store.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+        store.run_maintenance_cycle().await.unwrap();
+
+        let entry = inner_meta.get(&target).await.unwrap().expect("target metadata");
+        let ObjectEncoding::Delta { base_hash } = entry.encoding else {
+            panic!("the setup requires the target to be delta-encoded");
+        };
+
+        // Corrupt the delta payload but keep the correct full blob present so
+        // read_full_bytes takes the full-blob fallback path.
+        blob.write(target, ObjectEncoding::Full, target_bytes.clone()).await.unwrap();
+        blob.write(target, ObjectEncoding::Delta { base_hash }, Bytes::from_static(b"garbage"))
+            .await
+            .unwrap();
+
+        inner_meta.mark_corrupted(target).await.unwrap();
+
+        let recovered = store
+            .bg_engine()
+            .read_full_bytes(&target)
+            .await
+            .expect("best-effort clear failure must not fail the recovery")
+            .expect("the full fallback blob must be returned");
+
+        assert_eq!(
+            recovered, target_bytes,
+            "the recovery must return the verified full bytes despite the clear failure"
+        );
+        assert_eq!(
+            inner_meta.list_corrupted().await.unwrap(),
+            vec![target],
+            "a best-effort clear failure must leave the corruption record for the collapse pass"
+        );
     }
 }
