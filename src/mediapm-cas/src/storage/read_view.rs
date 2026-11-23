@@ -23,7 +23,7 @@ use crate::delta::object::StoredObject;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::blob_store::BlobStore;
+use super::blob_store::{BlobForm, BlobStore};
 use super::metadata_store::{MetadataEntry, MetadataStore};
 use super::pending_ops::PendingOps;
 use super::reconstructed_cache::{
@@ -400,7 +400,7 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
                     Ok(())
                 }
                 PendingState::PresentExternal { .. } => {
-                    let mtime = self.blob.materialized_mtime(hash, ObjectEncoding::Full).await;
+                    let mtime = self.blob.materialized_mtime(hash, BlobForm::Full).await;
                     if self.blob.should_verify_on_read(hash, mtime) {
                         use tokio::io::AsyncWriteExt;
                         let bytes = self
@@ -425,7 +425,7 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
                         match entry.encoding {
                             ObjectEncoding::Full => {
                                 let mtime =
-                                    self.blob.materialized_mtime(hash, ObjectEncoding::Full).await;
+                                    self.blob.materialized_mtime(hash, BlobForm::Full).await;
                                 if self.blob.should_verify_on_read(hash, mtime) {
                                     use tokio::io::AsyncWriteExt;
                                     let bytes = self
@@ -481,7 +481,7 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
         // strategy compares it against the last verified mtime for this hash,
         // so a delta-only object or a tampered delta beside an unchanged full
         // file would be misclassified if we stat the wrong form.
-        let mtime = self.blob.materialized_mtime(hash, entry.encoding).await;
+        let mtime = self.blob.materialized_mtime(hash, BlobForm::from(entry.encoding)).await;
         if self.blob.should_verify_on_read(hash, mtime) {
             let bytes = self.read_with_fallback(hash).await?.ok_or(CasError::NotFound(*hash))?;
             writer.write_all(&bytes).await?;

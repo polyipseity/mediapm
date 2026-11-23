@@ -34,6 +34,29 @@ pub struct PresentEncodings {
     pub delta: bool,
 }
 
+/// Which physical form of an object a caller is asking about.
+///
+/// `ObjectEncoding` names how bytes are stored and carries the base a delta
+/// applies to; mtime selection only needs the form, so it takes this instead.
+/// A caller that holds an encoding projects it, and one that picked a form for
+/// path selection states only the form and invents no base hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlobForm {
+    /// The full payload file.
+    Full,
+    /// The `.diff` delta envelope.
+    Delta,
+}
+
+impl From<ObjectEncoding> for BlobForm {
+    fn from(encoding: ObjectEncoding) -> Self {
+        match encoding {
+            ObjectEncoding::Full => Self::Full,
+            ObjectEncoding::Delta { .. } => Self::Delta,
+        }
+    }
+}
+
 /// Content-addressed blob storage.
 ///
 /// Provides read/write/delete for data indexed by content hash.
@@ -142,20 +165,20 @@ pub trait BlobStore: Send + Sync {
 
     /// The modification time of the materialized payload for `hash`, if any.
     ///
-    /// `encoding` selects which physical form to stat: a full read cares about
-    /// the full file's mtime, a delta read cares about the delta file's. A
-    /// Modified verify-on-read strategy keys its comparison on this mtime, so
-    /// the caller must pass the form it is about to read; passing the wrong
-    /// form makes tamper detection compare against an unrelated file.
+    /// `form` selects which physical form to stat: a full read cares about the
+    /// full file's mtime, a delta read cares about the delta file's. A Modified
+    /// verify-on-read strategy keys its comparison on this mtime, so the caller
+    /// must pass the form it is about to read; passing the wrong form makes
+    /// tamper detection compare against an unrelated file.
     ///
-    /// Defaulted to `None`: an in-memory store has no on-disk file whose
-    /// mtime a verify-on-read strategy could compare.
+    /// Defaulted to `None`: an in-memory store has no on-disk file whose mtime
+    /// a verify-on-read strategy could compare.
     async fn materialized_mtime(
         &self,
         hash: &Hash,
-        encoding: ObjectEncoding,
+        form: BlobForm,
     ) -> Option<std::time::SystemTime> {
-        let _ = (hash, encoding);
+        let _ = (hash, form);
         None
     }
 
@@ -267,5 +290,21 @@ pub trait BlobStore: Send + Sync {
     async fn all_aux(&self, name: &str) -> Result<Vec<Bytes>, CasError> {
         let _ = name;
         Ok(vec![])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::ObjectEncoding;
+    use crate::hash::Hash;
+
+    #[test]
+    fn an_encoding_projects_to_the_form_it_names() {
+        assert_eq!(BlobForm::from(ObjectEncoding::Full), BlobForm::Full);
+        assert_eq!(
+            BlobForm::from(ObjectEncoding::Delta { base_hash: Hash::from_content(b"base") }),
+            BlobForm::Delta
+        );
     }
 }

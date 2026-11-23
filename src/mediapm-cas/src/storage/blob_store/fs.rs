@@ -31,7 +31,7 @@ use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::versions::{CURRENT_BLOB_PATH_VERSION, hash_to_delta_path, hash_to_path};
-use super::{BlobStore, PresentEncodings};
+use super::{BlobForm, BlobStore, PresentEncodings};
 use crate::api::{ObjectEncoding, VerifyTriggerStrategy};
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -608,7 +608,7 @@ impl BlobStore for FileSystemBlobStore {
     async fn read(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_path(&self.root, hash);
         let _meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        let mtime = self.materialized_mtime(hash, ObjectEncoding::Full).await;
+        let mtime = self.materialized_mtime(hash, BlobForm::Full).await;
         let data = fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
         if self.verify_evaluator.should_verify(hash, mtime) {
             Self::verify_hash(&path, hash).await?;
@@ -624,7 +624,7 @@ impl BlobStore for FileSystemBlobStore {
     ) -> Result<(), CasError> {
         let path = hash_to_path(&self.root, hash);
         let _meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        let mtime = self.materialized_mtime(hash, ObjectEncoding::Full).await;
+        let mtime = self.materialized_mtime(hash, BlobForm::Full).await;
         let mut file = fs::File::open(&path).await.map_err(|_| CasError::NotFound(*hash))?;
         if self.verify_evaluator.should_verify(hash, mtime) {
             // Verify hash while streaming: compute hash incrementally
@@ -736,8 +736,7 @@ impl BlobStore for FileSystemBlobStore {
     async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_delta_path(&self.root, hash);
         let _meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        let mtime =
-            self.materialized_mtime(hash, ObjectEncoding::Delta { base_hash: Hash::empty() }).await;
+        let mtime = self.materialized_mtime(hash, BlobForm::Delta).await;
         let data = fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
         if self.verify_evaluator.should_verify(hash, mtime) {
             // A delta envelope is a derived encoding: its bytes are the patch
@@ -762,9 +761,7 @@ impl BlobStore for FileSystemBlobStore {
                     from_version = version,
                     "rewrote a legacy delta envelope in the current format so it carries an integrity field"
                 );
-                let fresh_mtime = self
-                    .materialized_mtime(hash, ObjectEncoding::Delta { base_hash: Hash::empty() })
-                    .await;
+                let fresh_mtime = self.materialized_mtime(hash, BlobForm::Delta).await;
                 self.verify_evaluator.record_verification(hash, fresh_mtime);
                 return Ok(Bytes::from(rewritten));
             }
@@ -886,11 +883,11 @@ impl BlobStore for FileSystemBlobStore {
     async fn materialized_mtime(
         &self,
         hash: &Hash,
-        encoding: ObjectEncoding,
+        form: BlobForm,
     ) -> Option<std::time::SystemTime> {
-        let path = match encoding {
-            ObjectEncoding::Full => hash_to_path(&self.root, hash),
-            ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, hash),
+        let path = match form {
+            BlobForm::Full => hash_to_path(&self.root, hash),
+            BlobForm::Delta => hash_to_delta_path(&self.root, hash),
         };
         fs::metadata(path).await.ok().and_then(|meta| meta.modified().ok())
     }
@@ -1104,9 +1101,7 @@ mod tests {
 
         let _raw = store.read_delta(&target_hash).await.unwrap();
 
-        let fresh_mtime = store
-            .materialized_mtime(&target_hash, ObjectEncoding::Delta { base_hash: Hash::empty() })
-            .await;
+        let fresh_mtime = store.materialized_mtime(&target_hash, BlobForm::Delta).await;
         assert_ne!(fresh_mtime, stale_mtime, "rewrite should update the delta file mtime");
         assert!(
             !store.verify_evaluator.should_verify(&target_hash, fresh_mtime),
