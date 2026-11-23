@@ -263,11 +263,23 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
         let indexed = self.try_indexed(hash).await;
         match indexed {
             Ok(Some(bytes)) => Ok(Some(bytes)),
-            Ok(None) => {
+            Ok(None) | Err(CasError::NotFound(_)) => {
+                let is_not_found = matches!(indexed, Err(CasError::NotFound(_)));
                 if matches!(self.wal.check_pending(hash).await, PendingState::Tombstone) {
                     return Ok(None);
                 }
-                self.try_other_form(hash).await
+                let recovered = self.try_other_form(hash).await?;
+                if let Some(bytes) = recovered {
+                    let other = self.current_encoding(hash).await;
+                    tracing::warn!(
+                        %hash,
+                        ?other,
+                        "missing indexed blob read fell back to the other physical form"
+                    );
+                    self.metadata.clear_corrupted(hash).await?;
+                    return Ok(Some(bytes));
+                }
+                if is_not_found { Err(CasError::NotFound(*hash)) } else { Ok(None) }
             }
             Err(CasError::CorruptObject { details, .. }) => {
                 let recovered = self.try_other_form(hash).await?;

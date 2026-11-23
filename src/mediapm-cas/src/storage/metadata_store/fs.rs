@@ -902,4 +902,20 @@ mod tests {
             "an entry whose bytes do not exist must be dropped, not resurrected"
         );
     }
+
+    #[tokio::test]
+    async fn delete_clears_corruption_record() {
+        let (blob, _dir) = test_blob_store().await;
+        let index = FileSystemMetadataStore::new(blob).expect("the metadata store");
+        let hash = crate::hash::Hash::from_content(b"fs-corrupt-delete-target");
+        index.mark_corrupted(hash).await.unwrap();
+        assert_eq!(index.list_corrupted().await.unwrap(), vec![hash]);
+
+        index.delete(&hash).await.unwrap();
+
+        assert!(
+            index.list_corrupted().await.unwrap().is_empty(),
+            "delete must clear corruption record"
+        );
+    }
 }

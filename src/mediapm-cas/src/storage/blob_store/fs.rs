@@ -751,8 +751,12 @@ impl BlobStore for FileSystemBlobStore {
             if version < crate::delta::versions::LATEST_DELTA_VERSION {
                 let base_hash = state.base_hash;
                 let rewritten = crate::delta::versions::encode_delta_state(state);
-                self.write(*hash, ObjectEncoding::Delta { base_hash }, Bytes::from(rewritten))
-                    .await?;
+                self.write(
+                    *hash,
+                    ObjectEncoding::Delta { base_hash },
+                    Bytes::from(rewritten.clone()),
+                )
+                .await?;
                 tracing::info!(
                     hash = %hash,
                     from_version = version,
@@ -762,9 +766,9 @@ impl BlobStore for FileSystemBlobStore {
                     .materialized_mtime(hash, ObjectEncoding::Delta { base_hash: Hash::empty() })
                     .await;
                 self.verify_evaluator.record_verification(hash, fresh_mtime);
-            } else {
-                self.verify_evaluator.record_verification(hash, mtime);
+                return Ok(Bytes::from(rewritten));
             }
+            self.verify_evaluator.record_verification(hash, mtime);
         }
         Ok(Bytes::from(data))
     }

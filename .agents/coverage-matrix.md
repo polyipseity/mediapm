@@ -1604,7 +1604,7 @@ Step instance identity is derived from the step's logical tool name and key mate
 | V1 snapshot rejects unknown fields | [covered] | `regression_v1_snapshot_rejects_unknown_field` |
 | Corruption is recorded, reported, and cleared | [covered] | `corrupt_objects` integration tests |
 | The corruption record survives a restart | [covered] | `the_corruption_record_survives_a_restart` |
-| A sole corrupt form read records corruption and delete/verified fallback clear it | [covered] | `delete_clears_corruption_record`, `a_sole_corrupt_form_read_records_corruption`, `a_verified_fallback_read_clears_corruption_record` |
+| A sole corrupt form read records corruption and delete/verified fallback clear it | [covered] | `delete_clears_corruption_record`, `a_sole_corrupt_form_read_records_corruption`, `a_verified_fallback_read_clears_corruption_record`, `a_verified_fallback_from_missing_indexed_form_clears_corruption_record` |
 | `CasDurability` defaults to no extra syncs | [covered] | `blob_forms.rs` `the_default_durability_is_no_extra_flags` |
 | A durable full constraint materializes before returning | [covered] | `a_durable_full_constraint_materializes_the_payload_before_returning` |
 | Legacy delta envelopes are rewritten on first read | [covered] | `a_legacy_delta_envelope_is_rewritten_on_first_read` |

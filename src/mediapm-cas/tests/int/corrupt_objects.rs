@@ -151,3 +151,44 @@ async fn a_verified_fallback_read_clears_corruption_record() {
         "verified fallback must clear corruption record"
     );
 }
+
+/// A missing indexed form with a sound other form is also a verified read-time
+/// recovery: the read succeeds and clears a stale corruption record.
+#[tokio::test]
+async fn a_verified_fallback_from_missing_indexed_form_clears_corruption_record() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(common::similar(b'M', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'M', b"REPLACED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let (full, delta) = common::form_paths(&cas, target);
+    let delta_bytes = std::fs::read(&delta).expect("read delta before corruption");
+    common::corrupt(&full);
+    common::corrupt(&delta);
+    let report = cas.run_maintenance_cycle().await.unwrap();
+    assert_eq!(report.corrupted_objects, 1, "precondition: hash recorded as corrupt");
+
+    // Remove whichever form is indexed and keep the other sound. If the indexed
+    // form was delta, the restored delta read is a plain unverified Ok(Some)
+    // and must not clear corruption; in that case remove delta and restore full
+    // so the missing-indexed path exercises the verified-fallback clearing.
+    std::fs::write(&delta, &delta_bytes).expect("restore delta payload");
+    std::fs::remove_file(&full).expect("remove full form");
+
+    let read = cas.get(target).await.unwrap();
+    assert_eq!(read.as_ref(), expected.as_slice(), "first recovery must return correct bytes");
+    if !cas.list_corrupted_objects().await.unwrap().is_empty() {
+        std::fs::write(&full, &expected).expect("restore full payload");
+        std::fs::remove_file(&delta).expect("remove delta form");
+        let read = cas.get(target).await.unwrap();
+        assert_eq!(read.as_ref(), expected.as_slice(), "second recovery must return correct bytes");
+    }
+
+    assert!(
+        cas.list_corrupted_objects().await.unwrap().is_empty(),
+        "verified fallback from missing indexed form must clear corruption record"
+    );
+}
