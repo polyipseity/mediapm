@@ -19,7 +19,6 @@ struct AllowlistEntry {
     /// Workspace-relative path suffix that identifies the file.
     path_suffix: &'static str,
     /// Reason the occurrence does not require whitelist application.
-    #[allow(dead_code)]
     reason: &'static str,
 }
 
@@ -77,6 +76,18 @@ fn has_whitelist_marker(lines: &[&str], line_index: usize) -> bool {
     lines[start..=end]
         .iter()
         .any(|line| line.contains("child_env") || line.contains("set_child_environment"))
+}
+
+/// Every allowlist entry must carry a reason so the exclusion stays auditable.
+#[test]
+fn allowlist_entries_have_nonempty_reasons() {
+    for entry in ALLOWLIST {
+        assert!(
+            !entry.reason.trim().is_empty(),
+            "allowlist reason must be non-empty for {}",
+            entry.path_suffix
+        );
+    }
 }
 
 /// Every runtime `Command::new` in mediapm and conductor source must use the
