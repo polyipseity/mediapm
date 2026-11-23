@@ -1,8 +1,0 @@
-# Synchronized with `.commitlintrc.mjs`.
-
-extends:
-  - "@commitlint/config-conventional"
-
-ignores: []
-
-rules: {}
