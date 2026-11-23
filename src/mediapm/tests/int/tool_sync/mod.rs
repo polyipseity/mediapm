@@ -31,6 +31,7 @@ mod counters;
 mod inline_deps;
 mod requires_sync;
 mod resolved;
+mod superseded_maps;
 mod validation;
 
 // ---------------------------------------------------------------------------
