@@ -279,11 +279,11 @@ async fn a_clearing_failure_still_serves_the_verified_bytes() {
         }
     }
     let aux_dir = common::aux_dir_for(&cas, target);
-    let read_only = common::ReadOnlyDirGuard::new(&aux_dir);
+    let blocked = common::BlockedAuxSnapshot::new(&aux_dir);
 
     let read = cas.get(target).await.expect("a verified read must not fail on a bookkeeping error");
     assert_eq!(read.as_ref(), expected.as_slice());
-    drop(read_only);
+    drop(blocked);
     let cas = cas.reopen().await;
     assert_eq!(
         cas.list_corrupted_objects().await.unwrap(),
@@ -327,11 +327,11 @@ async fn a_clearing_failure_on_missing_indexed_fallback_still_serves_the_verifie
         }
     }
     let aux_dir = common::aux_dir_for(&cas, target);
-    let read_only = common::ReadOnlyDirGuard::new(&aux_dir);
+    let blocked = common::BlockedAuxSnapshot::new(&aux_dir);
 
     let read = cas.get(target).await.expect("a verified read must not fail on a bookkeeping error");
     assert_eq!(read.as_ref(), expected.as_slice());
-    drop(read_only);
+    drop(blocked);
     let cas = cas.reopen().await;
     assert_eq!(
         cas.list_corrupted_objects().await.unwrap(),

@@ -242,72 +242,41 @@ pub(crate) fn corrupt(path: &std::path::Path) {
     std::fs::write(path, b"not the bytes this hash names").expect("corrupt the payload");
 }
 
-/// Removes write permission from a directory.
+/// The per-directory metadata snapshot filename this build writes.
 ///
-/// A read path that has already verified its bytes must not fail because the
-/// bookkeeping write that follows cannot land. Tests use this to make that
-/// write fail deterministically.
-pub(crate) fn make_read_only_dir(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555))
-            .expect("make the directory read-only");
-    }
-    #[cfg(windows)]
-    {
-        let status = std::process::Command::new("icacls")
-            .arg(path)
-            .arg("/deny")
-            .arg("Everyone:(WD,AD,WA,WEA,DC,WDAC)")
-            .status()
-            .expect("run icacls to deny directory writes");
-        assert!(status.success(), "icacls failed to deny directory writes");
-    }
-}
+/// Spelled literally because `LATEST_METADATA_FORMAT` is `pub(crate)` and this
+/// integration target is a separate crate. Drift is self-checking rather than
+/// silent: if the name moves, the block becomes a no-op, the clear succeeds,
+/// and the assertion that the record survives on disk fails.
+const AUX_SNAPSHOT_NAME: &str = "metadata-v3.json";
 
-/// Restores write permission to a directory made read-only by
-/// [`make_read_only_dir`].
-pub(crate) fn make_writable_dir(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-            .expect("restore directory write permission");
-    }
-    #[cfg(windows)]
-    {
-        let status = std::process::Command::new("icacls")
-            .arg(path)
-            .arg("/remove:d")
-            .arg("Everyone")
-            .status()
-            .expect("run icacls to restore directory writes");
-        assert!(status.success(), "icacls failed to restore directory writes");
-    }
-}
-
-/// RAII guard that restores write permission to a directory made read-only by
-/// [`make_read_only_dir`].
+/// Blocks the per-directory metadata snapshot write without a permission API.
 ///
-/// A test that makes a directory read-only to exercise a bookkeeping failure
-/// path must still restore it when an assertion panics, or the leftover
-/// permissions poison later cleanup.
-pub(crate) struct ReadOnlyDirGuard {
-    path: std::path::PathBuf,
+/// The snapshot file is moved aside and a directory is created at its path, so
+/// the staging rename onto that path fails on every target. The previous split
+/// used platform-specific permission denial on Unix and Windows, but no
+/// Windows job executed these tests. Blocking the snapshot rather than the
+/// fan-out directory is also what keeps the sabotage scoped to the bookkeeping
+/// write, because the read resolves the payload through that same directory.
+pub(crate) struct BlockedAuxSnapshot {
+    snapshot: std::path::PathBuf,
+    stashed: std::path::PathBuf,
 }
 
-impl ReadOnlyDirGuard {
-    /// Makes `path` read-only and returns a guard that restores write permission
-    /// on drop.
-    pub(crate) fn new(path: &std::path::Path) -> Self {
-        make_read_only_dir(path);
-        Self { path: path.to_path_buf() }
+impl BlockedAuxSnapshot {
+    /// Blocks the snapshot file in `aux_dir` and returns a guard that restores it.
+    pub(crate) fn new(aux_dir: &std::path::Path) -> Self {
+        let snapshot = aux_dir.join(AUX_SNAPSHOT_NAME);
+        let stashed = aux_dir.join(format!("{AUX_SNAPSHOT_NAME}.blocked"));
+        std::fs::rename(&snapshot, &stashed).expect("move the metadata snapshot aside");
+        std::fs::create_dir(&snapshot).expect("create a directory where the snapshot was");
+        Self { snapshot, stashed }
     }
 }
 
-impl Drop for ReadOnlyDirGuard {
+impl Drop for BlockedAuxSnapshot {
     fn drop(&mut self) {
-        make_writable_dir(&self.path);
+        std::fs::remove_dir(&self.snapshot).expect("remove the blocking directory");
+        std::fs::rename(&self.stashed, &self.snapshot).expect("restore the metadata snapshot");
     }
 }
