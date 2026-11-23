@@ -513,6 +513,22 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         }
     }
 
+    /// Clear a corruption record whose sound form a read already served.
+    ///
+    /// The bytes are verified and in hand, so a bookkeeping write that fails must
+    /// not turn a successful read into a failure. The record that survives is the
+    /// collapse pass's work, and that pass still propagates its own failures.
+    async fn clear_corruption_record_best_effort(&self, hash: &Hash) {
+        if let Err(error) = self.metadata.clear_corrupted(hash).await {
+            tracing::warn!(
+                %hash,
+                %error,
+                "served a sound form but could not clear the corruption record; \
+                 the next collapse pass will retry it"
+            );
+        }
+    }
+
     /// Reconstruct the full (reconstructed) bytes for a hash by walking
     /// any delta chain present in the Metadata + Blob.
     ///
@@ -521,7 +537,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// repeated delta-chain walks during maintenance and rematerialization
     /// are served from the cache (spec: `src/mediapm-cas/AGENTS.md` §5.6).
     ///
-    /// Returns `None` if the hash does not exist in the store.
+    /// Returns `None` if the hash does not exist in the store. Clearing a
+    /// corruption record on this path is best-effort because the bytes were
+    /// already served; the collapse pass remains the authority that must not
+    /// swallow a bookkeeping failure.
     async fn read_full_bytes(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
         let Some(entry) = self.metadata.get(hash).await? else {
             return Ok(None);
@@ -556,7 +575,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
                             },
                         )
                         .await;
-                    self.metadata.clear_corrupted(hash).await?;
+                    self.clear_corruption_record_best_effort(hash).await;
                     Some(full_bytes)
                 } else {
                     None

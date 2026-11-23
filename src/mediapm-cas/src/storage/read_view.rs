@@ -248,6 +248,22 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
         .map(Some)
     }
 
+    /// Clear a corruption record whose sound form a read already served.
+    ///
+    /// The bytes are verified and in hand, so a bookkeeping write that fails must
+    /// not turn a successful read into a failure. The record that survives is the
+    /// collapse pass's work, and that pass still propagates its own failures.
+    async fn clear_corruption_record_best_effort(&self, hash: &Hash) {
+        if let Err(error) = self.metadata.clear_corrupted(hash).await {
+            tracing::warn!(
+                %hash,
+                %error,
+                "served a sound form but could not clear the corruption record; \
+                 the next collapse pass will retry it"
+            );
+        }
+    }
+
     /// Read one object, falling back to the other physical form when the
     /// indexed form fails.
     ///
@@ -255,7 +271,9 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
     /// unsound must serve the other rather than fail: that is what makes a
     /// half-finished promotion recoverable instead of fatal. Repair is the
     /// collapse pass's job (`BackgroundEngine::collapse_blob_forms`), so this
-    /// path only falls back.
+    /// path only falls back. Clearing the corruption record is best-effort on
+    /// this path because the read already holds verified bytes; the collapse
+    /// pass remains the authority that must not swallow a bookkeeping failure.
     ///
     /// A fallback is reported at `warn`, because it means the tree holds a form
     /// the index does not name and the next collapse pass has work to do.
@@ -276,7 +294,7 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
                         ?other,
                         "missing indexed blob read fell back to the other physical form"
                     );
-                    self.metadata.clear_corrupted(hash).await?;
+                    self.clear_corruption_record_best_effort(hash).await;
                     return Ok(Some(bytes));
                 }
                 if is_not_found { Err(CasError::NotFound(*hash)) } else { Ok(None) }
@@ -290,7 +308,7 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
                         ?other,
                         "corrupt blob read fell back to the other physical form"
                     );
-                    self.metadata.clear_corrupted(hash).await?;
+                    self.clear_corruption_record_best_effort(hash).await;
                     return Ok(Some(bytes));
                 }
                 self.metadata.mark_corrupted(*hash).await?;

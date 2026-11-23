@@ -185,6 +185,18 @@ pub(crate) fn form_paths(
     (full, delta)
 }
 
+/// The fan-out aux directory holding a hash's metadata snapshot.
+pub(crate) fn aux_dir_for(
+    cas: &mediapm_cas::FileSystemCas,
+    hash: mediapm_cas::Hash,
+) -> std::path::PathBuf {
+    form_paths(cas, hash)
+        .0
+        .parent()
+        .expect("an object path has a fan-out parent directory")
+        .to_path_buf()
+}
+
 /// Two similar buffers with one marker replaced, large enough that VCDIFF finds
 /// a payload worth storing as a delta.
 pub(crate) fn similar(fill: u8, marker: &[u8]) -> Vec<u8> {
@@ -252,6 +264,51 @@ pub(crate) fn make_writable(path: &std::path::Path) {
         permissions.set_readonly(false);
     }
     std::fs::set_permissions(path, permissions).expect("make the payload writable");
+}
+
+/// Removes write permission from a directory.
+///
+/// A read path that has already verified its bytes must not fail because the
+/// bookkeeping write that follows cannot land. Tests use this to make that
+/// write fail deterministically.
+pub(crate) fn make_read_only_dir(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555))
+            .expect("make the directory read-only");
+    }
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/deny")
+            .arg("Everyone:(WD,AD,WA,WEA,DC,WDAC)")
+            .status()
+            .expect("run icacls to deny directory writes");
+        assert!(status.success(), "icacls failed to deny directory writes");
+    }
+}
+
+/// Restores write permission to a directory made read-only by
+/// [`make_read_only_dir`].
+pub(crate) fn make_writable_dir(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("restore directory write permission");
+    }
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/remove:d")
+            .arg("Everyone")
+            .status()
+            .expect("run icacls to restore directory writes");
+        assert!(status.success(), "icacls failed to restore directory writes");
+    }
 }
 
 /// Re-encodes a current delta envelope as a legacy V1 envelope.

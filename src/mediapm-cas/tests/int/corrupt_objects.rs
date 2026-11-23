@@ -192,3 +192,33 @@ async fn a_verified_fallback_from_missing_indexed_form_clears_corruption_record(
         "verified fallback from missing indexed form must clear corruption record"
     );
 }
+
+/// The read already holds verified bytes, so a bookkeeping write failure must
+/// not turn a healthy object into an unreadable one. The surviving record is
+/// the next collapse pass's work, not this read's failure.
+#[tokio::test]
+async fn a_clearing_failure_still_serves_the_verified_bytes() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(common::similar(b'C', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'C', b"REPLACED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let (full, delta) = common::form_paths(&cas, target);
+    common::corrupt(&full);
+    common::corrupt(&delta);
+    let report = cas.run_maintenance_cycle().await.unwrap();
+    assert_eq!(report.corrupted_objects, 1, "precondition: hash recorded as corrupt");
+
+    // Make the sound form readable but the snapshot directory unwritable, so the
+    // recovery path can read bytes and cannot clear the record.
+    std::fs::write(&full, &expected).expect("restore full payload");
+    let aux_dir = common::aux_dir_for(&cas, target);
+    common::make_read_only_dir(&aux_dir);
+
+    let read = cas.get(target).await.expect("a verified read must not fail on a bookkeeping error");
+    assert_eq!(read.as_ref(), expected.as_slice());
+    common::make_writable_dir(&aux_dir);
+}
