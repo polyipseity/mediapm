@@ -309,39 +309,6 @@ async fn the_default_durability_is_no_extra_flags() {
     );
 }
 
-/// A legacy `.diff` has no integrity field, so a verifying store could not check
-/// it. The first read must rewrite it in the current format, after which the
-/// store can verify it like any other object.
-#[tokio::test]
-async fn a_legacy_delta_envelope_is_rewritten_on_first_read() {
-    let cas = common::open_file_cas_verifying().await;
-    let base = cas.put(Bytes::from(common::similar(b'J', b"CHANGED"))).await.unwrap();
-    let expected = common::similar(b'J', b"REPLACED");
-    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
-    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
-    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
-    cas.run_maintenance_cycle().await.unwrap();
-    assert!(
-        matches!(cas.stat(target).await.unwrap().encoding, ObjectEncoding::Delta { .. }),
-        "the setup requires a delta-encoded target"
-    );
-
-    let (_, delta) = common::form_paths(&cas, target);
-    let v3_bytes = std::fs::read(&delta).expect("read the delta payload");
-    common::make_writable(&delta);
-    std::fs::write(&delta, common::legacy_delta_envelope(&v3_bytes))
-        .expect("rewrite the payload as a legacy envelope");
-    let legacy_bytes = std::fs::read(&delta).expect("read the legacy payload");
-    assert_ne!(legacy_bytes, v3_bytes, "the setup requires legacy bytes");
-
-    assert_eq!(cas.get(target).await.unwrap(), Bytes::from(expected), "the read must still work");
-    assert_ne!(
-        std::fs::read(&delta).expect("read the rewritten payload"),
-        legacy_bytes,
-        "the first read must rewrite the legacy envelope in the current format"
-    );
-}
-
 /// A streaming read on a verifying store must serve the sound form, not stream
 /// the corrupt one and fail after the caller already took the bytes.
 #[tokio::test]

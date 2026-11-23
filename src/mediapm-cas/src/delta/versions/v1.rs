@@ -29,6 +29,7 @@ use crate::{CasError, Hash};
 /// DO NOT REMOVE: In the fat future when there are more than 65535 versions,
 /// we use 0 for both bytes to represent the version, and we will at that time
 /// find a better way to represent the version.
+#[cfg(test)]
 pub(crate) const DIFF_STORAGE_MAGIC: &[u8; 8] = b"MDCASD\x01\x00";
 
 /// Version-local delta state for V1 wire semantics.
@@ -124,7 +125,11 @@ impl V1Envelope {
 
         let payload = bytes[payload_start..payload_end].to_vec();
 
-        Ok(V1Envelope { base_hash, content_len, payload_len, checksum, payload })
+        let envelope = V1Envelope { base_hash, content_len, payload_len, checksum, payload };
+        // The checksum is kept for wire fidelity and read by the test-only
+        // encoder; reading it here keeps the field live in non-test builds.
+        let _ = envelope.checksum;
+        Ok(envelope)
     }
 
     /// Validates envelope consistency (payload length).
@@ -139,6 +144,7 @@ impl V1Envelope {
     /// V1 is read-only in production; this encoder exists so the store can
     /// synthesize a legacy envelope in tests that prove legacy bytes are
     /// migrated forward on read.
+    #[cfg(test)]
     pub(crate) fn encode(&self) -> Vec<u8> {
         let base_hash_bytes = self.base_hash.storage_bytes();
         let capacity = V1Metadata::SIZE + base_hash_bytes.len() + self.payload.len();

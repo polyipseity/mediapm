@@ -194,6 +194,7 @@ pub(crate) const LATEST_DELTA_VERSION: u32 = 3;
 ///
 /// Used by tests that verify a verifying store rewrites legacy bytes on first
 /// read. V1 has no integrity field, so it is the format the rewrite targets.
+#[cfg(test)]
 pub(crate) fn legacy_delta_bytes_for_tests(state: &DeltaState) -> Vec<u8> {
     let payload_len = u64::try_from(state.payload.len()).expect("payload length exceeds u64::MAX");
     let envelope = v1::V1Envelope {
@@ -208,11 +209,12 @@ pub(crate) fn legacy_delta_bytes_for_tests(state: &DeltaState) -> Vec<u8> {
 
 /// Decodes a current delta envelope and re-encodes it as a legacy V1 envelope.
 ///
-/// Integration tests build legacy on-disk bytes through this helper so they
-/// exercise the rewrite path without naming a version module.
+/// Blob-store unit tests build legacy on-disk bytes through this helper so
+/// they exercise the rewrite path without naming a version module.
+#[cfg(test)]
 #[doc(hidden)]
 #[must_use]
-pub fn legacy_delta_v1_wire_from_current(current: &[u8]) -> Vec<u8> {
+pub(crate) fn legacy_delta_v1_wire_from_current(current: &[u8]) -> Vec<u8> {
     let state = decode_delta_state(current).expect("current delta envelope must decode");
     legacy_delta_bytes_for_tests(&state)
 }

@@ -1093,7 +1093,7 @@ mod tests {
             content_len: target_bytes.len() as u64,
             payload: patch.encode().to_vec(),
         });
-        let v1 = crate::legacy_delta_v1_wire_from_current(&v3);
+        let v1 = crate::delta::versions::legacy_delta_v1_wire_from_current(&v3);
         let delta_path = hash_to_delta_path(dir.path(), &target_hash);
         fs::create_dir_all(delta_path.parent().unwrap()).await.unwrap();
         fs::write(&delta_path, &v1).await.unwrap();
@@ -1107,6 +1107,48 @@ mod tests {
             !store.verify_evaluator.should_verify(&target_hash, fresh_mtime),
             "legacy rewrite must record the fresh mtime"
         );
+    }
+
+    /// A legacy `.diff` has no integrity field, so a verifying store could not
+    /// check it. The first read must rewrite it in the current format and
+    /// return the rewritten bytes.
+    #[tokio::test]
+    async fn legacy_delta_envelope_is_rewritten_in_place() {
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
+
+        let base_bytes = Bytes::from_static(b"base for legacy delta rewrite");
+        let base_hash = Hash::from_content(&base_bytes);
+        store.write(base_hash, ObjectEncoding::Full, base_bytes.clone()).await.unwrap();
+
+        let target_bytes = Bytes::from_static(b"target for legacy delta rewrite");
+        let target_hash = Hash::from_content(&target_bytes);
+        let patch = crate::delta::patch::DeltaPatch::diff(&base_bytes, &target_bytes)
+            .expect("compute delta patch");
+        let v3 = crate::delta::versions::encode_delta_state(crate::delta::object::DeltaState {
+            base_hash,
+            content_len: target_bytes.len() as u64,
+            payload: patch.encode().to_vec(),
+        });
+        let v1 = crate::delta::versions::legacy_delta_v1_wire_from_current(&v3);
+        let delta_path = hash_to_delta_path(dir.path(), &target_hash);
+        fs::create_dir_all(delta_path.parent().unwrap()).await.unwrap();
+        fs::write(&delta_path, &v1).await.unwrap();
+
+        let read_back = store.read_delta(&target_hash).await.unwrap();
+        assert_eq!(
+            read_back.as_ref(),
+            v3.as_slice(),
+            "a verifying read must return the rewritten current envelope"
+        );
+        let on_disk = fs::read(&delta_path).await.unwrap();
+        assert_ne!(on_disk, v1, "the on-disk envelope must no longer be the legacy encoding");
+        assert_eq!(on_disk, v3, "the on-disk envelope must be rewritten to the current format");
     }
 
     #[tokio::test]

@@ -60,14 +60,3 @@ pub use hash::{Hash, HashParseError};
 pub use storage::file_system::FileSystemCas;
 pub use storage::in_memory::{InMemoryCas, new_in_memory_cas};
 pub use storage::store::CasStore;
-
-/// Re-encodes a current delta envelope as a legacy V1 envelope.
-///
-/// Integration tests use this to stage on-disk bytes that a verifying store
-/// must rewrite on first read. V1 has no integrity field, so the helper models
-/// the exact legacy state the migration targets.
-#[doc(hidden)]
-#[must_use]
-pub fn legacy_delta_v1_wire_from_current(current: &[u8]) -> Vec<u8> {
-    delta::versions::legacy_delta_v1_wire_from_current(current)
-}
