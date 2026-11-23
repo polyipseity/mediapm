@@ -1421,11 +1421,12 @@ mod tests {
                 file_index_low: 0,
             };
             let ok =
-                unsafe { GetFileInformationByHandle(file.as_raw_handle() as *mut _, &mut info) };
+                unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &raw mut info) };
             if ok == 0 {
                 return None;
             }
-            let file_index = ((info.file_index_high as u64) << 32) | (info.file_index_low as u64);
+            let file_index =
+                (u64::from(info.file_index_high) << 32) | u64::from(info.file_index_low);
             Some((info.volume_serial_number, file_index))
         }
 

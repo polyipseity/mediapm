@@ -4225,6 +4225,10 @@ mod tests {
     #[cfg(windows)]
     fn make_blob_replaceable(path: &Path) {
         let mut permissions = std::fs::metadata(path).expect("blob metadata").permissions();
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "the store commits objects read-only, so a test that tampers with one has to clear the attribute first"
+        )]
         permissions.set_readonly(false);
         std::fs::set_permissions(path, permissions).expect("clear the read-only attribute");
     }
