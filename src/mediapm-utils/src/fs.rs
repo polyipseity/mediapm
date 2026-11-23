@@ -263,12 +263,11 @@ fn is_temporary_suffix(tail: &str) -> bool {
 /// The alternative is to clear before the first attempt, which would widen the
 /// mode of every protected document on a save that never lands.
 ///
-/// No gate exercises the retry. It is unreachable on POSIX, where the rename needs
-/// only the directory's write permission, and CI's Windows job runs its tests over
-/// `mediapm-tests` and `test-runner` alone. That job compiles this body through the
-/// packages that depend on `mediapm-utils`, and runs no clippy, so the Windows
-/// branch is compiled by CI and checked by a developer running `cargo clippy-all`
-/// on Windows, and nothing else touches it.
+/// The retry is unreachable on POSIX, where the rename needs only the directory's
+/// write permission, so `a_publish_replaces_a_read_only_target` is its only
+/// exercise and Windows is where that test reaches it. The `windows-latest` leg of
+/// the build job gets there through `test-all`, the same run that compiles this
+/// body under `clippy-all`.
 fn replace(temporary: &Path, path: &Path) -> io::Result<()> {
     match std::fs::rename(temporary, path) {
         Ok(()) => Ok(()),
