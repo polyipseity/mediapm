@@ -99,3 +99,55 @@ async fn the_corruption_record_survives_a_restart() {
         "the snapshot must carry the record across a restart"
     );
 }
+
+/// A read that finds no sound physical form must record the hash, so the
+/// corruption report reflects reads as well as maintenance passes.
+#[tokio::test]
+async fn a_sole_corrupt_form_read_records_corruption() {
+    let cas = common::open_file_cas_verifying().await;
+    let expected = b"sole corrupt form";
+    let hash = cas.put(Bytes::from_static(expected)).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let (full, delta) = common::form_paths(&cas, hash);
+    assert!(!delta.exists(), "fresh put should be full-only");
+    common::corrupt(&full);
+
+    let err = cas.get(hash).await.unwrap_err();
+    assert!(
+        matches!(err, mediapm_cas::CasError::CorruptObject { .. }),
+        "corrupt sole form must fail, got {err:?}"
+    );
+    assert_eq!(
+        cas.list_corrupted_objects().await.unwrap(),
+        vec![hash],
+        "a sole corrupt form read must record corruption"
+    );
+}
+
+/// A corrupt indexed form with a sound other form is a read-time repair: the
+/// read succeeds from the verified fallback and the corruption record clears.
+#[tokio::test]
+async fn a_verified_fallback_read_clears_corruption_record() {
+    let cas = common::open_file_cas_verifying().await;
+    let base = cas.put(Bytes::from(common::similar(b'R', b"CHANGED"))).await.unwrap();
+    let expected = common::similar(b'R', b"REPLACED");
+    let target = cas.put(Bytes::from(expected.clone())).await.unwrap();
+    cas.set_constraint(base, BTreeSet::from([Hash::empty()])).await.unwrap();
+    cas.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    let (full, delta) = common::form_paths(&cas, target);
+    common::corrupt(&full);
+    common::corrupt(&delta);
+    let report = cas.run_maintenance_cycle().await.unwrap();
+    assert_eq!(report.corrupted_objects, 1, "precondition: hash recorded as corrupt");
+    std::fs::write(&full, &expected).expect("restore full payload");
+
+    let read = cas.get(target).await.unwrap();
+    assert_eq!(read.as_ref(), expected.as_slice(), "fallback read must return correct bytes");
+    assert!(
+        cas.list_corrupted_objects().await.unwrap().is_empty(),
+        "verified fallback must clear corruption record"
+    );
+}

@@ -92,6 +92,7 @@ impl MetadataStore for InMemoryMetadataStore {
         self.data.remove(hash);
         // Also clean up any associated constraint.
         self.constraints.remove(hash);
+        self.corrupted.remove(hash);
         Ok(())
     }
 
@@ -430,6 +431,21 @@ mod tests {
         assert!(
             index.get_constraint(&kept).await.unwrap().is_empty(),
             "the constraint goes with the object"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_clears_corruption_record() {
+        let store = InMemoryMetadataStore::new();
+        let hash = Hash::from_content(b"corrupt-delete-target");
+        store.mark_corrupted(hash).await.unwrap();
+        assert_eq!(store.list_corrupted().await.unwrap(), vec![hash]);
+
+        store.delete(&hash).await.unwrap();
+
+        assert!(
+            store.list_corrupted().await.unwrap().is_empty(),
+            "delete must clear corruption record"
         );
     }
 

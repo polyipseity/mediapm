@@ -272,17 +272,28 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
             Err(CasError::CorruptObject { details, .. }) => {
                 let recovered = self.try_other_form(hash).await?;
                 if let Some(bytes) = recovered {
+                    let other = self.current_encoding(hash).await;
                     tracing::warn!(
-                        hash = %hash,
-                        details = %details,
-                        "served an object from its other physical form"
+                        %hash,
+                        ?other,
+                        "corrupt blob read fell back to the other physical form"
                     );
+                    self.metadata.clear_corrupted(hash).await?;
                     return Ok(Some(bytes));
                 }
-                Err(CasError::CorruptObject { hash: Some(*hash), details })
+                self.metadata.mark_corrupted(*hash).await?;
+                Err(CasError::corrupt_object_with_hash(
+                    *hash,
+                    format!("neither physical form is readable for {hash} ({details})"),
+                ))
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// The encoding the metadata currently records for `hash`, if any.
+    async fn current_encoding(&self, hash: &Hash) -> Option<ObjectEncoding> {
+        self.metadata.get(hash).await.ok().flatten().map(|entry| entry.encoding)
     }
 
     /// Read whichever physical form the tree holds.

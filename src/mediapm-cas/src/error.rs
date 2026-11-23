@@ -115,6 +115,11 @@ impl CasError {
         CasError::CorruptObject { hash: None, details: detail.into() }
     }
 
+    /// Convenience constructor for corruption errors tied to a known hash.
+    pub fn corrupt_object_with_hash(hash: Hash, detail: impl Into<String>) -> Self {
+        CasError::CorruptObject { hash: Some(hash), details: detail.into() }
+    }
+
     /// Convenience constructor for reconstruction corruption errors.
     pub fn corrupt_reconstruction(
         target: Hash,
