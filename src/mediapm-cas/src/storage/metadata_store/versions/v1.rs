@@ -27,6 +27,7 @@ use crate::hash::Hash;
 
 /// On-disk representation of a constraint entry.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConstraintEntry {
     /// Hex-encoded base hashes.
     bases: Vec<String>,
@@ -34,6 +35,7 @@ struct ConstraintEntry {
 
 /// On-disk representation of a metadata entry.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EntryData {
     len: u64,
     /// `"full"` or `"delta:<hex_base_hash>"`
@@ -45,6 +47,7 @@ struct EntryData {
 /// The format is identified by the filename (`metadata-v1.json`), not
 /// by an internal version field.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SnapshotFile {
     /// Map from hex-encoded target hash → constraint entry.
     constraints: BTreeMap<String, ConstraintEntry>,
@@ -183,6 +186,23 @@ mod tests {
         assert!(
             text.contains("\"encoding\": \"full\""),
             "the v1 writer must keep emitting the field a v1 reader expects: {text}"
+        );
+    }
+
+    #[test]
+    fn regression_v1_snapshot_rejects_unknown_field() {
+        let raw = r#"{
+        "constraints": {},
+        "entries": {},
+        "unexpected": true
+    }"#;
+        let err = serde_json::from_str::<SnapshotFile>(raw)
+            .err()
+            .expect("v1 snapshot should reject unknown fields")
+            .to_string();
+        assert!(
+            err.contains("unknown field"),
+            "v1 snapshot must reject unknown fields, got: {err}"
         );
     }
 }
