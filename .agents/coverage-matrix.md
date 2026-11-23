@@ -911,6 +911,7 @@ Spec: `.pi/plans/plan-2026-09-24T092019.md`, section "Spec". One `ProgressTermin
 | yt-dlp states both policies explicitly in the generated tool definition | `yt_dlp_states_both_policies_explicitly` (`src/mediapm/src/tools/workflows/yt_dlp.rs`) | [covered] |
 | media-tagger caps concurrency and inherits the retry default | `media_tagger_caps_concurrency_and_inherits_the_retry_default` (`src/mediapm/src/tools/workflows/media_tagger.rs`) | [covered] |
 | an unconstrained tool restates neither policy in the generated document | `sd_states_no_policy_so_the_defaults_apply` (`src/mediapm/src/tools/workflows/sd.rs`), `generated_document_states_only_overridden_policies` (`src/mediapm/src/conductor_bridge/sync/tests_generated_document.rs`) | [covered] |
+| The generated document is evaluated in process | `generated_document_states_only_overridden_policies` (`src/mediapm/src/conductor_bridge/sync/tests_generated_document.rs`) | [covered] |
 | a step override is retries only | `strict_step_runtime_overrides_retries_only` (`mediapm-conductor/tests/int/schema_strictness.rs`) | [covered] |
 | Ready-queue dispatch pulls any free worker with no level barrier: a dependent step runs while another branch holds a worker, and an unrelated held step stays in flight across a fast branch's whole execution | `ready_queue_dispatches_a_step_before_an_unrelated_branch_finishes`, `free_pool_dispatches_a_dependent_while_another_branch_holds_a_worker`, `ready_queue_releases_a_diamond_join_only_after_both_branches_finish`, `fast_branch_completes_while_an_unrelated_held_step_is_in_flight` (`mediapm-conductor/tests/int/workflow_scheduler.rs`) | [covered] |
 | Worker-slot bars set `suppress_rate_eta`, dropping the auto-derived rate and eta on a step-count total while the tally, elapsed, and the EMA survive; the overall bar and Screens A/C leave it unset | `worker_slots_suppress_rate_and_eta_but_the_overall_row_keeps_them` (conductor int), `a_suppressed_row_reports_no_rate_or_eta_but_still_advances_the_ema` (mediapm-utils unit), `suppressed_row_drops_rate_and_eta_and_the_fill_takes_their_columns` (mediapm-utils render) | [covered] |
@@ -1594,6 +1595,7 @@ Step instance identity is derived from the step's logical tool name and key mate
 | Optimizer is idempotent on an encoded target | `blob_forms.rs` `a_second_pass_over_a_delta_target_does_no_work` | [covered] |
 | A tool's runtime is derived from its spec | `tools/workflows/tests_definition.rs` `every_managed_tool_derives_one_runtime` | [covered] |
 | The live tool set comes from the document | `conductor_bridge/sync/live_tools.rs` `only_provisioned_tools_are_live` | [covered] |
+| No source spawns an unprovisioned host tool | `src/mediapm/tests/int/child_env_scan.rs` `runtime_code_spawns_no_unprovisioned_host_tool` | [covered] |
 
 ## Corrupt-object recording, durable constraints, and resolver truth (2026-11-22)
 
@@ -1606,7 +1608,7 @@ Step instance identity is derived from the step's logical tool name and key mate
 | Corruption is recorded, reported, and cleared | [covered] | `corrupt_objects` integration tests |
 | The corruption record survives a restart | [covered] | `the_corruption_record_survives_a_restart` |
 | A sole corrupt form read records corruption and delete/verified fallback clear it | [covered] | `delete_clears_corruption_record`, `a_sole_corrupt_form_read_records_corruption`, `a_verified_fallback_read_clears_corruption_record`, `a_verified_fallback_from_missing_indexed_form_clears_corruption_record`, `a_plain_unverified_indexed_read_does_not_clear_the_record` |
-| Best-effort read-path clearing serves verified bytes on clear failure | [covered] | `a_clearing_failure_still_serves_the_verified_bytes`, `a_clearing_failure_on_missing_indexed_fallback_still_serves_the_verified_bytes` |
+| Best-effort read-path clearing serves verified bytes on clear failure; the clearing-failure tests block the aux snapshot portably | [covered] | `a_clearing_failure_still_serves_the_verified_bytes`, `a_clearing_failure_on_missing_indexed_fallback_still_serves_the_verified_bytes` |
 | `CasDurability` defaults to no extra syncs | [covered] | `blob_forms.rs` `the_default_durability_is_no_extra_flags` |
 | A durable full constraint materializes before returning | [covered] | `a_durable_full_constraint_materializes_the_payload_before_returning` |
 | One snapshot install on the durable path | [covered] | `metadata_store::fs::tests::a_syncing_constraint_install_writes_the_snapshot_once` |
@@ -1619,3 +1621,4 @@ Step instance identity is derived from the step's logical tool name and key mate
 | The newest deployment decides the active tool key | [covered] | `sync::tests_active_tool_spec` `the_deployment_record_beats_a_first_key_with_a_live_map` |
 | A document with no deployment record still resolves | [covered] | `sync::tests_active_tool_spec` `a_tool_with_no_deployment_record_falls_back_to_the_content_map` |
 | One post-apply pass clears superseded content maps for provisioned tool ids in the run | [covered] | `sync::tests_active_tool_spec::a_stale_sibling_key_is_cleared_but_the_live_one_is_kept`, `sync::tests_skip_path::skip_reuse_clears_superseded_content_maps`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_fetched_outcome`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_no_payload_outcome`, `sync::tests_pruning::reconcile_prunes_old_tool_version_clears_content_map`, `int::tool_sync::superseded_maps::a_skipping_sync_clears_a_stale_sibling_map_through_reconcile` |
+| The Windows job runs the corruption module | [covered] | `windows` job in `.github/workflows/ci.yml`, step "Run the CAS corruption tests" |
