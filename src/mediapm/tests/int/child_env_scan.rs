@@ -1,4 +1,4 @@
-//! Regression scan for unwhitelisted child-process spawns.
+//! Regression scans for child-process spawns.
 //!
 //! Every runtime `Command::new` in mediapm and conductor source must route
 //! through the child-environment whitelist: either the shared `child_env`
@@ -6,9 +6,13 @@
 //! or constructs an environment outside that path would leak ambient host state
 //! into a child the document did not authorize.
 //!
-//! The scan walks `src/mediapm/src/**` and `src/mediapm-conductor/src/**`.
-//! Build scripts and test-support spawns live outside that runtime surface and
-//! are excluded with reasons recorded in the allowlist below.
+//! The whitelist scan walks `src/mediapm/src/**` and
+//! `src/mediapm-conductor/src/**`. Build scripts and test-support spawns live
+//! outside that runtime surface and are excluded with reasons recorded in the
+//! allowlist below.
+//!
+//! A second scan rejects spawns of host tools that CI does not provision, so a
+//! test that passes on a developer machine does not fail on a runner.
 
 use std::path::{Path, PathBuf};
 
@@ -125,6 +129,48 @@ fn runtime_command_spawns_use_the_child_environment_whitelist() {
         violations.is_empty(),
         "found Command::new spawns without child_env/set_child_environment whitelist usage \
          (allowlist: build script `src/mediapm/build.rs`, test-support spawns):\n{}",
+        violations.join("\n")
+    );
+}
+
+/// CI provisions exactly one host tool, and a test that spawns anything else is
+/// a red job that only a developer machine hides.
+///
+/// `.github/workflows/ci.yml` installs `ffmpeg` (which brings `ffprobe`); every
+/// other tool a test needs is evaluated in process or comes from the tool
+/// document. `nickel` was spawned by a generated-document test and failed the
+/// first CI run that contained it, because the runner has no Nickel CLI.
+const UNPROVISIONED_HOST_TOOLS: &[&str] = &["nickel"];
+
+#[test]
+fn runtime_code_spawns_no_unprovisioned_host_tool() {
+    // `CARGO_MANIFEST_DIR` is `src/mediapm`, so two levels up is the workspace
+    // root, which is the directory the sibling scan reaches through `"src"`.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert!(root.join("Cargo.toml").is_file(), "the scan root must be the workspace root");
+    let mut files = Vec::new();
+    for dir in ["src", "scripts", "tests"] {
+        rust_files(&root.join(dir), &mut files);
+    }
+    files.sort();
+
+    let mut violations = Vec::new();
+    for file in &files {
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        for (index, line) in source.lines().enumerate() {
+            for tool in UNPROVISIONED_HOST_TOOLS {
+                if line.contains(&format!("Command::new(\"{tool}\")")) {
+                    violations.push(format!("{}:{}: {}", file.display(), index + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "CI installs only ffmpeg, so these spawns fail on a runner:\n{}",
         violations.join("\n")
     );
 }
