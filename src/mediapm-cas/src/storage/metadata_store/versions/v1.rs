@@ -205,4 +205,24 @@ mod tests {
             "v1 snapshot must reject unknown fields, got: {err}"
         );
     }
+
+    #[test]
+    fn regression_v1_constraint_entry_rejects_unknown_field() {
+        let raw = r#"{"constraints":{"00": {"bases": [], "unexpected": true}},"entries":{}}"#;
+        let err = serde_json::from_str::<SnapshotFile>(raw)
+            .err()
+            .expect("nested constraint entry must reject unknown fields")
+            .to_string();
+        assert!(err.contains("unknown field"), "got: {err}");
+    }
+
+    #[test]
+    fn regression_v1_entry_data_rejects_unknown_field() {
+        let raw = r#"{"constraints":{},"entries":{"00": {"len": 0, "encoding": "full", "unexpected": true}}}"#;
+        let err = serde_json::from_str::<SnapshotFile>(raw)
+            .err()
+            .expect("nested entry must reject unknown fields")
+            .to_string();
+        assert!(err.contains("unknown field"), "got: {err}");
+    }
 }
