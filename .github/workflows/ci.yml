@@ -38,8 +38,16 @@ permissions:
 
 jobs:
   build:
-    name: "Build & Test"
-    runs-on: ubuntu-latest
+    name: "Build & Test (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One leg's failure must not cancel the other: a Windows-only break is the
+      # whole reason this job has two legs, and cancelling hides it.
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -57,7 +65,14 @@ jobs:
 
       # R3: run cheap static checks before expensive test/build steps so obvious
       # failures stop the job early. rumdl runs before fmt-check (approved change).
+      #
+      # `shell: bash` because this step chains three commands and only the last
+      # one's status survives otherwise: GitHub's default Windows shell appends
+      # `exit $LASTEXITCODE`, and `$ErrorActionPreference = 'stop'` does not trap
+      # a native command's non-zero exit. bash's `-eo pipefail` aborts on the
+      # first failure, which is what "stop the job early" means.
       - name: Run cheap checks
+        shell: bash
         run: |
           cargo --locked bin rumdl check
           cargo --locked fmt-check
@@ -65,9 +80,16 @@ jobs:
 
       # R10: ffmpeg/ffprobe is kept for the build job because test-all runs demo
       # and network-group example tests; install it after cheap checks so a
-      # lint/format/clippy failure avoids this fixed apt setup cost.
-      - name: Install ffprobe for the example tests
+      # lint/format/clippy failure avoids this fixed install cost. Neither
+      # runner image ships either binary, and four media-tagger tests call
+      # `ffmpeg` directly rather than skipping when it is absent.
+      - name: Install ffmpeg for the example tests (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg for the example tests (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
 
       - name: Run tests
         run: cargo --locked test-all
