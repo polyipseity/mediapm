@@ -329,10 +329,12 @@ fn strict_payload_free_tool_spec_refuses_an_id_outside_the_published_set() {
 
 /// D5: a generated document states a policy only where a preset overrides one, so
 /// a user document that states the defaults never collides with it.
+///
+/// The encoded document is evaluated in process rather than through a `nickel`
+/// binary: CI provisions no Nickel CLI, and the value under test is what
+/// `encode_document` wrote, not what an external exporter makes of it.
 #[test]
 fn generated_document_states_only_overridden_policies() {
-    use std::io::Write;
-
     let (yt_dlp_spec, yt_dlp_runtime) =
         crate::tools::workflows::yt_dlp::build_yt_dlp_spec(BTreeMap::new(), &BTreeMap::new())
             .into_parts();
@@ -347,22 +349,14 @@ fn generated_document_states_only_overridden_policies() {
 
     let encoded = mediapm_conductor::encode_document(document)
         .expect("tool specs must encode as a generated conductor document");
-    let mut encoded_file = tempfile::NamedTempFile::new().expect("temp file");
-    encoded_file.write_all(&encoded).expect("write encoded document");
-    let mut cmd = std::process::Command::new("nickel");
-    crate::child_env::apply_std(&mut cmd, &crate::child_env::default_host_inherited_env_pairs());
-    let exported = cmd
-        .args(["export", "--format", "json"])
-        .arg(encoded_file.path())
-        .output()
-        .expect("nickel export must run");
-    assert!(
-        exported.status.success(),
-        "nickel export failed: {}",
-        String::from_utf8_lossy(&exported.stderr)
-    );
-    let json: serde_json::Value =
-        serde_json::from_slice(&exported.stdout).expect("nickel export must produce JSON");
+    // `evaluate_nickel_source_to_json` takes a path, and the format is chosen
+    // from the extension, so the document is staged as a `.ncl` file in a
+    // managed temp dir that outlives the evaluation.
+    let dir = mediapm_utils::temp::artifact_dir().expect("create a managed temp dir");
+    let path = dir.path().join("generated.ncl");
+    std::fs::write(&path, &encoded).expect("stage the encoded document");
+    let json = crate::config::nickel_io::evaluate_nickel_source_to_json(&path)
+        .expect("the generated document must evaluate");
 
     let yt_dlp = &json["tools"]["yt-dlp"];
     assert_eq!(yt_dlp["runtime"]["max_concurrent_calls"], 1);
