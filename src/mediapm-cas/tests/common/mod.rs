@@ -269,7 +269,15 @@ impl BlockedAuxSnapshot {
         let snapshot = aux_dir.join(AUX_SNAPSHOT_NAME);
         let stashed = aux_dir.join(format!("{AUX_SNAPSHOT_NAME}.blocked"));
         std::fs::rename(&snapshot, &stashed).expect("move the metadata snapshot aside");
-        std::fs::create_dir(&snapshot).expect("create a directory where the snapshot was");
+        if let Err(err) = std::fs::create_dir(&snapshot) {
+            if let Err(restore_err) = std::fs::rename(&stashed, &snapshot) {
+                panic!(
+                    "create a directory where the snapshot was: {err}; \
+                     restoring the stashed snapshot also failed: {restore_err}"
+                );
+            }
+            panic!("create a directory where the snapshot was: {err}");
+        }
         Self { snapshot, stashed }
     }
 }
