@@ -1611,4 +1611,4 @@ Step instance identity is derived from the step's logical tool name and key mate
 | The CLI lists known-corrupt objects | [covered] | `corrupted_takes_no_arguments`, `cli_entry_point::corrupted_lists_recorded_objects` |
 | The newest deployment decides the active tool key | [covered] | `sync::tests_active_tool_spec` `the_deployment_record_beats_a_first_key_with_a_live_map` |
 | A document with no deployment record still resolves | [covered] | `sync::tests_active_tool_spec` `a_tool_with_no_deployment_record_falls_back_to_the_content_map` |
-| Every update path clears superseded content maps | [covered] | `tests_pruning`, `tests_skip_path` |
+| One post-apply pass clears superseded content maps for provisioned tool ids in the run | [covered] | `sync::tests_active_tool_spec::a_stale_sibling_key_is_cleared_but_the_live_one_is_kept`, `sync::tests_skip_path::skip_reuse_clears_superseded_content_maps`, `sync::tests_skip_path::post_apply_pass_clears_superseded_content_maps_for_fetched_and_no_payload_outcomes`, `sync::tests_pruning::reconcile_prunes_old_tool_version_clears_content_map` |

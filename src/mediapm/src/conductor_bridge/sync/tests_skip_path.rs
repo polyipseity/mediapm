@@ -789,19 +789,11 @@ async fn recheck_interval_resolves_only_after_it_elapses() {
     assert_eq!(stale.resolve_count("media-tagger"), 1, "an expired record is not reused");
 }
 
-/// A skip reuse path clears superseded same-tool content maps, the same
-/// invariant fetch/apply paths enforce.
+/// A skip reuse path clears superseded same-tool content maps through the
+/// one post-apply structural pass, not per-arm clearing inside `apply_entry_outcome`.
 #[test]
 fn skip_reuse_clears_superseded_content_maps() {
     use mediapm_utils::Timestamp;
-    let screen = ProgressScreen::disabled();
-    let bar: Arc<dyn ProgressBarApi> = Arc::new(screen.add_bar(0, "skip"));
-    let progress = OverallProgress::new(&bar);
-    let entry = ProvisionEntry {
-        tool_id: "ffmpeg".to_string(),
-        tool_requirement: ToolRequirement::default(),
-        kind: EntryKind::Explicit,
-    };
     let mut doc = NickelDocument {
         tools: BTreeMap::from([
             (
@@ -831,33 +823,139 @@ fn skip_reuse_clears_superseded_content_maps() {
         ]),
         ..Default::default()
     };
-    let mut report = ToolSyncReport::default();
-    let mut live_state = std::collections::HashMap::new();
-    apply_entry_outcome(
-        &entry,
-        EntryOutcome::Skipped {
-            key: "ffmpeg@new".to_string(),
-            tool_record: Box::new(ToolRegistryEntry {
-                tool_id: "ffmpeg".to_string(),
-                version: "v".to_string(),
-                canonical_version: "c".to_string(),
-                content_map_hash: "new".to_string(),
-                deployed_at: Timestamp::from_unix_nanos(1),
-                resolved_tag: None,
-                resolved_version: None,
-                resolved_vcs_hash: None,
-            }),
-        },
-        &mut doc,
-        &ToolDeployments::empty(),
-        &mut report,
-        &mut live_state,
-        0,
-        &progress,
-    );
+    let deployments = ToolDeployments::from_records(&[ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: "v".to_string(),
+        canonical_version: "c".to_string(),
+        content_map_hash: "new".to_string(),
+        deployed_at: Timestamp::from_unix_nanos(1),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    }]);
+
+    let cleared =
+        clear_all_superseded_content_maps(&mut doc, &deployments, vec!["ffmpeg".to_string()]);
+
+    assert_eq!(cleared, 1);
     assert!(doc.tools["ffmpeg@old"].runtime.content_map.is_empty());
     assert_eq!(
         doc.tools["ffmpeg@new"].runtime.content_map.get("bin/ffmpeg"),
         Some(&"h2".to_string())
     );
+}
+
+/// Fetched and no-payload outcomes leave stale siblings behind in the document
+/// until the post-apply structural pass clears them; this proves the pass covers
+/// both outcome shapes by the same code path.
+#[test]
+fn post_apply_pass_clears_superseded_content_maps_for_fetched_and_no_payload_outcomes() {
+    use mediapm_utils::Timestamp;
+
+    // Fetched: the apply inserted `ffmpeg@new` and left `ffmpeg@old` populated.
+    let mut fetched_doc = NickelDocument {
+        tools: BTreeMap::from([
+            (
+                "ffmpeg@old".to_string(),
+                ToolSpec {
+                    name: "ffmpeg".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "bin/ffmpeg".to_string(),
+                            "old".to_string(),
+                        )]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+            (
+                "ffmpeg@new".to_string(),
+                ToolSpec {
+                    name: "ffmpeg".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "bin/ffmpeg".to_string(),
+                            "new".to_string(),
+                        )]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+        ]),
+        ..Default::default()
+    };
+    let fetched_deployments = ToolDeployments::from_records(&[ToolRegistryEntry {
+        tool_id: "ffmpeg".to_string(),
+        version: "v".to_string(),
+        canonical_version: "c".to_string(),
+        content_map_hash: "new".to_string(),
+        deployed_at: Timestamp::from_unix_nanos(2),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    }]);
+    let fetched_cleared = clear_all_superseded_content_maps(
+        &mut fetched_doc,
+        &fetched_deployments,
+        vec!["ffmpeg".to_string()],
+    );
+    assert_eq!(fetched_cleared, 1, "fetched outcome must clear the stale sibling");
+    assert!(fetched_doc.tools["ffmpeg@old"].runtime.content_map.is_empty());
+    assert_eq!(
+        fetched_doc.tools["ffmpeg@new"].runtime.content_map.get("bin/ffmpeg"),
+        Some(&"new".to_string())
+    );
+
+    // No-payload: the active spec is the bare tool id and a stale keyed sibling remains.
+    let mut no_payload_doc = NickelDocument {
+        tools: BTreeMap::from([
+            (
+                "media-tagger@old".to_string(),
+                ToolSpec {
+                    name: "media-tagger".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "bin/media-tagger".to_string(),
+                            "old".to_string(),
+                        )]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+            (
+                "media-tagger".to_string(),
+                ToolSpec {
+                    name: "media-tagger".to_string(),
+                    kind: ToolKindSpec::default(),
+                    runtime: ToolRuntime::default(),
+                    ..Default::default()
+                },
+            ),
+        ]),
+        ..Default::default()
+    };
+    let no_payload_deployments = ToolDeployments::from_records(&[ToolRegistryEntry {
+        tool_id: "media-tagger".to_string(),
+        version: "v".to_string(),
+        canonical_version: "c".to_string(),
+        content_map_hash: String::new(),
+        deployed_at: Timestamp::from_unix_nanos(3),
+        resolved_tag: None,
+        resolved_version: None,
+        resolved_vcs_hash: None,
+    }]);
+    let no_payload_cleared = clear_all_superseded_content_maps(
+        &mut no_payload_doc,
+        &no_payload_deployments,
+        vec!["media-tagger".to_string()],
+    );
+    assert_eq!(no_payload_cleared, 1, "no-payload outcome must clear the stale sibling");
+    assert!(no_payload_doc.tools["media-tagger@old"].runtime.content_map.is_empty());
+    assert!(no_payload_doc.tools["media-tagger"].runtime.content_map.is_empty());
 }

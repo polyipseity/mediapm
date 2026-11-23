@@ -18,7 +18,7 @@ pub(crate) mod provision;
 pub use deployments::ToolDeployments;
 use live_tools::live_tool_specs;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -761,7 +761,6 @@ fn apply_entry_outcome(
                 tool_req.max_input_slots,
                 tool_req.max_output_slots,
             );
-            clear_superseded_content_maps(generated_doc, &tool_record.tool_id, &key);
             report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
             progress.advance_once(entry_index);
@@ -774,7 +773,6 @@ fn apply_entry_outcome(
                 tool_req.max_input_slots,
                 tool_req.max_output_slots,
             );
-            clear_superseded_content_maps(generated_doc, &tool_record.tool_id, &key);
             report.resolved_field_backfills.push(backfill);
             report.tool_records.push(*tool_record);
             report.tools_skipped += 1;
@@ -825,8 +823,6 @@ fn apply_entry_outcome(
             let tool_key =
                 if map_hash.is_empty() { tool_id.clone() } else { format!("{tool_id}@{map_hash}") };
 
-            clear_superseded_content_maps(generated_doc, &tool_id, &tool_key);
-
             generated_doc.tools.insert(tool_key.clone(), spec);
         }
         EntryOutcome::FetchedNone {
@@ -853,14 +849,6 @@ fn apply_entry_outcome(
                     .entry(tool_id.clone())
                     .or_insert_with(|| payload_free_tool_spec(&tool_id));
             }
-            let live_key = if is_builtin_code {
-                active_spec_key(generated_doc, deployments, &tool_id)
-                    .unwrap_or_else(|| tool_id.clone())
-            } else {
-                tool_id.clone()
-            };
-            clear_superseded_content_maps(generated_doc, &tool_id, &live_key);
-
             let record = ToolRegistryEntry {
                 tool_id: tool_id.clone(),
                 version: format!(
@@ -1561,6 +1549,24 @@ fn clear_superseded_content_maps(
     stale.len()
 }
 
+fn clear_all_superseded_content_maps(
+    generated_doc: &mut NickelDocument,
+    deployments: &ToolDeployments,
+    tool_ids: impl IntoIterator<Item = String>,
+) -> usize {
+    let mut cleared = 0usize;
+    let mut seen = BTreeSet::new();
+    for tool_id in tool_ids {
+        if !seen.insert(tool_id.clone()) {
+            continue;
+        }
+        let live_key = active_spec_key(generated_doc, deployments, &tool_id)
+            .unwrap_or_else(|| tool_id.clone());
+        cleared += clear_superseded_content_maps(generated_doc, &tool_id, &live_key);
+    }
+    cleared
+}
+
 /// Opens (or creates) the workspace-scoped persistent CAS store used for tool payloads.
 pub(crate) async fn open_workspace_cas_store(
     paths: &MediaPmPaths,
@@ -1907,6 +1913,21 @@ pub(crate) async fn reconcile_desired_tools(
                     progress.as_ref(),
                 );
             }
+            // One structural pass clears stale siblings for every tool this run
+            // provisioned, so every outcome path — fetched, no-payload, and both
+            // skip shapes — is covered by the same code that writes the document.
+            // The live key comes from the post-apply deployment state: a newly
+            // fetched key is not the one the pre-sync records named.
+            let provisioned_tool_ids: Vec<String> =
+                report.tool_records.iter().map(|record| record.tool_id.clone()).collect();
+            let post_apply_records: Vec<ToolRegistryEntry> =
+                live_state.values().flat_map(|records| records.iter().cloned()).collect();
+            let post_apply_deployments = ToolDeployments::from_records(&post_apply_records);
+            clear_all_superseded_content_maps(
+                &mut generated_doc,
+                &post_apply_deployments,
+                provisioned_tool_ids,
+            );
         }
         Err(pool_failure) => {
             // Fail fast: the first provisioning failure aborts the whole sync.
