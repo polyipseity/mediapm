@@ -305,22 +305,8 @@ async fn execute_prepared_step<C: CasApi + ConstraintApi + Send + Sync>(
     lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
     maintenance_rekey: Option<(Hash, Hash)>,
 ) -> Result<StepExecutionBundle, ConductorError> {
-    execute_miss(
-        cas,
-        request,
-        &prepared.tool_call_id,
-        prepared.tool_spec,
-        resolved_inputs,
-        &prepared.key_material,
-        &prepared.producible_outputs,
-        &prepared.merged_outputs,
-        prepared.k_latest,
-        prepared.executed_at,
-        prepared.env_vars.clone(),
-        lookup_side_effects,
-        maintenance_rekey,
-    )
-    .await
+    execute_miss(cas, request, prepared, resolved_inputs, lookup_side_effects, maintenance_rekey)
+        .await
 }
 
 /// Executes one step: resolves inputs, runs the tool, captures outputs.
@@ -352,22 +338,22 @@ pub(super) async fn execute_step<C: CasApi + ConstraintApi + Send + Sync>(
 }
 
 /// Executes a step on cache miss (or forced rerun/blob-miss fallback).
-#[allow(clippy::too_many_arguments)]
 async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
     cas: &C,
     request: &StepExecutionRequest,
-    tool_call_id: &str,
-    tool_spec: &UnifiedToolSpec,
+    prepared: &PreparedStep<'_>,
     resolved_inputs: &[ResolvedInput],
-    key_material: &[Hash],
-    producible_outputs: &BTreeMap<String, OutputCaptureSpec>,
-    merged_outputs: &BTreeMap<String, OutputCaptureSpec>,
-    k_latest: Hash,
-    executed_at: Timestamp,
-    env_vars: BTreeMap<String, crate::state::EnvVarEntry>,
     lookup_side_effects: BTreeMap<Hash, ToolCallInstance>,
     maintenance_rekey: Option<(Hash, Hash)>,
 ) -> Result<StepExecutionBundle, ConductorError> {
+    let tool_call_id = &prepared.tool_call_id;
+    let tool_spec = prepared.tool_spec;
+    let key_material = &prepared.key_material;
+    let producible_outputs = &prepared.producible_outputs;
+    let merged_outputs = &prepared.merged_outputs;
+    let k_latest = prepared.k_latest;
+    let executed_at = prepared.executed_at;
+    let env_vars = prepared.env_vars.clone();
     // Sandbox is named by the predicted LATEST key for determinism.
     let sandbox_dir = create_sandbox(&request.conductor_tmp_dir, &k_latest).await?;
     prepare_tool_payload(cas, tool_spec, &sandbox_dir).await?;
@@ -401,7 +387,7 @@ async fn execute_miss<C: CasApi + ConstraintApi + Send + Sync>(
     let instance = ToolCallInstance {
         key_version: INSTANCE_KEY_VERSION,
         attempted_key_version_nk: INSTANCE_KEY_VERSION,
-        tool_call_id: tool_call_id.to_string(),
+        tool_call_id: tool_call_id.clone(),
         command_args: dispatched.command_args,
         env_vars_ck: env_vars,
         materialized_inputs: actual_materialized_inputs,

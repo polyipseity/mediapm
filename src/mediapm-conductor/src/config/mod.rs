@@ -1233,20 +1233,11 @@ mod tests {
         }
     }
 
-    /// Pins the three platform default lists exactly: their lengths, their
-    /// contents, and the fact that macOS differs from Linux only by the GPU
-    /// and display group.
+    /// Pins the Linux default list exactly.
     #[test]
-    #[allow(clippy::too_many_lines)]
-    fn default_platform_inherited_env_var_names_are_pinned() {
+    fn default_platform_inherited_env_var_names_linux_are_pinned() {
         let linux = default_platform_inherited_env_var_names("linux");
-        let macos = default_platform_inherited_env_var_names("macos");
-        let windows = default_platform_inherited_env_var_names("windows");
-
         assert_eq!(linux.len(), 51, "linux default list length");
-        assert_eq!(macos.len(), 40, "macos default list length");
-        assert_eq!(windows.len(), 46, "windows default list length");
-
         assert_eq!(
             linux,
             &[
@@ -1309,7 +1300,14 @@ mod tests {
                 "WAYLAND_DISPLAY",
             ]
         );
+    }
 
+    /// Pins the macOS default list and its relationship to Linux.
+    #[test]
+    fn default_platform_inherited_env_var_names_macos_are_pinned() {
+        let linux = default_platform_inherited_env_var_names("linux");
+        let macos = default_platform_inherited_env_var_names("macos");
+        assert_eq!(macos.len(), 40, "macos default list length");
         assert_eq!(
             macos,
             &[
@@ -1382,7 +1380,13 @@ mod tests {
             ],
             "Linux differs from macOS only by the GPU and display group"
         );
+    }
 
+    /// Pins the Windows default list and its case-folding invariants.
+    #[test]
+    fn default_platform_inherited_env_var_names_windows_are_pinned() {
+        let windows = default_platform_inherited_env_var_names("windows");
+        assert_eq!(windows.len(), 46, "windows default list length");
         assert_eq!(
             windows,
             &[
