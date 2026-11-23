@@ -758,8 +758,13 @@ impl BlobStore for FileSystemBlobStore {
                     from_version = version,
                     "rewrote a legacy delta envelope in the current format so it carries an integrity field"
                 );
+                let fresh_mtime = self
+                    .materialized_mtime(hash, ObjectEncoding::Delta { base_hash: Hash::empty() })
+                    .await;
+                self.verify_evaluator.record_verification(hash, fresh_mtime);
+            } else {
+                self.verify_evaluator.record_verification(hash, mtime);
             }
-            self.verify_evaluator.record_verification(hash, mtime);
         }
         Ok(Bytes::from(data))
     }
@@ -1062,6 +1067,47 @@ mod tests {
         // Full path should not exist.
         let result = store.read(&hash).await;
         assert!(result.is_err(), "full path should not exist for delta-only blob");
+    }
+
+    #[tokio::test]
+    async fn legacy_delta_rewrite_records_fresh_mtime() {
+        let dir = mediapm_utils::temp::artifact_dir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Modified],
+        )
+        .await
+        .unwrap();
+
+        let base_bytes = Bytes::from_static(b"base for legacy delta mtime");
+        let base_hash = Hash::from_content(&base_bytes);
+        store.write(base_hash, ObjectEncoding::Full, base_bytes.clone()).await.unwrap();
+
+        let target_bytes = Bytes::from_static(b"target for legacy delta mtime");
+        let target_hash = Hash::from_content(&target_bytes);
+        let patch = crate::delta::patch::DeltaPatch::diff(&base_bytes, &target_bytes)
+            .expect("compute delta patch");
+        let v3 = crate::delta::versions::encode_delta_state(crate::delta::object::DeltaState {
+            base_hash,
+            content_len: target_bytes.len() as u64,
+            payload: patch.encode().to_vec(),
+        });
+        let v1 = crate::legacy_delta_v1_wire_from_current(&v3);
+        let delta_path = hash_to_delta_path(dir.path(), &target_hash);
+        fs::create_dir_all(delta_path.parent().unwrap()).await.unwrap();
+        fs::write(&delta_path, &v1).await.unwrap();
+        let stale_mtime = fs::metadata(&delta_path).await.unwrap().modified().ok();
+
+        let _raw = store.read_delta(&target_hash).await.unwrap();
+
+        let fresh_mtime = store
+            .materialized_mtime(&target_hash, ObjectEncoding::Delta { base_hash: Hash::empty() })
+            .await;
+        assert_ne!(fresh_mtime, stale_mtime, "rewrite should update the delta file mtime");
+        assert!(
+            !store.verify_evaluator.should_verify(&target_hash, fresh_mtime),
+            "legacy rewrite must record the fresh mtime"
+        );
     }
 
     #[tokio::test]
