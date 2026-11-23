@@ -504,6 +504,13 @@ mod tests {
 
     impl ExecutableTimeoutOverride {
         /// Sets the executable-timeout env override to `secs` for this guard's lifetime.
+        #[cfg_attr(
+            not(unix),
+            expect(
+                dead_code,
+                reason = "both users drive a shell fixture, so the guard is unreferenced on Windows"
+            )
+        )]
         fn set(secs: u64) -> Self {
             let prior = std::env::var(EXECUTABLE_TIMEOUT_ENV_VAR).ok();
             // Safety: env mutation is process-global; EXECUTABLE_TIMEOUT_ENV_LOCK
@@ -514,6 +521,13 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(unix),
+        expect(
+            dead_code,
+            reason = "both users drive a shell fixture, so the guard is unreferenced on Windows"
+        )
+    )]
     impl Drop for ExecutableTimeoutOverride {
         fn drop(&mut self) {
             // Safety: mirrors `set`; restores the pre-test env state.
