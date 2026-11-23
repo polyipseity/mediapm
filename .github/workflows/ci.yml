@@ -190,8 +190,16 @@ jobs:
       # Scoped rather than `--all-targets` for historical reasons: `is_same_file`
       # now uses FFI to `GetFileInformationByHandle` and no longer requires the
       # unstable `windows_by_handle` feature, so `--all-targets` is usable. The
-      # scope is retained to match the existing CI contract and avoid widening
-      # the job. Features stay at `--all-features`, so the narrowing is targets
-      # only and the run covers the same modules every other gate does.
+      # scope is retained to match the existing CI contract. The corruption
+      # module now runs in its own step below, so this check stays narrow while
+      # the Windows-only corruption paths still execute on a real runner.
+      # Features stay at `--all-features`, so the narrowing is targets only and
+      # the run covers the same modules every other gate does.
       - name: Check the CAS integration test target
         run: cargo --locked check -p mediapm-cas --all-features --lib --bins --examples --test mod
+
+      # Runs the module that tampers with payloads and directory aux files, so
+      # the Windows-only removal and restore paths execute on a real runner
+      # instead of only compiling. The filter matches the module path.
+      - name: Run the CAS corruption tests
+        run: cargo --locked test -p mediapm-cas --all-features --test mod -- corrupt_objects
