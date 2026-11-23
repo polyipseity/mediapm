@@ -86,6 +86,7 @@ fn script_key() -> String {
 /// requester's content map under `deps/<tool id>/`, keeping the companion's own
 /// key, so this is the shape a document carries when the executable it names is
 /// a companion rather than the tool's own binary.
+#[cfg(unix)]
 fn companion_key() -> String {
     format!("deps/companion/{}", script_key())
 }
@@ -97,6 +98,10 @@ struct Fixture {
     /// under it. Read directly by a test that needs a path outside both.
     tmp: mediapm_utils::temp::ManagedTempDir,
     /// Runtime root handed to the worker as `conductor_tmp_dir`.
+    ///
+    /// Only the execution-based tests read it, and those drive a `#!/bin/sh`
+    /// fixture, so they compile out on Windows.
+    #[cfg(unix)]
     runtime_root: PathBuf,
     /// Directory the provisioner would have filled.
     payload_root: PathBuf,
@@ -115,7 +120,13 @@ impl Fixture {
         let script =
             std::fs::read(payload_root.join(script_key())).expect("the fixture script is readable");
         cas.put(Bytes::from(script)).await.expect("import the fixture script");
-        Self { tmp, runtime_root, payload_root, cas }
+        Self {
+            tmp,
+            #[cfg(unix)]
+            runtime_root,
+            payload_root,
+            cas,
+        }
     }
 
     /// The content map that names the fixture script, which is also the payload
@@ -220,6 +231,7 @@ fn script_tool(
 /// `variant` distinguishes each run's logical tool identity so that runs
 /// comparing different staging topologies produce independent instance keys and
 /// sandboxes.
+#[cfg(unix)]
 async fn run_step(
     fixture: &Fixture,
     mut tool: UnifiedToolSpec,
@@ -266,6 +278,7 @@ async fn run_step(
 
 /// Reads the file the fixture script wrote, which is the run's observable
 /// result under every strategy.
+#[cfg(unix)]
 fn written_output(sandbox: &Path) -> Vec<u8> {
     std::fs::read(sandbox.join("downloads").join("out.txt"))
         .expect("the script writes its argument into the sandbox")
@@ -425,7 +438,13 @@ async fn an_archive_payload_is_unpacked_once() {
         permissions.set_mode(permissions.mode() | 0o700);
         std::fs::set_permissions(&unpacked, permissions).expect("make the script executable");
     }
-    let fixture = Fixture { tmp, runtime_root, payload_root, cas };
+    let fixture = Fixture {
+        tmp,
+        #[cfg(unix)]
+        runtime_root,
+        payload_root,
+        cas,
+    };
     let dir_key = format!("{}/", host_platform_dir());
     let content_map = BTreeMap::from([(dir_key, archive_hash.to_hex())]);
 
@@ -632,7 +651,16 @@ async fn fixture_with_companions() -> (Fixture, BTreeMap<String, String>) {
         (companion_dir_key(), archive_hash.to_hex()),
         (companion_binary_key(), deno_hash.to_hex()),
     ]);
-    (Fixture { tmp, runtime_root, payload_root, cas }, content_map)
+    (
+        Fixture {
+            tmp,
+            #[cfg(unix)]
+            runtime_root,
+            payload_root,
+            cas,
+        },
+        content_map,
+    )
 }
 
 /// Builds the tool whose arguments name both companion shapes the way the

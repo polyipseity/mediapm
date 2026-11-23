@@ -490,8 +490,13 @@ mod tests {
     ///
     /// Every guard user holds `EXECUTABLE_TIMEOUT_ENV_LOCK` for the whole
     /// override window — see that lock's docs for the race this closes.
+    ///
+    /// Both users drive a `#!/bin/sh` fixture, so the guard compiles out on
+    /// Windows with them.
+    #[cfg(unix)]
     struct ExecutableTimeoutOverride(Option<String>);
 
+    #[cfg(unix)]
     impl ExecutableTimeoutOverride {
         /// Sets the executable-timeout env override to `secs` for this guard's lifetime.
         fn set(secs: u64) -> Self {
@@ -504,6 +509,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for ExecutableTimeoutOverride {
         fn drop(&mut self) {
             // Safety: mirrors `set`; restores the pre-test env state.

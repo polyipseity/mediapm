@@ -84,6 +84,17 @@ fn normalize_sandbox_relative_path(
 }
 
 /// Ensures one extracted payload file is executable by the current user.
+///
+/// Only a POSIX filesystem spells executability as a permission bit, so the
+/// non-unix body is a no-op and the signature is a `Result` only where it can
+/// fail.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the fallible signature is shared with the unix body, where reading and setting the mode can fail"
+    )
+)]
 pub(crate) fn ensure_user_execute_bit(path: &Path) -> Result<(), ConductorError> {
     // Only a POSIX filesystem spells executability as a permission bit, so every
     // platform that is not one takes the no-op below and never reads the path.
@@ -116,6 +127,16 @@ pub(crate) fn ensure_user_execute_bit(path: &Path) -> Result<(), ConductorError>
 
 /// Recursively ensures all regular files under one payload tree have owner
 /// execute permissions.
+///
+/// Like [`ensure_user_execute_bit`], the non-unix body is a no-op and the
+/// signature is a `Result` only where it can fail.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the fallible signature is shared with the unix body, where reading the tree and setting modes can fail"
+    )
+)]
 pub(crate) fn ensure_payload_tree_user_execute_bits(root: &Path) -> Result<(), ConductorError> {
     if !root.exists() {
         return Ok(());
