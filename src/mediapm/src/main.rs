@@ -98,8 +98,20 @@ fn tool_sync_exit_status(summary: &mediapm::ToolsSyncSummary) -> Option<i32> {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let worker = std::thread::Builder::new().stack_size(32 * 1024 * 1024).spawn(run)?;
+    worker.join().expect("the worker thread panicked")
+}
+
+fn run() -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(32 * 1024 * 1024)
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     #[cfg(feature = "cli")]
     {
         main_cli().await?;
