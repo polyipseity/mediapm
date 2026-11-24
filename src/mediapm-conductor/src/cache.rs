@@ -3055,15 +3055,9 @@ mod tests {
     /// tests do the same through a private helper.
     fn make_writable(path: &std::path::Path) {
         let mut permissions = std::fs::metadata(path).expect("blob metadata").permissions();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            permissions.set_mode(permissions.mode() | 0o200);
-        }
-        #[cfg(not(unix))]
         #[expect(
             clippy::permissions_set_readonly_false,
-            reason = "the test plants corrupt bytes in a stored object, and the read-only attribute is the gate it has to clear on this platform"
+            reason = "the test plants corrupt bytes in a stored object, and the read-only attribute is the gate it has to clear on any platform"
         )]
         permissions.set_readonly(false);
         std::fs::set_permissions(path, permissions).expect("make the blob writable");

@@ -518,7 +518,6 @@ mod tests {
     /// second probe rather than on the removal because the removal is synchronous
     /// and offers no window a test can observe from outside; if the lock did not
     /// exclude a second holder, the held probe would guard nothing.
-    #[cfg(unix)]
     #[test]
     fn strict_a_held_legacy_lock_still_blocks_a_second_probe() {
         let tools_dir = artifact_dir().expect("tools dir");
@@ -668,19 +667,56 @@ mod tests {
         );
     }
 
-    /// Sets an entry directory's own mode, which is what decides whether this
-    /// account can list it.
+    /// Makes an entry directory unremovable by the current process, using the
+    /// platform's own permission mechanism.
     ///
-    /// `0o300` is the mode that makes `remove_dir_all` fail while the entry's
-    /// lock file still opens: opening a child needs search permission, which the
-    /// mode keeps, and listing the directory needs read permission, which the
-    /// mode drops.
-    #[cfg(unix)]
-    fn set_entry_dir_mode(path: &Path, mode: u32) {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = fs::metadata(path).expect("entry directory metadata").permissions();
-        permissions.set_mode(mode);
-        fs::set_permissions(path, permissions).expect("set entry directory mode");
+    /// On POSIX, dropping read permission from the directory prevents listing
+    /// its children while keeping search permission so the lock file still opens.
+    /// On Windows, readonly attributes on the directory's files make
+    /// `remove_dir_all` fail with access denied.
+    fn make_entry_dir_unremovable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions =
+                fs::metadata(path).expect("entry directory metadata").permissions();
+            permissions.set_mode(0o300);
+            fs::set_permissions(path, permissions).expect("set entry directory mode");
+        }
+        #[cfg(not(unix))]
+        {
+            for entry in fs::read_dir(path).expect("read blocked dir") {
+                let entry = entry.expect("blocked dir entry");
+                let mut permissions = entry.metadata().expect("entry metadata").permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "Windows removal fails on readonly files; the test needs removal to fail to prove the sweep reports it"
+                )]
+                permissions.set_readonly(true);
+                fs::set_permissions(entry.path(), permissions).expect("make entry file readonly");
+            }
+        }
+    }
+
+    /// Restores an entry directory made unremovable by [`make_entry_dir_unremovable`].
+    fn restore_entry_dir(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions =
+                fs::metadata(path).expect("entry directory metadata").permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(path, permissions).expect("restore entry directory mode");
+        }
+        #[cfg(not(unix))]
+        {
+            for entry in fs::read_dir(path).expect("read blocked dir") {
+                let entry = entry.expect("blocked dir entry");
+                let mut permissions = entry.metadata().expect("entry metadata").permissions();
+                permissions.set_readonly(false);
+                fs::set_permissions(entry.path(), permissions).expect("clear readonly");
+            }
+        }
     }
 
     /// A directory the sweep cannot remove is reported, and the sweep still
@@ -690,7 +726,6 @@ mod tests {
     /// later sweep reports either, so the store keeps it for the life of the
     /// workspace with nothing saying why; aborting the pass instead leaves every
     /// other stale entry behind because of one directory that would not go.
-    #[cfg(unix)]
     #[tokio::test]
     async fn regression_a_failed_tool_dir_removal_is_reported() {
         let tools_dir = artifact_dir().expect("tools dir");
@@ -698,7 +733,7 @@ mod tests {
         seed_entry(tools_dir.path(), "removable", LOCK_FILE_NAME, 0);
         seed_entry(tools_dir.path(), "kept", LOCK_FILE_NAME, 0);
         let blocked = tools_dir.path().join("blocked");
-        set_entry_dir_mode(&blocked, 0o300);
+        make_entry_dir_unremovable(&blocked);
 
         let warnings = retain_only_tool_dirs(
             tools_dir.path().to_path_buf(),
@@ -717,7 +752,7 @@ mod tests {
         );
 
         if blocked.exists() {
-            set_entry_dir_mode(&blocked, 0o700);
+            restore_entry_dir(&blocked);
             assert_eq!(
                 warnings.len(),
                 1,

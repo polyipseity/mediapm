@@ -22,19 +22,11 @@ async fn maintenance_records_a_hash_whose_every_form_is_corrupt() {
     // The delta is a committed read-only CAS object; clear the read-only bit
     // before overwriting, same as the common::corrupt helper.
     let mut delta_perms = std::fs::metadata(&delta).expect("delta metadata").permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        delta_perms.set_mode(delta_perms.mode() | 0o200);
-    }
-    #[cfg(windows)]
-    {
-        #[expect(
-            clippy::permissions_set_readonly_false,
-            reason = "clearing the read-only attribute is how a test tampers with a committed blob"
-        )]
-        delta_perms.set_readonly(false);
-    }
+    #[expect(
+        clippy::permissions_set_readonly_false,
+        reason = "clearing the read-only attribute is how a test tampers with a committed blob on any platform"
+    )]
+    delta_perms.set_readonly(false);
     std::fs::set_permissions(&delta, delta_perms).expect("make the delta payload writable");
     std::fs::write(&full, b"neither of these").expect("make the full payload wrong");
     std::fs::write(&delta, b"is the target's bytes").expect("make the delta payload wrong");

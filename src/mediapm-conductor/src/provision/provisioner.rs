@@ -513,30 +513,61 @@ mod tests {
     /// turns a permission problem into a tool nobody can use. What the failure
     /// costs is the timestamp: the entry keeps aging from the use time it held.
     ///
-    /// Root and some filesystems ignore the mode, so the premise is probed rather
-    /// than assumed. A test that fails for the account running it says nothing
-    /// about the writer.
-    #[cfg(unix)]
+    /// Root and some filesystems ignore the permission mechanism, so the premise
+    /// is probed rather than assumed. A test that fails for the account running it
+    /// says nothing about the writer.
     #[tokio::test]
     async fn a_hit_that_cannot_record_its_use_time_still_serves_the_payload() {
-        use std::os::unix::fs::PermissionsExt;
+        fn seal_entry_dir(path: &std::path::Path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o500))
+                    .expect("seal the entry directory");
+            }
+            #[cfg(not(unix))]
+            {
+                let mut permissions =
+                    std::fs::metadata(path).expect("entry metadata").permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "the readonly attribute is the platform's write-deny mechanism and the probe below verifies whether it took effect"
+                )]
+                permissions.set_readonly(true);
+                std::fs::set_permissions(path, permissions).expect("seal the entry directory");
+            }
+        }
+
+        fn unseal_entry_dir(path: &std::path::Path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                    .expect("restore the entry directory");
+            }
+            #[cfg(not(unix))]
+            {
+                let mut permissions =
+                    std::fs::metadata(path).expect("entry metadata").permissions();
+                permissions.set_readonly(false);
+                std::fs::set_permissions(path, permissions).expect("restore the entry directory");
+            }
+        }
 
         let _serialized = SWEEP_STATE_LOCK.lock().await;
         let (tools_dir, cache) = cache_with_payload().await;
         let content_map = BTreeMap::new();
         drop(cache.materialize("sealed-tool", &content_map).await.expect("first materialize"));
         let entry = tools_dir.path().join("sealed-tool");
-        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o500))
-            .expect("seal the entry directory");
+        seal_entry_dir(&entry);
 
         let probe = entry.join("probe");
         if std::fs::write(&probe, b"x").is_ok() {
             drop(std::fs::remove_file(&probe));
-            std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o700))
-                .expect("restore the entry directory");
+            unseal_entry_dir(&entry);
             eprintln!(
                 "skipping a_hit_that_cannot_record_its_use_time_still_serves_the_payload: \
-                 this process can write into a 0o500 directory"
+                 this process can write into the sealed entry directory"
             );
             return;
         }
@@ -551,8 +582,7 @@ mod tests {
             "the hit handed back an entry whose payload is gone"
         );
         drop(guard);
-        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o700))
-            .expect("restore the entry directory");
+        unseal_entry_dir(&entry);
     }
 
     /// Re-extracting an entry writes the header again, because the extraction

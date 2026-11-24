@@ -1942,7 +1942,6 @@ mod tests {
         unreachable!("a few hundred hashes cannot all miss the sibling directories of one ancestor")
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn regression_a_deleted_object_leaves_the_hardlinked_copy_read_only() {
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");

@@ -221,19 +221,11 @@ pub(crate) fn corrupt(path: &std::path::Path) {
     match std::fs::metadata(path) {
         Ok(metadata) => {
             let mut permissions = metadata.permissions();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                permissions.set_mode(permissions.mode() | 0o200);
-            }
-            #[cfg(windows)]
-            {
-                #[expect(
-                    clippy::permissions_set_readonly_false,
-                    reason = "clearing the read-only attribute is how a Windows test tampers with a committed blob"
-                )]
-                permissions.set_readonly(false);
-            }
+            #[expect(
+                clippy::permissions_set_readonly_false,
+                reason = "clearing the read-only attribute is how a test tampers with a committed blob on any platform"
+            )]
+            permissions.set_readonly(false);
             std::fs::set_permissions(path, permissions).expect("make the payload writable");
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

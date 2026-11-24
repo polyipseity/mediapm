@@ -615,8 +615,9 @@ fn echo(args: &[String]) -> Result<(), StubError> {
     if let Some(parent) =
         Path::new(&output).parent().filter(|parent| !parent.as_os_str().is_empty())
     {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| StubError::io(format!("cannot create '{parent:?}': {error}")))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            StubError::io(format!("cannot create '{}': {error}", parent.display()))
+        })?;
     }
     std::fs::write(&output, written.join("\n"))
         .map_err(|error| StubError::io(format!("cannot write output '{output}': {error}")))

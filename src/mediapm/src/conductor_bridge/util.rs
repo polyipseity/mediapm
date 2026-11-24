@@ -115,10 +115,45 @@ mod tests {
     /// document, because the conductor's document type is private to its own
     /// crate and this test lives in mediapm. The writer is the same one, so the
     /// property it states is the same property.
-    #[cfg(unix)]
+    ///
+    /// Root and some filesystems ignore the permission mechanism, so the premise
+    /// is probed rather than assumed.
     #[test]
     fn a_failed_publish_leaves_a_document_the_decoder_accepts() {
-        use std::os::unix::fs::PermissionsExt;
+        fn seal_dir(path: &std::path::Path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o500))
+                    .expect("make the document's directory unwritable");
+            }
+            #[cfg(not(unix))]
+            {
+                let mut permissions = fs::metadata(path).expect("dir metadata").permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "the readonly attribute is the platform's write-deny mechanism and the probe below verifies whether it took effect"
+                )]
+                permissions.set_readonly(true);
+                fs::set_permissions(path, permissions)
+                    .expect("make the document's directory unwritable");
+            }
+        }
+
+        fn unseal_dir(path: &std::path::Path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                    .expect("restore the document's directory");
+            }
+            #[cfg(not(unix))]
+            {
+                let mut permissions = fs::metadata(path).expect("dir metadata").permissions();
+                permissions.set_readonly(false);
+                fs::set_permissions(path, permissions).expect("restore the document's directory");
+            }
+        }
 
         let tmp = mediapm_utils::temp::artifact_dir().unwrap();
         let path = tmp.path().join("mediapm.ncl");
@@ -130,11 +165,20 @@ mod tests {
                 .expect("render the document the test starts from");
 
         let directory = path.parent().expect("the document's directory").to_path_buf();
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o500))
-            .expect("make the document's directory unwritable");
+        seal_dir(&directory);
+        let probe = directory.join("probe");
+        if std::fs::write(&probe, b"x").is_ok() {
+            drop(std::fs::remove_file(&probe));
+            unseal_dir(&directory);
+            eprintln!(
+                "skipping a_failed_publish_leaves_a_document_the_decoder_accepts: \
+                 this process can write into the sealed directory"
+            );
+            return;
+        }
+
         let failed = write_bytes(&path, b"a document that never finishes", "test");
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
-            .expect("restore the document's directory");
+        unseal_dir(&directory);
 
         let error = failed.expect_err("a publish into an unwritable directory must be reported");
         assert_eq!(error.code(), "MPM-E007", "the failure is an IO error the caller can act on");

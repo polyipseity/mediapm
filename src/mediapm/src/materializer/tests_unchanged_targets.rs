@@ -12,7 +12,6 @@ use super::tests_common::{
 };
 
 use super::*;
-#[cfg(unix)]
 use crate::config::{MaterializationMethod, defaults};
 
 /// Media id of the single entry these tests re-sync.
@@ -375,13 +374,28 @@ async fn an_output_edited_to_the_same_length_is_written_again() {
     );
 }
 
+/// Creates a file symlink with the platform's own API.
+///
+/// The symlink tests exercise the materializer's symlink reading, so they need
+/// a real symlink on disk. Windows names the operation differently from POSIX,
+/// but the resulting link is the same thing: a path that resolves to another.
+fn make_symlink(original: &Path, link: &Path) {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(original, link).expect("the entry becomes a symlink");
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(original, link).expect("the entry becomes a symlink");
+    }
+}
+
 /// A library entry that is a symlink naming the CAS object is declined.
 ///
 /// The re-sync reads the link and finds the path the document resolved, so
 /// there is nothing left to establish and no byte is read. The entry is turned
 /// into a symlink by replacing it between two runs, because `sync_hierarchy`
 /// writes through hardlink and never produces one itself.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_symlink_naming_the_right_object_skips() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();
@@ -399,7 +413,7 @@ async fn a_symlink_naming_the_right_object_skips() {
         .object_path_for_hash(hash)
         .expect("the first run linked a hardlink, so the object is a file on disk");
     commit::remove_path(&target).expect("a readonly managed output is removable");
-    std::os::unix::fs::symlink(&object_path, &target).expect("the entry becomes a symlink");
+    make_symlink(&object_path, &target);
 
     let second = run_sync(&paths, &document, &mut state, &cas, None, None).await;
     assert_eq!(
@@ -422,7 +436,6 @@ async fn a_symlink_naming_the_right_object_skips() {
 /// wrong whatever it happens to resolve to. The decoy holds the same number of
 /// bytes as the content the document resolves, so neither the length nor the
 /// hash can see this: only the link itself says where the entry went.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_symlink_naming_the_wrong_object_is_written_again() {
     // Same length on purpose. A decoy with a different length would be caught by
@@ -455,7 +468,7 @@ async fn a_symlink_naming_the_wrong_object_is_written_again() {
     let decoy_path = cas
         .object_path_for_hash(decoy)
         .expect("the decoy was materialized above, so it is a file on disk");
-    std::os::unix::fs::symlink(&decoy_path, &target).expect("the entry becomes a symlink");
+    make_symlink(&decoy_path, &target);
 
     let second = run_sync(&paths, &document, &mut state, &cas, None, None).await;
     assert_eq!(
@@ -472,8 +485,7 @@ async fn a_symlink_naming_the_wrong_object_is_written_again() {
 }
 
 /// Length the CAS reports for `hash`, which the decoy has to match.
-#[cfg(unix)]
-async fn decoy_hash_len(cas: &FileSystemCas, hash: Hash) -> u64 {
+async fn decoy_hash_len(cas: &FileSystemCas, hash: mediapm_cas::Hash) -> u64 {
     cas.stat(hash).await.expect("the decoy is in the store").len
 }
 
@@ -481,10 +493,9 @@ async fn decoy_hash_len(cas: &FileSystemCas, hash: Hash) -> u64 {
 ///
 /// `sync_hierarchy` writes through hardlink, so the other three have to be
 /// materialized here directly to reach the check with them. What each method
-/// leaves behind is what the check answers on: an inode for hardlink, a name
-/// for symlink, and bytes alone for the two that share no inode with the
+/// leaves behind is what the check answers on: an identity for hardlink, a name
+/// for symlink, and bytes alone for the two that share no identity with the
 /// object.
-#[cfg(unix)]
 #[tokio::test]
 async fn an_untouched_output_skips_whatever_method_produced_it() {
     let root = mediapm_utils::temp::artifact_dir().unwrap();

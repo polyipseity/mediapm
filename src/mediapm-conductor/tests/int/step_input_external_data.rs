@@ -88,7 +88,6 @@ fn write_declared_input_workflow(tc: &TestConductor, hash: Hash) {
 /// it. The hash is staged and declared, no step produces it, and the command
 /// still hands the tool the payload — the path an ffmpeg step takes when its
 /// input variant is declared only as a hash.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_step_reading_a_declared_hash_sees_the_declared_bytes() {
     let tc = TestConductor::new();
@@ -139,7 +138,6 @@ async fn a_step_reading_a_declared_hash_sees_the_declared_bytes() {
 /// The declared hash is the input, so the second run reuses the first run's
 /// instance instead of executing again — the payload was never the run's to
 /// produce, and nothing about the second run makes it different work.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_declared_hash_input_is_the_same_work_on_a_second_run() {
     let tc = TestConductor::new();
@@ -185,7 +183,6 @@ async fn a_declared_hash_input_is_the_same_work_on_a_second_run() {
 ///
 /// No instance is recorded for a step that failed at input resolution, so the
 /// next run retries it rather than reusing an execution that never happened.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_declared_hash_the_store_does_not_hold_fails_the_step() {
     let tc = TestConductor::new();

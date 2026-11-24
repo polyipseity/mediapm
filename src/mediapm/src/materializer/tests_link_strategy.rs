@@ -5,8 +5,8 @@
 //! that order rather than a built-in one. An attempt that falls through to a
 //! later method succeeded by a method the document did not prefer, so the run
 //! has to say so rather than pass it off as the preferred method. And a
-//! hardlink is a claim about inodes: an output that is not the store object's
-//! own inode was not hardlinked, whatever the order said.
+//! hardlink is a claim about identity: an output that is not the store object's
+//! own file was not hardlinked, whatever the order said.
 //!
 //! The fallback case is forced without a second filesystem. A CAS object small
 //! enough to live only in the write-ahead log has no blob file until something
@@ -27,41 +27,38 @@ use super::*;
 /// directory removable: a write-protected directory refuses the deletion of
 /// its own entries, so a test that froze the tree and panicked before thawing
 /// would leak the workspace instead of failing cleanly.
-#[cfg(unix)]
 struct FrozenBlobTree {
     /// Every directory the freeze touched, so the drop restores each one.
     directories: Vec<PathBuf>,
 }
 
-#[cfg(unix)]
 impl FrozenBlobTree {
-    /// Write-protects `root` and every directory below it.
+    /// Freezes `root` so a write through it fails.
     ///
-    /// Only the write bit is cleared. Read and search stay, because the store
-    /// still has to be able to answer what it holds; it is writing a blob that
-    /// must fail.
+    /// The freeze is proved by the caller's own probe write rather than assumed,
+    /// which is what lets one implementation cover both a POSIX mode bit and a
+    /// Windows readonly attribute: whichever the platform has, the probe either
+    /// fails (the freeze took) or the test reports that it did not.
     fn freeze(root: &Path) -> Self {
         let mut directories = Vec::new();
         collect_directories(root, &mut directories);
         for directory in &directories {
-            set_mode(directory, 0o555);
+            deny_writes(directory);
         }
         Self { directories }
     }
 }
 
-#[cfg(unix)]
 impl Drop for FrozenBlobTree {
     fn drop(&mut self) {
         for directory in &self.directories {
-            set_mode(directory, 0o755);
+            allow_writes(directory);
         }
     }
 }
 
 /// Collects `root` and every directory below it, so a freeze reaches the
 /// fan-out directories a blob write would otherwise create.
-#[cfg(unix)]
 fn collect_directories(root: &Path, into: &mut Vec<PathBuf>) {
     if !root.is_dir() {
         return;
@@ -75,13 +72,47 @@ fn collect_directories(root: &Path, into: &mut Vec<PathBuf>) {
     }
 }
 
-/// Sets the permission bits of one directory.
-#[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt as _;
+/// Makes `path` refuse writes, by mode bit on POSIX and readonly attribute on Windows.
+///
+/// The caller proves the freeze with its own probe write, so this is the best
+/// platform-available mechanism rather than a guarantee stated in isolation.
+fn deny_writes(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
 
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .expect("the test can set the directory's mode");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555))
+            .expect("the test can set the directory's mode");
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions =
+            std::fs::metadata(path).expect("the directory's metadata").permissions();
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows has no mode bits; setting the readonly attribute is the platform's write-deny mechanism and the caller verifies it with a probe write"
+        )]
+        permissions.set_readonly(true);
+        std::fs::set_permissions(path, permissions).expect("the test can deny writes");
+    }
+}
+
+/// Restores write access removed by [`deny_writes`].
+fn allow_writes(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("the test can restore the directory's mode");
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions =
+            std::fs::metadata(path).expect("the directory's metadata").permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions).expect("the test can restore writes");
+    }
 }
 
 /// Runs one `sync_hierarchy` over a document whose order is `order`.
@@ -168,14 +199,10 @@ async fn strict_the_configured_order_is_the_order_attempted() {
             if expects_hardlink { "a copy" } else { "a hardlink" }
         );
 
-        #[cfg(unix)]
         if !expects_hardlink {
-            use std::os::unix::fs::MetadataExt as _;
-
-            let links = std::fs::metadata(&target).expect("the target's metadata").nlink();
-            assert_eq!(
-                links, 1,
-                "a copied output holds its own bytes, so nothing else may count it as a link"
+            assert!(
+                !same_file::is_same_file(&object, &target).expect("the same_file check"),
+                "a copied output holds its own bytes, so it must not share the object's identity"
             );
         }
     }
@@ -214,7 +241,6 @@ async fn no_notice_when_the_preferred_method_succeeds() {
 /// which streams the logged bytes — writes the output. The notice therefore
 /// has to name both the entry and `copy`, because a notice that named only one
 /// of them would leave a reader unable to tell what happened to what.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_fallback_is_reported_with_the_path_and_the_method() {
     let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");
@@ -279,15 +305,15 @@ async fn a_fallback_is_reported_with_the_path_and_the_method() {
     );
 }
 
-/// A hardlinked output is the store object's own inode.
+/// A hardlinked output is the store object's own file.
 ///
 /// This is the claim the default order makes, and the claim a read-only output
-/// rests on: the bytes on disk are the store's bytes, not a copy of them. Link
-/// count is the second half, because a file that shares an inode with the
-/// object has at least two names, one of which is the object's. The run leaves
-/// the order unset, so the method that answers is the default order's first
-/// one, and it asserts no notice: a notice here would mean the default order
-/// fell through on the layout every library starts with.
+/// rests on: the bytes on disk are the store's bytes, not a copy of them.
+/// `same_file::is_same_file` is the identity check, because a hardlink is the
+/// same file under another name. The run leaves the order unset, so the method
+/// that answers is the default order's first one, and it asserts no notice: a
+/// notice here would mean the default order fell through on the layout every
+/// library starts with.
 #[tokio::test]
 async fn strict_a_materialized_hardlink_shares_the_cas_inode() {
     let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");
@@ -310,21 +336,9 @@ async fn strict_a_materialized_hardlink_shares_the_cas_inode() {
     let target = single_entry_target(&paths);
     assert!(
         same_file::is_same_file(&object, &target).expect("the same_file check"),
-        "a hardlinked output is the store object under another name, so the two paths must name \
-         one file"
+        "a hardlinked output is the store object under another name, so the two paths must \
+         name one file"
     );
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-
-        let links = std::fs::metadata(&target).expect("the target's metadata").nlink();
-        assert!(
-            links >= 2,
-            "a hardlinked output adds a name to the object's inode, so the count is at least two, \
-             and {links} says the output was not hardlinked"
-        );
-    }
 }
 
 /// A zip-member entry replaces its target with the member, and records the

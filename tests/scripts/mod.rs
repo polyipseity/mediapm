@@ -958,7 +958,6 @@ fn assert_deep_chain_removed(script_name: &str, run: impl Fn(&Path, &Path, &[&st
 /// and `Get-ChildItem -Directory` reports a link as a container, which the pwsh
 /// sweep has to skip — so the link is not a swept path and both runs report the
 /// empty sweep.
-#[cfg(unix)]
 fn assert_root_symlink_not_followed(
     script_name: &str,
     run: impl Fn(&Path, &Path, &[&str]) -> RunOutcome,
@@ -972,7 +971,10 @@ fn assert_root_symlink_not_followed(
     fs::write(target.join("nested").join("keep-nested"), b"keep")
         .expect("seed the link target's nested file");
     let link = scope.join(FAKE_MEDIAPM_DIRS[0]);
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&target, &link).expect("seed the mediapm-* symlink");
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&target, &link).expect("seed the mediapm-* symlink");
     let janitor = script_path(script_name);
 
     let dry = run(&janitor, &scope, &["--dry-run"]);
@@ -1095,7 +1097,6 @@ fn pwsh_janitor_removes_a_deep_chain() {
 /// Same shape as [`bash_janitor_leaves_a_root_symlink_alone`]: `-Directory`
 /// reports a link to a directory as a container, so the pwsh twin has to skip
 /// links explicitly to stay on the same set of paths as the sh twin.
-#[cfg(unix)]
 #[test]
 fn pwsh_janitor_leaves_a_root_symlink_alone() {
     if !skip_unless("pwsh", &["--version"]) {

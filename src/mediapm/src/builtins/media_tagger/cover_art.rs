@@ -2291,12 +2291,48 @@ mod tests {
     ///
     /// `write_index_file` persists by temp-file-plus-rename, so a read-only
     /// *file* would still accept the rename — the write fails only when the
-    /// directory itself refuses new files. The chmod therefore seals the
-    /// cache root, and is lifted again before the temp dir cleans up.
-    #[cfg(unix)]
+    /// directory itself refuses new files. The permission change therefore seals
+    /// the cache root, and is lifted again before the temp dir cleans up.
+    ///
+    /// Root and some filesystems ignore the permission mechanism, so the premise
+    /// is probed rather than assumed.
     #[tokio::test]
     async fn eviction_fails_loudly_when_the_index_cannot_be_persisted() {
-        use std::os::unix::fs::PermissionsExt;
+        fn seal_dir(path: &std::path::Path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut sealed = fs::metadata(path).expect("root metadata").permissions();
+                sealed.set_mode(0o555);
+                fs::set_permissions(path, sealed).expect("seal cache root");
+            }
+            #[cfg(not(unix))]
+            {
+                let mut sealed = fs::metadata(path).expect("root metadata").permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "the readonly attribute is the platform's write-deny mechanism and the probe below verifies whether it took effect"
+                )]
+                sealed.set_readonly(true);
+                fs::set_permissions(path, sealed).expect("seal cache root");
+            }
+        }
+
+        fn unseal_dir(path: &std::path::Path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut open = fs::metadata(path).expect("root metadata").permissions();
+                open.set_mode(0o755);
+                fs::set_permissions(path, open).expect("unseal cache root");
+            }
+            #[cfg(not(unix))]
+            {
+                let mut open = fs::metadata(path).expect("root metadata").permissions();
+                open.set_readonly(false);
+                fs::set_permissions(path, open).expect("unseal cache root");
+            }
+        }
 
         let root = mediapm_utils::temp::cache_dir().expect("cache directory");
         let cache = MediaTaggerHttpCache::new(
@@ -2313,15 +2349,21 @@ mod tests {
             .expect("seed row");
         age_index_row(&cache, "caa-entries", "https://example.test/sealed", 3600);
 
-        let mut sealed = fs::metadata(root.path()).expect("root metadata").permissions();
-        sealed.set_mode(0o555);
-        fs::set_permissions(root.path(), sealed).expect("seal cache root");
+        seal_dir(root.path());
+        let probe = root.path().join("probe");
+        if std::fs::write(&probe, b"x").is_ok() {
+            drop(std::fs::remove_file(&probe));
+            unseal_dir(root.path());
+            eprintln!(
+                "skipping eviction_fails_loudly_when_the_index_cannot_be_persisted: \
+                 this process can write into the sealed cache directory"
+            );
+            return;
+        }
 
         let result = cache.evict_expired().await;
 
-        let mut open = fs::metadata(root.path()).expect("root metadata").permissions();
-        open.set_mode(0o755);
-        fs::set_permissions(root.path(), open).expect("unseal cache root");
+        unseal_dir(root.path());
 
         let error = result.expect_err("a sealed cache dir must fail eviction, not skip it");
         assert!(
