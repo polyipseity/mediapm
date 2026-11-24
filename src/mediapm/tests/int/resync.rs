@@ -558,6 +558,15 @@ fn the_write_witness_moves_when_a_file_is_relinked_with_identical_bytes() {
         PAYLOAD,
         "both links carry identical bytes, so content cannot be what distinguishes them"
     );
+    // NTFS creation time (the Windows `changed` witness) is stored on the MFT
+    // record, so relinking a name to the same inode does not move it. The
+    // portable calibration this test provides is therefore Unix-only; the
+    // byte-content check above remains cross-platform. Evidence: Windows CI run
+    // 45393133364 (job 138441789530) failed here with `relinking identical
+    // bytes must move the status-change time...`.
+    #[cfg(not(unix))]
+    let _ = (&before, &after);
+    #[cfg(unix)]
     assert_ne!(
         after.changed, before.changed,
         "relinking identical bytes must move the status-change time, or the witness cannot tell \

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -511,36 +511,23 @@ impl MediaTaggerHttpCache {
 
         let rendered =
             serde_json::to_string_pretty(index).context("encoding media-tagger cache index")?;
-        let mut temp_file = tempfile::NamedTempFile::new_in(parent).with_context(|| {
-            format!("creating temporary media-tagger cache index file in '{}'", parent.display())
-        })?;
-        temp_file.write_all(format!("{rendered}\n").as_bytes()).with_context(|| {
-            format!("writing temporary media-tagger cache index '{}'", temp_file.path().display())
-        })?;
+        let bytes = format!("{rendered}\n");
 
         // Replace the destination with one rename, with no `remove_file` first.
         //
-        // `NamedTempFile::persist` is the atomic replace-the-destination
-        // operation on every supported platform: it resolves to `rename(2)` on
-        // Unix, and on Windows to `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`
-        // — the same flag `std::fs::rename` passes there, so overwriting an
-        // existing index needs no pre-removal on Windows either. The temp file
-        // is created in the destination's own directory, so the rename never
-        // crosses a filesystem boundary and cannot fail with `EXDEV`. See the
-        // `2ed8dfb5` commit message for the full derivation.
-        //
-        // Removing the destination beforehand opens a window in which
-        // `media-tagger.json` does not exist, and the file's only reader,
-        // `load_media_tagger_cache_index` (reached solely from
-        // `MediaTaggerHttpCache::new`), maps a missing file to an empty
-        // index. A cache constructed inside that window starts with no rows,
-        // re-downloads what it wants, and its first `upsert_index_entry`
-        // persists an index built from that empty map — erasing every row the
-        // file held and orphaning their CAS payloads under `store/`. Guarded
-        // by `index_rewrite_never_hides_a_live_row_from_a_fresh_cache_reader`.
-        temp_file
-            .persist(path)
-            .map_err(|error| error.error)
+        // `mediapm_utils::fs::write_bytes_atomically` publishes through a sibling
+        // temp file and a same-directory rename, so a reader sees the old or new
+        // index, never an absent or partial file. Removing the destination
+        // beforehand would open a window in which `media-tagger.json` does not
+        // exist, and the file's only reader, `load_media_tagger_cache_index`
+        // (reached solely from `MediaTaggerHttpCache::new`), maps a missing file
+        // to an empty index. A cache constructed inside that window would start
+        // with no rows, re-download what it wants, and its first
+        // `upsert_index_entry` would persist an index built from that empty map
+        // — erasing every row the file held and orphaning their CAS payloads
+        // under `store/`. Guarded by
+        // `index_rewrite_never_hides_a_live_row_from_a_fresh_cache_reader`.
+        mediapm_utils::fs::write_bytes_atomically(path, bytes.as_bytes())
             .with_context(|| format!("replacing media-tagger cache index '{}'", path.display()))?;
 
         Ok(())

@@ -27,11 +27,13 @@ use super::*;
 /// directory removable: a write-protected directory refuses the deletion of
 /// its own entries, so a test that froze the tree and panicked before thawing
 /// would leak the workspace instead of failing cleanly.
+#[cfg(not(windows))]
 struct FrozenBlobTree {
     /// Every directory the freeze touched, so the drop restores each one.
     directories: Vec<PathBuf>,
 }
 
+#[cfg(not(windows))]
 impl FrozenBlobTree {
     /// Freezes `root` so a write through it fails.
     ///
@@ -49,6 +51,7 @@ impl FrozenBlobTree {
     }
 }
 
+#[cfg(not(windows))]
 impl Drop for FrozenBlobTree {
     fn drop(&mut self) {
         for directory in &self.directories {
@@ -59,6 +62,7 @@ impl Drop for FrozenBlobTree {
 
 /// Collects `root` and every directory below it, so a freeze reaches the
 /// fan-out directories a blob write would otherwise create.
+#[cfg(not(windows))]
 fn collect_directories(root: &Path, into: &mut Vec<PathBuf>) {
     if !root.is_dir() {
         return;
@@ -76,6 +80,7 @@ fn collect_directories(root: &Path, into: &mut Vec<PathBuf>) {
 ///
 /// The caller proves the freeze with its own probe write, so this is the best
 /// platform-available mechanism rather than a guarantee stated in isolation.
+#[cfg(not(windows))]
 fn deny_writes(path: &Path) {
     #[cfg(unix)]
     {
@@ -94,6 +99,7 @@ fn deny_writes(path: &Path) {
 }
 
 /// Restores write access removed by [`deny_writes`].
+#[cfg(not(windows))]
 fn allow_writes(path: &Path) {
     #[cfg(unix)]
     {
@@ -241,6 +247,14 @@ async fn no_notice_when_the_preferred_method_succeeds() {
 /// which streams the logged bytes — writes the output. The notice therefore
 /// has to name both the entry and `copy`, because a notice that named only one
 /// of them would leave a reader unable to tell what happened to what.
+// Windows directory readonly attributes do not prevent file creation or
+// writes inside the directory, so this test's blob-tree freeze probe cannot be
+// made portable without ACL manipulation (no new deps allowed). The fallback
+// reporting invariant is cross-platform; only this freeze-based setup is
+// Windows-specific. Evidence: Windows CI run 45393133364 (job 138441789530)
+// failed with "the blob tree must refuse a write, or the fallback this case is
+// about cannot happen".
+#[cfg(not(windows))]
 #[tokio::test]
 async fn a_fallback_is_reported_with_the_path_and_the_method() {
     let workspace = mediapm_utils::temp::artifact_dir().expect("an artifact dir");

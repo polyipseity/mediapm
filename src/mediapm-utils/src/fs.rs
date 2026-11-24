@@ -263,17 +263,49 @@ fn is_temporary_suffix(tail: &str) -> bool {
 /// The alternative is to clear before the first attempt, which would widen the
 /// mode of every protected document on a save that never lands.
 ///
-/// The retry is unreachable on POSIX, where the rename needs only the directory's
-/// write permission, so `a_publish_replaces_a_read_only_target` is its only
-/// exercise and Windows is where that test reaches it. The `windows-latest` leg of
-/// the build job gets there through `test-all`, the same run that compiles this
-/// body under `clippy-all`.
+/// On Windows a rename over an open destination can also fail with
+/// `PermissionDenied` (os error 5) while a concurrent reader holds a handle.
+/// CI run 45393133364 (Windows, job 138441789530) hit this in
+/// `mediapm::builtins::media_tagger::cover_art::tests::index_rewrite_never_hides_a_live_row_from_a_fresh_cache_reader`
+/// as `replacing media-tagger cache index ... Access is denied. (os error 5)`.
+/// The extra bounded retries cover that transient sharing case without masking a
+/// genuine permission error, because the same small backoff budget is the only
+/// cost a real denial pays.
+///
+/// The POSIX PermissionDenied path is not retried: a directory-permission error
+/// there is not transient. The read-only clear retry is exercised on POSIX by
+/// `a_publish_replaces_a_read_only_target` only as unreachable code in
+/// practice, and on Windows through `test-all`.
 fn replace(temporary: &Path, path: &Path) -> io::Result<()> {
     match std::fs::rename(temporary, path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             clear_read_only_attribute(path)?;
-            std::fs::rename(temporary, path)
+            #[cfg(windows)]
+            {
+                const ATTEMPTS: usize = 6;
+                const BACKOFF_MS: u64 = 40;
+                let mut last_error = None;
+                for attempt in 0..ATTEMPTS {
+                    match std::fs::rename(temporary, path) {
+                        Ok(()) => return Ok(()),
+                        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                            let retryable = attempt + 1 < ATTEMPTS;
+                            last_error = Some(error);
+                            if !retryable {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(BACKOFF_MS));
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(last_error.expect("the retry loop records its last PermissionDenied"))
+            }
+            #[cfg(not(windows))]
+            {
+                std::fs::rename(temporary, path)
+            }
         }
         Err(error) => Err(error),
     }

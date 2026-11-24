@@ -119,11 +119,16 @@ mod tests {
     async fn a_store_lock_names_itself() {
         let dir = mediapm_utils::temp::artifact_dir().unwrap();
         let guard = DirectoryLockGuard::lock(dir.path()).await.unwrap();
+        // Read after releasing the lock: Windows mandatory exclusive locks deny
+        // reads from other handles, including a same-process read_to_string
+        // (CI 45393133364, Windows, os error 33 ERROR_LOCK_VIOLATION). The
+        // header is persisted before lock() returns, so reading after drop
+        // preserves the asserted property.
+        drop(guard);
 
         let contents = tokio::fs::read_to_string(dir.path().join("lock")).await.unwrap();
 
         assert_eq!(contents, STORE_LOCK_HEADER);
-        drop(guard);
     }
 
     /// Acquiring, dropping, then re-acquiring the lock must succeed.
@@ -188,14 +193,19 @@ mod tests {
             "expected LockContention, got {error:?}"
         );
 
+        // Read after releasing the manual lock: Windows mandatory exclusive
+        // locks deny reads from other handles (CI 45393133364, Windows, os
+        // error 33 ERROR_LOCK_VIOLATION). The contention attempt above already
+        // failed, so nothing after it can empty the header; reading after drop
+        // preserves the asserted property.
+        drop(other_process);
+
         let contents =
             tokio::fs::read_to_string(&lock_path).await.expect("read the lock file back");
         assert_eq!(
             contents, STORE_LOCK_HEADER,
             "an open that cannot take the lock must not empty the holder's header"
         );
-
-        drop(other_process);
     }
 
     /// Simulating cross-process contention by pre-locking the flock file:
