@@ -12,6 +12,7 @@ use super::tests_common::{
 };
 
 use super::*;
+#[cfg(unix)]
 use crate::config::{MaterializationMethod, defaults};
 
 /// Media id of the single entry these tests re-sync.

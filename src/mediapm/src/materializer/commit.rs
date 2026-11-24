@@ -437,11 +437,14 @@ pub(super) fn sanitize_and_validate_components(
 mod tests {
     use super::*;
     use crate::config::{MediaPmDocument, MediaPmState};
+    #[cfg(unix)]
     use crate::materializer::tests_common::{open_hierarchy_cas, resolvable_media_document};
     use crate::materializer::{MaterializeReport, sync_hierarchy};
     use crate::path_component::is_rejected_char;
     use crate::paths::MediaPmPaths;
-    use mediapm_cas::{CasApi, FileSystemCas};
+    #[cfg(unix)]
+    use mediapm_cas::CasApi;
+    use mediapm_cas::FileSystemCas;
     use mediapm_conductor::{ConductorState, NickelDocument};
 
     /// Hierarchy path of the single entry [`a_dangling_symlink_output_is_replaced_by_the_next_run`]

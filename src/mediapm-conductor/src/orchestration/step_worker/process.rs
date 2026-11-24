@@ -521,13 +521,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(unix),
-        expect(
-            dead_code,
-            reason = "both users drive a shell fixture, so the guard is unreferenced on Windows"
-        )
-    )]
     impl Drop for ExecutableTimeoutOverride {
         fn drop(&mut self) {
             // Safety: mirrors `set`; restores the pre-test env state.
