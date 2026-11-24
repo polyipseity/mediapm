@@ -7,10 +7,9 @@
 //! it as before. These tests pin all three against one payload, and pin the
 //! refusal that keeps a document with no usable root from running a tool.
 //!
-//! A test that runs a tool drives a `#!/bin/sh` fixture, so it compiles out on
-//! Windows. The step that decides what the sandbox holds is not platform
-//! specific, and `payload_staging_prepares_the_sandbox_on_every_platform`
-//! covers it there.
+//! Every test drives the same stub binary the rest of the test support uses, so
+//! the run-based tests execute on every platform rather than compiling out behind
+//! unix-only gates.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -31,13 +30,6 @@ use crate::state::ConductorState;
 use super::executor::execute_step;
 use super::sandbox::prepare_tool_payload;
 
-/// The tool body that records its whole argument vector instead of one argument.
-///
-/// A companion path is an *argument*, so a fixture that asserted only one
-/// argument could not tell where the others resolved.
-const ARGV_SCRIPT: &str =
-    "#!/bin/sh\nmkdir -p downloads\nprintf '%s\\n' \"$@\" > downloads/out.txt\n";
-
 /// The archive companion's directory key, which the provisioner unpacks.
 fn companion_dir_key() -> String {
     format!("deps/ffmpeg/{}/", host_platform_dir())
@@ -52,10 +44,6 @@ fn companion_file_path_key() -> String {
 fn companion_binary_key() -> String {
     format!("deps/deno/{}/deno", host_platform_dir())
 }
-
-/// The tool body every fixture runs: it writes its argument into a
-/// sandbox-relative path, which is what the capture phase reads.
-const SCRIPT: &str = "#!/bin/sh\nmkdir -p downloads\nprintf '%s' \"$1\" > downloads/out.txt\n";
 
 /// The argument the script echoes, so every strategy can be compared by bytes.
 const ARGUMENT: &str = "payload-bytes";
@@ -75,9 +63,27 @@ fn host_platform_dir() -> &'static str {
     }
 }
 
-/// The content-map key of the fixture script.
+/// The content-map key of the fixture tool.
+///
+/// The key carries the host's own executable suffix because the staged file is
+/// the stub binary itself: a `.exe` on Windows, a bare name elsewhere. A real
+/// provisioned payload is shaped the same way.
 fn script_key() -> String {
-    format!("{}/tool.sh", host_platform_dir())
+    format!("{}/tool{}", host_platform_dir(), std::env::consts::EXE_SUFFIX)
+}
+
+/// The command parts that make the fixture tool write its arguments to
+/// `downloads/out.txt`.
+///
+/// The stub selects its mode from these flags rather than from a shell, which is
+/// the whole reason these fixtures no longer need unix-only gates.
+fn echo_command_parts() -> Vec<String> {
+    vec![
+        "--mode".to_string(),
+        "echo".to_string(),
+        "--output".to_string(),
+        "downloads/out.txt".to_string(),
+    ]
 }
 
 /// The content-map key of the inlined companion script.
@@ -86,13 +92,6 @@ fn script_key() -> String {
 /// requester's content map under `deps/<tool id>/`, keeping the companion's own
 /// key, so this is the shape a document carries when the executable it names is
 /// a companion rather than the tool's own binary.
-#[cfg_attr(
-    not(unix),
-    expect(
-        dead_code,
-        reason = "only the unix tests drive a shell fixture, so this helper is unreferenced there"
-    )
-)]
 fn companion_key() -> String {
     format!("deps/companion/{}", script_key())
 }
@@ -107,13 +106,6 @@ struct Fixture {
     ///
     /// Only the execution-based tests read it, and those drive a `#!/bin/sh`
     /// fixture, so they compile out on Windows.
-    #[cfg_attr(
-        not(unix),
-        expect(
-            dead_code,
-            reason = "only the unix tests read this field; the ungated tests leave it unread"
-        )
-    )]
     runtime_root: PathBuf,
     /// Directory the provisioner would have filled.
     payload_root: PathBuf,
@@ -159,19 +151,24 @@ impl Fixture {
     }
 }
 
-/// Writes the fixture script under its own key, executable where the platform
+/// Writes the fixture tool under its own key, executable where the platform
 /// has a mode.
 fn write_script(payload_root: &Path) -> PathBuf {
     write_script_at(payload_root, &script_key())
 }
 
-/// Writes the fixture script at `key` under `payload_root`.
+/// Writes the fixture tool under `key` as a copy of the stub binary.
 ///
-/// A companion lives under a `deps/`-prefixed key, so the key is a parameter
-/// rather than a constant: the writer has to be able to produce the whole tree
-/// a reconciled payload root holds.
+/// A copy rather than a link, because a test asserts what the payload root holds
+/// and a shared inode would let a staging bug corrupt the running stub.
 fn write_script_at(payload_root: &Path, key: &str) -> PathBuf {
-    write_payload_file(payload_root, key, SCRIPT.as_bytes(), true)
+    write_payload_file(
+        payload_root,
+        key,
+        &std::fs::read(mediapm_test_support::stub_tool_path())
+            .expect("the stub binary is readable to build a fixture from"),
+        true,
+    )
 }
 
 /// Writes `bytes` at `key` under `payload_root`, executable where the platform
@@ -211,7 +208,12 @@ fn script_tool(
         max_retries: 0,
         inputs: BTreeMap::new(),
         default_inputs: BTreeMap::new(),
-        command_parts: vec![script_key(), ARGUMENT.to_string()],
+        command_parts: {
+            let mut parts = vec![script_key()];
+            parts.extend(echo_command_parts());
+            parts.push(ARGUMENT.to_string());
+            parts
+        },
         success_codes: vec![0],
         execution_env_vars: BTreeMap::new(),
         literal_env_vars: BTreeMap::new(),
@@ -237,13 +239,6 @@ fn script_tool(
 /// `variant` distinguishes each run's logical tool identity so that runs
 /// comparing different staging topologies produce independent instance keys and
 /// sandboxes.
-#[cfg_attr(
-    not(unix),
-    expect(
-        dead_code,
-        reason = "only the unix tests drive a shell fixture, so this helper is unreferenced there"
-    )
-)]
 async fn run_step(
     fixture: &Fixture,
     mut tool: UnifiedToolSpec,
@@ -290,23 +285,9 @@ async fn run_step(
 
 /// Reads the file the fixture script wrote, which is the run's observable
 /// result under every strategy.
-#[cfg_attr(
-    not(unix),
-    expect(
-        dead_code,
-        reason = "only the unix tests drive a shell fixture, so this helper is unreferenced there"
-    )
-)]
 fn written_output(sandbox: &Path) -> Vec<u8> {
     std::fs::read(sandbox.join("downloads").join("out.txt"))
         .expect("the script writes its argument into the sandbox")
-}
-
-/// The inode a path resolves to, where the platform has one.
-#[cfg(unix)]
-fn inode(path: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).expect("path metadata").ino()
 }
 
 /// `in_place` runs the tool where the provisioner put it.
@@ -314,7 +295,6 @@ fn inode(path: &Path) -> u64 {
 /// The sandbox holds nothing from the content map — that is the whole point of
 /// the strategy — while the command still resolves, so a step's inputs and
 /// outputs keep their sandbox-relative names.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_step_executes_the_provisioned_payload() {
     let fixture = Fixture::with_script().await;
@@ -344,7 +324,6 @@ async fn a_step_executes_the_provisioned_payload() {
 /// The tool's working directory is the sandbox, not the payload root: a tool
 /// that wrote `downloads/x` next to its own binary would put run output inside
 /// the provisioned tree, where the next step would find it.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_relative_output_still_lands_in_the_sandbox() {
     let fixture = Fixture::with_script().await;
@@ -367,7 +346,6 @@ async fn a_relative_output_still_lands_in_the_sandbox() {
 /// payload the provisioner handed the step — which no command ever read as an
 /// input. What a selector stages is the fact the record exists for: the
 /// destination in the sandbox and the object whose bytes were written there.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_step_records_the_inputs_its_command_stages() {
     let fixture = Fixture::with_script().await;
@@ -383,11 +361,11 @@ async fn a_step_records_the_inputs_its_command_stages() {
         .await
         .expect("import the second input");
     let mut tool = script_tool(content_map, &fixture.payload_root, PayloadStaging::InPlace);
-    tool.command_parts = vec![
-        script_key(),
-        format!("${{external_data.{first_hash}:file(inputs/first.bin)}}"),
-        format!("${{external_data.{second_hash}:file(inputs/second.bin)}}"),
-    ];
+    let mut command_parts = vec![script_key()];
+    command_parts.extend(echo_command_parts());
+    command_parts.push(format!("${{external_data.{first_hash}:file(inputs/first.bin)}}"));
+    command_parts.push(format!("${{external_data.{second_hash}:file(inputs/second.bin)}}"));
+    tool.command_parts = command_parts;
 
     let (bundle, _sandbox) =
         run_step(&fixture, tool, "staged-input-step", "staged-input").await.expect("the step runs");
@@ -403,11 +381,10 @@ async fn a_step_records_the_inputs_its_command_stages() {
     );
 }
 
-/// A hard-linked payload shares the provisioned inode instead of copying bytes.
+/// A hard-linked payload is the same file as the provisioned one.
 ///
 /// The strategy exists to keep the payload out of the CAS-read path per step:
 /// a link costs an entry, a copy costs the bytes.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_hard_linked_payload_shares_the_payload_inode() {
     let fixture = Fixture::with_script().await;
@@ -417,11 +394,20 @@ async fn a_hard_linked_payload_shares_the_payload_inode() {
     let (_bundle, sandbox) =
         run_step(&fixture, tool, "hard-link-step", "hard-link").await.expect("the step runs");
     let staged = sandbox.join(script_key());
+    let provisioned = fixture.payload_root.join(script_key());
+    let marker = b"hardlink identity marker";
+    std::fs::write(&staged, marker).expect("the staged payload is writable");
     assert_eq!(
-        inode(&staged),
-        inode(&fixture.payload_root.join(script_key())),
-        "a hard-linked payload has to share the provisioned inode",
+        std::fs::read(&provisioned).expect("the provisioned payload is readable"),
+        marker,
+        "a hard-linked payload is one file under two names, so a write through the staged path \
+         has to be visible through the provisioned one",
     );
+    std::fs::write(
+        &staged,
+        std::fs::read(mediapm_test_support::stub_tool_path()).expect("the stub is readable"),
+    )
+    .expect("the payload is restored");
     assert_eq!(written_output(&sandbox), ARGUMENT.as_bytes());
 }
 
@@ -430,32 +416,27 @@ async fn a_hard_linked_payload_shares_the_payload_inode() {
 /// The content map names a directory key, which the `copy` strategy unpacks into
 /// the sandbox on every step. Under `hard_link` the provisioner's unpacked tree
 /// is linked, so a second step extracts nothing and both sandboxes hold the same
-/// inode.
-#[cfg(unix)]
+/// file.
 #[tokio::test]
 async fn an_archive_payload_is_unpacked_once() {
     let tmp = mediapm_utils::temp::artifact_dir().expect("artifact dir");
     let runtime_root = tmp.path().join("runtime");
     let payload_root = tmp.path().join("payload");
     let cas = InMemoryCas::new();
+    let stub_bytes = std::fs::read(mediapm_test_support::stub_tool_path())
+        .expect("the stub binary is readable to build a fixture from");
 
     // What the provisioner leaves behind for a directory key: the archive is
     // unpacked under the key's relative directory.
-    let archive = make_zip(&[("tool.sh", SCRIPT.as_bytes())]);
+    let archive =
+        make_zip(&[(&format!("tool{}", std::env::consts::EXE_SUFFIX), stub_bytes.as_slice())]);
     let archive_hash = cas.put(Bytes::from(archive.clone())).await.expect("import the archive");
     mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
         &archive,
         &payload_root.join(host_platform_dir()),
     )
     .expect("unpack the payload the provisioner would have unpacked");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let unpacked = payload_root.join(script_key());
-        let mut permissions = std::fs::metadata(&unpacked).expect("metadata").permissions();
-        permissions.set_mode(permissions.mode() | 0o700);
-        std::fs::set_permissions(&unpacked, permissions).expect("make the script executable");
-    }
+    write_payload_file(&payload_root, &script_key(), &stub_bytes, true);
     let fixture = Fixture { tmp, runtime_root, payload_root, cas };
     let dir_key = format!("{}/", host_platform_dir());
     let content_map = BTreeMap::from([(dir_key, archive_hash.to_hex())]);
@@ -466,11 +447,16 @@ async fn an_archive_payload_is_unpacked_once() {
         let (_bundle, sandbox) =
             run_step(&fixture, tool, step_id, step_id).await.expect("the step runs");
         let staged = sandbox.join(script_key());
+        let provisioned = fixture.payload_root.join(script_key());
+        let marker = b"hardlink identity marker";
+        std::fs::write(&staged, marker).expect("the staged payload is writable");
         assert_eq!(
-            inode(&staged),
-            inode(&fixture.payload_root.join(script_key())),
-            "step {step_id} has to link the unpacked payload rather than extract it again",
+            std::fs::read(&provisioned).expect("the provisioned payload is readable"),
+            marker,
+            "step {step_id} has to link the unpacked payload rather than extract it again, so a \
+             write through the staged path has to be visible through the provisioned one",
         );
+        std::fs::write(&staged, &stub_bytes).expect("the payload is restored");
         assert_eq!(written_output(&sandbox), ARGUMENT.as_bytes());
     }
 
@@ -485,21 +471,14 @@ async fn an_archive_payload_is_unpacked_once() {
 /// This is the test that keeps `copy` honest: it stays in the enum, so a
 /// strategy that misbehaves on a platform still has a covered alternative, and
 /// every alternative has to produce what `copy` produced.
-///
-/// The rows compare execution, so they run on unix only; the staging step itself
-/// is covered on every platform by
-/// `payload_staging_prepares_the_sandbox_on_every_platform`.
-#[cfg(unix)]
 #[tokio::test]
 async fn payload_staging_matrix() {
-    let payload = {
-        let fixture = Fixture::with_script().await;
-        let content_map = fixture.content_map().await;
-        // Warm the CAS with the same bytes every strategy will see.
-        fixture.cas.put(Bytes::from_static(SCRIPT.as_bytes())).await.expect("import script");
-        (fixture, content_map)
-    };
-    let (fixture, content_map) = payload;
+    let fixture = Fixture::with_script().await;
+    let content_map = fixture.content_map().await;
+    let stub_bytes = std::fs::read(mediapm_test_support::stub_tool_path())
+        .expect("the stub binary is readable to build a fixture from");
+    // Warm the CAS with the same bytes every strategy will see.
+    fixture.cas.put(Bytes::from(stub_bytes.clone())).await.expect("import script");
 
     let mut produced: Vec<(PayloadStaging, Vec<u8>)> = Vec::new();
     for (index, staging) in
@@ -517,21 +496,32 @@ async fn payload_staging_matrix() {
             PayloadStaging::InPlace => {
                 assert!(!staged.exists(), "in_place writes nothing into the sandbox for the tool");
             }
-            PayloadStaging::HardLink => assert_eq!(
-                inode(&staged),
-                inode(&fixture.payload_root.join(script_key())),
-                "hard_link shares the provisioned inode",
-            ),
+            PayloadStaging::HardLink => {
+                let provisioned = fixture.payload_root.join(script_key());
+                let marker = b"hardlink identity marker";
+                std::fs::write(&staged, marker).expect("the staged payload is writable");
+                assert_eq!(
+                    std::fs::read(&provisioned).expect("the provisioned payload is readable"),
+                    marker,
+                    "hard_link shares the provisioned file, so a write through the staged path \
+                     has to be visible through the provisioned one",
+                );
+                std::fs::write(&staged, &stub_bytes).expect("the payload is restored");
+            }
             PayloadStaging::Copy => {
                 assert_eq!(
                     std::fs::read(&staged).expect("the copy is readable"),
-                    SCRIPT.as_bytes(),
+                    stub_bytes.as_slice(),
                     "copy writes the content map into the sandbox",
                 );
+                let provisioned = fixture.payload_root.join(script_key());
+                let marker = b"copy independence marker";
+                std::fs::write(&staged, marker).expect("the staged copy is writable");
                 assert_ne!(
-                    inode(&staged),
-                    inode(&fixture.payload_root.join(script_key())),
-                    "copy must not share the provisioned inode, or it is not the copy path",
+                    std::fs::read(&provisioned).expect("the provisioned payload is readable"),
+                    marker,
+                    "copy must not share the provisioned file, so a write through the staged \
+                     path must not reach the provisioned one",
                 );
             }
         }
@@ -561,7 +551,6 @@ async fn payload_staging_matrix() {
 /// that resolved only the tool's own entries would leave the companion
 /// unreachable, and the step would fail with "not found" for a payload the
 /// document had declared.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_deps_prefixed_payload_stages_under_every_strategy() {
     let fixture = Fixture::with_script().await;
@@ -583,21 +572,39 @@ async fn a_deps_prefixed_payload_stages_under_every_strategy() {
                 !sandbox.join("deps").exists(),
                 "an in-place step runs the companion where the provisioner put it",
             ),
-            PayloadStaging::HardLink => assert_eq!(
-                inode(&staged),
-                inode(&fixture.payload_root.join(companion_key())),
-                "hard_link links the companion tree as well as the tool's own",
-            ),
+            PayloadStaging::HardLink => {
+                let provisioned = fixture.payload_root.join(companion_key());
+                let marker = b"hardlink identity marker";
+                std::fs::write(&staged, marker).expect("the staged payload is writable");
+                assert_eq!(
+                    std::fs::read(&provisioned).expect("the provisioned payload is readable"),
+                    marker,
+                    "a hard-linked payload is one file under two names, so a write through the \
+                     staged path has to be visible through the provisioned one",
+                );
+                std::fs::write(
+                    &staged,
+                    std::fs::read(mediapm_test_support::stub_tool_path())
+                        .expect("the stub is readable"),
+                )
+                .expect("the payload is restored");
+            }
             PayloadStaging::Copy => {
+                let stub = std::fs::read(mediapm_test_support::stub_tool_path())
+                    .expect("the stub is readable");
                 assert_eq!(
                     std::fs::read(&staged).expect("the copied companion is readable"),
-                    SCRIPT.as_bytes(),
+                    stub,
                     "copy writes the companion into the sandbox",
                 );
+                let provisioned = fixture.payload_root.join(companion_key());
+                let marker = b"copy independence marker";
+                std::fs::write(&staged, marker).expect("the staged copy is writable");
                 assert_ne!(
-                    inode(&staged),
-                    inode(&fixture.payload_root.join(companion_key())),
-                    "copy must not share the companion's inode, or it is not the copy path",
+                    std::fs::read(&provisioned).expect("the provisioned payload is readable"),
+                    marker,
+                    "a copied payload is an independent file, so a write through the staged path \
+                     must not reach the provisioned one",
                 );
             }
         }
@@ -615,11 +622,10 @@ async fn a_deps_prefixed_payload_stages_under_every_strategy() {
     }
 }
 
-/// Reads the argument vector the fixture script recorded.
+/// Reads the argument vector the fixture tool recorded.
 ///
-/// The argument-writing script puts one argument per line, so the comparison can
+/// The argument-writing tool puts one argument per line, so the comparison can
 /// say which argument resolved where instead of only that some argument did.
-#[cfg(unix)]
 fn recorded_arguments(sandbox: &Path) -> Vec<String> {
     let text = String::from_utf8(written_output(sandbox))
         .expect("the fixture script writes its arguments as text");
@@ -645,7 +651,9 @@ async fn fixture_with_companions() -> (Fixture, BTreeMap<String, String>) {
     let payload_root = tmp.path().join("payload");
     let cas = InMemoryCas::new();
 
-    write_payload_file(&payload_root, &script_key(), ARGV_SCRIPT.as_bytes(), true);
+    let stub_bytes = std::fs::read(mediapm_test_support::stub_tool_path())
+        .expect("the stub binary is readable to build a fixture from");
+    write_payload_file(&payload_root, &script_key(), &stub_bytes, true);
     // The provisioner unpacks an archive source under its directory key, so the
     // path a flag names inside it exists before any step runs.
     let archive = make_zip(&[("ffmpeg", b"companion-binary")]);
@@ -656,8 +664,7 @@ async fn fixture_with_companions() -> (Fixture, BTreeMap<String, String>) {
     let deno_hash = cas.put(Bytes::from_static(deno_bytes)).await.expect("import the deno bytes");
     write_payload_file(&payload_root, &companion_binary_key(), deno_bytes, true);
 
-    let tool_hash =
-        cas.put(Bytes::from_static(ARGV_SCRIPT.as_bytes())).await.expect("import the tool body");
+    let tool_hash = cas.put(Bytes::from(stub_bytes)).await.expect("import the tool body");
     let content_map = BTreeMap::from([
         (script_key(), tool_hash.to_hex()),
         (companion_dir_key(), archive_hash.to_hex()),
@@ -674,15 +681,17 @@ fn companion_argument_tool(
     staging: PayloadStaging,
 ) -> UnifiedToolSpec {
     let mut tool = script_tool(content_map, payload_root, staging);
-    tool.command_parts = vec![
-        script_key(),
+    let mut parts = vec![script_key()];
+    parts.extend(echo_command_parts());
+    parts.extend([
         "--ffmpeg-location".to_string(),
         companion_file_path_key(),
         "--js-runtimes".to_string(),
         format!("deno:{}", companion_binary_key()),
         "--marker".to_string(),
         "tail".to_string(),
-    ];
+    ]);
+    tool.command_parts = parts;
     tool
 }
 
@@ -692,7 +701,6 @@ fn companion_argument_tool(
 /// no longer holds the `deps/` tree it once did. A step that left those values
 /// relative would hand the tool a path that does not exist, and the failure would
 /// report itself as the tool's rather than as the document's.
-#[cfg(unix)]
 #[tokio::test]
 async fn an_in_place_step_names_its_companions_absolutely() {
     let (fixture, content_map) = fixture_with_companions().await;
@@ -730,7 +738,6 @@ async fn an_in_place_step_names_its_companions_absolutely() {
 /// The tree is in the sandbox under exactly those names, so rewriting them would
 /// point the tool at the provisioned tree instead of the staged one — and would
 /// make the two strategies indistinguishable in the recorded arguments.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_hard_link_step_keeps_its_companion_arguments_relative() {
     let (fixture, content_map) = fixture_with_companions().await;
@@ -871,6 +878,8 @@ async fn a_drive_relative_path_is_not_qualified() {
 async fn payload_staging_prepares_the_sandbox_on_every_platform() {
     let fixture = Fixture::with_script().await;
     let content_map = fixture.content_map().await;
+    let stub_bytes = std::fs::read(mediapm_test_support::stub_tool_path())
+        .expect("the stub binary is readable to build a fixture from");
 
     for staging in [PayloadStaging::InPlace, PayloadStaging::HardLink, PayloadStaging::Copy] {
         let tool = script_tool(content_map.clone(), &fixture.payload_root, staging);
@@ -887,12 +896,12 @@ async fn payload_staging_prepares_the_sandbox_on_every_platform() {
             ),
             PayloadStaging::HardLink => assert_eq!(
                 std::fs::read(&staged).expect("the linked payload is readable"),
-                SCRIPT.as_bytes(),
+                stub_bytes.as_slice(),
                 "hard_link stages the payload bytes into the sandbox",
             ),
             PayloadStaging::Copy => assert_eq!(
                 std::fs::read(&staged).expect("the copied payload is readable"),
-                SCRIPT.as_bytes(),
+                stub_bytes.as_slice(),
                 "copy stages the payload bytes into the sandbox",
             ),
         }
@@ -905,7 +914,6 @@ async fn payload_staging_prepares_the_sandbox_on_every_platform() {
 /// The check runs before the step, so the failure says which tool and which path
 /// the document got wrong; a run that fell through to the command would report
 /// "not found" and send the reader to the tool instead of to the document.
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_a_missing_payload_root_fails_before_execution() {
     let fixture = Fixture::with_script().await;
@@ -962,7 +970,6 @@ async fn strict_a_missing_payload_root_fails_before_execution() {
 /// Executing whatever happens to be there is the failure this refuses: the tool
 /// would run with the wrong tree behind it, and the run would report a tool
 /// defect rather than a document one.
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_an_incomplete_payload_root_fails_before_execution() {
     let fixture = Fixture::with_script().await;
@@ -999,17 +1006,15 @@ async fn strict_an_incomplete_payload_root_fails_before_execution() {
 /// command names: a companion the root lacks is a payload the document declared
 /// and the disk does not hold, and finding that out before the step runs is what
 /// keeps the failure attributable to the document.
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_a_missing_deps_entry_fails_before_execution() {
     let fixture = Fixture::with_script().await;
     // The companion's bytes are in the CAS, as a reconciled map would have them,
     // while the payload root holds only the tool's own entry.
-    let companion_hash = fixture
-        .cas
-        .put(Bytes::from_static(SCRIPT.as_bytes()))
-        .await
-        .expect("import the companion script");
+    let stub_bytes = std::fs::read(mediapm_test_support::stub_tool_path())
+        .expect("the stub binary is readable to build a fixture from");
+    let companion_hash =
+        fixture.cas.put(Bytes::from(stub_bytes)).await.expect("import the companion script");
     let mut content_map = fixture.content_map().await;
     content_map.insert(companion_key(), companion_hash.to_hex());
     let expected_path = fixture.payload_root.join(companion_key());
