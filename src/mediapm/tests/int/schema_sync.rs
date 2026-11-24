@@ -21,6 +21,14 @@ use std::collections::BTreeMap;
 use mediapm::MediaPmDocument;
 use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec, decode_document, encode_document};
 
+/// Normalizes Nickel source for line-ending-independent matching.
+///
+/// `include_str!` preserves the checked-out line endings, so CRLF Windows
+/// checkouts embed `\r\n` in schema text while test literals use `\n`.
+fn ncl(source: &str) -> String {
+    source.replace("\r\n", "\n")
+}
+
 /// Extracts the body of the Nickel record contract `let <contract> = { ... }`.
 ///
 /// Returns `None` when the contract is absent, or when its closing brace is
@@ -145,7 +153,7 @@ fn parity_mediapm_document_serialization_invariants() {
 /// contracts and omits removed ones.
 #[test]
 fn parity_v1_nickel_schema_structure() {
-    let schema = include_str!("../../src/config/versions/v1.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v1.ncl"));
 
     // --- MUST define ToolRequirementV1 contract ---
     assert!(
@@ -153,13 +161,13 @@ fn parity_v1_nickel_schema_structure() {
         "v1.ncl must define ToolRequirementV1 contract for the top-level tools field"
     );
     assert!(
-        nickel_record_body(schema, "ToolRequirementV1").is_some_and(
+        nickel_record_body(&schema, "ToolRequirementV1").is_some_and(
             |body| body.contains("version_spec\n    | ConfigVersionSpecV1\n    | optional,")
         ),
         "ToolRequirementV1 must have version_spec field typed ConfigVersionSpecV1"
     );
     assert!(
-        nickel_record_body(schema, "ToolRequirementV1")
+        nickel_record_body(&schema, "ToolRequirementV1")
             .is_some_and(|body| body.contains("dependencies | {")),
         "ToolRequirementV1 must have dependencies field"
     );
@@ -197,7 +205,7 @@ fn parity_v1_nickel_schema_structure() {
 /// contracts and omits the dropped state surface.
 #[test]
 fn parity_v2_nickel_schema_structure() {
-    let schema = include_str!("../../src/config/versions/v2.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v2.ncl"));
 
     // --- MUST define ToolRequirementV2 contract ---
     assert!(
@@ -205,13 +213,13 @@ fn parity_v2_nickel_schema_structure() {
         "v2.ncl must define ToolRequirementV2 contract for the top-level tools field"
     );
     assert!(
-        nickel_record_body(schema, "ToolRequirementV2").is_some_and(
+        nickel_record_body(&schema, "ToolRequirementV2").is_some_and(
             |body| body.contains("version_spec\n    | ConfigVersionSpecV2\n    | optional,")
         ),
         "ToolRequirementV2 must have version_spec field typed ConfigVersionSpecV2"
     );
     assert!(
-        nickel_record_body(schema, "ToolRequirementV2")
+        nickel_record_body(&schema, "ToolRequirementV2")
             .is_some_and(|body| body.contains("dependencies | {")),
         "ToolRequirementV2 must have dependencies field"
     );
@@ -256,7 +264,7 @@ fn parity_v2_nickel_schema_structure() {
 /// validation, and a contract field with no Rust carrier would do the reverse.
 #[test]
 fn parity_v3_nickel_schema_structure() {
-    let schema = include_str!("../../src/config/versions/v3.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v3.ncl"));
 
     // --- MUST define ToolRequirementV3 contract ---
     assert!(
@@ -264,7 +272,7 @@ fn parity_v3_nickel_schema_structure() {
         "v3.ncl must define ToolRequirementV3 contract for the top-level tools field"
     );
     assert!(
-        nickel_record_body(schema, "ToolRequirementV3").is_some_and(
+        nickel_record_body(&schema, "ToolRequirementV3").is_some_and(
             |body| body.contains("payload_staging | ConfigPayloadStagingV3 | optional,")
         ),
         "ToolRequirementV3 must carry the per-tool staging choice as an optional field"
@@ -272,7 +280,7 @@ fn parity_v3_nickel_schema_structure() {
 
     // --- MUST scope the per-tool staging field to ToolRequirementV3 ---
     assert!(
-        nickel_record_body(schema, "ToolRequirementV3").is_some_and(
+        nickel_record_body(&schema, "ToolRequirementV3").is_some_and(
             |body| body.contains("version_spec\n    | ConfigVersionSpecV3\n    | optional,")
         ),
         "ToolRequirementV3 must have version_spec field typed ConfigVersionSpecV3"
@@ -280,7 +288,7 @@ fn parity_v3_nickel_schema_structure() {
 
     // --- MUST declare the library-wide staging default on the materialization record ---
     assert!(
-        nickel_record_body(schema, "RuntimeMaterializationConfigV3")
+        nickel_record_body(&schema, "RuntimeMaterializationConfigV3")
             .is_some_and(|body| body.contains("payload_staging | PayloadStagingV3 | optional,")),
         "RuntimeMaterializationConfigV3 must carry the library-wide staging default"
     );
@@ -325,26 +333,26 @@ fn parity_v3_nickel_schema_structure() {
 /// the decoder, and a contract field with no Rust carrier would do the reverse.
 #[test]
 fn parity_v4_nickel_schema_structure() {
-    let schema = include_str!("../../src/config/versions/v4.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v4.ncl"));
 
     assert!(
         schema.contains("let ToolRequirementV4 = {"),
         "v4.ncl must define ToolRequirementV4 contract for the top-level tools field"
     );
     assert!(
-        nickel_record_body(schema, "ToolRequirementV4").is_some_and(
+        nickel_record_body(&schema, "ToolRequirementV4").is_some_and(
             |body| body.contains("payload_staging | ConfigPayloadStagingV4 | optional,")
         ),
         "ToolRequirementV4 must carry the per-tool staging choice as an optional field"
     );
     assert!(
-        nickel_record_body(schema, "ToolRequirementV4").is_some_and(
+        nickel_record_body(&schema, "ToolRequirementV4").is_some_and(
             |body| body.contains("version_spec\n    | ConfigVersionSpecV4\n    | optional,")
         ),
         "ToolRequirementV4 must have version_spec field typed ConfigVersionSpecV4"
     );
     assert!(
-        nickel_record_body(schema, "RuntimeMaterializationConfigV4")
+        nickel_record_body(&schema, "RuntimeMaterializationConfigV4")
             .is_some_and(|body| body.contains("payload_staging | PayloadStagingV4 | optional,")),
         "RuntimeMaterializationConfigV4 must carry the library-wide staging default"
     );
@@ -385,11 +393,11 @@ fn parity_v4_nickel_schema_structure() {
 /// [`parity_tree_scan_catches_dispatcher_outside_mod_rs`].
 #[test]
 fn parity_rust_side_owns_no_migration_dispatcher() {
-    let v1_ncl = include_str!("../../src/config/versions/v1.ncl");
-    let v2_ncl = include_str!("../../src/config/versions/v2.ncl");
-    let v3_ncl = include_str!("../../src/config/versions/v3.ncl");
-    let v4_ncl = include_str!("../../src/config/versions/v4.ncl");
-    let registry_ncl = include_str!("../../src/config/versions/mod.ncl");
+    let v1_ncl = ncl(include_str!("../../src/config/versions/v1.ncl"));
+    let v2_ncl = ncl(include_str!("../../src/config/versions/v2.ncl"));
+    let v3_ncl = ncl(include_str!("../../src/config/versions/v3.ncl"));
+    let v4_ncl = ncl(include_str!("../../src/config/versions/v4.ncl"));
+    let registry_ncl = ncl(include_str!("../../src/config/versions/mod.ncl"));
 
     // The Nickel registry must remain the dispatcher: it owns the supported
     // set, the current version, and both migration edges.
@@ -442,7 +450,7 @@ fn parity_rust_side_owns_no_migration_dispatcher() {
 /// missing where the file-wide substring still matched.
 #[test]
 fn parity_scoped_lookup_catches_field_removed_from_tool_requirement() {
-    let schema = include_str!("../../src/config/versions/v1.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v1.ncl"));
     let defective =
         schema.replacen("  dependencies | { _ : ConfigVersionSpecV1 } | default = {},\n", "", 1)
             + "\nlet UnrelatedHolderV1 = {\n  dependencies | { _ : String } | default = {},\n}\n";
@@ -567,9 +575,10 @@ fn conductor_source_with_version_line(name: &str, version_line: &str) -> String 
 /// and missing on the other is drift the Rust side would hide.
 #[test]
 fn parity_conductor_tool_version_is_optional_and_non_empty_in_nickel() {
+    let conductor_active_ncl = ncl(CONDUCTOR_ACTIVE_NCL);
     for contract in ["BuiltinToolSpecV5", "ExecutableToolSpecV5"] {
         assert!(
-            nickel_record_body(CONDUCTOR_ACTIVE_NCL, contract)
+            nickel_record_body(&conductor_active_ncl, contract)
                 .is_some_and(|body| { body.contains("version | NonEmptyStringV5 | optional,") }),
             "{contract} must declare `version | NonEmptyStringV5 | optional`"
         );
@@ -582,7 +591,7 @@ fn parity_conductor_tool_version_is_optional_and_non_empty_in_nickel() {
     // `NonEmptyStringV5` is a predicate binding rather than a record, so it needs
     // its own lookup. A `None` here is a failure like it is in `nickel_record_body`,
     // because a missing binding means the constraint is gone.
-    let (_, after_binding) = CONDUCTOR_ACTIVE_NCL
+    let (_, after_binding) = conductor_active_ncl
         .split_once("let NonEmptyStringV5 =")
         .expect("conductor v5.ncl must define NonEmptyStringV5");
     let (predicate, _) = after_binding

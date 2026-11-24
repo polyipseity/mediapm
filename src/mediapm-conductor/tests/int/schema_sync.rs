@@ -7,6 +7,14 @@
 
 use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec};
 
+/// Normalizes Nickel source for line-ending-independent matching.
+///
+/// `include_str!` preserves the checked-out line endings, so CRLF Windows
+/// checkouts embed `\r\n` in schema text while test literals use `\n`.
+fn ncl(source: &str) -> String {
+    source.replace("\r\n", "\n")
+}
+
 /// Validates that the Rust struct serialization shape matches the expected
 /// V2 schema contract invariants.
 #[test]
@@ -51,7 +59,7 @@ fn conductor_document_serialization_invariants() {
 /// contracts and omits removed ones.
 #[test]
 fn v2_nickel_schema_structure() {
-    let schema = include_str!("../../src/config/versions/v2.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v2.ncl"));
 
     // --- runtime MUST be optional ---
     assert!(
@@ -115,7 +123,7 @@ fn v2_nickel_schema_structure() {
 /// the Rust types use.
 #[test]
 fn v3_nickel_schema_structure() {
-    let schema = include_str!("../../src/config/versions/v3.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v3.ncl"));
 
     // --- version marker is required, and it is the one v3 names (S-A2) ---
     assert!(
@@ -153,7 +161,7 @@ fn v3_nickel_schema_structure() {
     assert!(schema.contains("envelope_contract_v3"), "v3.ncl must export envelope_contract_v3");
     assert!(schema.contains("migrate_v2_to_v3"), "v3.ncl must own the v2 → v3 migration");
 
-    let v2 = include_str!("../../src/config/versions/v2.ncl");
+    let v2 = ncl(include_str!("../../src/config/versions/v2.ncl"));
     assert!(
         v2.contains("migrate_v3_to_v2"),
         "v2.ncl must own the v3 → v2 migration, which drops the staging decision"
@@ -164,7 +172,7 @@ fn v3_nickel_schema_structure() {
 /// staging default and keeps the per-tool decision v3 introduced.
 #[test]
 fn v4_nickel_schema_structure() {
-    let schema = include_str!("../../src/config/versions/v4.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v4.ncl"));
 
     // --- version marker is required, and it is the one v4 names (S-A2) ---
     assert!(
@@ -237,7 +245,7 @@ fn v4_nickel_schema_structure() {
     assert!(schema.contains("envelope_contract_v4"), "v4.ncl must export envelope_contract_v4");
     assert!(schema.contains("migrate_v3_to_v4"), "v4.ncl must own the v3 → v4 migration");
 
-    let v3 = include_str!("../../src/config/versions/v3.ncl");
+    let v3 = ncl(include_str!("../../src/config/versions/v3.ncl"));
     assert!(
         v3.contains("migrate_v4_to_v3"),
         "v3.ncl must own the v4 → v3 migration, which drops the document-level default"
@@ -250,7 +258,7 @@ fn v4_nickel_schema_structure() {
 /// shape (top-level `tool_configs`, required `runtime`).
 #[test]
 fn v1_nickel_schema_structure() {
-    let schema = include_str!("../../src/config/versions/v1.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v1.ncl"));
 
     // --- S-B1..S-B3: runtime numeric fields are integer-guarded ---
     for field in [

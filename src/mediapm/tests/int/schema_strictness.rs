@@ -46,6 +46,13 @@ const REALISTIC_V1_DOC: &str = r#"
 }
 "#;
 
+/// Normalizes Nickel source for line-ending-independent matching.
+///
+/// `include_str!` preserves the checked-out line endings, so CRLF Windows
+/// checkouts embed `\r\n` in schema text while test literals use `\n`.
+fn ncl(source: &str) -> String {
+    source.replace("\r\n", "\n")
+}
 fn expect_rejected(contract: &str, source: &str) {
     let result = apply_v1_contract(contract, source);
     assert!(
@@ -371,7 +378,7 @@ fn strict_mod_ncl_version_contract_rejects_float() {
 /// S-C8: `mod.ncl` exports the registry surface and unversioned aliases.
 #[test]
 fn parity_mod_ncl_exports_registry_surface() {
-    let mod_source = include_str!("../../src/config/versions/mod.ncl");
+    let mod_source = ncl(include_str!("../../src/config/versions/mod.ncl"));
     assert!(mod_source.contains("current_version = "), "mod.ncl must export current_version");
     assert!(
         mod_source.contains("supported_versions = [1, 2, 3, 4, 5]"),
@@ -403,7 +410,7 @@ fn parity_mod_ncl_exports_registry_surface() {
 /// S-C7: `v1.ncl` exports the version-locked validator and envelope contract.
 #[test]
 fn parity_v1_ncl_exports_validator_and_envelope() {
-    let schema = include_str!("../../src/config/versions/v1.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v1.ncl"));
     assert!(
         schema.contains("validate_document_v1 = fun document => document | _media_pm_document_v1"),
         "v1.ncl must export validate_document_v1"
@@ -421,7 +428,7 @@ fn parity_v1_ncl_exports_validator_and_envelope() {
 /// The v2 module exports the version-locked validator and envelope contract.
 #[test]
 fn parity_v2_ncl_exports_validator_and_envelope() {
-    let schema = include_str!("../../src/config/versions/v2.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v2.ncl"));
     assert!(
         schema.contains("validate_document_v2 = fun document => document | _media_pm_document_v2"),
         "v2.ncl must export validate_document_v2"
@@ -438,7 +445,7 @@ fn parity_v2_ncl_exports_validator_and_envelope() {
 /// `envelope_contract_v2`, `migrate_v1_to_v2`).
 #[test]
 fn strict_v2_no_v1_names() {
-    let schema = include_str!("../../src/config/versions/v2.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v2.ncl"));
     for v1_name in [
         "MediaPmDocumentV1",
         "MediaSourceSpecV1",
@@ -469,7 +476,7 @@ fn strict_v2_no_v1_names() {
 /// config surface.
 #[test]
 fn strict_v2_media_pm_state_not_exported() {
-    let schema = include_str!("../../src/config/versions/v2.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v2.ncl"));
     assert!(
         !schema.contains("MediaPmStateV"),
         "v2.ncl must not define or reference any MediaPmStateV1/V2 contract"
@@ -515,7 +522,7 @@ fn strict_v2_rejects_unknown_top_level_field() {
 /// plus the edge INTO v3.
 #[test]
 fn parity_v3_ncl_exports_validator_and_envelope() {
-    let schema = include_str!("../../src/config/versions/v3.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v3.ncl"));
     assert!(
         schema.contains("validate_document_v3 = fun document => document | _media_pm_document_v3"),
         "v3.ncl must export validate_document_v3"
@@ -539,7 +546,7 @@ fn parity_v3_ncl_exports_validator_and_envelope() {
 /// through the v3 module.
 #[test]
 fn strict_v3_no_v1_or_v2_names() {
-    let schema = include_str!("../../src/config/versions/v3.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v3.ncl"));
     for older_name in [
         "MediaPmDocumentV1",
         "MediaRuntimeStorageV1",
@@ -1084,15 +1091,15 @@ fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
     mediapm::export_config_contracts(Some(&export_dir), &conductor_dir).expect("export contracts");
 
     let mediapm_expected = [
-        ("mod.ncl", include_str!("../../src/config/versions/mod.ncl")),
-        ("v1.ncl", include_str!("../../src/config/versions/v1.ncl")),
-        ("v2.ncl", include_str!("../../src/config/versions/v2.ncl")),
-        ("v3.ncl", include_str!("../../src/config/versions/v3.ncl")),
-        ("v4.ncl", include_str!("../../src/config/versions/v4.ncl")),
+        ("mod.ncl", ncl(include_str!("../../src/config/versions/mod.ncl"))),
+        ("v1.ncl", ncl(include_str!("../../src/config/versions/v1.ncl"))),
+        ("v2.ncl", ncl(include_str!("../../src/config/versions/v2.ncl"))),
+        ("v3.ncl", ncl(include_str!("../../src/config/versions/v3.ncl"))),
+        ("v4.ncl", ncl(include_str!("../../src/config/versions/v4.ncl"))),
     ];
     for (name, source) in mediapm_expected {
-        let written = std::fs::read_to_string(export_dir.join(name))
-            .unwrap_or_else(|error| panic!("read exported {name}: {error}"));
+        let written = ncl(&std::fs::read_to_string(export_dir.join(name))
+            .unwrap_or_else(|error| panic!("read exported {name}: {error}")));
         assert_eq!(written, source, "exported mediapm {name} must be the evaluated source");
         assert!(
             source.contains('{'),
@@ -1101,15 +1108,15 @@ fn strict_exported_contracts_are_the_sources_the_runtime_evaluates() {
     }
 
     let conductor_expected = [
-        ("mod.ncl", include_str!("../../../mediapm-conductor/src/config/versions/mod.ncl")),
-        ("v1.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v1.ncl")),
-        ("v2.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v2.ncl")),
-        ("v3.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v3.ncl")),
-        ("v4.ncl", include_str!("../../../mediapm-conductor/src/config/versions/v4.ncl")),
+        ("mod.ncl", ncl(include_str!("../../../mediapm-conductor/src/config/versions/mod.ncl"))),
+        ("v1.ncl", ncl(include_str!("../../../mediapm-conductor/src/config/versions/v1.ncl"))),
+        ("v2.ncl", ncl(include_str!("../../../mediapm-conductor/src/config/versions/v2.ncl"))),
+        ("v3.ncl", ncl(include_str!("../../../mediapm-conductor/src/config/versions/v3.ncl"))),
+        ("v4.ncl", ncl(include_str!("../../../mediapm-conductor/src/config/versions/v4.ncl"))),
     ];
     for (name, source) in conductor_expected {
-        let written = std::fs::read_to_string(conductor_dir.join(name))
-            .unwrap_or_else(|error| panic!("read exported {name}: {error}"));
+        let written = ncl(&std::fs::read_to_string(conductor_dir.join(name))
+            .unwrap_or_else(|error| panic!("read exported {name}: {error}")));
         assert_eq!(written, source, "exported conductor {name} must be the evaluated source");
         assert!(
             source.contains('{'),
@@ -1464,7 +1471,7 @@ fn strict_output_save_accepts_auto_and_rejects_anything_else() {
 /// the edge INTO v4.
 #[test]
 fn parity_v4_ncl_exports_validator_and_envelope() {
-    let schema = include_str!("../../src/config/versions/v4.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v4.ncl"));
     assert!(
         schema.contains("validate_document_v4 = fun document => document | _media_pm_document_v4"),
         "v4.ncl must export validate_document_v4"
@@ -1483,7 +1490,7 @@ fn parity_v4_ncl_exports_validator_and_envelope() {
 /// contract names.
 #[test]
 fn strict_v4_no_v1_v2_or_v3_names() {
-    let schema = include_str!("../../src/config/versions/v4.ncl");
+    let schema = ncl(include_str!("../../src/config/versions/v4.ncl"));
     for older_name in [
         "MediaPmDocumentV1",
         "MediaRuntimeStorageV1",

@@ -169,7 +169,9 @@ fn toml_table_body<'a>(manifest: &'a str, table: &str) -> &'a str {
             trimmed.starts_with('[') && trimmed.ends_with(']')
         })
         .unwrap_or_else(|| rest.lines().count());
-    let byte_end: usize = rest.lines().take(end_line).map(|line| line.len() + 1).sum();
+    // `lines()` strips both `\n` and `\r\n`, so `line.len() + 1` undercounts on
+    // CRLF checkouts. `split_inclusive('\n')` keeps the actual terminator bytes.
+    let byte_end: usize = rest.split_inclusive('\n').take(end_line).map(str::len).sum();
     &rest[..byte_end]
 }
 
@@ -243,8 +245,10 @@ fn workspace_member_roots(workspace_root: &Path) -> Vec<PathBuf> {
         .map_or_else(
             || panic!("workspace manifest has no `members` key"),
             |index| {
+                // Count actual line-ending bytes so CRLF checkouts produce the same
+                // offset as LF checkouts.
                 let offset: usize =
-                    members_body.lines().take(index).map(|line| line.len() + 1).sum();
+                    members_body.split_inclusive('\n').take(index).map(str::len).sum();
                 &members_body[offset..]
             },
         );

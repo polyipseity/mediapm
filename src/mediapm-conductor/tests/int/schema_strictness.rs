@@ -25,6 +25,13 @@ use mediapm_conductor::config::{
 ///
 /// The version in each fixture's source decides which contract runs; the
 /// helper makes no claim about it.
+/// Normalizes Nickel source for line-ending-independent matching.
+///
+/// `include_str!` preserves the checked-out line endings, so CRLF Windows
+/// checkouts embed `\r\n` in schema text while test literals use `\n`.
+fn ncl(source: &str) -> String {
+    source.replace("\r\n", "\n")
+}
 fn decode_error(doc: &str) -> String {
     format!("{}", decode_document(doc.as_bytes()).expect_err("document must be rejected"))
 }
@@ -577,7 +584,7 @@ fn regression_a_builtin_with_empty_tools_side_env_vars_still_loads() {
 /// S-A7: `mod.ncl` exports unversioned registry aliases for the latest schema.
 #[test]
 fn parity_mod_ncl_exports_unversioned_aliases() {
-    let mod_source = include_str!("../../src/config/versions/mod.ncl");
+    let mod_source = ncl(include_str!("../../src/config/versions/mod.ncl"));
     assert!(
         mod_source.contains("validate_document = v6_migration.validate_document_v6"),
         "mod.ncl must re-export validate_document (unversioned alias)"
@@ -809,7 +816,7 @@ fn regression_a_v4_document_round_trips_byte_for_byte() {
 /// document written by one side is read by the other.
 #[test]
 fn parity_v3_contract_and_rust_types_agree() {
-    let contract = include_str!("../../src/config/versions/v3.ncl");
+    let contract = ncl(include_str!("../../src/config/versions/v3.ncl"));
     let rust: std::collections::BTreeSet<String> =
         [PayloadStaging::InPlace, PayloadStaging::HardLink, PayloadStaging::Copy]
             .iter()
@@ -819,7 +826,7 @@ fn parity_v3_contract_and_rust_types_agree() {
     // The contract's own set, read out of the staging predicate. Comparing sets
     // rather than checking one direction is what catches a strategy added to the
     // contract alone: it would validate a document this build cannot stage.
-    let contract_set = staging_names_in_contract(contract, "PayloadStagingV3");
+    let contract_set = staging_names_in_contract(&contract, "PayloadStagingV3");
     assert_eq!(
         contract_set, rust,
         "v3.ncl's staging set and the Rust enum must name the same strategies"
@@ -839,7 +846,7 @@ fn parity_v3_contract_and_rust_types_agree() {
 /// alone would validate a document the runtime cannot stage.
 #[test]
 fn parity_v4_contract_and_rust_types_agree() {
-    let contract = include_str!("../../src/config/versions/v4.ncl");
+    let contract = ncl(include_str!("../../src/config/versions/v4.ncl"));
     let rust: std::collections::BTreeSet<String> =
         [PayloadStaging::InPlace, PayloadStaging::HardLink, PayloadStaging::Copy]
             .iter()
@@ -847,7 +854,7 @@ fn parity_v4_contract_and_rust_types_agree() {
             .collect();
 
     assert_eq!(
-        staging_names_in_contract(contract, "PayloadStagingV4"),
+        staging_names_in_contract(&contract, "PayloadStagingV4"),
         rust,
         "v4.ncl's staging set and the Rust enum must name the same strategies"
     );
