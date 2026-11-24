@@ -82,8 +82,12 @@ struct FileWitness {
     /// Last-write time.
     modified: std::time::SystemTime,
     /// Status-change time, which a hardlink rewrite moves even though the bytes
-    /// and the modification time stay identical. Zeroed on non-unix platforms
-    /// where it is not separately expressible.
+    /// and the modification time stay identical. Read only on Unix, where a
+    /// hardlink rewrite moves it.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "status-change stamp is only asserted on Unix")
+    )]
     changed: WitnessStamp,
 }
 
