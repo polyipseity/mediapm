@@ -37,13 +37,16 @@ const MATERIALIZED_INPUT_PATH: &str = "inputs/in0.bin";
 /// ffmpeg preset builds, so a selector that wrote the hash literal instead of the
 /// bytes it names would leave the assertion in the test with the hash text.
 fn write_declared_input_workflow(tc: &TestConductor, hash: Hash) {
+    let stub = mediapm_test_support::stub_tool_path();
     let reader = ToolSpec {
         version: None,
         kind: ToolKindSpec::Executable {
             command: vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                format!("cat ${{inputs.in0:file({MATERIALIZED_INPUT_PATH})}}"),
+                stub.to_string_lossy().into_owned(),
+                "--mode".to_string(),
+                "cat".to_string(),
+                "--file".to_string(),
+                format!("${{inputs.in0:file({MATERIALIZED_INPUT_PATH})}}"),
             ],
             env_vars: BTreeMap::new(),
             success_codes: vec![0],

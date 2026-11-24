@@ -1,14 +1,15 @@
 //! A stand-in managed-tool executable for hermetic tests.
 //!
-//! Five modes cover the ways a test needs a real process: `copy` stands in for a
-//! tool that reads an input file and writes an output file, `echo` for one that
-//! writes the arguments it was handed, `emit` for one that writes a set of files
-//! a manifest names, `probe` for one that answers a metadata query on stdout,
-//! and `sleep` for one whose only interesting property is that it takes time.
-//! All of them replace something a test cannot have — a downloaded `ffmpeg`, or
-//! a shell — and none needs a shell, which is the point: a `sh -c` stand-in is
-//! unavailable on a host without `sh` and reintroduces the platform dependency
-//! it was meant to remove.
+//! Seven modes cover the ways a test needs a real process: `copy` stands in for a
+//! tool that reads an input file and writes an output file, `cat` for one that
+//! writes a file's contents to stdout, `echo` for one that writes the arguments
+//! it was handed, `emit` for one that writes a set of files a manifest names,
+//! `probe` for one that answers a metadata query on stdout, `print-env` for one
+//! that reports an environment variable, and `sleep` for one whose only
+//! interesting property is that it takes time. All of them replace something a
+//! test cannot have — a downloaded `ffmpeg`, or a shell — and none needs a
+//! shell, which is the point: a `sh -c` stand-in is unavailable on a host
+//! without `sh` and reintroduces the platform dependency it was meant to remove.
 //!
 //! # Modes
 //!
@@ -18,6 +19,9 @@
 //! the preset emits one `${inputs.output_path_N}` per output slot, so the last
 //! argument is slot 0's output path only when there is one of them. A command
 //! with several output slots would hand the stub the highest-index path.
+//!
+//! `--mode cat --file <path>` writes the contents of `path` to stdout, so a
+//! step that captures stdout can read a file without a shell.
 //!
 //! `--mode echo --output <path>` writes the arguments a step passed — every
 //! argument except its own `--mode` and `--output` pairs — to `path`, newline
@@ -238,13 +242,14 @@ fn run(program: Option<&str>, args: &[String]) -> Result<(), StubError> {
 fn run_mode(mode: &str, args: &[String]) -> Result<(), StubError> {
     match mode {
         "copy" => copy(args),
+        "cat" => cat(args),
         "echo" => echo(args),
         "emit" => emit(args),
         "probe" => probe(),
         "print-env" => print_env(args),
         "sleep" => sleep_for(args),
         unknown => Err(StubError::usage(format!(
-            "unknown mode '{unknown}': expected `copy`, `echo`, `emit`, `probe`, `print-env` or `sleep`"
+            "unknown mode '{unknown}': expected `copy`, `cat`, `echo`, `emit`, `probe`, `print-env` or `sleep`"
         ))),
     }
 }
@@ -275,7 +280,9 @@ fn run_as_program(program: Option<&str>, args: &[String]) -> Result<(), StubErro
 /// when a bare run answers this message (`behaves_like_the_stub` in
 /// `src/mediapm-test-support/src/lib.rs`).
 fn missing_mode() -> StubError {
-    StubError::usage("--mode is required (expected `copy`, `emit`, `probe` or `sleep`)")
+    StubError::usage(
+        "--mode is required (expected `copy`, `cat`, `echo`, `emit`, `probe`, `print-env` or `sleep`)",
+    )
 }
 
 /// The file stem of `argv[0]`, the name a copy of the stub was invoked under.
@@ -569,6 +576,26 @@ fn print_env(args: &[String]) -> Result<(), StubError> {
             StubError::io(format!("cannot write the environment value to stdout: {error}"))
         })
     }
+}
+
+/// Writes the contents of `--file` to stdout.
+///
+/// A step that captures stdout can use this instead of a shell `cat`, so the
+/// command stays portable.
+///
+/// # Errors
+///
+/// Returns a usage failure when `--file` is absent, and an I/O failure when the
+/// file cannot be read or stdout cannot be written.
+fn cat(args: &[String]) -> Result<(), StubError> {
+    let path = value_after(args, "--file")
+        .ok_or_else(|| StubError::usage("--file is required in cat mode"))?;
+    let bytes = std::fs::read(&path)
+        .map_err(|error| StubError::io(format!("cannot read file '{path}': {error}")))?;
+    std::io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|error| StubError::io(format!("cannot write file '{path}' to stdout: {error}")))
 }
 
 /// The flags `echo` reads for itself rather than writing.

@@ -99,6 +99,27 @@ async fn dispatch_tool_execution<C: CasApi + ConstraintApi + Send + Sync>(
         // companion path an argument names.
         resolve_executable_under_payload_root(&mut resolved_parts, tool_spec)?;
         pre_qualify_payload_arguments(&mut resolved_parts, tool_spec);
+        // Defensive fallback: an in-place executable that is still a relative
+        // path with a separator must run from the payload root. `run_executable_process`
+        // resolves relative paths against the sandbox for the copy/hard-link case,
+        // which would point an in-place tool at the wrong directory on Windows
+        // where CreateProcess ignores the child's working directory for a
+        // relative application name with separators.
+        if tool_spec.payload_staging == crate::config::PayloadStaging::InPlace
+            && let Some(first) = resolved_parts.first_mut()
+        {
+            let command_path = Path::new(first.as_str());
+            if command_path.is_relative()
+                && !command_path.has_root()
+                && (first.contains('/') || first.contains('\\'))
+                && !tool_spec.payload_root.is_empty()
+            {
+                let executable = Path::new(&tool_spec.payload_root).join(&*first);
+                if executable.is_file() {
+                    *first = executable.to_string_lossy().into_owned();
+                }
+            }
+        }
         let result = run_executable_process(
             &resolved_parts,
             &tool_spec.success_codes,
@@ -1390,6 +1411,7 @@ mod tests {
                 },
             ),
         ]);
+        let stub = mediapm_test_support::stub_tool_path();
         let tool = UnifiedToolSpec {
             name: "writer".to_string(),
             version: None,
@@ -1399,9 +1421,12 @@ mod tests {
             inputs: BTreeMap::new(),
             default_inputs: BTreeMap::new(),
             command_parts: vec![
-                "/bin/sh".to_string(),
-                "-c".to_string(),
-                "printf '%s' sidecar > sidecar.txt".to_string(),
+                stub.to_string_lossy().into_owned(),
+                "--mode".to_string(),
+                "echo".to_string(),
+                "--output".to_string(),
+                "sidecar.txt".to_string(),
+                "sidecar".to_string(),
             ],
             success_codes: vec![0],
             execution_env_vars: BTreeMap::new(),

@@ -110,7 +110,23 @@ pub(super) async fn run_executable_process(
         ));
     };
 
-    let mut cmd = Command::new(command);
+    let command_path = Path::new(command);
+    // A relative path with a separator is a path the step staged, not a name to
+    // look up on PATH. On Windows, CreateProcess resolves such a path relative
+    // to the parent process's current directory, so spawning it as-given would
+    // ignore the child's `current_dir`; resolving it against the sandbox here
+    // makes the spawn find the same file on every platform. A bare command name
+    // stays a name so PATH lookup still applies.
+    let spawn_command = if command_path.is_relative()
+        && !command_path.has_root()
+        && (command.contains('/') || command.contains('\\'))
+    {
+        sandbox_dir.join(command_path)
+    } else {
+        command_path.to_path_buf()
+    };
+
+    let mut cmd = Command::new(&spawn_command);
     cmd.args(args);
     cmd.current_dir(sandbox_dir);
     cmd.stdout(Stdio::piped());
