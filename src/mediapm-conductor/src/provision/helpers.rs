@@ -58,7 +58,7 @@ fn normalize_sandbox_relative_path(
         )));
     }
     let parsed = Path::new(raw);
-    if parsed.is_absolute() {
+    if parsed.is_absolute() || parsed.has_root() {
         return Err(ConductorError::Workflow(format!(
             "tool content map key '{context_key}' path must be relative"
         )));

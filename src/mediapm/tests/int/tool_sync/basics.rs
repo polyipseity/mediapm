@@ -222,7 +222,7 @@ async fn sync_env_paths_contain_payload_segment() -> Result<(), mediapm::MediaPm
         // Each non-comment line should be KEY=VALUE
         if let Some((_name, value)) = line.split_once('=') {
             assert!(
-                value.contains("/payload/"),
+                value.replace('\\', "/").contains("/payload/"),
                 "env var value must contain /payload/ segment: {value} in env file"
             );
             let raw = value.trim_matches('"');
@@ -391,7 +391,10 @@ async fn sync_provisions_downloaded_payload() -> Result<(), mediapm::MediaPmErro
     );
     for (name, value) in &vars {
         assert!(!name.contains('@'), "env var name must not contain @: '{name}'");
-        assert!(value.contains("/payload/"), "env value must contain /payload/: {value}");
+        assert!(
+            value.replace('\\', "/").contains("/payload/"),
+            "env value must contain /payload/: {value}"
+        );
         let raw = value.trim_matches('"');
         assert!(
             raw.starts_with('/') || raw.starts_with("\\\\") || raw.chars().nth(1) == Some(':'),

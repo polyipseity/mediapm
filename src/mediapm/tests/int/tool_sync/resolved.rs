@@ -424,8 +424,9 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
         .find(|line| line.starts_with("MEDIAPM_FFMPEG_LINUX="))
         .unwrap_or_else(|| panic!("missing MEDIAPM_FFMPEG_LINUX in env file:\n{content}"));
     let sanitized = recorded_hash.replace(':', "_");
+    let normalized_binary_line = binary_line.replace("\\\\", "/").replace('\\', "/");
     assert!(
-        binary_line.contains(&format!("/ffmpeg@{sanitized}/payload/linux/ffmpeg")),
+        normalized_binary_line.contains(&format!("/ffmpeg@{sanitized}/payload/linux/ffmpeg")),
         "binary env path must use the sanitized conductor tool id: {binary_line}"
     );
 
@@ -434,14 +435,16 @@ async fn sync_env_paths_use_conductor_tool_id() -> Result<(), mediapm::MediaPmEr
         .lines()
         .find(|line| line.starts_with("MEDIAPM_FFMPEG_LINUX_DIR="))
         .unwrap_or_else(|| panic!("missing MEDIAPM_FFMPEG_LINUX_DIR in env file:\n{content}"));
+    let normalized_dir_line = dir_line.replace("\\\\", "/").replace('\\', "/");
     assert!(
-        dir_line.contains(&format!("/ffmpeg@{sanitized}/payload/linux/")),
+        normalized_dir_line.contains(&format!("/ffmpeg@{sanitized}/payload/linux/")),
         "dir env path must use the sanitized conductor tool id: {dir_line}"
     );
 
     // Regression: the bare mediapm tool id must never be the path segment.
+    let normalized_content = content.replace("\\\\", "/").replace('\\', "/");
     assert!(
-        !content.contains("/ffmpeg/payload/"),
+        !normalized_content.contains("/ffmpeg/payload/"),
         "env paths must not use the bare mediapm tool id:\n{content}"
     );
 

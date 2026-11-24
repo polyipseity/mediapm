@@ -103,7 +103,7 @@ pub fn normalize_relative_path(candidate: &str, context: &str) -> Result<PathBuf
     }
 
     let parsed = Path::new(candidate);
-    if parsed.is_absolute() {
+    if parsed.is_absolute() || parsed.has_root() {
         return Err(format!("{context} must be relative"));
     }
 
@@ -173,19 +173,19 @@ mod tests {
     #[test]
     fn normalize_relative_path_accepts_simple() {
         let result = normalize_relative_path("foo/bar/baz.txt", "test").expect("should succeed");
-        assert_eq!(result.to_string_lossy(), "foo/bar/baz.txt");
+        assert_eq!(result, std::path::PathBuf::from_iter(["foo", "bar", "baz.txt"]));
     }
 
     #[test]
     fn normalize_relative_path_strips_curdir() {
         let result = normalize_relative_path("./foo/bar", "test").expect("should succeed");
-        assert_eq!(result.to_string_lossy(), "foo/bar");
+        assert_eq!(result, std::path::PathBuf::from_iter(["foo", "bar"]));
     }
 
     #[test]
     fn normalize_relative_path_strips_mid_curdir() {
         let result = normalize_relative_path("foo/./bar", "test").expect("should succeed");
-        assert_eq!(result.to_string_lossy(), "foo/bar");
+        assert_eq!(result, std::path::PathBuf::from_iter(["foo", "bar"]));
     }
 
     #[test]
@@ -223,15 +223,15 @@ mod tests {
     #[test]
     fn normalize_relative_path_mixed() {
         let result = normalize_relative_path("./a/./b/./c.txt", "test").expect("should succeed");
-        assert_eq!(result.to_string_lossy(), "a/b/c.txt");
+        assert_eq!(result, std::path::PathBuf::from_iter(["a", "b", "c.txt"]));
     }
 
     // absolute_root tests
 
     #[test]
     fn absolute_root_keeps_absolute() {
-        let root = std::path::Path::new("/tmp");
-        let result = absolute_root(root, "test").expect("should succeed");
+        let root = std::env::current_dir().expect("cwd should be absolute");
+        let result = absolute_root(&root, "test").expect("should succeed");
         assert_eq!(result, root);
     }
 

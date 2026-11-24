@@ -533,7 +533,15 @@ async fn sync_parallel_fetch_is_deterministic() {
 fn normalize_workspace_root(document: &[u8], root: &std::path::Path) -> String {
     let text = String::from_utf8(document.to_vec()).expect("the generated document is UTF-8");
     let root_text = root.to_string_lossy();
-    let normalized = text.replace(root_text.as_ref(), "<workspace>");
+    let mut normalized = text.replace(root_text.as_ref(), "<workspace>");
+    let forward = root_text.replace('\\', "/");
+    if forward != root_text.as_ref() {
+        normalized = normalized.replace(&forward, "<workspace>");
+    }
+    let json_escaped = root_text.replace('\\', "\\\\");
+    if json_escaped != root_text.as_ref() {
+        normalized = normalized.replace(&json_escaped, "<workspace>");
+    }
     assert!(
         normalized.contains("<workspace>"),
         "the generated document has to name the workspace root it was written in",

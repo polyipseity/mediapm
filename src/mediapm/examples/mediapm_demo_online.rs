@@ -5924,7 +5924,7 @@ mod tests {
             "error must name the canonical directory: {message}"
         );
         assert!(
-            message.contains("sidecars/info.json"),
+            message.replace('\\', "/").contains("sidecars/info.json"),
             "error must name the missing sidecar file: {message}"
         );
     }

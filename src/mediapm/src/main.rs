@@ -1008,11 +1008,11 @@ mod tests {
         let injected = inject_conductor_passthrough_defaults(&["state".to_string()], &paths);
 
         assert!(injected.contains(&"--conductor-dir".to_string()));
-        assert!(injected.contains(&"/tmp/demo-root/.mediapm".to_string()));
+        assert!(injected.contains(&paths.runtime_root.to_string_lossy().to_string()));
         assert!(injected.contains(&"--cas-store-dir".to_string()));
-        assert!(injected.contains(&"/tmp/demo-root/.mediapm/store".to_string()));
+        assert!(injected.contains(&paths.runtime_root.join("store").to_string_lossy().to_string()));
         assert!(injected.contains(&"--conductor-tools-dir".to_string()));
-        assert!(injected.contains(&"/tmp/demo-root/.mediapm/tools".to_string()));
+        assert!(injected.contains(&paths.tools_dir.to_string_lossy().to_string()));
         assert_eq!(injected.last().map(String::as_str), Some("state"));
     }
 

@@ -1901,7 +1901,8 @@ fn pack_directory_entries(
                 decompressed_accumulator,
             )?;
         } else {
-            let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
+            let relative =
+                path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
             let mut file = std::fs::File::open(&path).map_err(|source| {
                 ConductorError::io(
                     format!("opening file '{}' for zip", path.display()),

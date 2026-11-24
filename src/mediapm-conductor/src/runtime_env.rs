@@ -886,6 +886,14 @@ mod tests {
         }
     }
 
+    /// Normalizes path separators in dotenv content for portable assertions.
+    ///
+    /// `.env.generated` quotes values with escaped backslashes on Windows, so a
+    /// literal path comparison must accept either separator form.
+    fn normalize_env_separators(value: &str) -> String {
+        value.replace("\\\\", "/").replace('\\', "/")
+    }
+
     #[test]
     fn content_key_to_env_name_binary() {
         assert_eq!(
@@ -970,8 +978,15 @@ mod tests {
             "MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp@blake3_abc123/payload/linux/yt-dlp\""
         );
 
-        assert!(content.contains(&dir_line), "env must contain _DIR entry\ncontent:\n{content}");
-        assert!(content.contains(&bin_line), "env must contain binary entry\ncontent:\n{content}");
+        let normalized_content = normalize_env_separators(&content);
+        assert!(
+            normalized_content.contains(&normalize_env_separators(&dir_line)),
+            "env must contain _DIR entry\ncontent:\n{content}"
+        );
+        assert!(
+            normalized_content.contains(&normalize_env_separators(&bin_line)),
+            "env must contain binary entry\ncontent:\n{content}"
+        );
         assert_env_lines_have_absolute_paths(&content);
     }
 
@@ -996,7 +1011,11 @@ mod tests {
         );
         let bin_var = "MEDIAPM_FFMPEG_LINUX=";
 
-        assert!(content.contains(&dir_line), "env must contain _DIR entry\ncontent:\n{content}");
+        let normalized_content = normalize_env_separators(&content);
+        assert!(
+            normalized_content.contains(&normalize_env_separators(&dir_line)),
+            "env must contain _DIR entry\ncontent:\n{content}"
+        );
         assert!(
             !content.contains(bin_var),
             "env must not contain binary env var\ncontent:\n{content}"
@@ -1022,29 +1041,30 @@ mod tests {
 
         let tools_dir_str = tools_dir.to_string_lossy();
         let segment = "yt-dlp@blake3_abc";
+        let normalized_content = normalize_env_separators(&content);
 
         assert!(
-            content.contains(&format!(
+            normalized_content.contains(&normalize_env_separators(&format!(
                 "MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/{segment}/payload/linux/\""
-            )),
+            ))),
             "missing linux _DIR entry"
         );
         assert!(
-            content.contains(&format!(
+            normalized_content.contains(&normalize_env_separators(&format!(
                 "MEDIAPM_YT_DLP_MACOS_DIR=\"{tools_dir_str}/{segment}/payload/macos/\""
-            )),
+            ))),
             "missing macos _DIR entry"
         );
         assert!(
-            content.contains(&format!(
+            normalized_content.contains(&normalize_env_separators(&format!(
                 "MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/{segment}/payload/linux/yt-dlp\""
-            )),
+            ))),
             "missing linux binary entry"
         );
         assert!(
-            content.contains(&format!(
+            normalized_content.contains(&normalize_env_separators(&format!(
                 "MEDIAPM_YT_DLP_MACOS=\"{tools_dir_str}/{segment}/payload/macos/yt-dlp\""
-            )),
+            ))),
             "missing macos binary entry"
         );
 
@@ -1075,16 +1095,17 @@ mod tests {
 
         // Own keys still emit their _DIR + binary entries.
         let tools_dir_str = tools_dir.to_string_lossy();
+        let normalized_content = normalize_env_separators(&content);
         assert!(
-            content.contains(&format!(
+            normalized_content.contains(&normalize_env_separators(&format!(
                 "MEDIAPM_YT_DLP_LINUX_DIR=\"{tools_dir_str}/yt-dlp@blake3_abc/payload/linux/\""
-            )),
+            ))),
             "own _DIR entry must still emit\ncontent:\n{content}",
         );
         assert!(
-            content.contains(&format!(
+            normalized_content.contains(&normalize_env_separators(&format!(
                 "MEDIAPM_YT_DLP_LINUX=\"{tools_dir_str}/yt-dlp@blake3_abc/payload/linux/yt-dlp\""
-            )),
+            ))),
             "own binary entry must still emit\ncontent:\n{content}",
         );
         // Inlined deps keys emit nothing — no _DIR, no binary, no garbage.
@@ -1146,23 +1167,24 @@ mod tests {
             .expect("env file should be readable");
 
         let tools_dir_str = tools_dir.to_string_lossy();
+        let normalized_content = normalize_env_separators(&content);
         for key in runtimes.keys() {
             let segment = sanitize_tool_id(key);
             let expected = format!("{tools_dir_str}/{segment}/payload/");
             assert!(
-                content.contains(&expected),
+                normalized_content.contains(&normalize_env_separators(&expected)),
                 "env must contain the sanitized conductor tool id segment '{segment}'\ncontent:\n{content}"
             );
             assert!(
-                content.contains(&format!(
+                normalized_content.contains(&normalize_env_separators(&format!(
                     "MEDIAPM_{}_LINUX_DIR=\"{expected}linux/\"",
                     strip_tool_key_hash(key).to_uppercase().replace(['-', '.'], "_")
-                )),
+                ))),
                 "_DIR entry must point at the provision cache layout\ncontent:\n{content}"
             );
         }
         assert!(
-            !content.contains("/yt-dlp/payload/"),
+            !normalized_content.contains("/yt-dlp/payload/"),
             "plain mediapm tool id must not be used in paths\ncontent:\n{content}"
         );
         assert_env_lines_have_absolute_paths(&content);
