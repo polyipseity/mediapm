@@ -252,6 +252,7 @@ async fn an_immediate_second_sync_executes_nothing_and_rematerializes_nothing()
         after.modified, before.modified,
         "the re-run must not rewrite the file, or its modification time moves"
     );
+    #[cfg(unix)]
     assert_eq!(
         after.changed, before.changed,
         "the re-run must not replace or relink the file, or its status-change time moves"
