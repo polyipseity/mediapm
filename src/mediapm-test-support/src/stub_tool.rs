@@ -1784,4 +1784,86 @@ mod tests {
             "the record must append rather than overwrite: {text}",
         );
     }
+
+    /// The echo mode writes the arguments a step handed a tool, and neither of
+    /// its own control flags.
+    ///
+    /// A test that asserted only one argument could not tell where the others
+    /// resolved, so the newline form is what lets a fixture compare a whole
+    /// argument vector without a shell.
+    #[test]
+    fn echo_writes_each_argument_on_its_own_line() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let output = dir.path().join("out.txt");
+        let (code, _, stderr) = run_stub(&[
+            "--mode",
+            "echo",
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "--ffmpeg-location",
+            "deps/ffmpeg/linux/ffmpeg",
+            "tail",
+        ]);
+        assert_eq!(code, 0, "echo must succeed: {stderr}");
+        assert_eq!(
+            std::fs::read_to_string(&output).expect("the output is written"),
+            "--ffmpeg-location\ndeps/ffmpeg/linux/ffmpeg\ntail",
+            "echo writes every non-control argument, newline separated, with no trailing newline",
+        );
+    }
+
+    /// A single argument round-trips byte for byte, which is the shape the
+    /// payload-staging fixture compared by bytes.
+    #[test]
+    fn echo_writes_a_lone_argument_verbatim() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let output = dir.path().join("out.txt");
+        let (code, _, stderr) = run_stub(&[
+            "--mode",
+            "echo",
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "payload-bytes",
+        ]);
+        assert_eq!(code, 0, "echo must succeed: {stderr}");
+        assert_eq!(
+            std::fs::read_to_string(&output).expect("the output is written"),
+            "payload-bytes",
+            "one argument has to land exactly as given, or a byte comparison proves nothing",
+        );
+    }
+
+    /// An echo writes into a destination whose parent does not exist yet, which
+    /// is the shape every step's sandbox has.
+    ///
+    /// The shell fixture made `downloads/` with `mkdir -p`. A stub that skipped
+    /// that would fail every converted test with a missing-directory error that
+    /// says nothing about the argument the test was comparing.
+    #[test]
+    fn echo_creates_the_outputs_missing_parent() {
+        let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
+        let output = dir.path().join("downloads").join("out.txt");
+        let (code, _, stderr) = run_stub(&[
+            "--mode",
+            "echo",
+            "--output",
+            output.to_str().expect("utf-8 output path"),
+            "payload-bytes",
+        ]);
+        assert_eq!(code, 0, "echo must succeed into a fresh tree: {stderr}");
+        assert_eq!(
+            std::fs::read_to_string(&output).expect("the output is written"),
+            "payload-bytes",
+            "the parent has to be created, not reported as missing",
+        );
+    }
+
+    /// An echo with nowhere to write is a usage failure rather than a silent
+    /// no-op, because a test reading the missing file would pass on emptiness.
+    #[test]
+    fn echo_without_an_output_is_a_usage_failure() {
+        let (code, _, stderr) = run_stub(&["--mode", "echo"]);
+        assert_eq!(code, 2, "a missing --output is a usage failure: {stderr}");
+        assert!(stderr.contains("--output"), "the failure has to name the missing flag: {stderr}");
+    }
 }

@@ -1,13 +1,14 @@
 //! A stand-in managed-tool executable for hermetic tests.
 //!
-//! Four modes cover the ways a test needs a real process: `copy` stands in for a
-//! tool that reads an input file and writes an output file, `emit` for one that
-//! writes a set of files a manifest names, `probe` for one that answers a
-//! metadata query on stdout, and `sleep` for one whose only interesting property
-//! is that it takes time. All of them replace something a test cannot have — a
-//! downloaded `ffmpeg`, or a shell — and none needs a shell, which is the point:
-//! a `sh -c` stand-in is unavailable on a host without `sh` and reintroduces the
-//! platform dependency it was meant to remove.
+//! Five modes cover the ways a test needs a real process: `copy` stands in for a
+//! tool that reads an input file and writes an output file, `echo` for one that
+//! writes the arguments it was handed, `emit` for one that writes a set of files
+//! a manifest names, `probe` for one that answers a metadata query on stdout,
+//! and `sleep` for one whose only interesting property is that it takes time.
+//! All of them replace something a test cannot have — a downloaded `ffmpeg`, or
+//! a shell — and none needs a shell, which is the point: a `sh -c` stand-in is
+//! unavailable on a host without `sh` and reintroduces the platform dependency
+//! it was meant to remove.
 //!
 //! # Modes
 //!
@@ -17,6 +18,12 @@
 //! the preset emits one `${inputs.output_path_N}` per output slot, so the last
 //! argument is slot 0's output path only when there is one of them. A command
 //! with several output slots would hand the stub the highest-index path.
+//!
+//! `--mode echo --output <path>` writes the arguments a step passed — every
+//! argument except its own `--mode` and `--output` pairs — to `path`, newline
+//! separated with no trailing newline. One argument is written verbatim, so a
+//! fixture can compare a single argument or a whole argument vector without a
+//! shell.
 //!
 //! `--mode emit --manifest <path>` writes the file set the manifest names. Each
 //! line of the manifest is a destination and a source separated by a tab, and
@@ -231,12 +238,13 @@ fn run(program: Option<&str>, args: &[String]) -> Result<(), StubError> {
 fn run_mode(mode: &str, args: &[String]) -> Result<(), StubError> {
     match mode {
         "copy" => copy(args),
+        "echo" => echo(args),
         "emit" => emit(args),
         "probe" => probe(),
         "print-env" => print_env(args),
         "sleep" => sleep_for(args),
         unknown => Err(StubError::usage(format!(
-            "unknown mode '{unknown}': expected `copy`, `emit`, `probe`, `print-env` or `sleep`"
+            "unknown mode '{unknown}': expected `copy`, `echo`, `emit`, `probe`, `print-env` or `sleep`"
         ))),
     }
 }
@@ -561,6 +569,57 @@ fn print_env(args: &[String]) -> Result<(), StubError> {
             StubError::io(format!("cannot write the environment value to stdout: {error}"))
         })
     }
+}
+
+/// The flags `echo` reads for itself rather than writing.
+///
+/// A step's command line carries them only to select this mode and name its
+/// destination, so writing them would put the stub's own plumbing into the file a
+/// test compares against the document's arguments.
+const ECHO_CONTROL_FLAGS: [&str; 2] = ["--mode", "--output"];
+
+/// Writes every argument a step passed, one per line, to `--output`.
+///
+/// A single argument is written with no trailing newline, so a fixture comparing
+/// one argument byte for byte sees exactly what `printf '%s' "$1"` produced. Two
+/// or more are newline separated with none trailing, which is what lets a test
+/// compare a whole argument vector and say which argument resolved where. No
+/// shell is involved, so the fixture runs on every platform.
+///
+/// The destination's missing parents are created, which is what the shell
+/// fixture's own `mkdir -p` did: a step's sandbox holds no `downloads/` until a
+/// tool makes one, and a write that failed there would report a missing directory
+/// instead of the argument the test asked about.
+///
+/// # Errors
+///
+/// Returns a usage failure when `--output` is absent or empty, and an I/O
+/// failure when the destination's parents or the destination cannot be written.
+fn echo(args: &[String]) -> Result<(), StubError> {
+    let output =
+        value_after(args, "--output").filter(|path| !path.is_empty()).ok_or_else(|| {
+            StubError::usage("echo writes the arguments it was given to --output, which is missing")
+        })?;
+    let mut written = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if ECHO_CONTROL_FLAGS.contains(&argument.as_str()) {
+            // Skip the flag and the value that follows it.
+            index += 2;
+            continue;
+        }
+        written.push(argument.clone());
+        index += 1;
+    }
+    if let Some(parent) =
+        Path::new(&output).parent().filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| StubError::io(format!("cannot create '{parent:?}': {error}")))?;
+    }
+    std::fs::write(&output, written.join("\n"))
+        .map_err(|error| StubError::io(format!("cannot write output '{output}': {error}")))
 }
 
 /// Sleeps for the whole number of seconds `--seconds` names.
