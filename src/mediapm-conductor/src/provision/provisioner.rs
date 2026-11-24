@@ -529,10 +529,6 @@ mod tests {
             {
                 let mut permissions =
                     std::fs::metadata(path).expect("entry metadata").permissions();
-                #[expect(
-                    clippy::permissions_set_readonly_false,
-                    reason = "the readonly attribute is the platform's write-deny mechanism and the probe below verifies whether it took effect"
-                )]
                 permissions.set_readonly(true);
                 std::fs::set_permissions(path, permissions).expect("seal the entry directory");
             }
@@ -549,6 +545,10 @@ mod tests {
             {
                 let mut permissions =
                     std::fs::metadata(path).expect("entry metadata").permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "clearing the readonly attribute restores write access; the lint is a Unix portability warning"
+                )]
                 permissions.set_readonly(false);
                 std::fs::set_permissions(path, permissions).expect("restore the entry directory");
             }

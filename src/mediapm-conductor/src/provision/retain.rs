@@ -688,10 +688,6 @@ mod tests {
             for entry in fs::read_dir(path).expect("read blocked dir") {
                 let entry = entry.expect("blocked dir entry");
                 let mut permissions = entry.metadata().expect("entry metadata").permissions();
-                #[expect(
-                    clippy::permissions_set_readonly_false,
-                    reason = "Windows removal fails on readonly files; the test needs removal to fail to prove the sweep reports it"
-                )]
                 permissions.set_readonly(true);
                 fs::set_permissions(entry.path(), permissions).expect("make entry file readonly");
             }
@@ -713,6 +709,10 @@ mod tests {
             for entry in fs::read_dir(path).expect("read blocked dir") {
                 let entry = entry.expect("blocked dir entry");
                 let mut permissions = entry.metadata().expect("entry metadata").permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "clearing readonly restores write access; the lint is a Unix portability warning"
+                )]
                 permissions.set_readonly(false);
                 fs::set_permissions(entry.path(), permissions).expect("clear readonly");
             }

@@ -88,10 +88,6 @@ fn deny_writes(path: &Path) {
     {
         let mut permissions =
             std::fs::metadata(path).expect("the directory's metadata").permissions();
-        #[expect(
-            clippy::permissions_set_readonly_false,
-            reason = "Windows has no mode bits; setting the readonly attribute is the platform's write-deny mechanism and the caller verifies it with a probe write"
-        )]
         permissions.set_readonly(true);
         std::fs::set_permissions(path, permissions).expect("the test can deny writes");
     }
@@ -110,6 +106,10 @@ fn allow_writes(path: &Path) {
     {
         let mut permissions =
             std::fs::metadata(path).expect("the directory's metadata").permissions();
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "clearing the readonly attribute restores write access; the lint is a Unix portability warning"
+        )]
         permissions.set_readonly(false);
         std::fs::set_permissions(path, permissions).expect("the test can restore writes");
     }

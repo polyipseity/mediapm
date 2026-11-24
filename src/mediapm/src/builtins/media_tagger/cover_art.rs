@@ -2309,10 +2309,6 @@ mod tests {
             #[cfg(not(unix))]
             {
                 let mut sealed = fs::metadata(path).expect("root metadata").permissions();
-                #[expect(
-                    clippy::permissions_set_readonly_false,
-                    reason = "the readonly attribute is the platform's write-deny mechanism and the probe below verifies whether it took effect"
-                )]
                 sealed.set_readonly(true);
                 fs::set_permissions(path, sealed).expect("seal cache root");
             }
@@ -2329,6 +2325,10 @@ mod tests {
             #[cfg(not(unix))]
             {
                 let mut open = fs::metadata(path).expect("root metadata").permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "clearing the readonly attribute restores write access; the lint is a Unix portability warning"
+                )]
                 open.set_readonly(false);
                 fs::set_permissions(path, open).expect("unseal cache root");
             }

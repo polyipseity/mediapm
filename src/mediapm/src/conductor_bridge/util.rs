@@ -130,10 +130,6 @@ mod tests {
             #[cfg(not(unix))]
             {
                 let mut permissions = fs::metadata(path).expect("dir metadata").permissions();
-                #[expect(
-                    clippy::permissions_set_readonly_false,
-                    reason = "the readonly attribute is the platform's write-deny mechanism and the probe below verifies whether it took effect"
-                )]
                 permissions.set_readonly(true);
                 fs::set_permissions(path, permissions)
                     .expect("make the document's directory unwritable");
@@ -150,6 +146,10 @@ mod tests {
             #[cfg(not(unix))]
             {
                 let mut permissions = fs::metadata(path).expect("dir metadata").permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "clearing the readonly attribute restores write access; the lint is a Unix portability warning"
+                )]
                 permissions.set_readonly(false);
                 fs::set_permissions(path, permissions).expect("restore the document's directory");
             }
