@@ -75,6 +75,11 @@ pub fn assert_frames_match(expected: &str, actual: &str, context: &str) {
     for (index, (expected_line, actual_line)) in
         expected_lines.iter().zip(actual_lines.iter()).enumerate()
     {
+        // A trailing carriage return is a line-ending representation, not
+        // rendered content. Tolerating it keeps a fixture checked out with CRLF
+        // on Windows from differing at the final cell.
+        let expected_line = expected_line.strip_suffix('\r').unwrap_or(expected_line);
+        let actual_line = actual_line.strip_suffix('\r').unwrap_or(actual_line);
         if let Some(column) = first_difference(expected_line, actual_line) {
             panic!(
                 "{context}: row {} column {column} differs: expected {}, got {}\n  expected: \
