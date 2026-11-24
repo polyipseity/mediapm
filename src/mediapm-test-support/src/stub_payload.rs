@@ -254,27 +254,12 @@ mod tests {
 
     use super::*;
 
-    /// The marker every host stub prints, so a run can be asserted on output
-    /// rather than on the fact that a process started.
-    const STUB_MARKER: &str = "mediapm-stub-ran";
-
     /// Filename of the host stub inside its container.
-    #[cfg(unix)]
-    const HOST_STUB_NAME: &str = "stub.sh";
-    /// Filename of the host stub inside its container.
-    #[cfg(windows)]
-    const HOST_STUB_NAME: &str = "stub.cmd";
-
-    /// Body of the host stub, which prints [`STUB_MARKER`].
-    #[cfg(unix)]
-    fn host_stub_body() -> String {
-        format!("#!/bin/sh\necho {STUB_MARKER}\n")
-    }
-
-    /// Body of the host stub, which prints [`STUB_MARKER`].
-    #[cfg(windows)]
-    fn host_stub_body() -> String {
-        format!("@echo off\r\necho {STUB_MARKER}\r\n")
+    ///
+    /// The entry is a copy of the stub binary, so the name carries the host's own
+    /// executable suffix and every platform packs and runs the same artifact.
+    fn host_stub_name() -> String {
+        format!("{}{}", crate::stub_tool::STUB_TOOL_BIN_NAME, std::env::consts::EXE_SUFFIX)
     }
 
     /// Extracts a ZIP archive into `dir` using the real ZIP reader.
@@ -295,34 +280,6 @@ mod tests {
         let decoder = xz2::read::XzDecoder::new(std::io::Cursor::new(bytes.to_vec()));
         tar::Archive::new(decoder).unpack(dir).expect("tar.xz extracts");
     }
-
-    /// Runs `path` as a program and returns its stdout.
-    fn run_stub(path: &Path) -> String {
-        #[cfg(windows)]
-        let output = std::process::Command::new("cmd")
-            .arg("/C")
-            .arg(path)
-            .output()
-            .expect("the host stub runs");
-        #[cfg(unix)]
-        let output = std::process::Command::new(path).output().expect("the host stub runs");
-        assert!(output.status.success(), "the host stub must exit zero: {output:?}");
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    }
-
-    /// Marks `path` executable for the current user.
-    #[cfg(unix)]
-    fn make_executable(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut permissions = std::fs::metadata(path).expect("stub metadata").permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).expect("stub chmod");
-    }
-
-    /// A windows-only no-op: an extracted `.cmd` runs through `cmd /C`.
-    #[cfg(windows)]
-    fn make_executable(_path: &Path) {}
 
     /// A ZIP payload round-trips through a real extraction with its bytes
     /// intact, so the container this crate writes is one the pipeline's
@@ -374,20 +331,25 @@ mod tests {
 
     /// The host slot's stub extracts and executes, so a later task can stand a
     /// real tool up behind the mock rather than only serving bytes.
+    ///
+    /// The entry is the stub binary, so extraction hands back a program that runs
+    /// on the host it was extracted on: no shell, no `.cmd` launcher.
     #[test]
     fn the_host_stub_extracts_and_executes() {
-        let entries = [StubEntry::executable(HOST_STUB_NAME, host_stub_body().into_bytes())];
+        let name = host_stub_name();
+        let body = std::fs::read(crate::stub_tool::stub_tool_path())
+            .expect("the stub binary is readable to build a payload from");
+        let entries = [StubEntry::executable(&name, body)];
         let bytes = PayloadFormat::Zip.pack(&entries);
         let dir = mediapm_utils::temp::artifact_dir().expect("artifact dir");
 
         extract_zip(&bytes, dir.path());
-        let stub = dir.path().join(HOST_STUB_NAME);
-        make_executable(&stub);
-
-        assert!(
-            run_stub(&stub).contains(STUB_MARKER),
-            "the extracted stub must run and print its marker"
-        );
+        let stub = dir.path().join(&name);
+        let output = std::process::Command::new(&stub)
+            .args(["--mode", "print-env", "--name", "PATH"])
+            .output()
+            .expect("the extracted stub runs");
+        assert!(output.status.success(), "the extracted stub has to run: {output:?}");
     }
 
     /// A container records the execute bit its entry declares, which is what
@@ -396,7 +358,7 @@ mod tests {
     #[test]
     fn an_executable_entry_carries_the_execute_bit() {
         let entries = [
-            StubEntry::executable("tool", b"#!/bin/sh\n".as_slice()),
+            StubEntry::executable("tool", b"executable body".as_slice()),
             StubEntry::data("readme", b"plain".as_slice()),
         ];
         let bytes = PayloadFormat::Zip.pack(&entries);
