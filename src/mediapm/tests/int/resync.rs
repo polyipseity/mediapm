@@ -637,6 +637,6 @@ fn write_witness(path: &Path) -> std::io::Result<WriteWitness> {
     })?;
     Ok(WriteWitness {
         modified: metadata.modified()?,
-        changed: (since_epoch.as_secs(), since_epoch.subsec_nanos()),
+        changed: (since_epoch.as_secs().into(), since_epoch.subsec_nanos()),
     })
 }
