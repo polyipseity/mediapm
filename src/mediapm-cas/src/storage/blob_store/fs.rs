@@ -1357,83 +1357,16 @@ mod tests {
     }
 
     /// Reports whether two paths resolve to the same filesystem object.
+    /// Reports whether two paths resolve to the same filesystem object.
     ///
-    /// Hard-link identity is the CAS materialization contract, so the check
-    /// must be identity-based: comparing contents would not notice an object
-    /// that was replaced by a byte-identical file, which is exactly the
-    /// failure this guards.
-    #[cfg(unix)]
+    /// Hard-link identity is the CAS materialization contract, so the check must
+    /// be identity-based: comparing contents would not notice an object that was
+    /// replaced by a byte-identical file, which is exactly the failure this
+    /// guards. `same-file` answers it through the platform's own identity — device
+    /// and inode on unix, volume serial and file index on Windows — so one call
+    /// replaces the two hand-written readers this file used to carry.
     fn is_same_file(left: &Path, right: &Path) -> bool {
-        use std::os::unix::fs::MetadataExt;
-
-        match (std::fs::metadata(left), std::fs::metadata(right)) {
-            (Ok(left_meta), Ok(right_meta)) => {
-                left_meta.dev() == right_meta.dev() && left_meta.ino() == right_meta.ino()
-            }
-            _ => false,
-        }
-    }
-
-    /// Windows counterpart of the unix [`is_same_file`], using the volume
-    /// serial number plus file index as the object identity.
-    ///
-    /// The identity is read through `GetFileInformationByHandle` via FFI rather
-    /// than through `MetadataExt::volume_serial_number`/`file_index`, because
-    /// those methods are still behind the unstable `windows_by_handle` feature
-    /// on stable Rust. FFI keeps this callable on every toolchain.
-    #[cfg(windows)]
-    fn is_same_file(left: &Path, right: &Path) -> bool {
-        use std::os::windows::io::AsRawHandle;
-
-        #[repr(C)]
-        struct ByHandleFileInformation {
-            file_attributes: u32,
-            creation_time: u64,
-            last_access_time: u64,
-            last_write_time: u64,
-            volume_serial_number: u32,
-            file_size_high: u32,
-            file_size_low: u32,
-            number_of_links: u32,
-            file_index_high: u32,
-            file_index_low: u32,
-        }
-
-        unsafe extern "system" {
-            fn GetFileInformationByHandle(
-                h_file: *mut std::ffi::c_void,
-                info: *mut ByHandleFileInformation,
-            ) -> i32;
-        }
-
-        fn file_identity(path: &Path) -> Option<(u32, u64)> {
-            let file = std::fs::File::open(path).ok()?;
-            let mut info = ByHandleFileInformation {
-                file_attributes: 0,
-                creation_time: 0,
-                last_access_time: 0,
-                last_write_time: 0,
-                volume_serial_number: 0,
-                file_size_high: 0,
-                file_size_low: 0,
-                number_of_links: 0,
-                file_index_high: 0,
-                file_index_low: 0,
-            };
-            let ok =
-                unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &raw mut info) };
-            if ok == 0 {
-                return None;
-            }
-            let file_index =
-                (u64::from(info.file_index_high) << 32) | u64::from(info.file_index_low);
-            Some((info.volume_serial_number, file_index))
-        }
-
-        match (file_identity(left), file_identity(right)) {
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        }
+        same_file::is_same_file(left, right).unwrap_or(false)
     }
 
     /// Regression test for the intermittent

@@ -36,6 +36,7 @@ tracing.workspace = true
 zerocopy = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+same-file.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]
