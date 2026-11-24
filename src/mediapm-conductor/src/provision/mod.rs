@@ -121,11 +121,18 @@ pub(crate) static SWEEP_STATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 pub(crate) const DEFAULT_MAX_CONCURRENT: usize = 8;
 
 /// Platform directory names that are never relevant on the current OS.
-#[cfg(target_os = "macos")]
-pub(crate) const FOREIGN_PLATFORM_DIRS: &[&str] = &["linux", "windows"];
-#[cfg(target_os = "linux")]
-pub(crate) const FOREIGN_PLATFORM_DIRS: &[&str] = &["macos", "windows"];
-#[cfg(target_os = "windows")]
-pub(crate) const FOREIGN_PLATFORM_DIRS: &[&str] = &["linux", "macos"];
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub(crate) const FOREIGN_PLATFORM_DIRS: &[&str] = &[];
+///
+/// A provisioned payload carries every platform's directory, so the linker drops
+/// the two that are not the host's. The selection is a `cfg!` rather than four
+/// `#[cfg]` definitions because each arm compiles everywhere and only the value
+/// differs; an unnamed target keeps the empty list, which is what the previous
+/// catch-all arm returned.
+pub(crate) const FOREIGN_PLATFORM_DIRS: &[&str] = if cfg!(target_os = "macos") {
+    &["linux", "windows"]
+} else if cfg!(target_os = "linux") {
+    &["macos", "windows"]
+} else if cfg!(target_os = "windows") {
+    &["linux", "macos"]
+} else {
+    &[]
+};

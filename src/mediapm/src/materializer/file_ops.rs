@@ -241,16 +241,20 @@ pub(super) async fn remove_existing_destination_path(path: &Path) -> Result<(), 
 
 /// Creates one filesystem symlink for a regular file using the async tokio
 /// runtime API.
-#[cfg(unix)]
+///
+/// Windows distinguishes a file link from a directory link, so it needs
+/// `symlink_file`; every other platform has one `symlink`. The platform
+/// selection stays inside one function rather than duplicating the whole
+/// definition.
 async fn create_file_symlink_async(source_path: &Path, destination_path: &Path) -> io::Result<()> {
-    tokio::fs::symlink(source_path, destination_path).await
-}
-
-/// Creates one filesystem symlink for a regular file using the async tokio
-/// runtime API.
-#[cfg(windows)]
-async fn create_file_symlink_async(source_path: &Path, destination_path: &Path) -> io::Result<()> {
-    tokio::fs::symlink_file(source_path, destination_path).await
+    #[cfg(windows)]
+    {
+        tokio::fs::symlink_file(source_path, destination_path).await
+    }
+    #[cfg(not(windows))]
+    {
+        tokio::fs::symlink(source_path, destination_path).await
+    }
 }
 
 /// Attempts reflink/clone (copy-on-write) materialization for one file.
