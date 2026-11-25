@@ -485,6 +485,31 @@ async fn seed_object_into_cas(cas: &FileSystemCas, payload: &[u8]) -> ExampleRes
 /// leaf, so it declares `"full"`: the library links to that object, and `full`
 /// keeps the blob whole instead of storing it as a delta. The scratch step's
 /// output is declared `save = false` because no hierarchy entry reads it, which is
+/// Builds the full platform inherited-env-var map for the demo document.
+///
+/// The demo writes all three platforms so the same `mediapm.ncl` can be synced
+/// from any host. Values are the conductor platform defaults; `extra` names are
+/// added to every platform (deduped, sorted) for host-provided stub secrets.
+fn all_platform_inherited_env_vars(extra: &[&str]) -> BTreeMap<String, Vec<String>> {
+    let mut map = BTreeMap::new();
+    for platform in ["linux", "macos", "windows"] {
+        let mut names =
+            mediapm_conductor::config::default_platform_inherited_env_var_names(platform)
+                .iter()
+                .map(|&name| name.to_owned())
+                .collect::<Vec<_>>();
+        for name in extra {
+            if !names.iter().any(|existing| existing == name) {
+                names.push((*name).to_owned());
+            }
+        }
+        names.sort();
+        names.dedup();
+        map.insert(platform.to_owned(), names);
+    }
+    map
+}
+
 /// what the document demonstrates: the bytes exist after the step and nothing in
 /// the library asks the store to keep them.
 ///
@@ -675,8 +700,8 @@ fn configure_document_for_local_tool_chain(
         // Optional default runtime GC TTL in seconds.
         // Default: 259200 (3 days).
         instance_ttl_seconds: Some(3600),
-        // Absent platforms inherit the document's platform defaults.
-        inherited_env_vars: None,
+        // Write every platform so the document can be synced from any host.
+        inherited_env_vars: Some(all_platform_inherited_env_vars(&[])),
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
         profiler_enabled: Some(true),
@@ -1093,6 +1118,20 @@ mod tests {
             manifest["library_root"].is_string(),
             "the manifest needs one anchor so a reader can find the tree it describes"
         );
+    }
+
+    /// The demo writes inherited env vars for every platform so a configured
+    /// document can be synced from any host, not only the host that wrote it.
+    #[tokio::test]
+    async fn mediapm_ncl_records_inherited_env_vars_for_all_platforms() {
+        let _isolated = IsolatedExampleRoots::with_cache();
+        let run = super::generate_demo_artifacts(false).await.expect("configure demo artifacts");
+        let doc = mediapm::load_mediapm_document(&run.workspace_root.join("mediapm.ncl"))
+            .expect("load mediapm.ncl");
+        let envs = doc.runtime.environment.inherited_env_vars.as_ref().expect("inherited env vars");
+        for key in ["windows", "linux", "macos"] {
+            assert!(envs.contains_key(key), "mediapm.ncl missing platform {key}");
+        }
     }
 
     /// Verifies demo artifact generation writes one complete import workflow manifest in full-sync mode.

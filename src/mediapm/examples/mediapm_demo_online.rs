@@ -1152,6 +1152,31 @@ async fn assert_materialized_output_hardlinked_to_cas(
 /// option rather than a provider seam, and a stub-chain run passes the mock's
 /// loopback URL. `None` leaves the option out, which is what the real-upstream
 /// route does — the tagger's default endpoint then applies.
+/// Builds the full platform inherited-env-var map for the demo document.
+///
+/// The demo writes all three platforms so the same `mediapm.ncl` can be synced
+/// from any host. `extra` names extend every platform for the stub chain's
+/// manifest and log paths.
+fn all_platform_inherited_env_vars(extra: &[&str]) -> BTreeMap<String, Vec<String>> {
+    let mut map = BTreeMap::new();
+    for platform in ["linux", "macos", "windows"] {
+        let mut names =
+            mediapm_conductor::config::default_platform_inherited_env_var_names(platform)
+                .iter()
+                .map(|&name| name.to_owned())
+                .collect::<Vec<_>>();
+        for name in extra {
+            if !names.iter().any(|existing| existing == name) {
+                names.push((*name).to_owned());
+            }
+        }
+        names.sort();
+        names.dedup();
+        map.insert(platform.to_owned(), names);
+    }
+    map
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
@@ -1737,21 +1762,10 @@ fn configure_document_for_online_demo(
     // `runtime_boundary` spells the whole surface out; the deviations below are
     // the only knobs this demo moves away from it.
     // The stub chain publishes its manifest and invocation-log paths in the
-    // host environment for offline runs. Declare those names on the host
-    // platform so whitelisted runtime children (workflow steps and mediapm-side
-    // probes that use the platform env map) can receive them when the host sets
-    // them; an unset host value is omitted by the resolver.
-    let host_platform = mediapm_conductor::config::host_platform_inherited_env_var_key();
-    let mut host_inherited =
-        mediapm_conductor::config::default_platform_inherited_env_var_names(host_platform)
-            .iter()
-            .map(|&name| name.to_string())
-            .collect::<Vec<_>>();
-    for name in mediapm_test_support::stub_media::OfflineToolChain::inherited_env_names() {
-        if !host_inherited.iter().any(|existing| existing == name) {
-            host_inherited.push((*name).to_string());
-        }
-    }
+    // host environment for offline runs. Extend every platform with those names
+    // so the whitelist is present regardless of which host wrote the document;
+    // an unset host value is omitted by the resolver.
+    let stub_env_names = mediapm_test_support::stub_media::OfflineToolChain::inherited_env_names();
 
     document.runtime = runtime_boundary(RuntimeBoundaryDeviations {
         // Materialized hierarchy root directory.
@@ -1763,10 +1777,9 @@ fn configure_document_for_online_demo(
         // Optional default runtime GC TTL in seconds.
         // Default: 259200 (3 days).
         instance_ttl_seconds: Some(3600),
-        // Extend the host platform's defaults with the stub chain env names so
-        // offline runs can pass them through the whitelist; online runs leave
-        // them unset on the host, so the resolver omits them.
-        inherited_env_vars: Some(BTreeMap::from([(host_platform.to_string(), host_inherited)])),
+        // Write every platform so the document can be synced from any host; the
+        // stub env names are present on all platforms for offline runs.
+        inherited_env_vars: Some(all_platform_inherited_env_vars(&stub_env_names)),
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
         profiler_enabled: Some(true),
@@ -4424,6 +4437,23 @@ mod tests {
             !super::expected_demo_media_root_name().contains("(Official Video)"),
             "the canonical name must not carry upstream's title suffix"
         );
+    }
+
+    /// The online demo writes inherited env vars for every platform so a
+    /// configured document can be synced from any host.
+    #[test]
+    fn mediapm_ncl_records_inherited_env_vars_for_all_platforms() -> super::ExampleResult<()> {
+        let isolated = IsolatedExampleRoots::with_cache();
+        let workspace_root = isolated.artifact_root_path();
+        super::configure_document_for_online_demo(workspace_root, None)?;
+
+        let document = super::load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
+        let envs =
+            document.runtime.environment.inherited_env_vars.as_ref().expect("inherited env vars");
+        for key in ["windows", "linux", "macos"] {
+            assert!(envs.contains_key(key), "mediapm.ncl missing platform {key}");
+        }
+        Ok(())
     }
 
     /// Ensures the online demo resolves its title from the tagged variant first.
