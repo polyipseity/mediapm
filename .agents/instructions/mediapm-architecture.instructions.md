@@ -55,6 +55,7 @@ Per-crate `AGENTS.md` files hold detailed invariants and contracts.
 - Write library entries directly from CAS object to target path: validate object, remove read-only target, then write. No staging tree or rename commit. `MediaPmPaths` has no staging directory.
 - Decide skip by target content. Store-object entries compare recorded hash and object length; `zip_member` entries compare member hash/length and replace read-only target through the same remove-then-write path.
 - NFD filenames: config stage rejects non-NFD user-declared components (`check_nfd_source`/`validate_hierarchy_path_component`) with a distinct message. Post-resolution stage normalizes components after interpolation (`sanitize_and_validate_components`) before workers start; reject `.`/`..` and unrewritten separators. Sanitize `rename_files` replacement strings with the configured replacement map.
+- Playlist entry paths render with `/` on every platform, relative or absolute: XSPF `<location>`, WPL `<media src>`, and ASX `<ref href>` are URI references where `\` is not a separator, and M3U8/PLS readers accept `/` everywhere. `resolve_playlist_target_relative_path` returns the rendered string, so a host separator cannot leak into a playlist body.
 
 ## Output save policy
 

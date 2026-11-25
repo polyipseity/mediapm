@@ -4,7 +4,6 @@
 //! WPL (Windows Media Player), and ASX (Advanced Stream Redirector).
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
 
 use crate::config::hierarchy_types::PlaylistFormat;
 
@@ -40,45 +39,47 @@ pub(super) fn generate_playlist_bytes(
     }
 }
 
-/// Resolves the relative path from a playlist file location to the media
-/// entry target.
+/// Resolves the path a playlist entry records, always separated by `/`.
 ///
 /// In relative mode, computes a `../`-based path from the playlist's parent
 /// directory to the entry. In absolute mode, returns the entry path as-is.
+///
+/// The result is a string rather than a `PathBuf` because three of the five
+/// formats carry URI references — XSPF `<location>`, WPL `<media src>`, ASX
+/// `<ref href>` — where `\` is not a separator. M3U8 and PLS readers accept `/`
+/// on Windows too, so one rendering is correct in all five formats and the
+/// written bytes no longer depend on the host.
 #[must_use]
 pub(super) fn resolve_playlist_target_relative_path(
     playlist_path: &str,
     entry_path: &str,
     path_mode: PlaylistEntryPathMode,
-) -> PathBuf {
+) -> String {
     match path_mode {
-        PlaylistEntryPathMode::Absolute => PathBuf::from(entry_path),
+        PlaylistEntryPathMode::Absolute => entry_path.to_string(),
         PlaylistEntryPathMode::Relative => {
-            let playlist = Path::new(playlist_path);
-            let parent = playlist.parent().unwrap_or(playlist);
-            let entry = Path::new(entry_path);
+            let playlist_components: Vec<&str> = playlist_path.split(['/', '\\']).collect();
+            let entry_components: Vec<&str> = entry_path.split(['/', '\\']).collect();
+            // The file name is not a directory: relative paths start from the
+            // playlist's parent. A playlist named by one component has no
+            // parent components, and neither does an empty name, so the slice
+            // is taken only when there is a file name to drop.
+            let parent_components = if playlist_components.len() > 1 {
+                &playlist_components[..playlist_components.len() - 1]
+            } else {
+                &[][..]
+            };
 
-            let parent_components: Vec<std::path::Component<'_>> = parent.components().collect();
-            let entry_components: Vec<std::path::Component<'_>> = entry.components().collect();
-
-            // Find the shared prefix length.
             let shared_prefix = parent_components
                 .iter()
                 .zip(entry_components.iter())
                 .take_while(|(a, b)| a == b)
                 .count();
 
-            // Build relative path: "../" for each remaining parent component,
-            // then the remaining entry components.
-            let mut relative = PathBuf::new();
-            for _ in shared_prefix..parent_components.len() {
-                relative.push("..");
-            }
-            for component in &entry_components[shared_prefix..] {
-                relative.push(component.as_os_str());
-            }
-
-            relative
+            let mut segments: Vec<&str> = Vec::new();
+            segments.extend(std::iter::repeat_n("..", parent_components.len() - shared_prefix));
+            segments.extend(entry_components[shared_prefix..].iter().copied());
+            segments.join("/")
         }
     }
 }

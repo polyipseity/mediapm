@@ -1588,10 +1588,8 @@ async fn materialize_playlist_entry(
         let media_relative_path = render_relative_path(path_components);
         let resolved =
             resolve_playlist_target_relative_path(relative_path, &media_relative_path, path_mode);
-        rendered_entries.push(RenderedPlaylistEntry {
-            id: hierarchy_id.to_string(),
-            path: resolved.to_string_lossy().to_string(),
-        });
+        rendered_entries
+            .push(RenderedPlaylistEntry { id: hierarchy_id.to_string(), path: resolved });
     }
 
     // Where the expected body comes from: the document's references rendered

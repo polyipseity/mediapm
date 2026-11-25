@@ -280,9 +280,15 @@ async fn a_playlist_whose_path_is_a_directory_is_counted_as_missing() {
     );
 }
 
-/// Both playlist path modes render the same entry through the two shapes a user
-/// can ask for: relative to the playlist's own directory, or from the library
-/// root.
+/// Both playlist path modes render the same entry through the shapes a user can
+/// ask for: relative to the playlist's own directory, or from the library root.
+///
+/// The expected strings are compared as `&str`, not as `PathBuf`, because the
+/// rendered body is what a player reads: XSPF's `<location>`, WPL's
+/// `<media src>`, and ASX's `<ref href>` are URI references, where `/` is the
+/// only separator, and M3U8 and PLS readers accept it on every platform. A
+/// `PathBuf` comparison would accept the host separator and let a Windows run
+/// write a body no player on that platform can resolve.
 #[test]
 fn both_playlist_path_modes_render() {
     use super::playlist::PlaylistEntryPathMode;
@@ -293,7 +299,7 @@ fn both_playlist_path_modes_render() {
             "music/x.mp4",
             PlaylistEntryPathMode::Relative
         ),
-        std::path::PathBuf::from("../music/x.mp4")
+        "../music/x.mp4"
     );
     assert_eq!(
         resolve_playlist_target_relative_path(
@@ -301,6 +307,15 @@ fn both_playlist_path_modes_render() {
             "music/x.mp4",
             PlaylistEntryPathMode::Absolute
         ),
-        std::path::PathBuf::from("music/x.mp4")
+        "music/x.mp4"
+    );
+    assert_eq!(
+        resolve_playlist_target_relative_path(
+            "playlists/nested/a.m3u8",
+            "music/x.mp4",
+            PlaylistEntryPathMode::Relative
+        ),
+        "../../music/x.mp4",
+        "each remaining parent component contributes one `..` segment"
     );
 }
