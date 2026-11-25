@@ -155,11 +155,11 @@ use mediapm::demo_hierarchy_spec::{
 };
 use mediapm::{
     ConfigPayloadStaging, ConfigVersionSpec, GenericOutputVariantConfig, HierarchyFolderRenameRule,
-    HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
+    HierarchyNode, HierarchyNodeKind, HierarchyPath, MediaMetadataValue,
     MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmService,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
     OutputSaveConfig, OutputVariantValue, PlaylistFormat, PlaylistItemRef, PlaylistOutputMode,
-    SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, TransformInputValue, YtDlpOutputKind,
+    SanitizeNamesConfig, ToolRequirement, TransformInputValue, YtDlpOutputKind,
     YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
     load_mediapm_state_document, save_mediapm_document,
 };
@@ -209,13 +209,6 @@ const DEMO_UNTAGGED_MEDIA_FILE_NAME: &str = "${media.metadata.artist} - ${media.
 
 const DEMO_TAGGED_MEDIA_FILE_NAME: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
-
-const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
-    MaterializationMethod::Hardlink,
-    MaterializationMethod::Symlink,
-    MaterializationMethod::Reflink,
-    MaterializationMethod::Copy,
-];
 
 fn final_demo_output_variant() -> &'static str {
     "video_untagged"
@@ -433,18 +426,6 @@ struct SecondRunTally {
     warning_count: usize,
 }
 
-/// Per-tool provenance as recorded in the state lockfile: the canonical version
-/// that drives skip-if-up-to-date logic, plus the upstream identifiers the
-/// provider resolved (`None` where the provider has no value — the why-empty
-/// rules live in `.agents/instructions/tool-provisioning.instructions.md`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct ManagedToolProvenance {
-    canonical_version: String,
-    resolved_tag: Option<String>,
-    resolved_version: Option<String>,
-    resolved_vcs_hash: Option<String>,
-}
-
 /// What an offline run recorded that proves it reached no network, and that the mock's
 /// answer is the one the run used.
 ///
@@ -481,25 +462,12 @@ struct OfflineEvidence {
 /// Paths are deliberately absent except [`Self::media_folder`]: the workspace,
 /// the generated document, and the tool binaries all sit at fixed offsets or in
 /// the state lockfile, and a reader who has the manifest has the artifact root.
-/// What stays is what no other file records for this run: the counters, the
-/// versions, the applied policy, and the offline evidence.
+/// What stays is what no other file records for this run: the counters and the
+/// offline evidence.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct DemoManifest {
-    /// Which mode produced this manifest. Both routes run the same full sync, so
-    /// this is always `"full"`; [`DemoManifest::offline`] is what records which
-    /// upstream the run reached.
-    run_mode: String,
     generated_unix_epoch_seconds: u64,
-    tool_ids: Vec<String>,
-    /// Canonical version and upstream provenance per logical managed tool id,
-    /// read from the state lockfile after the sync. See
-    /// [`summarize_managed_tool_provenance`].
-    managed_tools: BTreeMap<String, ManagedToolProvenance>,
-    yt_dlp_max_concurrent_calls: i32,
-    yt_dlp_max_retries: i32,
-    workflow_id: String,
     workflow_step_count: usize,
-    materialization_preference_order: Vec<String>,
     executed_steps: usize,
     cached_steps: usize,
     materialized_paths: usize,
@@ -888,43 +856,6 @@ async fn summarize_store_size(cas: &FileSystemCas, cas_root: &Path) -> ExampleRe
     }
 
     Ok(total)
-}
-
-/// Summarises the state lockfile's `managed_tools` entries as one provenance
-/// record per logical tool id.
-///
-/// Every fetch-and-deploy cycle appends an entry, so one tool id can appear
-/// several times; the record kept is the entry with the greatest
-/// `deployed_at`, which is the deployment the run just resolved against.
-/// Entries are keyed by the logical `tool_id` rather than the content-addressed
-/// conductor id because that is the name a reader of the manifest recognises.
-fn summarize_managed_tool_provenance(
-    entries: &[ToolRegistryEntry],
-) -> BTreeMap<String, ManagedToolProvenance> {
-    let mut latest: BTreeMap<&str, &ToolRegistryEntry> = BTreeMap::new();
-    for entry in entries {
-        let superseded = latest
-            .get(entry.tool_id.as_str())
-            .is_some_and(|current| current.deployed_at >= entry.deployed_at);
-        if !superseded {
-            latest.insert(entry.tool_id.as_str(), entry);
-        }
-    }
-
-    latest
-        .into_iter()
-        .map(|(tool_id, entry)| {
-            (
-                tool_id.to_string(),
-                ManagedToolProvenance {
-                    canonical_version: entry.canonical_version.clone(),
-                    resolved_tag: entry.resolved_tag.clone(),
-                    resolved_version: entry.resolved_version.clone(),
-                    resolved_vcs_hash: entry.resolved_vcs_hash.clone(),
-                },
-            )
-        })
-        .collect()
 }
 
 /// Snapshots every file under the hierarchy root as `(relative path, length,
@@ -3920,9 +3851,9 @@ async fn run_online_demo(
     configure_demo_ffprobe_command(&machine, &tool_binaries)?;
 
     let yt_dlp_tool_id = resolve_managed_tool_id(&machine, "yt-dlp")?;
-    let yt_dlp_max_concurrent_calls = assert_yt_dlp_concurrency_policy(&machine, &yt_dlp_tool_id)?;
-    let yt_dlp_max_retries = assert_yt_dlp_retry_policy(&machine, &yt_dlp_tool_id)?;
-    let (workflow_id, workflow_step_count) = assert_demo_workflow_shape(&machine)?;
+    let _ = assert_yt_dlp_concurrency_policy(&machine, &yt_dlp_tool_id)?;
+    let _ = assert_yt_dlp_retry_policy(&machine, &yt_dlp_tool_id)?;
+    let (_workflow_id, workflow_step_count) = assert_demo_workflow_shape(&machine)?;
     let hierarchy_root = sync_service.resolve_effective_paths()?.hierarchy_root_dir;
     let resolved = resolve_demo_output_paths(route, &hierarchy_root)?;
     let playlist_path = hierarchy_root.join("playlists").join("rickroll.m3u8");
@@ -3988,10 +3919,6 @@ async fn run_online_demo(
     mediapm::output::print_sync_summary(&second);
 
     let store_size_bytes = summarize_store_size(sync_service.conductor().cas(), &cas_root).await?;
-    let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
-        .iter()
-        .map(|method| format!("{method:?}"))
-        .collect::<Vec<_>>();
 
     let _yt_dlp_binary =
         tool_binaries.get(&yt_dlp_tool_id).ok_or("yt-dlp command selector missing")?;
@@ -4002,15 +3929,8 @@ async fn run_online_demo(
         .ok_or("tagged demo video should live inside its media folder")?;
 
     let manifest = DemoManifest {
-        run_mode: "full".to_string(),
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
-        tool_ids: logical_tool_ids,
-        managed_tools: summarize_managed_tool_provenance(&lock.managed_tools),
-        yt_dlp_max_concurrent_calls,
-        yt_dlp_max_retries,
-        workflow_id,
         workflow_step_count,
-        materialization_preference_order,
         executed_steps: summary.executed_steps,
         cached_steps: summary.cached_steps,
         materialized_paths: summary.materialized_paths,
@@ -4787,9 +4707,8 @@ mod tests {
     /// `media-tagger` became a host builtin: its step dispatches in-process, so
     /// its generated entry has no command to spawn and the resolver must not
     /// claim it has a binary — nor may it reject the run for that. The configured
-    /// ids are the manifest's `tool_ids`, so they stay whole: the manifest
-    /// records the tools the demo asked for, and only `tool_binaries` narrows to
-    /// what can be spawned.
+    /// ids stay whole: the demo records the tools it asked for, and only
+    /// `tool_binaries` narrows to what can be spawned.
     #[test]
     fn resolve_tool_binaries_skips_a_payload_free_builtin() {
         let _isolated = IsolatedExampleRoots::with_cache();
@@ -4799,7 +4718,7 @@ mod tests {
         assert_eq!(
             configured_ids.iter().map(String::as_str).collect::<Vec<_>>(),
             DEMO_CONFIGURED_TOOL_IDS.to_vec(),
-            "the manifest's tool_ids are the configured set, in declaration order"
+            "the configured tool ids are the set the demo asks for, in declaration order"
         );
 
         let document = generated_document_with_every_configured_tool();
@@ -4953,15 +4872,17 @@ mod tests {
         );
 
         // The default path ran a full sync, which is what the run prints as
-        // `sync executed: true`. The manifest is the assertable form of that
-        // decision: both routes record `full`, and the idempotency re-run's tally
-        // is written by that path alone.
+        // `sync executed: true`. The manifest records the idempotency re-run's
+        // tally, which is written by that path alone.
         let manifest_path = roots.artifact_root().join("manifest.json");
         let manifest: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&manifest_path).expect("the offline run should write a manifest.json"),
         )
         .expect("manifest.json should be valid JSON");
-        assert_eq!(manifest["run_mode"], "full", "the default path must run a full sync");
+        assert!(
+            manifest.get("run_mode").is_none(),
+            "demo-online manifest no longer records run_mode"
+        );
         assert!(
             manifest.get("second_run").is_some(),
             "the default path must run the idempotency re-run the full path performs"
@@ -5247,17 +5168,6 @@ mod tests {
                 None => std::env::remove_var(example_isolation::ARTIFACT_ROOT_ENV),
             }
         }
-    }
-
-    /// Ensures demo runtime config surfaces the explicit default
-    /// materialization order in a stable serialized form.
-    #[test]
-    fn demo_materialization_preference_order_matches_default_labels() {
-        let labels = super::DEMO_MATERIALIZATION_PREFERENCE_ORDER
-            .iter()
-            .map(|method| method.as_label())
-            .collect::<Vec<_>>();
-        assert_eq!(labels, vec!["hardlink", "symlink", "reflink", "copy"]);
     }
 
     /// Ensures cleanup helpers can remove readonly-marked trees created by
@@ -5650,46 +5560,6 @@ mod tests {
 
         super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect("media-id-aligned non-subtitle sidecars should be accepted");
-    }
-
-    /// Ensures the manifest's per-tool provenance follows the deployment the
-    /// run resolved against: when one tool id has several recorded deploys,
-    /// the newest supplies the canonical version and the provenance fields.
-    #[test]
-    fn managed_tool_provenance_keeps_the_latest_deployed_entry() {
-        let older = mediapm::ToolRegistryEntry {
-            tool_id: "yt-dlp".to_string(),
-            version: "2026.01.01".to_string(),
-            canonical_version: "older-commit".to_string(),
-            content_map_hash: "older-hash".to_string(),
-            deployed_at: mediapm_utils::Timestamp::from_unix_nanos(1),
-            resolved_tag: Some("2026.01.01".to_string()),
-            resolved_version: Some("2026.01.01".to_string()),
-            resolved_vcs_hash: Some("older-vcs".to_string()),
-        };
-        let newer = mediapm::ToolRegistryEntry {
-            tool_id: "yt-dlp".to_string(),
-            version: "2026.02.02".to_string(),
-            canonical_version: "newer-commit".to_string(),
-            content_map_hash: "newer-hash".to_string(),
-            deployed_at: mediapm_utils::Timestamp::from_unix_nanos(2),
-            resolved_tag: Some("2026.02.02".to_string()),
-            resolved_version: Some("2026.02.02".to_string()),
-            resolved_vcs_hash: Some("newer-vcs".to_string()),
-        };
-
-        // Both orders must land on the newer deployment: the summarizer
-        // selects by `deployed_at`, not by position in the lockfile.
-        for entries in [vec![older.clone(), newer.clone()], vec![newer, older]] {
-            let summary = super::summarize_managed_tool_provenance(&entries);
-
-            assert_eq!(summary.len(), 1, "one record per logical tool id");
-            let provenance = summary.get("yt-dlp").expect("yt-dlp provenance recorded");
-            assert_eq!(provenance.canonical_version, "newer-commit");
-            assert_eq!(provenance.resolved_tag.as_deref(), Some("2026.02.02"));
-            assert_eq!(provenance.resolved_version.as_deref(), Some("2026.02.02"));
-            assert_eq!(provenance.resolved_vcs_hash.as_deref(), Some("newer-vcs"));
-        }
     }
 
     /// Pins the demo manifest's store-size walk against a store this test seeds.

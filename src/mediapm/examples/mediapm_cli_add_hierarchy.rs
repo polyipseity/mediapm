@@ -1,8 +1,8 @@
 //! Example for adding hierarchy presets on top of registered media sources.
 //!
 //! Bootstraps a clean `mediapm` workspace, registers one local and one online
-//! media source, applies local and yt-dlp hierarchy presets, and writes a
-//! manifest recording the resulting document locations.
+//! media source, applies local and yt-dlp hierarchy presets, and writes a small
+//! manifest recording the hierarchy node count.
 
 use std::error::Error;
 use std::fs;
@@ -18,8 +18,6 @@ use url::Url;
 const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-hierarchy";
 const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
 const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
-const LOCAL_HIERARCHY_FOLDER: &str = "music videos/local";
-const YT_DLP_HIERARCHY_FOLDER: &str = "music videos/online";
 
 /// Embedded tiny MP4 payload containing both video and audio tracks.
 const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
@@ -28,11 +26,7 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AddHierarchyManifest {
-    local_media_id: String,
-    remote_media_id: String,
     hierarchy_node_count: usize,
-    local_hierarchy_folder: String,
-    yt_dlp_hierarchy_folder: String,
 }
 
 fn workspace_root() -> PathBuf {
@@ -105,14 +99,12 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
             .await?;
 
     let local_source_path = write_dummy_local_source(&root)?;
-    let local_media_id = service
-        .add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End)
-        .await?;
+    service.add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End).await?;
     let remote_uri = Url::parse(DUMMY_YOUTUBE_URL)?;
     let remote_media_id = "youtube-dQw4w9WgXcQ".to_string();
     service.add_media_source(
         &MediaSourceSpec::default(),
-        remote_media_id.clone(),
+        remote_media_id,
         &remote_uri,
         None,
         None,
@@ -123,13 +115,7 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
 
     let paths = service.paths();
     let document = load_mediapm_document(&paths.mediapm_ncl)?;
-    let manifest = AddHierarchyManifest {
-        local_media_id,
-        remote_media_id,
-        hierarchy_node_count: document.hierarchy.len(),
-        local_hierarchy_folder: LOCAL_HIERARCHY_FOLDER.to_string(),
-        yt_dlp_hierarchy_folder: YT_DLP_HIERARCHY_FOLDER.to_string(),
-    };
+    let manifest = AddHierarchyManifest { hierarchy_node_count: document.hierarchy.len() };
 
     fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
 
@@ -144,8 +130,6 @@ async fn main() -> ExampleResult<()> {
     let root = artifact_root();
 
     println!("manifest: {}", root.join("manifest.json").display());
-    println!("local media id: {}", manifest.local_media_id);
-    println!("remote media id: {}", manifest.remote_media_id);
     println!("hierarchy node count: {}", manifest.hierarchy_node_count);
 
     Ok(())
@@ -170,6 +154,38 @@ mod tests {
 
         let document = load_mediapm_document(&mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.hierarchy.len(), 2, "example should add two hierarchy nodes");
+        assert_eq!(
+            manifest.hierarchy_node_count,
+            document.hierarchy.len(),
+            "manifest records the hierarchy node count observed in this run"
+        );
+
+        assert_eq!(document.media.len(), 2, "example should register exactly two media sources");
+        let (local_media_id, local_source) = document
+            .media
+            .iter()
+            .find(|(_, source)| {
+                source.steps.first().is_some_and(|step| {
+                    step.tool == mediapm::MediaStepTool::Import
+                        && step.options.get("kind")
+                            == Some(&mediapm::TransformInputValue::String("cas_hash".to_string()))
+                })
+            })
+            .expect("local add should register an imported source with cas_hash kind");
+        let (remote_media_id, remote_source) = document
+            .media
+            .iter()
+            .find(|(_, source)| {
+                source.steps.is_empty()
+                    && source.metadata.is_empty()
+                    && source.title.is_empty()
+                    && source.description.is_empty()
+            })
+            .expect("remote add should register a bare source spec");
+        assert_ne!(
+            local_media_id, remote_media_id,
+            "local and remote sources must have different ids"
+        );
 
         let local_root = document
             .hierarchy
@@ -198,8 +214,10 @@ mod tests {
             );
         }
 
-        let remote_source =
-            document.media.get(&manifest.remote_media_id).expect("remote source should exist");
+        assert!(
+            !local_source.title.trim().is_empty(),
+            "local add should auto-populate a non-empty title from ffprobe"
+        );
         assert!(
             remote_source.steps.is_empty(),
             "remote hierarchy example registers a bare source spec with no steps"
@@ -207,10 +225,6 @@ mod tests {
         assert!(
             remote_source.metadata.is_empty(),
             "remote hierarchy example registers a bare source spec with no metadata"
-        );
-        assert!(
-            remote_source.title.is_empty() && remote_source.description.is_empty(),
-            "remote hierarchy example registers a bare source spec with no title/description"
         );
 
         // Conductor documents (user/generated) and managed workflows are only

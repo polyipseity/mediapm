@@ -2,15 +2,13 @@
 //!
 //! Uses `MediaPmService::add_local_source` and `add_media_source` directly
 //! instead of spawning the CLI. Writes generated documents under
-//! `src/mediapm/examples/artifacts/cli-add-sources/` and emits a small
-//! `manifest.json` with resulting media ids and config locations.
+//! `src/mediapm/examples/artifacts/cli-add-sources/`.
 
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use mediapm::{AddInsertPosition, MediaPmService, MediaSourceSpec, example_isolation};
-use serde::{Deserialize, Serialize};
 use url::Url;
 
 const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-sources";
@@ -21,12 +19,6 @@ const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
 
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct AddSourcesManifest {
-    local_media_id: String,
-    remote_media_id: String,
-}
 
 fn workspace_root() -> PathBuf {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -61,49 +53,41 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     Ok(local_source_path)
 }
 
-/// Builds the media-source manifest this example documents.
+/// Registers one local and one remote media source in a clean workspace.
 ///
 /// Shuts the conductor the service owns down before returning:
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
 /// into the caller's removed directory.
-async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
+async fn run_add_sources_example() -> ExampleResult<()> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
     let mut service = MediaPmService::new_fs_at(&root).await?;
 
     let local_source_path = write_dummy_local_source(&root)?;
-    let local_media_id = service
-        .add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End)
-        .await?;
+    service.add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End).await?;
 
     let remote_uri = Url::parse(DUMMY_YOUTUBE_URL)?;
     let remote_media_id = mediapm::media_id_from_uri(&remote_uri);
     service.add_media_source(
         &MediaSourceSpec::default(),
-        remote_media_id.clone(),
+        remote_media_id,
         &remote_uri,
         None,
         None,
     )?;
 
-    let manifest = AddSourcesManifest { local_media_id, remote_media_id };
-
-    fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
-
     service.conductor().shutdown().await?;
 
-    Ok(manifest)
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let manifest = run_add_sources_example().await?;
+    run_add_sources_example().await?;
     let root = artifact_root();
 
-    println!("manifest: {}", root.join("manifest.json").display());
-    println!("local media id: {}", manifest.local_media_id);
-    println!("remote media id: {}", manifest.remote_media_id);
+    println!("mediapm config: {}", root.join("mediapm.ncl").display());
 
     Ok(())
 }
@@ -120,18 +104,35 @@ mod tests {
     #[tokio::test]
     async fn cli_add_sources_writes_expected_config_documents() {
         let _isolated = IsolatedExampleRoots::artifact_only();
-        let manifest = run_add_sources_example().await.expect("run add-sources example");
-        let mediapm_ncl = super::artifact_root().join("mediapm.ncl");
+        run_add_sources_example().await.expect("run add-sources example");
+        let root = super::artifact_root();
+        let mediapm_ncl = root.join("mediapm.ncl");
 
+        assert!(
+            !root.join("manifest.json").exists(),
+            "add-sources manifest is redundant; the config documents already record the sources"
+        );
         assert!(mediapm_ncl.exists(), "mediapm config should exist");
 
         let document = load_mediapm_document(&mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.media.len(), 2, "example should register exactly two media sources");
 
-        let local_source =
-            document.media.get(&manifest.local_media_id).expect("local source should exist");
-        let remote_source =
-            document.media.get(&manifest.remote_media_id).expect("remote source should exist");
+        let (remote_media_id, remote_source) = document
+            .media
+            .iter()
+            .find(|(_, source)| source.steps.is_empty() && source.metadata.is_empty())
+            .expect("remote add registers a bare source spec");
+        let (local_media_id, local_source) = document
+            .media
+            .iter()
+            .find(|(_, source)| {
+                source.steps.first().is_some_and(|step| step.tool == MediaStepTool::Import)
+            })
+            .expect("local add registers an imported source spec");
+        assert_ne!(
+            local_media_id, remote_media_id,
+            "local and remote sources must have different ids"
+        );
 
         assert!(
             !local_source.title.trim().is_empty(),

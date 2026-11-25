@@ -73,11 +73,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use mediapm::config::versions::{RuntimeBoundaryDeviations, runtime_boundary};
 use mediapm::{
     AddInsertPosition, ConfigPayloadStaging, ConfigVersionSpec, HierarchyNode, HierarchyNodeKind,
-    HierarchyPath, MaterializationMethod, MediaMetadataValue, MediaPmService, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, OutputSaveConfig, OutputVariantValue,
-    PlaylistFormat, PlaylistItemRef, PlaylistOutputMode, SanitizeNamesConfig, ToolRequirement,
-    TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig, example_isolation,
-    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    HierarchyPath, MediaMetadataValue, MediaPmService, MediaRuntimeStorage, MediaSourceSpec,
+    MediaStep, MediaStepTool, OutputSaveConfig, OutputVariantValue, PlaylistFormat,
+    PlaylistItemRef, PlaylistOutputMode, SanitizeNamesConfig, ToolRequirement, TransformInputValue,
+    YtDlpOutputKind, YtDlpOutputVariantConfig, example_isolation, load_mediapm_document,
+    load_mediapm_state_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{NickelDocument, decode_document, encode_document};
@@ -111,28 +111,18 @@ const DEMO_LIBRARY_ROOT: &str = "music videos";
 const DEMO_MEDIA_FOLDER_TEMPLATE: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
 const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
-const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
-    MaterializationMethod::Hardlink,
-    MaterializationMethod::Symlink,
-    MaterializationMethod::Reflink,
-    MaterializationMethod::Copy,
-];
 
 /// One offline demo run, summarized.
 ///
 /// Paths are deliberately absent except [`Self::library_root`]: the workspace,
 /// the document, the state file, and the profile all sit at fixed offsets from
 /// the artifact root, and a reader who has the manifest has the root. What stays
-/// is what no other file records for this run: the counters, the sizes, and the
-/// policy the run applied.
+/// is what no other file records for this run: the counters and the sizes.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct DemoManifest {
     generated_unix_epoch_seconds: u64,
-    media_id: String,
-    source_hash: String,
     configured_tool_count: usize,
     configured_step_count: usize,
-    materialization_preference_order: Vec<String>,
     executed_steps: usize,
     cached_steps: usize,
     materialized_paths: usize,
@@ -985,11 +975,6 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         .map_err(|e| std::io::Error::other(format!("resolve effective paths: {e}")))?;
     let cas_root = effective_paths.runtime_root.join("store");
     let store_size_stats = summarize_store_sizes(service.conductor().cas(), &cas_root).await?;
-    let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
-        .iter()
-        .map(MaterializationMethod::as_label)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
 
     let materialized = effective_paths
         .hierarchy_root_dir
@@ -1009,11 +994,8 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 
     let manifest = DemoManifest {
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
-        media_id: DEMO_MEDIA_ID.to_string(),
-        source_hash: source_hash_text,
         configured_tool_count,
         configured_step_count,
-        materialization_preference_order,
         executed_steps: maybe_summary.as_ref().map_or(0, |summary| summary.executed_steps),
         cached_steps: maybe_summary.as_ref().map_or(0, |summary| summary.cached_steps),
         materialized_paths: maybe_summary.as_ref().map_or(0, |summary| summary.materialized_paths),
@@ -1090,6 +1072,9 @@ mod tests {
             "mediapm_state_json_path",
             "profile_path",
             "materialized_hardlinked_to_cas",
+            "media_id",
+            "source_hash",
+            "materialization_preference_order",
         ] {
             assert!(
                 manifest.get(absent).is_none(),
@@ -1098,7 +1083,6 @@ mod tests {
         }
 
         for present in [
-            "media_id",
             "configured_tool_count",
             "configured_step_count",
             "executed_steps",
@@ -1195,23 +1179,12 @@ mod tests {
             (ratio - expected_ratio).abs() <= f64::EPSILON,
             "manifest ratio should match with/without store-size math"
         );
-        assert!(
-            manifest_json
-                .get("source_hash")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|hash| hash.starts_with("blake3:")),
-            "manifest should record a blake3-prefixed CAS hash"
-        );
-        assert_eq!(
-            manifest_json
-                .get("materialization_preference_order")
-                .and_then(serde_json::Value::as_array)
-                .map(|value| {
-                    value.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>()
-                }),
-            Some(vec!["hardlink", "symlink", "reflink", "copy"]),
-            "manifest should expose explicit default materialization order"
-        );
+        for absent in ["media_id", "source_hash", "materialization_preference_order"] {
+            assert!(
+                manifest_json.get(absent).is_none(),
+                "demo manifest should not restate {absent}"
+            );
+        }
         assert!(
             manifest_json
                 .get("executed_steps")

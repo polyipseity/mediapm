@@ -18,7 +18,6 @@ use mediapm_conductor::{
     ConfigPayloadStaging, NickelDocument, OutputSaveMode, ToolKindSpec, ToolRuntime, ToolSpec,
     config::ExternalDataEntry, decode_document, encode_document,
 };
-use serde::{Deserialize, Serialize};
 
 const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-tools";
 const TOOL_NAMES: [&str; 6] = ["yt-dlp", "ffmpeg", "deno", "rsgain", "sd", "media-tagger"];
@@ -43,12 +42,6 @@ fn example_cache_root() -> PathBuf {
 }
 
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct AddToolsManifest {
-    logical_tool_names: Vec<String>,
-    tool_ids: Vec<String>,
-}
 
 fn workspace_root() -> PathBuf {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -113,12 +106,12 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     }
 }
 
-/// Builds the managed-tool manifest this example documents.
+/// Populates the managed-tool requirements this example documents.
 ///
 /// Shuts the conductor the service owns down before returning:
 /// `Conductor::shutdown` awaits the background pass that would otherwise write
 /// into the caller's removed directory.
-async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
+async fn run_add_tools_example() -> ExampleResult<()> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
@@ -188,26 +181,20 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
 
     fs::write(&paths.conductor_generated_ncl, encode_document(machine)?)?;
 
-    let manifest = AddToolsManifest {
-        logical_tool_names: TOOL_NAMES.iter().map(|v| (*v).to_string()).collect(),
-        tool_ids,
-    };
-
-    fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
-
     service.conductor().shutdown().await?;
 
-    Ok(manifest)
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let manifest = run_add_tools_example().await?;
+    run_add_tools_example().await?;
     let root = artifact_root();
+    let tool_ids = TOOL_NAMES.iter().map(|name| tool_id_for(name)).collect::<Vec<_>>();
 
-    println!("manifest: {}", root.join("manifest.json").display());
-    println!("logical tools: {}", manifest.logical_tool_names.join(", "));
-    println!("tool ids: {}", manifest.tool_ids.join(", "));
+    println!("mediapm config: {}", root.join("mediapm.ncl").display());
+    println!("logical tools: {}", TOOL_NAMES.join(", "));
+    println!("tool ids: {}", tool_ids.join(", "));
 
     Ok(())
 }
@@ -224,9 +211,13 @@ mod tests {
     #[tokio::test]
     async fn add_tools_writes_expected_config_documents() {
         let isolated = IsolatedExampleRoots::with_cache();
-        let manifest = run_add_tools_example().await.expect("run add-tools example");
+        run_add_tools_example().await.expect("run add-tools example");
         let root = super::artifact_root();
 
+        assert!(
+            !root.join("manifest.json").exists(),
+            "add-tools manifest is redundant; the config documents already record the tools"
+        );
         assert!(
             isolated.cache_root_path().expect("cache root").join("store").exists(),
             "tool sync should have used the isolated user cache root"
@@ -241,15 +232,16 @@ mod tests {
         assert!(document.media.is_empty(), "tools example should leave media empty");
         assert_eq!(
             document.tools.len(),
-            manifest.logical_tool_names.len(),
+            super::TOOL_NAMES.len(),
             "tools example should register every managed tool requirement"
         );
 
         let machine_bytes = fs::read(&conductor_generated_ncl).expect("read machine doc");
         let machine: NickelDocument = decode_document(&machine_bytes).expect("decode machine doc");
 
-        for tool_id in &manifest.tool_ids {
-            let tool = machine.tools.get(tool_id).expect("expected tool '{tool_id}'");
+        for logical_tool_name in super::TOOL_NAMES {
+            let tool_id = super::tool_id_for(logical_tool_name);
+            let tool = machine.tools.get(&tool_id).expect("expected tool '{tool_id}'");
             assert!(
                 !tool.runtime.content_map.is_empty(),
                 "expected content map entries for dummy tool '{tool_id}'"
