@@ -594,38 +594,27 @@ async fn sync_parallel_driver_is_deterministic() -> Result<(), mediapm::MediaPmE
     // is set aside: the document names the directory each payload was
     // materialized into, and that path starts with the workspace root the run
     // used. Everything the document says about the tools still has to match.
+    let normalize_workspace_root = |document: &[u8], root: &std::path::Path| -> String {
+        let text = String::from_utf8(document.to_vec()).expect("the generated document is UTF-8");
+        let root_text = root.to_string_lossy();
+        let mut normalized = text.replace(root_text.as_ref(), "<workspace>");
+        let forward = root_text.replace('\\', "/");
+        if forward != root_text.as_ref() {
+            normalized = normalized.replace(&forward, "<workspace>");
+        }
+        let json_escaped = root_text.replace('\\', "\\\\");
+        if json_escaped != root_text.as_ref() {
+            normalized = normalized.replace(&json_escaped, "<workspace>");
+        }
+        assert!(
+            normalized.contains("<workspace>"),
+            "the generated document has to name the workspace root it was written in",
+        );
+        normalized
+    };
     let doc1 = normalize_workspace_root(&doc1_bytes, &svc1.paths().root_dir);
     let doc2 = normalize_workspace_root(&doc2_bytes, &svc2.paths().root_dir);
     assert_eq!(doc1, doc2, "generated doc bytes differ between runs");
 
     Ok(())
-}
-
-/// Replaces a workspace root with a fixed token in a generated document.
-///
-/// The assertion that the token appears is what keeps this honest: a
-/// normalization that matched nothing would leave the comparison exactly as it
-/// was and hide the reason it was introduced.
-///
-/// `conductor_bridge/sync/tests_multi_tool_sync.rs` carries the same helper. The
-/// two cannot share one: that copy lives in a `#[cfg(test)]` module inside the
-/// crate and this one in a separate crate, so a shared helper would have to be
-/// public API of `mediapm` and would export a test-only utility.
-fn normalize_workspace_root(document: &[u8], root: &std::path::Path) -> String {
-    let text = String::from_utf8(document.to_vec()).expect("the generated document is UTF-8");
-    let root_text = root.to_string_lossy();
-    let mut normalized = text.replace(root_text.as_ref(), "<workspace>");
-    let forward = root_text.replace('\\', "/");
-    if forward != root_text.as_ref() {
-        normalized = normalized.replace(&forward, "<workspace>");
-    }
-    let json_escaped = root_text.replace('\\', "\\\\");
-    if json_escaped != root_text.as_ref() {
-        normalized = normalized.replace(&json_escaped, "<workspace>");
-    }
-    assert!(
-        normalized.contains("<workspace>"),
-        "the generated document has to name the workspace root it was written in",
-    );
-    normalized
 }

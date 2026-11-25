@@ -1075,7 +1075,7 @@ fn regression_runtime_open_record_no_longer_accepted() {
 // S-C9: the export directory holds the contracts the runtime evaluates
 // ---------------------------------------------------------------------------
 
-/// Every file `export_config_contracts` writes is byte-identical to the Nickel
+/// Every file `export_config_contracts` writes is identical after normalization to the Nickel
 /// source the runtime embeds, for both the mediapm registry and the
 /// conductor's.
 ///

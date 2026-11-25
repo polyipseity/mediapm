@@ -320,4 +320,15 @@ mod tests {
                 .expect("should resolve");
         assert_eq!(resolved, temp.path().join("foo/bar.txt"));
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_absolute_path_is_reported_as_absolute() {
+        let path = std::path::Path::new("C:\\repo\\file.txt");
+        assert!(
+            path.is_absolute(),
+            "Windows drive paths should be reported as absolute, got {:?}",
+            path
+        );
+    }
 }
