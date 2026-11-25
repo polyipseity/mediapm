@@ -257,26 +257,9 @@ mod tests {
     /// would notice the omission.
     #[test]
     fn every_workspace_package_is_classified_for_every_target() {
-        let real = [
-            "build-utils",
-            "cargo-bin",
-            "mediapm",
-            "mediapm-cas",
-            "mediapm-cas-cli",
-            "mediapm-cli",
-            "mediapm-conductor",
-            "mediapm-conductor-builtin-archive",
-            "mediapm-conductor-builtin-echo",
-            "mediapm-conductor-builtin-export",
-            "mediapm-conductor-builtin-fs",
-            "mediapm-conductor-cli",
-            "mediapm-conductor-examples-concat-tool",
-            "mediapm-test-support",
-            "mediapm-tests",
-            "mediapm-utils",
-            "test-runner",
-        ];
-        assert_eq!(classify(&metadata(&real)), Vec::<String>::new());
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let real = crate::cargo::metadata(dir).expect("read workspace metadata");
+        assert_eq!(classify(&real), Vec::<String>::new());
     }
 
     /// A package in neither list is a gate hole, and the report names it
