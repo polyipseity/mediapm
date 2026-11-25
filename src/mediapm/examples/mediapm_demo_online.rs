@@ -1144,14 +1144,6 @@ async fn assert_materialized_output_hardlinked_to_cas(
     Ok(())
 }
 
-/// Writes the demo's `mediapm.ncl` into `workspace_root` and returns the tool ids
-/// it declares, in declaration order.
-///
-/// `musicbrainz_endpoint` is the tagging step's backend when the run must not
-/// reach the real one: the tagger is a host builtin, so its endpoint is a step
-/// option rather than a provider seam, and a stub-chain run passes the mock's
-/// loopback URL. `None` leaves the option out, which is what the real-upstream
-/// route does — the tagger's default endpoint then applies.
 /// Builds the full platform inherited-env-var map for the demo document.
 ///
 /// The demo writes all three platforms so the same `mediapm.ncl` can be synced
@@ -1177,6 +1169,14 @@ fn all_platform_inherited_env_vars(extra: &[&str]) -> BTreeMap<String, Vec<Strin
     map
 }
 
+/// Writes the demo's `mediapm.ncl` into `workspace_root` and returns the tool ids
+/// it declares, in declaration order.
+///
+/// `musicbrainz_endpoint` is the tagging step's backend when the run must not
+/// reach the real one: the tagger is a host builtin, so its endpoint is a step
+/// option rather than a provider seam, and a stub-chain run passes the mock's
+/// loopback URL. `None` leaves the option out, which is what the real-upstream
+/// route does — the tagger's default endpoint then applies.
 #[expect(
     clippy::too_many_lines,
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
@@ -4450,8 +4450,47 @@ mod tests {
         let document = super::load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
         let envs =
             document.runtime.environment.inherited_env_vars.as_ref().expect("inherited env vars");
-        for key in ["windows", "linux", "macos"] {
-            assert!(envs.contains_key(key), "mediapm.ncl missing platform {key}");
+        let stub_env_names =
+            mediapm_test_support::stub_media::OfflineToolChain::inherited_env_names();
+        for platform in ["windows", "linux", "macos"] {
+            let names = envs
+                .get(platform)
+                .unwrap_or_else(|| panic!("mediapm.ncl missing platform {platform}"));
+            let mut expected =
+                mediapm_conductor::config::default_platform_inherited_env_var_names(platform)
+                    .iter()
+                    .map(|&name| name.to_owned())
+                    .collect::<Vec<_>>();
+            for name in stub_env_names {
+                if !expected.iter().any(|existing| existing == *name) {
+                    expected.push((*name).to_owned());
+                }
+            }
+            expected.sort();
+            expected.dedup();
+
+            for default_name in
+                mediapm_conductor::config::default_platform_inherited_env_var_names(platform)
+            {
+                assert!(
+                    names.iter().any(|name| name == default_name),
+                    "platform {platform} missing default inherited env var {default_name}"
+                );
+            }
+            for stub_name in stub_env_names {
+                assert!(
+                    names.iter().any(|name| name == stub_name),
+                    "platform {platform} missing stub inherited env var {stub_name}"
+                );
+            }
+
+            let mut actual = names.clone();
+            actual.sort();
+            actual.dedup();
+            assert_eq!(
+                actual, expected,
+                "platform {platform} should record defaults plus stub env names"
+            );
         }
         Ok(())
     }

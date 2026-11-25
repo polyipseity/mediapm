@@ -478,13 +478,6 @@ async fn seed_object_into_cas(cas: &FileSystemCas, payload: &[u8]) -> ExampleRes
     Ok(hash)
 }
 
-/// Builds the offline demo's media document: one import step the hierarchy links,
-/// and one scratch import step nothing links.
-///
-/// The kept step's single output is materialized as the demo's untagged media
-/// leaf, so it declares `"full"`: the library links to that object, and `full`
-/// keeps the blob whole instead of storing it as a delta. The scratch step's
-/// output is declared `save = false` because no hierarchy entry reads it, which is
 /// Builds the full platform inherited-env-var map for the demo document.
 ///
 /// The demo writes all three platforms so the same `mediapm.ncl` can be synced
@@ -510,6 +503,13 @@ fn all_platform_inherited_env_vars(extra: &[&str]) -> BTreeMap<String, Vec<Strin
     map
 }
 
+/// Builds the offline demo's media document: one import step the hierarchy links,
+/// and one scratch import step nothing links.
+///
+/// The kept step's single output is materialized as the demo's untagged media
+/// leaf, so it declares `"full"`: the library links to that object, and `full`
+/// keeps the blob whole instead of storing it as a delta. The scratch step's
+/// output is declared `save = false` because no hierarchy entry reads it, which is
 /// what the document demonstrates: the bytes exist after the step and nothing in
 /// the library asks the store to keep them.
 ///
@@ -1129,8 +1129,24 @@ mod tests {
         let doc = mediapm::load_mediapm_document(&run.workspace_root.join("mediapm.ncl"))
             .expect("load mediapm.ncl");
         let envs = doc.runtime.environment.inherited_env_vars.as_ref().expect("inherited env vars");
-        for key in ["windows", "linux", "macos"] {
-            assert!(envs.contains_key(key), "mediapm.ncl missing platform {key}");
+        for platform in ["windows", "linux", "macos"] {
+            let names = envs
+                .get(platform)
+                .unwrap_or_else(|| panic!("mediapm.ncl missing platform {platform}"));
+            let mut expected =
+                mediapm_conductor::config::default_platform_inherited_env_var_names(platform)
+                    .iter()
+                    .map(|&name| name.to_owned())
+                    .collect::<Vec<_>>();
+            expected.sort();
+            expected.dedup();
+            let mut actual = names.clone();
+            actual.sort();
+            actual.dedup();
+            assert_eq!(
+                actual, expected,
+                "platform {platform} should record exactly the conductor defaults"
+            );
         }
     }
 
