@@ -1,12 +1,12 @@
 //! This crate's environment-variable table.
 //!
-//! The twelve clap `env = "` readers this definition declares are
-//! catalogued here with the shared [`EnvVarEntry`] type, so the mediapm
-//! root's composed registry renders them beside `mediapm-conductor`'s and
-//! `mediapm`'s tables. The three `MEDIAPM_CONDUCTOR_*_CONFIG` names are
-//! shared with `mediapm-conductor`'s table and carry byte-identical
-//! `default`, `doc` and `group` there, which is what makes the composer's
-//! first-wins dedup render either copy identically.
+//! The clap `env = "` readers this definition declares are catalogued here
+//! with the shared [`EnvVarEntry`] type, so the mediapm root's composed
+//! registry renders them beside `mediapm-conductor`'s and `mediapm`'s tables.
+//! The three `MEDIAPM_CONDUCTOR_*_CONFIG` names are shared with
+//! `mediapm-conductor`'s table and carry byte-identical `default`, `doc` and
+//! `group` there, which is what makes the composer's first-wins dedup render
+//! either copy identically.
 
 use mediapm_utils::env_registry::{EnvVarEntry, EnvVarGroup};
 
@@ -76,6 +76,12 @@ pub fn env_registry() -> &'static [EnvVarEntry] {
             group: EnvVarGroup::CliPaths,
         },
         EnvVarEntry {
+            name: "MEDIAPM_TOOL_CACHE_DIR",
+            default: "",
+            doc: "User-level tool download cache root override (`<...>/mediapm/cache`).",
+            group: EnvVarGroup::CliPaths,
+        },
+        EnvVarEntry {
             name: "MEDIAPM_NO_PROGRESS",
             default: "",
             doc: "Suppresses progress output when set.",
@@ -105,6 +111,7 @@ mod tests {
             "MEDIAPM_ENV_GENERATED_FILE",
             "MEDIAPM_MEDIAPM_SCHEMA_DIR",
             "MEDIAPM_MEDIA_STATE_CONFIG",
+            "MEDIAPM_TOOL_CACHE_DIR",
             "MEDIAPM_NO_PROGRESS",
         ] {
             assert!(

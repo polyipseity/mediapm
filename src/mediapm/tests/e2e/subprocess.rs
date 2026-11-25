@@ -1,11 +1,11 @@
 //! The one place an end-to-end test spawns the real `mediapm` binary.
 //!
 //! Both subprocess suites in this directory go through [`run_sync`] or
-//! [`run_tool_sync`], so the isolation a child process needs is stated once: a
-//! fresh `HOME` and no inherited `XDG_CACHE_HOME`, so the tool download cache
-//! stays off the real OS cache, and every ambient `MEDIAPM_*` variable removed,
-//! so a `MEDIAPM_ROOT` or `MEDIAPM_PROGRESS_DEBUG` in the test process cannot
-//! steer the child. `PATH` and the rest of the environment are left alone so the
+//! [`run_tool_sync`], so the isolation a child process needs is stated once:
+//! `--tool-cache-dir <cache_home>` puts the tool download cache inside the
+//! test's own directory, and every ambient `MEDIAPM_*` variable is removed so a
+//! `MEDIAPM_ROOT` or `MEDIAPM_PROGRESS_DEBUG` in the test process cannot steer
+//! the child. `PATH` and the rest of the environment are left alone so the
 //! binary resolves the same tools it normally would.
 
 use std::path::Path;
@@ -29,11 +29,12 @@ pub(crate) fn run_tool_sync(workspace: &Path, cache_home: &Path, no_progress: bo
 /// environment isolation both subprocess suites depend on.
 fn run(subcommand: &[String], workspace: &Path, cache_home: &Path, no_progress: bool) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_mediapm"));
-    command.arg("--root").arg(workspace).args(subcommand);
+    command.arg("--root").arg(workspace);
+    command.arg("--tool-cache-dir").arg(cache_home);
+    command.args(subcommand);
     if no_progress {
         command.arg("--no-progress");
     }
-    command.env("HOME", cache_home).env_remove("XDG_CACHE_HOME");
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("MEDIAPM_") {
             command.env_remove(&key);

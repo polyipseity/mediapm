@@ -67,6 +67,7 @@ The test-runner `test` subcommand runs gates last: nextest, then the unprefixed-
 - Tests use `mediapm::example_isolation::IsolatedExampleRoots`. `with_cache()` or `output_only()` hold the process-wide env lock for the guard lifetime; never nest lock/guards (`parking_lot::Mutex` is non-reentrant).
 - Direct env mutation without a guard must hold `example_isolation::lock_process_env()` for the mutation scope. Tests that depend on the default environment must hold the lock too, whether reading a seam or assuming one is not installed.
 - Integration tests use `output_dir() + cache_dir() + cache_root_override`; never the real OS cache or canonical example output roots. Bind `ManagedTempDir` locals for the full scope and pass `cache_root_override` when sync/provisioning/version resolution runs.
+- A test that spawns the binary isolates it the same way: pass `--tool-cache-dir <cache_dir>`, which is the CLI form of `cache_root_override`, and remove ambient `MEDIAPM_*` variables from the child. Process-environment isolation cannot reach the OS user cache: `dirs::cache_dir()` reads the platform known folder (`FOLDERID_LocalAppData` on Windows) rather than home-directory or XDG-style environment variables.
 - Share-violation fallbacks use `isolated_output_dir()` and keep the returned `ManagedTempDir` alive until cleanup.
 - Explicit `cargo run --example` resolves the real OS user-level cache via `example_isolation::user_level_cache_root()` when `MEDIAPM_EXAMPLE_CACHE_ROOT` is unset; embedded tests always isolate it.
 

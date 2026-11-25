@@ -280,6 +280,28 @@ async fn sync_exits_zero_when_every_entry_landed() {
     );
 }
 
+/// The child's tool cache lands inside the directory the test named.
+///
+/// `dirs::cache_dir()` reads the platform's known folder, so the cache cannot
+/// be redirected through process-environment isolation; naming the root on the
+/// command line is the only lever that reaches it. Without this the assertion
+/// would pass on a host where the ambient cache happened to be writable, which
+/// is exactly how the Windows run collided with its own lock.
+#[tokio::test]
+async fn sync_puts_the_tool_cache_under_the_named_root() {
+    let workspace = workspace_holding_payload().await;
+    let cache_home = mediapm_utils::temp::cache_dir().expect("cache dir");
+
+    let output = sync(workspace.path(), cache_home.path());
+
+    assert_eq!(output.status.code(), Some(0), "{}", describe("a clean sync must exit 0", &output));
+    assert!(
+        cache_home.path().join("store").is_dir(),
+        "the child must open its CAS store under the named cache root: {}",
+        cache_home.path().display()
+    );
+}
+
 /// A second run over a library nothing changed exits zero, and leaves the entry
 /// where the first run put it.
 ///

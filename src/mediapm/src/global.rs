@@ -77,6 +77,19 @@ impl MediaPmGlobalPaths {
     pub fn resolve_default() -> Option<Self> {
         default_mediapm_user_download_cache_root().map(Self::from_tool_cache_dir)
     }
+
+    /// Resolves global-directory paths, honoring a caller-supplied cache root.
+    ///
+    /// `Some` names the tool-cache directory directly, `None` resolves the OS
+    /// user cache. This is the one place the two branches are written down:
+    /// every entry point that can be pointed at a cache root goes through it.
+    #[must_use]
+    pub fn resolve(cache_root_override: Option<&Path>) -> Option<Self> {
+        match cache_root_override {
+            Some(root) => Some(Self::from_tool_cache_dir(root)),
+            None => Self::resolve_default(),
+        }
+    }
 }
 
 /// Infers the mediapm global root from a resolved tool-cache path.
@@ -89,12 +102,17 @@ fn infer_root_dir_from_tool_cache_dir(tool_cache_dir: &Path) -> PathBuf {
 
 /// Ensures that the global directory layout exists on disk.
 ///
+/// `cache_root_override` names the tool-cache directory to create when the
+/// caller named one; unset resolves the OS user cache.
+///
 /// # Errors
 ///
 /// Returns `std::io::Error` if directory creation fails or the global cache
 /// root cannot be resolved.
-pub fn ensure_global_directory_layout() -> Result<(), std::io::Error> {
-    let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
+pub fn ensure_global_directory_layout(
+    cache_root_override: Option<&Path>,
+) -> Result<(), std::io::Error> {
+    let paths = MediaPmGlobalPaths::resolve(cache_root_override).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve global cache root")
     })?;
     std::fs::create_dir_all(&paths.tool_cache_store_dir)?;
@@ -128,7 +146,7 @@ fn global_tool_cache_domains() -> Vec<CacheDomainConfig> {
 /// root/store/index paths.
 ///
 /// When `cache_root_override` is `Some`, the cache is opened at that root
-/// instead of the resolved default (used by hermetic tests).
+/// instead of the resolved default.
 ///
 /// # Errors
 ///
@@ -137,12 +155,8 @@ fn global_tool_cache_domains() -> Vec<CacheDomainConfig> {
 pub async fn global_tool_cache_status(
     cache_root_override: Option<&Path>,
 ) -> Result<GlobalToolCacheStatus, ConductorError> {
-    let paths = match cache_root_override {
-        Some(root) => MediaPmGlobalPaths::from_tool_cache_dir(root),
-        None => MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
-            ConductorError::Workflow("cannot resolve global cache root".to_string())
-        })?,
-    };
+    let paths = MediaPmGlobalPaths::resolve(cache_root_override)
+        .ok_or_else(|| ConductorError::Workflow("cannot resolve global cache root".to_string()))?;
     let cache =
         Cache::open_without_background(&paths.tool_cache_dir, &global_tool_cache_domains()).await?;
     let mut entry_count = 0u64;
@@ -178,7 +192,7 @@ pub struct GlobalToolCacheStatus {
 /// payload counts.
 ///
 /// When `cache_root_override` is `Some`, the cache is opened at that root
-/// instead of the resolved default (used by hermetic tests).
+/// instead of the resolved default.
 ///
 /// # Errors
 ///
@@ -187,12 +201,8 @@ pub struct GlobalToolCacheStatus {
 pub async fn global_tool_cache_prune_expired(
     cache_root_override: Option<&Path>,
 ) -> Result<GlobalToolCachePruneSummary, ConductorError> {
-    let paths = match cache_root_override {
-        Some(root) => MediaPmGlobalPaths::from_tool_cache_dir(root),
-        None => MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
-            ConductorError::Workflow("cannot resolve global cache root".to_string())
-        })?,
-    };
+    let paths = MediaPmGlobalPaths::resolve(cache_root_override)
+        .ok_or_else(|| ConductorError::Workflow("cannot resolve global cache root".to_string()))?;
     let cache =
         Cache::open_without_background(&paths.tool_cache_dir, &global_tool_cache_domains()).await?;
     let mut removed_entries = 0usize;
@@ -216,12 +226,15 @@ pub struct GlobalToolCachePruneSummary {
 
 /// Clears the global tool cache entirely.
 ///
+/// `cache_root_override` names the tool-cache directory to clear when the
+/// caller named one; unset resolves the OS user cache.
+///
 /// # Errors
 ///
 /// Returns `std::io::Error` if the cache cannot be cleared or the root
 /// cannot be resolved.
-pub fn global_tool_cache_clear() -> Result<(), std::io::Error> {
-    let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
+pub fn global_tool_cache_clear(cache_root_override: Option<&Path>) -> Result<(), std::io::Error> {
+    let paths = MediaPmGlobalPaths::resolve(cache_root_override).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve global cache root")
     })?;
     if paths.tool_cache_dir.is_dir() {

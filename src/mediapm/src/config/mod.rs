@@ -341,7 +341,10 @@ pub struct MediaRuntimeStorage {
 
     #[serde(default, skip)]
     pub tools: BTreeMap<String, ToolRequirement>,
-    /// Sole exception to the no-Option policy; reason: testing only.
+    /// Sole exception to the no-`Option` policy: the only field a caller sets
+    /// after the document is resolved, because a cache root is a host fact
+    /// rather than document policy. `mediapm --tool-cache-dir` and every
+    /// hermetic test route set it; unset resolves the OS user cache.
     #[doc(hidden)]
     #[serde(skip)]
     pub cache_root_override: Option<PathBuf>,

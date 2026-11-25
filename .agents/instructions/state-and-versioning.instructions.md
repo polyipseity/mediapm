@@ -48,7 +48,7 @@ applyTo: "src/**/*.rs, **/*.ncl"
 
 ## Config document pattern
 
-- Migrations live at the version boundary. Parse into a `*Latest` boundary type, then resolve defaults into plain values. User-facing config types use plain values with serde defaults, not `Option<T>`; documented exceptions include `cache_root_override` and `resolved_*` provenance fields.
+- Migrations live at the version boundary. Parse into a `*Latest` boundary type, then resolve defaults into plain values. User-facing config types use plain values with serde defaults, not `Option<T>`; documented exceptions are `cache_root_override`, the one field a caller sets after the document is resolved because a cache root is a host fact rather than document policy, and the `resolved_*` provenance fields.
 - Each version envelope keeps its own shape. Version-specific types and `From` bridges live inside the version file, never in shared `config/mod.rs`. `config/mod.rs` holds the resolved model only.
 - Boundary entry points (`from_boundary`, `into_boundary`, multi-document merge) live in `versions/mod.rs` and must not re-export versioned symbols outside `versions/`.
 

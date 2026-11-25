@@ -140,6 +140,10 @@ async fn main_cli() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let cli_mediapm_dir = cli.mediapm_dir.clone();
+    // Bound once here because every `global` arm honours the same root: the
+    // reported path, the created layout, and the opened cache must be one
+    // directory, or `global path` would describe a cache the run never used.
+    let cli_tool_cache_dir = cli.tool_cache_dir.clone();
     // The CLI wants *resolved* runtime overrides, not a wire document, so the
     // resolved model is built directly. Every knob the CLI does not expose
     // keeps its `Default` value, which is exactly what resolving a boundary
@@ -158,6 +162,7 @@ async fn main_cli() -> anyhow::Result<()> {
             env_generated_file: cli.env_generated_file.clone().unwrap_or_default(),
         },
         materialization: RuntimeMaterializationConfig::default(),
+        cache_root_override: cli_tool_cache_dir.clone(),
 
         ..MediaRuntimeStorage::default()
     };
@@ -471,9 +476,7 @@ async fn main_cli() -> anyhow::Result<()> {
         }
         Command::Global { command } => match command {
             GlobalCommand::Path => {
-                let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
-                    anyhow::anyhow!("could not resolve global user directory for this environment")
-                })?;
+                let paths = resolve_global_paths(cli_tool_cache_dir.as_deref())?;
                 print_status_report(&[
                     ("root_dir", &paths.root_dir.display() as &dyn std::fmt::Display),
                     ("tool_cache_dir", &paths.tool_cache_dir.display()),
@@ -483,8 +486,8 @@ async fn main_cli() -> anyhow::Result<()> {
                 Ok(())
             }
             GlobalCommand::Init => {
-                ensure_global_directory_layout()?;
-                let paths = MediaPmGlobalPaths::resolve_default().unwrap();
+                ensure_global_directory_layout(cli_tool_cache_dir.as_deref())?;
+                let paths = resolve_global_paths(cli_tool_cache_dir.as_deref())?;
                 print_result(
                     StatusIcon::Success,
                     "global dir initialized",
@@ -495,7 +498,7 @@ async fn main_cli() -> anyhow::Result<()> {
             }
             GlobalCommand::ToolCache { command } => match command {
                 GlobalToolCacheCommand::Status => {
-                    let status = global_tool_cache_status(None).await?;
+                    let status = global_tool_cache_status(cli_tool_cache_dir.as_deref()).await?;
                     print_status_report(&[
                         (
                             "tool_cache_dir",
@@ -508,7 +511,8 @@ async fn main_cli() -> anyhow::Result<()> {
                     Ok(())
                 }
                 GlobalToolCacheCommand::Prune => {
-                    let summary = global_tool_cache_prune_expired(None).await?;
+                    let summary =
+                        global_tool_cache_prune_expired(cli_tool_cache_dir.as_deref()).await?;
                     print_result(
                         StatusIcon::Success,
                         "tool cache pruned",
@@ -521,7 +525,7 @@ async fn main_cli() -> anyhow::Result<()> {
                     Ok(())
                 }
                 GlobalToolCacheCommand::Clear => {
-                    global_tool_cache_clear()?;
+                    global_tool_cache_clear(cli_tool_cache_dir.as_deref())?;
                     print_result(StatusIcon::Success, "tool cache cleared", &[], None);
                     Ok(())
                 }
@@ -544,6 +548,19 @@ async fn main_cli() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Resolves the global directory paths a `global` command reports or creates.
+///
+/// Wraps [`MediaPmGlobalPaths::resolve`] so the two arms that print their result
+/// word one failure message: whichever way the resolution failed, the operator
+/// needs the directory name and not the internal reason.
+fn resolve_global_paths(
+    cache_root_override: Option<&std::path::Path>,
+) -> anyhow::Result<MediaPmGlobalPaths> {
+    MediaPmGlobalPaths::resolve(cache_root_override).ok_or_else(|| {
+        anyhow::anyhow!("could not resolve global user directory for this environment")
+    })
 }
 
 /// Resolves the CLI recheck override a `sync` invocation asked for.
@@ -811,7 +828,7 @@ fn passthrough_requests_help_or_version(args: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
     use mediapm::MediaPmPaths;
     use std::path::PathBuf;
 
@@ -1390,6 +1407,46 @@ mod tests {
         assert_ne!(
             EXIT_INCOMPLETE_LIBRARY, missing_cli_feature,
             "an incomplete library must not read as a usage problem"
+        );
+    }
+
+    /// The tool-cache root is a run-wide option, so it is accepted before the
+    /// subcommand and reaches the resolved runtime storage unchanged.
+    ///
+    /// A test-only hook was rejected: the value the CLI parses here is the
+    /// same `MediaRuntimeStorage.cache_root_override` every resolution site
+    /// already honors, so the flag closes a real CLI/API parity gap instead of
+    /// adding a second isolation mechanism.
+    #[test]
+    fn the_tool_cache_dir_option_is_accepted_before_the_subcommand() {
+        let parsed =
+            Cli::try_parse_from(["mediapm", "--tool-cache-dir", "/tmp/mediapm-tool-cache", "sync"])
+                .expect("--tool-cache-dir must parse ahead of the subcommand");
+        assert_eq!(
+            parsed.tool_cache_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/mediapm-tool-cache")),
+            "the parsed value must be the directory the caller named"
+        );
+    }
+
+    /// The env form is the same lever as the flag, so a scripted run can
+    /// isolate its cache without spelling the argument.
+    #[test]
+    fn the_tool_cache_dir_env_is_the_same_lever_as_the_flag() {
+        // `try_parse_from` reads the process environment for `env = "..."`,
+        // so this asserts the arg definition carries the variable name rather
+        // than mutating process state: setting a process-wide var from a unit
+        // test would race every sibling test that parses this definition.
+        let env = Cli::command()
+            .get_arguments()
+            .find(|arg| arg.get_id().as_str() == "tool_cache_dir")
+            .expect("the definition declares a tool-cache-dir argument")
+            .get_env()
+            .map(|env| env.to_string_lossy().into_owned());
+        assert_eq!(
+            env.as_deref(),
+            Some("MEDIAPM_TOOL_CACHE_DIR"),
+            "the option must read the documented environment variable"
         );
     }
 }

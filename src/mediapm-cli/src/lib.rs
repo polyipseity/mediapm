@@ -113,6 +113,12 @@ pub struct Cli {
     /// Override for `runtime.media_state_config`.
     #[arg(long, env = "MEDIAPM_MEDIA_STATE_CONFIG")]
     pub media_state_config: Option<PathBuf>,
+    /// Overrides the user-level tool download cache root for this invocation,
+    /// the directory holding `store/` and `tools.json`. Unset resolves the OS
+    /// user cache; a test or a scripted run sets it so the cache stays inside
+    /// its own directory.
+    #[arg(long, env = "MEDIAPM_TOOL_CACHE_DIR")]
+    pub tool_cache_dir: Option<PathBuf>,
     /// Top-level command selector.
     #[command(subcommand)]
     pub command: Command,
